@@ -7,3 +7,7 @@ dist/
 coverage/
 .nyc_output/
 *.tsbuildinfo
+
+# Changesets temp files
+.changeset/_tmp.md
+.changeset/pre.json

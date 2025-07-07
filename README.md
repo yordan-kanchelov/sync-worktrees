@@ -119,6 +119,23 @@ pnpm dev -- --repoPath /path/to/repo --worktreeDir /path/to/worktrees --runOnce
 - `pnpm test` - Run tests
 - `pnpm lint` - Check linting
 - `pnpm typecheck` - Run type checking
+- `pnpm changeset` - Create a changeset for your changes
+- `pnpm version` - Update versions based on changesets
+- `pnpm release` - Build and publish to npm
+
+## Contributing
+
+This project uses [changesets](https://github.com/changesets/changesets) to manage versions and releases.
+
+### Making Changes
+
+1. Make your changes and commit them
+2. Run `pnpm changeset` to create a changeset describing your changes
+3. Select the appropriate version bump type (patch/minor/major)
+4. Write a summary of your changes for the changelog
+5. Commit the generated changeset file
+
+The CI will automatically create a PR to update versions when changesets are merged to main, and will publish to npm when that PR is merged.
 
 ## License
 

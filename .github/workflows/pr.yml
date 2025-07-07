@@ -1,0 +1,82 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  check-changeset:
+    name: Check for Changeset
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Dependencies
+        run: pnpm install
+
+      - name: Check for changeset
+        run: |
+          # Check if this PR touches any code files
+          git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.(ts|js|json)$' > /dev/null || {
+            echo "No code changes detected, skipping changeset check"
+            exit 0
+          }
+          
+          # Check if there's a changeset
+          pnpm changeset status --since=origin/${{ github.base_ref }} || {
+            echo "::error::This PR contains code changes but is missing a changeset. Please run 'pnpm changeset' and commit the generated file."
+            echo "::error::If this change doesn't need a version bump (e.g., internal refactoring, tests, docs), you can create an empty changeset."
+            exit 1
+          }
+
+  lint-and-test:
+    name: Lint and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Dependencies
+        run: pnpm install
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type Check
+        run: pnpm typecheck
+
+      - name: Test with coverage
+        run: pnpm test:coverage
+
+      - name: Build
+        run: pnpm build
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
