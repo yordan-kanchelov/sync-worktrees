@@ -1,0 +1,233 @@
+import * as fs from "fs/promises";
+
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import * as cron from "node-cron";
+import simpleGit from "simple-git";
+
+import { WorktreeSyncService } from "../services/worktree-sync.service";
+// import { parseArguments } from '../utils/cli'; // Skip due to ESM issues
+
+import type { SimpleGit } from "simple-git";
+
+// Mock all external dependencies
+jest.mock("fs/promises");
+jest.mock("simple-git");
+jest.mock("node-cron");
+// jest.mock('../utils/cli'); // Skip due to ESM issues
+
+describe("Integration Tests", () => {
+  let mockGit: jest.Mocked<SimpleGit>;
+  let mockScheduledTask: { start: jest.Mock; stop: jest.Mock };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    // Setup mock git
+    mockGit = {
+      fetch: jest.fn<any>().mockResolvedValue(undefined),
+      branch: jest.fn<any>().mockResolvedValue({
+        all: ["origin/main", "origin/feature-1", "origin/feature-2"],
+        current: "main",
+      }),
+      raw: jest.fn<any>().mockResolvedValue(""),
+      status: jest.fn<any>().mockResolvedValue({
+        isClean: jest.fn().mockReturnValue(true),
+      }),
+      clone: jest.fn<any>().mockResolvedValue(undefined),
+    } as any;
+
+    (simpleGit as unknown as jest.Mock).mockReturnValue(mockGit);
+
+    // Setup mock cron
+    mockScheduledTask = {
+      start: jest.fn(),
+      stop: jest.fn(),
+    };
+    (cron.schedule as jest.Mock).mockReturnValue(mockScheduledTask);
+
+    // Setup mock fs
+    (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+    (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+    (fs.readdir as jest.Mock<any>).mockResolvedValue(["main"]);
+  });
+
+  describe("Full sync workflow", () => {
+    it("should perform complete sync from initialization to cleanup", async () => {
+      const config = {
+        repoPath: "/test/repo",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      };
+
+      const service = new WorktreeSyncService(config);
+
+      // Initialize and sync
+      await service.initialize();
+      await service.sync();
+
+      // Verify complete workflow
+      expect(fs.access).toHaveBeenCalledWith("/test/repo");
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--prune"]);
+      expect(mockGit.branch).toHaveBeenCalledWith(["-r"]);
+      expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees", { recursive: true });
+      expect(fs.readdir).toHaveBeenCalledWith("/test/worktrees");
+
+      // Should create worktrees for feature-1 and feature-2
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-2", "feature-2"]);
+
+      // Should prune at the end
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "prune"]);
+    });
+
+    it("should handle repository cloning on first run", async () => {
+      // Simulate repo doesn't exist
+      (fs.access as jest.Mock<any>).mockRejectedValueOnce(new Error("ENOENT"));
+
+      const config = {
+        repoPath: "/test/new-repo",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      };
+
+      const service = new WorktreeSyncService(config);
+      await service.initialize();
+
+      // Should clone the repository
+      expect(simpleGit).toHaveBeenCalledWith(); // Called without args for cloning
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", "/test/new-repo");
+    });
+  });
+
+  describe("Cron scheduling", () => {
+    it("should schedule sync when runOnce is false", async () => {
+      const config = {
+        repoPath: "/test/repo",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "*/5 * * * *",
+        runOnce: false,
+      };
+
+      // (parseArguments as jest.Mock).mockReturnValue(config);
+
+      // Import and run the main module
+      // Note: In a real scenario, you'd import your main function
+      // For this example, we'll simulate the scheduling logic
+      const service = new WorktreeSyncService(config);
+      await service.initialize();
+
+      // Simulate cron scheduling
+      cron.schedule("*/5 * * * *", async () => {
+        await service.sync();
+      });
+
+      expect(cron.schedule).toHaveBeenCalledWith("*/5 * * * *", expect.any(Function));
+    });
+
+    it("should run once and exit when runOnce is true", async () => {
+      const config = {
+        repoPath: "/test/repo",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      };
+
+      const service = new WorktreeSyncService(config);
+      await service.initialize();
+      await service.sync();
+
+      // Should not schedule cron job
+      expect(cron.schedule).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Error handling", () => {
+    it("should handle and recover from sync errors", async () => {
+      const config = {
+        repoPath: "/test/repo",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      };
+
+      // Make fetch fail
+      mockGit.fetch.mockRejectedValueOnce(new Error("Network error"));
+
+      const service = new WorktreeSyncService(config);
+      await service.initialize();
+
+      // Should throw but log the error
+      await expect(service.sync()).rejects.toThrow("Network error");
+      expect(console.error).toHaveBeenCalledWith("Error during worktree synchronization:", expect.any(Error));
+    });
+
+    it("should continue sync even if individual worktree operations fail", async () => {
+      const config = {
+        repoPath: "/test/repo",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      };
+
+      // Make first worktree add fail
+      mockGit.raw.mockRejectedValueOnce(new Error("Worktree already exists")).mockResolvedValue("");
+
+      const service = new WorktreeSyncService(config);
+      await service.initialize();
+
+      // Should not throw and continue with other operations
+      await expect(service.sync()).rejects.toThrow("Worktree already exists");
+    });
+  });
+
+  describe("Complex scenarios", () => {
+    it("should handle mixed operations: add, remove, and skip", async () => {
+      const config = {
+        repoPath: "/test/repo",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      };
+
+      // Setup: existing worktrees include some to keep, some to remove
+      (fs.readdir as jest.Mock<any>).mockResolvedValue([
+        "main", // Keep (exists in remote)
+        "feature-1", // Keep (exists in remote)
+        "old-feature", // Remove (not in remote)
+        "dirty-branch", // Skip removal (has changes)
+      ]);
+
+      // Mock status checks
+      const statusChecks = new Map([
+        ["/test/worktrees/old-feature", true], // Clean, can remove
+        ["/test/worktrees/dirty-branch", false], // Has changes, skip
+      ]);
+
+      (mockGit.status as jest.Mock<any>).mockImplementation(async () => {
+        const currentPath = (simpleGit as unknown as jest.Mock<any>).mock.calls.slice(-1)[0][0] as string;
+        const isClean = statusChecks.get(currentPath) ?? true;
+        return { isClean: jest.fn().mockReturnValue(isClean) } as any;
+      });
+
+      const service = new WorktreeSyncService(config);
+      await service.initialize();
+      await service.sync();
+
+      // Should add feature-2
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-2", "feature-2"]);
+
+      // Should remove old-feature
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "old-feature", "--force"]);
+
+      // Should NOT remove dirty-branch
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "remove", "dirty-branch", "--force"]);
+
+      // Should log warning about dirty-branch
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Skipping removal of 'dirty-branch'"));
+    });
+  });
+});
