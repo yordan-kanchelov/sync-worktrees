@@ -202,4 +202,56 @@ describe("GitService", () => {
       expect(isClean).toBe(false);
     });
   });
+
+  describe("hasUnpushedCommits", () => {
+    it("should return true when worktree has unpushed commits", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "feature-1",
+        }),
+        raw: jest.fn<any>().mockResolvedValue("3\n"), // 3 unpushed commits
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-1");
+
+      expect(hasUnpushed).toBe(true);
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "feature-1", "--not", "--remotes"]);
+    });
+
+    it("should return false when worktree has no unpushed commits", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "feature-1",
+        }),
+        raw: jest.fn<any>().mockResolvedValue("0\n"), // No unpushed commits
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-1");
+
+      expect(hasUnpushed).toBe(false);
+    });
+
+    it("should handle errors and return false", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockRejectedValue(new Error("Branch command failed")),
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-1");
+
+      expect(hasUnpushed).toBe(false);
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Error checking unpushed commits"));
+
+      consoleSpy.mockRestore();
+    });
+  });
 });

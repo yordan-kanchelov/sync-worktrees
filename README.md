@@ -7,7 +7,7 @@ Automatically synchronize Git worktrees with remote branches. Keep your local wo
 - 🔄 Automatically creates worktrees for all remote branches
 - 🗑️ Removes worktrees for deleted remote branches (preserves local changes)
 - ⏰ Run as a scheduled cron job or one-time execution
-- 🛡️ Safe operations - won't delete worktrees with uncommitted changes
+- 🛡️ Safe operations - won't delete worktrees with uncommitted changes or unpushed commits
 - 📝 Clear logging with timestamps and progress indicators
 
 ## Installation
@@ -84,7 +84,7 @@ sync-worktrees \
 2. **Synchronization**:
    - Fetches latest changes from all remotes
    - Creates worktrees for new remote branches
-   - Removes worktrees for deleted remote branches (only if they have no local changes)
+   - Removes worktrees for deleted remote branches (only if they have no local changes and no unpushed commits)
    - Prunes stale worktree metadata
 
 ## Requirements

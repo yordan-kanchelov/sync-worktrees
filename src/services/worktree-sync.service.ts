@@ -75,11 +75,17 @@ export class WorktreeSyncService {
 
         try {
           const isClean = await this.gitService.checkWorktreeStatus(worktreePath);
+          const hasUnpushed = await this.gitService.hasUnpushedCommits(worktreePath);
 
-          if (isClean) {
+          if (isClean && !hasUnpushed) {
             await this.gitService.removeWorktree(branchName);
           } else {
-            console.log(`  - ⚠️ Skipping removal of '${branchName}' as it has local changes.`);
+            if (!isClean) {
+              console.log(`  - ⚠️ Skipping removal of '${branchName}' as it has uncommitted changes.`);
+            }
+            if (hasUnpushed) {
+              console.log(`  - ⚠️ Skipping removal of '${branchName}' as it has unpushed commits.`);
+            }
           }
         } catch (error) {
           console.error(`  - Error checking worktree '${branchName}':`, error);

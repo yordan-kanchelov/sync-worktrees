@@ -37,6 +37,7 @@ describe("WorktreeSyncService", () => {
       removeWorktree: jest.fn<any>().mockResolvedValue(undefined),
       pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
       checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
+      hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
       getGit: jest.fn<any>(),
     } as any;
 
@@ -77,6 +78,7 @@ describe("WorktreeSyncService", () => {
 
       // Should check and remove old-branch
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
+      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("old-branch");
 
       // Should prune at the end
@@ -101,6 +103,34 @@ describe("WorktreeSyncService", () => {
       await service.sync();
 
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(path.join("/test/worktrees", "dirty-branch"));
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+    });
+
+    it("should skip worktrees with unpushed commits", async () => {
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "unpushed-branch"]);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true); // Clean
+      mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Has unpushed commits
+
+      await service.sync();
+
+      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(path.join("/test/worktrees", "unpushed-branch"));
+      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledWith(path.join("/test/worktrees", "unpushed-branch"));
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+    });
+
+    it("should skip worktrees with both local changes and unpushed commits", async () => {
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "dirty-unpushed-branch"]);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(false); // Has local changes
+      mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Has unpushed commits
+
+      await service.sync();
+
+      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(
+        path.join("/test/worktrees", "dirty-unpushed-branch"),
+      );
+      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledWith(
+        path.join("/test/worktrees", "dirty-unpushed-branch"),
+      );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
     });
 
@@ -149,6 +179,34 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("old-1");
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("old-2");
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("old-3");
+    });
+
+    it("should only remove worktrees that are clean with no unpushed commits", async () => {
+      mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "deleted-clean", "deleted-dirty", "deleted-unpushed"]);
+
+      // Set up different conditions for each worktree
+      mockGitService.checkWorktreeStatus
+        .mockResolvedValueOnce(true) // deleted-clean: clean
+        .mockResolvedValueOnce(false) // deleted-dirty: has uncommitted changes
+        .mockResolvedValueOnce(true); // deleted-unpushed: clean
+
+      mockGitService.hasUnpushedCommits
+        .mockResolvedValueOnce(false) // deleted-clean: no unpushed commits
+        .mockResolvedValueOnce(false) // deleted-dirty: no unpushed commits (but won't be checked due to uncommitted changes)
+        .mockResolvedValueOnce(true); // deleted-unpushed: has unpushed commits
+
+      await service.sync();
+
+      // Should only remove the worktree that is both clean AND has no unpushed commits
+      expect(mockGitService.removeWorktree).toHaveBeenCalledTimes(1);
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("deleted-clean");
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith("deleted-dirty");
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith("deleted-unpushed");
+
+      // Verify all safety checks were performed
+      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
+      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledTimes(3); // Called for all worktrees regardless of checkWorktreeStatus result
     });
   });
 });

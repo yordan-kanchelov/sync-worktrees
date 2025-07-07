@@ -73,4 +73,23 @@ export class GitService {
     const status = await worktreeGit.status();
     return status.isClean();
   }
+
+  async hasUnpushedCommits(worktreePath: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+    try {
+      // Get the current branch name
+      const branchSummary = await worktreeGit.branch();
+      const currentBranch = branchSummary.current;
+
+      // Count commits that exist in the current branch but not in any remote
+      const result = await worktreeGit.raw(["rev-list", "--count", currentBranch, "--not", "--remotes"]);
+
+      const unpushedCount = parseInt(result.trim(), 10);
+      return unpushedCount > 0;
+    } catch (error) {
+      // If the command fails (e.g., branch doesn't exist), assume it's safe
+      console.error(`Error checking unpushed commits: ${error}`);
+      return false;
+    }
+  }
 }
