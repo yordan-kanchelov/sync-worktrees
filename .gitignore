@@ -11,3 +11,6 @@ coverage/
 # Changesets temp files
 .changeset/_tmp.md
 .changeset/pre.json
+
+# User config files (but keep examples)
+sync-worktrees.config.js

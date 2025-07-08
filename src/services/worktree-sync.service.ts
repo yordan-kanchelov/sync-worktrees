@@ -27,13 +27,19 @@ export class WorktreeSyncService {
       console.log(`Found ${remoteBranches.length} remote branches.`);
 
       await fs.mkdir(this.config.worktreeDir, { recursive: true });
-      const worktreeDirs = await fs.readdir(this.config.worktreeDir);
-      console.log(`Found ${worktreeDirs.length} existing worktree directories.`);
+
+      // Get actual Git worktrees instead of just directories
+      const worktrees = await this.gitService.getWorktrees();
+      const worktreeBranches = worktrees.map((w) => w.branch);
+      console.log(`Found ${worktrees.length} existing Git worktrees.`);
+
+      // Clean up orphaned directories
+      await this.cleanupOrphanedDirectories(worktrees);
 
       const currentBranch = await this.gitService.getCurrentBranch();
-      await this.createNewWorktrees(remoteBranches, worktreeDirs, currentBranch);
+      await this.createNewWorktrees(remoteBranches, worktreeBranches, currentBranch);
 
-      await this.pruneOldWorktrees(remoteBranches, worktreeDirs);
+      await this.pruneOldWorktrees(remoteBranches, worktreeBranches);
 
       await this.gitService.pruneWorktrees();
       console.log("Step 4: Pruned worktree metadata.");
@@ -47,10 +53,12 @@ export class WorktreeSyncService {
 
   private async createNewWorktrees(
     remoteBranches: string[],
-    worktreeDirs: string[],
+    existingWorktreeBranches: string[],
     currentBranch: string,
   ): Promise<void> {
-    const newBranches = remoteBranches.filter((b) => !worktreeDirs.includes(b)).filter((b) => b !== currentBranch);
+    const newBranches = remoteBranches
+      .filter((b) => !existingWorktreeBranches.includes(b))
+      .filter((b) => b !== currentBranch);
 
     if (newBranches.length > 0) {
       console.log(`Step 2: Creating new worktrees for: ${newBranches.join(", ")}`);
@@ -63,8 +71,8 @@ export class WorktreeSyncService {
     }
   }
 
-  private async pruneOldWorktrees(remoteBranches: string[], worktreeDirs: string[]): Promise<void> {
-    const deletedBranches = worktreeDirs.filter((dir) => !remoteBranches.includes(dir));
+  private async pruneOldWorktrees(remoteBranches: string[], existingWorktreeBranches: string[]): Promise<void> {
+    const deletedBranches = existingWorktreeBranches.filter((branch) => !remoteBranches.includes(branch));
 
     if (deletedBranches.length > 0) {
       console.log(`Step 3: Checking for stale worktrees to prune: ${deletedBranches.join(", ")}`);
@@ -92,6 +100,34 @@ export class WorktreeSyncService {
       }
     } else {
       console.log("Step 3: No stale worktrees to prune.");
+    }
+  }
+
+  private async cleanupOrphanedDirectories(worktrees: { path: string; branch: string }[]): Promise<void> {
+    try {
+      const worktreePaths = worktrees.map((w) => path.basename(w.path));
+      const allDirs = await fs.readdir(this.config.worktreeDir);
+
+      const orphanedDirs = allDirs.filter((dir) => !worktreePaths.includes(dir));
+
+      if (orphanedDirs.length > 0) {
+        console.log(`Found ${orphanedDirs.length} orphaned directories: ${orphanedDirs.join(", ")}`);
+
+        for (const dir of orphanedDirs) {
+          const dirPath = path.join(this.config.worktreeDir, dir);
+          try {
+            const stat = await fs.stat(dirPath);
+            if (stat.isDirectory()) {
+              await fs.rm(dirPath, { recursive: true, force: true });
+              console.log(`  - Removed orphaned directory: ${dir}`);
+            }
+          } catch (error) {
+            console.error(`  - Failed to remove orphaned directory ${dir}:`, error);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error during orphaned directory cleanup:", error);
     }
   }
 }

@@ -8,6 +8,7 @@ module.exports = {
     'src/**/*.ts',
     '!src/**/*.d.ts',
     '!src/index.ts',
+    '!src/utils/cli.ts',
     '!src/**/__tests__/**'
   ],
   coverageDirectory: 'coverage',

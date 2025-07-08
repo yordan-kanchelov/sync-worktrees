@@ -9,6 +9,7 @@ Automatically synchronize Git worktrees with remote branches. Keep your local wo
 - ⏰ Run as a scheduled cron job or one-time execution
 - 🛡️ Safe operations - won't delete worktrees with uncommitted changes or unpushed commits
 - 📝 Clear logging with timestamps and progress indicators
+- 📋 Config file support for managing multiple repositories
 
 ## Installation
 
@@ -46,16 +47,27 @@ sync-worktrees \
   --runOnce
 ```
 
+### Using a config file
+
+```bash
+sync-worktrees --config ./sync-worktrees.config.js
+```
+
 ## Options
 
 | Option | Alias | Description | Required | Default |
 |--------|-------|-------------|----------|---------|
-| `--repoPath` | `-r` | Absolute path to the target repository | Yes | - |
+| `--config` | `-c` | Path to JavaScript config file | No | - |
+| `--filter` | `-f` | Filter repositories by name (wildcards supported) | No | - |
+| `--list` | `-l` | List configured repositories and exit | No | `false` |
+| `--repoPath` | `-r` | Absolute path to the target repository | Yes* | - |
 | `--repoUrl` | `-u` | Git repository URL for cloning | No | - |
-| `--worktreeDir` | `-w` | Directory for storing worktrees | Yes | - |
+| `--worktreeDir` | `-w` | Directory for storing worktrees | Yes* | - |
 | `--cronSchedule` | `-s` | Cron pattern for scheduling | No | `0 * * * *` (hourly) |
 | `--runOnce` | - | Execute once and exit | No | `false` |
 | `--help` | `-h` | Show help | No | - |
+
+\* Required when not using a config file
 
 ## Examples
 
@@ -77,6 +89,58 @@ sync-worktrees \
   -w /home/user/new-repo-worktrees \
   --runOnce
 ```
+
+### Using a config file
+```bash
+# Sync all repositories in config
+sync-worktrees --config ./sync-worktrees.config.js
+
+# Sync specific repositories
+sync-worktrees --config ./sync-worktrees.config.js --filter "frontend-*,backend-*"
+
+# List configured repositories
+sync-worktrees --config ./sync-worktrees.config.js --list
+
+# Override config settings
+sync-worktrees --config ./sync-worktrees.config.js --runOnce
+```
+
+## Configuration File
+
+The config file is a JavaScript module that exports configuration for multiple repositories. This allows you to manage multiple repositories with different settings in a single command.
+
+### Basic Config Structure
+
+```javascript
+module.exports = {
+  // Optional global defaults
+  defaults: {
+    cronSchedule: "0 * * * *",
+    runOnce: false
+  },
+  
+  // Array of repository configurations
+  repositories: [
+    {
+      name: "my-project",  // Unique identifier
+      repoUrl: "https://github.com/user/repo.git",
+      repoPath: "/path/to/repo",
+      worktreeDir: "/path/to/worktrees",
+      cronSchedule: "*/30 * * * *",  // Override default
+      runOnce: false  // Override default
+    }
+  ]
+};
+```
+
+### Advanced Features
+
+- **Environment variables**: Use `process.env` to read from environment
+- **Dynamic paths**: Use Node.js modules like `path` and `os`
+- **Conditional config**: Include/exclude repos based on environment
+- **Relative paths**: Resolved relative to the config file location
+
+See `sync-worktrees.config.example.js` for more examples.
 
 ## How it works
 
