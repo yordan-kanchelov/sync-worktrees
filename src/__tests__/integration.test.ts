@@ -265,6 +265,31 @@ describe("Integration Tests", () => {
         "dirty-branch", // Skip removal (has changes)
       ]);
 
+      // Mock git worktree list --porcelain
+      const mockRawCalls: string[][] = [];
+      (mockGit.raw as jest.Mock<any>).mockImplementation(async (args: string[]) => {
+        mockRawCalls.push(args);
+        if (args[0] === "worktree" && args[1] === "list" && args[2] === "--porcelain") {
+          return `worktree /test/repo
+branch refs/heads/main
+
+worktree /test/worktrees/feature-1
+branch refs/heads/feature-1
+
+worktree /test/worktrees/old-feature
+branch refs/heads/old-feature
+
+worktree /test/worktrees/dirty-branch
+branch refs/heads/dirty-branch
+`;
+        }
+        return "";
+      });
+
+      // Mock fs.stat and fs.rm for orphaned directory cleanup
+      (fs.stat as jest.Mock<any>).mockResolvedValue({ isDirectory: jest.fn().mockReturnValue(true) });
+      (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
+
       // Mock status checks
       const statusChecks = new Map([
         ["/test/worktrees/old-feature", true], // Clean, can remove
@@ -281,14 +306,17 @@ describe("Integration Tests", () => {
       await service.initialize();
       await service.sync();
 
+      // Filter out the worktree list calls
+      const operationCalls = mockRawCalls.filter((args) => !(args[1] === "list" && args[2] === "--porcelain"));
+
       // Should add feature-2
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-2", "feature-2"]);
+      expect(operationCalls).toContainEqual(["worktree", "add", "/test/worktrees/feature-2", "feature-2"]);
 
       // Should remove old-feature
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "old-feature", "--force"]);
+      expect(operationCalls).toContainEqual(["worktree", "remove", "old-feature", "--force"]);
 
       // Should NOT remove dirty-branch
-      expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "remove", "dirty-branch", "--force"]);
+      expect(operationCalls).not.toContainEqual(["worktree", "remove", "dirty-branch", "--force"]);
 
       // Should log warning about dirty-branch
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Skipping removal of 'dirty-branch'"));

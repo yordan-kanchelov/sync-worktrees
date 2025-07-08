@@ -98,4 +98,34 @@ export class GitService {
     const branchSummary = await git.branch();
     return branchSummary.current;
   }
+
+  async getWorktrees(): Promise<{ path: string; branch: string }[]> {
+    const git = this.getGit();
+    const result = await git.raw(["worktree", "list", "--porcelain"]);
+
+    const worktrees: { path: string; branch: string }[] = [];
+    const lines = result.trim().split("\n");
+
+    let currentWorktree: { path?: string; branch?: string } = {};
+
+    for (const line of lines) {
+      if (line.startsWith("worktree ")) {
+        currentWorktree.path = line.substring(9);
+      } else if (line.startsWith("branch ")) {
+        currentWorktree.branch = line.substring(7).replace("refs/heads/", "");
+      } else if (line === "") {
+        if (currentWorktree.path && currentWorktree.branch) {
+          worktrees.push({ path: currentWorktree.path, branch: currentWorktree.branch });
+        }
+        currentWorktree = {};
+      }
+    }
+
+    // Handle the last worktree if there's no trailing empty line
+    if (currentWorktree.path && currentWorktree.branch) {
+      worktrees.push({ path: currentWorktree.path, branch: currentWorktree.branch });
+    }
+
+    return worktrees;
+  }
 }
