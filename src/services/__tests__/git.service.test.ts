@@ -254,4 +254,76 @@ describe("GitService", () => {
       consoleSpy.mockRestore();
     });
   });
+
+  describe("getWorktrees", () => {
+    it("should parse worktree list output correctly", async () => {
+      await gitService.initialize();
+
+      mockGit.raw.mockResolvedValue(`worktree /path/to/repo
+branch refs/heads/main
+
+worktree /path/to/worktrees/feature-1
+branch refs/heads/feature-1
+
+worktree /path/to/worktrees/feature-2
+branch refs/heads/feature-2
+`);
+
+      const worktrees = await gitService.getWorktrees();
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(worktrees).toEqual([
+        { path: "/path/to/repo", branch: "main" },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1" },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2" },
+      ]);
+    });
+
+    it("should handle worktree list with no trailing newline", async () => {
+      await gitService.initialize();
+
+      mockGit.raw.mockResolvedValue(`worktree /path/to/repo
+branch refs/heads/main
+
+worktree /path/to/worktrees/feature-1
+branch refs/heads/feature-1`);
+
+      const worktrees = await gitService.getWorktrees();
+
+      expect(worktrees).toEqual([
+        { path: "/path/to/repo", branch: "main" },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1" },
+      ]);
+    });
+
+    it("should handle empty worktree list", async () => {
+      await gitService.initialize();
+
+      mockGit.raw.mockResolvedValue("");
+
+      const worktrees = await gitService.getWorktrees();
+
+      expect(worktrees).toEqual([]);
+    });
+
+    it("should skip worktrees without branch info", async () => {
+      await gitService.initialize();
+
+      mockGit.raw.mockResolvedValue(`worktree /path/to/repo
+branch refs/heads/main
+
+worktree /path/to/worktrees/detached
+
+worktree /path/to/worktrees/feature-1
+branch refs/heads/feature-1
+`);
+
+      const worktrees = await gitService.getWorktrees();
+
+      expect(worktrees).toEqual([
+        { path: "/path/to/repo", branch: "main" },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1" },
+      ]);
+    });
+  });
 });

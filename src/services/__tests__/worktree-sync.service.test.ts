@@ -293,5 +293,20 @@ describe("WorktreeSyncService", () => {
       // Should continue with the rest of the sync
       expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
     });
+
+    it("should handle errors when reading worktree directory", async () => {
+      // Mock fs.readdir to throw an error
+      (fs.readdir as jest.Mock<any>).mockRejectedValue(new Error("Permission denied"));
+
+      mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
+
+      // Should not throw, just log the error
+      await service.sync();
+
+      expect(console.error).toHaveBeenCalledWith("Error during orphaned directory cleanup:", expect.any(Error));
+
+      // Should continue with the rest of the sync
+      expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
+    });
   });
 });
