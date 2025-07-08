@@ -5,10 +5,21 @@ import * as path from "path";
 import * as cron from "node-cron";
 
 import { WorktreeSyncService } from "./services/worktree-sync.service";
-import { parseArguments } from "./utils/cli";
+import { isInteractiveMode, parseArguments } from "./utils/cli";
+import { promptForConfig } from "./utils/interactive";
+
+import type { Config } from "./types";
 
 async function main(): Promise<void> {
-  const config = parseArguments();
+  const partialConfig = parseArguments();
+
+  let config: Config;
+  if (isInteractiveMode(partialConfig)) {
+    config = await promptForConfig(partialConfig);
+  } else {
+    config = partialConfig as Config;
+  }
+
   const syncService = new WorktreeSyncService(config);
 
   try {

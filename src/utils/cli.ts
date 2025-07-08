@@ -3,13 +3,12 @@ import { hideBin } from "yargs/helpers";
 
 import type { Config } from "../types";
 
-export function parseArguments(): Config {
-  return yargs(hideBin(process.argv))
+export function parseArguments(): Partial<Config> {
+  const argv = yargs(hideBin(process.argv))
     .option("repoPath", {
       alias: "r",
       type: "string",
       description: "Absolute path to the target local repository directory.",
-      demandOption: true,
     })
     .option("repoUrl", {
       alias: "u",
@@ -20,7 +19,6 @@ export function parseArguments(): Config {
       alias: "w",
       type: "string",
       description: "Absolute path to the directory for storing worktrees.",
-      demandOption: true,
     })
     .option("cronSchedule", {
       alias: "s",
@@ -35,5 +33,17 @@ export function parseArguments(): Config {
     })
     .help()
     .alias("help", "h")
-    .parseSync() as Config;
+    .parseSync();
+
+  return {
+    repoPath: argv.repoPath,
+    repoUrl: argv.repoUrl,
+    worktreeDir: argv.worktreeDir,
+    cronSchedule: argv.cronSchedule,
+    runOnce: argv.runOnce,
+  };
+}
+
+export function isInteractiveMode(config: Partial<Config>): boolean {
+  return !config.repoPath || !config.worktreeDir;
 }

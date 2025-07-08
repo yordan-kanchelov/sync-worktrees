@@ -47,6 +47,7 @@
   },
   "homepage": "https://github.com/yordan-kanchelov/sync-worktrees#readme",
   "dependencies": {
+    "@inquirer/prompts": "^7.6.0",
     "node-cron": "^4.2.0",
     "simple-git": "^3.28.0",
     "yargs": "^18.0.0"
