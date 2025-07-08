@@ -146,5 +146,117 @@ describe("Interactive prompt utility", () => {
       expect(input).not.toHaveBeenCalled();
       expect(result.cronSchedule).toBe("0 0 * * *");
     });
+
+    it("should validate empty repository path", async () => {
+      input
+        .mockResolvedValueOnce("/path/to/repo") // repoPath
+        .mockResolvedValueOnce("/path/to/worktrees"); // worktreeDir
+
+      select.mockResolvedValueOnce("once"); // runMode
+
+      await promptForConfig({});
+
+      const validateFn = (input as any).mock.calls[0][0].validate;
+
+      // Test validation
+      expect(validateFn("")).toBe("Repository path is required");
+      expect(validateFn("   ")).toBe("Repository path is required");
+      expect(validateFn("/valid/path")).toBe(true);
+    });
+
+    it("should validate empty worktree directory", async () => {
+      input
+        .mockResolvedValueOnce("/path/to/repo") // repoPath
+        .mockResolvedValueOnce("/path/to/worktrees"); // worktreeDir
+
+      select.mockResolvedValueOnce("once"); // runMode
+
+      await promptForConfig({});
+
+      const validateFn = (input as any).mock.calls[1][0].validate;
+
+      // Test validation
+      expect(validateFn("")).toBe("Worktree directory is required");
+      expect(validateFn("   ")).toBe("Worktree directory is required");
+      expect(validateFn("/valid/path")).toBe(true);
+    });
+
+    it("should validate repository URL when path doesn't exist", async () => {
+      mockExistsSync.mockReturnValue(false);
+
+      input
+        .mockResolvedValueOnce("/new/repo") // repoPath
+        .mockResolvedValueOnce("https://github.com/user/repo.git") // repoUrl
+        .mockResolvedValueOnce("/worktrees"); // worktreeDir
+
+      select.mockResolvedValueOnce("once"); // runMode
+
+      await promptForConfig({});
+
+      const validateFn = (input as any).mock.calls[1][0].validate;
+
+      // Test validation
+      expect(validateFn("")).toBe("Repository URL is required since the repository path doesn't exist");
+      expect(validateFn("   ")).toBe("Repository URL is required since the repository path doesn't exist");
+      expect(validateFn("https://github.com/user/repo.git")).toBe(true);
+    });
+
+    it("should validate cron schedule format", async () => {
+      select.mockResolvedValueOnce("scheduled"); // runMode
+
+      input.mockResolvedValueOnce("*/5 * * * *"); // cronSchedule
+
+      await promptForConfig({
+        repoPath: "/repo",
+        worktreeDir: "/worktrees",
+      });
+
+      const validateFn = (input as any).mock.calls[0][0].validate;
+
+      // Test validation
+      expect(validateFn("")).toBe("Cron schedule is required");
+      expect(validateFn("   ")).toBe("Cron schedule is required");
+      expect(validateFn("invalid")).toBe("Invalid cron pattern. Expected format: '* * * * *'");
+      expect(validateFn("* * * *")).toBe("Invalid cron pattern. Expected format: '* * * * *'");
+      expect(validateFn("* * * * *")).toBe(true);
+      expect(validateFn("0 */5 * * *")).toBe(true);
+    });
+
+    it("should not prompt for repo URL when path exists", async () => {
+      mockExistsSync.mockReturnValue(true);
+
+      input.mockResolvedValueOnce("/worktrees"); // worktreeDir only
+
+      select.mockResolvedValueOnce("once"); // runMode
+
+      const result = await promptForConfig({
+        repoPath: "/existing/repo",
+      });
+
+      expect(input).toHaveBeenCalledTimes(1); // Only worktreeDir
+      expect(result.repoUrl).toBeUndefined();
+    });
+
+    it("should handle all fields provided", async () => {
+      const result = await promptForConfig({
+        repoPath: "/repo",
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: "/worktrees",
+        cronSchedule: "0 0 * * *",
+        runOnce: false,
+      });
+
+      // Should not prompt for anything
+      expect(input).not.toHaveBeenCalled();
+      expect(select).not.toHaveBeenCalled();
+
+      expect(result).toEqual({
+        repoPath: "/repo",
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: "/worktrees",
+        cronSchedule: "0 0 * * *",
+        runOnce: false,
+      });
+    });
   });
 });

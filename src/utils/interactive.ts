@@ -19,7 +19,6 @@ export async function promptForConfig(partialConfig: Partial<Config>): Promise<C
         return true;
       },
     });
-    // Convert relative path to absolute
     if (!path.isAbsolute(repoPath)) {
       repoPath = path.resolve(repoPath);
     }
@@ -50,7 +49,6 @@ export async function promptForConfig(partialConfig: Partial<Config>): Promise<C
         return true;
       },
     });
-    // Convert relative path to absolute
     if (!path.isAbsolute(worktreeDir)) {
       worktreeDir = path.resolve(worktreeDir);
     }

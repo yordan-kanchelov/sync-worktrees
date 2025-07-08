@@ -23,10 +23,8 @@ async function main(): Promise<void> {
   const syncService = new WorktreeSyncService(config);
 
   try {
-    // Initialize the repository (clone if needed)
     await syncService.initialize();
 
-    // Decide whether to run once or schedule the job
     if (config.runOnce) {
       console.log("Running the sync process once as requested by --runOnce flag.");
       await syncService.sync();
@@ -50,7 +48,6 @@ async function main(): Promise<void> {
   }
 }
 
-// Run the main function
 main().catch((error) => {
   console.error("❌ Unhandled error:", error);
   process.exit(1);
