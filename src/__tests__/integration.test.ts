@@ -82,6 +82,40 @@ describe("Integration Tests", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "prune"]);
     });
 
+    it("should skip creating worktree for currently checked out branch", async () => {
+      // Mock readdir to return empty (no existing worktrees)
+      (fs.readdir as jest.Mock<any>).mockResolvedValueOnce([]);
+
+      // Mock branch calls - first for remote branches, second for current branch
+      mockGit.branch
+        .mockResolvedValueOnce({
+          all: ["origin/main", "origin/feature-1", "origin/feature-2"],
+          current: "feature-1",
+        } as any)
+        .mockResolvedValueOnce({
+          current: "feature-1",
+        } as any);
+
+      const config = {
+        repoPath: "/test/repo",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      };
+
+      const service = new WorktreeSyncService(config);
+      await service.initialize();
+      await service.sync();
+
+      // Should NOT create worktree for feature-1 (current branch)
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
+
+      // Should create worktrees for main and feature-2
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/main", "main"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-2", "feature-2"]);
+    });
+
     it("should handle repository cloning on first run", async () => {
       // Simulate repo doesn't exist
       (fs.access as jest.Mock<any>).mockRejectedValueOnce(new Error("ENOENT"));

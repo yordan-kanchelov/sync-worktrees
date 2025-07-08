@@ -38,6 +38,7 @@ describe("WorktreeSyncService", () => {
       pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
       checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
       hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
+      getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
       getGit: jest.fn<any>(),
     } as any;
 
@@ -63,18 +64,20 @@ describe("WorktreeSyncService", () => {
 
     it("should complete full sync workflow successfully", async () => {
       // Mock existing worktree directories
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "feature-1", "old-branch"]);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["feature-1", "old-branch"]);
 
       await service.sync();
 
       // Verify workflow steps
       expect(mockGitService.fetchAll).toHaveBeenCalled();
       expect(mockGitService.getRemoteBranches).toHaveBeenCalled();
+      expect(mockGitService.getCurrentBranch).toHaveBeenCalled();
       expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees", { recursive: true });
       expect(fs.readdir).toHaveBeenCalledWith("/test/worktrees");
 
-      // Should create new worktree for feature-2
+      // Should create new worktree for feature-2 (but not main, as it's the current branch)
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-2", path.join("/test/worktrees", "feature-2"));
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("main", path.join("/test/worktrees", "main"));
 
       // Should check and remove old-branch
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
@@ -97,7 +100,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should skip worktrees with local changes", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "dirty-branch"]);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["dirty-branch"]);
       mockGitService.checkWorktreeStatus.mockResolvedValue(false); // Has local changes
 
       await service.sync();
@@ -107,7 +110,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should skip worktrees with unpushed commits", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "unpushed-branch"]);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["unpushed-branch"]);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true); // Clean
       mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Has unpushed commits
 
@@ -119,7 +122,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should skip worktrees with both local changes and unpushed commits", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "dirty-unpushed-branch"]);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["dirty-unpushed-branch"]);
       mockGitService.checkWorktreeStatus.mockResolvedValue(false); // Has local changes
       mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Has unpushed commits
 
@@ -145,7 +148,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should handle errors when checking worktree status", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "broken-branch"]);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["broken-branch"]);
       mockGitService.checkWorktreeStatus.mockRejectedValue(new Error("Status check failed"));
 
       await service.sync();
@@ -158,19 +161,21 @@ describe("WorktreeSyncService", () => {
 
     it("should create multiple new worktrees", async () => {
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2", "feature-3"]);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main"]);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
 
       await service.sync();
 
+      // Should skip main (current branch) and create the other 3
       expect(mockGitService.addWorktree).toHaveBeenCalledTimes(3);
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", path.join("/test/worktrees", "feature-1"));
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-2", path.join("/test/worktrees", "feature-2"));
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-3", path.join("/test/worktrees", "feature-3"));
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("main", path.join("/test/worktrees", "main"));
     });
 
     it("should remove multiple stale worktrees", async () => {
       mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "old-1", "old-2", "old-3"]);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["old-1", "old-2", "old-3"]);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true); // All clean
 
       await service.sync();
@@ -183,7 +188,7 @@ describe("WorktreeSyncService", () => {
 
     it("should only remove worktrees that are clean with no unpushed commits", async () => {
       mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main", "deleted-clean", "deleted-dirty", "deleted-unpushed"]);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["deleted-clean", "deleted-dirty", "deleted-unpushed"]);
 
       // Set up different conditions for each worktree
       mockGitService.checkWorktreeStatus

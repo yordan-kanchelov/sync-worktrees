@@ -92,4 +92,10 @@ export class GitService {
       return false;
     }
   }
+
+  async getCurrentBranch(): Promise<string> {
+    const git = this.getGit();
+    const branchSummary = await git.branch();
+    return branchSummary.current;
+  }
 }
