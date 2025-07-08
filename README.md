@@ -1,6 +1,6 @@
 # sync-worktrees
 
-Automatically synchronize Git worktrees with remote branches. Keep your local worktrees in sync with remote repositories - perfect for CI/CD environments, multi-branch development workflows, and automated testing setups.
+Automatically synchronize Git worktrees with remote branches. Keep your local worktrees in sync with remote repositories - perfect for multi-branch development workflows and automated testing setups.
 
 ## Features
 
@@ -133,14 +133,56 @@ module.exports = {
 };
 ```
 
-### Advanced Features
+### Config File Examples
 
-- **Environment variables**: Use `process.env` to read from environment
-- **Dynamic paths**: Use Node.js modules like `path` and `os`
-- **Conditional config**: Include/exclude repos based on environment
-- **Relative paths**: Resolved relative to the config file location
+#### Using Environment Variables
+```javascript
+module.exports = {
+  repositories: [{
+    name: "private-repo",
+    repoUrl: process.env.PRIVATE_REPO_URL,
+    repoPath: "/path/to/repo",
+    worktreeDir: "/path/to/worktrees"
+  }]
+};
+```
 
-See `sync-worktrees.config.example.js` for more examples.
+#### Using Relative Paths
+```javascript
+// Paths are resolved relative to the config file location
+module.exports = {
+  repositories: [{
+    name: "local-project",
+    repoPath: "./repos/my-project",
+    worktreeDir: "./worktrees/my-project"
+  }]
+};
+```
+
+#### Multiple Repositories with Different Schedules
+```javascript
+module.exports = {
+  defaults: {
+    cronSchedule: "0 * * * *"  // Hourly by default
+  },
+  repositories: [
+    {
+      name: "frontend",
+      repoUrl: "https://github.com/company/frontend.git",
+      repoPath: "/projects/frontend",
+      worktreeDir: "/projects/frontend-worktrees",
+      cronSchedule: "*/30 * * * *"  // Every 30 minutes
+    },
+    {
+      name: "backend",
+      repoUrl: "https://github.com/company/backend.git", 
+      repoPath: "/projects/backend",
+      worktreeDir: "/projects/backend-worktrees"
+      // Uses default hourly schedule
+    }
+  ]
+};
+```
 
 ## How it works
 
@@ -203,4 +245,4 @@ The CI will automatically create a PR to update versions when changesets are mer
 
 ## License
 
-ISC
+MIT © [Yordan Kanchelov](https://github.com/yordan-kanchelov)

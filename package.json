@@ -1,7 +1,7 @@
 {
   "name": "sync-worktrees",
-  "version": "0.4.1",
-  "description": "Synchronize Git worktrees with remote repository branches",
+  "version": "0.4.0",
+  "description": "Automatically synchronize Git worktrees with remote branches - perfect for multi-branch development workflows",
   "main": "dist/index.js",
   "bin": {
     "sync-worktrees": "./dist/index.js"
@@ -26,10 +26,13 @@
     "git",
     "worktree",
     "sync",
-    "automation"
+    "automation",
+    "branch-management",
+    "git-worktrees",
+    "devops"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "Yordan Kanchelov <yordan.kanchelov@gmail.com>",
+  "license": "MIT",
   "engines": {
     "node": ">=22.0.0"
   },
