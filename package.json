@@ -1,6 +1,6 @@
 {
   "name": "sync-worktrees",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Synchronize Git worktrees with remote repository branches",
   "main": "dist/index.js",
   "bin": {
