@@ -23,18 +23,10 @@ jobs:
           # This makes Actions fetch all Git history so that Changesets can generate changelogs with the correct commits
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Environment
+        uses: ./.github/actions/setup-node-pnpm
         with:
           node-version: 22
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Install Dependencies
-        run: pnpm install
 
       - name: Create Release Pull Request or Publish to npm
         id: changesets
