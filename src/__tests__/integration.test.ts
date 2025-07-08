@@ -312,11 +312,11 @@ branch refs/heads/dirty-branch
       // Should add feature-2
       expect(operationCalls).toContainEqual(["worktree", "add", "/test/worktrees/feature-2", "feature-2"]);
 
-      // Should remove old-feature
-      expect(operationCalls).toContainEqual(["worktree", "remove", "old-feature", "--force"]);
+      // Should remove old-feature with full path
+      expect(operationCalls).toContainEqual(["worktree", "remove", "/test/worktrees/old-feature", "--force"]);
 
       // Should NOT remove dirty-branch
-      expect(operationCalls).not.toContainEqual(["worktree", "remove", "dirty-branch", "--force"]);
+      expect(operationCalls).not.toContainEqual(["worktree", "remove", "/test/worktrees/dirty-branch", "--force"]);
 
       // Should log warning about dirty-branch
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Skipping removal of 'dirty-branch'"));

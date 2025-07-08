@@ -89,7 +89,7 @@ describe("WorktreeSyncService", () => {
       // Should check and remove old-branch
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
       expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("old-branch");
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
 
       // Should prune at the end
       expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
@@ -203,9 +203,9 @@ describe("WorktreeSyncService", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).toHaveBeenCalledTimes(3);
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("old-1");
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("old-2");
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("old-3");
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "old-1"));
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "old-2"));
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "old-3"));
     });
 
     it("should only remove worktrees that are clean with no unpushed commits", async () => {
@@ -232,9 +232,9 @@ describe("WorktreeSyncService", () => {
 
       // Should only remove the worktree that is both clean AND has no unpushed commits
       expect(mockGitService.removeWorktree).toHaveBeenCalledTimes(1);
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("deleted-clean");
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith("deleted-dirty");
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith("deleted-unpushed");
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "deleted-clean"));
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith(path.join("/test/worktrees", "deleted-dirty"));
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith(path.join("/test/worktrees", "deleted-unpushed"));
 
       // Verify all safety checks were performed
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
@@ -307,6 +307,106 @@ describe("WorktreeSyncService", () => {
 
       // Should continue with the rest of the sync
       expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
+    });
+
+    describe("branches with slashes in names", () => {
+      it("should handle feature branches with slashes correctly", async () => {
+        const remoteBranchesWithSlashes = ["main", "feat/LCR-8879", "feat/PHX-3198", "bugfix/issue-123"];
+        mockGitService.getRemoteBranches.mockResolvedValue(remoteBranchesWithSlashes);
+        mockGitService.getCurrentBranch.mockResolvedValue("main");
+
+        // First sync - create worktrees
+        (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+        mockGitService.getWorktrees.mockResolvedValue([]);
+
+        await service.sync();
+
+        // Should create worktrees with full paths including slashes
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith(
+          "feat/LCR-8879",
+          path.join("/test/worktrees", "feat/LCR-8879"),
+        );
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith(
+          "feat/PHX-3198",
+          path.join("/test/worktrees", "feat/PHX-3198"),
+        );
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith(
+          "bugfix/issue-123",
+          path.join("/test/worktrees", "bugfix/issue-123"),
+        );
+      });
+
+      it("should not treat parent directories of slash branches as orphaned", async () => {
+        mockGitService.getRemoteBranches.mockResolvedValue(["main", "feat/LCR-8879", "feat/PHX-3198"]);
+        mockGitService.getCurrentBranch.mockResolvedValue("main");
+
+        // Mock file system showing nested structure
+        (fs.readdir as jest.Mock<any>).mockResolvedValue(["feat"]); // Parent directory
+
+        // Mock Git worktrees with nested paths
+        mockGitService.getWorktrees.mockResolvedValue([
+          { path: "/test/worktrees/feat/LCR-8879", branch: "feat/LCR-8879" },
+          { path: "/test/worktrees/feat/PHX-3198", branch: "feat/PHX-3198" },
+        ]);
+
+        // Mock fs.stat to identify 'feat' as a directory
+        const mockStat = { isDirectory: jest.fn().mockReturnValue(true) };
+        (fs.stat as jest.Mock<any>).mockResolvedValue(mockStat);
+        (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
+
+        await service.sync();
+
+        // Should NOT remove the 'feat' directory as it contains valid worktrees
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("Removed orphaned directory: feat"));
+      });
+
+      it("should remove slash-named worktrees correctly when branch is deleted", async () => {
+        mockGitService.getRemoteBranches.mockResolvedValue(["main"]); // feat branches deleted from remote
+        mockGitService.getCurrentBranch.mockResolvedValue("main");
+
+        (fs.readdir as jest.Mock<any>).mockResolvedValue(["feat"]);
+        mockGitService.getWorktrees.mockResolvedValue([
+          { path: "/test/worktrees/feat/LCR-8879", branch: "feat/LCR-8879" },
+          { path: "/test/worktrees/feat/PHX-3198", branch: "feat/PHX-3198" },
+        ]);
+
+        mockGitService.checkWorktreeStatus.mockResolvedValue(true); // All clean
+        mockGitService.hasUnpushedCommits.mockResolvedValue(false); // No unpushed
+
+        await service.sync();
+
+        // Should remove both worktrees with their full paths
+        expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "feat/LCR-8879"));
+        expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "feat/PHX-3198"));
+      });
+
+      it("should handle mixed flat and nested worktree structures", async () => {
+        mockGitService.getRemoteBranches.mockResolvedValue(["main", "simple-branch", "feat/nested-branch"]);
+        mockGitService.getCurrentBranch.mockResolvedValue("main");
+
+        // Mock mixed directory structure
+        (fs.readdir as jest.Mock<any>).mockResolvedValue(["simple-branch", "feat", "orphaned-dir"]);
+
+        mockGitService.getWorktrees.mockResolvedValue([
+          { path: "/test/worktrees/simple-branch", branch: "simple-branch" },
+          { path: "/test/worktrees/feat/nested-branch", branch: "feat/nested-branch" },
+        ]);
+
+        const mockStat = { isDirectory: jest.fn().mockReturnValue(true) };
+        (fs.stat as jest.Mock<any>).mockResolvedValue(mockStat);
+        (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
+
+        await service.sync();
+
+        // Should only remove truly orphaned directory
+        expect(fs.rm).toHaveBeenCalledTimes(1);
+        expect(fs.rm).toHaveBeenCalledWith(path.join("/test/worktrees", "orphaned-dir"), {
+          recursive: true,
+          force: true,
+        });
+        expect(fs.rm).not.toHaveBeenCalledWith(path.join("/test/worktrees", "feat"), expect.any(Object));
+      });
     });
   });
 });

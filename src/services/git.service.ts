@@ -56,10 +56,10 @@ export class GitService {
     console.log(`  - Created worktree for '${branchName}'`);
   }
 
-  async removeWorktree(branchName: string): Promise<void> {
+  async removeWorktree(worktreePath: string): Promise<void> {
     const git = this.getGit();
-    await git.raw(["worktree", "remove", branchName, "--force"]);
-    console.log(`  - ✅ Safely removed stale worktree for '${branchName}'.`);
+    await git.raw(["worktree", "remove", worktreePath, "--force"]);
+    console.log(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
   }
 
   async pruneWorktrees(): Promise<void> {

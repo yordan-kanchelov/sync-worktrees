@@ -85,7 +85,7 @@ export class WorktreeSyncService {
           const hasUnpushed = await this.gitService.hasUnpushedCommits(worktreePath);
 
           if (isClean && !hasUnpushed) {
-            await this.gitService.removeWorktree(branchName);
+            await this.gitService.removeWorktree(worktreePath);
           } else {
             if (!isClean) {
               console.log(`  - ⚠️ Skipping removal of '${branchName}' as it has uncommitted changes.`);
@@ -105,10 +105,22 @@ export class WorktreeSyncService {
 
   private async cleanupOrphanedDirectories(worktrees: { path: string; branch: string }[]): Promise<void> {
     try {
-      const worktreePaths = worktrees.map((w) => path.basename(w.path));
+      const worktreeRelativePaths = worktrees.map((w) => path.relative(this.config.worktreeDir, w.path));
       const allDirs = await fs.readdir(this.config.worktreeDir);
 
-      const orphanedDirs = allDirs.filter((dir) => !worktreePaths.includes(dir));
+      // For each directory, check if it's part of any worktree path
+      const orphanedDirs: string[] = [];
+      for (const dir of allDirs) {
+        // Check if this directory is part of any worktree path
+        const isPartOfWorktree = worktreeRelativePaths.some((worktreePath) => {
+          // Either the directory IS a worktree or it's a parent of a worktree
+          return worktreePath === dir || worktreePath.startsWith(dir + path.sep);
+        });
+
+        if (!isPartOfWorktree) {
+          orphanedDirs.push(dir);
+        }
+      }
 
       if (orphanedDirs.length > 0) {
         console.log(`Found ${orphanedDirs.length} orphaned directories: ${orphanedDirs.join(", ")}`);
