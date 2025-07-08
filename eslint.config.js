@@ -97,12 +97,13 @@ module.exports = [
 
   // JavaScript config files
   {
-    files: ["eslint.config.js", "jest.config.js"],
+    files: ["eslint.config.js", "jest.config.js", "sync-worktrees.config*.js"],
     languageOptions: {
       globals: {
         ...globals.node,
         module: "writable",
         require: "readonly",
+        process: "readonly",
       },
     },
   },

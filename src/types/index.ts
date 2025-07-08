@@ -6,6 +6,15 @@ export interface Config {
   runOnce: boolean;
 }
 
+export interface RepositoryConfig extends Config {
+  name: string;
+}
+
+export interface ConfigFile {
+  defaults?: Partial<Config>;
+  repositories: RepositoryConfig[];
+}
+
 export interface WorktreeStatus {
   branchName: string;
   worktreePath: string;

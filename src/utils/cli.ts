@@ -3,8 +3,30 @@ import { hideBin } from "yargs/helpers";
 
 import type { Config } from "../types";
 
-export function parseArguments(): Partial<Config> {
+export interface CliOptions extends Partial<Config> {
+  config?: string;
+  filter?: string;
+  list?: boolean;
+}
+
+export function parseArguments(): CliOptions {
   const argv = yargs(hideBin(process.argv))
+    .option("config", {
+      alias: "c",
+      type: "string",
+      description: "Path to JavaScript config file",
+    })
+    .option("filter", {
+      alias: "f",
+      type: "string",
+      description: "Filter repositories by name (supports wildcards and comma-separated values)",
+    })
+    .option("list", {
+      alias: "l",
+      type: "boolean",
+      description: "List configured repositories and exit",
+      default: false,
+    })
     .option("repoPath", {
       alias: "r",
       type: "string",
@@ -36,6 +58,9 @@ export function parseArguments(): Partial<Config> {
     .parseSync();
 
   return {
+    config: argv.config,
+    filter: argv.filter,
+    list: argv.list,
     repoPath: argv.repoPath,
     repoUrl: argv.repoUrl,
     worktreeDir: argv.worktreeDir,

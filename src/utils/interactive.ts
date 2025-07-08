@@ -1,7 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
 
-import { input, select } from "@inquirer/prompts";
+import { confirm, input, select } from "@inquirer/prompts";
+
+import { generateConfigFile, getDefaultConfigPath } from "./config-generator";
 
 import type { Config } from "../types";
 
@@ -105,6 +107,43 @@ export async function promptForConfig(partialConfig: Partial<Config>): Promise<C
     console.log(`   Mode:       Scheduled (${finalConfig.cronSchedule})`);
   }
   console.log("");
+
+  // Ask if user wants to save configuration to a file
+  const saveConfig = await confirm({
+    message: "Would you like to save this configuration to a file for future use?",
+    default: true,
+  });
+
+  if (saveConfig) {
+    const defaultConfigPath = getDefaultConfigPath();
+    let configPath = await input({
+      message: "Enter the path for the config file:",
+      default: defaultConfigPath,
+      validate: (value: string) => {
+        if (!value.trim()) {
+          return "Config file path is required";
+        }
+        if (!value.endsWith(".js")) {
+          return "Config file must have a .js extension";
+        }
+        return true;
+      },
+    });
+
+    if (!path.isAbsolute(configPath)) {
+      configPath = path.resolve(configPath);
+    }
+
+    try {
+      await generateConfigFile(finalConfig, configPath);
+      console.log(`\n✅ Configuration saved to: ${configPath}`);
+      console.log(`\n💡 You can now use this config file with:`);
+      console.log(`   sync-worktrees --config ${path.relative(process.cwd(), configPath)}`);
+      console.log("");
+    } catch (error) {
+      console.error(`\n❌ Failed to save config file: ${(error as Error).message}`);
+    }
+  }
 
   return finalConfig;
 }

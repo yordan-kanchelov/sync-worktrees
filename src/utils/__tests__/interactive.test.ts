@@ -12,21 +12,36 @@ jest.mock("fs");
 jest.mock("@inquirer/prompts", () => ({
   input: jest.fn(),
   select: jest.fn(),
+  confirm: jest.fn(),
+}));
+
+// Mock the config generator
+jest.mock("../config-generator", () => ({
+  generateConfigFile: jest.fn(),
+  getDefaultConfigPath: jest.fn(() => "/default/config.js"),
 }));
 
 describe("Interactive prompt utility", () => {
   const mockExistsSync = jest.mocked(fs.existsSync);
 
   // Get the mocked functions with proper typing
-  const { input, select } = jest.requireMock("@inquirer/prompts") as {
-    input: jest.MockedFunction<() => Promise<string>>;
-    select: jest.MockedFunction<() => Promise<string>>;
+  const { input, select, confirm } = jest.requireMock("@inquirer/prompts") as {
+    input: jest.MockedFunction<(options: any) => Promise<string>>;
+    select: jest.MockedFunction<(options: any) => Promise<string>>;
+    confirm: jest.MockedFunction<(options: any) => Promise<boolean>>;
+  };
+
+  const { generateConfigFile } = jest.requireMock("../config-generator") as {
+    generateConfigFile: jest.MockedFunction<(config: any, path: string) => Promise<void>>;
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(console, "log").mockImplementation(() => {});
+    jest.spyOn(console, "error").mockImplementation(() => {});
     mockExistsSync.mockReturnValue(true);
+    // Default to not saving config in tests
+    confirm.mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -256,6 +271,59 @@ describe("Interactive prompt utility", () => {
         worktreeDir: "/worktrees",
         cronSchedule: "0 0 * * *",
         runOnce: false,
+      });
+    });
+
+    it("should prompt to save config file", async () => {
+      confirm.mockResolvedValueOnce(true); // saveConfig
+      input
+        .mockResolvedValueOnce("/repo") // repoPath
+        .mockResolvedValueOnce("/worktrees") // worktreeDir
+        .mockResolvedValueOnce("/custom/config.js"); // configPath
+
+      select.mockResolvedValueOnce("once"); // runMode
+
+      await promptForConfig({});
+
+      expect(confirm).toHaveBeenCalledWith({
+        message: "Would you like to save this configuration to a file for future use?",
+        default: true,
+      });
+      expect(input).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "Enter the path for the config file:",
+          default: "/default/config.js",
+        }),
+      );
+      expect(generateConfigFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoPath: "/repo",
+          worktreeDir: "/worktrees",
+        }),
+        "/custom/config.js",
+      );
+    });
+
+    it("should handle config file save errors", async () => {
+      confirm.mockResolvedValueOnce(true); // saveConfig
+      generateConfigFile.mockRejectedValueOnce(new Error("Write failed"));
+
+      input
+        .mockResolvedValueOnce("/repo") // repoPath
+        .mockResolvedValueOnce("/worktrees") // worktreeDir
+        .mockResolvedValueOnce("/custom/config.js"); // configPath
+
+      select.mockResolvedValueOnce("once"); // runMode
+
+      const result = await promptForConfig({});
+
+      expect(generateConfigFile).toHaveBeenCalled();
+      expect(result).toEqual({
+        repoPath: "/repo",
+        worktreeDir: "/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+        repoUrl: undefined,
       });
     });
   });
