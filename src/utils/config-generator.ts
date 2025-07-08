@@ -15,6 +15,10 @@ export async function generateConfigFile(config: Config, configPath: string): Pr
   const useRelativeRepo = !repoPathRelative.startsWith("../../../");
   const useRelativeWorktree = !worktreeDirRelative.startsWith("../../../");
 
+  const repoUrlEntry = config.repoUrl ? `repoUrl: "${config.repoUrl}",\n      ` : "";
+  const repoPathEntry = `repoPath: "${useRelativeRepo ? `./${repoPathRelative}` : config.repoPath}"`;
+  const worktreeDirEntry = `worktreeDir: "${useRelativeWorktree ? `./${worktreeDirRelative}` : config.worktreeDir}"`;
+
   const configContent = `/**
  * Sync-worktrees configuration file
  * Generated on ${new Date().toISOString()}
@@ -25,13 +29,12 @@ module.exports = {
     cronSchedule: "${config.cronSchedule}",
     runOnce: ${config.runOnce}
   },
-  
+
   repositories: [
     {
       name: "${path.basename(config.repoPath)}",
-      repoUrl: ${repoUrl},
-      repoPath: "${useRelativeRepo ? `./${repoPathRelative}` : config.repoPath}",
-      worktreeDir: "${useRelativeWorktree ? `./${worktreeDirRelative}` : config.worktreeDir}"
+      ${repoUrlEntry}${repoPathEntry},
+      ${worktreeDirEntry}
     }
   ]
 };
