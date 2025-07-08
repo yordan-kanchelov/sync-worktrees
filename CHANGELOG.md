@@ -4,6 +4,12 @@
 
 ### Patch Changes
 
+- 8d3a34f: Exclude test files from the npm package by updating TypeScript configuration
+
+## 0.4.1
+
+### Patch Changes
+
 - e4970bd: Fix handling of branch names containing slashes
   - Fixed orphaned directory cleanup to properly handle nested directory structures created by branches with slashes (e.g., `feat/feature-name`)
   - Updated worktree removal to use full paths instead of branch names, ensuring Git can properly locate worktrees in nested directories
