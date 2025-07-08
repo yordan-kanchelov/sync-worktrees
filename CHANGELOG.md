@@ -1,5 +1,47 @@
 # sync-worktrees
 
+## 0.4.0
+
+### Minor Changes
+
+- 8e9ad44: Add config file support for managing multiple repositories
+  - Added support for JavaScript configuration files to manage multiple repositories with different settings
+  - New CLI options: `--config` to specify config file, `--filter` to select specific repositories, and `--list` to show configured repositories
+  - Interactive mode now prompts users to save their configuration to a file for future use
+  - When specifying a non-existent config file, users are prompted to create one through interactive setup
+  - Config files support environment variables, dynamic paths, and can use relative paths
+  - Added comprehensive validation for config files with helpful error messages
+  - Maintains full backward compatibility - existing single-repository CLI usage continues to work
+
+  Example config file:
+
+  ```javascript
+  module.exports = {
+    defaults: {
+      cronSchedule: "0 * * * *",
+      runOnce: false,
+    },
+    repositories: [
+      {
+        name: "my-project",
+        repoUrl: "https://github.com/user/repo.git",
+        repoPath: "./repos/my-project",
+        worktreeDir: "./worktrees/my-project",
+      },
+    ],
+  };
+  ```
+
+### Patch Changes
+
+- 8e9ad44: Fix worktree sync failing on restart due to orphaned directories
+  - Changed worktree detection to use Git's actual worktree list (`git worktree list`) instead of filesystem directories
+  - Added automatic cleanup of orphaned directories that exist on disk but aren't registered Git worktrees
+  - Fixed the error "fatal: '/path/to/worktree' already exists" that occurred when restarting after directories were left behind
+  - Added comprehensive tests for edge cases including orphaned directory handling
+
+  This ensures the tool works correctly even after system restarts or when directories exist without corresponding Git worktree metadata.
+
 ## 0.3.1
 
 ### Patch Changes
