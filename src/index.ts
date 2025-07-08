@@ -5,17 +5,26 @@ import * as path from "path";
 import * as cron from "node-cron";
 
 import { WorktreeSyncService } from "./services/worktree-sync.service";
-import { parseArguments } from "./utils/cli";
+import { isInteractiveMode, parseArguments } from "./utils/cli";
+import { promptForConfig } from "./utils/interactive";
+
+import type { Config } from "./types";
 
 async function main(): Promise<void> {
-  const config = parseArguments();
+  const partialConfig = parseArguments();
+
+  let config: Config;
+  if (isInteractiveMode(partialConfig)) {
+    config = await promptForConfig(partialConfig);
+  } else {
+    config = partialConfig as Config;
+  }
+
   const syncService = new WorktreeSyncService(config);
 
   try {
-    // Initialize the repository (clone if needed)
     await syncService.initialize();
 
-    // Decide whether to run once or schedule the job
     if (config.runOnce) {
       console.log("Running the sync process once as requested by --runOnce flag.");
       await syncService.sync();
@@ -39,7 +48,6 @@ async function main(): Promise<void> {
   }
 }
 
-// Run the main function
 main().catch((error) => {
   console.error("❌ Unhandled error:", error);
   process.exit(1);

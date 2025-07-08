@@ -20,26 +20,20 @@ export class WorktreeSyncService {
     console.log(`[${new Date().toISOString()}] Starting worktree synchronization...`);
 
     try {
-      // 1. Fetch latest changes and prune deleted remote branches
       console.log("Step 1: Fetching latest data from remote...");
       await this.gitService.fetchAll();
 
-      // 2. Get remote branches
       const remoteBranches = await this.gitService.getRemoteBranches();
       console.log(`Found ${remoteBranches.length} remote branches.`);
 
-      // 3. Get existing worktree directories
       await fs.mkdir(this.config.worktreeDir, { recursive: true });
       const worktreeDirs = await fs.readdir(this.config.worktreeDir);
       console.log(`Found ${worktreeDirs.length} existing worktree directories.`);
 
-      // 4. Create new worktrees
       await this.createNewWorktrees(remoteBranches, worktreeDirs);
 
-      // 5. Prune old worktrees (with safety check)
       await this.pruneOldWorktrees(remoteBranches, worktreeDirs);
 
-      // 6. Cleanup
       await this.gitService.pruneWorktrees();
       console.log("Step 4: Pruned worktree metadata.");
     } catch (error) {
