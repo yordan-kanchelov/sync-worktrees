@@ -29,7 +29,8 @@ module.exports = {
   repositories: [
     {
       name: "${path.basename(config.repoPath)}",
-      ${config.repoUrl ? `repoUrl: "${config.repoUrl}",\n      ` : ""}repoPath: "${useRelativeRepo ? `./${repoPathRelative}` : config.repoPath}",
+      repoUrl: ${repoUrl},
+      repoPath: "${useRelativeRepo ? `./${repoPathRelative}` : config.repoPath}",
       worktreeDir: "${useRelativeWorktree ? `./${worktreeDirRelative}` : config.worktreeDir}"
     }
   ]
