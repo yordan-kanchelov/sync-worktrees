@@ -32,6 +32,10 @@ async function main(): Promise<void> {
       console.log("Git Worktree Sync script started as a scheduled job.");
       console.log(`Job is scheduled with cron pattern: "${config.cronSchedule}"`);
       console.log(`To see options, run: node ${path.basename(process.argv[1])} --help`);
+
+      console.log("Running initial sync...");
+      await syncService.sync();
+
       console.log("Waiting for the next scheduled run...");
 
       cron.schedule(config.cronSchedule, async () => {

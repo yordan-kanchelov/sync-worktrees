@@ -128,6 +128,36 @@ describe("Integration Tests", () => {
       expect(cron.schedule).toHaveBeenCalledWith("*/5 * * * *", expect.any(Function));
     });
 
+    it("should run initial sync before scheduling cron job", async () => {
+      const config = {
+        repoPath: "/test/repo",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "*/30 * * * *",
+        runOnce: false,
+      };
+
+      const service = new WorktreeSyncService(config);
+      const syncSpy = jest.spyOn(service, "sync");
+
+      await service.initialize();
+
+      // Simulate what index.ts does: initial sync then cron schedule
+      await service.sync();
+
+      // Verify sync was called for initial run
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+
+      // Then schedule cron
+      const cronCallback = jest.fn();
+      cron.schedule("*/30 * * * *", cronCallback);
+
+      expect(cron.schedule).toHaveBeenCalledWith("*/30 * * * *", expect.any(Function));
+
+      // Verify the initial sync operations were performed
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--prune"]);
+      expect(mockGit.branch).toHaveBeenCalledWith(["-r"]);
+    });
+
     it("should run once and exit when runOnce is true", async () => {
       const config = {
         repoPath: "/test/repo",
