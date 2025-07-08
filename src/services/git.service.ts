@@ -113,7 +113,7 @@ export class GitService {
         currentWorktree.path = line.substring(9);
       } else if (line.startsWith("branch ")) {
         currentWorktree.branch = line.substring(7).replace("refs/heads/", "");
-      } else if (line === "") {
+      } else if (line.trim() === "") {
         if (currentWorktree.path && currentWorktree.branch) {
           worktrees.push({ path: currentWorktree.path, branch: currentWorktree.branch });
         }
