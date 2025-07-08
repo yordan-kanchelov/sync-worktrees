@@ -47,3 +47,31 @@ export function parseArguments(): Partial<Config> {
 export function isInteractiveMode(config: Partial<Config>): boolean {
   return !config.repoPath || !config.worktreeDir;
 }
+
+export function reconstructCliCommand(config: Config): string {
+  const executable = process.argv[1].includes("ts-node") ? "ts-node src/index.ts" : "sync-worktrees";
+
+  const args: string[] = [];
+
+  if (config.repoPath) {
+    args.push(`--repoPath "${config.repoPath}"`);
+  }
+
+  if (config.repoUrl) {
+    args.push(`--repoUrl "${config.repoUrl}"`);
+  }
+
+  if (config.worktreeDir) {
+    args.push(`--worktreeDir "${config.worktreeDir}"`);
+  }
+
+  if (config.cronSchedule && config.cronSchedule !== "0 * * * *") {
+    args.push(`--cronSchedule "${config.cronSchedule}"`);
+  }
+
+  if (config.runOnce) {
+    args.push("--runOnce");
+  }
+
+  return `${executable} ${args.join(" ")}`;
+}

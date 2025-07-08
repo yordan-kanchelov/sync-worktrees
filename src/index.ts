@@ -5,7 +5,7 @@ import * as path from "path";
 import * as cron from "node-cron";
 
 import { WorktreeSyncService } from "./services/worktree-sync.service";
-import { isInteractiveMode, parseArguments } from "./utils/cli";
+import { isInteractiveMode, parseArguments, reconstructCliCommand } from "./utils/cli";
 import { promptForConfig } from "./utils/interactive";
 
 import type { Config } from "./types";
@@ -19,6 +19,10 @@ async function main(): Promise<void> {
   } else {
     config = partialConfig as Config;
   }
+
+  console.log("\n📋 CLI Command (for future reference):");
+  console.log(`   ${reconstructCliCommand(config)}`);
+  console.log("");
 
   const syncService = new WorktreeSyncService(config);
 
