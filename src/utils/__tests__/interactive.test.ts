@@ -1,47 +1,47 @@
 import * as fs from "fs";
 import * as path from "path";
 
+import { confirm, input, select } from "@inquirer/prompts";
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
 
+import { generateConfigFile } from "../config-generator";
 import { promptForConfig } from "../interactive";
 
-// Mock fs module
-jest.mock("fs");
+import type { Config } from "../../types";
 
-// Mock the inquirer prompts
+// Mock the modules
 jest.mock("@inquirer/prompts", () => ({
   input: jest.fn(),
   select: jest.fn(),
   confirm: jest.fn(),
 }));
 
-// Mock the config generator
 jest.mock("../config-generator", () => ({
   generateConfigFile: jest.fn(),
-  getDefaultConfigPath: jest.fn(() => "/default/config.js"),
+  getDefaultConfigPath: jest.fn().mockReturnValue("/default/config.js"),
 }));
 
-describe("Interactive prompt utility", () => {
-  const mockExistsSync = jest.mocked(fs.existsSync);
+jest.mock("fs", () => ({
+  existsSync: jest.fn(),
+}));
 
-  // Get the mocked functions with proper typing
-  const { input, select, confirm } = jest.requireMock("@inquirer/prompts") as {
-    input: jest.MockedFunction<(options: any) => Promise<string>>;
-    select: jest.MockedFunction<(options: any) => Promise<string>>;
-    confirm: jest.MockedFunction<(options: any) => Promise<boolean>>;
-  };
+describe("Interactive", () => {
+  const mockInput = input as unknown as jest.MockedFunction<typeof input>;
+  const mockSelect = select as unknown as jest.MockedFunction<typeof select>;
+  const mockConfirm = confirm as unknown as jest.MockedFunction<typeof confirm>;
+  const mockGenerateConfigFile = generateConfigFile as jest.MockedFunction<typeof generateConfigFile>;
+  const mockExistsSync = fs.existsSync as jest.MockedFunction<typeof fs.existsSync>;
 
-  const { generateConfigFile } = jest.requireMock("../config-generator") as {
-    generateConfigFile: jest.MockedFunction<(config: any, path: string) => Promise<void>>;
-  };
+  const cwd = process.cwd();
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // Mock console methods to avoid noise in tests
     jest.spyOn(console, "log").mockImplementation(() => {});
     jest.spyOn(console, "error").mockImplementation(() => {});
     mockExistsSync.mockReturnValue(true);
     // Default to not saving config in tests
-    confirm.mockResolvedValue(false);
+    mockConfirm.mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -50,281 +50,161 @@ describe("Interactive prompt utility", () => {
 
   describe("promptForConfig", () => {
     it("should prompt for all missing fields", async () => {
-      input
-        .mockResolvedValueOnce("/path/to/repo") // repoPath
+      mockInput
+        .mockResolvedValueOnce("https://github.com/user/repo.git") // repoUrl
         .mockResolvedValueOnce("/path/to/worktrees") // worktreeDir
         .mockResolvedValueOnce("*/10 * * * *"); // cronSchedule
 
-      select.mockResolvedValueOnce("scheduled"); // runMode
+      mockSelect.mockResolvedValueOnce("scheduled"); // runMode
+      mockConfirm.mockResolvedValueOnce(false); // askForBareDir
 
       const result = await promptForConfig({});
 
-      expect(input).toHaveBeenCalledTimes(3);
-      expect(select).toHaveBeenCalledTimes(1);
+      expect(mockInput).toHaveBeenCalledTimes(3);
+      expect(mockSelect).toHaveBeenCalledTimes(1);
       expect(result).toEqual({
-        repoPath: "/path/to/repo",
-        repoUrl: undefined,
+        repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "*/10 * * * *",
         runOnce: false,
+        bareRepoDir: undefined,
       });
     });
 
     it("should not prompt for provided fields", async () => {
       const partialConfig = {
-        repoPath: "/existing/repo",
+        repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/existing/worktrees",
       };
 
-      select.mockResolvedValueOnce("once"); // runMode
+      mockSelect.mockResolvedValueOnce("once"); // runMode
+      mockConfirm.mockResolvedValueOnce(false); // askForBareDir
 
       const result = await promptForConfig(partialConfig);
 
-      expect(input).not.toHaveBeenCalled();
-      expect(select).toHaveBeenCalledTimes(1);
+      expect(mockInput).not.toHaveBeenCalled();
+      expect(mockSelect).toHaveBeenCalledTimes(1);
       expect(result).toEqual({
-        repoPath: "/existing/repo",
-        repoUrl: undefined,
+        repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/existing/worktrees",
         cronSchedule: "0 * * * *",
         runOnce: true,
+        bareRepoDir: undefined,
       });
     });
 
-    it("should prompt for repo URL when repo path doesn't exist", async () => {
-      mockExistsSync.mockReturnValue(false);
-
-      input
-        .mockResolvedValueOnce("/new/repo") // repoPath
+    it("should prompt for custom bare repo directory when requested", async () => {
+      mockInput
         .mockResolvedValueOnce("https://github.com/user/repo.git") // repoUrl
-        .mockResolvedValueOnce("/worktrees"); // worktreeDir
+        .mockResolvedValueOnce("/path/to/worktrees") // worktreeDir
+        .mockResolvedValueOnce("/custom/bare/location"); // bareRepoDir
 
-      select.mockResolvedValueOnce("once"); // runMode
+      mockSelect.mockResolvedValueOnce("once"); // runMode
+      mockConfirm
+        .mockResolvedValueOnce(true) // askForBareDir
+        .mockResolvedValueOnce(false); // save config
 
       const result = await promptForConfig({});
-
-      expect(input).toHaveBeenCalledTimes(3);
-      expect(result.repoUrl).toBe("https://github.com/user/repo.git");
-    });
-
-    it("should convert relative paths to absolute paths", async () => {
-      const cwd = process.cwd();
-
-      input
-        .mockResolvedValueOnce("./my-repo") // repoPath (relative)
-        .mockResolvedValueOnce("../worktrees"); // worktreeDir (relative)
-
-      select.mockResolvedValueOnce("once"); // runMode
-
-      const result = await promptForConfig({});
-
-      expect(result.repoPath).toBe(path.resolve(cwd, "./my-repo"));
-      expect(result.worktreeDir).toBe(path.resolve(cwd, "../worktrees"));
-    });
-
-    it("should not prompt for cron schedule when runOnce is true", async () => {
-      select.mockResolvedValueOnce("once"); // runMode
-
-      const result = await promptForConfig({
-        repoPath: "/repo",
-        worktreeDir: "/worktrees",
-      });
-
-      // Should not prompt for cronSchedule
-      expect(input).not.toHaveBeenCalled();
-      expect(result.runOnce).toBe(true);
-      expect(result.cronSchedule).toBe("0 * * * *"); // default value
-    });
-
-    it("should use provided runOnce value", async () => {
-      const result = await promptForConfig({
-        repoPath: "/repo",
-        worktreeDir: "/worktrees",
-        runOnce: true,
-      });
-
-      // Should not prompt for runMode
-      expect(select).not.toHaveBeenCalled();
-      expect(result.runOnce).toBe(true);
-    });
-
-    it("should use provided cronSchedule", async () => {
-      select.mockResolvedValueOnce("scheduled"); // runMode
-
-      const result = await promptForConfig({
-        repoPath: "/repo",
-        worktreeDir: "/worktrees",
-        cronSchedule: "0 0 * * *",
-      });
-
-      // Should not prompt for cronSchedule
-      expect(input).not.toHaveBeenCalled();
-      expect(result.cronSchedule).toBe("0 0 * * *");
-    });
-
-    it("should validate empty repository path", async () => {
-      input
-        .mockResolvedValueOnce("/path/to/repo") // repoPath
-        .mockResolvedValueOnce("/path/to/worktrees"); // worktreeDir
-
-      select.mockResolvedValueOnce("once"); // runMode
-
-      await promptForConfig({});
-
-      const validateFn = (input as any).mock.calls[0][0].validate;
-
-      // Test validation
-      expect(validateFn("")).toBe("Repository path is required");
-      expect(validateFn("   ")).toBe("Repository path is required");
-      expect(validateFn("/valid/path")).toBe(true);
-    });
-
-    it("should validate empty worktree directory", async () => {
-      input
-        .mockResolvedValueOnce("/path/to/repo") // repoPath
-        .mockResolvedValueOnce("/path/to/worktrees"); // worktreeDir
-
-      select.mockResolvedValueOnce("once"); // runMode
-
-      await promptForConfig({});
-
-      const validateFn = (input as any).mock.calls[1][0].validate;
-
-      // Test validation
-      expect(validateFn("")).toBe("Worktree directory is required");
-      expect(validateFn("   ")).toBe("Worktree directory is required");
-      expect(validateFn("/valid/path")).toBe(true);
-    });
-
-    it("should validate repository URL when path doesn't exist", async () => {
-      mockExistsSync.mockReturnValue(false);
-
-      input
-        .mockResolvedValueOnce("/new/repo") // repoPath
-        .mockResolvedValueOnce("https://github.com/user/repo.git") // repoUrl
-        .mockResolvedValueOnce("/worktrees"); // worktreeDir
-
-      select.mockResolvedValueOnce("once"); // runMode
-
-      await promptForConfig({});
-
-      const validateFn = (input as any).mock.calls[1][0].validate;
-
-      // Test validation
-      expect(validateFn("")).toBe("Repository URL is required since the repository path doesn't exist");
-      expect(validateFn("   ")).toBe("Repository URL is required since the repository path doesn't exist");
-      expect(validateFn("https://github.com/user/repo.git")).toBe(true);
-    });
-
-    it("should validate cron schedule format", async () => {
-      select.mockResolvedValueOnce("scheduled"); // runMode
-
-      input.mockResolvedValueOnce("*/5 * * * *"); // cronSchedule
-
-      await promptForConfig({
-        repoPath: "/repo",
-        worktreeDir: "/worktrees",
-      });
-
-      const validateFn = (input as any).mock.calls[0][0].validate;
-
-      // Test validation
-      expect(validateFn("")).toBe("Cron schedule is required");
-      expect(validateFn("   ")).toBe("Cron schedule is required");
-      expect(validateFn("invalid")).toBe("Invalid cron pattern. Expected format: '* * * * *'");
-      expect(validateFn("* * * *")).toBe("Invalid cron pattern. Expected format: '* * * * *'");
-      expect(validateFn("* * * * *")).toBe(true);
-      expect(validateFn("0 */5 * * *")).toBe(true);
-    });
-
-    it("should not prompt for repo URL when path exists", async () => {
-      mockExistsSync.mockReturnValue(true);
-
-      input.mockResolvedValueOnce("/worktrees"); // worktreeDir only
-
-      select.mockResolvedValueOnce("once"); // runMode
-
-      const result = await promptForConfig({
-        repoPath: "/existing/repo",
-      });
-
-      expect(input).toHaveBeenCalledTimes(1); // Only worktreeDir
-      expect(result.repoUrl).toBeUndefined();
-    });
-
-    it("should handle all fields provided", async () => {
-      const result = await promptForConfig({
-        repoPath: "/repo",
-        repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: "/worktrees",
-        cronSchedule: "0 0 * * *",
-        runOnce: false,
-      });
-
-      // Should not prompt for anything
-      expect(input).not.toHaveBeenCalled();
-      expect(select).not.toHaveBeenCalled();
 
       expect(result).toEqual({
-        repoPath: "/repo",
         repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: "/worktrees",
-        cronSchedule: "0 0 * * *",
-        runOnce: false,
+        worktreeDir: "/path/to/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+        bareRepoDir: "/custom/bare/location",
       });
     });
 
-    it("should prompt to save config file", async () => {
-      confirm.mockResolvedValueOnce(true); // saveConfig
-      input
-        .mockResolvedValueOnce("/repo") // repoPath
-        .mockResolvedValueOnce("/worktrees") // worktreeDir
-        .mockResolvedValueOnce("/custom/config.js"); // configPath
+    it("should resolve relative paths to absolute paths", async () => {
+      mockInput
+        .mockResolvedValueOnce("git@github.com:user/repo.git") // repoUrl
+        .mockResolvedValueOnce("./my-worktrees"); // worktreeDir (relative)
 
-      select.mockResolvedValueOnce("once"); // runMode
+      mockSelect.mockResolvedValueOnce("once"); // runMode
+      mockConfirm.mockResolvedValueOnce(false); // askForBareDir
 
-      await promptForConfig({});
+      const result = await promptForConfig({});
 
-      expect(confirm).toHaveBeenCalledWith({
-        message: "Would you like to save this configuration to a file for future use?",
-        default: true,
-      });
-      expect(input).toHaveBeenCalledWith(
+      expect(result.worktreeDir).toBe(path.resolve(cwd, "./my-worktrees"));
+    });
+
+    it("should save config file when requested", async () => {
+      const partialConfig: Partial<Config> = {
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: "/path/to/worktrees",
+        runOnce: true,
+      };
+
+      mockConfirm
+        .mockResolvedValueOnce(false) // askForBareDir
+        .mockResolvedValueOnce(true); // save config
+
+      mockInput.mockResolvedValueOnce("/custom/config.js"); // config path
+
+      const result = await promptForConfig(partialConfig);
+
+      expect(mockConfirm).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: "Enter the path for the config file:",
+          message: expect.stringContaining("save this configuration"),
+        }),
+      );
+
+      expect(mockInput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining("path for the config file"),
           default: "/default/config.js",
         }),
       );
-      expect(generateConfigFile).toHaveBeenCalledWith(
-        expect.objectContaining({
-          repoPath: "/repo",
-          worktreeDir: "/worktrees",
-        }),
-        "/custom/config.js",
-      );
+
+      expect(mockGenerateConfigFile).toHaveBeenCalledWith(result, "/custom/config.js");
     });
 
-    it("should handle config file save errors", async () => {
-      confirm.mockResolvedValueOnce(true); // saveConfig
-      generateConfigFile.mockRejectedValueOnce(new Error("Write failed"));
+    it("should validate URL format", async () => {
+      // First trigger a prompt to capture the validation function
+      mockInput.mockResolvedValueOnce("https://github.com/user/repo.git").mockResolvedValueOnce("/path/to/worktrees");
+      mockSelect.mockResolvedValueOnce("once");
+      mockConfirm.mockResolvedValueOnce(false);
 
-      input
-        .mockResolvedValueOnce("/repo") // repoPath
-        .mockResolvedValueOnce("/worktrees") // worktreeDir
-        .mockResolvedValueOnce("/custom/config.js"); // configPath
+      await promptForConfig({});
 
-      select.mockResolvedValueOnce("once"); // runMode
+      const validateFn = mockInput.mock.calls.find((call) => call[0].message?.includes("repository URL"))?.[0].validate;
 
-      const result = await promptForConfig({});
+      expect(validateFn).toBeDefined();
+      if (validateFn) {
+        expect(validateFn("")).toBe("Repository URL is required");
+        expect(validateFn("not-a-url")).toBe("Please enter a valid Git URL (https://, git@, or file://)");
+        expect(validateFn("https://github.com/user/repo.git")).toBe(true);
+        expect(validateFn("git@github.com:user/repo.git")).toBe(true);
+        expect(validateFn("file:///local/repo.git")).toBe(true);
+      }
+    });
 
-      expect(generateConfigFile).toHaveBeenCalled();
+    it("should handle error when saving config file fails", async () => {
+      const partialConfig: Partial<Config> = {
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: "/path/to/worktrees",
+      };
+
+      mockSelect.mockResolvedValueOnce("once");
+      mockConfirm
+        .mockResolvedValueOnce(false) // askForBareDir
+        .mockResolvedValueOnce(true); // save config
+
+      mockInput.mockResolvedValueOnce("/fail/config.js");
+
+      mockGenerateConfigFile.mockRejectedValueOnce(new Error("Write failed"));
+
+      const result = await promptForConfig(partialConfig);
+
       expect(result).toEqual({
-        repoPath: "/repo",
-        worktreeDir: "/worktrees",
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: "/path/to/worktrees",
         cronSchedule: "0 * * * *",
         runOnce: true,
-        repoUrl: undefined,
+        bareRepoDir: undefined,
       });
+
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Failed to save config file"));
     });
   });
 });

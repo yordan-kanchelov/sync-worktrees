@@ -56,8 +56,11 @@ async function runMultipleRepositories(repositories: RepositoryConfig[], runOnce
 
   for (const repoConfig of repositories) {
     console.log(`\n📦 Repository: ${repoConfig.name}`);
-    console.log(`   Path: ${repoConfig.repoPath}`);
+    console.log(`   URL: ${repoConfig.repoUrl}`);
     console.log(`   Worktrees: ${repoConfig.worktreeDir}`);
+    if (repoConfig.bareRepoDir) {
+      console.log(`   Bare repo: ${repoConfig.bareRepoDir}`);
+    }
 
     const syncService = new WorktreeSyncService(repoConfig);
     services.set(repoConfig.name, syncService);
@@ -120,12 +123,12 @@ async function listRepositories(configPath: string): Promise<void> {
     configFile.repositories.forEach((repo, index) => {
       const resolved = configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir);
       console.log(`${index + 1}. ${resolved.name}`);
-      console.log(`   Repository: ${resolved.repoPath}`);
+      console.log(`   URL: ${resolved.repoUrl}`);
       console.log(`   Worktrees: ${resolved.worktreeDir}`);
       console.log(`   Schedule: ${resolved.cronSchedule}`);
       console.log(`   Run Once: ${resolved.runOnce}`);
-      if (resolved.repoUrl) {
-        console.log(`   URL: ${resolved.repoUrl}`);
+      if (resolved.bareRepoDir) {
+        console.log(`   Bare repo: ${resolved.bareRepoDir}`);
       }
       console.log("");
     });

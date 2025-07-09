@@ -1,8 +1,17 @@
 import * as fs from "fs/promises";
+import * as path from "path";
 
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import simpleGit from "simple-git";
 
+import {
+  TEST_PATHS,
+  TEST_URLS,
+  buildGitStatusResponse,
+  createMockConfig,
+  createMockGitService,
+  createWorktreeListOutput,
+} from "../../__tests__/test-utils";
 import { GitService } from "../git.service";
 
 import type { Config } from "../../types";
@@ -22,25 +31,20 @@ describe("GitService", () => {
     jest.clearAllMocks();
 
     // Setup mock config
-    mockConfig = {
-      repoPath: "/test/repo",
-      repoUrl: "https://github.com/test/repo.git",
-      worktreeDir: "/test/worktrees",
-      cronSchedule: "0 * * * *",
-      runOnce: false,
-    };
+    mockConfig = createMockConfig();
 
-    // Setup mock git instance
-    mockGit = {
+    // Setup mock git instance with jest mocks
+    mockGit = createMockGitService({
       fetch: jest.fn<any>().mockResolvedValue(undefined),
       branch: jest.fn<any>().mockResolvedValue({
         all: ["origin/main", "origin/feature-1", "origin/feature-2", "local-branch"],
         current: "main",
       }),
       raw: jest.fn<any>().mockResolvedValue(""),
-      status: jest.fn<any>().mockResolvedValue({ isClean: jest.fn().mockReturnValue(true) }),
+      status: jest.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })),
       clone: jest.fn<any>().mockResolvedValue(undefined),
-    } as any;
+      addConfig: jest.fn<any>().mockResolvedValue(undefined),
+    }) as jest.Mocked<SimpleGit>;
 
     // Mock simpleGit factory
     (simpleGit as unknown as jest.Mock).mockReturnValue(mockGit);
@@ -49,40 +53,222 @@ describe("GitService", () => {
   });
 
   describe("initialize", () => {
-    it("should use existing repository when path exists", async () => {
-      // Mock fs.access to succeed (path exists)
+    it("should use existing bare repository when it exists", async () => {
+      // Mock fs.access to succeed (bare repo exists)
       (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock fs.mkdir
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock config check to throw error (config doesn't exist)
+      mockGit.raw
+        .mockResolvedValueOnce("") // First call: config check throws
+        .mockResolvedValueOnce(
+          createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
+        ); // Second call: worktree list
 
       const git = await gitService.initialize();
 
-      expect(fs.access).toHaveBeenCalledWith("/test/repo");
-      expect(simpleGit).toHaveBeenCalledWith("/test/repo");
+      expect(fs.access).toHaveBeenCalledWith(".bare/repo/HEAD");
+      expect(simpleGit).toHaveBeenCalledWith(".bare/repo");
+      expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
+      expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
       expect(git).toBe(mockGit);
     });
 
-    it("should clone repository when path does not exist and URL is provided", async () => {
-      // Mock fs.access to fail (path doesn't exist)
+    it("should clone as bare repository when it doesn't exist", async () => {
+      // Mock fs.access to fail (bare repo doesn't exist)
       (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      // Mock fs.mkdir
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock config check and worktree list
+      mockGit.raw
+        .mockResolvedValueOnce("") // First call: config check throws
+        .mockResolvedValueOnce("" as any); // Second call: getWorktreesFromBare returns empty
 
       await gitService.initialize();
 
-      expect(fs.access).toHaveBeenCalledWith("/test/repo");
+      expect(fs.access).toHaveBeenCalledWith(".bare/repo/HEAD");
+      expect(fs.mkdir).toHaveBeenCalled();
       expect(simpleGit).toHaveBeenCalledWith(); // Called without args for cloning
-      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", "/test/repo");
-      expect(simpleGit).toHaveBeenCalledWith("/test/repo"); // Called again after cloning
+      expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
+      expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
     });
 
-    it("should throw error when path does not exist and no URL is provided", async () => {
-      // Mock fs.access to fail
+    it("should create main worktree if it doesn't exist", async () => {
+      // Mock fs.access to succeed (bare repo exists)
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock fs.mkdir
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock config check and worktree list
+      mockGit.raw
+        .mockResolvedValueOnce("") // First call: config check throws
+        .mockResolvedValueOnce("" as any); // Second call: getWorktreesFromBare returns empty
+
+      await gitService.initialize();
+
+      expect(fs.mkdir).toHaveBeenCalledWith(TEST_PATHS.worktree, { recursive: true });
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", TEST_PATHS.worktree + "/main", "main"]);
+    });
+
+    it("should resolve relative paths to absolute paths when creating worktrees", async () => {
+      // Setup config with relative paths
+      const relativeConfig: Config = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./test/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const relativeGitService = new GitService(relativeConfig);
+
+      // Mock fs.access to succeed (bare repo exists)
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock fs.mkdir
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock config check and worktree list
+      mockGit.raw
+        .mockResolvedValueOnce("") // First call: config check throws
+        .mockResolvedValueOnce("" as any); // Second call: getWorktreesFromBare returns empty
+
+      await relativeGitService.initialize();
+
+      // Verify that the worktree add command received an absolute path
+      const expectedAbsolutePath = path.resolve("./test/worktrees/main");
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", expectedAbsolutePath, "main"]);
+    });
+
+    it("should not add duplicate fetch config when it already exists", async () => {
+      // Mock fs.access to succeed (bare repo exists)
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock fs.mkdir
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock config check to return existing fetch config
+      mockGit.raw
+        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*") // First call: config exists
+        .mockResolvedValueOnce(
+          createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
+        ); // Second call: worktree list
+
+      const git = await gitService.initialize();
+
+      expect(fs.access).toHaveBeenCalledWith(".bare/repo/HEAD");
+      expect(simpleGit).toHaveBeenCalledWith(".bare/repo");
+      expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
+      expect(mockGit.addConfig).not.toHaveBeenCalled(); // Should not add config if it already exists
+      expect(git).toBe(mockGit);
+    });
+
+    it("should handle empty bareRepoDir by using default", async () => {
+      // Setup config with empty bareRepoDir - should fall back to default
+      const configWithEmptyBareRepo: Config = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        bareRepoDir: "",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const gitServiceWithEmptyBareRepo = new GitService(configWithEmptyBareRepo);
+
+      // Mock fs.access to fail (bare repo doesn't exist)
+      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      // Mock config check and worktree list
+      mockGit.raw
+        .mockResolvedValueOnce("") // First call: config check throws
+        .mockResolvedValueOnce("" as any); // Second call: getWorktreesFromBare returns empty
+
+      await gitServiceWithEmptyBareRepo.initialize();
+
+      // Should use default bare repo path (.bare/repo) instead of empty string
+      expect(fs.mkdir).toHaveBeenCalled();
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", ".bare/repo", ["--bare"]);
+    });
+
+    it("should throw error when bareRepoPath is whitespace only", async () => {
+      // Setup config with whitespace-only bareRepoDir
+      const invalidConfig: Config = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        bareRepoDir: "   ",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const invalidGitService = new GitService(invalidConfig);
+
+      // Mock fs.access to fail (bare repo doesn't exist)
       (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
 
-      // Remove repoUrl from config
-      const configWithoutUrl = { ...mockConfig, repoUrl: undefined };
-      const serviceWithoutUrl = new GitService(configWithoutUrl);
-
-      await expect(serviceWithoutUrl.initialize()).rejects.toThrow(
-        'Repo path "/test/repo" not found and no --repoUrl was provided to clone from.',
+      await expect(invalidGitService.initialize()).rejects.toThrow(
+        "Invalid bare repository path: path cannot be empty",
       );
+    });
+
+    it("should throw error when bareRepoPath is a root directory", async () => {
+      // Setup config with root directory
+      const invalidConfig: Config = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        bareRepoDir: "/",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const invalidGitService = new GitService(invalidConfig);
+
+      // Mock fs.access to fail (bare repo doesn't exist)
+      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+      await expect(invalidGitService.initialize()).rejects.toThrow(
+        'Invalid bare repository path: "/" is a root directory or has invalid parent directory',
+      );
+    });
+
+    it("should allow relative bareRepoPath", async () => {
+      // Setup config with relative bareRepoDir
+      const validConfig: Config = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        bareRepoDir: "./my-bare-repo",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const validGitService = new GitService(validConfig);
+
+      // Mock fs.access to fail (bare repo doesn't exist)
+      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+
+      // Mock worktree raw command
+      mockGit.raw.mockResolvedValueOnce("worktree /test/worktrees/main\nbranch refs/heads/main\n\n" as any);
+
+      await validGitService.initialize();
+
+      // Should create parent directory and clone
+      expect(fs.mkdir).toHaveBeenCalled();
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", "./my-bare-repo", ["--bare"]);
+    });
+
+    it("should allow bareRepoPath with single directory name", async () => {
+      // Setup config with single directory name (parent would be '.')
+      const validConfig: Config = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        bareRepoDir: ".bare",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const validGitService = new GitService(validConfig);
+
+      // Mock fs.access to fail (bare repo doesn't exist)
+      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+
+      // Mock worktree raw command
+      mockGit.raw.mockResolvedValueOnce("worktree /test/worktrees/main\nbranch refs/heads/main\n\n" as any);
+
+      await validGitService.initialize();
+
+      // Should create parent directory and clone
+      expect(fs.mkdir).toHaveBeenCalled();
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", ".bare", ["--bare"]);
     });
   });
 
@@ -93,6 +279,8 @@ describe("GitService", () => {
 
     it("should return git instance when initialized", async () => {
       (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw.mockResolvedValueOnce("worktree /test/worktrees/main\nbranch refs/heads/main\n\n" as any);
       await gitService.initialize();
 
       const git = gitService.getGit();
@@ -146,6 +334,13 @@ describe("GitService", () => {
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
     });
+
+    it("should resolve relative paths to absolute paths when adding worktrees", async () => {
+      await gitService.addWorktree("feature-1", "./test/worktrees/feature-1");
+
+      const expectedAbsolutePath = path.resolve("./test/worktrees/feature-1");
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", expectedAbsolutePath, "feature-1"]);
+    });
   });
 
   describe("removeWorktree", () => {
@@ -176,28 +371,24 @@ describe("GitService", () => {
 
   describe("checkWorktreeStatus", () => {
     it("should return true when worktree is clean", async () => {
-      const mockWorktreeGit = {
-        status: jest.fn<any>().mockResolvedValue({
-          isClean: jest.fn().mockReturnValue(true),
-        }),
-      };
+      const mockWorktreeGit = createMockGitService({
+        status: jest.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })),
+      });
       (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
 
-      const isClean = await gitService.checkWorktreeStatus("/test/worktrees/feature-1");
+      const isClean = await gitService.checkWorktreeStatus(TEST_PATHS.worktree + "/feature-1");
 
-      expect(simpleGit).toHaveBeenCalledWith("/test/worktrees/feature-1");
+      expect(simpleGit).toHaveBeenCalledWith(TEST_PATHS.worktree + "/feature-1");
       expect(isClean).toBe(true);
     });
 
     it("should return false when worktree has changes", async () => {
-      const mockWorktreeGit = {
-        status: jest.fn<any>().mockResolvedValue({
-          isClean: jest.fn().mockReturnValue(false),
-        }),
-      };
+      const mockWorktreeGit = createMockGitService({
+        status: jest.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: false })),
+      });
       (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
 
-      const isClean = await gitService.checkWorktreeStatus("/test/worktrees/feature-1");
+      const isClean = await gitService.checkWorktreeStatus(TEST_PATHS.worktree + "/feature-1");
 
       expect(isClean).toBe(false);
     });
@@ -259,15 +450,12 @@ describe("GitService", () => {
     it("should parse worktree list output correctly", async () => {
       await gitService.initialize();
 
-      mockGit.raw.mockResolvedValue(`worktree /path/to/repo
-branch refs/heads/main
-
-worktree /path/to/worktrees/feature-1
-branch refs/heads/feature-1
-
-worktree /path/to/worktrees/feature-2
-branch refs/heads/feature-2
-`);
+      const worktreeData = [
+        { path: "/path/to/repo", branch: "main", commit: "abc123" },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", commit: "def456" },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2", commit: "ghi789" },
+      ];
+      mockGit.raw.mockResolvedValue(createWorktreeListOutput(worktreeData));
 
       const worktrees = await gitService.getWorktrees();
 

@@ -1,34 +1,91 @@
 import * as fs from "fs/promises";
+import * as path from "path";
 
 import simpleGit from "simple-git";
+
+import { getDefaultBareRepoDir } from "../utils/git-url";
 
 import type { Config } from "../types";
 import type { SimpleGit } from "simple-git";
 
 export class GitService {
   private git: SimpleGit | null = null;
+  private bareRepoPath: string;
+  private mainWorktreePath: string;
 
-  constructor(private config: Config) {}
+  constructor(private config: Config) {
+    this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
+    this.mainWorktreePath = path.join(this.config.worktreeDir, "main");
+  }
 
   async initialize(): Promise<SimpleGit> {
-    const { repoPath, repoUrl } = this.config;
+    const { repoUrl } = this.config;
 
     try {
-      await fs.access(repoPath);
-      console.log(`Repository path at "${repoPath}" already exists. Using it.`);
-      this.git = simpleGit(repoPath);
-      return this.git;
+      // Check if bare repo already exists
+      await fs.access(path.join(this.bareRepoPath, "HEAD"));
+      console.log(`Bare repository at "${this.bareRepoPath}" already exists. Using it.`);
     } catch {
-      if (!repoUrl) {
-        throw new Error(`Repo path "${repoPath}" not found and no --repoUrl was provided to clone from.`);
+      // Clone as bare repository
+      console.log(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
+
+      // Validate bareRepoPath before using path.dirname()
+      if (!this.bareRepoPath || this.bareRepoPath.trim() === "") {
+        throw new Error("Invalid bare repository path: path cannot be empty");
       }
 
-      console.log(`Cloning from "${repoUrl}" into "${repoPath}"...`);
-      await simpleGit().clone(repoUrl, repoPath);
+      const resolvedBareRepoPath = path.resolve(this.bareRepoPath);
+      const parentDir = path.dirname(resolvedBareRepoPath);
+
+      // Check if bareRepoPath is a root directory or if parent directory is the same as bareRepoPath
+      if (parentDir === resolvedBareRepoPath || parentDir === "/" || /^[A-Za-z]:[\\/]?$/.test(parentDir)) {
+        throw new Error(
+          `Invalid bare repository path: "${this.bareRepoPath}" is a root directory or has invalid parent directory`,
+        );
+      }
+
+      await fs.mkdir(path.dirname(resolvedBareRepoPath), { recursive: true });
+      await simpleGit().clone(repoUrl, this.bareRepoPath, ["--bare"]);
       console.log("✅ Clone successful.");
-      this.git = simpleGit(repoPath);
-      return this.git;
     }
+
+    // Configure bare repository for worktrees
+    const bareGit = simpleGit(this.bareRepoPath);
+
+    // Check if remote.origin.fetch config already exists to prevent duplicates
+    const fetchRefspec = "+refs/heads/*:refs/remotes/origin/*";
+    try {
+      const existingFetch = await bareGit.raw(["config", "--get-all", "remote.origin.fetch"]);
+
+      if (!existingFetch.includes(fetchRefspec)) {
+        await bareGit.addConfig("remote.origin.fetch", fetchRefspec);
+      }
+    } catch {
+      // Config doesn't exist, add it
+      await bareGit.addConfig("remote.origin.fetch", fetchRefspec);
+    }
+
+    // Check if main worktree exists
+    let needsMainWorktree = true;
+    try {
+      const worktrees = await this.getWorktreesFromBare(bareGit);
+      needsMainWorktree = !worktrees.some((w) => w.path === this.mainWorktreePath);
+    } catch {
+      // If worktree list fails, assume we need main worktree
+    }
+
+    if (needsMainWorktree) {
+      // Create main worktree if it doesn't exist
+      console.log(`Creating main worktree at "${this.mainWorktreePath}"...`);
+      await fs.mkdir(this.config.worktreeDir, { recursive: true });
+      // Use absolute path for worktree add to avoid relative path issues
+      const absoluteWorktreePath = path.resolve(this.mainWorktreePath);
+      await bareGit.raw(["worktree", "add", absoluteWorktreePath, "main"]);
+    }
+
+    // Use the main worktree as our primary git instance
+    this.git = simpleGit(this.mainWorktreePath);
+    return this.git;
   }
 
   getGit(): SimpleGit {
@@ -51,20 +108,22 @@ export class GitService {
   }
 
   async addWorktree(branchName: string, worktreePath: string): Promise<void> {
-    const git = this.getGit();
-    await git.raw(["worktree", "add", worktreePath, branchName]);
+    const bareGit = simpleGit(this.bareRepoPath);
+    // Use absolute path for worktree add to avoid relative path issues
+    const absoluteWorktreePath = path.resolve(worktreePath);
+    await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
     console.log(`  - Created worktree for '${branchName}'`);
   }
 
   async removeWorktree(worktreePath: string): Promise<void> {
-    const git = this.getGit();
-    await git.raw(["worktree", "remove", worktreePath, "--force"]);
+    const bareGit = simpleGit(this.bareRepoPath);
+    await bareGit.raw(["worktree", "remove", worktreePath, "--force"]);
     console.log(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
   }
 
   async pruneWorktrees(): Promise<void> {
-    const git = this.getGit();
-    await git.raw(["worktree", "prune"]);
+    const bareGit = simpleGit(this.bareRepoPath);
+    await bareGit.raw(["worktree", "prune"]);
     console.log("Pruned worktree metadata.");
   }
 
@@ -100,8 +159,12 @@ export class GitService {
   }
 
   async getWorktrees(): Promise<{ path: string; branch: string }[]> {
-    const git = this.getGit();
-    const result = await git.raw(["worktree", "list", "--porcelain"]);
+    const bareGit = simpleGit(this.bareRepoPath);
+    return this.getWorktreesFromBare(bareGit);
+  }
+
+  private async getWorktreesFromBare(bareGit: SimpleGit): Promise<{ path: string; branch: string }[]> {
+    const result = await bareGit.raw(["worktree", "list", "--porcelain"]);
 
     const worktrees: { path: string; branch: string }[] = [];
     const lines = result.trim().split("\n");

@@ -91,7 +91,6 @@ export function setupMockFileSystem(
  */
 export function createTestConfig(overrides?: any) {
   return {
-    repoPath: "/test/repo",
     repoUrl: "https://github.com/test/repo.git",
     worktreeDir: "/test/worktrees",
     cronSchedule: "0 * * * *",

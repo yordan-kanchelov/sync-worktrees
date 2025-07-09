@@ -10,6 +10,7 @@ Automatically synchronize Git worktrees with remote branches. Keep your local wo
 - 🛡️ Safe operations - won't delete worktrees with uncommitted changes or unpushed commits
 - 📝 Clear logging with timestamps and progress indicators
 - 📋 Config file support for managing multiple repositories
+- 💾 Space-efficient bare repository storage - no duplicate working trees
 
 ## Installation
 
@@ -25,31 +26,14 @@ pnpm add -g sync-worktrees
 
 ## Usage
 
-### One-time sync
-
 ```bash
-sync-worktrees --repoPath /path/to/repo --worktreeDir /path/to/worktrees --runOnce
-```
+# Single repository (one-time sync)
+sync-worktrees --repoUrl https://github.com/user/repo.git --worktreeDir ./worktrees --runOnce
 
-### Scheduled sync (default: hourly)
+# Single repository (scheduled hourly)
+sync-worktrees --repoUrl https://github.com/user/repo.git --worktreeDir ./worktrees
 
-```bash
-sync-worktrees --repoPath /path/to/repo --worktreeDir /path/to/worktrees
-```
-
-### Clone and sync a new repository
-
-```bash
-sync-worktrees \
-  --repoPath /path/to/repo \
-  --repoUrl git@github.com:user/repo.git \
-  --worktreeDir /path/to/worktrees \
-  --runOnce
-```
-
-### Using a config file
-
-```bash
+# Multiple repositories (using config file)
 sync-worktrees --config ./sync-worktrees.config.js
 ```
 
@@ -60,8 +44,8 @@ sync-worktrees --config ./sync-worktrees.config.js
 | `--config` | `-c` | Path to JavaScript config file | No | - |
 | `--filter` | `-f` | Filter repositories by name (wildcards supported) | No | - |
 | `--list` | `-l` | List configured repositories and exit | No | `false` |
-| `--repoPath` | `-r` | Absolute path to the target repository | Yes* | - |
-| `--repoUrl` | `-u` | Git repository URL for cloning | No | - |
+| `--repoUrl` | `-u` | Git repository URL (HTTPS or SSH) | Yes* | - |
+| `--bareRepoDir` | `-b` | Directory for bare repository | No | `.bare/<repo-name>` |
 | `--worktreeDir` | `-w` | Directory for storing worktrees | Yes* | - |
 | `--cronSchedule` | `-s` | Cron pattern for scheduling | No | `0 * * * *` (hourly) |
 | `--runOnce` | - | Execute once and exit | No | `false` |
@@ -71,122 +55,67 @@ sync-worktrees --config ./sync-worktrees.config.js
 
 ## Examples
 
-### Basic one-time sync
+### Single repository
 ```bash
-sync-worktrees -r /home/user/my-repo -w /home/user/my-repo-worktrees --runOnce
-```
+# One-time sync
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --runOnce
 
-### Custom cron schedule (every 30 minutes)
-```bash
-sync-worktrees -r /home/user/my-repo -w /home/user/my-repo-worktrees -s "*/30 * * * *"
-```
-
-### Clone and sync a repository
-```bash
-sync-worktrees \
-  -r /home/user/new-repo \
-  -u https://github.com/example/project.git \
-  -w /home/user/new-repo-worktrees \
-  --runOnce
+# Scheduled sync (every 30 minutes)
+sync-worktrees -u git@github.com:user/repo.git -w ./worktrees -s "*/30 * * * *"
 ```
 
 ### Using a config file
 ```bash
-# Sync all repositories in config
+# Sync all repositories
 sync-worktrees --config ./sync-worktrees.config.js
 
-# Sync specific repositories
-sync-worktrees --config ./sync-worktrees.config.js --filter "frontend-*,backend-*"
+# Filter specific repositories
+sync-worktrees --config ./sync-worktrees.config.js --filter "frontend-*"
 
 # List configured repositories
 sync-worktrees --config ./sync-worktrees.config.js --list
-
-# Override config settings
-sync-worktrees --config ./sync-worktrees.config.js --runOnce
 ```
 
 ## Configuration File
 
-The config file is a JavaScript module that exports configuration for multiple repositories. This allows you to manage multiple repositories with different settings in a single command.
-
-### Basic Config Structure
+For managing multiple repositories, create a JavaScript config file:
 
 ```javascript
 module.exports = {
-  // Optional global defaults
+  // Optional defaults for all repositories
   defaults: {
-    cronSchedule: "0 * * * *",
+    cronSchedule: "0 * * * *",  // Hourly
     runOnce: false
   },
   
-  // Array of repository configurations
   repositories: [
     {
-      name: "my-project",  // Unique identifier
-      repoUrl: "https://github.com/user/repo.git",
-      repoPath: "/path/to/repo",
-      worktreeDir: "/path/to/worktrees",
-      cronSchedule: "*/30 * * * *",  // Override default
-      runOnce: false  // Override default
-    }
-  ]
-};
-```
-
-### Config File Examples
-
-#### Using Environment Variables
-```javascript
-module.exports = {
-  repositories: [{
-    name: "private-repo",
-    repoUrl: process.env.PRIVATE_REPO_URL,
-    repoPath: "/path/to/repo",
-    worktreeDir: "/path/to/worktrees"
-  }]
-};
-```
-
-#### Using Relative Paths
-```javascript
-// Paths are resolved relative to the config file location
-module.exports = {
-  repositories: [{
-    name: "local-project",
-    repoPath: "./repos/my-project",
-    worktreeDir: "./worktrees/my-project"
-  }]
-};
-```
-
-#### Multiple Repositories with Different Schedules
-```javascript
-module.exports = {
-  defaults: {
-    cronSchedule: "0 * * * *"  // Hourly by default
-  },
-  repositories: [
-    {
-      name: "frontend",
+      name: "frontend",  // Unique identifier
       repoUrl: "https://github.com/company/frontend.git",
-      repoPath: "/projects/frontend",
-      worktreeDir: "/projects/frontend-worktrees",
-      cronSchedule: "*/30 * * * *"  // Every 30 minutes
+      worktreeDir: "./worktrees/frontend",  // Relative paths supported
+      cronSchedule: "*/30 * * * *"  // Override default
     },
     {
       name: "backend",
-      repoUrl: "https://github.com/company/backend.git", 
-      repoPath: "/projects/backend",
-      worktreeDir: "/projects/backend-worktrees"
-      // Uses default hourly schedule
+      repoUrl: process.env.BACKEND_REPO_URL,  // Environment variables supported
+      worktreeDir: "/absolute/path/backend-worktrees"
+      // Uses default schedule
     }
   ]
 };
 ```
 
+**Notes:**
+- Relative paths are resolved from the config file location
+- `bareRepoDir` defaults to `.bare/<repo-name>` if not specified
+- Repository-specific settings override defaults
+
 ## How it works
 
-1. **Initialization**: Clones the repository if it doesn't exist (when `--repoUrl` is provided)
+1. **Initialization**: 
+   - Clones the repository as a bare repository (space-efficient, no working tree)
+   - Creates a main worktree for immediate use
+   - Stores bare repository in `.bare/<repo-name>` by default
 2. **Synchronization**:
    - Fetches latest changes from all remotes
    - Creates worktrees for new remote branches
@@ -201,21 +130,17 @@ module.exports = {
 ## Development
 
 ```bash
-# Clone the repository
+# Setup
 git clone https://github.com/yordan-kanchelov/sync-worktrees.git
 cd sync-worktrees
-
-# Install dependencies
 pnpm install
 
-# Build
+# Build and test
 pnpm build
-
-# Run tests
 pnpm test
 
-# Development mode
-pnpm dev -- --repoPath /path/to/repo --worktreeDir /path/to/worktrees --runOnce
+# Run in development mode
+pnpm dev -- --repoUrl https://github.com/user/repo.git --worktreeDir ./worktrees --runOnce
 ```
 
 ### Available Scripts
@@ -223,11 +148,18 @@ pnpm dev -- --repoPath /path/to/repo --worktreeDir /path/to/worktrees --runOnce
 - `pnpm build` - Build the project
 - `pnpm dev` - Run in development mode
 - `pnpm test` - Run tests
+- `pnpm test:watch` - Run tests in watch mode
+- `pnpm test:coverage` - Run tests with coverage report
 - `pnpm lint` - Check linting
+- `pnpm lint:fix` - Auto-fix linting errors
 - `pnpm typecheck` - Run type checking
 - `pnpm changeset` - Create a changeset for your changes
 - `pnpm version` - Update versions based on changesets
 - `pnpm release` - Build and publish to npm
+
+### Testing
+
+The test suite uses Jest with comprehensive unit and integration tests. Common test utilities are available in `src/__tests__/test-utils.ts` including mock factories, test data constants, and helper functions. Use these utilities when writing tests to maintain consistency.
 
 ## Contributing
 
@@ -236,10 +168,11 @@ This project uses [changesets](https://github.com/changesets/changesets) to mana
 ### Making Changes
 
 1. Make your changes and commit them
-2. Run `pnpm changeset` to create a changeset describing your changes
-3. Select the appropriate version bump type (patch/minor/major)
-4. Write a summary of your changes for the changelog
-5. Commit the generated changeset file
+2. Write tests for your changes using the test utilities in `src/__tests__/test-utils.ts`
+3. Run `pnpm changeset` to create a changeset describing your changes
+4. Select the appropriate version bump type (patch/minor/major)
+5. Write a summary of your changes for the changelog
+6. Commit the generated changeset file
 
 The CI will automatically create a PR to update versions when changesets are merged to main, and will publish to npm when that PR is merged.
 
