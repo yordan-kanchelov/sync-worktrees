@@ -12,7 +12,6 @@ Automatically synchronize Git worktrees with remote branches. Keep your local wo
 - 🛡️ Safe operations - won't delete worktrees with uncommitted changes or unpushed commits
 - 📝 Clear logging with timestamps and progress indicators
 - 📋 Config file support for managing multiple repositories
-- 💾 Space-efficient bare repository storage - no duplicate working trees
 
 ## Installation
 
