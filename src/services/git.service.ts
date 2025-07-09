@@ -28,14 +28,48 @@ export class GitService {
     } catch {
       // Clone as bare repository
       console.log(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
-      await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
+
+      // Validate bareRepoPath before using path.dirname()
+      if (!this.bareRepoPath || this.bareRepoPath.trim() === "") {
+        throw new Error("Invalid bare repository path: path cannot be empty");
+      }
+
+      const parentDir = path.dirname(this.bareRepoPath);
+      const resolvedBareRepoPath = path.resolve(this.bareRepoPath);
+      const resolvedParentDir = path.resolve(parentDir);
+
+      // Check if bareRepoPath is a root directory or if parent directory is the same as bareRepoPath
+      if (
+        resolvedParentDir === resolvedBareRepoPath ||
+        parentDir === "/" ||
+        parentDir === "." ||
+        /^[A-Za-z]:[\\/]?$/.test(parentDir)
+      ) {
+        throw new Error(
+          `Invalid bare repository path: "${this.bareRepoPath}" is a root directory or has invalid parent directory`,
+        );
+      }
+
+      await fs.mkdir(parentDir, { recursive: true });
       await simpleGit().clone(repoUrl, this.bareRepoPath, ["--bare"]);
       console.log("✅ Clone successful.");
     }
 
     // Configure bare repository for worktrees
     const bareGit = simpleGit(this.bareRepoPath);
-    await bareGit.addConfig("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+
+    // Check if remote.origin.fetch config already exists to prevent duplicates
+    const fetchRefspec = "+refs/heads/*:refs/remotes/origin/*";
+    try {
+      const existingFetch = await bareGit.raw(["config", "--get-all", "remote.origin.fetch"]);
+
+      if (!existingFetch.includes(fetchRefspec)) {
+        await bareGit.addConfig("remote.origin.fetch", fetchRefspec);
+      }
+    } catch {
+      // Config doesn't exist, add it
+      await bareGit.addConfig("remote.origin.fetch", fetchRefspec);
+    }
 
     // Check if main worktree exists
     let needsMainWorktree = true;
