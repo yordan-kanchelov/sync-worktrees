@@ -1,5 +1,24 @@
 # sync-worktrees
 
+## 0.6.0
+
+### Minor Changes
+
+- 7c16278: Add default worktree directory based on repository name
+  - Interactive setup now suggests `./[repo-name]` as the default worktree directory
+  - Users can press Enter to accept the default or provide a custom path
+  - Reduces the number of required inputs during setup
+  - Creates a cleaner directory structure without unnecessary nesting
+
+### Patch Changes
+
+- 7c16278: Fix bare repository path resolution to prevent deletion during cleanup
+
+  When using the current directory as the worktree directory, the bare repository
+  was being created with a relative path that would then be incorrectly identified
+  as an orphaned directory and deleted during cleanup. This fix ensures the bare
+  repository path is always resolved to an absolute path.
+
 ## 0.5.1
 
 ### Patch Changes

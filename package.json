@@ -1,6 +1,6 @@
 {
   "name": "sync-worktrees",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Automatically synchronize Git worktrees with remote branches - perfect for multi-branch development workflows",
   "main": "dist/index.js",
   "bin": {
