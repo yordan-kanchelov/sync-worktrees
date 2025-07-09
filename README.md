@@ -2,6 +2,8 @@
 
 Automatically synchronize Git worktrees with remote branches. Keep your local worktrees in sync with remote repositories - perfect for multi-branch development workflows and automated testing setups.
 
+![sync-worktrees demo](./assets/sync-worktrees-demo-optimized.gif)
+
 ## Features
 
 - 🔄 Automatically creates worktrees for all remote branches
