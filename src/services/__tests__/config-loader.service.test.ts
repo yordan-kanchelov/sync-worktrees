@@ -114,6 +114,173 @@ describe("ConfigLoaderService", () => {
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Duplicate repository name: duplicate");
     });
+
+    it("should throw error for empty repositories array", async () => {
+      const configPath = path.join(tempDir, "empty.config.js");
+      const configContent = `
+        module.exports = {
+          repositories: []
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Config file must have at least one repository",
+      );
+    });
+
+    it("should throw error for invalid repository object", async () => {
+      const configPath = path.join(tempDir, "invalid-repo.config.js");
+      const configContent = `
+        module.exports = {
+          repositories: ["not-an-object"]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Repository at index 0 must be an object");
+    });
+
+    it("should throw error for missing repository name", async () => {
+      const configPath = path.join(tempDir, "no-name.config.js");
+      const configContent = `
+        module.exports = {
+          repositories: [
+            { repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Repository at index 0 must have a 'name' property",
+      );
+    });
+
+    it("should throw error for missing repoUrl", async () => {
+      const configPath = path.join(tempDir, "no-url.config.js");
+      const configContent = `
+        module.exports = {
+          repositories: [
+            { name: "test", worktreeDir: "/path" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Repository 'test' must have a 'repoUrl' property",
+      );
+    });
+
+    it("should throw error for missing worktreeDir", async () => {
+      const configPath = path.join(tempDir, "no-worktree.config.js");
+      const configContent = `
+        module.exports = {
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Repository 'test' must have a 'worktreeDir' property",
+      );
+    });
+
+    it("should throw error for invalid bareRepoDir type", async () => {
+      const configPath = path.join(tempDir, "invalid-bare.config.js");
+      const configContent = `
+        module.exports = {
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", bareRepoDir: 123 }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Repository 'test' has invalid 'bareRepoDir' property",
+      );
+    });
+
+    it("should throw error for invalid cronSchedule type", async () => {
+      const configPath = path.join(tempDir, "invalid-cron.config.js");
+      const configContent = `
+        module.exports = {
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", cronSchedule: 123 }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Repository 'test' has invalid 'cronSchedule' property",
+      );
+    });
+
+    it("should throw error for invalid runOnce type", async () => {
+      const configPath = path.join(tempDir, "invalid-runonce.config.js");
+      const configContent = `
+        module.exports = {
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", runOnce: "yes" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Repository 'test' has invalid 'runOnce' property",
+      );
+    });
+
+    it("should throw error for invalid defaults object", async () => {
+      const configPath = path.join(tempDir, "invalid-defaults.config.js");
+      const configContent = `
+        module.exports = {
+          defaults: "not-an-object",
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("'defaults' must be an object");
+    });
+
+    it("should throw error for invalid cronSchedule in defaults", async () => {
+      const configPath = path.join(tempDir, "invalid-defaults-cron.config.js");
+      const configContent = `
+        module.exports = {
+          defaults: { cronSchedule: 123 },
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Invalid 'cronSchedule' in defaults");
+    });
+
+    it("should throw error for invalid runOnce in defaults", async () => {
+      const configPath = path.join(tempDir, "invalid-defaults-runonce.config.js");
+      const configContent = `
+        module.exports = {
+          defaults: { runOnce: "yes" },
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Invalid 'runOnce' in defaults");
+    });
   });
 
   describe("resolveRepositoryConfig", () => {

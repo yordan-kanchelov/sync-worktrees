@@ -121,6 +121,39 @@ describe("Config Generator", () => {
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toMatch(/Generated on \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
+
+    it("should include bareRepoDir when provided with relative path", async () => {
+      const config: Config = {
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: path.join(tempDir, "worktrees"),
+        bareRepoDir: path.join(tempDir, ".bare/repo"),
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const configPath = path.join(tempDir, "config.js");
+      await generateConfigFile(config, configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain('bareRepoDir: "./.bare/repo"');
+    });
+
+    it("should include bareRepoDir with absolute path for deeply nested paths", async () => {
+      const config: Config = {
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: "/absolute/path/to/worktrees",
+        bareRepoDir: "/absolute/path/to/bare",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const configPath = path.join(tempDir, "deep/nested/dir/config.js");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await generateConfigFile(config, configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain('bareRepoDir: "/absolute/path/to/bare"');
+    });
   });
 
   describe("getDefaultConfigPath", () => {
