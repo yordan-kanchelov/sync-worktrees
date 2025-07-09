@@ -172,10 +172,11 @@ describe("Interactive", () => {
       expect(validateFn).toBeDefined();
       if (validateFn) {
         expect(validateFn("")).toBe("Repository URL is required");
-        expect(validateFn("not-a-url")).toBe("Please enter a valid Git URL (https://, git@, or file://)");
+        expect(validateFn("not-a-url")).toBe("Please enter a valid Git URL (https://, ssh://, git@, or file://)");
         expect(validateFn("https://github.com/user/repo.git")).toBe(true);
         expect(validateFn("git@github.com:user/repo.git")).toBe(true);
         expect(validateFn("file:///local/repo.git")).toBe(true);
+        expect(validateFn("ssh://git@github.com/user/repo.git")).toBe(true);
       }
     });
 

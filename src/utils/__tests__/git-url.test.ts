@@ -35,6 +35,15 @@ describe("git-url utilities", () => {
       expect(extractRepoNameFromUrl("git@bitbucket.org:user/repo.git")).toBe("repo");
     });
 
+    it("should handle SSH URL format (ssh://)", () => {
+      expect(extractRepoNameFromUrl("ssh://git@github.com/user/my-repo.git")).toBe("my-repo");
+      expect(extractRepoNameFromUrl("ssh://git@github.com/user/my-repo")).toBe("my-repo");
+      expect(extractRepoNameFromUrl("ssh://git@bitbucket.tech.amusnet.io/lc/live-casino-monorepo.git")).toBe(
+        "live-casino-monorepo",
+      );
+      expect(extractRepoNameFromUrl("ssh://git@gitlab.com/group/subgroup/project.git")).toBe("project");
+    });
+
     it("should trim whitespace", () => {
       expect(extractRepoNameFromUrl("  https://github.com/user/repo.git  ")).toBe("repo");
     });

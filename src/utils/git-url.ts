@@ -8,10 +8,16 @@ export function extractRepoNameFromUrl(gitUrl: string): string {
   // Remove trailing spaces
   const url = gitUrl.trim();
 
-  // Handle SSH format: git@github.com:user/repo.git
+  // Handle SSH format: git@github.com:user/repo.git or ssh://git@domain/path/repo.git
   const sshMatch = url.match(/^git@[^:]+:(?:.+\/)?([^/]+?)(?:\.git)?$/);
   if (sshMatch) {
     return sshMatch[1];
+  }
+
+  // Handle SSH URL format: ssh://git@domain.com/path/repo.git
+  const sshUrlMatch = url.match(/^ssh:\/\/[^/]+\/(?:.+\/)?([^/]+?)(?:\.git)?$/);
+  if (sshUrlMatch) {
+    return sshUrlMatch[1];
   }
 
   // Handle HTTPS format: https://github.com/user/repo.git

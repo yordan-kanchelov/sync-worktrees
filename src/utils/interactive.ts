@@ -19,8 +19,8 @@ export async function promptForConfig(partialConfig: Partial<Config>): Promise<C
         }
         try {
           // Basic URL validation
-          if (!value.match(/^(https?:\/\/|git@|file:\/\/).*$/)) {
-            return "Please enter a valid Git URL (https://, git@, or file://)";
+          if (!value.match(/^(https?:\/\/|ssh:\/\/|git@|file:\/\/).*$/)) {
+            return "Please enter a valid Git URL (https://, ssh://, git@, or file://)";
           }
           return true;
         } catch {
