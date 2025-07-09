@@ -1,5 +1,13 @@
 # sync-worktrees
 
+## 1.0.0
+
+### Major Changes
+
+- 8fa5c8b: ## 🎉 sync-worktrees v1.0.0 - Stable Release
+
+  This marks the first stable release of sync-worktrees! The tool is now feature-complete and production-ready.
+
 ## 0.6.0
 
 ### Minor Changes
