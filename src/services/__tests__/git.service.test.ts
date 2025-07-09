@@ -220,6 +220,56 @@ describe("GitService", () => {
         'Invalid bare repository path: "/" is a root directory or has invalid parent directory',
       );
     });
+
+    it("should allow relative bareRepoPath", async () => {
+      // Setup config with relative bareRepoDir
+      const validConfig: Config = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        bareRepoDir: "./my-bare-repo",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const validGitService = new GitService(validConfig);
+
+      // Mock fs.access to fail (bare repo doesn't exist)
+      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+
+      // Mock worktree raw command
+      mockGit.raw.mockResolvedValueOnce("worktree /test/worktrees/main\nbranch refs/heads/main\n\n" as any);
+
+      await validGitService.initialize();
+
+      // Should create parent directory and clone
+      expect(fs.mkdir).toHaveBeenCalled();
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", "./my-bare-repo", ["--bare"]);
+    });
+
+    it("should allow bareRepoPath with single directory name", async () => {
+      // Setup config with single directory name (parent would be '.')
+      const validConfig: Config = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        bareRepoDir: ".bare",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const validGitService = new GitService(validConfig);
+
+      // Mock fs.access to fail (bare repo doesn't exist)
+      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+
+      // Mock worktree raw command
+      mockGit.raw.mockResolvedValueOnce("worktree /test/worktrees/main\nbranch refs/heads/main\n\n" as any);
+
+      await validGitService.initialize();
+
+      // Should create parent directory and clone
+      expect(fs.mkdir).toHaveBeenCalled();
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", ".bare", ["--bare"]);
+    });
   });
 
   describe("getGit", () => {

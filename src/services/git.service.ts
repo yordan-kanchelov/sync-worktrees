@@ -34,23 +34,17 @@ export class GitService {
         throw new Error("Invalid bare repository path: path cannot be empty");
       }
 
-      const parentDir = path.dirname(this.bareRepoPath);
       const resolvedBareRepoPath = path.resolve(this.bareRepoPath);
-      const resolvedParentDir = path.resolve(parentDir);
+      const parentDir = path.dirname(resolvedBareRepoPath);
 
       // Check if bareRepoPath is a root directory or if parent directory is the same as bareRepoPath
-      if (
-        resolvedParentDir === resolvedBareRepoPath ||
-        parentDir === "/" ||
-        parentDir === "." ||
-        /^[A-Za-z]:[\\/]?$/.test(parentDir)
-      ) {
+      if (parentDir === resolvedBareRepoPath || parentDir === "/" || /^[A-Za-z]:[\\/]?$/.test(parentDir)) {
         throw new Error(
           `Invalid bare repository path: "${this.bareRepoPath}" is a root directory or has invalid parent directory`,
         );
       }
 
-      await fs.mkdir(parentDir, { recursive: true });
+      await fs.mkdir(path.dirname(resolvedBareRepoPath), { recursive: true });
       await simpleGit().clone(repoUrl, this.bareRepoPath, ["--bare"]);
       console.log("✅ Clone successful.");
     }
