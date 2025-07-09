@@ -128,6 +128,48 @@ describe("Interactive", () => {
       expect(result.worktreeDir).toBe(path.resolve(cwd, "./my-worktrees"));
     });
 
+    it("should use repository name as default worktree directory", async () => {
+      mockInput
+        .mockResolvedValueOnce("https://github.com/user/my-awesome-repo.git") // repoUrl
+        .mockResolvedValueOnce(""); // worktreeDir (empty to use default)
+
+      mockSelect.mockResolvedValueOnce("once"); // runMode
+      mockConfirm.mockResolvedValueOnce(false); // askForBareDir
+
+      const result = await promptForConfig({});
+
+      // Verify the input was called with the correct default
+      expect(mockInput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "Enter the directory for storing worktrees:",
+          default: "./my-awesome-repo",
+        }),
+      );
+
+      expect(result.worktreeDir).toBe(path.resolve(cwd, "./my-awesome-repo"));
+    });
+
+    it("should handle SSH URLs for default worktree directory", async () => {
+      mockInput
+        .mockResolvedValueOnce("ssh://git@bitbucket.tech.amusnet.io/lc/live-casino-monorepo.git") // repoUrl
+        .mockResolvedValueOnce(""); // worktreeDir (empty to use default)
+
+      mockSelect.mockResolvedValueOnce("once"); // runMode
+      mockConfirm.mockResolvedValueOnce(false); // askForBareDir
+
+      const result = await promptForConfig({});
+
+      // Verify the input was called with the correct default
+      expect(mockInput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "Enter the directory for storing worktrees:",
+          default: "./live-casino-monorepo",
+        }),
+      );
+
+      expect(result.worktreeDir).toBe(path.resolve(cwd, "./live-casino-monorepo"));
+    });
+
     it("should save config file when requested", async () => {
       const partialConfig: Partial<Config> = {
         repoUrl: "https://github.com/user/repo.git",

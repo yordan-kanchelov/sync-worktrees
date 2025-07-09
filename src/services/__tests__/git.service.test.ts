@@ -67,8 +67,8 @@ describe("GitService", () => {
 
       const git = await gitService.initialize();
 
-      expect(fs.access).toHaveBeenCalledWith(".bare/repo/HEAD");
-      expect(simpleGit).toHaveBeenCalledWith(".bare/repo");
+      expect(fs.access).toHaveBeenCalledWith(path.resolve(".bare/repo/HEAD"));
+      expect(simpleGit).toHaveBeenCalledWith(path.resolve(".bare/repo"));
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
       expect(git).toBe(mockGit);
@@ -86,10 +86,10 @@ describe("GitService", () => {
 
       await gitService.initialize();
 
-      expect(fs.access).toHaveBeenCalledWith(".bare/repo/HEAD");
+      expect(fs.access).toHaveBeenCalledWith(path.resolve(".bare/repo/HEAD"));
       expect(fs.mkdir).toHaveBeenCalled();
       expect(simpleGit).toHaveBeenCalledWith(); // Called without args for cloning
-      expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare"]);
+      expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, path.resolve(".bare/repo"), ["--bare"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
     });
@@ -150,8 +150,8 @@ describe("GitService", () => {
 
       const git = await gitService.initialize();
 
-      expect(fs.access).toHaveBeenCalledWith(".bare/repo/HEAD");
-      expect(simpleGit).toHaveBeenCalledWith(".bare/repo");
+      expect(fs.access).toHaveBeenCalledWith(path.resolve(".bare/repo/HEAD"));
+      expect(simpleGit).toHaveBeenCalledWith(path.resolve(".bare/repo"));
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).not.toHaveBeenCalled(); // Should not add config if it already exists
       expect(git).toBe(mockGit);
@@ -180,7 +180,7 @@ describe("GitService", () => {
 
       // Should use default bare repo path (.bare/repo) instead of empty string
       expect(fs.mkdir).toHaveBeenCalled();
-      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", ".bare/repo", ["--bare"]);
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", path.resolve(".bare/repo"), ["--bare"]);
     });
 
     it("should throw error when bareRepoPath is whitespace only", async () => {
@@ -192,12 +192,8 @@ describe("GitService", () => {
         cronSchedule: "0 * * * *",
         runOnce: false,
       };
-      const invalidGitService = new GitService(invalidConfig);
 
-      // Mock fs.access to fail (bare repo doesn't exist)
-      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
-
-      await expect(invalidGitService.initialize()).rejects.toThrow(
+      expect(() => new GitService(invalidConfig)).toThrow(
         "Invalid bare repository path: path cannot be empty",
       );
     });
@@ -243,7 +239,7 @@ describe("GitService", () => {
 
       // Should create parent directory and clone
       expect(fs.mkdir).toHaveBeenCalled();
-      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", "./my-bare-repo", ["--bare"]);
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", path.resolve("./my-bare-repo"), ["--bare"]);
     });
 
     it("should allow bareRepoPath with single directory name", async () => {
@@ -268,7 +264,35 @@ describe("GitService", () => {
 
       // Should create parent directory and clone
       expect(fs.mkdir).toHaveBeenCalled();
-      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", ".bare", ["--bare"]);
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", path.resolve(".bare"), ["--bare"]);
+    });
+
+    it("should always resolve bare repository path to absolute to prevent cleanup deletion", async () => {
+      // This test ensures the fix for the issue where bare repos were deleted during cleanup
+      // when the worktree directory was the current directory
+      const configWithRelativeBare: Config = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: process.cwd(), // Current directory
+        bareRepoDir: ".bare/repo", // Relative path
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const gitServiceWithRelativeBare = new GitService(configWithRelativeBare);
+
+      // Mock fs.access to fail (bare repo doesn't exist)
+      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw.mockResolvedValueOnce("" as any); // Empty worktree list
+
+      await gitServiceWithRelativeBare.initialize();
+
+      // The bare repo path should be resolved to absolute path
+      const expectedAbsolutePath = path.resolve(".bare/repo");
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", expectedAbsolutePath, ["--bare"]);
+      expect(simpleGit).toHaveBeenCalledWith(expectedAbsolutePath);
+      
+      // Verify the path is absolute (this is what prevents the cleanup deletion)
+      expect(path.isAbsolute(expectedAbsolutePath)).toBe(true);
     });
   });
 

@@ -3,6 +3,7 @@ import * as path from "path";
 import { confirm, input, select } from "@inquirer/prompts";
 
 import { generateConfigFile, getDefaultConfigPath } from "./config-generator";
+import { extractRepoNameFromUrl } from "./git-url";
 
 import type { Config } from "../types";
 
@@ -32,15 +33,27 @@ export async function promptForConfig(partialConfig: Partial<Config>): Promise<C
 
   let worktreeDir = partialConfig.worktreeDir;
   if (!worktreeDir) {
+    // Extract repository name from URL to suggest as default
+    const repoName = repoUrl ? extractRepoNameFromUrl(repoUrl) : "";
+    const defaultWorktreeDir = repoName ? `./${repoName}` : "";
+
     worktreeDir = await input({
       message: "Enter the directory for storing worktrees:",
+      default: defaultWorktreeDir,
       validate: (value: string) => {
-        if (!value.trim()) {
+        // Allow empty input to use default value
+        if (!value.trim() && !defaultWorktreeDir) {
           return "Worktree directory is required";
         }
         return true;
       },
     });
+
+    // Use default if empty input
+    if (!worktreeDir.trim() && defaultWorktreeDir) {
+      worktreeDir = defaultWorktreeDir;
+    }
+
     if (!path.isAbsolute(worktreeDir)) {
       worktreeDir = path.resolve(worktreeDir);
     }

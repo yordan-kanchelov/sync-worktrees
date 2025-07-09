@@ -14,7 +14,15 @@ export class GitService {
   private mainWorktreePath: string;
 
   constructor(private config: Config) {
-    this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
+    if (this.config.bareRepoDir) {
+      if (!this.config.bareRepoDir.trim()) {
+        throw new Error("Invalid bare repository path: path cannot be empty");
+      }
+      this.bareRepoPath = path.resolve(this.config.bareRepoDir);
+    } else {
+      const defaultBareDir = getDefaultBareRepoDir(this.config.repoUrl);
+      this.bareRepoPath = path.resolve(defaultBareDir);
+    }
     this.mainWorktreePath = path.join(this.config.worktreeDir, "main");
   }
 
@@ -29,22 +37,16 @@ export class GitService {
       // Clone as bare repository
       console.log(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
 
-      // Validate bareRepoPath before using path.dirname()
-      if (!this.bareRepoPath || this.bareRepoPath.trim() === "") {
-        throw new Error("Invalid bare repository path: path cannot be empty");
-      }
-
-      const resolvedBareRepoPath = path.resolve(this.bareRepoPath);
-      const parentDir = path.dirname(resolvedBareRepoPath);
+      const parentDir = path.dirname(this.bareRepoPath);
 
       // Check if bareRepoPath is a root directory or if parent directory is the same as bareRepoPath
-      if (parentDir === resolvedBareRepoPath || parentDir === "/" || /^[A-Za-z]:[\\/]?$/.test(parentDir)) {
+      if (parentDir === this.bareRepoPath || parentDir === "/" || /^[A-Za-z]:[\\/]?$/.test(parentDir)) {
         throw new Error(
           `Invalid bare repository path: "${this.bareRepoPath}" is a root directory or has invalid parent directory`,
         );
       }
 
-      await fs.mkdir(path.dirname(resolvedBareRepoPath), { recursive: true });
+      await fs.mkdir(parentDir, { recursive: true });
       await simpleGit().clone(repoUrl, this.bareRepoPath, ["--bare"]);
       console.log("✅ Clone successful.");
     }
