@@ -1,5 +1,12 @@
 # sync-worktrees
 
+## 0.5.1
+
+### Patch Changes
+
+- 1e0743e: Add support for SSH URLs with ssh:// protocol
+  - Updated URL validation in interactive mode to accept ssh:// URLs (e.g., ssh://git@bitbucket.com/user/repo.git)
+
 ## 0.5.0
 
 ### Minor Changes
