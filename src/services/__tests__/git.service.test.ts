@@ -180,7 +180,9 @@ describe("GitService", () => {
 
       // Should use default bare repo path (.bare/repo) instead of empty string
       expect(fs.mkdir).toHaveBeenCalled();
-      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", path.resolve(".bare/repo"), ["--bare"]);
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", path.resolve(".bare/repo"), [
+        "--bare",
+      ]);
     });
 
     it("should throw error when bareRepoPath is whitespace only", async () => {
@@ -193,9 +195,7 @@ describe("GitService", () => {
         runOnce: false,
       };
 
-      expect(() => new GitService(invalidConfig)).toThrow(
-        "Invalid bare repository path: path cannot be empty",
-      );
+      expect(() => new GitService(invalidConfig)).toThrow("Invalid bare repository path: path cannot be empty");
     });
 
     it("should throw error when bareRepoPath is a root directory", async () => {
@@ -239,7 +239,9 @@ describe("GitService", () => {
 
       // Should create parent directory and clone
       expect(fs.mkdir).toHaveBeenCalled();
-      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", path.resolve("./my-bare-repo"), ["--bare"]);
+      expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", path.resolve("./my-bare-repo"), [
+        "--bare",
+      ]);
     });
 
     it("should allow bareRepoPath with single directory name", async () => {
@@ -290,7 +292,7 @@ describe("GitService", () => {
       const expectedAbsolutePath = path.resolve(".bare/repo");
       expect(mockGit.clone).toHaveBeenCalledWith("https://github.com/test/repo.git", expectedAbsolutePath, ["--bare"]);
       expect(simpleGit).toHaveBeenCalledWith(expectedAbsolutePath);
-      
+
       // Verify the path is absolute (this is what prevents the cleanup deletion)
       expect(path.isAbsolute(expectedAbsolutePath)).toBe(true);
     });
