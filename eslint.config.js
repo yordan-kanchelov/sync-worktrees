@@ -46,7 +46,7 @@ module.exports = [
       parserOptions: {
         ecmaVersion: 2022,
         sourceType: "module",
-        project: "./tsconfig.json",
+        project: "./tsconfig.eslint.json",
       },
       globals: {
         ...globals.node,
@@ -65,7 +65,7 @@ module.exports = [
       "import/resolver": {
         typescript: {
           alwaysTryTypes: true,
-          project: "./tsconfig.json",
+          project: "./tsconfig.eslint.json",
         },
         node: {
           extensions: [".js", ".ts"],

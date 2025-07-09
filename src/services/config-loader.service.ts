@@ -62,16 +62,16 @@ export class ConfigLoaderService {
       }
       seenNames.add(repoObj.name);
 
-      if (!repoObj.repoPath || typeof repoObj.repoPath !== "string") {
-        throw new Error(`Repository '${repoObj.name}' must have a 'repoPath' property`);
+      if (!repoObj.repoUrl || typeof repoObj.repoUrl !== "string") {
+        throw new Error(`Repository '${repoObj.name}' must have a 'repoUrl' property`);
       }
 
       if (!repoObj.worktreeDir || typeof repoObj.worktreeDir !== "string") {
         throw new Error(`Repository '${repoObj.name}' must have a 'worktreeDir' property`);
       }
 
-      if (repoObj.repoUrl !== undefined && typeof repoObj.repoUrl !== "string") {
-        throw new Error(`Repository '${repoObj.name}' has invalid 'repoUrl' property`);
+      if (repoObj.bareRepoDir !== undefined && typeof repoObj.bareRepoDir !== "string") {
+        throw new Error(`Repository '${repoObj.name}' has invalid 'bareRepoDir' property`);
       }
 
       if (repoObj.cronSchedule !== undefined && typeof repoObj.cronSchedule !== "string") {
@@ -102,14 +102,14 @@ export class ConfigLoaderService {
   resolveRepositoryConfig(repo: RepositoryConfig, defaults?: Partial<Config>, configDir?: string): RepositoryConfig {
     const resolved: RepositoryConfig = {
       name: repo.name,
-      repoPath: this.resolvePath(repo.repoPath, configDir),
+      repoUrl: repo.repoUrl,
       worktreeDir: this.resolvePath(repo.worktreeDir, configDir),
       cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? "0 * * * *",
       runOnce: repo.runOnce ?? defaults?.runOnce ?? false,
     };
 
-    if (repo.repoUrl) {
-      resolved.repoUrl = repo.repoUrl;
+    if (repo.bareRepoDir) {
+      resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
     }
 
     return resolved;

@@ -3,6 +3,7 @@ import * as path from "path";
 
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
+import { TEST_BRANCHES } from "../../__tests__/test-utils";
 import { GitService } from "../git.service";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
@@ -21,7 +22,6 @@ describe("WorktreeSyncService", () => {
     jest.clearAllMocks();
 
     mockConfig = {
-      repoPath: "/test/repo",
       repoUrl: "https://github.com/test/repo.git",
       worktreeDir: "/test/worktrees",
       cronSchedule: "0 * * * *",
@@ -311,9 +311,9 @@ describe("WorktreeSyncService", () => {
 
     describe("branches with slashes in names", () => {
       it("should handle feature branches with slashes correctly", async () => {
-        const remoteBranchesWithSlashes = ["main", "feat/LCR-8879", "feat/PHX-3198", "bugfix/issue-123"];
+        const remoteBranchesWithSlashes = [TEST_BRANCHES.main, "feat/LCR-8879", "feat/PHX-3198", TEST_BRANCHES.bugfix];
         mockGitService.getRemoteBranches.mockResolvedValue(remoteBranchesWithSlashes);
-        mockGitService.getCurrentBranch.mockResolvedValue("main");
+        mockGitService.getCurrentBranch.mockResolvedValue(TEST_BRANCHES.main);
 
         // First sync - create worktrees
         (fs.readdir as jest.Mock<any>).mockResolvedValue([]);

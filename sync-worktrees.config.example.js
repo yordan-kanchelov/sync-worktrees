@@ -23,11 +23,8 @@ module.exports = {
       // Unique name for this repository configuration
       name: "my-main-project",
       
-      // Git repository URL (used for cloning if repo doesn't exist)
+      // Git repository URL (required)
       repoUrl: "https://github.com/user/my-main-project.git",
-      
-      // Local path where the main repository is/will be cloned
-      repoPath: path.join(os.homedir(), "projects", "my-main-project"),
       
       // Directory where worktrees will be created
       worktreeDir: path.join(os.homedir(), "projects", "my-main-project-worktrees"),
@@ -43,7 +40,6 @@ module.exports = {
       repoUrl: process.env.WORK_REPO_URL || "git@github.com:company/work-project.git",
       
       // Relative paths are resolved from the config file location
-      repoPath: "./repos/work-project",
       worktreeDir: "./worktrees/work-project",
       
       // Only sync during business hours on weekdays
@@ -53,8 +49,7 @@ module.exports = {
     {
       name: "documentation",
       
-      // No repoUrl - assumes repo already exists
-      repoPath: "/home/user/docs/main-docs",
+      repoUrl: "https://github.com/user/documentation.git",
       worktreeDir: "/home/user/docs/docs-worktrees",
       
       // Uses global defaults for cronSchedule and runOnce
@@ -64,8 +59,10 @@ module.exports = {
       name: "experimental-features",
       
       repoUrl: "https://github.com/user/experimental.git",
-      repoPath: path.join(os.homedir(), "experiments", "main"),
       worktreeDir: path.join(os.homedir(), "experiments", "worktrees"),
+      
+      // Custom bare repository location
+      bareRepoDir: path.join(os.homedir(), "experiments", ".bare", "experimental"),
       
       // This repo should only sync when manually triggered
       runOnce: true
@@ -88,7 +85,6 @@ module.exports = {
     ...(isDevelopment ? [{
       name: "dev-only-repo",
       repoUrl: "https://github.com/user/dev-repo.git",
-      repoPath: "./dev/repo",
       worktreeDir: "./dev/worktrees"
     }] : []),
     
@@ -96,7 +92,6 @@ module.exports = {
     {
       name: "production-app",
       repoUrl: process.env.PROD_REPO_URL,
-      repoPath: "/var/apps/production",
       worktreeDir: "/var/apps/production-worktrees",
       cronSchedule: "0 *\/6 * * *"  // Every 6 hours
     }

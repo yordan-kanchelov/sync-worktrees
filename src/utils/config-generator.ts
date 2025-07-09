@@ -1,6 +1,8 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import { extractRepoNameFromUrl } from "./git-url";
+
 import type { Config } from "../types";
 
 export async function generateConfigFile(config: Config, configPath: string): Promise<void> {
@@ -8,15 +10,17 @@ export async function generateConfigFile(config: Config, configPath: string): Pr
   await fs.mkdir(configDir, { recursive: true });
 
   // Calculate relative paths from config file location
-  const repoPathRelative = path.relative(configDir, config.repoPath);
   const worktreeDirRelative = path.relative(configDir, config.worktreeDir);
-
-  // Use relative paths if they don't go up too many levels
-  const useRelativeRepo = !repoPathRelative.startsWith("../../../");
   const useRelativeWorktree = !worktreeDirRelative.startsWith("../../../");
 
-  const repoUrlEntry = config.repoUrl ? `repoUrl: "${config.repoUrl}",\n      ` : "";
-  const repoPathEntry = `repoPath: "${useRelativeRepo ? `./${repoPathRelative}` : config.repoPath}"`;
+  let bareRepoDirEntry = "";
+  if (config.bareRepoDir) {
+    const bareRepoDirRelative = path.relative(configDir, config.bareRepoDir);
+    const useRelativeBare = !bareRepoDirRelative.startsWith("../../../");
+    bareRepoDirEntry = `,\n      bareRepoDir: "${useRelativeBare ? `./${bareRepoDirRelative}` : config.bareRepoDir}"`;
+  }
+
+  const repoName = extractRepoNameFromUrl(config.repoUrl);
   const worktreeDirEntry = `worktreeDir: "${useRelativeWorktree ? `./${worktreeDirRelative}` : config.worktreeDir}"`;
 
   const configContent = `/**
@@ -32,9 +36,9 @@ module.exports = {
 
   repositories: [
     {
-      name: "${path.basename(config.repoPath)}",
-      ${repoUrlEntry}${repoPathEntry},
-      ${worktreeDirEntry}
+      name: "${repoName}",
+      repoUrl: "${config.repoUrl}",
+      ${worktreeDirEntry}${bareRepoDirEntry}
     }
   ]
 };

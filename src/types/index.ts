@@ -1,9 +1,9 @@
 export interface Config {
-  repoPath: string;
-  repoUrl?: string;
+  repoUrl: string;
   worktreeDir: string;
   cronSchedule: string;
   runOnce: boolean;
+  bareRepoDir?: string;
 }
 
 export interface RepositoryConfig extends Config {

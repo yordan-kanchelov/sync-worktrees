@@ -21,7 +21,7 @@ describe("Config Generator", () => {
   describe("generateConfigFile", () => {
     it("should generate a basic config file", async () => {
       const config: Config = {
-        repoPath: "/absolute/path/to/repo",
+        repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/absolute/path/to/worktrees",
         cronSchedule: "0 * * * *",
         runOnce: false,
@@ -32,7 +32,7 @@ describe("Config Generator", () => {
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('name: "repo"');
-      expect(content).toContain('repoPath: "/absolute/path/to/repo"');
+      expect(content).toContain('repoUrl: "https://github.com/user/repo.git"');
       expect(content).toContain('worktreeDir: "/absolute/path/to/worktrees"');
       expect(content).toContain('cronSchedule: "0 * * * *"');
       expect(content).toContain("runOnce: false");
@@ -40,7 +40,6 @@ describe("Config Generator", () => {
 
     it("should include repoUrl when provided", async () => {
       const config: Config = {
-        repoPath: "/path/to/repo",
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "*/30 * * * *",
@@ -58,7 +57,7 @@ describe("Config Generator", () => {
 
     it("should use relative paths when appropriate", async () => {
       const config: Config = {
-        repoPath: path.join(tempDir, "repo"),
+        repoUrl: "https://github.com/user/myproject.git",
         worktreeDir: path.join(tempDir, "worktrees"),
         cronSchedule: "0 * * * *",
         runOnce: false,
@@ -68,13 +67,14 @@ describe("Config Generator", () => {
       await generateConfigFile(config, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
-      expect(content).toContain('repoPath: "./repo"');
+      expect(content).toContain('name: "myproject"');
+      expect(content).toContain('repoUrl: "https://github.com/user/myproject.git"');
       expect(content).toContain('worktreeDir: "./worktrees"');
     });
 
     it("should use absolute paths for deeply nested relative paths", async () => {
       const config: Config = {
-        repoPath: "/very/deeply/nested/path/to/repo",
+        repoUrl: "https://github.com/user/deeprepo.git",
         worktreeDir: path.join(tempDir, "worktrees"),
         cronSchedule: "0 * * * *",
         runOnce: false,
@@ -85,12 +85,13 @@ describe("Config Generator", () => {
       await generateConfigFile(config, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
-      expect(content).toContain('repoPath: "/very/deeply/nested/path/to/repo"');
+      expect(content).toContain('name: "deeprepo"');
+      expect(content).toContain('repoUrl: "https://github.com/user/deeprepo.git"');
     });
 
     it("should create parent directories if they don't exist", async () => {
       const config: Config = {
-        repoPath: "/path/to/repo",
+        repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "0 * * * *",
         runOnce: false,
@@ -108,7 +109,7 @@ describe("Config Generator", () => {
 
     it("should include a timestamp in the generated file", async () => {
       const config: Config = {
-        repoPath: "/path/to/repo",
+        repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "0 * * * *",
         runOnce: false,

@@ -3,6 +3,7 @@ import * as path from "path";
 
 import { beforeEach, describe, expect, it } from "@jest/globals";
 
+import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
 import { ConfigLoaderService } from "../config-loader.service";
 
 describe("ConfigLoaderService", () => {
@@ -11,11 +12,11 @@ describe("ConfigLoaderService", () => {
 
   beforeEach(async () => {
     configLoader = new ConfigLoaderService();
-    tempDir = await fs.mkdtemp(path.join(process.cwd(), "test-config-"));
+    tempDir = await createTempDirectory("test-config-");
   });
 
   afterEach(async () => {
-    await fs.rm(tempDir, { recursive: true, force: true });
+    await cleanupTempDirectories();
   });
 
   describe("loadConfigFile", () => {
@@ -26,7 +27,7 @@ describe("ConfigLoaderService", () => {
           repositories: [
             {
               name: "test-repo",
-              repoPath: "/path/to/repo",
+              repoUrl: "${TEST_URLS.github}",
               worktreeDir: "/path/to/worktrees"
             }
           ]
@@ -51,7 +52,7 @@ describe("ConfigLoaderService", () => {
           repositories: [
             {
               name: "test-repo",
-              repoPath: "/path/to/repo",
+              repoUrl: "${TEST_URLS.github}",
               worktreeDir: "/path/to/worktrees"
             }
           ]
@@ -98,12 +99,12 @@ describe("ConfigLoaderService", () => {
           repositories: [
             {
               name: "duplicate",
-              repoPath: "/path1",
+              repoUrl: "https://github.com/test/repo1.git",
               worktreeDir: "/worktrees1"
             },
             {
               name: "duplicate",
-              repoPath: "/path2",
+              repoUrl: "https://github.com/test/repo2.git",
               worktreeDir: "/worktrees2"
             }
           ]
@@ -119,7 +120,7 @@ describe("ConfigLoaderService", () => {
     it("should resolve relative paths", () => {
       const repo = {
         name: "test",
-        repoPath: "./relative/path",
+        repoUrl: "https://github.com/test/repo.git",
         worktreeDir: "./relative/worktrees",
         cronSchedule: "0 * * * *",
         runOnce: false,
@@ -127,14 +128,14 @@ describe("ConfigLoaderService", () => {
 
       const resolved = configLoader.resolveRepositoryConfig(repo, {}, "/base/dir");
 
-      expect(resolved.repoPath).toBe("/base/dir/relative/path");
+      expect(resolved.repoUrl).toBe("https://github.com/test/repo.git");
       expect(resolved.worktreeDir).toBe("/base/dir/relative/worktrees");
     });
 
     it("should preserve absolute paths", () => {
       const repo = {
         name: "test",
-        repoPath: "/absolute/path",
+        repoUrl: "https://github.com/test/repo.git",
         worktreeDir: "/absolute/worktrees",
         cronSchedule: "0 * * * *",
         runOnce: false,
@@ -142,14 +143,14 @@ describe("ConfigLoaderService", () => {
 
       const resolved = configLoader.resolveRepositoryConfig(repo, {}, "/base/dir");
 
-      expect(resolved.repoPath).toBe("/absolute/path");
+      expect(resolved.repoUrl).toBe("https://github.com/test/repo.git");
       expect(resolved.worktreeDir).toBe("/absolute/worktrees");
     });
 
     it("should apply defaults", () => {
       const repo = {
         name: "test",
-        repoPath: "/path",
+        repoUrl: "https://github.com/test/repo.git",
         worktreeDir: "/worktrees",
         cronSchedule: undefined as any,
         runOnce: undefined as any,
@@ -169,7 +170,7 @@ describe("ConfigLoaderService", () => {
     it("should override defaults with repo config", () => {
       const repo = {
         name: "test",
-        repoPath: "/path",
+        repoUrl: "https://github.com/test/repo.git",
         worktreeDir: "/worktrees",
         cronSchedule: "0 0 * * *",
         runOnce: false,
@@ -189,10 +190,28 @@ describe("ConfigLoaderService", () => {
 
   describe("filterRepositories", () => {
     const repos = [
-      { name: "frontend-app", repoPath: "/", worktreeDir: "/", cronSchedule: "", runOnce: false },
-      { name: "backend-api", repoPath: "/", worktreeDir: "/", cronSchedule: "", runOnce: false },
-      { name: "docs", repoPath: "/", worktreeDir: "/", cronSchedule: "", runOnce: false },
-      { name: "admin-dashboard", repoPath: "/", worktreeDir: "/", cronSchedule: "", runOnce: false },
+      {
+        name: "frontend-app",
+        repoUrl: "https://github.com/test/frontend.git",
+        worktreeDir: "/",
+        cronSchedule: "",
+        runOnce: false,
+      },
+      {
+        name: "backend-api",
+        repoUrl: "https://github.com/test/backend.git",
+        worktreeDir: "/",
+        cronSchedule: "",
+        runOnce: false,
+      },
+      { name: "docs", repoUrl: "https://github.com/test/docs.git", worktreeDir: "/", cronSchedule: "", runOnce: false },
+      {
+        name: "admin-dashboard",
+        repoUrl: "https://github.com/test/admin.git",
+        worktreeDir: "/",
+        cronSchedule: "",
+        runOnce: false,
+      },
     ];
 
     it("should return all repos when no filter", () => {

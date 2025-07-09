@@ -7,6 +7,7 @@ export interface CliOptions extends Partial<Config> {
   config?: string;
   filter?: string;
   list?: boolean;
+  bareRepoDir?: string;
 }
 
 export function parseArguments(): CliOptions {
@@ -27,15 +28,15 @@ export function parseArguments(): CliOptions {
       description: "List configured repositories and exit",
       default: false,
     })
-    .option("repoPath", {
-      alias: "r",
+    .option("bareRepoDir", {
+      alias: "b",
       type: "string",
-      description: "Absolute path to the target local repository directory.",
+      description: "Directory for storing bare repositories (default: .bare/<repo-name>).",
     })
     .option("repoUrl", {
       alias: "u",
       type: "string",
-      description: "Git repository URL (e.g., SSH or HTTPS). Used to clone if repoPath does not exist.",
+      description: "Git repository URL (e.g., SSH or HTTPS).",
     })
     .option("worktreeDir", {
       alias: "w",
@@ -61,16 +62,16 @@ export function parseArguments(): CliOptions {
     config: argv.config,
     filter: argv.filter,
     list: argv.list,
-    repoPath: argv.repoPath,
     repoUrl: argv.repoUrl,
     worktreeDir: argv.worktreeDir,
     cronSchedule: argv.cronSchedule,
     runOnce: argv.runOnce,
+    bareRepoDir: argv.bareRepoDir,
   };
 }
 
 export function isInteractiveMode(config: Partial<Config>): boolean {
-  return !config.repoPath || !config.worktreeDir;
+  return !config.repoUrl || !config.worktreeDir;
 }
 
 export function reconstructCliCommand(config: Config): string {
@@ -78,16 +79,14 @@ export function reconstructCliCommand(config: Config): string {
 
   const args: string[] = [];
 
-  if (config.repoPath) {
-    args.push(`--repoPath "${config.repoPath}"`);
-  }
-
-  if (config.repoUrl) {
-    args.push(`--repoUrl "${config.repoUrl}"`);
-  }
+  args.push(`--repoUrl "${config.repoUrl}"`);
 
   if (config.worktreeDir) {
     args.push(`--worktreeDir "${config.worktreeDir}"`);
+  }
+
+  if (config.bareRepoDir) {
+    args.push(`--bareRepoDir "${config.bareRepoDir}"`);
   }
 
   if (config.cronSchedule && config.cronSchedule !== "0 * * * *") {
