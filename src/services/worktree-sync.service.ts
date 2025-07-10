@@ -1,9 +1,12 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import { retry } from "../utils/retry";
+
 import { GitService } from "./git.service";
 
 import type { Config } from "../types";
+import type { RetryOptions } from "../utils/retry";
 
 export class WorktreeSyncService {
   private gitService: GitService;
@@ -19,32 +22,46 @@ export class WorktreeSyncService {
   async sync(): Promise<void> {
     console.log(`[${new Date().toISOString()}] Starting worktree synchronization...`);
 
+    const retryOptions: RetryOptions = {
+      maxAttempts: this.config.retry?.maxAttempts ?? 3,
+      initialDelayMs: this.config.retry?.initialDelayMs ?? 1000,
+      maxDelayMs: this.config.retry?.maxDelayMs ?? 30000,
+      backoffMultiplier: this.config.retry?.backoffMultiplier ?? 2,
+      onRetry: (error, attempt) => {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.log(`\n⚠️  Sync attempt ${attempt} failed: ${errorMessage}`);
+        console.log(`🔄 Retrying synchronization...\n`);
+      },
+    };
+
     try {
-      console.log("Step 1: Fetching latest data from remote...");
-      await this.gitService.fetchAll();
+      await retry(async () => {
+        console.log("Step 1: Fetching latest data from remote...");
+        await this.gitService.fetchAll();
 
-      const remoteBranches = await this.gitService.getRemoteBranches();
-      console.log(`Found ${remoteBranches.length} remote branches.`);
+        const remoteBranches = await this.gitService.getRemoteBranches();
+        console.log(`Found ${remoteBranches.length} remote branches.`);
 
-      await fs.mkdir(this.config.worktreeDir, { recursive: true });
+        await fs.mkdir(this.config.worktreeDir, { recursive: true });
 
-      // Get actual Git worktrees instead of just directories
-      const worktrees = await this.gitService.getWorktrees();
-      const worktreeBranches = worktrees.map((w) => w.branch);
-      console.log(`Found ${worktrees.length} existing Git worktrees.`);
+        // Get actual Git worktrees instead of just directories
+        const worktrees = await this.gitService.getWorktrees();
+        const worktreeBranches = worktrees.map((w) => w.branch);
+        console.log(`Found ${worktrees.length} existing Git worktrees.`);
 
-      // Clean up orphaned directories
-      await this.cleanupOrphanedDirectories(worktrees);
+        // Clean up orphaned directories
+        await this.cleanupOrphanedDirectories(worktrees);
 
-      const currentBranch = await this.gitService.getCurrentBranch();
-      await this.createNewWorktrees(remoteBranches, worktreeBranches, currentBranch);
+        const currentBranch = await this.gitService.getCurrentBranch();
+        await this.createNewWorktrees(remoteBranches, worktreeBranches, currentBranch);
 
-      await this.pruneOldWorktrees(remoteBranches, worktreeBranches);
+        await this.pruneOldWorktrees(remoteBranches, worktreeBranches);
 
-      await this.gitService.pruneWorktrees();
-      console.log("Step 4: Pruned worktree metadata.");
+        await this.gitService.pruneWorktrees();
+        console.log("Step 4: Pruned worktree metadata.");
+      }, retryOptions);
     } catch (error) {
-      console.error("Error during worktree synchronization:", error);
+      console.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
       throw error;
     } finally {
       console.log(`[${new Date().toISOString()}] Synchronization finished.\n`);

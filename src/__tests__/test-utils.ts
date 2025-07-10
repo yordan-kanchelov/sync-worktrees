@@ -77,7 +77,14 @@ export async function cleanupTempDirectories(): Promise<void> {
 }
 
 // File System Mock Helpers
-export function mockFileSystem() {
+export function mockFileSystem(): {
+  mkdir: jest.SpiedFunction<typeof fs.mkdir>;
+  access: jest.SpiedFunction<typeof fs.access>;
+  readdir: jest.SpiedFunction<typeof fs.readdir>;
+  rm: jest.SpiedFunction<typeof fs.rm>;
+  stat: jest.SpiedFunction<typeof fs.stat>;
+  restore: () => void;
+} {
   const mocks = {
     mkdir: jest.spyOn(fs, "mkdir").mockResolvedValue(undefined as any),
     access: jest.spyOn(fs, "access").mockResolvedValue(undefined as any),

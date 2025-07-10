@@ -157,8 +157,11 @@ describe("WorktreeSyncService", () => {
 
       await expect(service.sync()).rejects.toThrow("Fetch failed");
 
-      // Verify error is logged
-      expect(console.error).toHaveBeenCalledWith("Error during worktree synchronization:", error);
+      // The error gets wrapped because retry exhausts all attempts (even though it's only 1 attempt for non-retryable errors)
+      expect(console.error).toHaveBeenCalledWith(
+        "\n❌ Error during worktree synchronization after all retry attempts:",
+        error,
+      );
     });
 
     it("should handle errors when checking worktree status", async () => {

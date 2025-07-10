@@ -96,10 +96,47 @@ export class ConfigLoaderService {
       if (defaults.runOnce !== undefined && typeof defaults.runOnce !== "boolean") {
         throw new Error("Invalid 'runOnce' in defaults");
       }
+      if (defaults.retry !== undefined && typeof defaults.retry !== "object") {
+        throw new Error("Invalid 'retry' in defaults");
+      }
+    }
+
+    if (configObj.retry !== undefined) {
+      if (typeof configObj.retry !== "object") {
+        throw new Error("'retry' must be an object");
+      }
+
+      const retry = configObj.retry as Record<string, unknown>;
+
+      if (retry.maxAttempts !== undefined) {
+        if (retry.maxAttempts !== "unlimited" && (typeof retry.maxAttempts !== "number" || retry.maxAttempts < 1)) {
+          throw new Error("Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number");
+        }
+      }
+      if (
+        retry.initialDelayMs !== undefined &&
+        (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)
+      ) {
+        throw new Error("Invalid 'initialDelayMs' in retry config");
+      }
+      if (retry.maxDelayMs !== undefined && (typeof retry.maxDelayMs !== "number" || retry.maxDelayMs < 0)) {
+        throw new Error("Invalid 'maxDelayMs' in retry config");
+      }
+      if (
+        retry.backoffMultiplier !== undefined &&
+        (typeof retry.backoffMultiplier !== "number" || retry.backoffMultiplier < 1)
+      ) {
+        throw new Error("Invalid 'backoffMultiplier' in retry config");
+      }
     }
   }
 
-  resolveRepositoryConfig(repo: RepositoryConfig, defaults?: Partial<Config>, configDir?: string): RepositoryConfig {
+  resolveRepositoryConfig(
+    repo: RepositoryConfig,
+    defaults?: Partial<Config>,
+    configDir?: string,
+    globalRetry?: Config["retry"],
+  ): RepositoryConfig {
     const resolved: RepositoryConfig = {
       name: repo.name,
       repoUrl: repo.repoUrl,
@@ -110,6 +147,10 @@ export class ConfigLoaderService {
 
     if (repo.bareRepoDir) {
       resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
+    }
+
+    if (repo.retry || defaults?.retry || globalRetry) {
+      resolved.retry = { ...globalRetry, ...defaults?.retry, ...repo.retry };
     }
 
     return resolved;

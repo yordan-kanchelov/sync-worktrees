@@ -154,7 +154,7 @@ async function main(): Promise<void> {
       const configDir = path.dirname(path.resolve(options.config));
 
       let repositories = configFile.repositories.map((repo) =>
-        configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir),
+        configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
       );
 
       if (options.filter) {

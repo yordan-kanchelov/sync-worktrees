@@ -17,6 +17,20 @@ module.exports = {
     runOnce: false
   },
   
+  // Retry configuration for handling transient errors (optional)
+  retry: {
+    maxAttempts: 'unlimited', // Maximum retry attempts ('unlimited' or number)
+    initialDelayMs: 1000,     // Initial delay: 1 second
+    maxDelayMs: 600000,       // Maximum delay: 10 minutes
+    backoffMultiplier: 2      // Doubles delay each retry (1s, 2s, 4s, 8s...)
+  },
+  
+  // Simple retry presets (uncomment one):
+  // retry: { maxAttempts: 5 },                    // Try 5 times then stop
+  // retry: { maxAttempts: 'unlimited' },          // Keep trying forever
+  // retry: { maxDelayMs: 60000 },                 // Cap retry delay at 1 minute
+  // retry: { initialDelayMs: 5000 },              // Start with 5 second delay
+  
   // Array of repository configurations
   repositories: [
     {
@@ -65,7 +79,13 @@ module.exports = {
       bareRepoDir: path.join(os.homedir(), "experiments", ".bare", "experimental"),
       
       // This repo should only sync when manually triggered
-      runOnce: true
+      runOnce: true,
+      
+      // Repository-specific retry configuration (overrides global)
+      retry: {
+        maxAttempts: 10,        // Try 10 times for experimental repo
+        initialDelayMs: 2000    // Start with 2 second delay
+      }
     }
   ]
 };

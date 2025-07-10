@@ -114,7 +114,10 @@ describe("Integration Tests", () => {
 
       // Should throw but log the error
       await expect(service.sync()).rejects.toThrow("Network error");
-      expect(console.error).toHaveBeenCalledWith("Error during worktree synchronization:", expect.any(Error));
+      expect(console.error).toHaveBeenCalledWith(
+        "\n❌ Error during worktree synchronization after all retry attempts:",
+        expect.any(Error),
+      );
     });
 
     it("should continue sync even if individual worktree operations fail", async () => {

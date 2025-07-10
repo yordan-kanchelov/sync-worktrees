@@ -14,15 +14,7 @@ export class GitService {
   private mainWorktreePath: string;
 
   constructor(private config: Config) {
-    if (this.config.bareRepoDir) {
-      if (!this.config.bareRepoDir.trim()) {
-        throw new Error("Invalid bare repository path: path cannot be empty");
-      }
-      this.bareRepoPath = path.resolve(this.config.bareRepoDir);
-    } else {
-      const defaultBareDir = getDefaultBareRepoDir(this.config.repoUrl);
-      this.bareRepoPath = path.resolve(defaultBareDir);
-    }
+    this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, "main");
   }
 
@@ -36,17 +28,7 @@ export class GitService {
     } catch {
       // Clone as bare repository
       console.log(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
-
-      const parentDir = path.dirname(this.bareRepoPath);
-
-      // Check if bareRepoPath is a root directory or if parent directory is the same as bareRepoPath
-      if (parentDir === this.bareRepoPath || parentDir === "/" || /^[A-Za-z]:[\\/]?$/.test(parentDir)) {
-        throw new Error(
-          `Invalid bare repository path: "${this.bareRepoPath}" is a root directory or has invalid parent directory`,
-        );
-      }
-
-      await fs.mkdir(parentDir, { recursive: true });
+      await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
       await simpleGit().clone(repoUrl, this.bareRepoPath, ["--bare"]);
       console.log("✅ Clone successful.");
     }
@@ -54,17 +36,17 @@ export class GitService {
     // Configure bare repository for worktrees
     const bareGit = simpleGit(this.bareRepoPath);
 
-    // Check if remote.origin.fetch config already exists to prevent duplicates
-    const fetchRefspec = "+refs/heads/*:refs/remotes/origin/*";
+    // Check if fetch config already exists
     try {
-      const existingFetch = await bareGit.raw(["config", "--get-all", "remote.origin.fetch"]);
+      const existingConfig = await bareGit.raw(["config", "--get-all", "remote.origin.fetch"]);
+      const targetConfig = "+refs/heads/*:refs/remotes/origin/*";
 
-      if (!existingFetch.includes(fetchRefspec)) {
-        await bareGit.addConfig("remote.origin.fetch", fetchRefspec);
+      if (!existingConfig.includes(targetConfig)) {
+        await bareGit.addConfig("remote.origin.fetch", targetConfig);
       }
     } catch {
       // Config doesn't exist, add it
-      await bareGit.addConfig("remote.origin.fetch", fetchRefspec);
+      await bareGit.addConfig("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
     }
 
     // Check if main worktree exists

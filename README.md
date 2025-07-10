@@ -25,6 +25,7 @@ sync-worktrees maintains a **separate working directory for each remote branch**
 - 🛡️ Safe operations - won't delete worktrees with uncommitted changes or unpushed commits
 - 📝 Clear logging with timestamps and progress indicators
 - 📋 Config file support for managing multiple repositories
+- 🔁 Automatic retry with exponential backoff for network and filesystem errors
 
 ## Installation
 
@@ -116,6 +117,14 @@ module.exports = {
     runOnce: false
   },
   
+  // Retry configuration (optional - these are the defaults)
+  retry: {
+    maxAttempts: 'unlimited',  // or a number like 5
+    initialDelayMs: 1000,      // Start with 1 second
+    maxDelayMs: 600000,        // Max 10 minutes between retries
+    backoffMultiplier: 2       // Double the delay each time
+  },
+  
   repositories: [
     {
       name: "frontend",  // Unique identifier
@@ -126,8 +135,9 @@ module.exports = {
     {
       name: "backend",
       repoUrl: process.env.BACKEND_REPO_URL,  // Environment variables supported
-      worktreeDir: "/absolute/path/backend-worktrees"
+      worktreeDir: "/absolute/path/backend-worktrees",
       // Uses default schedule
+      retry: { maxAttempts: 10 }  // Override retry for this repo
     }
   ]
 };
@@ -137,6 +147,30 @@ module.exports = {
 - Relative paths are resolved from the config file location
 - `bareRepoDir` defaults to `.bare/<repo-name>` if not specified
 - Repository-specific settings override defaults
+
+### Retry Configuration
+
+The tool automatically retries on network errors and filesystem race conditions:
+
+- **Default behavior**: Unlimited retries with exponential backoff (1s, 2s, 4s... up to 10 minutes)
+- **Network errors**: Connection timeouts, DNS failures, repository access issues
+- **Filesystem errors**: Busy files, permission issues, race conditions
+
+Simple retry examples:
+```javascript
+// Global retry configuration
+retry: { maxAttempts: 5 }                    // Try 5 times then stop
+retry: { maxAttempts: 'unlimited' }          // Keep trying forever (default)
+retry: { maxDelayMs: 60000 }                 // Cap retry delay at 1 minute
+retry: { initialDelayMs: 5000 }              // Start with 5 second delay
+
+// Per-repository override
+repositories: [{
+  name: "critical-repo",
+  // ... other config ...
+  retry: { maxAttempts: 'unlimited', initialDelayMs: 10000 }
+}]
+```
 
 ## Requirements
 
