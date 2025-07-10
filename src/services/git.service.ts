@@ -136,6 +136,44 @@ export class GitService {
     }
   }
 
+  async hasStashedChanges(worktreePath: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+    try {
+      const stashList = await worktreeGit.stashList();
+      return stashList.total > 0;
+    } catch (error) {
+      // If stash check fails, assume it's unsafe to delete
+      console.error(`Error checking stash: ${error}`);
+      return true;
+    }
+  }
+
+  async hasModifiedSubmodules(worktreePath: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+    try {
+      const result = await worktreeGit.raw(["submodule", "status"]);
+      // Check for '+' or '-' prefix indicating modifications
+      return /^[+-]/m.test(result);
+    } catch {
+      return false; // No submodules or submodule command failed
+    }
+  }
+
+  async hasOperationInProgress(worktreePath: string): Promise<boolean> {
+    const gitDir = path.join(worktreePath, ".git");
+    const checkFiles = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply"];
+
+    for (const file of checkFiles) {
+      try {
+        await fs.access(path.join(gitDir, file));
+        return true; // Operation in progress
+      } catch {
+        // File doesn't exist, continue checking
+      }
+    }
+    return false;
+  }
+
   async getCurrentBranch(): Promise<string> {
     const git = this.getGit();
     const branchSummary = await git.branch();

@@ -38,6 +38,9 @@ describe("WorktreeSyncService", () => {
       pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
       checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
       hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
+      hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
+      hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
+      hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
       getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
       getWorktrees: jest.fn<any>().mockResolvedValue([]),
       getGit: jest.fn<any>(),
@@ -241,7 +244,10 @@ describe("WorktreeSyncService", () => {
 
       // Verify all safety checks were performed
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
-      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledTimes(3); // Called for all worktrees regardless of checkWorktreeStatus result
+      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledTimes(3); // Called for all worktrees
+      expect(mockGitService.hasStashedChanges).toHaveBeenCalledTimes(3);
+      expect(mockGitService.hasOperationInProgress).toHaveBeenCalledTimes(3);
+      expect(mockGitService.hasModifiedSubmodules).toHaveBeenCalledTimes(3);
     });
 
     it("should clean up orphaned directories that are not Git worktrees", async () => {

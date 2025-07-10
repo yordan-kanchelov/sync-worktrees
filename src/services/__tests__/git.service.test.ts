@@ -403,4 +403,156 @@ branch refs/heads/feature-1
       ]);
     });
   });
+
+  describe("hasStashedChanges", () => {
+    beforeEach(async () => {
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+    });
+
+    it("should return true when worktree has stashed changes", async () => {
+      const mockWorktreeGit = {
+        stashList: jest.fn<any>().mockResolvedValue({ total: 2 }),
+      } as any;
+      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.hasStashedChanges("/test/worktree");
+
+      expect(result).toBe(true);
+      expect(simpleGit).toHaveBeenCalledWith("/test/worktree");
+    });
+
+    it("should return false when worktree has no stashed changes", async () => {
+      const mockWorktreeGit = {
+        stashList: jest.fn<any>().mockResolvedValue({ total: 0 }),
+      } as any;
+      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.hasStashedChanges("/test/worktree");
+
+      expect(result).toBe(false);
+    });
+
+    it("should return true when stash check fails", async () => {
+      const mockWorktreeGit = {
+        stashList: jest.fn<any>().mockRejectedValue(new Error("Failed to check stash")),
+      } as any;
+      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const result = await gitService.hasStashedChanges("/test/worktree");
+
+      expect(result).toBe(true); // Conservative approach
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Error checking stash: Error: Failed to check stash"),
+      );
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe("hasModifiedSubmodules", () => {
+    beforeEach(async () => {
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+    });
+
+    it("should return true when submodules are modified", async () => {
+      const mockWorktreeGit = {
+        raw: jest.fn<any>().mockResolvedValue("+1234567 submodule1 (modified)"),
+      } as any;
+      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.hasModifiedSubmodules("/test/worktree");
+
+      expect(result).toBe(true);
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["submodule", "status"]);
+    });
+
+    it("should return true when submodules have different commits", async () => {
+      const mockWorktreeGit = {
+        raw: jest.fn<any>().mockResolvedValue("-1234567 submodule1 (new commits)"),
+      } as any;
+      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.hasModifiedSubmodules("/test/worktree");
+
+      expect(result).toBe(true);
+    });
+
+    it("should return false when no submodules or all clean", async () => {
+      const mockWorktreeGit = {
+        raw: jest.fn<any>().mockResolvedValue(" 1234567 submodule1 (clean)"),
+      } as any;
+      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.hasModifiedSubmodules("/test/worktree");
+
+      expect(result).toBe(false);
+    });
+
+    it("should return false when submodule command fails", async () => {
+      const mockWorktreeGit = {
+        raw: jest.fn<any>().mockRejectedValue(new Error("No submodules")),
+      } as any;
+      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.hasModifiedSubmodules("/test/worktree");
+
+      expect(result).toBe(false);
+    });
+  });
+
+  describe("hasOperationInProgress", () => {
+    let bareGit: jest.Mocked<SimpleGit>;
+
+    beforeEach(async () => {
+      bareGit = mockGit;
+      const mainWorktreeExists = createWorktreeListOutput([
+        { path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" },
+      ]);
+
+      (fs.access as jest.Mock<any>)
+        .mockResolvedValueOnce(undefined) // bare repo exists
+        .mockRejectedValueOnce(new Error("config not found")); // config check
+
+      bareGit.raw.mockResolvedValueOnce(mainWorktreeExists as any);
+      await gitService.initialize();
+    });
+
+    it("should return true when merge is in progress", async () => {
+      (fs.access as jest.Mock<any>)
+        .mockRejectedValueOnce(new Error("Not found")) // MERGE_HEAD
+        .mockResolvedValueOnce(undefined); // MERGE_HEAD exists
+
+      const result = await gitService.hasOperationInProgress("/test/worktree");
+
+      expect(result).toBe(true);
+      expect(fs.access).toHaveBeenCalledWith(path.join("/test/worktree", ".git", "MERGE_HEAD"));
+    });
+
+    it("should return true when rebase is in progress", async () => {
+      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as jest.Mock<any>)
+        .mockRejectedValueOnce(new Error("Not found")) // MERGE_HEAD
+        .mockRejectedValueOnce(new Error("Not found")) // CHERRY_PICK_HEAD
+        .mockRejectedValueOnce(new Error("Not found")) // REVERT_HEAD
+        .mockRejectedValueOnce(new Error("Not found")) // BISECT_LOG
+        .mockResolvedValueOnce(undefined); // rebase-merge exists
+
+      const result = await gitService.hasOperationInProgress("/test/worktree");
+
+      expect(result).toBe(true);
+    });
+
+    it("should return false when no operation is in progress", async () => {
+      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("Not found"));
+
+      const result = await gitService.hasOperationInProgress("/test/worktree");
+
+      expect(result).toBe(false);
+      // Note: fs.access is called 7 times: 1 from beforeEach (bare repo check) + 6 operation files
+      expect(fs.access).toHaveBeenCalledTimes(7);
+    });
+  });
 });

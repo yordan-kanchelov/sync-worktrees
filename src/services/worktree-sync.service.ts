@@ -100,16 +100,24 @@ export class WorktreeSyncService {
         try {
           const isClean = await this.gitService.checkWorktreeStatus(worktreePath);
           const hasUnpushed = await this.gitService.hasUnpushedCommits(worktreePath);
+          const hasStash = await this.gitService.hasStashedChanges(worktreePath);
+          const hasOperation = await this.gitService.hasOperationInProgress(worktreePath);
+          const hasDirtySubmodules = await this.gitService.hasModifiedSubmodules(worktreePath);
 
-          if (isClean && !hasUnpushed) {
+          const canDelete = isClean && !hasUnpushed && !hasStash && !hasOperation && !hasDirtySubmodules;
+
+          if (canDelete) {
             await this.gitService.removeWorktree(worktreePath);
           } else {
-            if (!isClean) {
-              console.log(`  - ⚠️ Skipping removal of '${branchName}' as it has uncommitted changes.`);
-            }
-            if (hasUnpushed) {
-              console.log(`  - ⚠️ Skipping removal of '${branchName}' as it has unpushed commits.`);
-            }
+            // Log specific reasons for skipping
+            const reasons: string[] = [];
+            if (!isClean) reasons.push("uncommitted changes");
+            if (hasUnpushed) reasons.push("unpushed commits");
+            if (hasStash) reasons.push("stashed changes");
+            if (hasOperation) reasons.push("operation in progress");
+            if (hasDirtySubmodules) reasons.push("modified submodules");
+
+            console.log(`  - ⚠️ Skipping removal of '${branchName}' due to: ${reasons.join(", ")}.`);
           }
         } catch (error) {
           console.error(`  - Error checking worktree '${branchName}':`, error);
