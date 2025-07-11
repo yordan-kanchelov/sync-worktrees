@@ -149,6 +149,10 @@ export class ConfigLoaderService {
       resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
     }
 
+    if (repo.branchMaxAge || defaults?.branchMaxAge) {
+      resolved.branchMaxAge = repo.branchMaxAge ?? defaults?.branchMaxAge;
+    }
+
     if (repo.retry || defaults?.retry || globalRetry) {
       resolved.retry = { ...globalRetry, ...defaults?.retry, ...repo.retry };
     }
