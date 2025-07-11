@@ -148,7 +148,9 @@ export class GitService {
   async getRemoteBranches(): Promise<string[]> {
     const git = this.getGit();
     const branches = await git.branch(["-r"]);
-    return branches.all.filter((b) => b.startsWith("origin/")).map((b) => b.replace("origin/", ""));
+    return branches.all
+      .filter((b) => b.startsWith("origin/") && !b.endsWith("/HEAD"))
+      .map((b) => b.replace("origin/", ""));
   }
 
   async getRemoteBranchesWithActivity(): Promise<{ branch: string; lastActivity: Date }[]> {
@@ -168,7 +170,7 @@ export class GitService {
 
     for (const line of lines) {
       const [ref, dateStr] = line.split("|", 2);
-      if (ref && dateStr) {
+      if (ref && dateStr && !ref.endsWith("/HEAD")) {
         const branch = ref.replace("origin/", "");
         const lastActivity = new Date(dateStr);
         // Skip if the date is invalid

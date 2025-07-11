@@ -239,6 +239,18 @@ describe("GitService", () => {
 
       expect(branches).toEqual([]);
     });
+
+    it("should filter out origin/HEAD", async () => {
+      mockGit.branch.mockResolvedValue({
+        all: ["origin/main", "origin/feature-1", "origin/HEAD"],
+        current: "main",
+      } as any);
+
+      const branches = await gitService.getRemoteBranches();
+
+      expect(branches).toEqual(["main", "feature-1"]);
+      expect(branches).not.toContain("HEAD");
+    });
   });
 
   describe("getRemoteBranchesWithActivity", () => {
@@ -302,6 +314,23 @@ describe("GitService", () => {
       expect(branches).toHaveLength(2);
       expect(branches[0].branch).toBe("main");
       expect(branches[1].branch).toBe("feature-2");
+    });
+
+    it("should filter out origin/HEAD", async () => {
+      const mockOutput = [
+        "origin/main|2024-01-15T10:30:00-05:00",
+        "origin/HEAD|2024-01-15T10:30:00-05:00",
+        "origin/feature-1|2024-01-14T09:15:00-05:00",
+      ].join("\n");
+
+      mockGit.raw.mockResolvedValueOnce(mockOutput as any);
+
+      const branches = await gitService.getRemoteBranchesWithActivity();
+
+      expect(branches).toHaveLength(2);
+      expect(branches[0].branch).toBe("main");
+      expect(branches[1].branch).toBe("feature-1");
+      expect(branches.some((b) => b.branch === "HEAD")).toBe(false);
     });
   });
 
