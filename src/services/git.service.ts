@@ -49,6 +49,10 @@ export class GitService {
       await bareGit.addConfig("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
     }
 
+    // Fetch all remote branches to ensure they exist locally
+    console.log("Fetching remote branches...");
+    await bareGit.fetch(["--all"]);
+
     // Check if main worktree exists
     let needsMainWorktree = true;
     try {
@@ -80,9 +84,24 @@ export class GitService {
           await bareGit.raw(["worktree", "add", "--track", "-b", "main", absoluteWorktreePath, "origin/main"]);
         }
       } catch (error) {
-        // Fallback to simple add if tracking setup fails
-        console.warn(`Failed to create main worktree with tracking, using simple add: ${error}`);
-        await bareGit.raw(["worktree", "add", absoluteWorktreePath, "main"]);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        // Check if error is because directory already exists
+        if (errorMessage.includes("already exists")) {
+          console.log(`Main worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`);
+        } else {
+          // Fallback to simple add if tracking setup fails
+          console.warn(`Failed to create main worktree with tracking, using simple add: ${error}`);
+          try {
+            await bareGit.raw(["worktree", "add", absoluteWorktreePath, "main"]);
+          } catch (fallbackError) {
+            const fallbackErrorMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            if (fallbackErrorMessage.includes("already exists")) {
+              console.log(`Main worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`);
+            } else {
+              throw fallbackError;
+            }
+          }
+        }
       }
     }
 

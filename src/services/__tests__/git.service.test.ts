@@ -71,6 +71,7 @@ describe("GitService", () => {
       expect(simpleGit).toHaveBeenCalledWith(".bare/repo");
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
       expect(git).toBe(mockGit);
     });
 
@@ -93,6 +94,7 @@ describe("GitService", () => {
       expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
     });
 
     it("should create main worktree if it doesn't exist", async () => {
@@ -112,6 +114,7 @@ describe("GitService", () => {
 
       await gitService.initialize();
 
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
       expect(fs.mkdir).toHaveBeenCalledWith(TEST_PATHS.worktree, { recursive: true });
       expect(mockGit.raw).toHaveBeenCalledWith([
         "worktree",
@@ -150,6 +153,7 @@ describe("GitService", () => {
 
       await relativeGitService.initialize();
 
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
       // Verify that the worktree add command received an absolute path
       const expectedAbsolutePath = path.resolve("./test/worktrees/main");
       expect(mockGit.raw).toHaveBeenCalledWith([
@@ -181,6 +185,7 @@ describe("GitService", () => {
       expect(simpleGit).toHaveBeenCalledWith(".bare/repo");
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).not.toHaveBeenCalled(); // Should not add config if it already exists
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
       expect(git).toBe(mockGit);
     });
   });

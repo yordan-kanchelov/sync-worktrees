@@ -60,6 +60,9 @@ describe("Integration Tests", () => {
       // Mock readdir to return empty (no existing worktrees)
       (fs.readdir as jest.Mock<any>).mockResolvedValueOnce([]);
 
+      // Mock fetch for initialization
+      mockGit.fetch.mockResolvedValue({} as any);
+
       // Mock raw calls for initialization and sync
       mockGit.raw
         .mockImplementationOnce(() => {
@@ -149,11 +152,11 @@ describe("Integration Tests", () => {
     it("should handle and recover from sync errors", async () => {
       const config = createMockConfig({ runOnce: true });
 
-      // Make fetch fail
-      mockGit.fetch.mockRejectedValueOnce(new Error("Network error"));
-
       const service = new WorktreeSyncService(config);
       await service.initialize();
+
+      // Make fetch fail during sync (after successful initialization)
+      mockGit.fetch.mockRejectedValueOnce(new Error("Network error"));
 
       // Should throw but log the error
       await expect(service.sync()).rejects.toThrow("Network error");
