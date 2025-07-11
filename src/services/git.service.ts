@@ -64,7 +64,26 @@ export class GitService {
       await fs.mkdir(this.config.worktreeDir, { recursive: true });
       // Use absolute path for worktree add to avoid relative path issues
       const absoluteWorktreePath = path.resolve(this.mainWorktreePath);
-      await bareGit.raw(["worktree", "add", absoluteWorktreePath, "main"]);
+
+      try {
+        // Check if local main branch exists
+        const branches = await bareGit.branch();
+        const mainBranchExists = branches.all.includes("main");
+
+        if (mainBranchExists) {
+          await bareGit.raw(["worktree", "add", absoluteWorktreePath, "main"]);
+          // Set upstream tracking after creating worktree
+          const worktreeGit = simpleGit(absoluteWorktreePath);
+          await worktreeGit.branch(["--set-upstream-to", "origin/main", "main"]);
+        } else {
+          // Create new branch tracking the remote branch
+          await bareGit.raw(["worktree", "add", "--track", "-b", "main", absoluteWorktreePath, "origin/main"]);
+        }
+      } catch (error) {
+        // Fallback to simple add if tracking setup fails
+        console.warn(`Failed to create main worktree with tracking, using simple add: ${error}`);
+        await bareGit.raw(["worktree", "add", absoluteWorktreePath, "main"]);
+      }
     }
 
     // Use the main worktree as our primary git instance
@@ -95,8 +114,40 @@ export class GitService {
     const bareGit = simpleGit(this.bareRepoPath);
     // Use absolute path for worktree add to avoid relative path issues
     const absoluteWorktreePath = path.resolve(worktreePath);
-    await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
-    console.log(`  - Created worktree for '${branchName}'`);
+
+    try {
+      // Check if local branch already exists
+      const branches = await bareGit.branch();
+      const localBranchExists = branches.all.includes(branchName);
+
+      if (localBranchExists) {
+        // If local branch exists, just add worktree with existing branch
+        await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
+
+        // Set upstream tracking after creating worktree
+        const worktreeGit = simpleGit(absoluteWorktreePath);
+        await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
+      } else {
+        // Create new branch tracking the remote branch
+        await bareGit.raw([
+          "worktree",
+          "add",
+          "--track",
+          "-b",
+          branchName,
+          absoluteWorktreePath,
+          `origin/${branchName}`,
+        ]);
+      }
+
+      console.log(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
+    } catch (error) {
+      // If the worktree add fails with tracking, fall back to non-tracking version
+      // This handles edge cases where the remote branch might not exist yet
+      console.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${error}`);
+      await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
+      console.log(`  - Created worktree for '${branchName}' (without tracking)`);
+    }
   }
 
   async removeWorktree(worktreePath: string): Promise<void> {

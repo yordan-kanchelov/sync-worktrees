@@ -105,11 +105,23 @@ describe("GitService", () => {
         .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
         .mockResolvedValueOnce("" as any) // Second call: getWorktreesFromBare returns empty
         .mockResolvedValueOnce("" as any); // Third call: worktree add
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
 
       await gitService.initialize();
 
       expect(fs.mkdir).toHaveBeenCalledWith(TEST_PATHS.worktree, { recursive: true });
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", TEST_PATHS.worktree + "/main", "main"]);
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "worktree",
+        "add",
+        "--track",
+        "-b",
+        "main",
+        TEST_PATHS.worktree + "/main",
+        "origin/main",
+      ]);
     });
 
     it("should resolve relative paths to absolute paths when creating worktrees", async () => {
@@ -131,12 +143,24 @@ describe("GitService", () => {
         .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
         .mockResolvedValueOnce("" as any) // Second call: getWorktreesFromBare returns empty
         .mockResolvedValueOnce("" as any); // Third call: worktree add
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
 
       await relativeGitService.initialize();
 
       // Verify that the worktree add command received an absolute path
       const expectedAbsolutePath = path.resolve("./test/worktrees/main");
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", expectedAbsolutePath, "main"]);
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "worktree",
+        "add",
+        "--track",
+        "-b",
+        "main",
+        expectedAbsolutePath,
+        "origin/main",
+      ]);
     });
 
     it("should not add duplicate fetch config when it already exists", async () => {
@@ -218,17 +242,87 @@ describe("GitService", () => {
       await gitService.initialize();
     });
 
-    it("should add worktree with correct parameters", async () => {
+    it("should add worktree with tracking when branch doesn't exist locally", async () => {
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
+      expect(mockGit.branch).toHaveBeenCalled();
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "worktree",
+        "add",
+        "--track",
+        "-b",
+        "feature-1",
+        "/test/worktrees/feature-1",
+        "origin/feature-1",
+      ]);
+    });
+
+    it("should add worktree and set upstream when branch exists locally", async () => {
+      mockGit.branch.mockResolvedValueOnce({
+        all: ["feature-1", "main"],
+        current: "main",
+      } as any);
+
+      const worktreeGitMock = {
+        branch: jest.fn<any>().mockResolvedValue(undefined),
+      };
+
+      // Store original implementation
+      const originalImplementation = (simpleGit as unknown as jest.Mock).getMockImplementation();
+
+      // Mock simpleGit to return worktreeGitMock for the worktree path, but mockGit for other paths
+      (simpleGit as unknown as jest.Mock).mockImplementation((path?: any) => {
+        if (path && path.includes("feature-1")) {
+          return worktreeGitMock;
+        }
+        return mockGit;
+      });
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(mockGit.branch).toHaveBeenCalled();
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
+      expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
+
+      // Restore original implementation
+      if (originalImplementation) {
+        (simpleGit as unknown as jest.Mock).mockImplementation(originalImplementation);
+      }
     });
 
     it("should resolve relative paths to absolute paths when adding worktrees", async () => {
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
       await gitService.addWorktree("feature-1", "./test/worktrees/feature-1");
 
       const expectedAbsolutePath = path.resolve("./test/worktrees/feature-1");
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", expectedAbsolutePath, "feature-1"]);
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "worktree",
+        "add",
+        "--track",
+        "-b",
+        "feature-1",
+        expectedAbsolutePath,
+        "origin/feature-1",
+      ]);
+    });
+
+    it("should fallback to simple add when tracking setup fails", async () => {
+      mockGit.branch.mockRejectedValueOnce(new Error("Branch check failed"));
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      // Should have two calls to raw - first failed attempt, then fallback
+      const rawCalls = mockGit.raw.mock.calls.filter((call) => call[0][1] === "add");
+      expect(rawCalls[rawCalls.length - 1]).toEqual([["worktree", "add", "/test/worktrees/feature-1", "feature-1"]]);
     });
   });
 
