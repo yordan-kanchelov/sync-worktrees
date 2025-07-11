@@ -1,5 +1,13 @@
 # sync-worktrees
 
+## 1.3.1
+
+### Patch Changes
+
+- e34624d: Fix branchMaxAge configuration not being applied from config files
+  - Fixed issue where `branchMaxAge` setting was not being copied during config resolution
+  - The branch age filter now properly works when configured in repository-specific or default settings
+
 ## 1.3.0
 
 ### Minor Changes
