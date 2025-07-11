@@ -67,11 +67,11 @@ jobs:
       - name: Run Type Check
         run: pnpm typecheck
 
-      - name: Run Tests with Coverage
-        run: pnpm test:coverage
-
       - name: Build Project
         run: pnpm build
+
+      - name: Run Tests with Coverage
+        run: pnpm test:coverage
 
       - name: Upload Coverage Reports
         if: success()

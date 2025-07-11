@@ -3,11 +3,8 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 // This test requires git to be installed and internet access
-// By default, tests run unless in CI environment
 // To skip: SKIP_E2E_TESTS=true pnpm test
-// To force in CI: RUN_E2E_TESTS=true pnpm test
-const shouldSkip =
-  process.env.SKIP_E2E_TESTS === "true" || (process.env.CI === "true" && process.env.RUN_E2E_TESTS !== "true");
+const shouldSkip = process.env.SKIP_E2E_TESTS === "true";
 
 const describeOrSkip = shouldSkip ? describe.skip : describe;
 
