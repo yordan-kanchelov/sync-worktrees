@@ -167,7 +167,7 @@ export class GitService {
       .filter((line) => line);
 
     for (const line of lines) {
-      const [ref, dateStr] = line.split("|");
+      const [ref, dateStr] = line.split("|", 2);
       if (ref && dateStr) {
         const branch = ref.replace("origin/", "");
         const lastActivity = new Date(dateStr);
