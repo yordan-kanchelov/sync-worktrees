@@ -52,8 +52,8 @@ export class WorktreeSyncService {
         // Clean up orphaned directories
         await this.cleanupOrphanedDirectories(worktrees);
 
-        const currentBranch = await this.gitService.getCurrentBranch();
-        await this.createNewWorktrees(remoteBranches, worktreeBranches, currentBranch);
+        const defaultBranch = this.gitService.getDefaultBranch();
+        await this.createNewWorktrees(remoteBranches, worktreeBranches, defaultBranch);
 
         await this.pruneOldWorktrees(remoteBranches, worktreeBranches);
 
@@ -71,11 +71,11 @@ export class WorktreeSyncService {
   private async createNewWorktrees(
     remoteBranches: string[],
     existingWorktreeBranches: string[],
-    currentBranch: string,
+    defaultBranch: string,
   ): Promise<void> {
     const newBranches = remoteBranches
       .filter((b) => !existingWorktreeBranches.includes(b))
-      .filter((b) => b !== currentBranch);
+      .filter((b) => b !== defaultBranch);
 
     if (newBranches.length > 0) {
       console.log(`Step 2: Creating new worktrees for: ${newBranches.join(", ")}`);

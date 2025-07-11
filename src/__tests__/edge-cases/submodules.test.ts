@@ -38,6 +38,7 @@ describe("Submodule Edge Cases", () => {
       hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
       hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
       getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
+      getDefaultBranch: jest.fn().mockReturnValue("main"),
       getWorktrees: jest.fn<any>().mockResolvedValue([]),
       getGit: jest.fn<any>(),
     } as any;

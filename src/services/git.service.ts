@@ -12,10 +12,11 @@ export class GitService {
   private git: SimpleGit | null = null;
   private bareRepoPath: string;
   private mainWorktreePath: string;
+  private defaultBranch: string = "main"; // Will be updated after detection
 
   constructor(private config: Config) {
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
-    this.mainWorktreePath = path.join(this.config.worktreeDir, "main");
+    this.mainWorktreePath = path.join(this.config.worktreeDir, "main"); // Temporary, will be updated
   }
 
   async initialize(): Promise<SimpleGit> {
@@ -53,6 +54,11 @@ export class GitService {
     console.log("Fetching remote branches...");
     await bareGit.fetch(["--all"]);
 
+    // Detect the default branch
+    this.defaultBranch = await this.detectDefaultBranch(bareGit);
+    this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
+    console.log(`Detected default branch: ${this.defaultBranch}`);
+
     // Check if main worktree exists
     let needsMainWorktree = true;
     try {
@@ -64,39 +70,51 @@ export class GitService {
 
     if (needsMainWorktree) {
       // Create main worktree if it doesn't exist
-      console.log(`Creating main worktree at "${this.mainWorktreePath}"...`);
+      console.log(`Creating ${this.defaultBranch} worktree at "${this.mainWorktreePath}"...`);
       await fs.mkdir(this.config.worktreeDir, { recursive: true });
       // Use absolute path for worktree add to avoid relative path issues
       const absoluteWorktreePath = path.resolve(this.mainWorktreePath);
 
       try {
-        // Check if local main branch exists
+        // Check if local branch exists
         const branches = await bareGit.branch();
-        const mainBranchExists = branches.all.includes("main");
+        const defaultBranchExists = branches.all.includes(this.defaultBranch);
 
-        if (mainBranchExists) {
-          await bareGit.raw(["worktree", "add", absoluteWorktreePath, "main"]);
+        if (defaultBranchExists) {
+          await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
           // Set upstream tracking after creating worktree
           const worktreeGit = simpleGit(absoluteWorktreePath);
-          await worktreeGit.branch(["--set-upstream-to", "origin/main", "main"]);
+          await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
         } else {
           // Create new branch tracking the remote branch
-          await bareGit.raw(["worktree", "add", "--track", "-b", "main", absoluteWorktreePath, "origin/main"]);
+          await bareGit.raw([
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            this.defaultBranch,
+            absoluteWorktreePath,
+            `origin/${this.defaultBranch}`,
+          ]);
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         // Check if error is because directory already exists
         if (errorMessage.includes("already exists")) {
-          console.log(`Main worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`);
+          console.log(
+            `${this.defaultBranch} worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`,
+          );
         } else {
           // Fallback to simple add if tracking setup fails
-          console.warn(`Failed to create main worktree with tracking, using simple add: ${error}`);
+          console.warn(`Failed to create ${this.defaultBranch} worktree with tracking, using simple add: ${error}`);
           try {
-            await bareGit.raw(["worktree", "add", absoluteWorktreePath, "main"]);
+            await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
           } catch (fallbackError) {
             const fallbackErrorMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
             if (fallbackErrorMessage.includes("already exists")) {
-              console.log(`Main worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`);
+              console.log(
+                `${this.defaultBranch} worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`,
+              );
             } else {
               throw fallbackError;
             }
@@ -115,6 +133,10 @@ export class GitService {
       throw new Error("Git service not initialized. Call initialize() first.");
     }
     return this.git;
+  }
+
+  getDefaultBranch(): string {
+    return this.defaultBranch;
   }
 
   async fetchAll(): Promise<void> {
@@ -248,6 +270,44 @@ export class GitService {
     const git = this.getGit();
     const branchSummary = await git.branch();
     return branchSummary.current;
+  }
+
+  private async detectDefaultBranch(bareGit: SimpleGit): Promise<string> {
+    try {
+      // Try to get the symbolic ref for origin/HEAD
+      const headRef = await bareGit.raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
+      // Extract branch name from refs/remotes/origin/main or refs/remotes/origin/master
+      const branch = headRef.trim().split("/").pop();
+      if (branch) {
+        return branch;
+      }
+    } catch {
+      // If that fails, try to set HEAD automatically
+      try {
+        await bareGit.raw(["remote", "set-head", "origin", "-a"]);
+        const headRef = await bareGit.raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
+        const branch = headRef.trim().split("/").pop();
+        if (branch) {
+          return branch;
+        }
+      } catch {
+        // If all else fails, try to detect from remote branches
+        try {
+          const remoteBranches = await bareGit.branch(["-r"]);
+          // Common default branch names in order of preference
+          const commonDefaults = ["main", "master", "develop", "trunk"];
+          for (const defaultName of commonDefaults) {
+            if (remoteBranches.all.some((branch) => branch === `origin/${defaultName}`)) {
+              return defaultName;
+            }
+          }
+        } catch {
+          // Ignore and fall through to default
+        }
+      }
+    }
+    // Final fallback
+    return "main";
   }
 
   async getWorktrees(): Promise<{ path: string; branch: string }[]> {

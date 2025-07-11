@@ -42,6 +42,7 @@ describe("WorktreeSyncService", () => {
       hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
       hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
       getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
+      getDefaultBranch: jest.fn().mockReturnValue("main"),
       getWorktrees: jest.fn<any>().mockResolvedValue([]),
       getGit: jest.fn<any>(),
     } as any;
@@ -81,7 +82,7 @@ describe("WorktreeSyncService", () => {
       // Verify workflow steps
       expect(mockGitService.fetchAll).toHaveBeenCalled();
       expect(mockGitService.getRemoteBranches).toHaveBeenCalled();
-      expect(mockGitService.getCurrentBranch).toHaveBeenCalled();
+      expect(mockGitService.getDefaultBranch).toHaveBeenCalled();
       expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees", { recursive: true });
       expect(mockGitService.getWorktrees).toHaveBeenCalled();
 

@@ -36,6 +36,7 @@ describe("WorktreeSyncService retry behavior", () => {
       getRemoteBranches: jest.fn(),
       getWorktrees: jest.fn(),
       getCurrentBranch: jest.fn(),
+      getDefaultBranch: jest.fn().mockReturnValue("main"),
       addWorktree: jest.fn(),
       removeWorktree: jest.fn(),
       pruneWorktrees: jest.fn(),
