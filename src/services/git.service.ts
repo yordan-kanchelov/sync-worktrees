@@ -151,6 +151,36 @@ export class GitService {
     return branches.all.filter((b) => b.startsWith("origin/")).map((b) => b.replace("origin/", ""));
   }
 
+  async getRemoteBranchesWithActivity(): Promise<{ branch: string; lastActivity: Date }[]> {
+    const git = this.getGit();
+    // Use for-each-ref to get branch names with their last commit dates
+    const result = await git.raw([
+      "for-each-ref",
+      "--format=%(refname:short)|%(committerdate:iso8601)",
+      "refs/remotes/origin",
+    ]);
+
+    const branches: { branch: string; lastActivity: Date }[] = [];
+    const lines = result
+      .trim()
+      .split("\n")
+      .filter((line) => line);
+
+    for (const line of lines) {
+      const [ref, dateStr] = line.split("|", 2);
+      if (ref && dateStr) {
+        const branch = ref.replace("origin/", "");
+        const lastActivity = new Date(dateStr);
+        // Skip if the date is invalid
+        if (!isNaN(lastActivity.getTime())) {
+          branches.push({ branch, lastActivity });
+        }
+      }
+    }
+
+    return branches;
+  }
+
   async addWorktree(branchName: string, worktreePath: string): Promise<void> {
     const bareGit = simpleGit(this.bareRepoPath);
     // Use absolute path for worktree add to avoid relative path issues

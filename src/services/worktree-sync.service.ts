@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { retry } from "../utils/retry";
 
 import { GitService } from "./git.service";
@@ -39,8 +40,28 @@ export class WorktreeSyncService {
         console.log("Step 1: Fetching latest data from remote...");
         await this.gitService.fetchAll();
 
-        const remoteBranches = await this.gitService.getRemoteBranches();
-        console.log(`Found ${remoteBranches.length} remote branches.`);
+        let remoteBranches: string[];
+
+        if (this.config.branchMaxAge) {
+          // Get branches with activity data and filter by age
+          const branchesWithActivity = await this.gitService.getRemoteBranchesWithActivity();
+          const filteredBranches = filterBranchesByAge(branchesWithActivity, this.config.branchMaxAge);
+          remoteBranches = filteredBranches.map((b) => b.branch);
+
+          console.log(`Found ${branchesWithActivity.length} remote branches.`);
+          console.log(
+            `After filtering by age (${formatDuration(this.config.branchMaxAge)}): ${remoteBranches.length} branches.`,
+          );
+
+          if (branchesWithActivity.length > remoteBranches.length) {
+            const excludedCount = branchesWithActivity.length - remoteBranches.length;
+            console.log(`  - Excluded ${excludedCount} stale branches.`);
+          }
+        } else {
+          // Use original method if no age filtering
+          remoteBranches = await this.gitService.getRemoteBranches();
+          console.log(`Found ${remoteBranches.length} remote branches.`);
+        }
 
         await fs.mkdir(this.config.worktreeDir, { recursive: true });
 

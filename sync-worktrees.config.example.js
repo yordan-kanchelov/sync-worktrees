@@ -14,7 +14,9 @@ module.exports = {
     // Default cron schedule: every hour
     cronSchedule: "0 * * * *",
     // By default, run as a scheduled job (not one-time)
-    runOnce: false
+    runOnce: false,
+    // Maximum age of branches to sync (optional)
+    // branchMaxAge: "30d",  // Only sync branches active in last 30 days
   },
   
   // Retry configuration for handling transient errors (optional)
@@ -86,6 +88,32 @@ module.exports = {
         maxAttempts: 10,        // Try 10 times for experimental repo
         initialDelayMs: 2000    // Start with 2 second delay
       }
+    },
+    
+    {
+      name: "active-development",
+      
+      repoUrl: "https://github.com/user/active-dev.git",
+      worktreeDir: "./worktrees/active-dev",
+      
+      // Only sync branches that have been active in the last 2 weeks
+      branchMaxAge: "14d",
+      
+      // Check for updates every 30 minutes
+      cronSchedule: "*/30 * * * *"
+    },
+    
+    {
+      name: "legacy-project",
+      
+      repoUrl: "https://github.com/user/legacy.git",
+      worktreeDir: "./worktrees/legacy",
+      
+      // For legacy projects, only sync branches active in last 6 months
+      branchMaxAge: "6m",
+      
+      // Check less frequently - once per day
+      cronSchedule: "0 0 * * *"
     }
   ]
 };
