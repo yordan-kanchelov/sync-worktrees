@@ -1,5 +1,13 @@
 # sync-worktrees
 
+## 1.2.2
+
+### Patch Changes
+
+- acf60f5: Fix worktrees tracking and creation
+  - Added fetch before creating main worktree to ensure remote branches exist
+  - Better error handling for cases where worktree directories already exist
+
 ## 1.2.1
 
 ### Patch Changes
