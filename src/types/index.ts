@@ -12,6 +12,7 @@ export interface Config {
   runOnce: boolean;
   bareRepoDir?: string;
   retry?: RetryConfig;
+  branchMaxAge?: string;
 }
 
 export interface RepositoryConfig extends Config {

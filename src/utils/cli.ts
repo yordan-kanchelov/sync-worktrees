@@ -8,6 +8,7 @@ export interface CliOptions extends Partial<Config> {
   filter?: string;
   list?: boolean;
   bareRepoDir?: string;
+  branchMaxAge?: string;
 }
 
 export function parseArguments(): CliOptions {
@@ -54,6 +55,11 @@ export function parseArguments(): CliOptions {
       description: "Run the sync process once and then exit, without scheduling.",
       default: false,
     })
+    .option("branchMaxAge", {
+      alias: "a",
+      type: "string",
+      description: "Maximum age of branches to sync (e.g., '30d', '6m', '1y').",
+    })
     .help()
     .alias("help", "h")
     .parseSync();
@@ -67,6 +73,7 @@ export function parseArguments(): CliOptions {
     cronSchedule: argv.cronSchedule,
     runOnce: argv.runOnce,
     bareRepoDir: argv.bareRepoDir,
+    branchMaxAge: argv.branchMaxAge,
   };
 }
 
@@ -95,6 +102,10 @@ export function reconstructCliCommand(config: Config): string {
 
   if (config.runOnce) {
     args.push("--runOnce");
+  }
+
+  if (config.branchMaxAge) {
+    args.push(`--branchMaxAge "${config.branchMaxAge}"`);
   }
 
   return `${executable} ${args.join(" ")}`;

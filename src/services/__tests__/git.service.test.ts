@@ -241,6 +241,70 @@ describe("GitService", () => {
     });
   });
 
+  describe("getRemoteBranchesWithActivity", () => {
+    beforeEach(async () => {
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+    });
+
+    it("should return branches with their last activity dates", async () => {
+      const mockOutput = [
+        "origin/main|2024-01-15T10:30:00-05:00",
+        "origin/feature-1|2024-01-10T14:20:00-05:00",
+        "origin/feature-2|2023-12-25T08:15:00-05:00",
+      ].join("\n");
+
+      mockGit.raw.mockResolvedValueOnce(mockOutput as any);
+
+      const branches = await gitService.getRemoteBranchesWithActivity();
+
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "for-each-ref",
+        "--format=%(refname:short)|%(committerdate:iso8601)",
+        "refs/remotes/origin",
+      ]);
+
+      expect(branches).toHaveLength(3);
+      expect(branches[0]).toEqual({
+        branch: "main",
+        lastActivity: new Date("2024-01-15T10:30:00-05:00"),
+      });
+      expect(branches[1]).toEqual({
+        branch: "feature-1",
+        lastActivity: new Date("2024-01-10T14:20:00-05:00"),
+      });
+      expect(branches[2]).toEqual({
+        branch: "feature-2",
+        lastActivity: new Date("2023-12-25T08:15:00-05:00"),
+      });
+    });
+
+    it("should handle empty output", async () => {
+      mockGit.raw.mockResolvedValueOnce("" as any);
+
+      const branches = await gitService.getRemoteBranchesWithActivity();
+
+      expect(branches).toEqual([]);
+    });
+
+    it("should skip invalid lines", async () => {
+      const mockOutput = [
+        "origin/main|2024-01-15T10:30:00-05:00",
+        "invalid-line",
+        "origin/feature-1|invalid-date",
+        "origin/feature-2|2024-01-10T14:20:00-05:00",
+      ].join("\n");
+
+      mockGit.raw.mockResolvedValueOnce(mockOutput as any);
+
+      const branches = await gitService.getRemoteBranchesWithActivity();
+
+      expect(branches).toHaveLength(2);
+      expect(branches[0].branch).toBe("main");
+      expect(branches[1].branch).toBe("feature-2");
+    });
+  });
+
   describe("addWorktree", () => {
     beforeEach(async () => {
       (fs.access as jest.Mock<any>).mockResolvedValue(undefined);

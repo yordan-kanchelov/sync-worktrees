@@ -26,6 +26,7 @@ sync-worktrees maintains a **separate working directory for each remote branch**
 - 📝 Clear logging with timestamps and progress indicators
 - 📋 Config file support for managing multiple repositories
 - 🔁 Automatic retry with exponential backoff for network and filesystem errors
+- 🕐 Branch age filtering - only sync branches active within a specified time period
 
 ## Installation
 
@@ -78,6 +79,7 @@ sync-worktrees --config ./sync-worktrees.config.js
 | `--worktreeDir` | `-w` | Directory for storing worktrees | Yes* | - |
 | `--cronSchedule` | `-s` | Cron pattern for scheduling | No | `0 * * * *` (hourly) |
 | `--runOnce` | - | Execute once and exit | No | `false` |
+| `--branchMaxAge` | `-a` | Maximum age of branches to sync (e.g., '30d', '6m', '1y') | No | - |
 | `--help` | `-h` | Show help | No | - |
 
 \* Required when not using a config file
@@ -91,6 +93,12 @@ sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --runOnce
 
 # Scheduled sync (every 30 minutes)
 sync-worktrees -u git@github.com:user/repo.git -w ./worktrees -s "*/30 * * * *"
+
+# Only sync branches active in the last 30 days
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchMaxAge 30d
+
+# Sync branches active in the last 6 months, check every hour
+sync-worktrees -u git@github.com:user/repo.git -w ./worktrees --branchMaxAge 6m
 ```
 
 ### Using a config file
@@ -114,7 +122,8 @@ module.exports = {
   // Optional defaults for all repositories
   defaults: {
     cronSchedule: "0 * * * *",  // Hourly
-    runOnce: false
+    runOnce: false,
+    branchMaxAge: "30d"  // Only sync branches active in last 30 days
   },
   
   // Retry configuration (optional - these are the defaults)
@@ -136,6 +145,7 @@ module.exports = {
       name: "backend",
       repoUrl: process.env.BACKEND_REPO_URL,  // Environment variables supported
       worktreeDir: "/absolute/path/backend-worktrees",
+      branchMaxAge: "6m",  // Override: only sync branches active in last 6 months
       // Uses default schedule
       retry: { maxAttempts: 10 }  // Override retry for this repo
     }
@@ -171,6 +181,43 @@ repositories: [{
   retry: { maxAttempts: 'unlimited', initialDelayMs: 10000 }
 }]
 ```
+
+### Branch Age Filtering
+
+To reduce clutter and save disk space, you can configure sync-worktrees to only sync branches that have been active within a specified time period. This is particularly useful for repositories with many stale or abandoned branches.
+
+**Duration format**: `<number><unit>`
+- `h` - hours (e.g., `24h`)
+- `d` - days (e.g., `30d`)
+- `w` - weeks (e.g., `4w`)
+- `m` - months (e.g., `6m`)
+- `y` - years (e.g., `1y`)
+
+**Examples**:
+```bash
+# Command line
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchMaxAge 30d
+
+# Config file - global default
+defaults: {
+  branchMaxAge: "90d"  // Only sync branches active in last 90 days
+}
+
+# Config file - per repository
+repositories: [{
+  name: "active-project",
+  branchMaxAge: "14d",  // Very active project - only last 2 weeks
+}, {
+  name: "legacy-project",
+  branchMaxAge: "1y",   // Legacy project - keep branches from last year
+}]
+```
+
+When branch filtering is active, the tool will:
+- Fetch commit timestamps for all remote branches
+- Filter out branches older than the specified age
+- Log how many branches were excluded
+- Only create/maintain worktrees for active branches
 
 ## Requirements
 
