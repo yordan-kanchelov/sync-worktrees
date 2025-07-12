@@ -34,6 +34,7 @@ describe("Double run E2E test", () => {
     await fs.writeFile(path.join(initDir, "README.md"), "# Test Repository");
     await initGit.add(".");
     await initGit.commit("Initial commit");
+    await initGit.branch(["-M", "main"]); // Ensure branch is named 'main'
     await initGit.addRemote("origin", bareRepo);
     await initGit.push("origin", "main");
 

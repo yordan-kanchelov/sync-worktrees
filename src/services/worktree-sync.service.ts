@@ -68,6 +68,9 @@ export class WorktreeSyncService {
             !this.config.skipLfs
           ) {
             console.log("⚠️  Fetch all failed due to LFS error. Attempting branch-by-branch fetch...");
+            console.log("⚠️  Temporarily disabling LFS downloads for branch-by-branch fetch...");
+            process.env.GIT_LFS_SKIP_SMUDGE = "1";
+            lfsSkipEnabled = true;
             await this.fetchBranchByBranch();
           } else {
             throw fetchError;
