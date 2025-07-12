@@ -80,6 +80,7 @@ sync-worktrees --config ./sync-worktrees.config.js
 | `--cronSchedule` | `-s` | Cron pattern for scheduling | No | `0 * * * *` (hourly) |
 | `--runOnce` | - | Execute once and exit | No | `false` |
 | `--branchMaxAge` | `-a` | Maximum age of branches to sync (e.g., '30d', '6m', '1y') | No | - |
+| `--skip-lfs` | - | Skip Git LFS downloads when fetching and creating worktrees | No | `false` |
 | `--help` | `-h` | Show help | No | - |
 
 \* Required when not using a config file
@@ -181,6 +182,22 @@ repositories: [{
   retry: { maxAttempts: 'unlimited', initialDelayMs: 10000 }
 }]
 ```
+
+### Git LFS Support
+
+For repositories with Git LFS issues or when large files aren't needed:
+
+```bash
+# Skip LFS downloads
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --skip-lfs
+
+# Or in config file
+defaults: {
+  skipLfs: true
+}
+```
+
+The tool automatically handles LFS errors by retrying with LFS disabled (max 2 retries by default, configurable via `retry.maxLfsRetries`).
 
 ### Branch Age Filtering
 

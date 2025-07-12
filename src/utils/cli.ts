@@ -9,6 +9,7 @@ export interface CliOptions extends Partial<Config> {
   list?: boolean;
   bareRepoDir?: string;
   branchMaxAge?: string;
+  skipLfs?: boolean;
 }
 
 export function parseArguments(): CliOptions {
@@ -60,6 +61,11 @@ export function parseArguments(): CliOptions {
       type: "string",
       description: "Maximum age of branches to sync (e.g., '30d', '6m', '1y').",
     })
+    .option("skipLfs", {
+      type: "boolean",
+      description: "Skip Git LFS downloads when fetching and creating worktrees.",
+      default: false,
+    })
     .help()
     .alias("help", "h")
     .parseSync();
@@ -74,6 +80,7 @@ export function parseArguments(): CliOptions {
     runOnce: argv.runOnce,
     bareRepoDir: argv.bareRepoDir,
     branchMaxAge: argv.branchMaxAge,
+    skipLfs: argv.skipLfs,
   };
 }
 
@@ -106,6 +113,10 @@ export function reconstructCliCommand(config: Config): string {
 
   if (config.branchMaxAge) {
     args.push(`--branchMaxAge "${config.branchMaxAge}"`);
+  }
+
+  if (config.skipLfs) {
+    args.push("--skip-lfs");
   }
 
   return `${executable} ${args.join(" ")}`;

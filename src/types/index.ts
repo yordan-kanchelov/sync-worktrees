@@ -1,5 +1,6 @@
 export interface RetryConfig {
   maxAttempts?: number | "unlimited";
+  maxLfsRetries?: number;
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;
@@ -13,6 +14,7 @@ export interface Config {
   bareRepoDir?: string;
   retry?: RetryConfig;
   branchMaxAge?: string;
+  skipLfs?: boolean;
 }
 
 export interface RepositoryConfig extends Config {

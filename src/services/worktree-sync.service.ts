@@ -2,6 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
+import { isLfsError } from "../utils/lfs-error";
 import { retry } from "../utils/retry";
 
 import { GitService } from "./git.service";
@@ -23,22 +24,53 @@ export class WorktreeSyncService {
   async sync(): Promise<void> {
     console.log(`[${new Date().toISOString()}] Starting worktree synchronization...`);
 
+    let lfsSkipEnabled = false;
+
     const retryOptions: RetryOptions = {
       maxAttempts: this.config.retry?.maxAttempts ?? 3,
+      maxLfsRetries: this.config.retry?.maxLfsRetries ?? 2,
       initialDelayMs: this.config.retry?.initialDelayMs ?? 1000,
       maxDelayMs: this.config.retry?.maxDelayMs ?? 30000,
       backoffMultiplier: this.config.retry?.backoffMultiplier ?? 2,
-      onRetry: (error, attempt) => {
+      onRetry: (error, attempt, context) => {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.log(`\n⚠️  Sync attempt ${attempt} failed: ${errorMessage}`);
-        console.log(`🔄 Retrying synchronization...\n`);
+
+        if (context?.isLfsError && !this.config.skipLfs) {
+          console.log(`🔄 LFS error detected. Will retry with LFS skipped...`);
+        } else {
+          console.log(`🔄 Retrying synchronization...\n`);
+        }
+      },
+      lfsRetryHandler: () => {
+        if (!this.config.skipLfs && !lfsSkipEnabled) {
+          console.log("⚠️  Temporarily disabling LFS downloads for this sync...");
+          process.env.GIT_LFS_SKIP_SMUDGE = "1";
+          lfsSkipEnabled = true;
+        }
       },
     };
 
     try {
       await retry(async () => {
         console.log("Step 1: Fetching latest data from remote...");
-        await this.gitService.fetchAll();
+
+        try {
+          await this.gitService.fetchAll();
+        } catch (fetchError) {
+          const errorMessage = fetchError instanceof Error ? fetchError.message : String(fetchError);
+
+          // If it's an LFS error and we haven't already enabled skip, try branch-by-branch
+          if (isLfsError(errorMessage) && !lfsSkipEnabled && !this.config.skipLfs) {
+            console.log("⚠️  Fetch all failed due to LFS error. Attempting branch-by-branch fetch...");
+            console.log("⚠️  Temporarily disabling LFS downloads for branch-by-branch fetch...");
+            process.env.GIT_LFS_SKIP_SMUDGE = "1";
+            lfsSkipEnabled = true;
+            await this.fetchBranchByBranch();
+          } else {
+            throw fetchError;
+          }
+        }
 
         let remoteBranches: string[];
 
@@ -85,6 +117,10 @@ export class WorktreeSyncService {
       console.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
       throw error;
     } finally {
+      // Clean up temporary LFS skip if it was enabled
+      if (lfsSkipEnabled && !this.config.skipLfs) {
+        delete process.env.GIT_LFS_SKIP_SMUDGE;
+      }
       console.log(`[${new Date().toISOString()}] Synchronization finished.\n`);
     }
   }
@@ -146,6 +182,35 @@ export class WorktreeSyncService {
       }
     } else {
       console.log("Step 3: No stale worktrees to prune.");
+    }
+  }
+
+  private async fetchBranchByBranch(): Promise<void> {
+    console.log("Fetching branches individually to isolate LFS errors...");
+
+    // First, get the list of remote branches (this shouldn't fail due to LFS)
+    const remoteBranches = await this.gitService.getRemoteBranches();
+    console.log(`Found ${remoteBranches.length} remote branches to fetch.`);
+
+    const failedBranches: string[] = [];
+    let successCount = 0;
+
+    for (const branch of remoteBranches) {
+      try {
+        await this.gitService.fetchBranch(branch);
+        successCount++;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.log(`  ⚠️  Failed to fetch branch '${branch}': ${errorMessage}`);
+        failedBranches.push(branch);
+      }
+    }
+
+    console.log(`Branch-by-branch fetch completed: ${successCount}/${remoteBranches.length} successful`);
+
+    if (failedBranches.length > 0) {
+      console.log(`⚠️  Failed to fetch ${failedBranches.length} branches due to errors.`);
+      console.log(`   These branches will be skipped: ${failedBranches.join(", ")}`);
     }
   }
 

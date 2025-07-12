@@ -225,8 +225,8 @@ describe("retry", () => {
       });
 
       expect(onRetry).toHaveBeenCalledTimes(2);
-      expect(onRetry).toHaveBeenNthCalledWith(1, error1, 1);
-      expect(onRetry).toHaveBeenNthCalledWith(2, error2, 2);
+      expect(onRetry).toHaveBeenNthCalledWith(1, error1, 1, expect.objectContaining({ isLfsError: false }));
+      expect(onRetry).toHaveBeenNthCalledWith(2, error2, 2, expect.objectContaining({ isLfsError: false }));
     });
   });
 
@@ -268,6 +268,125 @@ describe("retry", () => {
 
       expect(delays).toEqual(expectedDelays);
       mockSetTimeout.mockRestore();
+    });
+  });
+
+  describe("LFS error detection", () => {
+    it("should detect LFS errors and mark context", async () => {
+      const lfsError = new Error("smudge filter lfs failed");
+      let capturedContext: any;
+
+      const mockFn = jest.fn().mockRejectedValueOnce(lfsError).mockResolvedValue("success");
+
+      await retry(mockFn, {
+        initialDelayMs: 1,
+        onRetry: (_error, _attempt, context) => {
+          capturedContext = context;
+        },
+      });
+
+      expect(capturedContext?.isLfsError).toBe(true);
+    });
+
+    it("should detect various LFS error messages", async () => {
+      const lfsErrors = [
+        "smudge filter lfs failed",
+        "Object does not exist on the server",
+        "external filter 'git-lfs filter-process' failed",
+      ];
+
+      for (const errorMessage of lfsErrors) {
+        let capturedContext: any;
+        const error = new Error(errorMessage);
+
+        const mockFn = jest.fn().mockRejectedValueOnce(error).mockResolvedValue("success");
+
+        await retry(mockFn, {
+          initialDelayMs: 1,
+          onRetry: (_error, _attempt, context) => {
+            capturedContext = context;
+          },
+        });
+
+        expect(capturedContext?.isLfsError).toBe(true);
+      }
+    });
+
+    it("should call lfsRetryHandler when LFS error is detected", async () => {
+      const lfsError = new Error("smudge filter lfs failed");
+      const lfsRetryHandler = jest.fn();
+
+      const mockFn = jest.fn().mockRejectedValueOnce(lfsError).mockResolvedValue("success");
+
+      await retry(mockFn, {
+        initialDelayMs: 1,
+        lfsRetryHandler,
+      });
+
+      expect(lfsRetryHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isLfsError: true,
+        }),
+      );
+    });
+
+    it("should limit LFS retries to maxLfsRetries", async () => {
+      const lfsError = new Error("smudge filter lfs failed");
+      const mockFn = jest.fn().mockRejectedValue(lfsError);
+
+      await expect(
+        retry(mockFn, {
+          initialDelayMs: 1,
+          maxLfsRetries: 2,
+          maxAttempts: 10,
+        }),
+      ).rejects.toThrow("LFS error retry limit exceeded (2 attempts)");
+
+      // Should have tried 3 times total (initial + 2 retries)
+      expect(mockFn).toHaveBeenCalledTimes(3);
+    });
+
+    it("should respect default maxLfsRetries when not specified", async () => {
+      const lfsError = new Error("Object does not exist on the server");
+      const mockFn = jest.fn().mockRejectedValue(lfsError);
+
+      await expect(
+        retry(mockFn, {
+          initialDelayMs: 1,
+        }),
+      ).rejects.toThrow("LFS error retry limit exceeded (2 attempts)");
+
+      // Default is 2, so should try 3 times total
+      expect(mockFn).toHaveBeenCalledTimes(3);
+    });
+
+    it("should not apply LFS retry limit to non-LFS errors", async () => {
+      const networkError = new Error("Network error");
+      (networkError as any).code = "ECONNREFUSED";
+      const mockFn = jest.fn().mockRejectedValue(networkError);
+
+      await expect(
+        retry(mockFn, {
+          initialDelayMs: 1,
+          maxAttempts: 3,
+          maxLfsRetries: 1,
+        }),
+      ).rejects.toThrow("Network error");
+
+      // Should respect maxAttempts, not maxLfsRetries
+      expect(mockFn).toHaveBeenCalledTimes(3);
+    });
+
+    it("should include helpful message in LFS retry limit error", async () => {
+      const lfsError = new Error("external filter 'git-lfs filter-process' failed");
+      const mockFn = jest.fn().mockRejectedValue(lfsError);
+
+      await expect(
+        retry(mockFn, {
+          initialDelayMs: 1,
+          maxLfsRetries: 1,
+        }),
+      ).rejects.toThrow(/Consider using --skip-lfs option/);
     });
   });
 });

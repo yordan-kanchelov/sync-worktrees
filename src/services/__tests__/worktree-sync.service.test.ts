@@ -32,6 +32,7 @@ describe("WorktreeSyncService", () => {
     mockGitService = {
       initialize: jest.fn<any>().mockResolvedValue(undefined),
       fetchAll: jest.fn<any>().mockResolvedValue(undefined),
+      fetchBranch: jest.fn<any>().mockResolvedValue(undefined),
       getRemoteBranches: jest.fn<any>().mockResolvedValue(["main", "feature-1", "feature-2"]),
       addWorktree: jest.fn<any>().mockResolvedValue(undefined),
       removeWorktree: jest.fn<any>().mockResolvedValue(undefined),
@@ -416,6 +417,58 @@ describe("WorktreeSyncService", () => {
           force: true,
         });
         expect(fs.rm).not.toHaveBeenCalledWith(path.join("/test/worktrees", "feat"), expect.any(Object));
+      });
+    });
+
+    describe("LFS error handling", () => {
+      it("should set GIT_LFS_SKIP_SMUDGE when falling back to branch-by-branch fetch", async () => {
+        // Mock fetchAll to fail with LFS error
+        mockGitService.fetchAll = jest.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed"));
+
+        let lfsSkipDuringFetch: string | undefined;
+        mockGitService.fetchBranch = jest.fn<any>().mockImplementation(() => {
+          // Capture the env var value during the fetch call
+          lfsSkipDuringFetch = process.env.GIT_LFS_SKIP_SMUDGE;
+          return Promise.resolve(undefined);
+        });
+
+        // Store original env value
+        const originalLfsSkip = process.env.GIT_LFS_SKIP_SMUDGE;
+
+        try {
+          // Ensure env var is not set initially
+          delete process.env.GIT_LFS_SKIP_SMUDGE;
+
+          await service.sync();
+
+          // Verify that fetchBranch was called
+          expect(mockGitService.fetchBranch).toHaveBeenCalled();
+
+          // Verify that GIT_LFS_SKIP_SMUDGE was set during branch-by-branch fetch
+          expect(lfsSkipDuringFetch).toBe("1");
+        } finally {
+          // Restore original env value
+          if (originalLfsSkip !== undefined) {
+            process.env.GIT_LFS_SKIP_SMUDGE = originalLfsSkip;
+          } else {
+            delete process.env.GIT_LFS_SKIP_SMUDGE;
+          }
+        }
+      });
+
+      it("should not retry LFS branch-by-branch if skipLfs is already configured", async () => {
+        // Configure to skip LFS from the start
+        mockConfig.skipLfs = true;
+        service = new WorktreeSyncService(mockConfig);
+        service["gitService"] = mockGitService;
+
+        // Mock fetchAll to fail with LFS error
+        mockGitService.fetchAll = jest.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed"));
+
+        await expect(service.sync()).rejects.toThrow("LFS error retry limit exceeded");
+
+        // Should not attempt branch-by-branch fetch when skipLfs is true
+        expect(mockGitService.fetchBranch).not.toHaveBeenCalled();
       });
     });
   });
