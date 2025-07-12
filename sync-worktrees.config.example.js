@@ -19,6 +19,8 @@ module.exports = {
     // branchMaxAge: "30d",  // Only sync branches active in last 30 days
     // Skip Git LFS downloads (optional)
     // skipLfs: true,  // Skip downloading large files tracked by Git LFS
+    // Auto-update worktrees that are behind upstream (optional)
+    // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
   },
   
   // Retry configuration for handling transient errors (optional)
@@ -131,6 +133,19 @@ module.exports = {
       
       // Still check regularly for code changes
       cronSchedule: "0 * * * *"
+    },
+    
+    {
+      name: "read-only-reference",
+      
+      repoUrl: "https://github.com/user/reference.git",
+      worktreeDir: "./worktrees/reference",
+      
+      // Disable automatic updates for read-only reference repositories
+      updateExistingWorktrees: false,
+      
+      // Check less frequently since we won't update
+      cronSchedule: "0 0 * * 0"  // Once per week
     }
   ]
 };

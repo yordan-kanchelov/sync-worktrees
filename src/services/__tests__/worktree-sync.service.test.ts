@@ -45,6 +45,8 @@ describe("WorktreeSyncService", () => {
       getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
       getDefaultBranch: jest.fn().mockReturnValue("main"),
       getWorktrees: jest.fn<any>().mockResolvedValue([]),
+      isWorktreeBehind: jest.fn<any>().mockResolvedValue(false),
+      updateWorktree: jest.fn<any>().mockResolvedValue(undefined),
       getGit: jest.fn<any>(),
     } as any;
 
@@ -226,14 +228,15 @@ describe("WorktreeSyncService", () => {
       ]);
 
       // Set up different conditions for each worktree
+      // Note: Since these branches don't exist remotely, they won't be checked for updates
       mockGitService.checkWorktreeStatus
-        .mockResolvedValueOnce(true) // deleted-clean: clean
-        .mockResolvedValueOnce(false) // deleted-dirty: has uncommitted changes
-        .mockResolvedValueOnce(true); // deleted-unpushed: clean
+        .mockResolvedValueOnce(true) // deleted-clean: clean (for pruning)
+        .mockResolvedValueOnce(false) // deleted-dirty: has uncommitted changes (for pruning)
+        .mockResolvedValueOnce(true); // deleted-unpushed: clean (for pruning)
 
       mockGitService.hasUnpushedCommits
         .mockResolvedValueOnce(false) // deleted-clean: no unpushed commits
-        .mockResolvedValueOnce(false) // deleted-dirty: no unpushed commits (but won't be checked due to uncommitted changes)
+        .mockResolvedValueOnce(false) // deleted-dirty: no unpushed commits
         .mockResolvedValueOnce(true); // deleted-unpushed: has unpushed commits
 
       await service.sync();
@@ -245,7 +248,10 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith(path.join("/test/worktrees", "deleted-unpushed"));
 
       // Verify all safety checks were performed
+      // checkWorktreeStatus is called 3 times: once for each deleted branch during pruning
+      // (no update checks since these branches don't exist remotely)
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
+      // All safety checks are called for every worktree
       expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledTimes(3); // Called for all worktrees
       expect(mockGitService.hasStashedChanges).toHaveBeenCalledTimes(3);
       expect(mockGitService.hasOperationInProgress).toHaveBeenCalledTimes(3);
@@ -470,6 +476,58 @@ describe("WorktreeSyncService", () => {
         // Should not attempt branch-by-branch fetch when skipLfs is true
         expect(mockGitService.fetchBranch).not.toHaveBeenCalled();
       });
+    });
+
+    it("should not update worktrees when updateExistingWorktrees is disabled", async () => {
+      // Disable update functionality
+      mockConfig.updateExistingWorktrees = false;
+      service = new WorktreeSyncService(mockConfig);
+
+      // Mock worktrees that exist both locally and remotely
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-1", branch: "feature-1" },
+      ]);
+
+      // These should not be called when updates are disabled
+      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+
+      await service.sync();
+
+      // Verify update checks were not performed
+      expect(mockGitService.isWorktreeBehind).not.toHaveBeenCalled();
+      expect(mockGitService.updateWorktree).not.toHaveBeenCalled();
+    });
+
+    it("should update worktrees that are behind when updateExistingWorktrees is enabled", async () => {
+      // Mock worktrees that exist both locally and remotely
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-1", branch: "feature-1" },
+        { path: "/test/worktrees/feature-2", branch: "feature-2" },
+      ]);
+
+      // Mock different conditions
+      mockGitService.checkWorktreeStatus
+        .mockResolvedValueOnce(true) // main: clean
+        .mockResolvedValueOnce(false) // feature-1: has local changes
+        .mockResolvedValueOnce(true); // feature-2: clean
+
+      mockGitService.isWorktreeBehind
+        .mockResolvedValueOnce(false) // main: up to date
+        .mockResolvedValueOnce(true); // feature-2: behind
+
+      await service.sync();
+
+      // Should only check behind status for clean worktrees
+      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
+      expect(mockGitService.isWorktreeBehind).toHaveBeenCalledTimes(2); // Only for clean worktrees
+
+      // Should only update feature-2 (clean and behind)
+      expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(1);
+      expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature-2");
     });
   });
 });

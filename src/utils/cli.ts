@@ -10,6 +10,7 @@ export interface CliOptions extends Partial<Config> {
   bareRepoDir?: string;
   branchMaxAge?: string;
   skipLfs?: boolean;
+  noUpdateExisting?: boolean;
 }
 
 export function parseArguments(): CliOptions {
@@ -66,6 +67,11 @@ export function parseArguments(): CliOptions {
       description: "Skip Git LFS downloads when fetching and creating worktrees.",
       default: false,
     })
+    .option("no-update-existing", {
+      type: "boolean",
+      description: "Disable automatic updates of existing worktrees.",
+      default: false,
+    })
     .help()
     .alias("help", "h")
     .parseSync();
@@ -81,6 +87,7 @@ export function parseArguments(): CliOptions {
     bareRepoDir: argv.bareRepoDir,
     branchMaxAge: argv.branchMaxAge,
     skipLfs: argv.skipLfs,
+    noUpdateExisting: argv["no-update-existing"] as boolean,
   };
 }
 
@@ -117,6 +124,10 @@ export function reconstructCliCommand(config: Config): string {
 
   if (config.skipLfs) {
     args.push("--skip-lfs");
+  }
+
+  if (config.updateExistingWorktrees === false) {
+    args.push("--no-update-existing");
   }
 
   return `${executable} ${args.join(" ")}`;

@@ -81,6 +81,7 @@ sync-worktrees --config ./sync-worktrees.config.js
 | `--runOnce` | - | Execute once and exit | No | `false` |
 | `--branchMaxAge` | `-a` | Maximum age of branches to sync (e.g., '30d', '6m', '1y') | No | - |
 | `--skip-lfs` | - | Skip Git LFS downloads when fetching and creating worktrees | No | `false` |
+| `--no-update-existing` | - | Disable automatic updates of existing worktrees | No | `false` |
 | `--help` | `-h` | Show help | No | - |
 
 \* Required when not using a config file
@@ -100,6 +101,9 @@ sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchMaxAge
 
 # Sync branches active in the last 6 months, check every hour
 sync-worktrees -u git@github.com:user/repo.git -w ./worktrees --branchMaxAge 6m
+
+# Disable automatic updates of existing worktrees
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --no-update-existing
 ```
 
 ### Using a config file
@@ -124,7 +128,8 @@ module.exports = {
   defaults: {
     cronSchedule: "0 * * * *",  // Hourly
     runOnce: false,
-    branchMaxAge: "30d"  // Only sync branches active in last 30 days
+    branchMaxAge: "30d",  // Only sync branches active in last 30 days
+    updateExistingWorktrees: true  // Auto-update worktrees that are behind (default: true)
   },
   
   // Retry configuration (optional - these are the defaults)

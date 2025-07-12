@@ -167,6 +167,10 @@ export class ConfigLoaderService {
       resolved.retry = { ...globalRetry, ...defaults?.retry, ...repo.retry };
     }
 
+    if (repo.updateExistingWorktrees !== undefined || defaults?.updateExistingWorktrees !== undefined) {
+      resolved.updateExistingWorktrees = repo.updateExistingWorktrees ?? defaults?.updateExistingWorktrees ?? true;
+    }
+
     return resolved;
   }
 

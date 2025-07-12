@@ -110,8 +110,13 @@ export class WorktreeSyncService {
 
         await this.pruneOldWorktrees(remoteBranches, worktreeBranches);
 
+        // Update existing worktrees if enabled
+        if (this.config.updateExistingWorktrees !== false) {
+          await this.updateExistingWorktrees(worktrees, remoteBranches);
+        }
+
         await this.gitService.pruneWorktrees();
-        console.log("Step 4: Pruned worktree metadata.");
+        console.log("Step 5: Pruned worktree metadata.");
       }, retryOptions);
     } catch (error) {
       console.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
@@ -211,6 +216,59 @@ export class WorktreeSyncService {
     if (failedBranches.length > 0) {
       console.log(`⚠️  Failed to fetch ${failedBranches.length} branches due to errors.`);
       console.log(`   These branches will be skipped: ${failedBranches.join(", ")}`);
+    }
+  }
+
+  private async updateExistingWorktrees(
+    worktrees: { path: string; branch: string }[],
+    remoteBranches: string[],
+  ): Promise<void> {
+    const worktreesToUpdate: { path: string; branch: string }[] = [];
+
+    console.log("Step 4: Checking for worktrees that need updates...");
+
+    // Only check worktrees whose branches still exist remotely
+    const activeWorktrees = worktrees.filter((w) => remoteBranches.includes(w.branch));
+
+    // Check each active worktree to see if it's behind and clean
+    for (const worktree of activeWorktrees) {
+      try {
+        // First check if the worktree directory actually exists
+        try {
+          await fs.access(worktree.path);
+        } catch {
+          // Directory doesn't exist, skip it
+          continue;
+        }
+
+        const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
+        if (!isClean) {
+          continue; // Skip worktrees with local changes
+        }
+
+        const isBehind = await this.gitService.isWorktreeBehind(worktree.path);
+        if (isBehind) {
+          worktreesToUpdate.push(worktree);
+        }
+      } catch (error) {
+        console.error(`  - Error checking worktree '${worktree.branch}':`, error);
+      }
+    }
+
+    if (worktreesToUpdate.length > 0) {
+      console.log(`  - Found ${worktreesToUpdate.length} worktrees behind their upstream branches.`);
+
+      for (const worktree of worktreesToUpdate) {
+        try {
+          console.log(`  - Updating worktree '${worktree.branch}'...`);
+          await this.gitService.updateWorktree(worktree.path);
+          console.log(`    ✅ Successfully updated '${worktree.branch}'.`);
+        } catch (error) {
+          console.error(`    ❌ Failed to update '${worktree.branch}':`, error);
+        }
+      }
+    } else {
+      console.log("  - All worktrees are up to date.");
     }
   }
 

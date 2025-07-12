@@ -15,6 +15,7 @@ export interface Config {
   retry?: RetryConfig;
   branchMaxAge?: string;
   skipLfs?: boolean;
+  updateExistingWorktrees?: boolean;
 }
 
 export interface RepositoryConfig extends Config {

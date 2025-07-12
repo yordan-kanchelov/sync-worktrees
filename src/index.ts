@@ -170,6 +170,14 @@ async function main(): Promise<void> {
 
       const globalRunOnce = options.runOnce ?? configFile.defaults?.runOnce ?? false;
 
+      // Apply CLI override for updateExistingWorktrees
+      if (options.noUpdateExisting) {
+        repositories = repositories.map((repo) => ({
+          ...repo,
+          updateExistingWorktrees: false,
+        }));
+      }
+
       await runMultipleRepositories(repositories, globalRunOnce);
     } catch (error) {
       if (error instanceof Error && error.message.includes("Config file not found")) {
@@ -199,6 +207,13 @@ async function main(): Promise<void> {
       config = await promptForConfig(options);
     } else {
       config = options as Config;
+    }
+
+    // Convert noUpdateExisting CLI flag to updateExistingWorktrees config
+    if (options.noUpdateExisting) {
+      config.updateExistingWorktrees = false;
+    } else if (config.updateExistingWorktrees === undefined) {
+      config.updateExistingWorktrees = true; // Default to true
     }
 
     await runSingleRepository(config);

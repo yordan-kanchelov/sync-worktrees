@@ -162,7 +162,10 @@ export class GitService {
       );
 
       if (!mainWorktreeRegistered) {
-        console.warn(`Main worktree was created but not found in worktree list. This may cause issues.`);
+        // Only warn in non-test environments as this is common in tests due to Git state
+        if (process.env.NODE_ENV !== "test") {
+          console.warn(`Main worktree was created but not found in worktree list. This may cause issues.`);
+        }
       }
     }
 
@@ -411,6 +414,40 @@ export class GitService {
   async getWorktrees(): Promise<{ path: string; branch: string }[]> {
     const bareGit = simpleGit(this.bareRepoPath);
     return this.getWorktreesFromBare(bareGit);
+  }
+
+  async isWorktreeBehind(worktreePath: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+    try {
+      // Get the current branch
+      const branchSummary = await worktreeGit.branch();
+      const currentBranch = branchSummary.current;
+
+      // Check if the branch has an upstream
+      const upstreamInfo = await worktreeGit.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]);
+      if (!upstreamInfo.trim()) {
+        return false; // No upstream, can't be behind
+      }
+
+      // Count commits behind upstream
+      const behindCount = await worktreeGit.raw(["rev-list", "--count", `HEAD..${upstreamInfo.trim()}`]);
+      return parseInt(behindCount.trim(), 10) > 0;
+    } catch {
+      // If any command fails, assume not behind
+      return false;
+    }
+  }
+
+  async updateWorktree(worktreePath: string): Promise<void> {
+    const worktreeGit = this.isLfsSkipEnabled()
+      ? simpleGit(worktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+      : simpleGit(worktreePath);
+
+    // Perform a fast-forward merge
+    const branchSummary = await worktreeGit.branch();
+    const currentBranch = branchSummary.current;
+
+    await worktreeGit.merge([`origin/${currentBranch}`, "--ff-only"]);
   }
 
   private async getWorktreesFromBare(bareGit: SimpleGit): Promise<{ path: string; branch: string }[]> {
