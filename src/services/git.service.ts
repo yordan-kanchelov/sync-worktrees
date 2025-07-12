@@ -68,7 +68,7 @@ export class GitService {
     let needsMainWorktree = true;
     try {
       const worktrees = await this.getWorktreesFromBare(bareGit);
-      needsMainWorktree = !worktrees.some((w) => w.path === this.mainWorktreePath);
+      needsMainWorktree = !worktrees.some((w) => path.resolve(w.path) === path.resolve(this.mainWorktreePath));
     } catch {
       // If worktree list fails, assume we need main worktree
     }
