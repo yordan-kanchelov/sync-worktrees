@@ -41,12 +41,11 @@ export class WorktreeSyncService {
           console.log(`🔄 Retrying synchronization...\n`);
         }
       },
-      lfsRetryHandler: (context) => {
+      lfsRetryHandler: () => {
         if (!this.config.skipLfs && !lfsSkipEnabled) {
           console.log("⚠️  Temporarily disabling LFS downloads for this sync...");
           process.env.GIT_LFS_SKIP_SMUDGE = "1";
           lfsSkipEnabled = true;
-          context.skipLfsEnabled = true;
         }
       },
     };

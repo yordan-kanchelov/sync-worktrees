@@ -5,7 +5,6 @@ interface ErrorWithCode {
 
 export interface LfsErrorContext {
   isLfsError: boolean;
-  skipLfsEnabled?: boolean;
 }
 
 export interface RetryOptions {
