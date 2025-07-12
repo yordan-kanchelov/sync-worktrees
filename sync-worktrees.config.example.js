@@ -17,6 +17,8 @@ module.exports = {
     runOnce: false,
     // Maximum age of branches to sync (optional)
     // branchMaxAge: "30d",  // Only sync branches active in last 30 days
+    // Skip Git LFS downloads (optional)
+    // skipLfs: true,  // Skip downloading large files tracked by Git LFS
   },
   
   // Retry configuration for handling transient errors (optional)
@@ -114,6 +116,19 @@ module.exports = {
       
       // Check less frequently - once per day
       cronSchedule: "0 0 * * *"
+    },
+    
+    {
+      name: "large-media-project",
+      
+      repoUrl: "https://github.com/user/large-media.git",
+      worktreeDir: "./worktrees/large-media",
+      
+      // Skip downloading LFS files to save bandwidth and disk space
+      skipLfs: true,
+      
+      // Still check regularly for code changes
+      cronSchedule: "0 * * * *"
     }
   ]
 };

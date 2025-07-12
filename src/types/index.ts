@@ -13,6 +13,7 @@ export interface Config {
   bareRepoDir?: string;
   retry?: RetryConfig;
   branchMaxAge?: string;
+  skipLfs?: boolean;
 }
 
 export interface RepositoryConfig extends Config {

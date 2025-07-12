@@ -130,6 +130,9 @@ async function listRepositories(configPath: string): Promise<void> {
       if (resolved.bareRepoDir) {
         console.log(`   Bare repo: ${resolved.bareRepoDir}`);
       }
+      if (resolved.skipLfs) {
+        console.log(`   Skip LFS: ${resolved.skipLfs}`);
+      }
       console.log("");
     });
   } catch (error) {

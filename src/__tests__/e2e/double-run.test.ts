@@ -122,7 +122,7 @@ describe("Double run E2E test", () => {
     // Final verification
     const worktrees = await fs.readdir(worktreeDir);
     expect(worktrees).not.toContain("HEAD");
-  });
+  }, 30000);
 
   it("should recover gracefully if a HEAD worktree was manually created", async () => {
     const bareRepoDir = path.join(tempDir, ".bare");

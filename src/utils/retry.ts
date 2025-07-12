@@ -3,13 +3,19 @@ interface ErrorWithCode {
   message?: string;
 }
 
+export interface LfsErrorContext {
+  isLfsError: boolean;
+  skipLfsEnabled?: boolean;
+}
+
 export interface RetryOptions {
   maxAttempts?: number | "unlimited";
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;
-  shouldRetry?: (error: unknown) => boolean;
-  onRetry?: (error: unknown, attempt: number) => void;
+  shouldRetry?: (error: unknown, context?: LfsErrorContext) => boolean;
+  onRetry?: (error: unknown, attempt: number, context?: LfsErrorContext) => void;
+  lfsRetryHandler?: (context: LfsErrorContext) => void;
 }
 
 const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttempts: number | "unlimited" } = {
@@ -17,8 +23,21 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
   initialDelayMs: 1000,
   maxDelayMs: 600000, // 10 minutes
   backoffMultiplier: 2,
-  shouldRetry: (error) => {
+  shouldRetry: (error, context) => {
     const err = error as ErrorWithCode;
+
+    // Check for LFS errors
+    if (
+      err.message?.includes("smudge filter lfs failed") ||
+      err.message?.includes("Object does not exist on the server") ||
+      err.message?.includes("external filter 'git-lfs filter-process' failed")
+    ) {
+      if (context) {
+        context.isLfsError = true;
+      }
+      return true;
+    }
+
     if (err.code === "ENOTFOUND" || err.code === "ECONNREFUSED" || err.code === "ETIMEDOUT") {
       return true;
     }
@@ -38,11 +57,13 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
     return false;
   },
   onRetry: () => {},
+  lfsRetryHandler: () => {},
 };
 
 export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   let attempt = 1;
+  const lfsContext: LfsErrorContext = { isLfsError: false };
 
   while (true) {
     try {
@@ -50,13 +71,18 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
     } catch (error) {
       const isLastAttempt = opts.maxAttempts !== "unlimited" && attempt >= opts.maxAttempts;
 
-      if (isLastAttempt || !opts.shouldRetry(error)) {
+      if (isLastAttempt || !opts.shouldRetry(error, lfsContext)) {
         throw error;
+      }
+
+      // Handle LFS errors specifically
+      if (lfsContext.isLfsError && opts.lfsRetryHandler) {
+        opts.lfsRetryHandler(lfsContext);
       }
 
       const delay = Math.min(opts.initialDelayMs * Math.pow(opts.backoffMultiplier, attempt - 1), opts.maxDelayMs);
 
-      opts.onRetry(error, attempt);
+      opts.onRetry(error, attempt, lfsContext);
 
       await new Promise((resolve) => setTimeout(resolve, delay));
       attempt++;

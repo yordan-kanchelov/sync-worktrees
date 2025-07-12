@@ -153,6 +153,10 @@ export class ConfigLoaderService {
       resolved.branchMaxAge = repo.branchMaxAge ?? defaults?.branchMaxAge;
     }
 
+    if (repo.skipLfs !== undefined || defaults?.skipLfs !== undefined) {
+      resolved.skipLfs = repo.skipLfs ?? defaults?.skipLfs ?? false;
+    }
+
     if (repo.retry || defaults?.retry || globalRetry) {
       resolved.retry = { ...globalRetry, ...defaults?.retry, ...repo.retry };
     }

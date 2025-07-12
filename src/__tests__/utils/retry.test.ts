@@ -225,8 +225,8 @@ describe("retry", () => {
       });
 
       expect(onRetry).toHaveBeenCalledTimes(2);
-      expect(onRetry).toHaveBeenNthCalledWith(1, error1, 1);
-      expect(onRetry).toHaveBeenNthCalledWith(2, error2, 2);
+      expect(onRetry).toHaveBeenNthCalledWith(1, error1, 1, expect.objectContaining({ isLfsError: false }));
+      expect(onRetry).toHaveBeenNthCalledWith(2, error2, 2, expect.objectContaining({ isLfsError: false }));
     });
   });
 
@@ -268,6 +268,66 @@ describe("retry", () => {
 
       expect(delays).toEqual(expectedDelays);
       mockSetTimeout.mockRestore();
+    });
+  });
+
+  describe("LFS error detection", () => {
+    it("should detect LFS errors and mark context", async () => {
+      const lfsError = new Error("smudge filter lfs failed");
+      let capturedContext: any;
+
+      const mockFn = jest.fn().mockRejectedValueOnce(lfsError).mockResolvedValue("success");
+
+      await retry(mockFn, {
+        initialDelayMs: 1,
+        onRetry: (_error, _attempt, context) => {
+          capturedContext = context;
+        },
+      });
+
+      expect(capturedContext?.isLfsError).toBe(true);
+    });
+
+    it("should detect various LFS error messages", async () => {
+      const lfsErrors = [
+        "smudge filter lfs failed",
+        "Object does not exist on the server",
+        "external filter 'git-lfs filter-process' failed",
+      ];
+
+      for (const errorMessage of lfsErrors) {
+        let capturedContext: any;
+        const error = new Error(errorMessage);
+
+        const mockFn = jest.fn().mockRejectedValueOnce(error).mockResolvedValue("success");
+
+        await retry(mockFn, {
+          initialDelayMs: 1,
+          onRetry: (_error, _attempt, context) => {
+            capturedContext = context;
+          },
+        });
+
+        expect(capturedContext?.isLfsError).toBe(true);
+      }
+    });
+
+    it("should call lfsRetryHandler when LFS error is detected", async () => {
+      const lfsError = new Error("smudge filter lfs failed");
+      const lfsRetryHandler = jest.fn();
+
+      const mockFn = jest.fn().mockRejectedValueOnce(lfsError).mockResolvedValue("success");
+
+      await retry(mockFn, {
+        initialDelayMs: 1,
+        lfsRetryHandler,
+      });
+
+      expect(lfsRetryHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isLfsError: true,
+        }),
+      );
     });
   });
 });

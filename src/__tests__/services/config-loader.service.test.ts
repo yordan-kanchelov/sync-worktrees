@@ -232,6 +232,49 @@ describe("ConfigLoaderService", () => {
       expect(resolved.retry).toBeUndefined();
     });
 
+    it("should handle skipLfs configuration", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        module.exports = {
+          defaults: {
+            skipLfs: true
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "https://github.com/test/repo.git",
+            worktreeDir: "./worktrees"
+          }, {
+            name: "test-repo-2",
+            repoUrl: "https://github.com/test/repo2.git",
+            worktreeDir: "./worktrees2",
+            skipLfs: false
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+      const repo1 = configLoader.resolveRepositoryConfig(config.repositories[0], config.defaults, tempDir);
+      const repo2 = configLoader.resolveRepositoryConfig(config.repositories[1], config.defaults, tempDir);
+
+      expect(repo1.skipLfs).toBe(true); // Uses default
+      expect(repo2.skipLfs).toBe(false); // Overrides default
+    });
+
+    it("should default skipLfs to false when not specified", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo);
+
+      expect(resolved.skipLfs).toBeUndefined(); // Not explicitly set
+    });
+
     it("should prioritize repo retry over defaults and global", () => {
       const repo = {
         name: "test",
