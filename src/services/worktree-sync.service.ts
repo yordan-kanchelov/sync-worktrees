@@ -27,6 +27,7 @@ export class WorktreeSyncService {
 
     const retryOptions: RetryOptions = {
       maxAttempts: this.config.retry?.maxAttempts ?? 3,
+      maxLfsRetries: this.config.retry?.maxLfsRetries ?? 2,
       initialDelayMs: this.config.retry?.initialDelayMs ?? 1000,
       maxDelayMs: this.config.retry?.maxDelayMs ?? 30000,
       backoffMultiplier: this.config.retry?.backoffMultiplier ?? 2,

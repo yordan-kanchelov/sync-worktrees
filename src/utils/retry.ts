@@ -10,6 +10,7 @@ export interface LfsErrorContext {
 
 export interface RetryOptions {
   maxAttempts?: number | "unlimited";
+  maxLfsRetries?: number;
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;
@@ -20,6 +21,7 @@ export interface RetryOptions {
 
 const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttempts: number | "unlimited" } = {
   maxAttempts: "unlimited",
+  maxLfsRetries: 2,
   initialDelayMs: 1000,
   maxDelayMs: 600000, // 10 minutes
   backoffMultiplier: 2,
@@ -63,15 +65,38 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
 export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   let attempt = 1;
+  let lfsAttempt = 0;
   const lfsContext: LfsErrorContext = { isLfsError: false };
 
   while (true) {
     try {
       return await fn();
     } catch (error) {
-      const isLastAttempt = opts.maxAttempts !== "unlimited" && attempt >= opts.maxAttempts;
+      // Reset LFS error flag for each attempt
+      lfsContext.isLfsError = false;
 
-      if (isLastAttempt || !opts.shouldRetry(error, lfsContext)) {
+      // Check if we should retry
+      if (!opts.shouldRetry(error, lfsContext)) {
+        throw error;
+      }
+
+      // Track LFS attempts separately
+      if (lfsContext.isLfsError) {
+        lfsAttempt++;
+
+        // Check if we've exceeded LFS retry limit
+        if (lfsAttempt > opts.maxLfsRetries) {
+          const err = error as Error;
+          throw new Error(
+            `LFS error retry limit exceeded (${opts.maxLfsRetries} attempts). ` +
+              `Original error: ${err.message}. ` +
+              `Consider using --skip-lfs option to bypass LFS downloads.`,
+          );
+        }
+      }
+
+      const isLastAttempt = opts.maxAttempts !== "unlimited" && attempt >= opts.maxAttempts;
+      if (isLastAttempt) {
         throw error;
       }
 

@@ -24,6 +24,7 @@ module.exports = {
   // Retry configuration for handling transient errors (optional)
   retry: {
     maxAttempts: 'unlimited', // Maximum retry attempts ('unlimited' or number)
+    maxLfsRetries: 2,         // Maximum retry attempts for LFS errors (default: 2)
     initialDelayMs: 1000,     // Initial delay: 1 second
     maxDelayMs: 600000,       // Maximum delay: 10 minutes
     backoffMultiplier: 2      // Doubles delay each retry (1s, 2s, 4s, 8s...)
@@ -32,6 +33,7 @@ module.exports = {
   // Simple retry presets (uncomment one):
   // retry: { maxAttempts: 5 },                    // Try 5 times then stop
   // retry: { maxAttempts: 'unlimited' },          // Keep trying forever
+  // retry: { maxLfsRetries: 0 },                  // Don't retry LFS errors at all
   // retry: { maxDelayMs: 60000 },                 // Cap retry delay at 1 minute
   // retry: { initialDelayMs: 5000 },              // Start with 5 second delay
   

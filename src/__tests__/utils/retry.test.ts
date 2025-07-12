@@ -329,5 +329,64 @@ describe("retry", () => {
         }),
       );
     });
+
+    it("should limit LFS retries to maxLfsRetries", async () => {
+      const lfsError = new Error("smudge filter lfs failed");
+      const mockFn = jest.fn().mockRejectedValue(lfsError);
+
+      await expect(
+        retry(mockFn, {
+          initialDelayMs: 1,
+          maxLfsRetries: 2,
+          maxAttempts: 10,
+        }),
+      ).rejects.toThrow("LFS error retry limit exceeded (2 attempts)");
+
+      // Should have tried 3 times total (initial + 2 retries)
+      expect(mockFn).toHaveBeenCalledTimes(3);
+    });
+
+    it("should respect default maxLfsRetries when not specified", async () => {
+      const lfsError = new Error("Object does not exist on the server");
+      const mockFn = jest.fn().mockRejectedValue(lfsError);
+
+      await expect(
+        retry(mockFn, {
+          initialDelayMs: 1,
+        }),
+      ).rejects.toThrow("LFS error retry limit exceeded (2 attempts)");
+
+      // Default is 2, so should try 3 times total
+      expect(mockFn).toHaveBeenCalledTimes(3);
+    });
+
+    it("should not apply LFS retry limit to non-LFS errors", async () => {
+      const networkError = new Error("Network error");
+      (networkError as any).code = "ECONNREFUSED";
+      const mockFn = jest.fn().mockRejectedValue(networkError);
+
+      await expect(
+        retry(mockFn, {
+          initialDelayMs: 1,
+          maxAttempts: 3,
+          maxLfsRetries: 1,
+        }),
+      ).rejects.toThrow("Network error");
+
+      // Should respect maxAttempts, not maxLfsRetries
+      expect(mockFn).toHaveBeenCalledTimes(3);
+    });
+
+    it("should include helpful message in LFS retry limit error", async () => {
+      const lfsError = new Error("external filter 'git-lfs filter-process' failed");
+      const mockFn = jest.fn().mockRejectedValue(lfsError);
+
+      await expect(
+        retry(mockFn, {
+          initialDelayMs: 1,
+          maxLfsRetries: 1,
+        }),
+      ).rejects.toThrow(/Consider using --skip-lfs option/);
+    });
   });
 });

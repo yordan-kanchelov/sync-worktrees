@@ -1,5 +1,6 @@
 export interface RetryConfig {
   maxAttempts?: number | "unlimited";
+  maxLfsRetries?: number;
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;

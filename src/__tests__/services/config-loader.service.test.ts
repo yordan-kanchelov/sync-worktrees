@@ -315,5 +315,46 @@ describe("ConfigLoaderService", () => {
         backoffMultiplier: 1.5,
       });
     });
+
+    it("should reject invalid maxLfsRetries", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        module.exports = {
+          retry: {
+            maxLfsRetries: -1
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "https://github.com/test/repo.git",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid 'maxLfsRetries' in retry config. Must be a non-negative number",
+      );
+    });
+
+    it("should accept valid maxLfsRetries", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        module.exports = {
+          retry: {
+            maxLfsRetries: 0
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "https://github.com/test/repo.git",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+      expect(config.retry?.maxLfsRetries).toBe(0);
+    });
   });
 });

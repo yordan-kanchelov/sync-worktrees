@@ -113,6 +113,12 @@ export class ConfigLoaderService {
           throw new Error("Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number");
         }
       }
+
+      if (retry.maxLfsRetries !== undefined) {
+        if (typeof retry.maxLfsRetries !== "number" || retry.maxLfsRetries < 0) {
+          throw new Error("Invalid 'maxLfsRetries' in retry config. Must be a non-negative number");
+        }
+      }
       if (
         retry.initialDelayMs !== undefined &&
         (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)

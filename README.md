@@ -182,6 +182,22 @@ repositories: [{
 }]
 ```
 
+### Git LFS Support
+
+For repositories with Git LFS issues or when large files aren't needed:
+
+```bash
+# Skip LFS downloads
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --skip-lfs
+
+# Or in config file
+defaults: {
+  skipLfs: true
+}
+```
+
+The tool automatically handles LFS errors by retrying with LFS disabled (max 2 retries by default, configurable via `retry.maxLfsRetries`).
+
 ### Branch Age Filtering
 
 To reduce clutter and save disk space, you can configure sync-worktrees to only sync branches that have been active within a specified time period. This is particularly useful for repositories with many stale or abandoned branches.
