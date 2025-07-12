@@ -116,7 +116,7 @@ export function reconstructCliCommand(config: Config): string {
   }
 
   if (config.skipLfs) {
-    args.push("--skipLfs");
+    args.push("--skip-lfs");
   }
 
   return `${executable} ${args.join(" ")}`;

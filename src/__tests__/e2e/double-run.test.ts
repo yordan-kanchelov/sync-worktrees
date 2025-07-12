@@ -8,14 +8,12 @@ import simpleGit from "simple-git";
 describe("Double run E2E test", () => {
   let tempDir: string;
   let bareRepo: string;
-  let repoPath: string;
   let worktreeDir: string;
   const binaryPath = path.join(__dirname, "../../../dist/index.js");
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-double-run-"));
     bareRepo = path.join(tempDir, "test-repo.git");
-    repoPath = path.join(tempDir, "test-repo");
     worktreeDir = path.join(tempDir, "worktrees");
 
     // Create a bare repository with origin/HEAD
@@ -70,7 +68,7 @@ describe("Double run E2E test", () => {
 
   it("should run successfully twice without any errors about HEAD", async () => {
     const bareRepoDir = path.join(tempDir, ".bare");
-    const command = `node "${binaryPath}" --repoUrl "file://${bareRepo}" --repoPath "${repoPath}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`;
+    const command = `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`;
 
     // First run
     console.log("First run...");
@@ -104,7 +102,7 @@ describe("Double run E2E test", () => {
 
   it("should handle multiple rapid successive runs without errors", async () => {
     const bareRepoDir = path.join(tempDir, ".bare");
-    const command = `node "${binaryPath}" --repoUrl "file://${bareRepo}" --repoPath "${repoPath}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`;
+    const command = `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`;
 
     // Run the command 5 times in succession
     for (let i = 1; i <= 5; i++) {
@@ -127,7 +125,7 @@ describe("Double run E2E test", () => {
 
   it("should recover gracefully if a HEAD worktree was manually created", async () => {
     const bareRepoDir = path.join(tempDir, ".bare");
-    const command = `node "${binaryPath}" --repoUrl "file://${bareRepo}" --repoPath "${repoPath}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`;
+    const command = `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`;
 
     // First run to set up worktrees
     execSync(command, { encoding: "utf8" });

@@ -11,3 +11,4 @@ feat: add Git LFS error handling and skip option
 - Enhanced retry mechanism to detect and handle LFS-specific errors
 - Added `maxLfsRetries` configuration to prevent infinite retry loops on persistent LFS errors
 - Improved error resilience for repositories with missing or corrupted LFS objects
+- Fixed E2E tests to handle different Git default branch configurations

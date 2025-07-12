@@ -8,14 +8,12 @@ import simpleGit from "simple-git";
 describe("HEAD branch filtering (E2E)", () => {
   let tempDir: string;
   let bareRepo: string;
-  let repoPath: string;
   let worktreeDir: string;
   const binaryPath = path.join(__dirname, "../../../dist/index.js");
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-head-test-"));
     bareRepo = path.join(tempDir, "test-repo.git");
-    repoPath = path.join(tempDir, "test-repo");
     worktreeDir = path.join(tempDir, "worktrees");
 
     // Create a bare repository
@@ -66,7 +64,7 @@ describe("HEAD branch filtering (E2E)", () => {
     // Run sync-worktrees
     const bareRepoDir = path.join(tempDir, ".bare");
     const output = execSync(
-      `node "${binaryPath}" --repoUrl "file://${bareRepo}" --repoPath "${repoPath}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`,
+      `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`,
       { encoding: "utf8" },
     );
 
@@ -95,13 +93,13 @@ describe("HEAD branch filtering (E2E)", () => {
 
     // First run
     execSync(
-      `node "${binaryPath}" --repoUrl "file://${bareRepo}" --repoPath "${repoPath}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`,
+      `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`,
       { encoding: "utf8" },
     );
 
     // Second run - should not have any errors
     const output = execSync(
-      `node "${binaryPath}" --repoUrl "file://${bareRepo}" --repoPath "${repoPath}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`,
+      `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`,
       { encoding: "utf8" },
     );
 

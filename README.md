@@ -80,6 +80,7 @@ sync-worktrees --config ./sync-worktrees.config.js
 | `--cronSchedule` | `-s` | Cron pattern for scheduling | No | `0 * * * *` (hourly) |
 | `--runOnce` | - | Execute once and exit | No | `false` |
 | `--branchMaxAge` | `-a` | Maximum age of branches to sync (e.g., '30d', '6m', '1y') | No | - |
+| `--skip-lfs` | - | Skip Git LFS downloads when fetching and creating worktrees | No | `false` |
 | `--help` | `-h` | Show help | No | - |
 
 \* Required when not using a config file

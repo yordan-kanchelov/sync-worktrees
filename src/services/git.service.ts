@@ -154,6 +154,16 @@ export class GitService {
           }
         }
       }
+
+      // Ensure the worktree is registered by checking it exists in the list
+      const updatedWorktrees = await this.getWorktreesFromBare(bareGit);
+      const mainWorktreeRegistered = updatedWorktrees.some(
+        (w) => path.resolve(w.path) === path.resolve(this.mainWorktreePath),
+      );
+
+      if (!mainWorktreeRegistered) {
+        console.warn(`Main worktree was created but not found in worktree list. This may cause issues.`);
+      }
     }
 
     // Use the main worktree as our primary git instance
