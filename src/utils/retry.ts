@@ -56,7 +56,7 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
     return false;
   },
   onRetry: () => {},
-  lfsRetryHandler: () => {},
+  lfsRetryHandler: (context) => {},
 };
 
 export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
