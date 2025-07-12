@@ -2,6 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
+import { isLfsError } from "../utils/lfs-error";
 import { retry } from "../utils/retry";
 
 import { GitService } from "./git.service";
@@ -60,12 +61,7 @@ export class WorktreeSyncService {
           const errorMessage = fetchError instanceof Error ? fetchError.message : String(fetchError);
 
           // If it's an LFS error and we haven't already enabled skip, try branch-by-branch
-          if (
-            (errorMessage.includes("smudge filter lfs failed") ||
-              errorMessage.includes("Object does not exist on the server")) &&
-            !lfsSkipEnabled &&
-            !this.config.skipLfs
-          ) {
+          if (isLfsError(errorMessage) && !lfsSkipEnabled && !this.config.skipLfs) {
             console.log("⚠️  Fetch all failed due to LFS error. Attempting branch-by-branch fetch...");
             console.log("⚠️  Temporarily disabling LFS downloads for branch-by-branch fetch...");
             process.env.GIT_LFS_SKIP_SMUDGE = "1";

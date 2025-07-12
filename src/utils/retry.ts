@@ -1,3 +1,5 @@
+import { isLfsErrorFromError } from "./lfs-error";
+
 interface ErrorWithCode {
   code?: string;
   message?: string;
@@ -28,11 +30,7 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
     const err = error as ErrorWithCode;
 
     // Check for LFS errors
-    if (
-      err.message?.includes("smudge filter lfs failed") ||
-      err.message?.includes("Object does not exist on the server") ||
-      err.message?.includes("external filter 'git-lfs filter-process' failed")
-    ) {
+    if (isLfsErrorFromError(error)) {
       if (context) {
         context.isLfsError = true;
       }
