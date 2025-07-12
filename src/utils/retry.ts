@@ -56,7 +56,7 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
     return false;
   },
   onRetry: () => {},
-  lfsRetryHandler: (context) => {},
+  lfsRetryHandler: (_context) => {},
 };
 
 export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
@@ -87,7 +87,7 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
           throw new Error(
             `LFS error retry limit exceeded (${opts.maxLfsRetries} attempts). ` +
               `Consider using --skip-lfs option to bypass LFS downloads.`,
-            { cause: err }
+            { cause: err },
           );
         }
       }
