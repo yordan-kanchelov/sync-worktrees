@@ -30,10 +30,7 @@ export class GitService {
       // Clone as bare repository
       console.log(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
-      const cloneGit =
-        this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1"
-          ? simpleGit().env({ GIT_LFS_SKIP_SMUDGE: "1" })
-          : simpleGit();
+      const cloneGit = this.isLfsSkipEnabled() ? simpleGit().env({ GIT_LFS_SKIP_SMUDGE: "1" }) : simpleGit();
       await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare"]);
       console.log("✅ Clone successful.");
     }
@@ -56,7 +53,7 @@ export class GitService {
 
     // Fetch all remote branches to ensure they exist locally
     console.log("Fetching remote branches...");
-    if (this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1") {
+    if (this.isLfsSkipEnabled()) {
       await bareGit.env({ GIT_LFS_SKIP_SMUDGE: "1" }).fetch(["--all"]);
     } else {
       await bareGit.fetch(["--all"]);
@@ -89,7 +86,7 @@ export class GitService {
         const defaultBranchExists = branches.all.includes(this.defaultBranch);
 
         if (defaultBranchExists) {
-          if (this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1") {
+          if (this.isLfsSkipEnabled()) {
             await bareGit
               .env({ GIT_LFS_SKIP_SMUDGE: "1" })
               .raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
@@ -97,14 +94,13 @@ export class GitService {
             await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
           }
           // Set upstream tracking after creating worktree
-          const worktreeGit =
-            this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1"
-              ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
-              : simpleGit(absoluteWorktreePath);
+          const worktreeGit = this.isLfsSkipEnabled()
+            ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+            : simpleGit(absoluteWorktreePath);
           await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
         } else {
           // Create new branch tracking the remote branch
-          if (this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1") {
+          if (this.isLfsSkipEnabled()) {
             await bareGit
               .env({ GIT_LFS_SKIP_SMUDGE: "1" })
               .raw([
@@ -139,7 +135,7 @@ export class GitService {
           // Fallback to simple add if tracking setup fails
           console.warn(`Failed to create ${this.defaultBranch} worktree with tracking, using simple add: ${error}`);
           try {
-            if (this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1") {
+            if (this.isLfsSkipEnabled()) {
               await bareGit
                 .env({ GIT_LFS_SKIP_SMUDGE: "1" })
                 .raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
@@ -180,7 +176,7 @@ export class GitService {
     const git = this.getGit();
     console.log("Fetching latest data from remote...");
 
-    if (this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1") {
+    if (this.isLfsSkipEnabled()) {
       await git.env({ GIT_LFS_SKIP_SMUDGE: "1" }).fetch(["--all", "--prune"]);
     } else {
       await git.fetch(["--all", "--prune"]);
@@ -190,7 +186,7 @@ export class GitService {
   async fetchBranch(branchName: string): Promise<void> {
     const git = this.getGit();
 
-    if (this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1") {
+    if (this.isLfsSkipEnabled()) {
       await git.env({ GIT_LFS_SKIP_SMUDGE: "1" }).fetch(["origin", `${branchName}:${branchName}`, "--prune"]);
     } else {
       await git.fetch(["origin", `${branchName}:${branchName}`, "--prune"]);
@@ -236,10 +232,9 @@ export class GitService {
   }
 
   async addWorktree(branchName: string, worktreePath: string): Promise<void> {
-    const bareGit =
-      this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1"
-        ? simpleGit(this.bareRepoPath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
-        : simpleGit(this.bareRepoPath);
+    const bareGit = this.isLfsSkipEnabled()
+      ? simpleGit(this.bareRepoPath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+      : simpleGit(this.bareRepoPath);
     // Use absolute path for worktree add to avoid relative path issues
     const absoluteWorktreePath = path.resolve(worktreePath);
 
@@ -253,10 +248,9 @@ export class GitService {
         await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
 
         // Set upstream tracking after creating worktree
-        const worktreeGit =
-          this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1"
-            ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
-            : simpleGit(absoluteWorktreePath);
+        const worktreeGit = this.isLfsSkipEnabled()
+          ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+          : simpleGit(absoluteWorktreePath);
         await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
       } else {
         // Create new branch tracking the remote branch
@@ -398,6 +392,10 @@ export class GitService {
     }
     // Final fallback
     return "main";
+  }
+
+  private isLfsSkipEnabled(): boolean {
+    return this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1";
   }
 
   async getWorktrees(): Promise<{ path: string; branch: string }[]> {
