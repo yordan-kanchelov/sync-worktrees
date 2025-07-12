@@ -465,7 +465,7 @@ describe("WorktreeSyncService", () => {
         // Mock fetchAll to fail with LFS error
         mockGitService.fetchAll = jest.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed"));
 
-        await expect(service.sync()).rejects.toThrow("smudge filter lfs failed");
+        await expect(service.sync()).rejects.toThrow("LFS error retry limit exceeded");
 
         // Should not attempt branch-by-branch fetch when skipLfs is true
         expect(mockGitService.fetchBranch).not.toHaveBeenCalled();
