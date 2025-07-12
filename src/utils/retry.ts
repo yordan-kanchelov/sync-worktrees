@@ -86,8 +86,8 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
           const err = error as Error;
           throw new Error(
             `LFS error retry limit exceeded (${opts.maxLfsRetries} attempts). ` +
-              `Original error: ${err.message}. ` +
               `Consider using --skip-lfs option to bypass LFS downloads.`,
+            { cause: err }
           );
         }
       }
