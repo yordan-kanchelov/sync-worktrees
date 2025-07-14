@@ -171,15 +171,26 @@ export class WorktreeSyncService {
           if (canDelete) {
             await this.gitService.removeWorktree(worktreePath);
           } else {
-            // Log specific reasons for skipping
-            const reasons: string[] = [];
-            if (!isClean) reasons.push("uncommitted changes");
-            if (hasUnpushed) reasons.push("unpushed commits");
-            if (hasStash) reasons.push("stashed changes");
-            if (hasOperation) reasons.push("operation in progress");
-            if (hasDirtySubmodules) reasons.push("modified submodules");
+            // Check if upstream is gone for better messaging
+            const upstreamGone = hasUnpushed && (await this.gitService.hasUpstreamGone(worktreePath));
 
-            console.log(`  - ⚠️ Skipping removal of '${branchName}' due to: ${reasons.join(", ")}.`);
+            if (upstreamGone) {
+              console.warn(`  - ⚠️ Cannot automatically remove '${branchName}' - upstream branch was deleted.`);
+              console.log(`     Please review manually: cd ${worktreePath} && git log`);
+              console.log(
+                `     If changes were squash-merged, you can safely remove with: git worktree remove ${worktreePath}`,
+              );
+            } else {
+              // Log specific reasons for skipping
+              const reasons: string[] = [];
+              if (!isClean) reasons.push("uncommitted changes");
+              if (hasUnpushed) reasons.push("unpushed commits");
+              if (hasStash) reasons.push("stashed changes");
+              if (hasOperation) reasons.push("operation in progress");
+              if (hasDirtySubmodules) reasons.push("modified submodules");
+
+              console.log(`  - ⚠️ Skipping removal of '${branchName}' due to: ${reasons.join(", ")}.`);
+            }
           }
         } catch (error) {
           console.error(`  - Error checking worktree '${branchName}':`, error);

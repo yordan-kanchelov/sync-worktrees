@@ -13,6 +13,7 @@ import {
   createWorktreeListOutput,
 } from "../../__tests__/test-utils";
 import { GitService } from "../git.service";
+import { WorktreeMetadataService } from "../worktree-metadata.service";
 
 import type { Config } from "../../types";
 import type { SimpleGit } from "simple-git";
@@ -20,11 +21,13 @@ import type { SimpleGit } from "simple-git";
 // Mock the modules
 jest.mock("fs/promises");
 jest.mock("simple-git");
+jest.mock("../worktree-metadata.service");
 
 describe("GitService", () => {
   let gitService: GitService;
   let mockConfig: Config;
   let mockGit: jest.Mocked<SimpleGit>;
+  let mockMetadataService: any;
 
   beforeEach(() => {
     // Reset all mocks
@@ -32,6 +35,19 @@ describe("GitService", () => {
 
     // Setup mock config
     mockConfig = createMockConfig();
+
+    // Setup mock metadata service
+    mockMetadataService = {
+      createInitialMetadata: jest.fn<any>().mockResolvedValue(undefined),
+      updateLastSync: jest.fn<any>().mockResolvedValue(undefined),
+      loadMetadata: jest.fn<any>().mockResolvedValue(null),
+      deleteMetadata: jest.fn<any>().mockResolvedValue(undefined),
+      saveMetadata: jest.fn<any>().mockResolvedValue(undefined),
+      getMetadataPath: jest.fn<any>().mockResolvedValue("/test/path"),
+    };
+    (WorktreeMetadataService as jest.MockedClass<typeof WorktreeMetadataService>).mockImplementation(
+      () => mockMetadataService as any,
+    );
 
     // Setup mock git instance with jest mocks
     mockGit = createMockGitService({
@@ -44,6 +60,7 @@ describe("GitService", () => {
       status: jest.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })),
       clone: jest.fn<any>().mockResolvedValue(undefined),
       addConfig: jest.fn<any>().mockResolvedValue(undefined),
+      revparse: jest.fn<any>().mockResolvedValue("abc123"),
     }) as jest.Mocked<SimpleGit>;
 
     // Mock simpleGit factory
@@ -524,6 +541,134 @@ describe("GitService", () => {
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Error checking unpushed commits"));
 
       consoleSpy.mockRestore();
+    });
+
+    it("should use metadata when upstream is gone", async () => {
+      await gitService.initialize();
+
+      // Mock gitService methods
+      jest.spyOn(gitService, "hasUpstreamGone").mockResolvedValue(true);
+
+      // Mock metadata service to return saved metadata
+      (mockMetadataService.loadMetadata as jest.Mock<any>).mockResolvedValue({
+        lastSyncCommit: "abc123",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature-deleted",
+        createdFrom: { branch: "main", commit: "def456" },
+        syncHistory: [],
+      });
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "feature-deleted",
+        }),
+        raw: jest
+          .fn<any>()
+          .mockResolvedValueOnce("2\n") // 2 commits after last sync
+          .mockResolvedValueOnce("5\n"), // 5 total unpushed (fallback, should not be called)
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-deleted");
+
+      expect(hasUnpushed).toBe(true);
+      expect(mockMetadataService.loadMetadata).toHaveBeenCalledWith(".bare/repo", "feature-deleted");
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
+      // Should not fall back to regular check
+      expect(mockWorktreeGit.raw).toHaveBeenCalledTimes(1);
+    });
+
+    it("should return false when upstream is gone but no new commits since last sync", async () => {
+      await gitService.initialize();
+
+      jest.spyOn(gitService, "hasUpstreamGone").mockResolvedValue(true);
+
+      (mockMetadataService.loadMetadata as jest.Mock<any>).mockResolvedValue({
+        lastSyncCommit: "abc123",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature-deleted",
+        createdFrom: { branch: "main", commit: "def456" },
+        syncHistory: [],
+      });
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "feature-deleted",
+        }),
+        raw: jest.fn<any>().mockResolvedValue("0\n"), // 0 commits after last sync
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-deleted");
+
+      expect(hasUnpushed).toBe(false);
+    });
+  });
+
+  describe("hasUpstreamGone", () => {
+    it("should return true when upstream branch is deleted", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest
+          .fn<any>()
+          .mockResolvedValueOnce({
+            current: "feature-deleted",
+          })
+          .mockResolvedValueOnce({
+            all: ["origin/main", "origin/feature-1"], // feature-deleted not in remotes
+            current: "",
+          }),
+        raw: jest.fn<any>().mockResolvedValue("origin/feature-deleted\n"),
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/feature-deleted");
+
+      expect(upstreamGone).toBe(true);
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", "feature-deleted@{upstream}"]);
+      expect(mockWorktreeGit.branch).toHaveBeenCalledWith(["-r"]);
+    });
+
+    it("should return false when upstream branch exists", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest
+          .fn<any>()
+          .mockResolvedValueOnce({
+            current: "feature-1",
+          })
+          .mockResolvedValueOnce({
+            all: ["origin/main", "origin/feature-1"], // feature-1 exists in remotes
+            current: "",
+          }),
+        raw: jest.fn<any>().mockResolvedValue("origin/feature-1\n"),
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/feature-1");
+
+      expect(upstreamGone).toBe(false);
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", "feature-1@{upstream}"]);
+      expect(mockWorktreeGit.branch).toHaveBeenCalledWith(["-r"]);
+    });
+
+    it("should return false when no upstream is configured", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "local-only",
+        }),
+        raw: jest.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured")),
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/local-only");
+
+      expect(upstreamGone).toBe(false);
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", "local-only@{upstream}"]);
     });
   });
 
