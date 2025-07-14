@@ -1,5 +1,35 @@
 # sync-worktrees
 
+## 1.6.0
+
+### Minor Changes
+
+- 242bcdd: Improve warning messages for branches with deleted upstream
+
+  When a branch's upstream is deleted (e.g., after squash merge), sync-worktrees now shows clearer messages explaining why the worktree cannot be automatically removed. The new messages guide users to manually review and clean up if their changes were already integrated.
+
+  **Example:**
+
+  ```
+  ⚠️ Cannot automatically remove 'feat/LCR-5982' - upstream branch was deleted.
+     Please review manually: cd worktrees/feat/LCR-5982 && git log
+     If changes were squash-merged, you can safely remove with: git worktree remove worktrees/feat/LCR-5982
+  ```
+
+- 242bcdd: Add sync metadata tracking to accurately detect unpushed commits
+
+  Sync-worktrees now tracks synchronization metadata for each worktree, storing information about the last synced commit. This enables accurate detection of truly unpushed commits when a branch's upstream has been deleted (e.g., after squash merge).
+
+  **Benefits:**
+  - Accurately detects new commits made after the upstream was deleted
+  - Allows safe cleanup of worktrees whose changes were already integrated via squash merge
+  - Prevents false positives where all commits appeared as "unpushed" after upstream deletion
+
+  **Technical details:**
+  - Metadata is stored in Git's worktree directory: `.git/worktrees/[worktree-name]/sync-metadata.json`
+  - Automatically created when adding worktrees and updated during sync operations
+  - Backward compatible - works seamlessly with existing setups
+
 ## 1.5.0
 
 ### Minor Changes
