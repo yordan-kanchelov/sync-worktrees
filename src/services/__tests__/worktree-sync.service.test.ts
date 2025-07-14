@@ -39,6 +39,7 @@ describe("WorktreeSyncService", () => {
       pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
       checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
       hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
+      hasUpstreamGone: jest.fn<any>().mockResolvedValue(false),
       hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
       hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
       hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
@@ -137,6 +138,32 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(path.join("/test/worktrees", "unpushed-branch"));
       expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledWith(path.join("/test/worktrees", "unpushed-branch"));
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+    });
+
+    it("should show special message for worktrees with deleted upstream", async () => {
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["deleted-upstream-branch"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/deleted-upstream-branch", branch: "deleted-upstream-branch" },
+      ]);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true); // Clean
+      mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Has unpushed commits
+      mockGitService.hasUpstreamGone.mockResolvedValue(true); // Upstream is gone
+
+      const consoleSpy = jest.spyOn(console, "log");
+
+      await service.sync();
+
+      expect(mockGitService.hasUpstreamGone).toHaveBeenCalledWith(
+        path.join("/test/worktrees", "deleted-upstream-branch"),
+      );
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+
+      // Check for special upstream gone message
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Cannot automatically remove 'deleted-upstream-branch' - upstream branch was deleted"),
+      );
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Please review manually: cd"));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("git worktree remove"));
     });
 
     it("should skip worktrees with both local changes and unpushed commits", async () => {

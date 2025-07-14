@@ -34,6 +34,7 @@ describe("Complex Mixed State Scenarios", () => {
       pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
       checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
       hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
+      hasUpstreamGone: jest.fn<any>().mockResolvedValue(false),
       hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
       hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
       hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),

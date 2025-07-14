@@ -5,6 +5,8 @@ import simpleGit from "simple-git";
 
 import { getDefaultBareRepoDir } from "../utils/git-url";
 
+import { WorktreeMetadataService } from "./worktree-metadata.service";
+
 import type { Config } from "../types";
 import type { SimpleGit } from "simple-git";
 
@@ -13,10 +15,12 @@ export class GitService {
   private bareRepoPath: string;
   private mainWorktreePath: string;
   private defaultBranch: string = "main"; // Will be updated after detection
+  private metadataService: WorktreeMetadataService;
 
   constructor(private config: Config) {
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, "main"); // Temporary, will be updated
+    this.metadataService = new WorktreeMetadataService();
   }
 
   async initialize(): Promise<SimpleGit> {
@@ -279,19 +283,82 @@ export class GitService {
       }
 
       console.log(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
+
+      // Create metadata for the new worktree
+      try {
+        const worktreeGit = this.isLfsSkipEnabled()
+          ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+          : simpleGit(absoluteWorktreePath);
+        const currentCommit = await worktreeGit.revparse(["HEAD"]);
+
+        // Get parent branch info (use default branch as parent)
+        const parentCommit = await bareGit.revparse([this.defaultBranch]);
+
+        await this.metadataService.createInitialMetadata(
+          this.bareRepoPath,
+          branchName,
+          currentCommit.trim(),
+          `origin/${branchName}`,
+          this.defaultBranch,
+          parentCommit.trim(),
+        );
+      } catch (metadataError) {
+        console.warn(`  - Failed to create metadata for worktree: ${metadataError}`);
+      }
     } catch (error) {
       // If the worktree add fails with tracking, fall back to non-tracking version
       // This handles edge cases where the remote branch might not exist yet
       console.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${error}`);
       await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
       console.log(`  - Created worktree for '${branchName}' (without tracking)`);
+
+      // Try to create metadata even without tracking
+      try {
+        const worktreeGit = this.isLfsSkipEnabled()
+          ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+          : simpleGit(absoluteWorktreePath);
+        const currentCommit = await worktreeGit.revparse(["HEAD"]);
+        const parentCommit = await bareGit.revparse([this.defaultBranch]);
+
+        await this.metadataService.createInitialMetadata(
+          this.bareRepoPath,
+          branchName,
+          currentCommit.trim(),
+          `origin/${branchName}`,
+          this.defaultBranch,
+          parentCommit.trim(),
+        );
+      } catch (metadataError) {
+        console.warn(`  - Failed to create metadata for worktree: ${metadataError}`);
+      }
     }
   }
 
   async removeWorktree(worktreePath: string): Promise<void> {
     const bareGit = simpleGit(this.bareRepoPath);
+
+    // Try to get branch name before removing worktree
+    let branchName: string | null = null;
+    try {
+      const worktrees = await this.getWorktreesFromBare(bareGit);
+      const worktree = worktrees.find((w) => path.resolve(w.path) === path.resolve(worktreePath));
+      branchName = worktree?.branch || null;
+    } catch {
+      // If we can't get the branch name, extract from path as fallback
+      branchName = path.basename(worktreePath);
+    }
+
     await bareGit.raw(["worktree", "remove", worktreePath, "--force"]);
     console.log(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
+
+    // Clean up metadata
+    if (branchName) {
+      try {
+        await this.metadataService.deleteMetadata(this.bareRepoPath, branchName);
+      } catch (metadataError) {
+        console.warn(`Failed to delete metadata for worktree: ${metadataError}`);
+      }
+    }
   }
 
   async pruneWorktrees(): Promise<void> {
@@ -313,6 +380,23 @@ export class GitService {
       const branchSummary = await worktreeGit.branch();
       const currentBranch = branchSummary.current;
 
+      // Check if upstream is gone
+      const upstreamGone = await this.hasUpstreamGone(worktreePath);
+      if (upstreamGone) {
+        // Load metadata to check for commits after last sync
+        const metadata = await this.metadataService.loadMetadata(this.bareRepoPath, currentBranch);
+        if (metadata?.lastSyncCommit) {
+          try {
+            // Check for commits after last sync
+            const newCommitsResult = await worktreeGit.raw(["rev-list", "--count", `${metadata.lastSyncCommit}..HEAD`]);
+            const newCommitsCount = parseInt(newCommitsResult.trim(), 10);
+            return newCommitsCount > 0;
+          } catch {
+            // If lastSyncCommit doesn't exist, fall through to regular check
+          }
+        }
+      }
+
       // Count commits that exist in the current branch but not in any remote
       const result = await worktreeGit.raw(["rev-list", "--count", currentBranch, "--not", "--remotes"]);
 
@@ -321,6 +405,24 @@ export class GitService {
     } catch (error) {
       // If the command fails (e.g., branch doesn't exist), assume it's safe
       console.error(`Error checking unpushed commits: ${error}`);
+      return false;
+    }
+  }
+
+  async hasUpstreamGone(worktreePath: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+    try {
+      const branchSummary = await worktreeGit.branch();
+      const currentBranch = branchSummary.current;
+
+      // Try to get upstream branch
+      const upstream = await worktreeGit.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]);
+
+      // Check if upstream exists in remotes
+      const remoteBranches = await worktreeGit.branch(["-r"]);
+      return !remoteBranches.all.includes(upstream.trim());
+    } catch {
+      // No upstream configured
       return false;
     }
   }
@@ -448,6 +550,14 @@ export class GitService {
     const currentBranch = branchSummary.current;
 
     await worktreeGit.merge([`origin/${currentBranch}`, "--ff-only"]);
+
+    // Update metadata after successful update
+    try {
+      const currentCommit = await worktreeGit.revparse(["HEAD"]);
+      await this.metadataService.updateLastSync(this.bareRepoPath, currentBranch, currentCommit.trim(), "updated");
+    } catch (metadataError) {
+      console.warn(`Failed to update metadata for worktree: ${metadataError}`);
+    }
   }
 
   private async getWorktreesFromBare(bareGit: SimpleGit): Promise<{ path: string; branch: string }[]> {
