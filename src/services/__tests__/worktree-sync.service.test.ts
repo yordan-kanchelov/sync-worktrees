@@ -149,7 +149,8 @@ describe("WorktreeSyncService", () => {
       mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Has unpushed commits
       mockGitService.hasUpstreamGone.mockResolvedValue(true); // Upstream is gone
 
-      const consoleSpy = jest.spyOn(console, "log");
+      const consoleLogSpy = jest.spyOn(console, "log");
+      const consoleWarnSpy = jest.spyOn(console, "warn");
 
       await service.sync();
 
@@ -158,12 +159,12 @@ describe("WorktreeSyncService", () => {
       );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
 
-      // Check for special upstream gone message
-      expect(consoleSpy).toHaveBeenCalledWith(
+      // Check for special upstream gone message (now uses console.warn)
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining("Cannot automatically remove 'deleted-upstream-branch' - upstream branch was deleted"),
       );
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Please review manually: cd"));
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("git worktree remove"));
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Please review manually: cd"));
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("git worktree remove"));
     });
 
     it("should skip worktrees with both local changes and unpushed commits", async () => {
