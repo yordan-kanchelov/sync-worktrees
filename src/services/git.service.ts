@@ -409,13 +409,25 @@ export class GitService {
     } catch (error) {
       // Check if the error is because of no upstream configured
       const errorMessage = error instanceof Error ? error.message : String(error);
-      if (errorMessage.includes("no upstream configured") || errorMessage.includes("@{upstream}")) {
+
+      // Match specific Git error messages for missing upstream
+      if (
+        errorMessage.includes("fatal: no upstream configured") ||
+        errorMessage.includes("no upstream configured for branch")
+      ) {
         // This is expected when there's no upstream - not an error condition
         return false;
       }
 
-      // Log unexpected errors but still return false to be safe
-      console.error(`Unexpected error checking upstream status for ${worktreePath}: ${errorMessage}`);
+      // Log unexpected errors that don't match known patterns
+      console.error(
+        `Unexpected error checking upstream status for ${worktreePath}. ` +
+          `This might indicate a real issue rather than a missing upstream. ` +
+          `Error: ${errorMessage}`,
+      );
+
+      // Return false to be safe - we don't want to accidentally delete worktrees
+      // due to transient errors
       return false;
     }
   }
