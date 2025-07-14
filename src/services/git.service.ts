@@ -248,6 +248,27 @@ export class GitService {
     return branches;
   }
 
+  private async createWorktreeMetadata(bareGit: SimpleGit, worktreePath: string, branchName: string): Promise<void> {
+    try {
+      const worktreeGit = this.isLfsSkipEnabled()
+        ? simpleGit(worktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+        : simpleGit(worktreePath);
+      const currentCommit = await worktreeGit.revparse(["HEAD"]);
+      const parentCommit = await bareGit.revparse([this.defaultBranch]);
+
+      await this.metadataService.createInitialMetadata(
+        this.bareRepoPath,
+        branchName,
+        currentCommit.trim(),
+        `origin/${branchName}`,
+        this.defaultBranch,
+        parentCommit.trim(),
+      );
+    } catch (metadataError) {
+      console.warn(`  - Failed to create metadata for worktree: ${metadataError}`);
+    }
+  }
+
   async addWorktree(branchName: string, worktreePath: string): Promise<void> {
     const bareGit = this.isLfsSkipEnabled()
       ? simpleGit(this.bareRepoPath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
@@ -285,26 +306,7 @@ export class GitService {
       console.log(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
 
       // Create metadata for the new worktree
-      try {
-        const worktreeGit = this.isLfsSkipEnabled()
-          ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
-          : simpleGit(absoluteWorktreePath);
-        const currentCommit = await worktreeGit.revparse(["HEAD"]);
-
-        // Get parent branch info (use default branch as parent)
-        const parentCommit = await bareGit.revparse([this.defaultBranch]);
-
-        await this.metadataService.createInitialMetadata(
-          this.bareRepoPath,
-          branchName,
-          currentCommit.trim(),
-          `origin/${branchName}`,
-          this.defaultBranch,
-          parentCommit.trim(),
-        );
-      } catch (metadataError) {
-        console.warn(`  - Failed to create metadata for worktree: ${metadataError}`);
-      }
+      await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
     } catch (error) {
       // If the worktree add fails with tracking, fall back to non-tracking version
       // This handles edge cases where the remote branch might not exist yet
@@ -313,24 +315,7 @@ export class GitService {
       console.log(`  - Created worktree for '${branchName}' (without tracking)`);
 
       // Try to create metadata even without tracking
-      try {
-        const worktreeGit = this.isLfsSkipEnabled()
-          ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
-          : simpleGit(absoluteWorktreePath);
-        const currentCommit = await worktreeGit.revparse(["HEAD"]);
-        const parentCommit = await bareGit.revparse([this.defaultBranch]);
-
-        await this.metadataService.createInitialMetadata(
-          this.bareRepoPath,
-          branchName,
-          currentCommit.trim(),
-          `origin/${branchName}`,
-          this.defaultBranch,
-          parentCommit.trim(),
-        );
-      } catch (metadataError) {
-        console.warn(`  - Failed to create metadata for worktree: ${metadataError}`);
-      }
+      await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
     }
   }
 
@@ -421,8 +406,16 @@ export class GitService {
       // Check if upstream exists in remotes
       const remoteBranches = await worktreeGit.branch(["-r"]);
       return !remoteBranches.all.includes(upstream.trim());
-    } catch {
-      // No upstream configured
+    } catch (error) {
+      // Check if the error is because of no upstream configured
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes("no upstream configured") || errorMessage.includes("@{upstream}")) {
+        // This is expected when there's no upstream - not an error condition
+        return false;
+      }
+
+      // Log unexpected errors but still return false to be safe
+      console.error(`Unexpected error checking upstream status for ${worktreePath}: ${errorMessage}`);
       return false;
     }
   }
