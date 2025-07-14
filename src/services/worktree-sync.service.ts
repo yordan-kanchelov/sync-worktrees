@@ -175,7 +175,7 @@ export class WorktreeSyncService {
             const upstreamGone = hasUnpushed && (await this.gitService.hasUpstreamGone(worktreePath));
 
             if (upstreamGone) {
-              console.log(`  - ⚠️ Cannot automatically remove '${branchName}' - upstream branch was deleted.`);
+              console.warn(`  - ⚠️ Cannot automatically remove '${branchName}' - upstream branch was deleted.`);
               console.log(`     Please review manually: cd ${worktreePath} && git log`);
               console.log(
                 `     If changes were squash-merged, you can safely remove with: git worktree remove ${worktreePath}`,
