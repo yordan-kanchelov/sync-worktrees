@@ -488,6 +488,30 @@ describe("GitService", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
       expect(mockGit.raw).toHaveBeenCalledTimes(1); // Only the list call, no add call
     });
+
+    it("should clean up orphaned directory in fallback path when tracking fails", async () => {
+      // Mock - directory exists when checking in addWorktree fallback
+      (fs.access as jest.Mock<any>)
+        .mockRejectedValueOnce(new Error("Not found")) // First check - directory doesn't exist
+        .mockResolvedValueOnce(undefined); // Second check in fallback - directory exists
+
+      // Reset mockGit.raw and set up responses
+      mockGit.raw.mockReset();
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("tracking setup failed")) // Initial add with tracking fails
+        .mockResolvedValueOnce("") // worktree list - empty (directory is not a valid worktree)
+        .mockResolvedValueOnce(""); // fallback worktree add succeeds
+
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
+      expect(mockGit.raw).toHaveBeenCalledTimes(3); // Failed tracking add, worktree list, successful fallback add
+    });
   });
 
   describe("removeWorktree", () => {

@@ -330,6 +330,26 @@ export class GitService {
       // If the worktree add fails with tracking, fall back to non-tracking version
       // This handles edge cases where the remote branch might not exist yet
       console.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${error}`);
+
+      // Check again if directory exists before fallback attempt
+      try {
+        await fs.access(absoluteWorktreePath);
+        // Directory exists - check if it's already a valid worktree
+        const worktrees = await this.getWorktreesFromBare(bareGit);
+        const isValidWorktree = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
+
+        if (isValidWorktree) {
+          console.log(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
+          return;
+        } else {
+          // Directory exists but is not a valid worktree - clean it up
+          console.log(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}' before fallback attempt`);
+          await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
+        }
+      } catch {
+        // Directory doesn't exist, which is expected - continue with fallback
+      }
+
       await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
       console.log(`  - Created worktree for '${branchName}' (without tracking)`);
 
