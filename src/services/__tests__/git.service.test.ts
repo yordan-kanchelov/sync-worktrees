@@ -439,6 +439,55 @@ describe("GitService", () => {
       const rawCalls = mockGit.raw.mock.calls.filter((call) => call[0][1] === "add");
       expect(rawCalls[rawCalls.length - 1]).toEqual([["worktree", "add", "/test/worktrees/feature-1", "feature-1"]]);
     });
+
+    it("should clean up orphaned directory before creating worktree", async () => {
+      // Mock - directory exists when checking in addWorktree
+      (fs.access as jest.Mock<any>).mockResolvedValueOnce(undefined);
+
+      // Reset mockGit.raw and set up responses
+      mockGit.raw.mockReset();
+      mockGit.raw
+        .mockResolvedValueOnce("") // worktree list - empty (directory is not a valid worktree)
+        .mockResolvedValueOnce(""); // worktree add command
+
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(fs.access).toHaveBeenCalledWith("/test/worktrees/feature-1");
+      expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "worktree",
+        "add",
+        "--track",
+        "-b",
+        "feature-1",
+        "/test/worktrees/feature-1",
+        "origin/feature-1",
+      ]);
+    });
+
+    it("should skip if directory is already a valid worktree", async () => {
+      // Mock - directory exists when checking in addWorktree
+      (fs.access as jest.Mock<any>).mockResolvedValueOnce(undefined);
+
+      // Reset mockGit.raw and set up responses
+      mockGit.raw.mockReset();
+      mockGit.raw.mockResolvedValueOnce(
+        "worktree /test/worktrees/feature-1\n" + "HEAD abc123\n" + "branch refs/heads/feature-1\n\n",
+      ); // worktree list - shows the worktree exists
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(fs.access).toHaveBeenCalledWith("/test/worktrees/feature-1");
+      expect(fs.rm).not.toHaveBeenCalled();
+      // Should have called worktree list but not worktree add
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledTimes(1); // Only the list call, no add call
+    });
   });
 
   describe("removeWorktree", () => {

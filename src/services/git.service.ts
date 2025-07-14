@@ -276,6 +276,25 @@ export class GitService {
     // Use absolute path for worktree add to avoid relative path issues
     const absoluteWorktreePath = path.resolve(worktreePath);
 
+    // Check if directory already exists (could be from a failed previous attempt)
+    try {
+      await fs.access(absoluteWorktreePath);
+      // Directory exists - check if it's already a valid worktree
+      const worktrees = await this.getWorktreesFromBare(bareGit);
+      const isValidWorktree = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
+
+      if (isValidWorktree) {
+        console.log(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
+        return;
+      } else {
+        // Directory exists but is not a valid worktree - clean it up
+        console.log(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}'`);
+        await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
+      }
+    } catch {
+      // Directory doesn't exist, which is expected - continue with creation
+    }
+
     try {
       // Check if local branch already exists
       const branches = await bareGit.branch();
