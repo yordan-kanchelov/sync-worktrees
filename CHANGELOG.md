@@ -1,5 +1,14 @@
 # sync-worktrees
 
+## 1.6.2
+
+### Patch Changes
+
+- 01be2e9: Fix orphaned directory cleanup in LFS error fallback path
+  - Added orphaned directory cleanup when worktree tracking setup fails
+  - Prevents directories from being left behind after LFS errors or other failures during retry
+  - Ensures consistent cleanup behavior across all error scenarios
+
 ## 1.6.1
 
 ### Patch Changes
