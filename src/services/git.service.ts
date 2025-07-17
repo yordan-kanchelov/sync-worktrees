@@ -397,9 +397,23 @@ export class GitService {
     return status.isClean();
   }
 
+  private async isDetachedHead(worktreeGit: SimpleGit): Promise<boolean> {
+    try {
+      const branchSummary = await worktreeGit.branch();
+      return !branchSummary.current || branchSummary.detached;
+    } catch {
+      return true;
+    }
+  }
+
   async hasUnpushedCommits(worktreePath: string): Promise<boolean> {
     const worktreeGit = simpleGit(worktreePath);
     try {
+      // Check if in detached HEAD state
+      if (await this.isDetachedHead(worktreeGit)) {
+        return false;
+      }
+
       // Get the current branch name
       const branchSummary = await worktreeGit.branch();
       const currentBranch = branchSummary.current;
@@ -436,6 +450,11 @@ export class GitService {
   async hasUpstreamGone(worktreePath: string): Promise<boolean> {
     const worktreeGit = simpleGit(worktreePath);
     try {
+      // Check if in detached HEAD state
+      if (await this.isDetachedHead(worktreeGit)) {
+        return false;
+      }
+
       const branchSummary = await worktreeGit.branch();
       const currentBranch = branchSummary.current;
 
@@ -452,7 +471,9 @@ export class GitService {
       // Match specific Git error messages for missing upstream
       if (
         errorMessage.includes("fatal: no upstream configured") ||
-        errorMessage.includes("no upstream configured for branch")
+        errorMessage.includes("no upstream configured for branch") ||
+        errorMessage.includes("fatal: ambiguous argument") ||
+        errorMessage.includes("unknown revision or path")
       ) {
         // This is expected when there's no upstream - not an error condition
         return false;
@@ -595,6 +616,12 @@ export class GitService {
 
     await worktreeGit.merge([`origin/${currentBranch}`, "--ff-only"]);
 
+    // Skip metadata update for main worktree
+    const isMainWorktree = path.resolve(worktreePath) === path.resolve(this.mainWorktreePath);
+    if (isMainWorktree) {
+      return;
+    }
+
     // Update metadata after successful update
     try {
       const currentCommit = await worktreeGit.revparse(["HEAD"]);
@@ -610,23 +637,28 @@ export class GitService {
     const worktrees: { path: string; branch: string }[] = [];
     const lines = result.trim().split("\n");
 
-    let currentWorktree: { path?: string; branch?: string } = {};
+    let currentWorktree: { path?: string; branch?: string; detached?: boolean } = {};
 
     for (const line of lines) {
       if (line.startsWith("worktree ")) {
         currentWorktree.path = line.substring(9);
       } else if (line.startsWith("branch ")) {
         currentWorktree.branch = line.substring(7).replace("refs/heads/", "");
+      } else if (line === "detached") {
+        currentWorktree.detached = true;
       } else if (line.trim() === "") {
-        if (currentWorktree.path && currentWorktree.branch) {
-          worktrees.push({ path: currentWorktree.path, branch: currentWorktree.branch });
+        if (currentWorktree.path) {
+          // Only include worktrees that have a branch (not detached)
+          if (currentWorktree.branch && !currentWorktree.detached) {
+            worktrees.push({ path: currentWorktree.path, branch: currentWorktree.branch });
+          }
         }
         currentWorktree = {};
       }
     }
 
     // Handle the last worktree if there's no trailing empty line
-    if (currentWorktree.path && currentWorktree.branch) {
+    if (currentWorktree.path && currentWorktree.branch && !currentWorktree.detached) {
       worktrees.push({ path: currentWorktree.path, branch: currentWorktree.branch });
     }
 

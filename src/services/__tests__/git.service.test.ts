@@ -603,7 +603,11 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockRejectedValue(new Error("Branch command failed")),
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "feature-1",
+          detached: false,
+        }),
+        raw: jest.fn<any>().mockRejectedValue(new Error("Command failed")),
       };
       (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
 
@@ -676,6 +680,25 @@ describe("GitService", () => {
 
       expect(hasUnpushed).toBe(false);
     });
+
+    it("should return false when worktree is in detached HEAD state", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "",
+          detached: true,
+        }),
+        raw: jest.fn<any>(),
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/detached");
+
+      expect(hasUnpushed).toBe(false);
+      expect(mockWorktreeGit.branch).toHaveBeenCalled();
+      expect(mockWorktreeGit.raw).not.toHaveBeenCalled();
+    });
   });
 
   describe("hasUpstreamGone", () => {
@@ -687,6 +710,11 @@ describe("GitService", () => {
           .fn<any>()
           .mockResolvedValueOnce({
             current: "feature-deleted",
+            detached: false,
+          })
+          .mockResolvedValueOnce({
+            current: "feature-deleted",
+            detached: false,
           })
           .mockResolvedValueOnce({
             all: ["origin/main", "origin/feature-1"], // feature-deleted not in remotes
@@ -711,6 +739,11 @@ describe("GitService", () => {
           .fn<any>()
           .mockResolvedValueOnce({
             current: "feature-1",
+            detached: false,
+          })
+          .mockResolvedValueOnce({
+            current: "feature-1",
+            detached: false,
           })
           .mockResolvedValueOnce({
             all: ["origin/main", "origin/feature-1"], // feature-1 exists in remotes
@@ -742,6 +775,52 @@ describe("GitService", () => {
 
       expect(upstreamGone).toBe(false);
       expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", "local-only@{upstream}"]);
+    });
+
+    it("should return false when upstream reference is ambiguous", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "feat/autocue-frontend",
+        }),
+        raw: jest
+          .fn<any>()
+          .mockRejectedValue(
+            new Error(
+              "feat/autocue-frontend@{upstream}\nfatal: ambiguous argument 'feat/autocue-frontend@{upstream}': unknown revision or path not in the working tree.",
+            ),
+          ),
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/feat/autocue-frontend");
+
+      expect(upstreamGone).toBe(false);
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith([
+        "rev-parse",
+        "--abbrev-ref",
+        "feat/autocue-frontend@{upstream}",
+      ]);
+    });
+
+    it("should return false when worktree is in detached HEAD state", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "",
+          detached: true,
+        }),
+        raw: jest.fn<any>(),
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/detached");
+
+      expect(upstreamGone).toBe(false);
+      expect(mockWorktreeGit.branch).toHaveBeenCalled();
+      expect(mockWorktreeGit.raw).not.toHaveBeenCalled();
     });
   });
 
@@ -810,6 +889,30 @@ branch refs/heads/feature-1
       expect(worktrees).toEqual([
         { path: "/path/to/repo", branch: "main" },
         { path: "/path/to/worktrees/feature-1", branch: "feature-1" },
+      ]);
+    });
+
+    it("should skip worktrees in detached HEAD state", async () => {
+      await gitService.initialize();
+
+      mockGit.raw.mockResolvedValue(`worktree /path/to/repo
+branch refs/heads/main
+
+worktree /path/to/worktrees/feature-1
+branch refs/heads/feature-1
+
+worktree /path/to/worktrees/detached
+detached
+
+worktree /path/to/worktrees/feature-2
+branch refs/heads/feature-2`);
+
+      const worktrees = await gitService.getWorktrees();
+
+      expect(worktrees).toEqual([
+        { path: "/path/to/repo", branch: "main" },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1" },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2" },
       ]);
     });
   });
@@ -963,6 +1066,49 @@ branch refs/heads/feature-1
       expect(result).toBe(false);
       // Note: fs.access is called 7 times: 1 from beforeEach (bare repo check) + 6 operation files
       expect(fs.access).toHaveBeenCalledTimes(7);
+    });
+  });
+
+  describe("updateWorktree", () => {
+    it("should update worktree and metadata for regular worktrees", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "feature-1",
+        }),
+        merge: jest.fn<any>().mockResolvedValue(undefined),
+        revparse: jest.fn<any>().mockResolvedValue("newcommit123\n"),
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      await gitService.updateWorktree("/test/worktrees/feature-1");
+
+      expect(mockWorktreeGit.merge).toHaveBeenCalledWith(["origin/feature-1", "--ff-only"]);
+      expect(mockMetadataService.updateLastSync).toHaveBeenCalledWith(
+        ".bare/repo",
+        "feature-1",
+        "newcommit123",
+        "updated",
+      );
+    });
+
+    it("should skip metadata update for main worktree", async () => {
+      await gitService.initialize();
+
+      const mockWorktreeGit = {
+        branch: jest.fn<any>().mockResolvedValue({
+          current: "main",
+        }),
+        merge: jest.fn<any>().mockResolvedValue(undefined),
+        revparse: jest.fn<any>().mockResolvedValue("newcommit123\n"),
+      };
+      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+
+      await gitService.updateWorktree("/test/worktrees/main");
+
+      expect(mockWorktreeGit.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      expect(mockMetadataService.updateLastSync).not.toHaveBeenCalled();
     });
   });
 });
