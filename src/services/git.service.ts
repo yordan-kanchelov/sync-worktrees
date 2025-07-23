@@ -631,6 +631,78 @@ export class GitService {
     }
   }
 
+  async hasDivergedHistory(worktreePath: string, expectedBranch: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+
+    // Validate branch matches
+    const branchInfo = await worktreeGit.branch();
+    if (branchInfo.current !== expectedBranch) {
+      console.warn(`Branch mismatch in hasDivergedHistory: expected ${expectedBranch}, got ${branchInfo.current}`);
+      return false; // Conservative: assume can fast-forward
+    }
+
+    try {
+      // Check if HEAD is an ancestor of the remote branch (can fast-forward)
+      await worktreeGit.raw(["merge-base", "--is-ancestor", "HEAD", `origin/${expectedBranch}`]);
+      return false; // Can fast-forward
+    } catch {
+      return true; // Histories have diverged
+    }
+  }
+
+  async canFastForward(worktreePath: string, branch: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+    try {
+      await worktreeGit.raw(["merge-base", "--is-ancestor", "HEAD", `origin/${branch}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async compareTreeContent(worktreePath: string, branch: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+    try {
+      // Get the tree SHA for the current HEAD
+      const localTree = await worktreeGit.raw(["rev-parse", "HEAD^{tree}"]);
+      // Get the tree SHA for the remote branch
+      const remoteTree = await worktreeGit.raw(["rev-parse", `origin/${branch}^{tree}`]);
+
+      return localTree.trim() === remoteTree.trim();
+    } catch (error) {
+      console.error(`Error comparing tree content: ${error}`);
+      return false; // Assume trees are different if we can't compare
+    }
+  }
+
+  async resetToUpstream(worktreePath: string, branch: string): Promise<void> {
+    const worktreeGit = this.isLfsSkipEnabled()
+      ? simpleGit(worktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+      : simpleGit(worktreePath);
+
+    await worktreeGit.reset(["--hard", `origin/${branch}`]);
+
+    // Update metadata after reset
+    try {
+      const currentCommit = await worktreeGit.revparse(["HEAD"]);
+      await this.metadataService.updateLastSync(this.bareRepoPath, branch, currentCommit.trim(), "updated");
+    } catch (metadataError) {
+      console.warn(`Failed to update metadata after reset: ${metadataError}`);
+    }
+  }
+
+  async getCurrentCommit(worktreePath: string): Promise<string> {
+    const worktreeGit = simpleGit(worktreePath);
+    const commit = await worktreeGit.revparse(["HEAD"]);
+    return commit.trim();
+  }
+
+  async getRemoteCommit(ref: string): Promise<string> {
+    const git = this.getGit();
+    const commit = await git.revparse([ref]);
+    return commit.trim();
+  }
+
   private async getWorktreesFromBare(bareGit: SimpleGit): Promise<{ path: string; branch: string }[]> {
     const result = await bareGit.raw(["worktree", "list", "--porcelain"]);
 

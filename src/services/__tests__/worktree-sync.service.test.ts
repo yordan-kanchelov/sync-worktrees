@@ -47,6 +47,7 @@ describe("WorktreeSyncService", () => {
       getDefaultBranch: jest.fn().mockReturnValue("main"),
       getWorktrees: jest.fn<any>().mockResolvedValue([]),
       isWorktreeBehind: jest.fn<any>().mockResolvedValue(false),
+      canFastForward: jest.fn<any>().mockResolvedValue(true),
       updateWorktree: jest.fn<any>().mockResolvedValue(undefined),
       getGit: jest.fn<any>(),
     } as any;

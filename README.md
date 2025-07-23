@@ -27,6 +27,7 @@ sync-worktrees maintains a **separate working directory for each remote branch**
 - 📋 Config file support for managing multiple repositories
 - 🔁 Automatic retry with exponential backoff for network and filesystem errors
 - 🕐 Branch age filtering - only sync branches active within a specified time period
+- 🔀 Smart handling of rebased/force-pushed branches with automatic divergence detection
 
 ## Installation
 
@@ -240,6 +241,53 @@ When branch filtering is active, the tool will:
 - Filter out branches older than the specified age
 - Log how many branches were excluded
 - Only create/maintain worktrees for active branches
+
+### Handling Rebased and Force-Pushed Branches
+
+sync-worktrees intelligently handles branches that have been rebased or force-pushed to prevent data loss:
+
+**Automatic behavior (no configuration needed):**
+
+1. **Clean rebases** - When a branch is rebased but the file content remains identical:
+   - Automatically resets the worktree to match the upstream
+   - No data loss since the content is the same
+
+2. **Diverged branches** - When a branch has different content after rebase/force-push:
+   - Moves the worktree to `.diverged` directory within your worktrees folder
+   - Preserves all your local changes and commits
+   - Creates a fresh worktree from the upstream branch
+   - Logs clear instructions for reviewing diverged changes
+
+**Example diverged structure:**
+```
+my-repo-worktrees/
+├── main/
+├── feature-a/
+├── feature-b/
+└── .diverged/                      # Hidden diverged directory
+    ├── 2024-01-15-feature-x/      # Timestamp + branch name
+    │   ├── .diverged-info.json    # Metadata about the divergence
+    │   └── [all your local files]
+    └── 2024-01-16-feature-y/
+        ├── .diverged-info.json
+        └── [all your local files]
+```
+
+**Reviewing diverged worktrees:**
+```bash
+# See what's different
+cd my-repo-worktrees/.diverged/2024-01-15-feature-x
+git diff origin/feature-x
+
+# If you want to keep your changes
+git push --force-with-lease
+
+# If you want to discard and use upstream
+cd ../..
+rm -rf .diverged/2024-01-15-feature-x
+```
+
+This ensures you never lose work due to force pushes while keeping your worktrees in sync with upstream.
 
 ## Requirements
 

@@ -238,6 +238,17 @@ export class WorktreeSyncService {
 
     console.log("Step 4: Checking for worktrees that need updates...");
 
+    // Check for diverged worktrees
+    const divergedDir = path.join(this.config.worktreeDir, ".diverged");
+    try {
+      const diverged = await fs.readdir(divergedDir);
+      if (diverged.length > 0) {
+        console.log(`📦 Note: ${diverged.length} diverged worktree(s) in ${path.relative(process.cwd(), divergedDir)}`);
+      }
+    } catch {
+      // No diverged directory, that's fine
+    }
+
     // Only check worktrees whose branches still exist remotely
     const activeWorktrees = worktrees.filter((w) => remoteBranches.includes(w.branch));
 
@@ -255,6 +266,14 @@ export class WorktreeSyncService {
         const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
         if (!isClean) {
           continue; // Skip worktrees with local changes
+        }
+
+        // Check if we can fast-forward before attempting update
+        const canFastForward = await this.gitService.canFastForward(worktree.path, worktree.branch);
+        if (!canFastForward) {
+          // Handle diverged branch
+          await this.handleDivergedBranch(worktree);
+          continue;
         }
 
         const isBehind = await this.gitService.isWorktreeBehind(worktree.path);
@@ -288,9 +307,12 @@ export class WorktreeSyncService {
       const worktreeRelativePaths = worktrees.map((w) => path.relative(this.config.worktreeDir, w.path));
       const allDirs = await fs.readdir(this.config.worktreeDir);
 
+      // Filter out special directories like .diverged
+      const regularDirs = allDirs.filter((dir) => !dir.startsWith("."));
+
       // For each directory, check if it's part of any worktree path
       const orphanedDirs: string[] = [];
-      for (const dir of allDirs) {
+      for (const dir of regularDirs) {
         // Check if this directory is part of any worktree path
         const isPartOfWorktree = worktreeRelativePaths.some((worktreePath) => {
           // Either the directory IS a worktree or it's a parent of a worktree
@@ -321,5 +343,69 @@ export class WorktreeSyncService {
     } catch (error) {
       console.error("Error during orphaned directory cleanup:", error);
     }
+  }
+
+  private async handleDivergedBranch(worktree: { path: string; branch: string }): Promise<void> {
+    console.log(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
+
+    const treesIdentical = await this.gitService.compareTreeContent(worktree.path, worktree.branch);
+
+    if (treesIdentical) {
+      console.log(`✅ Branch '${worktree.branch}' was rebased but files are identical. Resetting to upstream...`);
+      await this.gitService.resetToUpstream(worktree.path, worktree.branch);
+      console.log(`   Successfully updated '${worktree.branch}' to match upstream.`);
+    } else {
+      console.log(`🔒 Branch '${worktree.branch}' has diverged with different content. Moving to diverged...`);
+
+      const divergedPath = await this.divergeWorktree(worktree.path, worktree.branch);
+      const relativePath = path.relative(process.cwd(), divergedPath);
+
+      console.log(`   Moved to: ${relativePath}`);
+      console.log(`   Your local changes are preserved. To review:`);
+      console.log(`     cd ${relativePath}`);
+      console.log(`     git diff origin/${worktree.branch}`);
+
+      // Create fresh worktree from upstream
+      await this.gitService.removeWorktree(worktree.path);
+      await this.gitService.addWorktree(worktree.branch, worktree.path);
+      console.log(`   Created fresh worktree from upstream at: ${worktree.path}`);
+    }
+  }
+
+  private async divergeWorktree(worktreePath: string, branchName: string): Promise<string> {
+    // Create .diverged directory inside worktreeDir
+    const divergedBaseDir = path.join(this.config.worktreeDir, ".diverged");
+
+    const timestamp = new Date().toISOString().split("T")[0];
+    const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+    const safeBranchName = branchName.replace(/\//g, "-");
+    const divergedName = `${timestamp}-${safeBranchName}-${uniqueSuffix}`;
+    const divergedPath = path.join(divergedBaseDir, divergedName);
+
+    // Ensure diverged directory exists
+    await fs.mkdir(divergedBaseDir, { recursive: true });
+
+    // Move the worktree directory
+    await fs.rename(worktreePath, divergedPath);
+
+    // Save metadata about why it was moved
+    const metadata = {
+      originalBranch: branchName,
+      divergedAt: new Date().toISOString(),
+      reason: "diverged-history-with-changes",
+      originalPath: worktreePath,
+      localCommit: await this.gitService.getCurrentCommit(divergedPath),
+      remoteCommit: await this.gitService.getRemoteCommit(`origin/${branchName}`),
+      instruction: `To preserve your changes:
+  1. Review: git diff origin/${branchName}
+  2. Keep changes: git push --force-with-lease origin ${branchName}
+  3. Discard changes: rm -rf this directory
+  
+  Original worktree location: ${worktreePath}`,
+    };
+
+    await fs.writeFile(path.join(divergedPath, ".diverged-info.json"), JSON.stringify(metadata, null, 2));
+
+    return divergedPath;
   }
 }

@@ -36,6 +36,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       ]),
       checkWorktreeStatus: jest.fn().mockResolvedValue(true), // All clean by default
       isWorktreeBehind: jest.fn().mockResolvedValue(false), // Not behind by default
+      canFastForward: jest.fn().mockResolvedValue(true), // Can fast-forward by default
       updateWorktree: jest.fn().mockResolvedValue(undefined),
       addWorktree: jest.fn().mockResolvedValue(undefined),
       removeWorktree: jest.fn().mockResolvedValue(undefined),
