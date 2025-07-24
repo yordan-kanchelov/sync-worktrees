@@ -294,7 +294,26 @@ export class WorktreeSyncService {
           await this.gitService.updateWorktree(worktree.path);
           console.log(`    ✅ Successfully updated '${worktree.branch}'.`);
         } catch (error) {
-          console.error(`    ❌ Failed to update '${worktree.branch}':`, error);
+          // Check if this is specifically a fast-forward error indicating diverged history
+          const errorMessage = error instanceof Error ? error.message : String(error);
+
+          // Only treat as diverged if it's specifically a fast-forward failure
+          // Other errors (network issues, permission problems, etc.) should not trigger divergence handling
+          if (
+            errorMessage.includes("Not possible to fast-forward") ||
+            errorMessage.includes("fatal: Not possible to fast-forward, aborting") ||
+            errorMessage.includes("cannot fast-forward")
+          ) {
+            console.log(`    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`);
+            try {
+              await this.handleDivergedBranch(worktree);
+            } catch (divergedError) {
+              console.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
+            }
+          } else {
+            // Other errors: network issues, permission problems, disk space, etc.
+            console.error(`    ❌ Failed to update '${worktree.branch}':`, error);
+          }
         }
       }
     } else {

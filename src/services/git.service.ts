@@ -653,9 +653,18 @@ export class GitService {
   async canFastForward(worktreePath: string, branch: string): Promise<boolean> {
     const worktreeGit = simpleGit(worktreePath);
     try {
-      await worktreeGit.raw(["merge-base", "--is-ancestor", "HEAD", `origin/${branch}`]);
-      return true;
+      // Get the merge base between HEAD and the remote branch
+      const mergeBase = await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`]);
+      const mergeBaseSha = mergeBase.trim();
+
+      // Get current HEAD SHA
+      const headSha = await worktreeGit.revparse(["HEAD"]);
+      const headShaTrimmed = headSha.trim();
+
+      // If merge base equals HEAD, then HEAD is an ancestor of remote and can fast-forward
+      return mergeBaseSha === headShaTrimmed;
     } catch {
+      // If merge-base fails, branches have diverged
       return false;
     }
   }
