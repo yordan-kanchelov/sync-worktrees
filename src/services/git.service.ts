@@ -203,10 +203,11 @@ export class GitService {
   async fetchBranch(branchName: string): Promise<void> {
     const git = this.getGit();
 
+    // Update only the remote ref for the branch to keep refs/remotes/origin/* fresh
     if (this.isLfsSkipEnabled()) {
-      await git.env({ GIT_LFS_SKIP_SMUDGE: "1" }).fetch(["origin", `${branchName}:${branchName}`, "--prune"]);
+      await git.env({ GIT_LFS_SKIP_SMUDGE: "1" }).fetch(["origin", branchName, "--prune"]);
     } else {
-      await git.fetch(["origin", `${branchName}:${branchName}`, "--prune"]);
+      await git.fetch(["origin", branchName, "--prune"]);
     }
   }
 
@@ -275,6 +276,8 @@ export class GitService {
       : simpleGit(this.bareRepoPath);
     // Use absolute path for worktree add to avoid relative path issues
     const absoluteWorktreePath = path.resolve(worktreePath);
+    // Ensure parent directory exists for nested branch paths
+    await fs.mkdir(path.dirname(absoluteWorktreePath), { recursive: true });
 
     // Check if directory already exists (could be from a failed previous attempt)
     try {
@@ -516,12 +519,28 @@ export class GitService {
   }
 
   async hasOperationInProgress(worktreePath: string): Promise<boolean> {
-    const gitDir = path.join(worktreePath, ".git");
-    const checkFiles = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply"];
+    // Resolve the actual git directory; in worktrees .git is a file pointing to the real gitdir
+    let resolvedGitDir = path.join(worktreePath, ".git");
+    try {
+      const stat = await fs.stat(resolvedGitDir);
+      if (stat.isFile()) {
+        const content = await fs.readFile(resolvedGitDir, "utf-8");
+        const match = content.match(/gitdir:\s*(.*)/i);
+        if (match && match[1]) {
+          resolvedGitDir = match[1].trim();
+          if (!path.isAbsolute(resolvedGitDir)) {
+            resolvedGitDir = path.resolve(worktreePath, resolvedGitDir);
+          }
+        }
+      }
+    } catch {
+      // Fall back to default .git directory
+    }
 
+    const checkFiles = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply"];
     for (const file of checkFiles) {
       try {
-        await fs.access(path.join(gitDir, file));
+        await fs.access(path.join(resolvedGitDir, file));
         return true; // Operation in progress
       } catch {
         // File doesn't exist, continue checking
@@ -707,7 +726,8 @@ export class GitService {
   }
 
   async getRemoteCommit(ref: string): Promise<string> {
-    const git = this.getGit();
+    // Use the bare repository to read remote commit to avoid dependency on main worktree path
+    const git = simpleGit(this.bareRepoPath);
     const commit = await git.revparse([ref]);
     return commit.trim();
   }

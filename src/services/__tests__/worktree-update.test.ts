@@ -46,6 +46,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       hasOperationInProgress: jest.fn().mockResolvedValue(false),
       hasModifiedSubmodules: jest.fn().mockResolvedValue(false),
       getDefaultBranch: jest.fn().mockReturnValue("main"),
+      getRemoteBranches: jest.fn().mockResolvedValue(["main", "feature", "develop"]),
     } as any;
 
     (service as any).gitService = mockGitService;
@@ -67,6 +68,17 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       // Should update only the feature branch
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(1);
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature");
+    });
+
+    it("should skip updating worktrees with an operation in progress", async () => {
+      // feature has an operation in progress
+      mockGitService.hasOperationInProgress.mockImplementation(async (p) => p.includes("feature"));
+      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+
+      await service.sync();
+
+      // Should not call update on feature
+      expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/test/worktrees/feature");
     });
 
     it("should skip updating worktrees with local changes", async () => {
@@ -130,6 +142,27 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/main");
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/develop");
+    });
+  });
+
+  describe("Default branch retention with branchMaxAge", () => {
+    it("should not prune default branch even if filtered by age", async () => {
+      // Recreate service with branchMaxAge configured
+      mockConfig.branchMaxAge = "1d";
+      service = new WorktreeSyncService(mockConfig);
+      (service as any).gitService = mockGitService;
+
+      // Simulate that age filtering removed all but (intentionally) not returning main
+      (mockGitService.getRemoteBranches as jest.Mock).mockResolvedValue(["feature", "develop"]);
+
+      const fs = require("fs/promises");
+      // Pretend worktreeDir contains main only
+      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main"]);
+
+      await service.sync();
+
+      // Ensure we did not try to remove the main worktree
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith("/test/worktrees/main");
     });
   });
 

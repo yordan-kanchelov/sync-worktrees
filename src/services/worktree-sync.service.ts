@@ -95,6 +95,13 @@ export class WorktreeSyncService {
           console.log(`Found ${remoteBranches.length} remote branches.`);
         }
 
+        // Always retain the default branch, even if excluded by age filters
+        const defaultBranch = this.gitService.getDefaultBranch();
+        if (!remoteBranches.includes(defaultBranch)) {
+          remoteBranches.push(defaultBranch);
+          console.log(`Ensuring default branch '${defaultBranch}' is retained.`);
+        }
+
         await fs.mkdir(this.config.worktreeDir, { recursive: true });
 
         // Get actual Git worktrees instead of just directories
@@ -105,7 +112,6 @@ export class WorktreeSyncService {
         // Clean up orphaned directories
         await this.cleanupOrphanedDirectories(worktrees);
 
-        const defaultBranch = this.gitService.getDefaultBranch();
         await this.createNewWorktrees(remoteBranches, worktreeBranches, defaultBranch);
 
         await this.pruneOldWorktrees(remoteBranches, worktreeBranches);
@@ -263,6 +269,12 @@ export class WorktreeSyncService {
           continue;
         }
 
+        // Skip if an operation is in progress (merge/rebase/etc.)
+        const hasOp = await this.gitService.hasOperationInProgress(worktree.path);
+        if (hasOp) {
+          continue;
+        }
+
         const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
         if (!isClean) {
           continue; // Skip worktrees with local changes
@@ -404,8 +416,19 @@ export class WorktreeSyncService {
     // Ensure diverged directory exists
     await fs.mkdir(divergedBaseDir, { recursive: true });
 
-    // Move the worktree directory
-    await fs.rename(worktreePath, divergedPath);
+    // Move the worktree directory; on cross-device errors, fall back to copy+remove
+    try {
+      await fs.rename(worktreePath, divergedPath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("EXDEV")) {
+        // Cross-device link not permitted: copy then remove
+        await fs.cp(worktreePath, divergedPath, { recursive: true });
+        await fs.rm(worktreePath, { recursive: true, force: true });
+      } else {
+        throw err;
+      }
+    }
 
     // Save metadata about why it was moved
     const metadata = {

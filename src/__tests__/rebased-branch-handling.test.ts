@@ -273,7 +273,7 @@ describe("Rebased Branch Handling", () => {
       );
     });
 
-    it("should handle diverged directory with many entries", async () => {
+    it("should handle diverged directory with many entries and still report", async () => {
       await service.initialize();
       (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
       (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
@@ -373,6 +373,35 @@ describe("Rebased Branch Handling", () => {
           message: expect.stringContaining("ENOSPC"),
         }),
       );
+    });
+
+    it("should fallback to copy+remove on cross-device rename (EXDEV)", async () => {
+      await service.initialize();
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+
+      // Simulate EXDEV failure on rename, then ensure cp and rm are used
+      (fs.rename as jest.Mock<any>).mockRejectedValue(new Error("EXDEV: cross-device link not permitted"));
+      (fs.cp as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
+
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-x"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-x", branch: "feature-x" },
+      ]);
+
+      mockGitService.canFastForward.mockImplementation(async (p) => !p.includes("feature-x"));
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+      mockGitService.getCurrentCommit.mockResolvedValue("local");
+      mockGitService.getRemoteCommit.mockResolvedValue("remote");
+
+      await service.sync();
+
+      expect(fs.cp).toHaveBeenCalled();
+      expect(fs.rm).toHaveBeenCalled();
     });
 
     it("should preserve diverged metadata integrity", async () => {

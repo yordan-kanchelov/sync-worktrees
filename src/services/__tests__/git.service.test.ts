@@ -207,6 +207,88 @@ describe("GitService", () => {
     });
   });
 
+  describe("addWorktree - parent directories", () => {
+    it("should create parent directories for nested branch paths", async () => {
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("config not found"))
+        .mockResolvedValueOnce(createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any);
+
+      await gitService.initialize();
+
+      const nestedPath = path.join(TEST_PATHS.worktree, "feature", "nested");
+      await gitService.addWorktree("feature/nested", nestedPath);
+
+      expect(fs.mkdir).toHaveBeenCalledWith(path.dirname(path.resolve(nestedPath)), { recursive: true });
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", path.resolve(nestedPath), "feature/nested"]);
+    });
+  });
+
+  describe("fetchBranch", () => {
+    it("should fetch single branch and update remote refs (no LFS)", async () => {
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("config not found"))
+        .mockResolvedValueOnce(createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any);
+
+      await gitService.initialize();
+
+      await gitService.fetchBranch("feature-1");
+      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "feature-1", "--prune"]);
+    });
+
+    it("should respect LFS skip when fetching branch", async () => {
+      const cfg: Config = { ...mockConfig, skipLfs: true };
+      const svc = new GitService(cfg);
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("config not found"))
+        .mockResolvedValueOnce(createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any);
+
+      await svc.initialize();
+      await svc.fetchBranch("feature-2");
+      expect(mockGit.env).toHaveBeenCalledWith({ GIT_LFS_SKIP_SMUDGE: "1" });
+      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "feature-2", "--prune"]);
+    });
+  });
+
+  describe("hasOperationInProgress (worktree .git file)", () => {
+    it("resolves gitdir from .git file and detects operation markers", async () => {
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      const worktreePath = "/test/worktree";
+      const gitFilePath = path.join(worktreePath, ".git");
+      // .git is a file
+      (fs.stat as jest.Mock<any>).mockResolvedValueOnce({ isFile: () => true });
+      (fs.readFile as jest.Mock<any>).mockResolvedValueOnce("gitdir: /real/git/dir\n");
+      // MERGE_HEAD exists in resolved dir
+      (fs.access as jest.Mock<any>).mockResolvedValueOnce(undefined);
+
+      const result = await gitService.hasOperationInProgress(worktreePath);
+      expect(result).toBe(true);
+      expect(fs.access).toHaveBeenCalledWith(path.join("/real/git/dir", "MERGE_HEAD"));
+      // ensure we looked at .git file
+      expect(fs.stat).toHaveBeenCalledWith(gitFilePath);
+    });
+  });
+
+  describe("getRemoteCommit", () => {
+    it("uses the bare repository to resolve refs", async () => {
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("config not found"))
+        .mockResolvedValueOnce(createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any);
+
+      await gitService.initialize();
+
+      (simpleGit as unknown as jest.Mock).mockClear();
+      // next simpleGit() call should be with bare repo path
+      await gitService.getRemoteCommit("origin/main");
+      const calls = (simpleGit as unknown as jest.Mock).mock.calls;
+      expect(calls[calls.length - 1][0]).toBe(TEST_PATHS.bareRepo);
+    });
+  });
+
   describe("getGit", () => {
     it("should throw error when service is not initialized", () => {
       expect(() => gitService.getGit()).toThrow("Git service not initialized. Call initialize() first.");
