@@ -76,7 +76,13 @@ export class WorktreeSyncService {
 
         if (this.config.branchMaxAge) {
           // Get branches with activity data and filter by age
-          const branchesWithActivity = await this.gitService.getRemoteBranchesWithActivity();
+          type GitServiceWithActivity = Pick<GitService, "getRemoteBranchesWithActivity">;
+          const getWithActivity = (
+            this.gitService as Partial<GitServiceWithActivity>
+          ).getRemoteBranchesWithActivity?.bind(this.gitService);
+          const branchesWithActivity = getWithActivity
+            ? await getWithActivity()
+            : (await this.gitService.getRemoteBranches()).map((b) => ({ branch: b, lastActivity: new Date(0) }));
           const filteredBranches = filterBranchesByAge(branchesWithActivity, this.config.branchMaxAge);
           remoteBranches = filteredBranches.map((b) => b.branch);
 
