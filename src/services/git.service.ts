@@ -57,11 +57,7 @@ export class GitService {
 
     // Fetch all remote branches to ensure they exist locally
     console.log("Fetching remote branches...");
-    if (this.isLfsSkipEnabled()) {
-      await bareGit.env({ GIT_LFS_SKIP_SMUDGE: "1" }).fetch(["--all"]);
-    } else {
-      await bareGit.fetch(["--all"]);
-    }
+    await bareGit.fetch(["--all"]);
 
     // Detect the default branch
     this.defaultBranch = await this.detectDefaultBranch(bareGit);
@@ -90,13 +86,7 @@ export class GitService {
         const defaultBranchExists = branches.all.includes(this.defaultBranch);
 
         if (defaultBranchExists) {
-          if (this.isLfsSkipEnabled()) {
-            await bareGit
-              .env({ GIT_LFS_SKIP_SMUDGE: "1" })
-              .raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
-          } else {
-            await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
-          }
+          await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
           // Set upstream tracking after creating worktree
           const worktreeGit = this.isLfsSkipEnabled()
             ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
@@ -104,29 +94,15 @@ export class GitService {
           await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
         } else {
           // Create new branch tracking the remote branch
-          if (this.isLfsSkipEnabled()) {
-            await bareGit
-              .env({ GIT_LFS_SKIP_SMUDGE: "1" })
-              .raw([
-                "worktree",
-                "add",
-                "--track",
-                "-b",
-                this.defaultBranch,
-                absoluteWorktreePath,
-                `origin/${this.defaultBranch}`,
-              ]);
-          } else {
-            await bareGit.raw([
-              "worktree",
-              "add",
-              "--track",
-              "-b",
-              this.defaultBranch,
-              absoluteWorktreePath,
-              `origin/${this.defaultBranch}`,
-            ]);
-          }
+          await bareGit.raw([
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            this.defaultBranch,
+            absoluteWorktreePath,
+            `origin/${this.defaultBranch}`,
+          ]);
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -139,13 +115,7 @@ export class GitService {
           // Fallback to simple add if tracking setup fails
           console.warn(`Failed to create ${this.defaultBranch} worktree with tracking, using simple add: ${error}`);
           try {
-            if (this.isLfsSkipEnabled()) {
-              await bareGit
-                .env({ GIT_LFS_SKIP_SMUDGE: "1" })
-                .raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
-            } else {
-              await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
-            }
+            await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
           } catch (fallbackError) {
             const fallbackErrorMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
             if (fallbackErrorMessage.includes("already exists")) {
@@ -303,11 +273,9 @@ export class GitService {
       const branches = await bareGit.branch();
       const localBranchExists = branches.all.includes(branchName);
 
-      if (localBranchExists) {
-        // If local branch exists, just add worktree with existing branch
+      if (localBranchExists || branchName.includes("/")) {
         await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
 
-        // Set upstream tracking after creating worktree
         const worktreeGit = this.isLfsSkipEnabled()
           ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
           : simpleGit(absoluteWorktreePath);
