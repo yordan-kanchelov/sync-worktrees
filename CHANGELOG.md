@@ -1,5 +1,11 @@
 # sync-worktrees
 
+## 1.7.3
+
+### Patch Changes
+
+- 8218f24: Fix prettier formatting errors and test issues causing pipeline failures
+
 ## 1.7.2
 
 ### Patch Changes
