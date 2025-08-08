@@ -26,6 +26,7 @@ export const TEST_PATHS = {
   repo: "/test/repo",
   worktree: "/test/worktrees",
   config: "/test/config.js",
+  bareRepo: ".bare/repo",
 };
 
 // Mock Git Service Factory
