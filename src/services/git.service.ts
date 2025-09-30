@@ -186,7 +186,8 @@ export class GitService {
     const branches = await git.branch(["-r"]);
     return branches.all
       .filter((b) => b.startsWith("origin/") && !b.endsWith("/HEAD"))
-      .map((b) => b.replace("origin/", ""));
+      .map((b) => b.replace("origin/", ""))
+      .filter((b) => b !== "origin" && b.length > 0);
   }
 
   async getRemoteBranchesWithActivity(): Promise<{ branch: string; lastActivity: Date }[]> {
@@ -208,6 +209,10 @@ export class GitService {
       const [ref, dateStr] = line.split("|", 2);
       if (ref && dateStr && !ref.endsWith("/HEAD")) {
         const branch = ref.replace("origin/", "");
+        // Skip invalid branch names
+        if (branch === "origin" || branch.length === 0) {
+          continue;
+        }
         const lastActivity = new Date(dateStr);
         // Skip if the date is invalid
         if (!isNaN(lastActivity.getTime())) {
@@ -298,6 +303,38 @@ export class GitService {
       // Create metadata for the new worktree
       await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Check if this is an "already registered" error
+      if (errorMessage.includes("already registered worktree")) {
+        console.warn(`  - Worktree already registered but missing. Pruning and retrying...`);
+        await bareGit.raw(["worktree", "prune"]);
+        // Clean up directory if it exists
+        try {
+          await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
+        } catch {
+          // Directory might not exist, ignore
+        }
+        // Retry once after pruning
+        try {
+          await bareGit.raw([
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            branchName,
+            absoluteWorktreePath,
+            `origin/${branchName}`,
+          ]);
+          console.log(`  - Created worktree for '${branchName}' after pruning`);
+          await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+          return;
+        } catch (retryError) {
+          console.error(`  - Failed to create worktree after pruning: ${retryError}`);
+          throw retryError;
+        }
+      }
+
       // If the worktree add fails with tracking, fall back to non-tracking version
       // This handles edge cases where the remote branch might not exist yet
       console.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${error}`);

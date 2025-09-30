@@ -53,6 +53,8 @@ export class WorktreeSyncService {
 
     try {
       await retry(async () => {
+        await this.gitService.pruneWorktrees();
+
         console.log("Step 1: Fetching latest data from remote...");
 
         try {

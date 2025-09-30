@@ -205,14 +205,16 @@ describe("WorktreeSyncService retry behavior", () => {
       mockGitService.pruneWorktrees
         .mockRejectedValueOnce(pruneError)
         .mockRejectedValueOnce(pruneError)
-        .mockResolvedValueOnce(undefined);
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValue(undefined);
 
       await syncService.sync();
 
       // Verify sync completed despite prune retries
       expect(mockGitService.fetchAll).toHaveBeenCalled();
       expect(mockGitService.getRemoteBranches).toHaveBeenCalled();
-      expect(mockGitService.pruneWorktrees).toHaveBeenCalledTimes(3);
+      // Called 4 times: 1 early prune + 3 retry attempts
+      expect(mockGitService.pruneWorktrees).toHaveBeenCalledTimes(4);
     });
   });
 });
