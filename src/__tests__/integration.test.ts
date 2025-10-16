@@ -38,6 +38,7 @@ describe("Integration Tests", () => {
       stashList: jest.fn<any>().mockResolvedValue({ total: 0 }),
       clone: jest.fn<any>().mockResolvedValue(undefined),
       addConfig: jest.fn<any>().mockResolvedValue(undefined),
+      revparse: jest.fn<any>().mockResolvedValue("abc123def456"),
     } as any;
 
     (simpleGit as unknown as jest.Mock).mockReturnValue(mockGit);

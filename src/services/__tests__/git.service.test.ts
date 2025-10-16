@@ -39,11 +39,16 @@ describe("GitService", () => {
     // Setup mock metadata service
     mockMetadataService = {
       createInitialMetadata: jest.fn<any>().mockResolvedValue(undefined),
+      createInitialMetadataFromPath: jest.fn<any>().mockResolvedValue(undefined),
       updateLastSync: jest.fn<any>().mockResolvedValue(undefined),
+      updateLastSyncFromPath: jest.fn<any>().mockResolvedValue(undefined),
       loadMetadata: jest.fn<any>().mockResolvedValue(null),
+      loadMetadataFromPath: jest.fn<any>().mockResolvedValue(null),
       deleteMetadata: jest.fn<any>().mockResolvedValue(undefined),
+      deleteMetadataFromPath: jest.fn<any>().mockResolvedValue(undefined),
       saveMetadata: jest.fn<any>().mockResolvedValue(undefined),
       getMetadataPath: jest.fn<any>().mockResolvedValue("/test/path"),
+      getMetadataPathFromWorktreePath: jest.fn<any>().mockResolvedValue("/test/path"),
     };
     (WorktreeMetadataService as jest.MockedClass<typeof WorktreeMetadataService>).mockImplementation(
       () => mockMetadataService as any,
@@ -475,6 +480,7 @@ describe("GitService", () => {
 
       const worktreeGitMock = {
         branch: jest.fn<any>().mockResolvedValue(undefined),
+        revparse: jest.fn<any>().mockResolvedValue("abc123"),
       };
 
       // Store original implementation
@@ -602,6 +608,31 @@ describe("GitService", () => {
       expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
       expect(mockGit.raw).toHaveBeenCalledTimes(3); // Failed tracking add, worktree list, successful fallback add
     });
+
+    it("should throw error when metadata creation fails", async () => {
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      const metadataError = new Error("Failed to write metadata file");
+      mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(metadataError);
+
+      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
+        "Metadata creation failed for feature-1",
+      );
+
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "worktree",
+        "add",
+        "--track",
+        "-b",
+        "feature-1",
+        "/test/worktrees/feature-1",
+        "origin/feature-1",
+      ]);
+      expect(mockMetadataService.createInitialMetadataFromPath).toHaveBeenCalled();
+    });
   });
 
   describe("removeWorktree", () => {
@@ -716,8 +747,8 @@ describe("GitService", () => {
       // Mock gitService methods
       jest.spyOn(gitService, "hasUpstreamGone").mockResolvedValue(true);
 
-      // Mock metadata service to return saved metadata
-      (mockMetadataService.loadMetadata as jest.Mock<any>).mockResolvedValue({
+      // Mock metadata service to return saved metadata (use path-based method)
+      (mockMetadataService.loadMetadataFromPath as jest.Mock<any>).mockResolvedValue({
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-deleted",
@@ -739,7 +770,10 @@ describe("GitService", () => {
       const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-deleted");
 
       expect(hasUnpushed).toBe(true);
-      expect(mockMetadataService.loadMetadata).toHaveBeenCalledWith(".bare/repo", "feature-deleted");
+      expect(mockMetadataService.loadMetadataFromPath).toHaveBeenCalledWith(
+        ".bare/repo",
+        "/test/worktrees/feature-deleted",
+      );
       expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
       // Should not fall back to regular check
       expect(mockWorktreeGit.raw).toHaveBeenCalledTimes(1);
@@ -867,7 +901,7 @@ describe("GitService", () => {
       expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", "local-only@{upstream}"]);
     });
 
-    it("should return false when upstream reference is ambiguous", async () => {
+    it("should return false when upstream reference is ambiguous and no config", async () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
@@ -1175,9 +1209,9 @@ branch refs/heads/feature-2`);
       await gitService.updateWorktree("/test/worktrees/feature-1");
 
       expect(mockWorktreeGit.merge).toHaveBeenCalledWith(["origin/feature-1", "--ff-only"]);
-      expect(mockMetadataService.updateLastSync).toHaveBeenCalledWith(
+      expect(mockMetadataService.updateLastSyncFromPath).toHaveBeenCalledWith(
         ".bare/repo",
-        "feature-1",
+        "/test/worktrees/feature-1",
         "newcommit123",
         "updated",
       );
