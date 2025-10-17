@@ -1,5 +1,36 @@
 # sync-worktrees
 
+## 1.7.5
+
+### Patch Changes
+
+- 3f91a81: Fix false positive "unpushed commits" warnings for branches with slashes in names
+
+  Fixed a critical bug where branches with slashes in their names (e.g., `fix/test-branch`, `feature/new-feature`) would incorrectly report "unpushed commits" even when they were cleanly synced and merged.
+
+  **Root Cause:**
+  - Git stores worktree metadata using the basename of the worktree path (e.g., `.git/worktrees/test-branch/`)
+  - sync-worktrees was using the full branch name with slashes (e.g., `.git/worktrees/fix/test-branch/`)
+  - This path mismatch caused metadata loading to fail, triggering false positives
+
+  **Changes:**
+  - Added path-based metadata methods that correctly derive the worktree directory name from the worktree path
+  - All metadata operations now use `path.basename()` to match Git's internal structure
+  - Added automatic migration from old incorrect paths to new correct paths
+  - Updated all callsites in GitService to use the new path-based methods
+
+  **Migration:**
+  Existing worktrees with metadata in the old (incorrect) path will be automatically migrated to the correct path on first load. The old metadata files will be cleaned up automatically.
+
+- 3f91a81: Fix error when "origin" appears as a branch name causing sync failures. Added early prune at sync start to clean stale worktree registrations, filtered invalid branch names like "origin" from remote branch lists, and improved error handling for "already registered worktree" errors with automatic retry after pruning.
+- 3f91a81: fix: correctly detect squash-merged branches with deleted upstreams
+
+  Fixed a bug where worktrees for squash-merged branches (where the remote branch was deleted) were incorrectly flagged as having "unpushed commits" even when they had never been touched locally.
+
+  The issue occurred because `hasUpstreamGone()` returned `false` when Git couldn't resolve `@{upstream}` due to the remote branch being deleted. This caused the metadata-based check to be skipped, falling back to `git rev-list --count <branch> --not --remotes`, which incorrectly counted the original (now-squashed) commits as "unpushed".
+
+  The fix checks the branch's upstream configuration when `@{upstream}` resolution fails, and verifies whether the configured remote branch actually exists. This allows the metadata-based check to run, which correctly reports zero unpushed commits for untouched worktrees.
+
 ## 1.7.4
 
 ### Patch Changes
