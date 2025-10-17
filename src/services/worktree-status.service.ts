@@ -35,7 +35,7 @@ export class WorktreeStatusService {
     const hasStashedChanges = await this.hasStashedChanges(worktreePath);
     const hasOperationInProgress = await this.hasOperationInProgress(worktreePath);
     const hasModifiedSubmodules = await this.hasModifiedSubmodules(worktreePath);
-    const upstreamGone = hasUnpushedCommits && (await this.hasUpstreamGone(worktreePath));
+    const upstreamGone = await this.hasUpstreamGone(worktreePath);
 
     const reasons: string[] = [];
     if (!isClean) reasons.push("uncommitted changes");

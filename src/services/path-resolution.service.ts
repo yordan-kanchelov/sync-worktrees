@@ -2,7 +2,7 @@ import * as path from "path";
 
 export class PathResolutionService {
   sanitizeBranchName(branchName: string): string {
-    return branchName.replace(/\//g, "-").replace(/[^a-zA-Z0-9-_]/g, "_");
+    return branchName.replace(/\//g, "-").replace(/[^a-zA-Z0-9_-]/g, "_");
   }
 
   normalizeWorktreePath(worktreePath: string, worktreeBaseDir: string): string {
