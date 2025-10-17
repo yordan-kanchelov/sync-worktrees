@@ -4,6 +4,7 @@ import * as path from "path";
 import simpleGit from "simple-git";
 
 import { getDefaultBareRepoDir } from "../utils/git-url";
+import { getErrorMessage } from "../utils/lfs-error";
 
 import { WorktreeMetadataService } from "./worktree-metadata.service";
 
@@ -105,7 +106,7 @@ export class GitService {
           ]);
         }
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage = getErrorMessage(error);
         // Check if error is because directory already exists
         if (errorMessage.includes("already exists")) {
           console.log(
@@ -117,7 +118,7 @@ export class GitService {
           try {
             await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
           } catch (fallbackError) {
-            const fallbackErrorMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            const fallbackErrorMessage = getErrorMessage(fallbackError);
             if (fallbackErrorMessage.includes("already exists")) {
               console.log(
                 `${this.defaultBranch} worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`,
@@ -232,16 +233,17 @@ export class GitService {
       const currentCommit = await worktreeGit.revparse(["HEAD"]);
       const parentCommit = await bareGit.revparse([this.defaultBranch]);
 
-      await this.metadataService.createInitialMetadata(
+      await this.metadataService.createInitialMetadataFromPath(
         this.bareRepoPath,
-        branchName,
+        worktreePath,
         currentCommit.trim(),
         `origin/${branchName}`,
         this.defaultBranch,
         parentCommit.trim(),
       );
     } catch (metadataError) {
-      console.warn(`  - Failed to create metadata for worktree: ${metadataError}`);
+      console.error(`  - ❌ Failed to create metadata for '${branchName}': ${metadataError}`);
+      throw new Error(`Metadata creation failed for ${branchName}. This worktree cannot be auto-managed.`);
     }
   }
 
@@ -303,7 +305,12 @@ export class GitService {
       // Create metadata for the new worktree
       await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error);
+
+      // Re-throw metadata creation errors - these are fatal and should not fall back
+      if (errorMessage.includes("Metadata creation failed")) {
+        throw error;
+      }
 
       // Check if this is an "already registered" error
       if (errorMessage.includes("already registered worktree")) {
@@ -369,27 +376,14 @@ export class GitService {
   async removeWorktree(worktreePath: string): Promise<void> {
     const bareGit = simpleGit(this.bareRepoPath);
 
-    // Try to get branch name before removing worktree
-    let branchName: string | null = null;
-    try {
-      const worktrees = await this.getWorktreesFromBare(bareGit);
-      const worktree = worktrees.find((w) => path.resolve(w.path) === path.resolve(worktreePath));
-      branchName = worktree?.branch || null;
-    } catch {
-      // If we can't get the branch name, extract from path as fallback
-      branchName = path.basename(worktreePath);
-    }
-
     await bareGit.raw(["worktree", "remove", worktreePath, "--force"]);
     console.log(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
 
-    // Clean up metadata
-    if (branchName) {
-      try {
-        await this.metadataService.deleteMetadata(this.bareRepoPath, branchName);
-      } catch (metadataError) {
-        console.warn(`Failed to delete metadata for worktree: ${metadataError}`);
-      }
+    // Clean up metadata using the worktree path
+    try {
+      await this.metadataService.deleteMetadataFromPath(this.bareRepoPath, worktreePath);
+    } catch (metadataError) {
+      console.warn(`Failed to delete metadata for worktree: ${metadataError}`);
     }
   }
 
@@ -429,8 +423,8 @@ export class GitService {
       // Check if upstream is gone
       const upstreamGone = await this.hasUpstreamGone(worktreePath);
       if (upstreamGone) {
-        // Load metadata to check for commits after last sync
-        const metadata = await this.metadataService.loadMetadata(this.bareRepoPath, currentBranch);
+        // Load metadata to check for commits after last sync (use path-based method)
+        const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
         if (metadata?.lastSyncCommit) {
           try {
             // Check for commits after last sync
@@ -473,29 +467,50 @@ export class GitService {
       const remoteBranches = await worktreeGit.branch(["-r"]);
       return !remoteBranches.all.includes(upstream.trim());
     } catch (error) {
-      // Check if the error is because of no upstream configured
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error);
 
-      // Match specific Git error messages for missing upstream
       if (
         errorMessage.includes("fatal: no upstream configured") ||
-        errorMessage.includes("no upstream configured for branch") ||
-        errorMessage.includes("fatal: ambiguous argument") ||
-        errorMessage.includes("unknown revision or path")
+        errorMessage.includes("no upstream configured for branch")
       ) {
-        // This is expected when there's no upstream - not an error condition
         return false;
       }
 
-      // Log unexpected errors that don't match known patterns
+      if (errorMessage.includes("fatal: ambiguous argument") || errorMessage.includes("unknown revision or path")) {
+        try {
+          const branchSummary = await worktreeGit.branch();
+          const currentBranch = branchSummary.current;
+
+          const remoteResult = await worktreeGit
+            .raw(["config", "--get", `branch.${currentBranch}.remote`])
+            .catch(() => "");
+          const mergeResult = await worktreeGit
+            .raw(["config", "--get", `branch.${currentBranch}.merge`])
+            .catch(() => "");
+
+          const remote = remoteResult.trim();
+          const merge = mergeResult.trim();
+
+          if (remote && merge) {
+            const remoteBranchName = merge.replace("refs/heads/", "");
+            const expectedUpstream = `${remote}/${remoteBranchName}`;
+
+            const remoteBranches = await worktreeGit.branch(["-r"]);
+            return !remoteBranches.all.includes(expectedUpstream);
+          }
+        } catch {
+          // Can't determine config, be conservative
+        }
+
+        return false;
+      }
+
       console.error(
         `Unexpected error checking upstream status for ${worktreePath}. ` +
           `This might indicate a real issue rather than a missing upstream. ` +
           `Error: ${errorMessage}`,
       );
 
-      // Return false to be safe - we don't want to accidentally delete worktrees
-      // due to transient errors
       return false;
     }
   }
@@ -646,10 +661,16 @@ export class GitService {
       return;
     }
 
-    // Update metadata after successful update
+    // Update metadata after successful update (use path-based method)
     try {
       const currentCommit = await worktreeGit.revparse(["HEAD"]);
-      await this.metadataService.updateLastSync(this.bareRepoPath, currentBranch, currentCommit.trim(), "updated");
+      await this.metadataService.updateLastSyncFromPath(
+        this.bareRepoPath,
+        worktreePath,
+        currentCommit.trim(),
+        "updated",
+        this.defaultBranch,
+      );
     } catch (metadataError) {
       console.warn(`Failed to update metadata for worktree: ${metadataError}`);
     }
@@ -715,10 +736,16 @@ export class GitService {
 
     await worktreeGit.reset(["--hard", `origin/${branch}`]);
 
-    // Update metadata after reset
+    // Update metadata after reset (use path-based method)
     try {
       const currentCommit = await worktreeGit.revparse(["HEAD"]);
-      await this.metadataService.updateLastSync(this.bareRepoPath, branch, currentCommit.trim(), "updated");
+      await this.metadataService.updateLastSyncFromPath(
+        this.bareRepoPath,
+        worktreePath,
+        currentCommit.trim(),
+        "updated",
+        this.defaultBranch,
+      );
     } catch (metadataError) {
       console.warn(`Failed to update metadata after reset: ${metadataError}`);
     }

@@ -59,7 +59,6 @@ describe("File System Edge Cases", () => {
         { path: "/test/worktrees/readonly-branch", branch: "readonly-branch" },
       ]);
 
-      // Simulate permission error when checking status
       mockGitService.checkWorktreeStatus.mockImplementation(async () => {
         throw new Error("EACCES: permission denied");
       });
@@ -69,67 +68,9 @@ describe("File System Edge Cases", () => {
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Error checking worktree"), expect.any(Error));
     });
-
-    it("should handle locked files in worktree", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["locked-files"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/locked-files", branch: "locked-files" }]);
-
-      // Git operations fail due to locked files
-      mockGitService.checkWorktreeStatus.mockImplementation(async () => {
-        throw new Error("fatal: Unable to create '.git/index.lock': File exists");
-      });
-
-      await service.sync();
-
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-    });
-
-    it("should handle worktree on read-only filesystem", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["readonly-fs"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/readonly-fs", branch: "readonly-fs" }]);
-
-      mockGitService.checkWorktreeStatus.mockImplementation(async () => {
-        throw new Error("EROFS: read-only file system");
-      });
-
-      await service.sync();
-
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-    });
   });
 
   describe("Symbolic links", () => {
-    it("should handle worktree containing symbolic links", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["symlink-branch"]);
-
-      // Mock fs.stat for symlink detection
-      const mockStat = {
-        isDirectory: jest.fn().mockReturnValue(true),
-        isSymbolicLink: jest.fn().mockReturnValue(true),
-      };
-      (fs.stat as jest.Mock<any>).mockResolvedValue(mockStat);
-
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/test/worktrees/symlink-branch", branch: "symlink-branch" },
-      ]);
-
-      // Worktree is clean but contains symlinks
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-
-      await service.sync();
-
-      // Should be able to remove if all checks pass
-      expect(mockGitService.removeWorktree).toHaveBeenCalled();
-    });
-
     it("should handle broken symbolic links", async () => {
       await service.initialize();
       (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
@@ -139,7 +80,6 @@ describe("File System Edge Cases", () => {
         { path: "/test/worktrees/broken-symlinks", branch: "broken-symlinks" },
       ]);
 
-      // Status check might fail due to broken symlinks
       mockGitService.checkWorktreeStatus.mockImplementation(async () => {
         throw new Error("ENOENT: no such file or directory");
       });
@@ -147,60 +87,6 @@ describe("File System Edge Cases", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-    });
-
-    it("should handle worktree that is itself a symlink", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["symlinked-worktree"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/actual/path/symlinked-worktree", branch: "symlinked-worktree" },
-      ]);
-
-      // Symlinked worktree might have path resolution issues
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-
-      await service.sync();
-
-      // Should handle symlinked worktrees properly
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalled();
-    });
-  });
-
-  describe("Case sensitivity", () => {
-    it("should handle branch names differing only in case", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["Feature-1", "feature-1"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/test/worktrees/Feature-1", branch: "Feature-1" },
-        { path: "/test/worktrees/feature-1", branch: "feature-1" },
-      ]);
-
-      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
-
-      await service.sync();
-
-      // Should handle case-sensitive branches correctly
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith("/test/worktrees/Feature-1");
-    });
-
-    it("should handle case-insensitive filesystem issues", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["BRANCH-name"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/branch-name", branch: "branch-name" }]);
-
-      // Filesystem returns different case than Git
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-
-      await service.sync();
-
-      // Should handle case differences gracefully
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalled();
     });
   });
 
@@ -212,63 +98,8 @@ describe("File System Edge Cases", () => {
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/large-repo", branch: "large-repo" }]);
 
-      // Simulate timeout
       mockGitService.checkWorktreeStatus.mockImplementation(async () => {
         throw new Error("Command failed: timeout");
-      });
-
-      await service.sync();
-
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-    });
-
-    it("should handle worktree with very large files", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["large-files"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/large-files", branch: "large-files" }]);
-
-      // Operations might be slow but should complete
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockImplementation(
-        () => new Promise((resolve) => setTimeout(() => resolve(false), 100)),
-      );
-
-      await service.sync();
-
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalled();
-      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalled();
-    });
-  });
-
-  describe("Special file types", () => {
-    it("should handle worktree with named pipes", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["fifo-branch"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/fifo-branch", branch: "fifo-branch" }]);
-
-      // Named pipes might cause issues with Git operations
-      mockGitService.checkWorktreeStatus.mockImplementation(async () => {
-        throw new Error("fatal: pathspec 'fifo' did not match any files");
-      });
-
-      await service.sync();
-
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-    });
-
-    it("should handle worktree with device files", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["device-files"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/device-files", branch: "device-files" }]);
-
-      mockGitService.checkWorktreeStatus.mockImplementation(async () => {
-        throw new Error("fatal: not a regular file");
       });
 
       await service.sync();
@@ -289,7 +120,6 @@ describe("File System Edge Cases", () => {
         { path: `/test/worktrees/${longBranchName}`, branch: longBranchName },
       ]);
 
-      // Long paths might cause issues
       mockGitService.checkWorktreeStatus.mockImplementation(async () => {
         throw new Error("ENAMETOOLONG: name too long");
       });

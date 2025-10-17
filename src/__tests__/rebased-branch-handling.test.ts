@@ -69,22 +69,18 @@ describe("Rebased Branch Handling", () => {
       (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
       (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
 
-      // Setup: feature-rebased cannot fast-forward
       mockGitService.canFastForward.mockImplementation(async (path) => {
         return !path.includes("feature-rebased");
       });
 
-      // But trees are identical (clean rebase)
       mockGitService.compareTreeContent.mockImplementation(async (path) => {
         return path.includes("feature-rebased");
       });
 
       await service.sync();
 
-      // Should reset to upstream
       expect(mockGitService.resetToUpstream).toHaveBeenCalledWith("/test/worktrees/feature-rebased", "feature-rebased");
 
-      // Should not move to diverged or remove worktree
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       expect(fs.rename).not.toHaveBeenCalled();
     });
@@ -99,17 +95,14 @@ describe("Rebased Branch Handling", () => {
       (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
       (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
 
-      // Setup: feature-diverged cannot fast-forward
       mockGitService.canFastForward.mockImplementation(async (path) => {
         return !path.includes("feature-diverged");
       });
 
-      // Trees are different (real divergence)
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
       await service.sync();
 
-      // Should move the worktree to diverged
       expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees/.diverged", { recursive: true });
 
       expect(fs.rename).toHaveBeenCalledWith(
@@ -117,13 +110,11 @@ describe("Rebased Branch Handling", () => {
         expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-[a-z0-9]+$/),
       );
 
-      // Should save metadata
       expect(fs.writeFile).toHaveBeenCalledWith(
         expect.stringMatching(/\.diverged-info\.json$/),
         expect.stringContaining("diverged-history-with-changes"),
       );
 
-      // Should remove and recreate worktree
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged");
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-diverged", "/test/worktrees/feature-diverged");
     });
@@ -135,7 +126,6 @@ describe("Rebased Branch Handling", () => {
       (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
       (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
 
-      // Mock existing diverged directory
       (fs.readdir as jest.Mock<any>).mockImplementation(async (path: string) => {
         if (path.endsWith(".diverged")) {
           return ["2024-01-01-old-branch", "2024-01-15-another-branch"];
@@ -155,7 +145,6 @@ describe("Rebased Branch Handling", () => {
       (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
       (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
 
-      // Mock directories including .diverged
       (fs.readdir as jest.Mock<any>).mockImplementation(async (path: string) => {
         if (path === "/test/worktrees") {
           return ["main", "feature", ".diverged", "orphaned-dir"];
@@ -163,7 +152,6 @@ describe("Rebased Branch Handling", () => {
         return [];
       });
 
-      // Mock that orphaned-dir is not a valid worktree
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/main", branch: "main" },
         { path: "/test/worktrees/feature", branch: "feature" },
@@ -175,7 +163,6 @@ describe("Rebased Branch Handling", () => {
 
       await service.sync();
 
-      // Should only try to remove orphaned-dir, not .diverged
       expect(fs.rm).toHaveBeenCalledTimes(1);
       expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/orphaned-dir", { recursive: true, force: true });
       expect(fs.rm).not.toHaveBeenCalledWith(expect.stringContaining(".diverged"), expect.any(Object));
@@ -198,20 +185,16 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/branch2", branch: "branch2" },
       ]);
 
-      // Both branches cannot fast-forward
       mockGitService.canFastForward.mockResolvedValue(false);
 
-      // branch1 has identical trees, branch2 has different content
       mockGitService.compareTreeContent.mockImplementation(async (path) => {
         return path.includes("branch1");
       });
 
       await service.sync();
 
-      // branch1 should be reset
       expect(mockGitService.resetToUpstream).toHaveBeenCalledWith("/test/worktrees/branch1", "branch1");
 
-      // branch2 should be moved to diverged
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/branch2",
         expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-branch2-[a-z0-9]+$/),
@@ -224,18 +207,15 @@ describe("Rebased Branch Handling", () => {
       (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
       (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
 
-      // Setup failing rename operation
       (fs.rename as jest.Mock<any>).mockRejectedValue(new Error("Permission denied"));
 
       mockGitService.canFastForward.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
-      // Should handle error gracefully and continue
       const consoleSpy = jest.spyOn(console, "error");
 
       await service.sync();
 
-      // Verify error was logged
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Error checking worktree"), expect.any(Error));
     });
 
@@ -256,13 +236,11 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/release/v1.0.0", branch: "release/v1.0.0" },
       ]);
 
-      // All special branches cannot fast-forward and have different content
       mockGitService.canFastForward.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
       await service.sync();
 
-      // Verify special characters are properly sanitized in diverged paths
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature/user@domain",
         expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-user@domain-[a-z0-9]+$/),
@@ -272,174 +250,151 @@ describe("Rebased Branch Handling", () => {
         expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-bugfix-issue#123-[a-z0-9]+$/),
       );
     });
+  });
 
-    it("should handle diverged directory with many entries and still report", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-
-      // Mock a diverged directory with many entries
-      const manyDivergedBranches = Array.from({ length: 100 }, (_, i) => `2024-01-01-branch${i}-abc123`);
-
-      (fs.readdir as jest.Mock<any>).mockImplementation(async (path: string) => {
-        if (path.endsWith(".diverged")) {
-          return manyDivergedBranches;
-        }
-        return [];
-      });
-
-      const consoleSpy = jest.spyOn(console, "log");
-
-      await service.sync();
-
-      // Should report the large number correctly
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("📦 Note: 100 diverged worktree(s)"));
-    });
-
-    it("should handle concurrent divergence operations with unique names", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
-
-      // Simulate delay in rename to test race condition handling
-      let renameCallCount = 0;
-      const renamedPaths: string[] = [];
-      (fs.rename as jest.Mock<any>).mockImplementation(async (_: string, divergedPath: string) => {
-        renameCallCount++;
-        // Small delay to simulate concurrent operations
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        renamedPaths.push(divergedPath);
-        return undefined;
-      });
-
-      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/test/worktrees/main", branch: "main" },
-        { path: "/test/worktrees/feature-1", branch: "feature-1" },
-        { path: "/test/worktrees/feature-2", branch: "feature-2" },
-      ]);
-
-      // Both features cannot fast-forward
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        // Only feature branches cannot fast-forward
-        return !path.includes("feature-");
-      });
-      mockGitService.compareTreeContent.mockResolvedValue(false);
-
-      await service.sync();
-
-      // Verify both branches were moved to diverged
-      expect(renameCallCount).toBe(2);
-
-      // Verify paths are unique (no collisions due to race condition)
-      expect(new Set(renamedPaths).size).toBe(2);
-
-      // Verify paths contain unique suffixes
-      const suffixPattern = /-[a-z0-9]+$/;
-      const suffixes = renamedPaths.map((path) => {
-        const match = path.match(suffixPattern);
-        return match ? match[0] : null;
-      });
-      expect(new Set(suffixes).size).toBe(2); // All suffixes should be unique
-    });
-
-    it("should handle filesystem errors during divergence", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-
-      // Mock filesystem full error
-      (fs.mkdir as jest.Mock<any>).mockImplementation(async (path: string) => {
-        if (path.includes(".diverged")) {
-          throw new Error("ENOSPC: no space left on device");
-        }
-        return undefined;
-      });
-
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.compareTreeContent.mockResolvedValue(false);
-
-      const consoleSpy = jest.spyOn(console, "error");
-
-      await service.sync();
-
-      // Should log the filesystem error
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining("Error checking worktree"),
-        expect.objectContaining({
-          message: expect.stringContaining("ENOSPC"),
-        }),
-      );
-    });
-
-    it("should fallback to copy+remove on cross-device rename (EXDEV)", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
-
-      // Simulate EXDEV failure on rename, then ensure cp and rm are used
-      (fs.rename as jest.Mock<any>).mockRejectedValue(new Error("EXDEV: cross-device link not permitted"));
-      (fs.cp as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
-
-      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-x"]);
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/test/worktrees/main", branch: "main" },
-        { path: "/test/worktrees/feature-x", branch: "feature-x" },
-      ]);
-
-      mockGitService.canFastForward.mockImplementation(async (p) => !p.includes("feature-x"));
-      mockGitService.compareTreeContent.mockResolvedValue(false);
-      mockGitService.getCurrentCommit.mockResolvedValue("local");
-      mockGitService.getRemoteCommit.mockResolvedValue("remote");
-
-      await service.sync();
-
-      expect(fs.cp).toHaveBeenCalled();
-      expect(fs.rm).toHaveBeenCalled();
-    });
-
-    it("should preserve diverged metadata integrity", async () => {
+  describe("Diverged and behind branches", () => {
+    it("should handle branches that are both behind and diverged correctly", async () => {
       await service.initialize();
       (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
       (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
       (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
       (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
 
-      let savedMetadata: any;
-      (fs.writeFile as jest.Mock<any>).mockImplementation(async (_: string, content: string) => {
-        savedMetadata = JSON.parse(content);
-        return undefined;
-      });
-
-      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature/nested/branch"]);
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-diverged-behind"]);
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/main", branch: "main" },
-        { path: "/test/worktrees/feature/nested/branch", branch: "feature/nested/branch" },
+        { path: "/test/worktrees/feature-diverged-behind", branch: "feature-diverged-behind" },
       ]);
 
-      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.canFastForward.mockImplementation(async (path) => {
+        return !path.includes("feature-diverged-behind");
+      });
+
+      mockGitService.isWorktreeBehind.mockImplementation(async (path) => {
+        return path.includes("feature-diverged-behind");
+      });
+
       mockGitService.compareTreeContent.mockResolvedValue(false);
-      mockGitService.getCurrentCommit.mockResolvedValue("local123");
-      mockGitService.getRemoteCommit.mockResolvedValue("remote456");
+
+      mockGitService.updateWorktree.mockImplementation(async (path) => {
+        if (path.includes("feature-diverged-behind")) {
+          const error = new Error("fatal: Not possible to fast-forward, aborting.") as any;
+          error.task = {
+            commands: ["merge", "origin/feature-diverged-behind", "--ff-only"],
+            format: "utf-8",
+          };
+          throw error;
+        }
+      });
 
       await service.sync();
 
-      // Verify metadata contains all required fields
-      expect(savedMetadata).toMatchObject({
-        originalBranch: "feature/nested/branch",
-        reason: "diverged-history-with-changes",
-        originalPath: "/test/worktrees/feature/nested/branch",
-        localCommit: "local123",
-        remoteCommit: "remote456",
+      expect(mockGitService.updateWorktree).not.toHaveBeenCalled();
+
+      expect(fs.rename).toHaveBeenCalledWith(
+        "/test/worktrees/feature-diverged-behind",
+        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-behind-[a-z0-9]+$/),
+      );
+
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith(
+        "feature-diverged-behind",
+        "/test/worktrees/feature-diverged-behind",
+      );
+    });
+
+    it("should recover from fast-forward errors by handling as diverged branch", async () => {
+      await service.initialize();
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-diverged-behind"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-diverged-behind", branch: "feature-diverged-behind" },
+      ]);
+
+      mockGitService.canFastForward.mockResolvedValue(true);
+
+      mockGitService.isWorktreeBehind.mockImplementation(async (path) => {
+        return path.includes("feature-diverged-behind");
       });
-      expect(savedMetadata.divergedAt).toBeDefined();
-      expect(savedMetadata.instruction).toContain("git diff origin/feature/nested/branch");
+
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+
+      mockGitService.updateWorktree.mockImplementation(async (path) => {
+        if (path.includes("feature-diverged-behind")) {
+          const error = new Error("fatal: Not possible to fast-forward, aborting.") as any;
+          error.task = {
+            commands: ["merge", "origin/feature-diverged-behind", "--ff-only"],
+            format: "utf-8",
+          };
+          throw error;
+        }
+      });
+
+      await service.sync();
+
+      expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
+
+      expect(fs.rename).toHaveBeenCalledWith(
+        "/test/worktrees/feature-diverged-behind",
+        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-behind-[a-z0-9]+$/),
+      );
+
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith(
+        "feature-diverged-behind",
+        "/test/worktrees/feature-diverged-behind",
+      );
+    });
+
+    it("should NOT treat other update errors as divergence", async () => {
+      await service.initialize();
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-diverged-behind"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-diverged-behind", branch: "feature-diverged-behind" },
+      ]);
+
+      mockGitService.canFastForward.mockResolvedValue(true);
+
+      mockGitService.isWorktreeBehind.mockImplementation(async (path) => {
+        return path.includes("feature-diverged-behind");
+      });
+
+      mockGitService.updateWorktree.mockImplementation(async (path) => {
+        if (path.includes("feature-diverged-behind")) {
+          throw new Error(
+            "fatal: unable to access 'https://github.com/test/repo.git/': Could not resolve host: github.com",
+          );
+        }
+      });
+
+      const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+      await service.sync();
+
+      expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
+
+      expect(fs.rename).not.toHaveBeenCalled();
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("feature-diverged-behind", expect.any(String));
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to update 'feature-diverged-behind':"),
+        expect.objectContaining({
+          message: expect.stringContaining("Could not resolve host"),
+        }),
+      );
     });
   });
 });

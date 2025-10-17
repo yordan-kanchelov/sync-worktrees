@@ -1,4 +1,19 @@
 /**
+ * Extracts error message from unknown error type
+ * @param error The error to extract message from
+ * @returns The error message string
+ */
+export function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return String(error);
+}
+
+/**
  * Common LFS error patterns that indicate Git LFS-related failures
  */
 export const LFS_ERROR_PATTERNS = Object.freeze([
@@ -22,17 +37,5 @@ export function isLfsError(errorMessage: string): boolean {
  * @returns true if the error is related to Git LFS
  */
 export function isLfsErrorFromError(error: unknown): boolean {
-  let errorMessage = "";
-
-  if (error instanceof Error) {
-    errorMessage = error.message;
-  } else if (typeof error === "string") {
-    errorMessage = error;
-  } else if (error && typeof error === "object" && "message" in error) {
-    errorMessage = String((error as { message: unknown }).message);
-  } else {
-    errorMessage = String(error);
-  }
-
-  return isLfsError(errorMessage);
+  return isLfsError(getErrorMessage(error));
 }

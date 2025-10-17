@@ -29,6 +29,11 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       initialize: jest.fn().mockResolvedValue(undefined),
       fetchAll: jest.fn().mockResolvedValue(undefined),
       getRemoteBranches: jest.fn().mockResolvedValue(["main", "feature", "develop"]),
+      getRemoteBranchesWithActivity: jest.fn().mockResolvedValue([
+        { branch: "main", lastActivity: new Date() },
+        { branch: "feature", lastActivity: new Date() },
+        { branch: "develop", lastActivity: new Date() },
+      ]),
       getWorktrees: jest.fn().mockResolvedValue([
         { path: "/test/worktrees/main", branch: "main" },
         { path: "/test/worktrees/feature", branch: "feature" },
