@@ -669,6 +669,7 @@ export class GitService {
         worktreePath,
         currentCommit.trim(),
         "updated",
+        this.defaultBranch,
       );
     } catch (metadataError) {
       console.warn(`Failed to update metadata for worktree: ${metadataError}`);
@@ -743,6 +744,7 @@ export class GitService {
         worktreePath,
         currentCommit.trim(),
         "updated",
+        this.defaultBranch,
       );
     } catch (metadataError) {
       console.warn(`Failed to update metadata after reset: ${metadataError}`);

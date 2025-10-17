@@ -1214,6 +1214,7 @@ branch refs/heads/feature-2`);
         "/test/worktrees/feature-1",
         "newcommit123",
         "updated",
+        "main",
       );
     });
 

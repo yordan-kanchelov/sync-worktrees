@@ -495,6 +495,13 @@ describe("WorktreeMetadataService", () => {
       (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
       (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
 
+      mockGit.branch = jest.fn<any>().mockResolvedValue({
+        current: "feature-branch",
+        all: ["feature-branch"],
+        branches: {},
+      });
+      mockGit.raw = jest.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured"));
+
       const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
       const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 
@@ -504,6 +511,7 @@ describe("WorktreeMetadataService", () => {
       expect(logSpy).toHaveBeenCalledWith("  Attempting to create initial metadata...");
       expect(logSpy).toHaveBeenCalledWith("  ✅ Created metadata for feature-branch");
       expect(mockGit.revparse).toHaveBeenCalledWith(["HEAD"]);
+      expect(mockGit.branch).toHaveBeenCalled();
       expect(fs.writeFile).toHaveBeenCalled();
 
       consoleSpy.mockRestore();
@@ -530,6 +538,71 @@ describe("WorktreeMetadataService", () => {
       consoleSpy.mockRestore();
       logSpy.mockRestore();
       errorSpy.mockRestore();
+    });
+
+    it("should use correct branch name for upstream with branches containing slashes", async () => {
+      const worktreePath = "/test/worktrees/feature/foo";
+      const currentCommit = "abc123def456";
+
+      (fs.readFile as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+
+      mockGit.revparse.mockResolvedValue(currentCommit);
+      mockGit.branch = jest.fn<any>().mockResolvedValue({
+        current: "feature/foo",
+        all: ["feature/foo"],
+        branches: {},
+      });
+      mockGit.raw = jest.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured"));
+
+      const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+      await service.updateLastSyncFromPath(mockBareRepoPath, worktreePath, currentCommit);
+
+      const writeCallArg = (fs.writeFile as jest.Mock<any>).mock.calls[0][1] as string;
+      const savedMetadata = JSON.parse(writeCallArg);
+
+      // Now fixed: uses actual branch name from git branch command
+      // - Old code used `origin/${worktreeDirName}` which was "origin/foo" (basename)
+      // - New code uses actual branch name: "origin/feature/foo"
+      expect(savedMetadata.upstreamBranch).toBe("origin/feature/foo");
+
+      consoleSpy.mockRestore();
+      logSpy.mockRestore();
+    });
+
+    it("should use actual default branch instead of hard-coded 'main'", async () => {
+      const worktreePath = "/test/worktrees/feature-branch";
+      const currentCommit = "abc123def456";
+
+      (fs.readFile as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+
+      mockGit.revparse.mockResolvedValue(currentCommit);
+      mockGit.branch = jest.fn<any>().mockResolvedValue({
+        current: "feature-branch",
+        all: ["feature-branch"],
+        branches: {},
+      });
+      mockGit.raw = jest.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured"));
+
+      const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+      // Test with a non-"main" default branch
+      await service.updateLastSyncFromPath(mockBareRepoPath, worktreePath, currentCommit, "updated", "develop");
+
+      const writeCallArg = (fs.writeFile as jest.Mock<any>).mock.calls[0][1] as string;
+      const savedMetadata = JSON.parse(writeCallArg);
+
+      // Now fixed: uses passed default branch instead of hard-coded "main"
+      expect(savedMetadata.createdFrom.branch).toBe("develop");
+
+      consoleSpy.mockRestore();
+      logSpy.mockRestore();
     });
   });
 

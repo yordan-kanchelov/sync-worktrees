@@ -165,6 +165,7 @@ export class WorktreeMetadataService {
     worktreePath: string,
     commit: string,
     action: "created" | "updated" | "fetched" = "updated",
+    defaultBranch?: string,
   ): Promise<void> {
     const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
     const existing = await this.loadMetadataFromPath(bareRepoPath, worktreePath);
@@ -177,12 +178,35 @@ export class WorktreeMetadataService {
         const worktreeGit = simpleGit(worktreePath);
         const currentCommit = await worktreeGit.revparse(["HEAD"]);
 
+        const branchSummary = await worktreeGit.branch();
+        const actualBranchName = branchSummary.current;
+
+        if (!actualBranchName) {
+          throw new Error("Could not determine current branch name");
+        }
+
+        let upstreamBranch = `origin/${actualBranchName}`;
+        try {
+          const configuredUpstream = await worktreeGit.raw([
+            "rev-parse",
+            "--abbrev-ref",
+            `${actualBranchName}@{upstream}`,
+          ]);
+          if (configuredUpstream.trim()) {
+            upstreamBranch = configuredUpstream.trim();
+          }
+        } catch {
+          // No configured upstream, use constructed value
+        }
+
+        const parentBranch = defaultBranch || "main";
+
         await this.createInitialMetadataFromPath(
           bareRepoPath,
           worktreePath,
           currentCommit.trim(),
-          `origin/${worktreeDirName}`,
-          "main",
+          upstreamBranch,
+          parentBranch,
           currentCommit.trim(),
         );
         console.log(`  ✅ Created metadata for ${worktreeDirName}`);
