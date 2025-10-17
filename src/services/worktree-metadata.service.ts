@@ -90,7 +90,7 @@ export class WorktreeMetadataService {
         try {
           await fs.unlink(oldPath);
           // Try to remove empty parent directory
-          await fs.rmdir(path.dirname(oldPath));
+          await fs.rm(path.dirname(oldPath), { recursive: false, force: true });
         } catch {
           // Ignore cleanup errors
         }
