@@ -3,6 +3,8 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
+import { METADATA_CONSTANTS } from "../constants";
+
 import type { SyncMetadata } from "../types/sync-metadata";
 
 export class WorktreeMetadataService {
@@ -145,15 +147,14 @@ export class WorktreeMetadataService {
     existing.lastSyncCommit = commit;
     existing.lastSyncDate = new Date().toISOString();
 
-    // Add to history (limit to last 10 entries)
     existing.syncHistory.push({
       date: existing.lastSyncDate,
       commit,
       action,
     });
 
-    if (existing.syncHistory.length > 10) {
-      existing.syncHistory = existing.syncHistory.slice(-10);
+    if (existing.syncHistory.length > METADATA_CONSTANTS.MAX_HISTORY_ENTRIES) {
+      existing.syncHistory = existing.syncHistory.slice(-METADATA_CONSTANTS.MAX_HISTORY_ENTRIES);
     }
 
     await this.saveMetadata(bareRepoPath, worktreeName, existing);
@@ -196,15 +197,14 @@ export class WorktreeMetadataService {
     existing.lastSyncCommit = commit;
     existing.lastSyncDate = new Date().toISOString();
 
-    // Add to history (limit to last 10 entries)
     existing.syncHistory.push({
       date: existing.lastSyncDate,
       commit,
       action,
     });
 
-    if (existing.syncHistory.length > 10) {
-      existing.syncHistory = existing.syncHistory.slice(-10);
+    if (existing.syncHistory.length > METADATA_CONSTANTS.MAX_HISTORY_ENTRIES) {
+      existing.syncHistory = existing.syncHistory.slice(-METADATA_CONSTANTS.MAX_HISTORY_ENTRIES);
     }
 
     // Save using the directory name

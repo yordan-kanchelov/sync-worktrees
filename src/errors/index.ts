@@ -28,11 +28,7 @@ export class GitNotInitializedError extends GitError {
 }
 
 export class GitOperationError extends GitError {
-  constructor(
-    operation: string,
-    details: string,
-    cause?: Error,
-  ) {
+  constructor(operation: string, details: string, cause?: Error) {
     super(`Git operation '${operation}' failed: ${details}`, "OPERATION_FAILED", cause);
   }
 }

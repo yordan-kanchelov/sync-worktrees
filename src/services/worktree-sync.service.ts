@@ -2,7 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
-import { isLfsError } from "../utils/lfs-error";
+import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { retry } from "../utils/retry";
 
 import { GitService } from "./git.service";
@@ -33,7 +33,7 @@ export class WorktreeSyncService {
       maxDelayMs: this.config.retry?.maxDelayMs ?? 30000,
       backoffMultiplier: this.config.retry?.backoffMultiplier ?? 2,
       onRetry: (error, attempt, context) => {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage = getErrorMessage(error);
         console.log(`\n⚠️  Sync attempt ${attempt} failed: ${errorMessage}`);
 
         if (context?.isLfsError && !this.config.skipLfs) {
@@ -60,9 +60,8 @@ export class WorktreeSyncService {
         try {
           await this.gitService.fetchAll();
         } catch (fetchError) {
-          const errorMessage = fetchError instanceof Error ? fetchError.message : String(fetchError);
+          const errorMessage = getErrorMessage(fetchError);
 
-          // If it's an LFS error and we haven't already enabled skip, try branch-by-branch
           if (isLfsError(errorMessage) && !lfsSkipEnabled && !this.config.skipLfs) {
             console.log("⚠️  Fetch all failed due to LFS error. Attempting branch-by-branch fetch...");
             console.log("⚠️  Temporarily disabling LFS downloads for branch-by-branch fetch...");
@@ -77,14 +76,7 @@ export class WorktreeSyncService {
         let remoteBranches: string[];
 
         if (this.config.branchMaxAge) {
-          // Get branches with activity data and filter by age
-          type GitServiceWithActivity = Pick<GitService, "getRemoteBranchesWithActivity">;
-          const getWithActivity = (
-            this.gitService as Partial<GitServiceWithActivity>
-          ).getRemoteBranchesWithActivity?.bind(this.gitService);
-          const branchesWithActivity = getWithActivity
-            ? await getWithActivity()
-            : (await this.gitService.getRemoteBranches()).map((b) => ({ branch: b, lastActivity: new Date(0) }));
+          const branchesWithActivity = await this.gitService.getRemoteBranchesWithActivity();
           const filteredBranches = filterBranchesByAge(branchesWithActivity, this.config.branchMaxAge);
           remoteBranches = filteredBranches.map((b) => b.branch);
 
@@ -230,7 +222,7 @@ export class WorktreeSyncService {
         await this.gitService.fetchBranch(branch);
         successCount++;
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage = getErrorMessage(error);
         console.log(`  ⚠️  Failed to fetch branch '${branch}': ${errorMessage}`);
         failedBranches.push(branch);
       }
@@ -315,7 +307,7 @@ export class WorktreeSyncService {
           console.log(`    ✅ Successfully updated '${worktree.branch}'.`);
         } catch (error) {
           // Check if this is specifically a fast-forward error indicating diverged history
-          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorMessage = getErrorMessage(error);
 
           // Only treat as diverged if it's specifically a fast-forward failure
           // Other errors (network issues, permission problems, etc.) should not trigger divergence handling
@@ -450,7 +442,7 @@ export class WorktreeSyncService {
   1. Review: git diff origin/${branchName}
   2. Keep changes: git push --force-with-lease origin ${branchName}
   3. Discard changes: rm -rf this directory
-  
+
   Original worktree location: ${worktreePath}`,
     };
 

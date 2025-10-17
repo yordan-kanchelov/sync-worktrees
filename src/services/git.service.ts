@@ -4,6 +4,7 @@ import * as path from "path";
 import simpleGit from "simple-git";
 
 import { getDefaultBareRepoDir } from "../utils/git-url";
+import { getErrorMessage } from "../utils/lfs-error";
 
 import { WorktreeMetadataService } from "./worktree-metadata.service";
 
@@ -105,7 +106,7 @@ export class GitService {
           ]);
         }
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage = getErrorMessage(error);
         // Check if error is because directory already exists
         if (errorMessage.includes("already exists")) {
           console.log(
@@ -117,7 +118,7 @@ export class GitService {
           try {
             await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
           } catch (fallbackError) {
-            const fallbackErrorMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            const fallbackErrorMessage = getErrorMessage(fallbackError);
             if (fallbackErrorMessage.includes("already exists")) {
               console.log(
                 `${this.defaultBranch} worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`,
@@ -304,7 +305,7 @@ export class GitService {
       // Create metadata for the new worktree
       await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error);
 
       // Re-throw metadata creation errors - these are fatal and should not fall back
       if (errorMessage.includes("Metadata creation failed")) {
@@ -466,7 +467,7 @@ export class GitService {
       const remoteBranches = await worktreeGit.branch(["-r"]);
       return !remoteBranches.all.includes(upstream.trim());
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error);
 
       if (
         errorMessage.includes("fatal: no upstream configured") ||

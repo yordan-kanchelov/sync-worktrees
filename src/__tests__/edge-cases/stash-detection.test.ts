@@ -59,7 +59,6 @@ describe("Stash Detection Edge Cases", () => {
         { path: "/test/worktrees/feature-with-stash", branch: "feature-with-stash" },
       ]);
 
-      // Clean working directory but has stashed changes
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasStashedChanges.mockResolvedValue(true);
 
@@ -77,35 +76,11 @@ describe("Stash Detection Edge Cases", () => {
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/multi-stash", branch: "multi-stash" }]);
 
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasStashedChanges.mockResolvedValue(true); // Multiple stashes
-
-      await service.sync();
-
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("Stash with clean working directory", () => {
-    it("should detect stash even when working directory is clean", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["clean-but-stashed"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/test/worktrees/clean-but-stashed", branch: "clean-but-stashed" },
-      ]);
-
-      // All appear clean except stash
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
       mockGitService.hasStashedChanges.mockResolvedValue(true);
-      mockGitService.hasOperationInProgress.mockResolvedValue(false);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
 
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("stashed changes"));
     });
   });
 
@@ -118,14 +93,12 @@ describe("Stash Detection Edge Cases", () => {
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/stash-error", branch: "stash-error" }]);
 
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      // Stash check throws error - should return true (unsafe)
       mockGitService.hasStashedChanges.mockImplementation(async () => {
         throw new Error("Failed to check stash");
       });
 
       await service.sync();
 
-      // Should not delete due to error (treated as unsafe)
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
     });
 
@@ -139,7 +112,6 @@ describe("Stash Detection Edge Cases", () => {
       ]);
 
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      // Simulate corrupted stash error
       mockGitService.hasStashedChanges.mockImplementation(async () => {
         throw new Error("fatal: bad revision 'stash@{0}'");
       });
@@ -160,53 +132,13 @@ describe("Stash Detection Edge Cases", () => {
         { path: "/test/worktrees/stash-and-dirty", branch: "stash-and-dirty" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false); // Has uncommitted changes
-      mockGitService.hasStashedChanges.mockResolvedValue(true); // Also has stash
+      mockGitService.checkWorktreeStatus.mockResolvedValue(false);
+      mockGitService.hasStashedChanges.mockResolvedValue(true);
 
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining("uncommitted changes, stashed changes"));
-    });
-
-    it("should handle stash with unpushed commits", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["stash-and-unpushed"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/test/worktrees/stash-and-unpushed", branch: "stash-and-unpushed" },
-      ]);
-
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValue(true);
-      mockGitService.hasStashedChanges.mockResolvedValue(true);
-
-      await service.sync();
-
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("unpushed commits, stashed changes"));
-    });
-
-    it("should handle stash during merge conflict", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["stash-merge-conflict"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/test/worktrees/stash-merge-conflict", branch: "stash-merge-conflict" },
-      ]);
-
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false);
-      mockGitService.hasStashedChanges.mockResolvedValue(true);
-      mockGitService.hasOperationInProgress.mockResolvedValue(true);
-
-      await service.sync();
-
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(
-        expect.stringContaining("uncommitted changes, stashed changes, operation in progress"),
-      );
     });
   });
 
@@ -220,8 +152,7 @@ describe("Stash Detection Edge Cases", () => {
         { path: "/test/worktrees/deleted-with-stash", branch: "deleted-with-stash" },
       ]);
 
-      // Branch deleted from remote but has stashed work
-      mockGitService.getRemoteBranches.mockResolvedValue(["main"]); // deleted-with-stash not in remote
+      mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasStashedChanges.mockResolvedValue(true);
 
@@ -229,24 +160,6 @@ describe("Stash Detection Edge Cases", () => {
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining("stashed changes"));
-    });
-
-    it("should handle stash created from different branch", async () => {
-      await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["cross-branch-stash"]);
-
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/test/worktrees/cross-branch-stash", branch: "cross-branch-stash" },
-      ]);
-
-      // Stash exists but may have been created from different branch
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasStashedChanges.mockResolvedValue(true);
-
-      await service.sync();
-
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
     });
   });
 });

@@ -49,11 +49,7 @@ export const ERROR_MESSAGES = {
     "fatal: ambiguous argument",
     "unknown revision or path",
   ],
-  LFS_ERROR: [
-    "smudge filter lfs failed",
-    "git-lfs",
-    "LFS",
-  ],
+  LFS_ERROR: ["smudge filter lfs failed", "git-lfs", "LFS"],
   EXDEV: "EXDEV",
 } as const;
 
@@ -65,4 +61,8 @@ export const TEST_TIMEOUT = {
 export const PATH_CONSTANTS = {
   GIT_DIR: ".git",
   README: "README",
+} as const;
+
+export const METADATA_CONSTANTS = {
+  MAX_HISTORY_ENTRIES: 10,
 } as const;

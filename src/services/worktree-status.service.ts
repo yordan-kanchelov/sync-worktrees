@@ -5,6 +5,7 @@ import simpleGit from "simple-git";
 
 import { GIT_OPERATIONS, PATH_CONSTANTS } from "../constants";
 import { GitOperationError, WorktreeNotCleanError } from "../errors";
+import { getErrorMessage } from "../utils/lfs-error";
 
 import type { SimpleGit } from "simple-git";
 
@@ -43,7 +44,8 @@ export class WorktreeStatusService {
     if (hasOperationInProgress) reasons.push("operation in progress");
     if (hasModifiedSubmodules) reasons.push("modified submodules");
 
-    const canRemove = isClean && !hasUnpushedCommits && !hasStashedChanges && !hasOperationInProgress && !hasModifiedSubmodules;
+    const canRemove =
+      isClean && !hasUnpushedCommits && !hasStashedChanges && !hasOperationInProgress && !hasModifiedSubmodules;
 
     return {
       isClean,
@@ -103,7 +105,7 @@ export class WorktreeStatusService {
 
       return !remoteBranches.all.includes(upstream.trim());
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error);
 
       if (
         errorMessage.includes("fatal: no upstream configured") ||
