@@ -54,6 +54,7 @@ describe("Rebased Branch Handling", () => {
       resetToUpstream: jest.fn<any>().mockResolvedValue(undefined),
       getCurrentCommit: jest.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: jest.fn<any>().mockResolvedValue("def456"),
+      getWorktreeMetadata: jest.fn<any>().mockResolvedValue(null),
       getGit: jest.fn<any>(),
     } as any;
 
@@ -83,6 +84,126 @@ describe("Rebased Branch Handling", () => {
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       expect(fs.rename).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Smart divergence detection", () => {
+    it("should reset to upstream when diverged but no local changes made", async () => {
+      await service.initialize();
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-no-local-changes"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-no-local-changes", branch: "feature-no-local-changes" },
+      ]);
+
+      mockGitService.canFastForward.mockImplementation(async (path) => {
+        return !path.includes("feature-no-local-changes");
+      });
+
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+
+      mockGitService.getWorktreeMetadata.mockResolvedValue({
+        lastSyncCommit: "abc123",
+        lastSyncDate: "2024-01-01T00:00:00.000Z",
+        upstreamBranch: "origin/feature-no-local-changes",
+        createdFrom: { branch: "main", commit: "xyz789" },
+        syncHistory: [],
+      });
+
+      mockGitService.getCurrentCommit.mockResolvedValue("abc123");
+
+      await service.sync();
+
+      expect(mockGitService.resetToUpstream).toHaveBeenCalledWith(
+        "/test/worktrees/feature-no-local-changes",
+        "feature-no-local-changes",
+      );
+      expect(fs.rename).not.toHaveBeenCalled();
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+    });
+
+    it("should move to diverged when diverged with local changes", async () => {
+      await service.initialize();
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-with-local-changes"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-with-local-changes", branch: "feature-with-local-changes" },
+      ]);
+
+      mockGitService.canFastForward.mockImplementation(async (path) => {
+        return !path.includes("feature-with-local-changes");
+      });
+
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+
+      mockGitService.getWorktreeMetadata.mockResolvedValue({
+        lastSyncCommit: "abc123",
+        lastSyncDate: "2024-01-01T00:00:00.000Z",
+        upstreamBranch: "origin/feature-with-local-changes",
+        createdFrom: { branch: "main", commit: "xyz789" },
+        syncHistory: [],
+      });
+
+      mockGitService.getCurrentCommit.mockResolvedValue("local456");
+
+      await service.sync();
+
+      expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees/.diverged", { recursive: true });
+      expect(fs.rename).toHaveBeenCalledWith(
+        "/test/worktrees/feature-with-local-changes",
+        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-with-local-changes-[a-z0-9]+$/),
+      );
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-with-local-changes");
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith(
+        "feature-with-local-changes",
+        "/test/worktrees/feature-with-local-changes",
+      );
+    });
+
+    it("should move to diverged when metadata is missing (safer default)", async () => {
+      await service.initialize();
+      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-no-metadata"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-no-metadata", branch: "feature-no-metadata" },
+      ]);
+
+      mockGitService.canFastForward.mockImplementation(async (path) => {
+        return !path.includes("feature-no-metadata");
+      });
+
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+
+      mockGitService.getWorktreeMetadata.mockResolvedValue(null);
+
+      await service.sync();
+
+      expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees/.diverged", { recursive: true });
+      expect(fs.rename).toHaveBeenCalledWith(
+        "/test/worktrees/feature-no-metadata",
+        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-no-metadata-[a-z0-9]+$/),
+      );
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-no-metadata");
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith(
+        "feature-no-metadata",
+        "/test/worktrees/feature-no-metadata",
+      );
     });
   });
 

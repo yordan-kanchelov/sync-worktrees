@@ -386,20 +386,43 @@ export class WorktreeSyncService {
       await this.gitService.resetToUpstream(worktree.path, worktree.branch);
       console.log(`   Successfully updated '${worktree.branch}' to match upstream.`);
     } else {
-      console.log(`🔒 Branch '${worktree.branch}' has diverged with different content. Moving to diverged...`);
+      const hasLocalChanges = await this.hasLocalChangesSinceLastSync(worktree.path);
 
-      const divergedPath = await this.divergeWorktree(worktree.path, worktree.branch);
-      const relativePath = path.relative(process.cwd(), divergedPath);
+      if (!hasLocalChanges) {
+        console.log(
+          `✅ Branch '${worktree.branch}' has diverged but you made no local changes. Resetting to upstream...`,
+        );
+        await this.gitService.resetToUpstream(worktree.path, worktree.branch);
+        console.log(`   Successfully updated '${worktree.branch}' to match upstream.`);
+      } else {
+        console.log(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
 
-      console.log(`   Moved to: ${relativePath}`);
-      console.log(`   Your local changes are preserved. To review:`);
-      console.log(`     cd ${relativePath}`);
-      console.log(`     git diff origin/${worktree.branch}`);
+        const divergedPath = await this.divergeWorktree(worktree.path, worktree.branch);
+        const relativePath = path.relative(process.cwd(), divergedPath);
 
-      // Create fresh worktree from upstream
-      await this.gitService.removeWorktree(worktree.path);
-      await this.gitService.addWorktree(worktree.branch, worktree.path);
-      console.log(`   Created fresh worktree from upstream at: ${worktree.path}`);
+        console.log(`   Moved to: ${relativePath}`);
+        console.log(`   Your local changes are preserved. To review:`);
+        console.log(`     cd ${relativePath}`);
+        console.log(`     git diff origin/${worktree.branch}`);
+
+        await this.gitService.removeWorktree(worktree.path);
+        await this.gitService.addWorktree(worktree.branch, worktree.path);
+        console.log(`   Created fresh worktree from upstream at: ${worktree.path}`);
+      }
+    }
+  }
+
+  private async hasLocalChangesSinceLastSync(worktreePath: string): Promise<boolean> {
+    try {
+      const metadata = await this.gitService.getWorktreeMetadata(worktreePath);
+      if (!metadata || !metadata.lastSyncCommit) {
+        return true;
+      }
+
+      const currentCommit = await this.gitService.getCurrentCommit(worktreePath);
+      return currentCommit !== metadata.lastSyncCommit;
+    } catch {
+      return true;
     }
   }
 

@@ -9,6 +9,7 @@ import { getErrorMessage } from "../utils/lfs-error";
 import { WorktreeMetadataService } from "./worktree-metadata.service";
 
 import type { Config } from "../types";
+import type { SyncMetadata } from "../types/sync-metadata";
 import type { SimpleGit } from "simple-git";
 
 export class GitService {
@@ -762,6 +763,10 @@ export class GitService {
     const git = simpleGit(this.bareRepoPath);
     const commit = await git.revparse([ref]);
     return commit.trim();
+  }
+
+  async getWorktreeMetadata(worktreePath: string): Promise<SyncMetadata | null> {
+    return this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
   }
 
   private async getWorktreesFromBare(bareGit: SimpleGit): Promise<{ path: string; branch: string }[]> {
