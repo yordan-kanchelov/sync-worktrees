@@ -252,7 +252,12 @@ sync-worktrees intelligently handles branches that have been rebased or force-pu
    - Automatically resets the worktree to match the upstream
    - No data loss since the content is the same
 
-2. **Diverged branches** - When a branch has different content after rebase/force-push:
+2. **Diverged branches with NO local changes** - When someone force-pushes but you haven't made local commits:
+   - Automatically resets to the new upstream state
+   - No move to `.diverged` since you have no work to preserve
+   - Keeps `.diverged` clean by only preserving actual user work
+
+3. **Diverged branches WITH local changes** - When a branch has different content AND you've made local commits:
    - Moves the worktree to `.diverged` directory within your worktrees folder
    - Preserves all your local changes and commits
    - Creates a fresh worktree from the upstream branch
