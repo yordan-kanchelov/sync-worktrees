@@ -6,6 +6,7 @@ import { confirm } from "@inquirer/prompts";
 import * as cron from "node-cron";
 
 import { ConfigLoaderService } from "./services/config-loader.service";
+import { InteractiveUIService } from "./services/interactive-ui.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { isInteractiveMode, parseArguments, reconstructCliCommand } from "./utils/cli";
 import { promptForConfig } from "./utils/interactive";
@@ -33,11 +34,17 @@ async function runSingleRepository(config: Config): Promise<void> {
       console.log("Running initial sync...");
       await syncService.sync();
 
-      console.log("Waiting for the next scheduled run...");
+      console.log("Initializing interactive UI...");
+      const ui = new InteractiveUIService([syncService], undefined, config.cronSchedule);
+
+      ui.log("{bold}{green-fg}✅ Initial sync completed{/green-fg}{/bold}");
+      ui.log("{cyan-fg}Press ? for help{/cyan-fg}");
+      ui.updateLastSyncTime();
 
       cron.schedule(config.cronSchedule, async () => {
         try {
           await syncService.sync();
+          ui.updateLastSyncTime();
         } catch (error) {
           console.error("Error during scheduled sync:", error);
         }
@@ -49,7 +56,11 @@ async function runSingleRepository(config: Config): Promise<void> {
   }
 }
 
-async function runMultipleRepositories(repositories: RepositoryConfig[], runOnce: boolean): Promise<void> {
+async function runMultipleRepositories(
+  repositories: RepositoryConfig[],
+  runOnce: boolean,
+  configPath?: string,
+): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
 
   console.log(`\n🔄 Syncing ${repositories.length} repositories...`);
@@ -103,11 +114,16 @@ async function runMultipleRepositories(repositories: RepositoryConfig[], runOnce
       }
     }
 
-    console.log("\n✅ All repositories scheduled. Waiting for next runs...");
-    for (const [schedule] of cronJobs) {
-      const repoCount = repositories.filter((r) => r.cronSchedule === schedule).length;
-      console.log(`   ${schedule}: ${repoCount} repository(ies)`);
-    }
+    console.log("\n✅ All repositories scheduled.");
+    console.log("Initializing interactive UI...");
+
+    const syncServiceArray = Array.from(services.values());
+    const primarySchedule = repositories[0]?.cronSchedule || "0 * * * *";
+    const ui = new InteractiveUIService(syncServiceArray, configPath, primarySchedule);
+
+    ui.log("{bold}{green-fg}✅ Initial sync completed for all repositories{/green-fg}{/bold}");
+    ui.log("{cyan-fg}Press ? for help{/cyan-fg}");
+    ui.updateLastSyncTime();
   }
 }
 
@@ -178,7 +194,7 @@ async function main(): Promise<void> {
         }));
       }
 
-      await runMultipleRepositories(repositories, globalRunOnce);
+      await runMultipleRepositories(repositories, globalRunOnce, options.config);
     } catch (error) {
       if (error instanceof Error && error.message.includes("Config file not found")) {
         console.error(`\n❌ Config file not found: ${options.config}`);
