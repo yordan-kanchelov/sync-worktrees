@@ -98,7 +98,7 @@ describe("Double run E2E test", () => {
     const bothRuns = firstRun + secondRun;
     expect(bothRuns).not.toContain("'HEAD' is not a valid branch name");
     expect(bothRuns).not.toContain("fatal: 'HEAD' is not a valid branch name");
-  });
+  }, 30000);
 
   it("should handle multiple rapid successive runs without errors", async () => {
     const bareRepoDir = path.join(tempDir, ".bare");

@@ -1,22 +1,61 @@
 import * as fs from "fs/promises";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GitService } from "../../services/git.service";
 import { WorktreeSyncService } from "../../services/worktree-sync.service";
 
+import type { GitService } from "../../services/git.service";
 import type { Config } from "../../types";
+import type { Mock, Mocked } from "vitest";
 
-jest.mock("fs/promises");
-jest.mock("../../services/git.service");
+vi.mock("fs/promises");
+
+const { mockGitServiceInstance } = vi.hoisted(() => {
+  return {
+    mockGitServiceInstance: {
+      initialize: vi.fn<any>().mockResolvedValue(undefined),
+      fetchAll: vi.fn<any>().mockResolvedValue(undefined),
+      getRemoteBranches: vi.fn<any>().mockResolvedValue(["main"]),
+      addWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
+      checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
+      hasUnpushedCommits: vi.fn<any>().mockResolvedValue(false),
+      hasUpstreamGone: vi.fn<any>().mockResolvedValue(false),
+      hasStashedChanges: vi.fn<any>().mockResolvedValue(false),
+      hasOperationInProgress: vi.fn<any>().mockResolvedValue(false),
+      hasModifiedSubmodules: vi.fn<any>().mockResolvedValue(false),
+      getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      }),
+      getCurrentBranch: vi.fn<any>().mockResolvedValue("main"),
+      getDefaultBranch: vi.fn().mockReturnValue("main"),
+      getWorktrees: vi.fn<any>().mockResolvedValue([]),
+      getGit: vi.fn<any>(),
+    } as any,
+  };
+});
+
+vi.mock("../../services/git.service", () => ({
+  GitService: vi.fn(function (this: any) {
+    return mockGitServiceInstance;
+  }),
+}));
 
 describe("Complex Mixed State Scenarios", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
-  let mockGitService: jest.Mocked<GitService>;
+  let mockGitService: Mocked<GitService>;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -25,26 +64,7 @@ describe("Complex Mixed State Scenarios", () => {
       runOnce: false,
     };
 
-    mockGitService = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      fetchAll: jest.fn<any>().mockResolvedValue(undefined),
-      getRemoteBranches: jest.fn<any>().mockResolvedValue(["main"]),
-      addWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      removeWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
-      checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
-      hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
-      hasUpstreamGone: jest.fn<any>().mockResolvedValue(false),
-      hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
-      hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
-      hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
-      getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
-      getDefaultBranch: jest.fn().mockReturnValue("main"),
-      getWorktrees: jest.fn<any>().mockResolvedValue([]),
-      getGit: jest.fn<any>(),
-    } as any;
-
-    (GitService as jest.MockedClass<typeof GitService>).mockImplementation(() => mockGitService);
+    mockGitService = mockGitServiceInstance;
 
     service = new WorktreeSyncService(mockConfig);
   });
@@ -52,19 +72,29 @@ describe("Complex Mixed State Scenarios", () => {
   describe("All unsafe conditions combined", () => {
     it("should not delete worktree with all types of changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["everything-dirty"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["everything-dirty"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/everything-dirty", branch: "everything-dirty" },
       ]);
 
-      // Everything is dirty/unsafe
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false); // Uncommitted changes
-      mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Unpushed commits
-      mockGitService.hasStashedChanges.mockResolvedValue(true); // Stashed changes
-      mockGitService.hasOperationInProgress.mockResolvedValue(true); // Operation in progress
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true); // Modified submodules
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: false,
+        hasUnpushedCommits: true,
+        hasStashedChanges: true,
+        hasOperationInProgress: true,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: [
+          "uncommitted changes",
+          "unpushed commits",
+          "stashed changes",
+          "operation in progress",
+          "modified submodules",
+        ],
+      });
 
       await service.sync();
 
@@ -80,8 +110,8 @@ describe("Complex Mixed State Scenarios", () => {
   describe("Partial commit states", () => {
     it("should handle staged but uncommitted changes with stash", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["staged-stash"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["staged-stash"]);
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/staged-stash", branch: "staged-stash" }]);
 
@@ -95,8 +125,8 @@ describe("Complex Mixed State Scenarios", () => {
 
     it("should handle partially staged files with unpushed commits", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["partial-stage"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["partial-stage"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/partial-stage", branch: "partial-stage" },
@@ -114,8 +144,8 @@ describe("Complex Mixed State Scenarios", () => {
   describe("Interrupted operations with multiple issues", () => {
     it("should handle interrupted merge with stash and unpushed", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["complex-merge"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["complex-merge"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/complex-merge", branch: "complex-merge" },
@@ -133,8 +163,8 @@ describe("Complex Mixed State Scenarios", () => {
 
     it("should handle interrupted rebase with dirty submodules", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["complex-rebase"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["complex-rebase"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/complex-rebase", branch: "complex-rebase" },
@@ -151,8 +181,8 @@ describe("Complex Mixed State Scenarios", () => {
 
     it("should handle cherry-pick with stash and submodule changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["complex-cherry"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["complex-cherry"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/complex-cherry", branch: "complex-cherry" },
@@ -172,8 +202,8 @@ describe("Complex Mixed State Scenarios", () => {
   describe("Edge case combinations", () => {
     it("should handle detached HEAD with unpushed and stash", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["detached-complex"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["detached-complex"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/detached-complex", branch: "detached-complex" },
@@ -193,8 +223,8 @@ describe("Complex Mixed State Scenarios", () => {
 
     it("should handle corrupted state with ongoing operations", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["corrupt-complex"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["corrupt-complex"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/corrupt-complex", branch: "corrupt-complex" },
@@ -216,8 +246,8 @@ describe("Complex Mixed State Scenarios", () => {
   describe("Real-world complex scenarios", () => {
     it("should handle developer workflow with WIP changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["wip-feature"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["wip-feature"]);
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/wip-feature", branch: "wip-feature" }]);
 
@@ -233,8 +263,8 @@ describe("Complex Mixed State Scenarios", () => {
 
     it("should handle hotfix branch with emergency changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["hotfix-urgent"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["hotfix-urgent"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/hotfix-urgent", branch: "hotfix-urgent" },
@@ -252,8 +282,8 @@ describe("Complex Mixed State Scenarios", () => {
 
     it("should handle long-running feature branch with all states", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["long-feature"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["long-feature"]);
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/long-feature", branch: "long-feature" }]);
 
@@ -272,8 +302,8 @@ describe("Complex Mixed State Scenarios", () => {
   describe("Performance under mixed conditions", () => {
     it("should handle large repo with multiple unsafe conditions", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["large-mixed"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["large-mixed"]);
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/large-mixed", branch: "large-mixed" }]);
 
@@ -300,8 +330,8 @@ describe("Complex Mixed State Scenarios", () => {
   describe("Recovery and cleanup scenarios", () => {
     it("should process multiple worktrees with different mixed states", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["mixed1", "mixed2", "mixed3"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["mixed1", "mixed2", "mixed3"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/mixed1", branch: "mixed1" },
@@ -310,26 +340,40 @@ describe("Complex Mixed State Scenarios", () => {
       ]);
 
       // Different combinations for each worktree
-      // mixed1: only uncommitted changes
-      mockGitService.checkWorktreeStatus
-        .mockResolvedValueOnce(false) // mixed1
-        .mockResolvedValueOnce(true) // mixed2
-        .mockResolvedValueOnce(true); // mixed3
-
-      // mixed2: only unpushed commits
-      mockGitService.hasUnpushedCommits
-        .mockResolvedValueOnce(false) // mixed1
-        .mockResolvedValueOnce(true) // mixed2
-        .mockResolvedValueOnce(false); // mixed3
-
-      // mixed3: only stashed changes
-      mockGitService.hasStashedChanges
-        .mockResolvedValueOnce(false) // mixed1
-        .mockResolvedValueOnce(false) // mixed2
-        .mockResolvedValueOnce(true); // mixed3
-
-      mockGitService.hasOperationInProgress.mockResolvedValue(false);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
+      mockGitService.getFullWorktreeStatus
+        .mockResolvedValueOnce({
+          // mixed1: only uncommitted changes
+          isClean: false,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["uncommitted changes"],
+        })
+        .mockResolvedValueOnce({
+          // mixed2: only unpushed commits
+          isClean: true,
+          hasUnpushedCommits: true,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["unpushed commits"],
+        })
+        .mockResolvedValueOnce({
+          // mixed3: only stashed changes
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: true,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["stashed changes"],
+        });
 
       await service.sync();
 

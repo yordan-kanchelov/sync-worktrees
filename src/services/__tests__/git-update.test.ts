@@ -1,20 +1,22 @@
 import simpleGit from "simple-git";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GitService } from "../git.service";
 
 import type { Config } from "../../types";
 import type { SimpleGit } from "simple-git";
+import type { Mock, Mocked } from "vitest";
 
-jest.mock("fs/promises");
-jest.mock("simple-git");
+vi.mock("fs/promises");
+vi.mock("simple-git");
 
 describe("GitService - Update Methods", () => {
   let service: GitService;
-  let mockGit: jest.Mocked<SimpleGit>;
+  let mockGit: Mocked<SimpleGit>;
   let mockConfig: Config;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -24,13 +26,13 @@ describe("GitService - Update Methods", () => {
     };
 
     mockGit = {
-      branch: jest.fn(),
-      raw: jest.fn(),
-      merge: jest.fn(),
-      env: jest.fn().mockReturnThis(),
+      branch: vi.fn(),
+      raw: vi.fn(),
+      merge: vi.fn(),
+      env: vi.fn().mockReturnThis(),
     } as any;
 
-    (simpleGit as jest.Mock).mockReturnValue(mockGit);
+    (simpleGit as Mock).mockReturnValue(mockGit);
 
     service = new GitService(mockConfig);
   });

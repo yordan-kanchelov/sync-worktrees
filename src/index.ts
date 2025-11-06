@@ -6,6 +6,7 @@ import { confirm } from "@inquirer/prompts";
 import * as cron from "node-cron";
 
 import { ConfigLoaderService } from "./services/config-loader.service";
+import { InteractiveUIService } from "./services/InteractiveUIService";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { isInteractiveMode, parseArguments, reconstructCliCommand } from "./utils/cli";
 import { promptForConfig } from "./utils/interactive";
@@ -26,20 +27,19 @@ async function runSingleRepository(config: Config): Promise<void> {
       console.log("Running the sync process once as requested by --runOnce flag.");
       await syncService.sync();
     } else {
-      console.log("Git Worktree Sync script started as a scheduled job.");
-      console.log(`Job is scheduled with cron pattern: "${config.cronSchedule}"`);
-      console.log(`To see options, run: node ${path.basename(process.argv[1])} --help`);
+      const uiService = new InteractiveUIService([syncService], undefined, config.cronSchedule);
 
-      console.log("Running initial sync...");
       await syncService.sync();
-
-      console.log("Waiting for the next scheduled run...");
+      uiService.updateLastSyncTime();
 
       cron.schedule(config.cronSchedule, async () => {
         try {
+          uiService.setStatus("syncing");
           await syncService.sync();
+          uiService.updateLastSyncTime();
         } catch (error) {
-          console.error("Error during scheduled sync:", error);
+          console.error(`Error during scheduled sync: ${(error as Error).message}`);
+          uiService.setStatus("idle");
         }
       });
     }
@@ -49,7 +49,11 @@ async function runSingleRepository(config: Config): Promise<void> {
   }
 }
 
-async function runMultipleRepositories(repositories: RepositoryConfig[], runOnce: boolean): Promise<void> {
+async function runMultipleRepositories(
+  repositories: RepositoryConfig[],
+  runOnce: boolean,
+  configPath?: string,
+): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
 
   console.log(`\n🔄 Syncing ${repositories.length} repositories...`);
@@ -74,7 +78,10 @@ async function runMultipleRepositories(repositories: RepositoryConfig[], runOnce
   }
 
   if (!runOnce) {
-    console.log("\n⏰ Scheduling cron jobs for all repositories...");
+    const uniqueSchedules = [...new Set(repositories.map((r) => r.cronSchedule))];
+    const displaySchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
+    const allServices = Array.from(services.values());
+    const uiService = new InteractiveUIService(allServices, configPath, displaySchedule);
 
     const cronJobs = new Map<string, string>();
 
@@ -88,50 +95,63 @@ async function runMultipleRepositories(repositories: RepositoryConfig[], runOnce
         cron.schedule(repoConfig.cronSchedule, async () => {
           const reposToSync = repositories.filter((r) => r.cronSchedule === repoConfig.cronSchedule);
 
+          uiService.setStatus("syncing");
           for (const repo of reposToSync) {
             const service = services.get(repo.name);
             if (!service) continue;
 
-            console.log(`\n🔄 Running scheduled sync for: ${repo.name}`);
+            console.log(`Running scheduled sync for: ${repo.name}`);
             try {
               await service.sync();
             } catch (error) {
-              console.error(`Error during scheduled sync for '${repo.name}':`, error);
+              console.error(`Error syncing '${repo.name}': ${(error as Error).message}`);
             }
           }
+          uiService.updateLastSyncTime();
         });
       }
     }
 
-    console.log("\n✅ All repositories scheduled. Waiting for next runs...");
+    console.log(`All ${repositories.length} repositories scheduled`);
     for (const [schedule] of cronJobs) {
       const repoCount = repositories.filter((r) => r.cronSchedule === schedule).length;
-      console.log(`   ${schedule}: ${repoCount} repository(ies)`);
+      console.log(`${schedule}: ${repoCount} repository(ies)`);
     }
   }
 }
 
-async function listRepositories(configPath: string): Promise<void> {
+async function listRepositories(configPath: string, filter?: string): Promise<void> {
   const configLoader = new ConfigLoaderService();
 
   try {
     const configFile = await configLoader.loadConfigFile(configPath);
     const configDir = path.dirname(path.resolve(configPath));
 
+    let repositories = configFile.repositories.map((repo) =>
+      configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
+    );
+
+    if (filter) {
+      repositories = configLoader.filterRepositories(repositories, filter);
+      if (repositories.length === 0) {
+        console.error(`❌ No repositories match filter: ${filter}`);
+        process.exit(1);
+      }
+    }
+
     console.log("\n📋 Configured repositories:\n");
 
-    configFile.repositories.forEach((repo, index) => {
-      const resolved = configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir);
-      console.log(`${index + 1}. ${resolved.name}`);
-      console.log(`   URL: ${resolved.repoUrl}`);
-      console.log(`   Worktrees: ${resolved.worktreeDir}`);
-      console.log(`   Schedule: ${resolved.cronSchedule}`);
-      console.log(`   Run Once: ${resolved.runOnce}`);
-      if (resolved.bareRepoDir) {
-        console.log(`   Bare repo: ${resolved.bareRepoDir}`);
+    repositories.forEach((repo, index) => {
+      console.log(`${index + 1}. ${repo.name}`);
+      console.log(`   URL: ${repo.repoUrl}`);
+      console.log(`   Worktrees: ${repo.worktreeDir}`);
+      console.log(`   Schedule: ${repo.cronSchedule}`);
+      console.log(`   Run Once: ${repo.runOnce}`);
+      if (repo.bareRepoDir) {
+        console.log(`   Bare repo: ${repo.bareRepoDir}`);
       }
-      if (resolved.skipLfs) {
-        console.log(`   Skip LFS: ${resolved.skipLfs}`);
+      if (repo.skipLfs) {
+        console.log(`   Skip LFS: ${repo.skipLfs}`);
       }
       console.log("");
     });
@@ -148,7 +168,7 @@ async function main(): Promise<void> {
     const configLoader = new ConfigLoaderService();
 
     if (options.list) {
-      await listRepositories(options.config);
+      await listRepositories(options.config, options.filter);
       return;
     }
 
@@ -170,7 +190,7 @@ async function main(): Promise<void> {
 
       const globalRunOnce = options.runOnce ?? configFile.defaults?.runOnce ?? false;
 
-      // Apply CLI override for updateExistingWorktrees
+      // Apply CLI overrides
       if (options.noUpdateExisting) {
         repositories = repositories.map((repo) => ({
           ...repo,
@@ -178,7 +198,14 @@ async function main(): Promise<void> {
         }));
       }
 
-      await runMultipleRepositories(repositories, globalRunOnce);
+      if (options.debug) {
+        repositories = repositories.map((repo) => ({
+          ...repo,
+          debug: true,
+        }));
+      }
+
+      await runMultipleRepositories(repositories, globalRunOnce, options.config);
     } catch (error) {
       if (error instanceof Error && error.message.includes("Config file not found")) {
         console.error(`\n❌ Config file not found: ${options.config}`);
@@ -209,11 +236,15 @@ async function main(): Promise<void> {
       config = options as Config;
     }
 
-    // Convert noUpdateExisting CLI flag to updateExistingWorktrees config
+    // Apply CLI overrides
     if (options.noUpdateExisting) {
       config.updateExistingWorktrees = false;
     } else if (config.updateExistingWorktrees === undefined) {
       config.updateExistingWorktrees = true; // Default to true
+    }
+
+    if (options.debug !== undefined) {
+      config.debug = options.debug;
     }
 
     await runSingleRepository(config);

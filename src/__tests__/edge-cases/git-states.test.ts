@@ -1,22 +1,61 @@
 import * as fs from "fs/promises";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GitService } from "../../services/git.service";
 import { WorktreeSyncService } from "../../services/worktree-sync.service";
 
+import type { GitService } from "../../services/git.service";
 import type { Config } from "../../types";
+import type { Mock, Mocked } from "vitest";
 
-jest.mock("fs/promises");
-jest.mock("../../services/git.service");
+vi.mock("fs/promises");
+
+const { mockGitServiceInstance } = vi.hoisted(() => {
+  return {
+    mockGitServiceInstance: {
+      initialize: vi.fn<any>().mockResolvedValue(undefined),
+      fetchAll: vi.fn<any>().mockResolvedValue(undefined),
+      getRemoteBranches: vi.fn<any>().mockResolvedValue(["main"]),
+      addWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
+      checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
+      hasUnpushedCommits: vi.fn<any>().mockResolvedValue(false),
+      hasUpstreamGone: vi.fn<any>().mockResolvedValue(false),
+      hasStashedChanges: vi.fn<any>().mockResolvedValue(false),
+      hasOperationInProgress: vi.fn<any>().mockResolvedValue(false),
+      hasModifiedSubmodules: vi.fn<any>().mockResolvedValue(false),
+      getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      }),
+      getCurrentBranch: vi.fn<any>().mockResolvedValue("main"),
+      getDefaultBranch: vi.fn().mockReturnValue("main"),
+      getWorktrees: vi.fn<any>().mockResolvedValue([]),
+      getGit: vi.fn<any>(),
+    } as any,
+  };
+});
+
+vi.mock("../../services/git.service", () => ({
+  GitService: vi.fn(function (this: any) {
+    return mockGitServiceInstance;
+  }),
+}));
 
 describe("Git States Edge Cases", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
-  let mockGitService: jest.Mocked<GitService>;
+  let mockGitService: Mocked<GitService>;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -25,26 +64,7 @@ describe("Git States Edge Cases", () => {
       runOnce: false,
     };
 
-    mockGitService = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      fetchAll: jest.fn<any>().mockResolvedValue(undefined),
-      getRemoteBranches: jest.fn<any>().mockResolvedValue(["main"]),
-      addWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      removeWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
-      checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
-      hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
-      hasUpstreamGone: jest.fn<any>().mockResolvedValue(false),
-      hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
-      hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
-      hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
-      getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
-      getDefaultBranch: jest.fn().mockReturnValue("main"),
-      getWorktrees: jest.fn<any>().mockResolvedValue([]),
-      getGit: jest.fn<any>(),
-    } as any;
-
-    (GitService as jest.MockedClass<typeof GitService>).mockImplementation(() => mockGitService);
+    mockGitService = mockGitServiceInstance;
 
     service = new WorktreeSyncService(mockConfig);
   });
@@ -52,15 +72,14 @@ describe("Git States Edge Cases", () => {
   describe("Detached HEAD state", () => {
     it("should not delete worktree in detached HEAD state", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["feature-detached"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["feature-detached"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/feature-detached", branch: "feature-detached" },
       ]);
 
-      // Simulate detached HEAD by throwing specific error
-      mockGitService.checkWorktreeStatus.mockImplementation(async () => {
+      mockGitService.getFullWorktreeStatus.mockImplementation(async () => {
         throw new Error("fatal: ref HEAD is not a symbolic ref");
       });
 
@@ -72,51 +91,72 @@ describe("Git States Edge Cases", () => {
 
     it("should handle worktree with HEAD pointing to non-existent branch", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["deleted-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["deleted-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/deleted-branch", branch: "deleted-branch" },
       ]);
 
-      // Branch exists locally but not in remote
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockImplementation(async () => {
+      mockGitService.getFullWorktreeStatus.mockImplementation(async () => {
         throw new Error("fatal: bad revision 'deleted-branch'");
       });
 
       await service.sync();
 
-      // Should handle error gracefully and not delete
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
     });
   });
 
   describe("Merge conflict states", () => {
+    beforeEach(() => {
+      // Reset mocks to prevent pollution from previous tests
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
+      mockGitService.hasStashedChanges.mockResolvedValue(false);
+      mockGitService.hasOperationInProgress.mockResolvedValue(false);
+      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
+      mockGitService.hasUpstreamGone.mockResolvedValue(false);
+    });
+
     it("should not delete worktree with merge conflicts", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["feature-conflicts"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["feature-conflicts"];
+      });
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/feature-conflicts", branch: "feature-conflicts" },
       ]);
 
-      // Has uncommitted changes due to conflicts
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false);
-      mockGitService.hasOperationInProgress.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: false,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: true,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["uncommitted changes", "operation in progress"],
+      });
 
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("uncommitted changes"));
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("operation in progress"));
+      const allLogs = (console.log as Mock).mock.calls.map((call) => call.join(" "));
+      expect(allLogs.some((log) => /uncommitted changes|operation in progress/.test(log))).toBe(true);
     });
 
     it("should detect MERGE_HEAD file indicating merge in progress", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["merging-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["merging-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/merging-branch", branch: "merging-branch" },
@@ -132,28 +172,54 @@ describe("Git States Edge Cases", () => {
   });
 
   describe("Rebase in progress", () => {
+    beforeEach(() => {
+      // Reset mocks to prevent pollution from previous tests
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
+      mockGitService.hasStashedChanges.mockResolvedValue(false);
+      mockGitService.hasOperationInProgress.mockResolvedValue(false);
+      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
+      mockGitService.hasUpstreamGone.mockResolvedValue(false);
+    });
+
     it("should not delete worktree during rebase", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["rebasing-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["rebasing-branch"];
+      });
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/rebasing-branch", branch: "rebasing-branch" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true); // May appear clean
-      mockGitService.hasOperationInProgress.mockResolvedValue(true); // But rebase in progress
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: true,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["operation in progress"],
+      });
 
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("operation in progress"));
+      const allLogs = (console.log as Mock).mock.calls.map((call) => call.join(" "));
+      expect(allLogs.some((log) => /operation in progress/.test(log))).toBe(true);
     });
 
     it("should handle interactive rebase state", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["interactive-rebase"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["interactive-rebase"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/interactive-rebase", branch: "interactive-rebase" },
@@ -170,8 +236,8 @@ describe("Git States Edge Cases", () => {
   describe("Cherry-pick in progress", () => {
     it("should not delete worktree during cherry-pick", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["cherry-picking"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["cherry-picking"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/cherry-picking", branch: "cherry-picking" },
@@ -187,17 +253,23 @@ describe("Git States Edge Cases", () => {
 
     it("should handle cherry-pick conflicts", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["cherry-pick-conflicts"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["cherry-pick-conflicts"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/cherry-pick-conflicts", branch: "cherry-pick-conflicts" },
       ]);
 
-      // Multiple indicators of unsafe state
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false);
-      mockGitService.hasOperationInProgress.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: false,
+        hasUnpushedCommits: true,
+        hasStashedChanges: false,
+        hasOperationInProgress: true,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["uncommitted changes", "unpushed commits", "operation in progress"],
+      });
 
       await service.sync();
 
@@ -211,8 +283,8 @@ describe("Git States Edge Cases", () => {
   describe("Bisect in progress", () => {
     it("should not delete worktree during bisect", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["bisecting-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["bisecting-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/bisecting-branch", branch: "bisecting-branch" },
@@ -229,8 +301,8 @@ describe("Git States Edge Cases", () => {
   describe("Revert in progress", () => {
     it("should not delete worktree during revert", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["reverting-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["reverting-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/reverting-branch", branch: "reverting-branch" },
@@ -248,8 +320,8 @@ describe("Git States Edge Cases", () => {
   describe("Complex Git states", () => {
     it("should handle worktree with staged but uncommitted changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["staged-changes"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["staged-changes"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/staged-changes", branch: "staged-changes" },
@@ -264,8 +336,8 @@ describe("Git States Edge Cases", () => {
 
     it("should handle worktree with amended commits not pushed", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["amended-commits"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["amended-commits"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/amended-commits", branch: "amended-commits" },
@@ -281,8 +353,8 @@ describe("Git States Edge Cases", () => {
 
     it("should handle worktree with commits ahead and behind remote", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["diverged-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["diverged-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/diverged-branch", branch: "diverged-branch" },

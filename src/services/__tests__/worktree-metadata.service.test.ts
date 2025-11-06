@@ -1,16 +1,17 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import simpleGit from "simple-git";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeMetadataService } from "../worktree-metadata.service";
 
 import type { SyncMetadata } from "../../types/sync-metadata";
 import type { SimpleGit } from "simple-git";
+import type { Mock, Mocked } from "vitest";
 
-jest.mock("fs/promises");
-jest.mock("simple-git");
+vi.mock("fs/promises");
+vi.mock("simple-git");
 
 describe("WorktreeMetadataService", () => {
   let service: WorktreeMetadataService;
@@ -18,7 +19,7 @@ describe("WorktreeMetadataService", () => {
   const mockWorktreeName = "feature-branch";
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     service = new WorktreeMetadataService();
   });
 
@@ -62,14 +63,14 @@ describe("WorktreeMetadataService", () => {
       };
 
       // Mock readFile to fail for new path (doesn't exist yet) and succeed for old path
-      (fs.readFile as jest.Mock<any>)
+      (fs.readFile as Mock<any>)
         .mockRejectedValueOnce(new Error("ENOENT")) // First try: new path doesn't exist
         .mockResolvedValueOnce(JSON.stringify(oldMetadata)); // Fallback: old path exists
 
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.unlink as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rmdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.unlink as Mock<any>).mockResolvedValue(undefined);
+      (fs.rmdir as Mock<any>).mockResolvedValue(undefined);
 
       const result = await service.loadMetadataFromPath(mockBareRepoPath, worktreePath);
 
@@ -107,8 +108,8 @@ describe("WorktreeMetadataService", () => {
         ],
       };
 
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       await service.saveMetadata(mockBareRepoPath, mockWorktreeName, mockMetadata);
 
@@ -137,7 +138,7 @@ describe("WorktreeMetadataService", () => {
         syncHistory: [],
       };
 
-      (fs.readFile as jest.Mock<any>).mockResolvedValue(JSON.stringify(mockMetadata));
+      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(mockMetadata));
 
       const result = await service.loadMetadata(mockBareRepoPath, mockWorktreeName);
 
@@ -149,7 +150,7 @@ describe("WorktreeMetadataService", () => {
     });
 
     it("should return null if file does not exist", async () => {
-      (fs.readFile as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
 
       const result = await service.loadMetadata(mockBareRepoPath, mockWorktreeName);
 
@@ -157,7 +158,7 @@ describe("WorktreeMetadataService", () => {
     });
 
     it("should return null if file contains invalid JSON", async () => {
-      (fs.readFile as jest.Mock<any>).mockResolvedValue("invalid json");
+      (fs.readFile as Mock<any>).mockResolvedValue("invalid json");
 
       const result = await service.loadMetadata(mockBareRepoPath, mockWorktreeName);
 
@@ -167,7 +168,7 @@ describe("WorktreeMetadataService", () => {
 
   describe("deleteMetadata", () => {
     it("should delete metadata file", async () => {
-      (fs.unlink as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.unlink as Mock<any>).mockResolvedValue(undefined);
 
       await service.deleteMetadata(mockBareRepoPath, mockWorktreeName);
 
@@ -177,14 +178,14 @@ describe("WorktreeMetadataService", () => {
     it("should not throw if file does not exist", async () => {
       const error = new Error("ENOENT") as NodeJS.ErrnoException;
       error.code = "ENOENT";
-      (fs.unlink as jest.Mock<any>).mockRejectedValue(error);
+      (fs.unlink as Mock<any>).mockRejectedValue(error);
 
       await expect(service.deleteMetadata(mockBareRepoPath, mockWorktreeName)).resolves.not.toThrow();
     });
 
     it("should throw for other errors", async () => {
       const error = new Error("Permission denied");
-      (fs.unlink as jest.Mock<any>).mockRejectedValue(error);
+      (fs.unlink as Mock<any>).mockRejectedValue(error);
 
       await expect(service.deleteMetadata(mockBareRepoPath, mockWorktreeName)).rejects.toThrow("Permission denied");
     });
@@ -209,13 +210,13 @@ describe("WorktreeMetadataService", () => {
         ],
       };
 
-      (fs.readFile as jest.Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       // Mock Date to have consistent timestamps
-      const mockDate = new Date("2024-01-15T12:00:00Z");
-      const dateSpy = jest.spyOn(global, "Date").mockImplementation(() => mockDate as any);
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2024-01-15T12:00:00Z"));
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456", "updated");
 
@@ -225,7 +226,7 @@ describe("WorktreeMetadataService", () => {
         "utf-8",
       );
 
-      dateSpy.mockRestore();
+      vi.useRealTimers();
       expect(fs.writeFile).toHaveBeenCalledWith(
         expect.any(String),
         expect.stringContaining('"lastSyncDate": "2024-01-15T12:00:00.000Z"'),
@@ -249,21 +250,21 @@ describe("WorktreeMetadataService", () => {
         }),
       };
 
-      (fs.readFile as jest.Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456", "updated");
 
       // Check that the saved metadata has exactly 10 entries
-      const savedData = JSON.parse((fs.writeFile as jest.Mock<any>).mock.calls[0][1] as string);
+      const savedData = JSON.parse((fs.writeFile as Mock<any>).mock.calls[0][1] as string);
       expect(savedData.syncHistory).toHaveLength(10);
       expect(savedData.syncHistory[9].commit).toBe("new456");
     });
 
     it("should warn if no metadata exists", async () => {
-      (fs.readFile as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
-      const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456");
 
@@ -276,11 +277,11 @@ describe("WorktreeMetadataService", () => {
 
   describe("createInitialMetadata", () => {
     it("should create initial metadata for new worktree", async () => {
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
-      const mockDate = new Date("2024-01-15T12:00:00Z");
-      const dateSpy = jest.spyOn(global, "Date").mockImplementation(() => mockDate as any);
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2024-01-15T12:00:00Z"));
 
       await service.createInitialMetadata(
         mockBareRepoPath,
@@ -291,7 +292,7 @@ describe("WorktreeMetadataService", () => {
         "def456",
       );
 
-      dateSpy.mockRestore();
+      vi.useRealTimers();
 
       const expectedMetadata: SyncMetadata = {
         lastSyncCommit: "abc123",
@@ -419,8 +420,8 @@ describe("WorktreeMetadataService", () => {
         upstreamBranch: "origin/feature",
       };
 
-      (fs.readFile as jest.Mock<any>).mockResolvedValue(JSON.stringify(corruptedMetadata));
-      const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(corruptedMetadata));
+      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       const result = await service.loadMetadataFromPath(mockBareRepoPath, "/test/worktrees/feature");
 
@@ -441,14 +442,14 @@ describe("WorktreeMetadataService", () => {
         syncHistory: [],
       };
 
-      (fs.readFile as jest.Mock<any>)
+      (fs.readFile as Mock<any>)
         .mockRejectedValueOnce(new Error("ENOENT"))
         .mockResolvedValueOnce(JSON.stringify(validMetadata));
 
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.unlink as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rmdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.unlink as Mock<any>).mockResolvedValue(undefined);
+      (fs.rmdir as Mock<any>).mockResolvedValue(undefined);
 
       const result = await service.loadMetadataFromPath(mockBareRepoPath, "/test/worktrees/fix/test-branch");
 
@@ -462,11 +463,11 @@ describe("WorktreeMetadataService", () => {
         upstreamBranch: "origin/fix/test",
       };
 
-      (fs.readFile as jest.Mock<any>)
+      (fs.readFile as Mock<any>)
         .mockRejectedValueOnce(new Error("ENOENT"))
         .mockResolvedValueOnce(JSON.stringify(corruptedMetadata));
 
-      const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       const result = await service.loadMetadataFromPath(mockBareRepoPath, "/test/worktrees/fix/test-branch");
 
@@ -478,32 +479,32 @@ describe("WorktreeMetadataService", () => {
   });
 
   describe("updateLastSyncFromPath auto-repair", () => {
-    let mockGit: jest.Mocked<SimpleGit>;
+    let mockGit: Mocked<SimpleGit>;
 
     beforeEach(() => {
       mockGit = {
-        revparse: jest.fn<any>().mockResolvedValue("abc123def456"),
+        revparse: vi.fn<any>().mockResolvedValue("abc123def456"),
       } as any;
 
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockGit);
     });
 
     it("should create metadata when missing", async () => {
       const worktreePath = "/test/worktrees/feature-branch";
 
-      (fs.readFile as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
-      mockGit.branch = jest.fn<any>().mockResolvedValue({
+      mockGit.branch = vi.fn<any>().mockResolvedValue({
         current: "feature-branch",
         all: ["feature-branch"],
         branches: {},
-      });
-      mockGit.raw = jest.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured"));
+      }) as any;
+      mockGit.raw = vi.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured")) as any;
 
-      const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       await service.updateLastSyncFromPath(mockBareRepoPath, worktreePath, "new123");
 
@@ -522,12 +523,12 @@ describe("WorktreeMetadataService", () => {
       const worktreePath = "/test/worktrees/feature-branch";
       const revparseError = new Error("fatal: not a git repository");
 
-      (fs.readFile as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       mockGit.revparse.mockRejectedValue(revparseError);
 
-      const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
-      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       await expect(service.updateLastSyncFromPath(mockBareRepoPath, worktreePath, "new123")).rejects.toThrow(
         "fatal: not a git repository",
@@ -544,24 +545,24 @@ describe("WorktreeMetadataService", () => {
       const worktreePath = "/test/worktrees/feature/foo";
       const currentCommit = "abc123def456";
 
-      (fs.readFile as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGit.revparse.mockResolvedValue(currentCommit);
-      mockGit.branch = jest.fn<any>().mockResolvedValue({
+      mockGit.branch = vi.fn<any>().mockResolvedValue({
         current: "feature/foo",
         all: ["feature/foo"],
         branches: {},
-      });
-      mockGit.raw = jest.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured"));
+      }) as any;
+      mockGit.raw = vi.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured")) as any;
 
-      const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       await service.updateLastSyncFromPath(mockBareRepoPath, worktreePath, currentCommit);
 
-      const writeCallArg = (fs.writeFile as jest.Mock<any>).mock.calls[0][1] as string;
+      const writeCallArg = (fs.writeFile as Mock<any>).mock.calls[0][1] as string;
       const savedMetadata = JSON.parse(writeCallArg);
 
       // Now fixed: uses actual branch name from git branch command
@@ -577,25 +578,25 @@ describe("WorktreeMetadataService", () => {
       const worktreePath = "/test/worktrees/feature-branch";
       const currentCommit = "abc123def456";
 
-      (fs.readFile as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGit.revparse.mockResolvedValue(currentCommit);
-      mockGit.branch = jest.fn<any>().mockResolvedValue({
+      mockGit.branch = vi.fn<any>().mockResolvedValue({
         current: "feature-branch",
         all: ["feature-branch"],
         branches: {},
-      });
-      mockGit.raw = jest.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured"));
+      }) as any;
+      mockGit.raw = vi.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured")) as any;
 
-      const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       // Test with a non-"main" default branch
       await service.updateLastSyncFromPath(mockBareRepoPath, worktreePath, currentCommit, "updated", "develop");
 
-      const writeCallArg = (fs.writeFile as jest.Mock<any>).mock.calls[0][1] as string;
+      const writeCallArg = (fs.writeFile as Mock<any>).mock.calls[0][1] as string;
       const savedMetadata = JSON.parse(writeCallArg);
 
       // Now fixed: uses passed default branch instead of hard-coded "main"
@@ -616,9 +617,9 @@ describe("WorktreeMetadataService", () => {
         syncHistory: [],
       };
 
-      (fs.readFile as jest.Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new123", "updated");
 

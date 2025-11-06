@@ -16,6 +16,7 @@ export interface Config {
   branchMaxAge?: string;
   skipLfs?: boolean;
   updateExistingWorktrees?: boolean;
+  debug?: boolean;
 }
 
 export interface RepositoryConfig extends Config {

@@ -1,18 +1,23 @@
+import * as fs from "fs/promises";
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { Config } from "../../types";
 import type { GitService } from "../git.service";
+import type { Mock, Mocked } from "vitest";
 
-jest.mock("fs/promises");
-jest.mock("simple-git");
+vi.mock("fs/promises");
+vi.mock("simple-git");
 
 describe("WorktreeSyncService - Update Existing Worktrees", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
-  let mockGitService: jest.Mocked<GitService>;
+  let mockGitService: Mocked<GitService>;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -26,31 +31,31 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
     // Mock GitService methods
     mockGitService = {
-      initialize: jest.fn().mockResolvedValue(undefined),
-      fetchAll: jest.fn().mockResolvedValue(undefined),
-      getRemoteBranches: jest.fn().mockResolvedValue(["main", "feature", "develop"]),
-      getRemoteBranchesWithActivity: jest.fn().mockResolvedValue([
+      initialize: vi.fn().mockResolvedValue(undefined),
+      fetchAll: vi.fn().mockResolvedValue(undefined),
+      getRemoteBranches: vi.fn().mockResolvedValue(["main", "feature", "develop"]),
+      getRemoteBranchesWithActivity: vi.fn().mockResolvedValue([
         { branch: "main", lastActivity: new Date() },
         { branch: "feature", lastActivity: new Date() },
         { branch: "develop", lastActivity: new Date() },
       ]),
-      getWorktrees: jest.fn().mockResolvedValue([
+      getWorktrees: vi.fn().mockResolvedValue([
         { path: "/test/worktrees/main", branch: "main" },
         { path: "/test/worktrees/feature", branch: "feature" },
         { path: "/test/worktrees/develop", branch: "develop" },
       ]),
-      checkWorktreeStatus: jest.fn().mockResolvedValue(true), // All clean by default
-      isWorktreeBehind: jest.fn().mockResolvedValue(false), // Not behind by default
-      canFastForward: jest.fn().mockResolvedValue(true), // Can fast-forward by default
-      updateWorktree: jest.fn().mockResolvedValue(undefined),
-      addWorktree: jest.fn().mockResolvedValue(undefined),
-      removeWorktree: jest.fn().mockResolvedValue(undefined),
-      pruneWorktrees: jest.fn().mockResolvedValue(undefined),
-      hasUnpushedCommits: jest.fn().mockResolvedValue(false),
-      hasStashedChanges: jest.fn().mockResolvedValue(false),
-      hasOperationInProgress: jest.fn().mockResolvedValue(false),
-      hasModifiedSubmodules: jest.fn().mockResolvedValue(false),
-      getDefaultBranch: jest.fn().mockReturnValue("main"),
+      checkWorktreeStatus: vi.fn().mockResolvedValue(true), // All clean by default
+      isWorktreeBehind: vi.fn().mockResolvedValue(false), // Not behind by default
+      canFastForward: vi.fn().mockResolvedValue(true), // Can fast-forward by default
+      updateWorktree: vi.fn().mockResolvedValue(undefined),
+      addWorktree: vi.fn().mockResolvedValue(undefined),
+      removeWorktree: vi.fn().mockResolvedValue(undefined),
+      pruneWorktrees: vi.fn().mockResolvedValue(undefined),
+      hasUnpushedCommits: vi.fn().mockResolvedValue(false),
+      hasStashedChanges: vi.fn().mockResolvedValue(false),
+      hasOperationInProgress: vi.fn().mockResolvedValue(false),
+      hasModifiedSubmodules: vi.fn().mockResolvedValue(false),
+      getDefaultBranch: vi.fn().mockReturnValue("main"),
     } as any;
 
     (service as any).gitService = mockGitService;
@@ -157,11 +162,10 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       (service as any).gitService = mockGitService;
 
       // Simulate that age filtering removed all but (intentionally) not returning main
-      (mockGitService.getRemoteBranches as jest.Mock).mockResolvedValue(["feature", "develop"]);
+      (mockGitService.getRemoteBranches as Mock).mockResolvedValue(["feature", "develop"]);
 
-      const fs = require("fs/promises");
       // Pretend worktreeDir contains main only
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["main"]);
+      (fs.readdir as Mock<any>).mockResolvedValue(["main"]);
 
       await service.sync();
 
@@ -192,7 +196,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
   describe("No worktrees need updating", () => {
     it("should log that all worktrees are up to date", async () => {
-      const consoleSpy = jest.spyOn(console, "log");
+      const consoleSpy = vi.spyOn(console, "log");
 
       // All worktrees are up to date (not behind)
       mockGitService.isWorktreeBehind.mockResolvedValue(false);

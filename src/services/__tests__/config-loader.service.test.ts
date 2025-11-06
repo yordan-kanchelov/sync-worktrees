@@ -1,7 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { beforeEach, describe, expect, it } from "@jest/globals";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
 import { ConfigLoaderService } from "../config-loader.service";

@@ -1,7 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { beforeEach, describe, expect, it } from "@jest/globals";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { generateConfigFile, getDefaultConfigPath } from "../config-generator";
 

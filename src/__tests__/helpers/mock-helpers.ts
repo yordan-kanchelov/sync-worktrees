@@ -1,22 +1,22 @@
-import { jest } from "@jest/globals";
+import { vi } from "vitest";
 
 import type { SimpleGit } from "simple-git";
 
 /**
  * Creates a mock SimpleGit instance with common default behaviors
  */
-export function createMockGit(overrides?: Partial<SimpleGit>): jest.Mocked<SimpleGit> {
+export function createMockGit(overrides?: Partial<SimpleGit>): SimpleGit {
   return {
-    fetch: jest.fn<any>().mockResolvedValue(undefined),
-    branch: jest.fn<any>().mockResolvedValue({
+    fetch: vi.fn<any>().mockResolvedValue(undefined),
+    branch: vi.fn<any>().mockResolvedValue({
       all: ["origin/main"],
       current: "main",
       branches: {},
       detached: false,
     }),
-    raw: jest.fn<any>().mockResolvedValue(""),
-    status: jest.fn<any>().mockResolvedValue({
-      isClean: jest.fn().mockReturnValue(true),
+    raw: vi.fn<any>().mockResolvedValue(""),
+    status: vi.fn<any>().mockResolvedValue({
+      isClean: vi.fn().mockReturnValue(true),
       not_added: [],
       conflicted: [],
       created: [],
@@ -31,7 +31,7 @@ export function createMockGit(overrides?: Partial<SimpleGit>): jest.Mocked<Simpl
       tracking: "origin/main",
       detached: false,
     }),
-    clone: jest.fn<any>().mockResolvedValue(undefined),
+    clone: vi.fn<any>().mockResolvedValue(undefined),
     ...overrides,
   } as any;
 }
@@ -53,20 +53,20 @@ export interface MockFileSystem {
 export function setupMockFileSystem(
   mockFs: MockFileSystem,
   fsMock: {
-    access: jest.Mock<any>;
-    readdir: jest.Mock<any>;
-    mkdir: jest.Mock<any>;
+    access: ReturnType<typeof vi.fn>;
+    readdir: ReturnType<typeof vi.fn>;
+    mkdir: ReturnType<typeof vi.fn>;
   },
 ): void {
   // Mock fs.access
-  fsMock.access.mockImplementation(async (path: string) => {
+  fsMock.access.mockImplementation(async (path) => {
     if (!(path in mockFs)) {
       throw new Error(`ENOENT: no such file or directory, access '${path}'`);
     }
   });
 
   // Mock fs.readdir
-  fsMock.readdir.mockImplementation(async (path: string) => {
+  fsMock.readdir.mockImplementation(async (path) => {
     const entry = mockFs[path];
     if (!entry) {
       throw new Error(`ENOENT: no such file or directory, scandir '${path}'`);
@@ -78,7 +78,7 @@ export function setupMockFileSystem(
   });
 
   // Mock fs.mkdir
-  fsMock.mkdir.mockImplementation(async (path: string, options?: any) => {
+  fsMock.mkdir.mockImplementation(async (path, options) => {
     if (path in mockFs && !options?.recursive) {
       throw new Error(`EEXIST: file already exists, mkdir '${path}'`);
     }

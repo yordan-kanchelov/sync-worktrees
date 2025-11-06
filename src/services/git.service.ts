@@ -7,8 +7,10 @@ import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 
 import { WorktreeMetadataService } from "./worktree-metadata.service";
+import { WorktreeStatusService } from "./worktree-status.service";
 
 import type { Config } from "../types";
+import type { WorktreeStatusResult } from "./worktree-status.service";
 import type { SyncMetadata } from "../types/sync-metadata";
 import type { SimpleGit } from "simple-git";
 
@@ -18,11 +20,13 @@ export class GitService {
   private mainWorktreePath: string;
   private defaultBranch: string = "main"; // Will be updated after detection
   private metadataService: WorktreeMetadataService;
+  private statusService: WorktreeStatusService;
 
   constructor(private config: Config) {
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, "main"); // Temporary, will be updated
     this.metadataService = new WorktreeMetadataService();
+    this.statusService = new WorktreeStatusService({ skipLfs: this.config.skipLfs });
   }
 
   async initialize(): Promise<SimpleGit> {
@@ -226,6 +230,75 @@ export class GitService {
     return branches;
   }
 
+  private async verifyLfsFilesDownloaded(worktreePath: string, branchName: string): Promise<void> {
+    const worktreeGit = simpleGit(worktreePath);
+
+    try {
+      const lfsFiles = await worktreeGit.raw(["lfs", "ls-files", "--name-only"]);
+      const lfsFileList = lfsFiles
+        .trim()
+        .split("\n")
+        .filter((f) => f.length > 0);
+
+      if (lfsFileList.length === 0) {
+        return;
+      }
+
+      if (this.config.debug) {
+        console.log(`  - Verifying ${lfsFileList.length} LFS files are downloaded...`);
+      }
+
+      const sampleSize = Math.min(5, lfsFileList.length);
+      const samplesToCheck = [];
+      for (let i = 0; i < sampleSize; i++) {
+        const randomIndex = Math.floor(Math.random() * lfsFileList.length);
+        samplesToCheck.push(lfsFileList[randomIndex]);
+      }
+
+      let retries = 0;
+      const maxRetries = 30;
+      const retryDelay = 1000;
+
+      while (retries < maxRetries) {
+        let allDownloaded = true;
+        const notDownloaded: string[] = [];
+
+        for (const file of samplesToCheck) {
+          const filePath = path.join(worktreePath, file);
+          try {
+            const content = await fs.readFile(filePath, "utf8");
+            if (content.startsWith("version https://git-lfs.github.com/spec/")) {
+              allDownloaded = false;
+              notDownloaded.push(file);
+            }
+          } catch {
+            allDownloaded = false;
+            notDownloaded.push(file);
+          }
+        }
+
+        if (allDownloaded) {
+          if (this.config.debug) {
+            console.log(`  - ✅ LFS files verified (${samplesToCheck.length} samples checked)`);
+          }
+          return;
+        }
+
+        retries++;
+        if (retries < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelay));
+        }
+      }
+
+      console.warn(
+        `  - ⚠️ Warning: Some LFS files may not be fully downloaded after ${maxRetries} seconds. ` +
+          `This might cause issues if tools access the worktree immediately.`,
+      );
+    } catch (error) {
+      console.warn(`  - ⚠️ Warning: Could not verify LFS files for '${branchName}': ${error}`);
+    }
+  }
+
   private async createWorktreeMetadata(bareGit: SimpleGit, worktreePath: string, branchName: string): Promise<void> {
     try {
       const worktreeGit = this.isLfsSkipEnabled()
@@ -303,6 +376,11 @@ export class GitService {
 
       console.log(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
 
+      // Verify LFS files are properly downloaded (if not skipping LFS)
+      if (!this.isLfsSkipEnabled()) {
+        await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
+      }
+
       // Create metadata for the new worktree
       await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
     } catch (error) {
@@ -335,6 +413,12 @@ export class GitService {
             `origin/${branchName}`,
           ]);
           console.log(`  - Created worktree for '${branchName}' after pruning`);
+
+          // Verify LFS files are properly downloaded (if not skipping LFS)
+          if (!this.isLfsSkipEnabled()) {
+            await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
+          }
+
           await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
           return;
         } catch (retryError) {
@@ -368,6 +452,11 @@ export class GitService {
 
       await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
       console.log(`  - Created worktree for '${branchName}' (without tracking)`);
+
+      // Verify LFS files are properly downloaded (if not skipping LFS)
+      if (!this.isLfsSkipEnabled()) {
+        await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
+      }
 
       // Try to create metadata even without tracking
       await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
@@ -526,6 +615,10 @@ export class GitService {
       console.error(`Error checking stash: ${error}`);
       return true;
     }
+  }
+
+  async getFullWorktreeStatus(worktreePath: string, includeDetails = false): Promise<WorktreeStatusResult> {
+    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails);
   }
 
   async hasModifiedSubmodules(worktreePath: string): Promise<boolean> {

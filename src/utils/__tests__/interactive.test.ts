@@ -2,50 +2,51 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { confirm, input, select } from "@inquirer/prompts";
-import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { generateConfigFile } from "../config-generator";
 import { promptForConfig } from "../interactive";
 
 import type { Config } from "../../types";
+import type { MockedFunction } from "vitest";
 
 // Mock the modules
-jest.mock("@inquirer/prompts", () => ({
-  input: jest.fn(),
-  select: jest.fn(),
-  confirm: jest.fn(),
+vi.mock("@inquirer/prompts", () => ({
+  input: vi.fn(),
+  select: vi.fn(),
+  confirm: vi.fn(),
 }));
 
-jest.mock("../config-generator", () => ({
-  generateConfigFile: jest.fn(),
-  getDefaultConfigPath: jest.fn().mockReturnValue("/default/config.js"),
+vi.mock("../config-generator", () => ({
+  generateConfigFile: vi.fn(),
+  getDefaultConfigPath: vi.fn().mockReturnValue("/default/config.js"),
 }));
 
-jest.mock("fs", () => ({
-  existsSync: jest.fn(),
+vi.mock("fs", () => ({
+  existsSync: vi.fn(),
 }));
 
 describe("Interactive", () => {
-  const mockInput = input as unknown as jest.MockedFunction<typeof input>;
-  const mockSelect = select as unknown as jest.MockedFunction<typeof select>;
-  const mockConfirm = confirm as unknown as jest.MockedFunction<typeof confirm>;
-  const mockGenerateConfigFile = generateConfigFile as jest.MockedFunction<typeof generateConfigFile>;
-  const mockExistsSync = fs.existsSync as jest.MockedFunction<typeof fs.existsSync>;
+  const mockInput = input as unknown as MockedFunction<typeof input>;
+  const mockSelect = select as unknown as MockedFunction<typeof select>;
+  const mockConfirm = confirm as unknown as MockedFunction<typeof confirm>;
+  const mockGenerateConfigFile = generateConfigFile as MockedFunction<typeof generateConfigFile>;
+  const mockExistsSync = fs.existsSync as MockedFunction<typeof fs.existsSync>;
 
   const cwd = process.cwd();
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     // Mock console methods to avoid noise in tests
-    jest.spyOn(console, "log").mockImplementation(() => {});
-    jest.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
     mockExistsSync.mockReturnValue(true);
     // Default to not saving config in tests
     mockConfirm.mockResolvedValue(false);
   });
 
   afterEach(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   describe("promptForConfig", () => {

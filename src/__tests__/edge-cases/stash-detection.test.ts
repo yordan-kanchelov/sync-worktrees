@@ -1,22 +1,61 @@
 import * as fs from "fs/promises";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GitService } from "../../services/git.service";
 import { WorktreeSyncService } from "../../services/worktree-sync.service";
 
+import type { GitService } from "../../services/git.service";
 import type { Config } from "../../types";
+import type { Mock, Mocked } from "vitest";
 
-jest.mock("fs/promises");
-jest.mock("../../services/git.service");
+vi.mock("fs/promises");
+
+const { mockGitServiceInstance } = vi.hoisted(() => {
+  return {
+    mockGitServiceInstance: {
+      initialize: vi.fn<any>().mockResolvedValue(undefined),
+      fetchAll: vi.fn<any>().mockResolvedValue(undefined),
+      getRemoteBranches: vi.fn<any>().mockResolvedValue(["main"]),
+      addWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
+      checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
+      hasUnpushedCommits: vi.fn<any>().mockResolvedValue(false),
+      hasUpstreamGone: vi.fn<any>().mockResolvedValue(false),
+      hasStashedChanges: vi.fn<any>().mockResolvedValue(false),
+      hasOperationInProgress: vi.fn<any>().mockResolvedValue(false),
+      hasModifiedSubmodules: vi.fn<any>().mockResolvedValue(false),
+      getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      }),
+      getCurrentBranch: vi.fn<any>().mockResolvedValue("main"),
+      getDefaultBranch: vi.fn().mockReturnValue("main"),
+      getWorktrees: vi.fn<any>().mockResolvedValue([]),
+      getGit: vi.fn<any>(),
+    } as any,
+  };
+});
+
+vi.mock("../../services/git.service", () => ({
+  GitService: vi.fn(function (this: any) {
+    return mockGitServiceInstance;
+  }),
+}));
 
 describe("Stash Detection Edge Cases", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
-  let mockGitService: jest.Mocked<GitService>;
+  let mockGitService: Mocked<GitService>;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -25,26 +64,7 @@ describe("Stash Detection Edge Cases", () => {
       runOnce: false,
     };
 
-    mockGitService = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      fetchAll: jest.fn<any>().mockResolvedValue(undefined),
-      getRemoteBranches: jest.fn<any>().mockResolvedValue(["main"]),
-      addWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      removeWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
-      checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
-      hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
-      hasUpstreamGone: jest.fn<any>().mockResolvedValue(false),
-      hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
-      hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
-      hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
-      getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
-      getDefaultBranch: jest.fn().mockReturnValue("main"),
-      getWorktrees: jest.fn<any>().mockResolvedValue([]),
-      getGit: jest.fn<any>(),
-    } as any;
-
-    (GitService as jest.MockedClass<typeof GitService>).mockImplementation(() => mockGitService);
+    mockGitService = mockGitServiceInstance;
 
     service = new WorktreeSyncService(mockConfig);
   });
@@ -52,15 +72,23 @@ describe("Stash Detection Edge Cases", () => {
   describe("Basic stash detection", () => {
     it("should not delete worktree with stashed changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["feature-with-stash"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["feature-with-stash"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/feature-with-stash", branch: "feature-with-stash" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasStashedChanges.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: true,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["stashed changes"],
+      });
 
       await service.sync();
 
@@ -70,8 +98,8 @@ describe("Stash Detection Edge Cases", () => {
 
     it("should not delete worktree with multiple stash entries", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["multi-stash"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["multi-stash"]);
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/multi-stash", branch: "multi-stash" }]);
 
@@ -87,8 +115,8 @@ describe("Stash Detection Edge Cases", () => {
   describe("Stash error handling", () => {
     it("should assume unsafe when stash check fails", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["stash-error"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["stash-error"]);
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/stash-error", branch: "stash-error" }]);
 
@@ -104,8 +132,8 @@ describe("Stash Detection Edge Cases", () => {
 
     it("should handle corrupted stash gracefully", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["corrupted-stash"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["corrupted-stash"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/corrupted-stash", branch: "corrupted-stash" },
@@ -125,15 +153,23 @@ describe("Stash Detection Edge Cases", () => {
   describe("Combined stash scenarios", () => {
     it("should handle stash with uncommitted changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["stash-and-dirty"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["stash-and-dirty"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/stash-and-dirty", branch: "stash-and-dirty" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false);
-      mockGitService.hasStashedChanges.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: false,
+        hasUnpushedCommits: false,
+        hasStashedChanges: true,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["uncommitted changes", "stashed changes"],
+      });
 
       await service.sync();
 
@@ -145,16 +181,24 @@ describe("Stash Detection Edge Cases", () => {
   describe("Stash with branch-specific scenarios", () => {
     it("should preserve worktree with stash when branch deleted from remote", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["deleted-with-stash"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["deleted-with-stash"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/deleted-with-stash", branch: "deleted-with-stash" },
       ]);
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasStashedChanges.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: true,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["stashed changes"],
+      });
 
       await service.sync();
 

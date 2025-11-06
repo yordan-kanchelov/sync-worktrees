@@ -11,6 +11,7 @@ export interface CliOptions extends Partial<Config> {
   branchMaxAge?: string;
   skipLfs?: boolean;
   noUpdateExisting?: boolean;
+  debug?: boolean;
 }
 
 export function parseArguments(): CliOptions {
@@ -72,6 +73,12 @@ export function parseArguments(): CliOptions {
       description: "Disable automatic updates of existing worktrees.",
       default: false,
     })
+    .option("debug", {
+      alias: "d",
+      type: "boolean",
+      description: "Enable debug mode to show detailed reasons why worktrees are not cleaned up.",
+      default: false,
+    })
     .help()
     .alias("help", "h")
     .parseSync();
@@ -88,6 +95,7 @@ export function parseArguments(): CliOptions {
     branchMaxAge: argv.branchMaxAge,
     skipLfs: argv.skipLfs,
     noUpdateExisting: argv["no-update-existing"] as boolean,
+    debug: argv.debug,
   };
 }
 

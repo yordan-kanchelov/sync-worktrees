@@ -116,5 +116,5 @@ describe("HEAD branch filtering (E2E)", () => {
     expect(output).not.toContain("Creating new worktrees for: HEAD");
     expect(output).not.toContain("Failed to create worktree");
     expect(output).not.toContain("Error during worktree synchronization");
-  });
+  }, 30000);
 });
