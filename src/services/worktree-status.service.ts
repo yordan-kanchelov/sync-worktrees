@@ -67,9 +67,13 @@ export class WorktreeStatusService {
     return true;
   }
 
-  async getFullWorktreeStatus(worktreePath: string, includeDetails = false): Promise<WorktreeStatusResult> {
+  async getFullWorktreeStatus(
+    worktreePath: string,
+    includeDetails = false,
+    lastSyncCommit?: string,
+  ): Promise<WorktreeStatusResult> {
     const isClean = await this.checkWorktreeStatus(worktreePath);
-    const hasUnpushedCommits = await this.hasUnpushedCommits(worktreePath);
+    const hasUnpushedCommits = await this.hasUnpushedCommits(worktreePath, lastSyncCommit);
     const hasStashedChanges = await this.hasStashedChanges(worktreePath);
     const hasOperationInProgress = await this.hasOperationInProgress(worktreePath);
     const hasModifiedSubmodules = await this.hasModifiedSubmodules(worktreePath);
@@ -224,8 +228,8 @@ export class WorktreeStatusService {
     }
   }
 
-  async validateWorktreeForRemoval(worktreePath: string): Promise<void> {
-    const status = await this.getFullWorktreeStatus(worktreePath);
+  async validateWorktreeForRemoval(worktreePath: string, lastSyncCommit?: string): Promise<void> {
+    const status = await this.getFullWorktreeStatus(worktreePath, false, lastSyncCommit);
 
     if (!status.canRemove) {
       throw new WorktreeNotCleanError(worktreePath, status.reasons);

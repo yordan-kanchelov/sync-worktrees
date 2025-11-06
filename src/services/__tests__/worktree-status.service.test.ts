@@ -659,5 +659,44 @@ describe("WorktreeStatusService", () => {
 
       expect(status.details).toBeUndefined();
     });
+
+    it("should use lastSyncCommit parameter when provided", async () => {
+      mockGit.status.mockResolvedValue({
+        modified: [],
+        deleted: [],
+        renamed: [],
+        created: [],
+        conflicted: [],
+        not_added: [],
+      } as any);
+      mockGit.raw.mockResolvedValue("2\n");
+      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, "abc123");
+
+      expect(status.hasUnpushedCommits).toBe(true);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
+    });
+
+    it("should not report false positive for stale branch with lastSyncCommit", async () => {
+      mockGit.status.mockResolvedValue({
+        modified: [],
+        deleted: [],
+        renamed: [],
+        created: [],
+        conflicted: [],
+        not_added: [],
+      } as any);
+      mockGit.raw.mockResolvedValue("0\n");
+      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, "lastSyncCommit123");
+
+      expect(status.hasUnpushedCommits).toBe(false);
+      expect(status.canRemove).toBe(true);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "lastSyncCommit123..HEAD"]);
+    });
   });
 });

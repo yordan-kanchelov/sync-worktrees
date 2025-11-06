@@ -625,7 +625,8 @@ export class GitService {
   }
 
   async getFullWorktreeStatus(worktreePath: string, includeDetails = false): Promise<WorktreeStatusResult> {
-    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails);
+    const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
+    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails, metadata?.lastSyncCommit);
   }
 
   async hasModifiedSubmodules(worktreePath: string): Promise<boolean> {
