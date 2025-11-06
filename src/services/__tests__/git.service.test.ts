@@ -670,12 +670,25 @@ describe("GitService", () => {
         return mockGit;
       });
 
-      (fs.readFile as Mock<any>).mockResolvedValue("actual image data");
+      const mockFileHandle = {
+        read: vi.fn<any>().mockResolvedValue({
+          bytesRead: 18,
+        }),
+        close: vi.fn<any>().mockResolvedValue(undefined),
+      };
+
+      (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
+
+      const bufferSpy = vi.spyOn(Buffer, "alloc");
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
       expect(worktreeGitMock.raw).toHaveBeenCalledWith(["lfs", "ls-files", "--name-only"]);
-      expect(fs.readFile).toHaveBeenCalled();
+      expect(fs.open).toHaveBeenCalled();
+      expect(bufferSpy).toHaveBeenCalledWith(200);
+      expect(mockFileHandle.close).toHaveBeenCalled();
+
+      bufferSpy.mockRestore();
     });
 
     it("should skip LFS verification when skipLfs is enabled", async () => {
@@ -730,17 +743,25 @@ describe("GitService", () => {
       });
 
       let callCount = 0;
-      (fs.readFile as Mock<any>).mockImplementation(() => {
-        callCount++;
-        if (callCount === 1) {
-          return Promise.resolve("version https://git-lfs.github.com/spec/v1");
-        }
-        return Promise.resolve("actual image data");
-      });
+      const mockFileHandle = {
+        read: vi.fn().mockImplementation((buffer: Buffer) => {
+          callCount++;
+          if (callCount === 1) {
+            buffer.write("version https://git-lfs.github.com/spec/v1", "utf8");
+            return Promise.resolve({ bytesRead: 43 });
+          }
+          buffer.write("actual image data", "utf8");
+          return Promise.resolve({ bytesRead: 17 });
+        }),
+        close: vi.fn<any>().mockResolvedValue(undefined),
+      };
+
+      (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
-      expect(fs.readFile).toHaveBeenCalledTimes(2);
+      expect(fs.open).toHaveBeenCalledTimes(2);
+      expect(mockFileHandle.close).toHaveBeenCalledTimes(2);
     });
 
     it("should warn if LFS files are not downloaded after timeout", async () => {
@@ -764,7 +785,15 @@ describe("GitService", () => {
         return mockGit;
       });
 
-      (fs.readFile as Mock<any>).mockResolvedValue("version https://git-lfs.github.com/spec/v1");
+      const mockFileHandle = {
+        read: vi.fn().mockImplementation((buffer: Buffer) => {
+          buffer.write("version https://git-lfs.github.com/spec/v1", "utf8");
+          return Promise.resolve({ bytesRead: 43 });
+        }),
+        close: vi.fn<any>().mockResolvedValue(undefined),
+      };
+
+      (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 

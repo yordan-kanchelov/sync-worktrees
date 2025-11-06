@@ -2,6 +2,8 @@ import { execSync } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
 const shouldSkip = process.env.SKIP_E2E_TESTS === "true";
 
 const describeOrSkip = shouldSkip ? describe.skip : describe;

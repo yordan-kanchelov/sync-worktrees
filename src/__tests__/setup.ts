@@ -1,5 +1,5 @@
 // Vitest setup file for global test configuration
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
 
 // Ensure NODE_ENV is set to test
 process.env.NODE_ENV = "test";

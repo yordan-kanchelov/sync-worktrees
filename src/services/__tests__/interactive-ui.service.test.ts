@@ -1,5 +1,5 @@
 import * as ink from "ink";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { InteractiveUIService } from "../InteractiveUIService";
 

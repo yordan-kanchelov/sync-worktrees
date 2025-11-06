@@ -4,6 +4,7 @@ import * as os from "os";
 import * as path from "path";
 
 import simpleGit from "simple-git";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 describe("HEAD branch filtering (E2E)", () => {
   let tempDir: string;

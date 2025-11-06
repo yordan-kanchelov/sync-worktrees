@@ -266,11 +266,17 @@ export class GitService {
         for (const file of samplesToCheck) {
           const filePath = path.join(worktreePath, file);
           try {
-            const buffer = await fs.readFile(filePath);
-            const header = buffer.slice(0, 200).toString("utf8");
-            if (header.startsWith("version https://git-lfs.github.com/spec/")) {
-              allDownloaded = false;
-              notDownloaded.push(file);
+            const handle = await fs.open(filePath, "r");
+            try {
+              const buffer = Buffer.alloc(200);
+              const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+              const header = buffer.subarray(0, bytesRead).toString("utf8");
+              if (header.startsWith("version https://git-lfs.github.com/spec/")) {
+                allDownloaded = false;
+                notDownloaded.push(file);
+              }
+            } finally {
+              await handle.close();
             }
           } catch {
             allDownloaded = false;

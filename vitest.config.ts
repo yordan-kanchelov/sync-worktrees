@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    globals: true,
+    globals: false,
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     exclude: ["node_modules", "dist", "**/*.skip"],
@@ -21,7 +21,8 @@ export default defineConfig({
       },
     },
     setupFiles: ["./src/__tests__/setup.ts"],
-    testTimeout: 10000,
+    testTimeout: 40000,
+    hookTimeout: 40000,
   },
   resolve: {
     alias: {

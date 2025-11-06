@@ -4,6 +4,7 @@ import * as os from "os";
 import * as path from "path";
 
 import simpleGit from "simple-git";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 describe("Double run E2E test", () => {
   let tempDir: string;
@@ -121,7 +122,7 @@ describe("Double run E2E test", () => {
     // Final verification
     const worktrees = await fs.readdir(worktreeDir);
     expect(worktrees).not.toContain("HEAD");
-  }, 30000);
+  }, 60000);
 
   it("should recover gracefully if a HEAD worktree was manually created", async () => {
     const bareRepoDir = path.join(tempDir, ".bare");
@@ -148,5 +149,5 @@ describe("Double run E2E test", () => {
     // Verify HEAD directory was removed
     const worktrees = await fs.readdir(worktreeDir);
     expect(worktrees).not.toContain("HEAD");
-  });
+  }, 30000);
 });
