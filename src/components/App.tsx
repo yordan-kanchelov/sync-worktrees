@@ -24,10 +24,12 @@ const App: React.FC<AppProps> = ({ repositoryCount, cronSchedule, onManualSync, 
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
 
   useInput((input, key) => {
+    if (showHelp) return;
+
     if (key.escape || input === "q") {
       void onQuit();
     } else if (input === "?" || input === "h") {
-      setShowHelp(prev => !prev);
+      setShowHelp(true);
     } else if (input === "s" && status !== "syncing") {
       setStatus("syncing");
       void (async () => {
