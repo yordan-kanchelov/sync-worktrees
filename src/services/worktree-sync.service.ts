@@ -1,6 +1,9 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import pLimit from "p-limit";
+
+import { DEFAULT_CONFIG } from "../constants";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { retry } from "../utils/retry";
@@ -157,11 +160,32 @@ export class WorktreeSyncService {
       .filter((b) => b !== defaultBranch);
 
     if (newBranches.length > 0) {
-      console.log(`Step 2: Creating new worktrees for: ${newBranches.join(", ")}`);
-      for (const branchName of newBranches) {
-        const worktreePath = path.join(this.config.worktreeDir, branchName);
-        await this.gitService.addWorktree(branchName, worktreePath);
-      }
+      console.log(`Step 2: Creating ${newBranches.length} new worktrees...`);
+
+      // Worktree creation has concurrency=1 by default because Git's worktree.lock
+      // can cause race conditions when multiple operations run simultaneously.
+      // If concurrent operations try to create the same worktree, we gracefully handle
+      // the "already registered" error by checking if the worktree actually exists.
+      const maxConcurrent =
+        this.config.parallelism?.maxWorktreeCreation ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
+      const limit = pLimit(maxConcurrent);
+
+      const results = await Promise.allSettled(
+        newBranches.map((branchName) =>
+          limit(async () => {
+            const worktreePath = path.join(this.config.worktreeDir, branchName);
+            try {
+              await this.gitService.addWorktree(branchName, worktreePath);
+              console.log(`  ✅ Created worktree for '${branchName}'`);
+            } catch (error) {
+              console.error(`  ❌ Failed to create worktree for '${branchName}':`, getErrorMessage(error));
+            }
+          }),
+        ),
+      );
+
+      const successCount = results.filter((r) => r.status === "fulfilled").length;
+      console.log(`  Created ${successCount}/${newBranches.length} worktrees successfully`);
     } else {
       console.log("Step 2: No new branches to create worktrees for.");
     }
@@ -171,33 +195,78 @@ export class WorktreeSyncService {
     const deletedBranches = existingWorktreeBranches.filter((branch) => !remoteBranches.includes(branch));
 
     if (deletedBranches.length > 0) {
-      console.log(`Step 3: Checking for stale worktrees to prune: ${deletedBranches.join(", ")}`);
+      console.log(`Step 3: Checking ${deletedBranches.length} stale worktrees to prune...`);
 
-      for (const branchName of deletedBranches) {
-        const worktreePath = path.join(this.config.worktreeDir, branchName);
+      // Two-phase approach: First check status in parallel (read-only, safe),
+      // then remove worktrees in parallel (mutation, needs lower concurrency)
+      const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+      const limit = pLimit(maxConcurrent);
 
-        try {
-          const status = await this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug);
+      const statusResults = await Promise.allSettled(
+        deletedBranches.map((branchName) =>
+          limit(async () => {
+            const worktreePath = path.join(this.config.worktreeDir, branchName);
+            const status = await this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug);
+            return { branchName, worktreePath, status };
+          }),
+        ),
+      );
 
+      const toRemove: Array<{ branchName: string; worktreePath: string }> = [];
+      const toSkip: Array<{
+        branchName: string;
+        status: Awaited<ReturnType<GitService["getFullWorktreeStatus"]>>;
+      }> = [];
+
+      for (const result of statusResults) {
+        if (result.status === "fulfilled") {
+          const { branchName, worktreePath, status } = result.value;
           if (status.canRemove) {
-            await this.gitService.removeWorktree(worktreePath);
+            toRemove.push({ branchName, worktreePath });
           } else {
-            if (status.upstreamGone && status.hasUnpushedCommits) {
-              console.warn(`  - ⚠️ Cannot automatically remove '${branchName}' - upstream branch was deleted.`);
-              console.log(`     Please review manually: cd ${worktreePath} && git log`);
-              console.log(
-                `     If changes were squash-merged, you can safely remove with: git worktree remove ${worktreePath}`,
-              );
-            } else {
-              console.log(`  - ⚠️ Skipping removal of '${branchName}' due to: ${status.reasons.join(", ")}.`);
-            }
-
-            if (this.config.debug && status.details) {
-              this.logDebugDetails(branchName, status.details);
-            }
+            toSkip.push({ branchName, status });
           }
-        } catch (error) {
-          console.error(`  - Error checking worktree '${branchName}':`, error);
+        } else {
+          console.error(`  - Error checking worktree:`, result.reason);
+        }
+      }
+
+      if (toRemove.length > 0) {
+        const removeLimit = pLimit(
+          this.config.parallelism?.maxWorktreeRemoval ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL,
+        );
+
+        const removeResults = await Promise.allSettled(
+          toRemove.map(({ branchName, worktreePath }) =>
+            removeLimit(async () => {
+              await this.gitService.removeWorktree(worktreePath);
+              console.log(`  ✅ Removed worktree for '${branchName}'`);
+            }),
+          ),
+        );
+
+        const removedCount = removeResults.filter((r) => r.status === "fulfilled").length;
+        console.log(`  Removed ${removedCount}/${toRemove.length} worktrees successfully`);
+      }
+
+      if (toSkip.length > 0) {
+        console.log(`  Skipped ${toSkip.length} worktree(s) with local changes or unpushed commits`);
+      }
+
+      for (const { branchName, status } of toSkip) {
+        if (status.upstreamGone && status.hasUnpushedCommits) {
+          const worktreePath = path.join(this.config.worktreeDir, branchName);
+          console.warn(`  - ⚠️ Cannot automatically remove '${branchName}' - upstream branch was deleted.`);
+          console.log(`     Please review manually: cd ${worktreePath} && git log`);
+          console.log(
+            `     If changes were squash-merged, you can safely remove with: git worktree remove ${worktreePath}`,
+          );
+        } else {
+          console.log(`  - ⚠️ Skipping removal of '${branchName}' due to: ${status.reasons.join(", ")}.`);
+        }
+
+        if (this.config.debug && status.details) {
+          this.logDebugDetails(branchName, status.details);
         }
       }
     } else {
@@ -282,11 +351,8 @@ export class WorktreeSyncService {
     worktrees: { path: string; branch: string }[],
     remoteBranches: string[],
   ): Promise<void> {
-    const worktreesToUpdate: { path: string; branch: string }[] = [];
-
     console.log("Step 4: Checking for worktrees that need updates...");
 
-    // Check for diverged worktrees
     const divergedDir = path.join(this.config.worktreeDir, ".diverged");
     try {
       const diverged = await fs.readdir(divergedDir);
@@ -297,79 +363,88 @@ export class WorktreeSyncService {
       // No diverged directory, that's fine
     }
 
-    // Only check worktrees whose branches still exist remotely
     const activeWorktrees = worktrees.filter((w) => remoteBranches.includes(w.branch));
 
-    // Check each active worktree to see if it's behind and clean
-    for (const worktree of activeWorktrees) {
-      try {
-        // First check if the worktree directory actually exists
-        try {
-          await fs.access(worktree.path);
-        } catch {
-          // Directory doesn't exist, skip it
-          continue;
-        }
+    // Two-phase approach: Check which worktrees need updates (parallel, read-only),
+    // then perform updates (parallel with lower concurrency to avoid conflicts)
+    const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+    const limit = pLimit(maxConcurrent);
 
-        // Skip if an operation is in progress (merge/rebase/etc.)
-        const hasOp = await this.gitService.hasOperationInProgress(worktree.path);
-        if (hasOp) {
-          continue;
-        }
+    const checkResults = await Promise.allSettled(
+      activeWorktrees.map((worktree) =>
+        limit(async () => {
+          try {
+            await fs.access(worktree.path);
+          } catch {
+            return null;
+          }
 
-        const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
-        if (!isClean) {
-          continue; // Skip worktrees with local changes
-        }
+          const hasOp = await this.gitService.hasOperationInProgress(worktree.path);
+          if (hasOp) return null;
 
-        // Check if we can fast-forward before attempting update
-        const canFastForward = await this.gitService.canFastForward(worktree.path, worktree.branch);
-        if (!canFastForward) {
-          // Handle diverged branch
-          await this.handleDivergedBranch(worktree);
-          continue;
-        }
+          const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
+          if (!isClean) return null;
 
-        const isBehind = await this.gitService.isWorktreeBehind(worktree.path);
-        if (isBehind) {
-          worktreesToUpdate.push(worktree);
-        }
-      } catch (error) {
-        console.error(`  - Error checking worktree '${worktree.branch}':`, error);
+          const canFastForward = await this.gitService.canFastForward(worktree.path, worktree.branch);
+          if (!canFastForward) {
+            await this.handleDivergedBranch(worktree);
+            return null;
+          }
+
+          const isBehind = await this.gitService.isWorktreeBehind(worktree.path);
+          return isBehind ? worktree : null;
+        }),
+      ),
+    );
+
+    const worktreesToUpdate: { path: string; branch: string }[] = [];
+    for (const result of checkResults) {
+      if (result.status === "fulfilled" && result.value) {
+        worktreesToUpdate.push(result.value);
+      } else if (result.status === "rejected") {
+        console.error(`  - Error checking worktree:`, result.reason);
       }
     }
 
     if (worktreesToUpdate.length > 0) {
       console.log(`  - Found ${worktreesToUpdate.length} worktrees behind their upstream branches.`);
 
-      for (const worktree of worktreesToUpdate) {
-        try {
-          console.log(`  - Updating worktree '${worktree.branch}'...`);
-          await this.gitService.updateWorktree(worktree.path);
-          console.log(`    ✅ Successfully updated '${worktree.branch}'.`);
-        } catch (error) {
-          // Check if this is specifically a fast-forward error indicating diverged history
-          const errorMessage = getErrorMessage(error);
+      const updateLimit = pLimit(
+        this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES,
+      );
 
-          // Only treat as diverged if it's specifically a fast-forward failure
-          // Other errors (network issues, permission problems, etc.) should not trigger divergence handling
-          if (
-            errorMessage.includes("Not possible to fast-forward") ||
-            errorMessage.includes("fatal: Not possible to fast-forward, aborting") ||
-            errorMessage.includes("cannot fast-forward")
-          ) {
-            console.log(`    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`);
+      const updateResults = await Promise.allSettled(
+        worktreesToUpdate.map((worktree) =>
+          updateLimit(async () => {
             try {
-              await this.handleDivergedBranch(worktree);
-            } catch (divergedError) {
-              console.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
+              console.log(`  - Updating worktree '${worktree.branch}'...`);
+              await this.gitService.updateWorktree(worktree.path);
+              console.log(`    ✅ Successfully updated '${worktree.branch}'.`);
+            } catch (error) {
+              const errorMessage = getErrorMessage(error);
+
+              if (
+                errorMessage.includes("Not possible to fast-forward") ||
+                errorMessage.includes("fatal: Not possible to fast-forward, aborting") ||
+                errorMessage.includes("cannot fast-forward")
+              ) {
+                console.log(`    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`);
+                try {
+                  await this.handleDivergedBranch(worktree);
+                } catch (divergedError) {
+                  console.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
+                }
+              } else {
+                console.error(`    ❌ Failed to update '${worktree.branch}':`, error);
+              }
+              throw error;
             }
-          } else {
-            // Other errors: network issues, permission problems, disk space, etc.
-            console.error(`    ❌ Failed to update '${worktree.branch}':`, error);
-          }
-        }
-      }
+          }),
+        ),
+      );
+
+      const successCount = updateResults.filter((r) => r.status === "fulfilled").length;
+      console.log(`  Updated ${successCount}/${worktreesToUpdate.length} worktrees successfully`);
     } else {
       console.log("  - All worktrees are up to date.");
     }

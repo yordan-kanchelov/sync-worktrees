@@ -177,6 +177,13 @@ export class ConfigLoaderService {
       };
     }
 
+    if (repo.parallelism || defaults?.parallelism) {
+      resolved.parallelism = {
+        ...(defaults?.parallelism || {}),
+        ...(repo.parallelism || {}),
+      };
+    }
+
     if (repo.updateExistingWorktrees !== undefined || defaults?.updateExistingWorktrees !== undefined) {
       resolved.updateExistingWorktrees = repo.updateExistingWorktrees ?? defaults?.updateExistingWorktrees ?? true;
     }

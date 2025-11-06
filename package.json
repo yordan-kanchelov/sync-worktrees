@@ -56,6 +56,7 @@
     "fast-folder-size": "^2.4.0",
     "ink": "^6.4.0",
     "node-cron": "^4.2.0",
+    "p-limit": "^7.2.0",
     "react": "^19.2.0",
     "simple-git": "^3.28.0",
     "yargs": "^18.0.0"

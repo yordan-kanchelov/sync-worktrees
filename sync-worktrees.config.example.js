@@ -31,13 +31,29 @@ export default {
     maxDelayMs: 600000,       // Maximum delay: 10 minutes
     backoffMultiplier: 2      // Doubles delay each retry (1s, 2s, 4s, 8s...)
   },
-  
+
   // Simple retry presets (uncomment one):
   // retry: { maxAttempts: 5 },                    // Try 5 times then stop
   // retry: { maxAttempts: 'unlimited' },          // Keep trying forever
   // retry: { maxLfsRetries: 0 },                  // Don't retry LFS errors at all
   // retry: { maxDelayMs: 60000 },                 // Cap retry delay at 1 minute
   // retry: { initialDelayMs: 5000 },              // Start with 5 second delay
+
+  // Parallelism configuration for performance tuning (optional)
+  parallelism: {
+    maxRepositories: 10,      // Max concurrent repositories to sync (default: 10)
+    maxWorktreeCreation: 1,   // Max concurrent worktree creations (default: 1 - KEEP LOW!)
+    maxWorktreeUpdates: 3,    // Max concurrent worktree updates (default: 3)
+    maxWorktreeRemoval: 3,    // Max concurrent worktree removals (default: 3)
+    maxStatusChecks: 20       // Max concurrent status checks (default: 20)
+  },
+
+  // Performance tuning tips:
+  // - maxWorktreeCreation: Keep at 1 to avoid Git lock contention issues
+  // - maxStatusChecks: Safe to increase (20-50) since they're read-only
+  // - maxRepositories: Higher values speed up multi-repo syncs but use more resources
+  // - Total concurrent operations = maxRepositories × per-repo limits
+  // - On powerful machines with SSDs, you can increase these values for better performance
   
   // Array of repository configurations
   repositories: [
@@ -79,20 +95,26 @@ export default {
     
     {
       name: "experimental-features",
-      
+
       repoUrl: "https://github.com/user/experimental.git",
       worktreeDir: path.join(os.homedir(), "experiments", "worktrees"),
-      
+
       // Custom bare repository location
       bareRepoDir: path.join(os.homedir(), "experiments", ".bare", "experimental"),
-      
+
       // This repo should only sync when manually triggered
       runOnce: true,
-      
+
       // Repository-specific retry configuration (overrides global)
       retry: {
         maxAttempts: 10,        // Try 10 times for experimental repo
         initialDelayMs: 2000    // Start with 2 second delay
+      },
+
+      // Repository-specific parallelism configuration (overrides global)
+      parallelism: {
+        maxStatusChecks: 50,    // This repo has many branches, check them faster
+        maxWorktreeUpdates: 5   // Can handle more concurrent updates
       }
     },
     

@@ -400,6 +400,15 @@ export class GitService {
 
       // Check if this is an "already registered" error
       if (errorMessage.includes("already registered worktree")) {
+        // Check if worktree was actually created by a concurrent operation
+        const worktrees = await this.getWorktreesFromBare(bareGit);
+        const alreadyExists = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
+
+        if (alreadyExists) {
+          console.log(`  - Worktree for '${branchName}' was created by concurrent operation`);
+          return;
+        }
+
         console.warn(`  - Worktree already registered but missing. Pruning and retrying...`);
         await bareGit.raw(["worktree", "prune"]);
         // Clean up directory if it exists
@@ -457,16 +466,34 @@ export class GitService {
         // Directory doesn't exist, which is expected - continue with fallback
       }
 
-      await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
-      console.log(`  - Created worktree for '${branchName}' (without tracking)`);
+      try {
+        await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
+        console.log(`  - Created worktree for '${branchName}' (without tracking)`);
 
-      // Verify LFS files are properly downloaded (if not skipping LFS)
-      if (!this.isLfsSkipEnabled()) {
-        await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
+        // Verify LFS files are properly downloaded (if not skipping LFS)
+        if (!this.isLfsSkipEnabled()) {
+          await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
+        }
+
+        // Try to create metadata even without tracking
+        await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+      } catch (fallbackError) {
+        const fallbackErrorMessage = getErrorMessage(fallbackError);
+
+        // If fallback also fails with "already registered", check if created by concurrent op
+        if (fallbackErrorMessage.includes("already registered worktree")) {
+          const worktrees = await this.getWorktreesFromBare(bareGit);
+          const alreadyExists = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
+
+          if (alreadyExists) {
+            console.log(`  - Worktree for '${branchName}' was created by concurrent operation during fallback`);
+            return;
+          }
+        }
+
+        // If still failing, this is a real error
+        throw fallbackError;
       }
-
-      // Try to create metadata even without tracking
-      await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
     }
   }
 

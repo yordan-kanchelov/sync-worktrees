@@ -6,6 +6,31 @@ export interface RetryConfig {
   backoffMultiplier?: number;
 }
 
+/**
+ * Controls concurrency limits for parallel operations.
+ * Lower values reduce resource usage but increase total sync time.
+ * Higher values speed up syncs but may cause lock contention or resource exhaustion.
+ *
+ * Note: Total concurrent operations can be maxRepositories × per-repo limits.
+ * Tune these values based on your system resources and repository count.
+ */
+export interface ParallelismConfig {
+  /** Max concurrent repositories to sync (default: 10) */
+  maxRepositories?: number;
+  /**
+   * Max concurrent worktree creations (default: 1).
+   * WARNING: Git's worktree.lock file makes parallel creation unsafe.
+   * Only increase if you understand the race condition risks.
+   */
+  maxWorktreeCreation?: number;
+  /** Max concurrent worktree updates (default: 3) */
+  maxWorktreeUpdates?: number;
+  /** Max concurrent worktree removals (default: 3) */
+  maxWorktreeRemoval?: number;
+  /** Max concurrent status checks (default: 20) */
+  maxStatusChecks?: number;
+}
+
 export interface Config {
   repoUrl: string;
   worktreeDir: string;
@@ -13,6 +38,7 @@ export interface Config {
   runOnce: boolean;
   bareRepoDir?: string;
   retry?: RetryConfig;
+  parallelism?: ParallelismConfig;
   branchMaxAge?: string;
   skipLfs?: boolean;
   updateExistingWorktrees?: boolean;
@@ -27,6 +53,7 @@ export interface ConfigFile {
   defaults?: Partial<Config>;
   repositories: RepositoryConfig[];
   retry?: RetryConfig;
+  parallelism?: ParallelismConfig;
 }
 
 export interface WorktreeStatus {
