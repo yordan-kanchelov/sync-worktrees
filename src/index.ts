@@ -31,12 +31,14 @@ async function runSingleRepository(config: Config): Promise<void> {
 
       await syncService.sync();
       uiService.updateLastSyncTime();
+      void uiService.calculateAndUpdateDiskSpace();
 
       cron.schedule(config.cronSchedule, async () => {
         try {
           uiService.setStatus("syncing");
           await syncService.sync();
           uiService.updateLastSyncTime();
+          void uiService.calculateAndUpdateDiskSpace();
         } catch (error) {
           console.error(`Error during scheduled sync: ${(error as Error).message}`);
           uiService.setStatus("idle");
@@ -83,6 +85,9 @@ async function runMultipleRepositories(
     const allServices = Array.from(services.values());
     const uiService = new InteractiveUIService(allServices, configPath, displaySchedule);
 
+    uiService.updateLastSyncTime();
+    void uiService.calculateAndUpdateDiskSpace();
+
     const cronJobs = new Map<string, string>();
 
     for (const repoConfig of repositories) {
@@ -108,11 +113,13 @@ async function runMultipleRepositories(
             }
           }
           uiService.updateLastSyncTime();
+          void uiService.calculateAndUpdateDiskSpace();
         });
       }
     }
 
     console.log(`All ${repositories.length} repositories scheduled`);
+
     for (const [schedule] of cronJobs) {
       const repoCount = repositories.filter((r) => r.cronSchedule === schedule).length;
       console.log(`${schedule}: ${repoCount} repository(ies)`);

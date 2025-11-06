@@ -249,7 +249,7 @@ export class InteractiveUIService {
     }
   }
 
-  private async calculateAndUpdateDiskSpace(): Promise<void> {
+  public async calculateAndUpdateDiskSpace(): Promise<void> {
     try {
       const bareRepoDirs = this.syncServices.map(
         (service) => service.config.bareRepoDir || getDefaultBareRepoDir(service.config.repoUrl),
