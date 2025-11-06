@@ -266,8 +266,9 @@ export class GitService {
         for (const file of samplesToCheck) {
           const filePath = path.join(worktreePath, file);
           try {
-            const content = await fs.readFile(filePath, "utf8");
-            if (content.startsWith("version https://git-lfs.github.com/spec/")) {
+            const buffer = await fs.readFile(filePath);
+            const header = buffer.slice(0, 200).toString("utf8");
+            if (header.startsWith("version https://git-lfs.github.com/spec/")) {
               allDownloaded = false;
               notDownloaded.push(file);
             }

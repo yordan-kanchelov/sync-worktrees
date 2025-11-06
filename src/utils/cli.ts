@@ -138,5 +138,9 @@ export function reconstructCliCommand(config: Config): string {
     args.push("--no-update-existing");
   }
 
+  if (config.debug) {
+    args.push("--debug");
+  }
+
   return `${executable} ${args.join(" ")}`;
 }

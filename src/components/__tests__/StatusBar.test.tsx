@@ -16,6 +16,7 @@ describe("StatusBar", () => {
       repositoryCount: 3,
       lastSyncTime: null,
       cronSchedule: undefined,
+      diskSpaceUsed: undefined,
     };
   });
 
@@ -156,6 +157,50 @@ describe("StatusBar", () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} />);
 
       expect(lastFrame()).toContain("Repositories:");
+    });
+  });
+
+  describe("disk space", () => {
+    it("should show Calculating... when diskSpaceUsed is undefined", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} diskSpaceUsed={undefined} />);
+
+      expect(lastFrame()).toContain("Disk Space:");
+      expect(lastFrame()).toContain("Calculating...");
+    });
+
+    it("should show disk space value when provided", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} diskSpaceUsed="1.2 GB" />);
+
+      expect(lastFrame()).toContain("Disk Space:");
+      expect(lastFrame()).toContain("1.2 GB");
+      expect(lastFrame()).not.toContain("Calculating...");
+    });
+
+    it("should show N/A when disk space calculation fails", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} diskSpaceUsed="N/A" />);
+
+      expect(lastFrame()).toContain("Disk Space:");
+      expect(lastFrame()).toContain("N/A");
+    });
+
+    it("should update when diskSpaceUsed changes", () => {
+      const { lastFrame, rerender } = render(<StatusBar {...defaultProps} diskSpaceUsed={undefined} />);
+
+      expect(lastFrame()).toContain("Calculating...");
+
+      rerender(<StatusBar {...defaultProps} diskSpaceUsed="500 MB" />);
+
+      expect(lastFrame()).toContain("500 MB");
+      expect(lastFrame()).not.toContain("Calculating...");
+    });
+
+    it("should display different disk space formats correctly", () => {
+      const testCases = ["123.45 KB", "12.34 MB", "5.67 GB", "1.23 TB"];
+
+      testCases.forEach((diskSpace) => {
+        const { lastFrame } = render(<StatusBar {...defaultProps} diskSpaceUsed={diskSpace} />);
+        expect(lastFrame()).toContain(diskSpace);
+      });
     });
   });
 });

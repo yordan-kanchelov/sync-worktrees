@@ -22,9 +22,15 @@ const App: React.FC<AppProps> = ({ repositoryCount, cronSchedule, onManualSync, 
   const [showHelp, setShowHelp] = useState(false);
   const [status, setStatus] = useState<"idle" | "syncing">("idle");
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  const [diskSpaceUsed, setDiskSpaceUsed] = useState<string | null>(null);
 
   useInput((input, key) => {
-    if (showHelp) return;
+    if (showHelp) {
+      if (input === "?" || input === "h") {
+        setShowHelp(false);
+      }
+      return;
+    }
 
     if (key.escape || input === "q") {
       void onQuit();
@@ -62,6 +68,7 @@ const App: React.FC<AppProps> = ({ repositoryCount, cronSchedule, onManualSync, 
     (globalThis as any).__inkAppMethods = {
       updateLastSyncTime,
       setStatus,
+      setDiskSpace: setDiskSpaceUsed,
     };
 
     return () => {
@@ -76,6 +83,7 @@ const App: React.FC<AppProps> = ({ repositoryCount, cronSchedule, onManualSync, 
         repositoryCount={repositoryCount}
         lastSyncTime={lastSyncTime}
         cronSchedule={cronSchedule}
+        diskSpaceUsed={diskSpaceUsed ?? undefined}
       />
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}

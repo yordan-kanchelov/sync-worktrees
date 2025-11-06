@@ -28,6 +28,10 @@ export class WorktreeSyncService {
   }
 
   async sync(): Promise<void> {
+    if (this.syncInProgress) {
+      console.warn("⚠️  Sync already in progress, skipping...");
+      return;
+    }
     this.syncInProgress = true;
     console.log(`[${new Date().toISOString()}] Starting worktree synchronization...`);
 

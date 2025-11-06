@@ -46,6 +46,7 @@ describe("App", () => {
       expect(methods).toBeDefined();
       expect(methods.updateLastSyncTime).toBeInstanceOf(Function);
       expect(methods.setStatus).toBeInstanceOf(Function);
+      expect(methods.setDiskSpace).toBeInstanceOf(Function);
     });
 
     it("should clean up global methods on unmount", () => {
@@ -240,6 +241,61 @@ describe("App", () => {
       const { lastFrame } = render(<App {...defaultProps} cronSchedule={undefined} />);
 
       expect(lastFrame()).not.toContain("Next Sync:");
+    });
+  });
+
+  describe("setDiskSpace functionality", () => {
+    it("should initially show Calculating... for disk space", () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      expect(lastFrame()).toContain("Disk Space:");
+      expect(lastFrame()).toContain("Calculating...");
+    });
+
+    it("should update disk space when setDiskSpace is called", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      const { setDiskSpace } = (globalThis as any).__inkAppMethods;
+
+      expect(lastFrame()).toContain("Calculating...");
+
+      setDiskSpace("1.2 GB");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("1.2 GB");
+      expect(lastFrame()).not.toContain("Calculating...");
+    });
+
+    it("should handle N/A disk space value", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      const { setDiskSpace } = (globalThis as any).__inkAppMethods;
+
+      setDiskSpace("N/A");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("N/A");
+    });
+
+    it("should update disk space multiple times", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      const { setDiskSpace } = (globalThis as any).__inkAppMethods;
+
+      setDiskSpace("500 MB");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("500 MB");
+
+      setDiskSpace("1.2 GB");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("1.2 GB");
+      expect(lastFrame()).not.toContain("500 MB");
     });
   });
 });

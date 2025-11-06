@@ -7,9 +7,10 @@ export interface StatusBarProps {
   repositoryCount: number;
   lastSyncTime: Date | null;
   cronSchedule?: string;
+  diskSpaceUsed?: string;
 }
 
-const StatusBar: React.FC<StatusBarProps> = ({ status, repositoryCount, lastSyncTime, cronSchedule }) => {
+const StatusBar: React.FC<StatusBarProps> = ({ status, repositoryCount, lastSyncTime, cronSchedule, diskSpaceUsed }) => {
   const [nextSyncTime, setNextSyncTime] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -68,6 +69,11 @@ const StatusBar: React.FC<StatusBarProps> = ({ status, repositoryCount, lastSync
               Next Sync: <Text color="gray">{formatTime(nextSyncTime)}</Text>
             </Text>
           )}
+        </Box>
+        <Box justifyContent="space-between">
+          <Text>
+            Disk Space: <Text color="magenta">{diskSpaceUsed || "Calculating..."}</Text>
+          </Text>
         </Box>
       </Box>
     </Box>

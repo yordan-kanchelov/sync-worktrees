@@ -4,6 +4,8 @@ import * as cron from "node-cron";
 import App from "../components/App";
 import { WorktreeSyncService } from "./worktree-sync.service";
 import { ConfigLoaderService } from "./config-loader.service";
+import { calculateSyncDiskSpace } from "../utils/disk-space";
+import { getDefaultBareRepoDir } from "../utils/git-url";
 import type { RepositoryConfig } from "../types";
 
 export class InteractiveUIService {
@@ -76,8 +78,11 @@ export class InteractiveUIService {
           await service.sync();
         } catch (error) {
           console.error(`Error syncing: ${(error as Error).message}`);
+        } finally {
+          this.setStatus("idle");
         }
         this.updateLastSyncTime();
+        await this.calculateAndUpdateDiskSpace();
       });
 
       this.cronJobs.push(task);
@@ -116,6 +121,7 @@ export class InteractiveUIService {
       }
 
       this.updateLastSyncTime();
+      await this.calculateAndUpdateDiskSpace();
     } catch (error) {
       console.error("Manual sync failed:", error);
     } finally {
@@ -175,6 +181,7 @@ export class InteractiveUIService {
 
       this.renderUI();
       this.updateLastSyncTime();
+      await this.calculateAndUpdateDiskSpace();
       this.setStatus("idle");
 
       if (failures.length > 0) {
@@ -182,6 +189,7 @@ export class InteractiveUIService {
       }
     } catch (error) {
       console.error(`Reload failed: ${(error as Error).message}`);
+      this.setupCronJobs();
       this.setStatus("idle");
     }
   }
@@ -231,6 +239,28 @@ export class InteractiveUIService {
     const methods = (globalThis as any).__inkAppMethods;
     if (methods && methods.setStatus) {
       methods.setStatus(status);
+    }
+  }
+
+  public setDiskSpace(diskSpace: string): void {
+    const methods = (globalThis as any).__inkAppMethods;
+    if (methods && methods.setDiskSpace) {
+      methods.setDiskSpace(diskSpace);
+    }
+  }
+
+  private async calculateAndUpdateDiskSpace(): Promise<void> {
+    try {
+      const bareRepoDirs = this.syncServices.map(
+        (service) => service.config.bareRepoDir || getDefaultBareRepoDir(service.config.repoUrl),
+      );
+      const worktreeDirs = this.syncServices.map((service) => service.config.worktreeDir);
+
+      const diskSpace = await calculateSyncDiskSpace(bareRepoDirs, worktreeDirs);
+      this.setDiskSpace(diskSpace);
+    } catch (error) {
+      console.error("Failed to calculate disk space:", error);
+      this.setDiskSpace("N/A");
     }
   }
 
