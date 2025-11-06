@@ -27,7 +27,7 @@ const App: React.FC<AppProps> = ({ repositoryCount, cronSchedule, onManualSync, 
     if (key.escape || input === "q") {
       void onQuit();
     } else if (input === "?" || input === "h") {
-      setShowHelp(!showHelp);
+      setShowHelp(prev => !prev);
     } else if (input === "s" && status !== "syncing") {
       setStatus("syncing");
       void (async () => {

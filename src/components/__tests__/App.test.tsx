@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import App, { AppProps } from "../App";
 
 // Helper to wait for React state updates
-const waitForStateUpdate = () => new Promise(resolve => setTimeout(resolve, 10));
+const waitForStateUpdate = () => new Promise(resolve => setTimeout(resolve, 100));
 
 describe("App", () => {
   let defaultProps: AppProps;

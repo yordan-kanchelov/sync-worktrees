@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import StatusBar, { StatusBarProps } from "../StatusBar";
 
 // Helper to wait for React state updates and effects
-const waitForEffects = () => new Promise(resolve => setTimeout(resolve, 10));
+const waitForEffects = () => new Promise(resolve => setTimeout(resolve, 100));
 
 describe("StatusBar", () => {
   let defaultProps: StatusBarProps;
