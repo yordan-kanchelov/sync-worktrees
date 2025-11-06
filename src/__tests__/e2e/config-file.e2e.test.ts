@@ -21,11 +21,11 @@ describeOrSkip("Config file loading E2E tests", () => {
   });
 
   it("should load and list repositories from config file", async () => {
-    const configPath = path.join(tmpBase, "test.config.cjs");
+    const configPath = path.join(tmpBase, "test.config.js");
     await fs.mkdir(tmpBase, { recursive: true });
 
     const configContent = `
-module.exports = {
+export default {
   defaults: {
     cronSchedule: "0 * * * *",
     runOnce: true
@@ -61,14 +61,14 @@ module.exports = {
   });
 
   it.skip("should sync a single repository from config file with runOnce", async () => {
-    const configPath = path.join(tmpBase, "single-repo.config.cjs");
+    const configPath = path.join(tmpBase, "single-repo.config.js");
     const worktreeDir = path.join(tmpBase, "single-worktrees");
     const bareRepoDir = path.join(tmpBase, "single-bare");
 
     await fs.mkdir(tmpBase, { recursive: true });
 
     const configContent = `
-module.exports = {
+export default {
   defaults: {
     cronSchedule: "0 * * * *",
     runOnce: true
@@ -111,11 +111,11 @@ module.exports = {
 
   it("should handle config file with relative paths", async () => {
     const configDir = path.join(tmpBase, "config-dir");
-    const configPath = path.join(configDir, "relative.config.cjs");
+    const configPath = path.join(configDir, "relative.config.js");
     await fs.mkdir(configDir, { recursive: true });
 
     const configContent = `
-module.exports = {
+export default {
   repositories: [
     {
       name: "relative-repo",
@@ -139,11 +139,11 @@ module.exports = {
   });
 
   it("should filter repositories by name", async () => {
-    const configPath = path.join(tmpBase, "filter-test.config.cjs");
+    const configPath = path.join(tmpBase, "filter-test.config.js");
     await fs.mkdir(tmpBase, { recursive: true });
 
     const configContent = `
-module.exports = {
+export default {
   repositories: [
     {
       name: "repo-alpha",
@@ -177,11 +177,11 @@ module.exports = {
   });
 
   it("should filter repositories with wildcards", async () => {
-    const configPath = path.join(tmpBase, "wildcard-test.config.cjs");
+    const configPath = path.join(tmpBase, "wildcard-test.config.js");
     await fs.mkdir(tmpBase, { recursive: true });
 
     const configContent = `
-module.exports = {
+export default {
   repositories: [
     {
       name: "frontend-app",
@@ -215,11 +215,11 @@ module.exports = {
   });
 
   it("should handle config file with custom retry settings", async () => {
-    const configPath = path.join(tmpBase, "retry-test.config.cjs");
+    const configPath = path.join(tmpBase, "retry-test.config.js");
     await fs.mkdir(tmpBase, { recursive: true });
 
     const configContent = `
-module.exports = {
+export default {
   retry: {
     maxAttempts: 5,
     initialDelayMs: 2000,
@@ -246,11 +246,11 @@ module.exports = {
   });
 
   it("should handle config file with branchMaxAge", async () => {
-    const configPath = path.join(tmpBase, "branch-age-test.config.cjs");
+    const configPath = path.join(tmpBase, "branch-age-test.config.js");
     await fs.mkdir(tmpBase, { recursive: true });
 
     const configContent = `
-module.exports = {
+export default {
   defaults: {
     branchMaxAge: "30d"
   },

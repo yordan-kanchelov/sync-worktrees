@@ -18,7 +18,11 @@ export class ConfigLoaderService {
       const fileUrl = pathToFileURL(absolutePath);
       fileUrl.searchParams.set("t", Date.now().toString());
       const configModule = await import(fileUrl.href);
-      const config = configModule.default || configModule;
+      const config = configModule.default;
+
+      if (!config) {
+        throw new Error("Config file must use 'export default' syntax");
+      }
 
       this.validateConfigFile(config);
 

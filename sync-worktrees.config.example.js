@@ -1,14 +1,14 @@
 /**
  * Example configuration file for sync-worktrees
- * 
+ *
  * This file demonstrates various ways to configure multiple repositories
  * for automatic Git worktree synchronization.
  */
 
-const os = require('os');
-const path = require('path');
+import os from 'os';
+import path from 'path';
 
-module.exports = {
+export default {
   // Global defaults for all repositories (optional)
   defaults: {
     // Default cron schedule: every hour
@@ -154,12 +154,12 @@ module.exports = {
 /*
 const isDevelopment = process.env.NODE_ENV === 'development';
 
-module.exports = {
+export default {
   defaults: {
     cronSchedule: isDevelopment ? "*\/5 * * * *" : "0 * * * *",
     runOnce: false
   },
-  
+
   repositories: [
     // Filter repositories based on environment
     ...(isDevelopment ? [{
@@ -167,7 +167,7 @@ module.exports = {
       repoUrl: "https://github.com/user/dev-repo.git",
       worktreeDir: "./dev/worktrees"
     }] : []),
-    
+
     // Always include production repos
     {
       name: "production-app",

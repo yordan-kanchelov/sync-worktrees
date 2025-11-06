@@ -11,9 +11,9 @@ interface SerializableObject {
 }
 
 /**
- * Serializes a JavaScript object to a clean module.exports format
+ * Serializes a JavaScript object to a clean ESM export default format
  */
-function serializeToModuleExports(obj: SerializableValue, indent: number = 0): string {
+function serializeToESM(obj: SerializableValue, indent: number = 0): string {
   const spaces = " ".repeat(indent);
   const innerSpaces = " ".repeat(indent + 2);
 
@@ -27,7 +27,7 @@ function serializeToModuleExports(obj: SerializableValue, indent: number = 0): s
 
   if (Array.isArray(obj)) {
     if (obj.length === 0) return "[]";
-    const items = obj.map((item) => `${innerSpaces}${serializeToModuleExports(item, indent + 2)}`).join(",\n");
+    const items = obj.map((item) => `${innerSpaces}${serializeToESM(item, indent + 2)}`).join(",\n");
     return `[\n${items}\n${spaces}]`;
   }
 
@@ -35,7 +35,7 @@ function serializeToModuleExports(obj: SerializableValue, indent: number = 0): s
     const entries = Object.entries(obj)
       .filter(([_, value]) => value !== undefined)
       .map(([key, value]) => {
-        const serializedValue = serializeToModuleExports(value, indent + 2);
+        const serializedValue = serializeToESM(value, indent + 2);
         return `${innerSpaces}${key}: ${serializedValue}`;
       });
 
@@ -85,7 +85,7 @@ export async function generateConfigFile(config: Config, configPath: string): Pr
  * Generated on ${new Date().toISOString()}
  */
 
-module.exports = ${serializeToModuleExports(configObject)};
+export default ${serializeToESM(configObject)};
 `;
 
   await fs.writeFile(configPath, configContent, "utf-8");

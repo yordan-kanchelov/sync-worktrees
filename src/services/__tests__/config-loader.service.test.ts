@@ -23,7 +23,7 @@ describe("ConfigLoaderService", () => {
     it("should load a valid config file", async () => {
       const configPath = path.join(tempDir, "test.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: [
             {
               name: "test-repo",
@@ -44,7 +44,7 @@ describe("ConfigLoaderService", () => {
     it("should load config with defaults", async () => {
       const configPath = path.join(tempDir, "test.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           defaults: {
             cronSchedule: "*/30 * * * *",
             runOnce: true
@@ -76,7 +76,7 @@ describe("ConfigLoaderService", () => {
 
     it("should throw error for invalid config format", async () => {
       const configPath = path.join(tempDir, "invalid.config.js");
-      const configContent = `module.exports = "not an object";`;
+      const configContent = `export default "not an object";`;
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Config file must export an object");
@@ -84,7 +84,7 @@ describe("ConfigLoaderService", () => {
 
     it("should throw error for missing repositories array", async () => {
       const configPath = path.join(tempDir, "invalid.config.js");
-      const configContent = `module.exports = { defaults: {} };`;
+      const configContent = `export default { defaults: {} };`;
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
@@ -95,7 +95,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for duplicate repository names", async () => {
       const configPath = path.join(tempDir, "duplicate.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: [
             {
               name: "duplicate",
@@ -118,7 +118,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for empty repositories array", async () => {
       const configPath = path.join(tempDir, "empty.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: []
         };
       `;
@@ -132,7 +132,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for invalid repository object", async () => {
       const configPath = path.join(tempDir, "invalid-repo.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: ["not-an-object"]
         };
       `;
@@ -144,7 +144,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for missing repository name", async () => {
       const configPath = path.join(tempDir, "no-name.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: [
             { repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
           ]
@@ -160,7 +160,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for missing repoUrl", async () => {
       const configPath = path.join(tempDir, "no-url.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: [
             { name: "test", worktreeDir: "/path" }
           ]
@@ -176,7 +176,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for missing worktreeDir", async () => {
       const configPath = path.join(tempDir, "no-worktree.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: [
             { name: "test", repoUrl: "https://github.com/test/repo.git" }
           ]
@@ -192,7 +192,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for invalid bareRepoDir type", async () => {
       const configPath = path.join(tempDir, "invalid-bare.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: [
             { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", bareRepoDir: 123 }
           ]
@@ -208,7 +208,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for invalid cronSchedule type", async () => {
       const configPath = path.join(tempDir, "invalid-cron.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: [
             { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", cronSchedule: 123 }
           ]
@@ -224,7 +224,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for invalid runOnce type", async () => {
       const configPath = path.join(tempDir, "invalid-runonce.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           repositories: [
             { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", runOnce: "yes" }
           ]
@@ -240,7 +240,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for invalid defaults object", async () => {
       const configPath = path.join(tempDir, "invalid-defaults.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           defaults: "not-an-object",
           repositories: [
             { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
@@ -255,7 +255,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for invalid cronSchedule in defaults", async () => {
       const configPath = path.join(tempDir, "invalid-defaults-cron.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           defaults: { cronSchedule: 123 },
           repositories: [
             { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
@@ -270,7 +270,7 @@ describe("ConfigLoaderService", () => {
     it("should throw error for invalid runOnce in defaults", async () => {
       const configPath = path.join(tempDir, "invalid-defaults-runonce.config.js");
       const configContent = `
-        module.exports = {
+        export default {
           defaults: { runOnce: "yes" },
           repositories: [
             { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
@@ -415,7 +415,7 @@ describe("ConfigLoaderService", () => {
     it("should accept valid global retry configuration", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           retry: {
             maxAttempts: 5,
             initialDelayMs: 2000,
@@ -444,7 +444,7 @@ describe("ConfigLoaderService", () => {
     it("should accept 'unlimited' as maxAttempts", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           retry: {
             maxAttempts: 'unlimited'
           },
@@ -465,7 +465,7 @@ describe("ConfigLoaderService", () => {
     it("should reject invalid maxAttempts", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           retry: {
             maxAttempts: 0
           },
@@ -486,7 +486,7 @@ describe("ConfigLoaderService", () => {
     it("should reject negative initialDelayMs", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           retry: {
             initialDelayMs: -1000
           },
@@ -505,7 +505,7 @@ describe("ConfigLoaderService", () => {
     it("should reject negative maxDelayMs", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           retry: {
             maxDelayMs: -1
           },
@@ -524,7 +524,7 @@ describe("ConfigLoaderService", () => {
     it("should reject backoffMultiplier less than 1", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           retry: {
             backoffMultiplier: 0.5
           },
@@ -545,7 +545,7 @@ describe("ConfigLoaderService", () => {
     it("should reject non-object retry configuration", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           retry: "invalid",
           repositories: [{
             name: "test-repo",
@@ -562,7 +562,7 @@ describe("ConfigLoaderService", () => {
     it("should accept retry config in defaults", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           defaults: {
             retry: {
               maxAttempts: 10
@@ -585,7 +585,7 @@ describe("ConfigLoaderService", () => {
     it("should reject invalid maxLfsRetries", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           retry: {
             maxLfsRetries: -1
           },
@@ -606,7 +606,7 @@ describe("ConfigLoaderService", () => {
     it("should accept valid maxLfsRetries", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           retry: {
             maxLfsRetries: 0
           },
@@ -670,7 +670,7 @@ describe("ConfigLoaderService", () => {
     it("should handle skipLfs configuration", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
-        module.exports = {
+        export default {
           defaults: {
             skipLfs: true
           },
