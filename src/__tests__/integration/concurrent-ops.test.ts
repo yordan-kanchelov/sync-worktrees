@@ -1,22 +1,61 @@
 import * as fs from "fs/promises";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GitService } from "../../services/git.service";
 import { WorktreeSyncService } from "../../services/worktree-sync.service";
 
+import type { GitService } from "../../services/git.service";
 import type { Config } from "../../types";
+import type { Mock, Mocked } from "vitest";
 
-jest.mock("fs/promises");
-jest.mock("../../services/git.service");
+vi.mock("fs/promises");
+
+const { mockGitServiceInstance } = vi.hoisted(() => {
+  return {
+    mockGitServiceInstance: {
+      initialize: vi.fn<any>().mockResolvedValue(undefined),
+      fetchAll: vi.fn<any>().mockResolvedValue(undefined),
+      getRemoteBranches: vi.fn<any>().mockResolvedValue(["main"]),
+      addWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
+      checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
+      hasUnpushedCommits: vi.fn<any>().mockResolvedValue(false),
+      hasUpstreamGone: vi.fn<any>().mockResolvedValue(false),
+      hasStashedChanges: vi.fn<any>().mockResolvedValue(false),
+      hasOperationInProgress: vi.fn<any>().mockResolvedValue(false),
+      hasModifiedSubmodules: vi.fn<any>().mockResolvedValue(false),
+      getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      }),
+      getCurrentBranch: vi.fn<any>().mockResolvedValue("main"),
+      getDefaultBranch: vi.fn().mockReturnValue("main"),
+      getWorktrees: vi.fn<any>().mockResolvedValue([]),
+      getGit: vi.fn<any>(),
+    } as any,
+  };
+});
+
+vi.mock("../../services/git.service", () => ({
+  GitService: vi.fn(function (this: any) {
+    return mockGitServiceInstance;
+  }),
+}));
 
 describe("Concurrent Operations and Race Conditions", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
-  let mockGitService: jest.Mocked<GitService>;
+  let mockGitService: Mocked<GitService>;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -25,26 +64,7 @@ describe("Concurrent Operations and Race Conditions", () => {
       runOnce: false,
     };
 
-    mockGitService = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      fetchAll: jest.fn<any>().mockResolvedValue(undefined),
-      getRemoteBranches: jest.fn<any>().mockResolvedValue(["main"]),
-      addWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      removeWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
-      checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
-      hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
-      hasUpstreamGone: jest.fn<any>().mockResolvedValue(false),
-      hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
-      hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
-      hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
-      getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
-      getDefaultBranch: jest.fn().mockReturnValue("main"),
-      getWorktrees: jest.fn<any>().mockResolvedValue([]),
-      getGit: jest.fn<any>(),
-    } as any;
-
-    (GitService as jest.MockedClass<typeof GitService>).mockImplementation(() => mockGitService);
+    mockGitService = mockGitServiceInstance;
 
     service = new WorktreeSyncService(mockConfig);
   });
@@ -52,56 +72,58 @@ describe("Concurrent Operations and Race Conditions", () => {
   describe("Simultaneous sync operations", () => {
     it("should handle multiple sync operations running concurrently", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["feature-1"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["feature-1"]);
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
 
-      // First sync sees everything clean, second sync sees dirty state
       let syncCount = 0;
-      mockGitService.checkWorktreeStatus.mockImplementation(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10)); // Simulate async delay
+      mockGitService.getFullWorktreeStatus.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
         syncCount++;
-        // First sync's calls return clean, second sync's calls return dirty
-        return syncCount <= 1;
+        if (syncCount <= 1) {
+          return {
+            isClean: true,
+            hasUnpushedCommits: false,
+            hasStashedChanges: false,
+            hasOperationInProgress: false,
+            hasModifiedSubmodules: false,
+            upstreamGone: false,
+            canRemove: true,
+            reasons: [],
+          };
+        } else {
+          return {
+            isClean: false,
+            hasUnpushedCommits: false,
+            hasStashedChanges: true,
+            hasOperationInProgress: false,
+            hasModifiedSubmodules: false,
+            upstreamGone: false,
+            canRemove: false,
+            reasons: ["uncommitted changes", "stashed changes"],
+          };
+        }
       });
 
-      // Ensure other checks show as clean for first sync
-      mockGitService.hasUnpushedCommits.mockImplementation(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        return false;
-      });
-      mockGitService.hasStashedChanges.mockImplementation(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        return syncCount > 1; // Second sync sees stash
-      });
-      mockGitService.hasOperationInProgress.mockResolvedValue(false);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
-
-      // Run two syncs concurrently
       const sync1 = service.sync();
       const sync2 = service.sync();
 
       await Promise.all([sync1, sync2]);
 
-      // Due to the timing and how the mocks work, the removal may or may not happen
-      // depending on when each sync reads the state. The test verifies that
-      // concurrent operations complete without throwing errors.
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalled();
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalled();
     });
 
     it("should handle lock file contention", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["locked-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["locked-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/locked-branch", branch: "locked-branch" },
       ]);
 
-      // Simulate lock file being created during operation
-      mockGitService.checkWorktreeStatus.mockImplementationOnce(async () => {
-        // Simulate delay then lock error
+      mockGitService.getFullWorktreeStatus.mockImplementationOnce(async () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         throw new Error("fatal: Unable to create '.git/index.lock': File exists");
       });
@@ -115,19 +137,23 @@ describe("Concurrent Operations and Race Conditions", () => {
   describe("External modifications during sync", () => {
     it("should handle files being modified during status check", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["active-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["active-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/active-branch", branch: "active-branch" },
       ]);
 
-      // Status changes between checks
-      mockGitService.checkWorktreeStatus.mockResolvedValueOnce(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValueOnce(false);
-      mockGitService.hasStashedChanges.mockResolvedValueOnce(false);
-      // Operation started during our checks
-      mockGitService.hasOperationInProgress.mockResolvedValueOnce(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: true,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["operation in progress"],
+      });
 
       await service.sync();
 
@@ -137,19 +163,25 @@ describe("Concurrent Operations and Race Conditions", () => {
 
     it("should handle commits being added during checks", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["modified-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["modified-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/modified-branch", branch: "modified-branch" },
       ]);
 
-      // Clean at first check
-      mockGitService.checkWorktreeStatus.mockResolvedValueOnce(true);
-      // But unpushed commits appear during check
-      mockGitService.hasUnpushedCommits.mockImplementation(async () => {
+      mockGitService.getFullWorktreeStatus.mockImplementation(async () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
-        return true; // Commits were added
+        return {
+          isClean: true,
+          hasUnpushedCommits: true,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["unpushed commits"],
+        };
       });
 
       await service.sync();
@@ -159,19 +191,25 @@ describe("Concurrent Operations and Race Conditions", () => {
 
     it("should handle stash being created during checks", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["stashing-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["stashing-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/stashing-branch", branch: "stashing-branch" },
       ]);
 
-      // All checks pass except stash which is created during checks
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
-      mockGitService.hasStashedChanges.mockImplementation(async () => {
+      mockGitService.getFullWorktreeStatus.mockImplementation(async () => {
         await new Promise((resolve) => setTimeout(resolve, 30));
-        return true; // Stash was created
+        return {
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: true,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["stashed changes"],
+        };
       });
 
       await service.sync();
@@ -183,20 +221,23 @@ describe("Concurrent Operations and Race Conditions", () => {
   describe("Git operations during sync", () => {
     it("should handle rebase starting during deletion check", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["rebasing-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["rebasing-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/rebasing-branch", branch: "rebasing-branch" },
       ]);
 
-      // Clean initially
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
-      mockGitService.hasStashedChanges.mockResolvedValue(false);
-      // Rebase starts during our checks
-      mockGitService.hasOperationInProgress.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: true,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["operation in progress"],
+      });
 
       await service.sync();
 
@@ -205,8 +246,8 @@ describe("Concurrent Operations and Race Conditions", () => {
 
     it("should handle merge operation during sync", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["merging-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["merging-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/merging-branch", branch: "merging-branch" },
@@ -225,10 +266,10 @@ describe("Concurrent Operations and Race Conditions", () => {
   describe("Directory operations race conditions", () => {
     it("should handle directory being created while checking", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
       // Directory doesn't exist initially
-      (fs.readdir as jest.Mock<any>).mockResolvedValueOnce([]).mockResolvedValueOnce(["new-branch"]); // Created during sync
+      (fs.readdir as Mock<any>).mockResolvedValueOnce([]).mockResolvedValueOnce(["new-branch"]); // Created during sync
 
       mockGitService.getWorktrees
         .mockResolvedValueOnce([])
@@ -242,8 +283,8 @@ describe("Concurrent Operations and Race Conditions", () => {
 
     it("should handle directory being removed while checking", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["disappearing-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["disappearing-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/disappearing-branch", branch: "disappearing-branch" },
@@ -263,16 +304,16 @@ describe("Concurrent Operations and Race Conditions", () => {
   describe("Orphaned directory cleanup race conditions", () => {
     it("should handle orphaned directory being accessed externally", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["orphaned"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["orphaned"]);
 
       mockGitService.getWorktrees.mockResolvedValue([]); // No worktrees
 
-      const mockStat = { isDirectory: jest.fn().mockReturnValue(true) };
-      (fs.stat as jest.Mock<any>).mockResolvedValue(mockStat);
+      const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
+      (fs.stat as Mock<any>).mockResolvedValue(mockStat);
 
       // Directory is being accessed when we try to remove it
-      (fs.rm as jest.Mock<any>).mockRejectedValue(new Error("EBUSY: resource busy"));
+      (fs.rm as Mock<any>).mockRejectedValue(new Error("EBUSY: resource busy"));
 
       await service.sync();
 
@@ -286,17 +327,21 @@ describe("Concurrent Operations and Race Conditions", () => {
   describe("Complex concurrent scenarios", () => {
     it("should handle multiple operations on same worktree", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["busy-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["busy-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/busy-branch", branch: "busy-branch" }]);
 
-      // Simulate that at least one check shows unsafe state
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
-      mockGitService.hasStashedChanges.mockResolvedValue(true); // Has stash, so unsafe
-      mockGitService.hasOperationInProgress.mockResolvedValue(false);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: true,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["stashed changes"],
+      });
 
       await service.sync();
 
@@ -305,28 +350,28 @@ describe("Concurrent Operations and Race Conditions", () => {
 
     it("should handle rapid sequential syncs", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["rapid-branch"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["rapid-branch"]);
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/rapid-branch", branch: "rapid-branch" }]);
 
-      // Each sync will see different states, simulating rapid changes
       let callCount = 0;
-      mockGitService.checkWorktreeStatus.mockImplementation(async () => {
+      mockGitService.getFullWorktreeStatus.mockImplementation(async () => {
         callCount++;
-        // Alternate between clean and dirty
-        return callCount % 2 === 1;
+        const isClean = callCount % 2 === 1;
+        const hasUnpushedCommits = Math.random() > 0.5;
+        return {
+          isClean,
+          hasUnpushedCommits,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: isClean && !hasUnpushedCommits,
+          reasons: !isClean ? ["uncommitted changes"] : hasUnpushedCommits ? ["unpushed commits"] : [],
+        };
       });
 
-      // Randomly return unsafe states
-      mockGitService.hasUnpushedCommits.mockImplementation(async () => {
-        return Math.random() > 0.5;
-      });
-      mockGitService.hasStashedChanges.mockResolvedValue(false);
-      mockGitService.hasOperationInProgress.mockResolvedValue(false);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
-
-      // Run multiple syncs in rapid succession
       const syncs = [];
       for (let i = 0; i < 5; i++) {
         syncs.push(service.sync());
@@ -335,10 +380,7 @@ describe("Concurrent Operations and Race Conditions", () => {
 
       await Promise.all(syncs);
 
-      // With rapid state changes, the worktree might be removed if all checks
-      // happened to pass during one of the syncs. The test verifies that
-      // concurrent syncs complete without errors.
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalled();
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalled();
     });
   });
 });

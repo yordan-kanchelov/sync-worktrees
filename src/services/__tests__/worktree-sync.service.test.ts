@@ -1,25 +1,68 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_BRANCHES } from "../../__tests__/test-utils";
-import { GitService } from "../git.service";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { Config } from "../../types";
+import type { GitService } from "../git.service";
+import type { Mock, Mocked } from "vitest";
+
+// Use vi.hoisted to create mock instance that can be accessed in both factory and tests
+const { mockGitServiceInstance } = vi.hoisted(() => {
+  return {
+    mockGitServiceInstance: {
+      initialize: vi.fn<any>().mockResolvedValue(undefined),
+      fetchAll: vi.fn<any>().mockResolvedValue(undefined),
+      fetchBranch: vi.fn<any>().mockResolvedValue(undefined),
+      getRemoteBranches: vi.fn<any>().mockResolvedValue(["main", "feature-1", "feature-2"]),
+      addWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
+      checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
+      hasUnpushedCommits: vi.fn<any>().mockResolvedValue(false),
+      hasUpstreamGone: vi.fn<any>().mockResolvedValue(false),
+      hasStashedChanges: vi.fn<any>().mockResolvedValue(false),
+      hasOperationInProgress: vi.fn<any>().mockResolvedValue(false),
+      hasModifiedSubmodules: vi.fn<any>().mockResolvedValue(false),
+      getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      }),
+      getCurrentBranch: vi.fn<any>().mockResolvedValue("main"),
+      getDefaultBranch: vi.fn().mockReturnValue("main"),
+      getWorktrees: vi.fn<any>().mockResolvedValue([]),
+      isWorktreeBehind: vi.fn<any>().mockResolvedValue(false),
+      canFastForward: vi.fn<any>().mockResolvedValue(true),
+      updateWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      getGit: vi.fn<any>(),
+    } as any,
+  };
+});
 
 // Mock modules
-jest.mock("fs/promises");
-jest.mock("../git.service");
+vi.mock("fs/promises");
+vi.mock("../git.service", () => ({
+  GitService: vi.fn(function (this: any) {
+    return mockGitServiceInstance;
+  }),
+}));
 
 describe("WorktreeSyncService", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
-  let mockGitService: jest.Mocked<GitService>;
+  let mockGitService: Mocked<GitService>;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -28,32 +71,8 @@ describe("WorktreeSyncService", () => {
       runOnce: false,
     };
 
-    // Create mock GitService
-    mockGitService = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      fetchAll: jest.fn<any>().mockResolvedValue(undefined),
-      fetchBranch: jest.fn<any>().mockResolvedValue(undefined),
-      getRemoteBranches: jest.fn<any>().mockResolvedValue(["main", "feature-1", "feature-2"]),
-      addWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      removeWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
-      checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
-      hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
-      hasUpstreamGone: jest.fn<any>().mockResolvedValue(false),
-      hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
-      hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
-      hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
-      getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
-      getDefaultBranch: jest.fn().mockReturnValue("main"),
-      getWorktrees: jest.fn<any>().mockResolvedValue([]),
-      isWorktreeBehind: jest.fn<any>().mockResolvedValue(false),
-      canFastForward: jest.fn<any>().mockResolvedValue(true),
-      updateWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      getGit: jest.fn<any>(),
-    } as any;
-
-    // Mock GitService constructor
-    (GitService as jest.MockedClass<typeof GitService>).mockImplementation(() => mockGitService);
+    // Reference the hoisted mock instance
+    mockGitService = mockGitServiceInstance;
 
     service = new WorktreeSyncService(mockConfig);
   });
@@ -69,14 +88,45 @@ describe("WorktreeSyncService", () => {
   describe("sync", () => {
     beforeEach(async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return [];
+      });
+
+      mockGitService.fetchAll.mockResolvedValue(undefined);
+      mockGitService.getWorktrees.mockResolvedValue([]);
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      });
     });
 
     it("should complete full sync workflow successfully", async () => {
-      // Mock existing worktree directories
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["feature-1", "old-branch"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["feature-1", "old-branch"];
+      });
 
-      // Mock actual Git worktrees
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/feature-1", branch: "feature-1" },
         { path: "/test/worktrees/old-branch", branch: "old-branch" },
@@ -96,8 +146,10 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("main", path.join("/test/worktrees", "main"));
 
       // Should check and remove old-branch
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
-      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
+        path.join("/test/worktrees", "old-branch"),
+        undefined,
+      );
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
 
       // Should prune at the end
@@ -106,7 +158,14 @@ describe("WorktreeSyncService", () => {
 
     it("should handle empty remote branches", async () => {
       mockGitService.getRemoteBranches.mockResolvedValue([]);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return [];
+      });
 
       await service.sync();
 
@@ -116,47 +175,98 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should skip worktrees with local changes", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["dirty-branch"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["dirty-branch"];
+      });
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/dirty-branch", branch: "dirty-branch" }]);
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false); // Has local changes
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: false,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["uncommitted changes"],
+      });
 
       await service.sync();
 
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(path.join("/test/worktrees", "dirty-branch"));
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
+        path.join("/test/worktrees", "dirty-branch"),
+        undefined,
+      );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
     });
 
     it("should skip worktrees with unpushed commits", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["unpushed-branch"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["unpushed-branch"];
+      });
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/unpushed-branch", branch: "unpushed-branch" },
       ]);
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true); // Clean
-      mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Has unpushed commits
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: true,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["unpushed commits"],
+      });
 
       await service.sync();
 
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(path.join("/test/worktrees", "unpushed-branch"));
-      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledWith(path.join("/test/worktrees", "unpushed-branch"));
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
+        path.join("/test/worktrees", "unpushed-branch"),
+        undefined,
+      );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
     });
 
     it("should show special message for worktrees with deleted upstream", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["deleted-upstream-branch"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["deleted-upstream-branch"];
+      });
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/deleted-upstream-branch", branch: "deleted-upstream-branch" },
       ]);
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true); // Clean
-      mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Has unpushed commits
-      mockGitService.hasUpstreamGone.mockResolvedValue(true); // Upstream is gone
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: true,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: true,
+        canRemove: false,
+        reasons: ["unpushed commits"],
+      });
 
-      const consoleLogSpy = jest.spyOn(console, "log");
-      const consoleWarnSpy = jest.spyOn(console, "warn");
+      const consoleLogSpy = vi.spyOn(console, "log");
+      const consoleWarnSpy = vi.spyOn(console, "warn");
 
       await service.sync();
 
-      expect(mockGitService.hasUpstreamGone).toHaveBeenCalledWith(
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
         path.join("/test/worktrees", "deleted-upstream-branch"),
+        undefined,
       );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
 
@@ -169,20 +279,33 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should skip worktrees with both local changes and unpushed commits", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["dirty-unpushed-branch"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["dirty-unpushed-branch"];
+      });
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/dirty-unpushed-branch", branch: "dirty-unpushed-branch" },
       ]);
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false); // Has local changes
-      mockGitService.hasUnpushedCommits.mockResolvedValue(true); // Has unpushed commits
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: false,
+        hasUnpushedCommits: true,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["uncommitted changes", "unpushed commits"],
+      });
 
       await service.sync();
 
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledWith(
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
         path.join("/test/worktrees", "dirty-unpushed-branch"),
-      );
-      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledWith(
-        path.join("/test/worktrees", "dirty-unpushed-branch"),
+        undefined,
       );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
     });
@@ -201,11 +324,18 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should handle errors when checking worktree status", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["broken-branch"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["broken-branch"];
+      });
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/broken-branch", branch: "broken-branch" },
       ]);
-      mockGitService.checkWorktreeStatus.mockRejectedValue(new Error("Status check failed"));
+      mockGitService.getFullWorktreeStatus.mockRejectedValue(new Error("Status check failed"));
 
       await service.sync();
 
@@ -217,7 +347,14 @@ describe("WorktreeSyncService", () => {
 
     it("should create multiple new worktrees", async () => {
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2", "feature-3"]);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return [];
+      });
 
       await service.sync();
 
@@ -231,13 +368,19 @@ describe("WorktreeSyncService", () => {
 
     it("should remove multiple stale worktrees", async () => {
       mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["old-1", "old-2", "old-3"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["old-1", "old-2", "old-3"];
+      });
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/old-1", branch: "old-1" },
         { path: "/test/worktrees/old-2", branch: "old-2" },
         { path: "/test/worktrees/old-3", branch: "old-3" },
       ]);
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true); // All clean
 
       await service.sync();
 
@@ -249,7 +392,14 @@ describe("WorktreeSyncService", () => {
 
     it("should only remove worktrees that are clean with no unpushed commits", async () => {
       mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["deleted-clean", "deleted-dirty", "deleted-unpushed"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["deleted-clean", "deleted-dirty", "deleted-unpushed"];
+      });
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/deleted-clean", branch: "deleted-clean" },
         { path: "/test/worktrees/deleted-dirty", branch: "deleted-dirty" },
@@ -257,16 +407,37 @@ describe("WorktreeSyncService", () => {
       ]);
 
       // Set up different conditions for each worktree
-      // Note: Since these branches don't exist remotely, they won't be checked for updates
-      mockGitService.checkWorktreeStatus
-        .mockResolvedValueOnce(true) // deleted-clean: clean (for pruning)
-        .mockResolvedValueOnce(false) // deleted-dirty: has uncommitted changes (for pruning)
-        .mockResolvedValueOnce(true); // deleted-unpushed: clean (for pruning)
-
-      mockGitService.hasUnpushedCommits
-        .mockResolvedValueOnce(false) // deleted-clean: no unpushed commits
-        .mockResolvedValueOnce(false) // deleted-dirty: no unpushed commits
-        .mockResolvedValueOnce(true); // deleted-unpushed: has unpushed commits
+      mockGitService.getFullWorktreeStatus
+        .mockResolvedValueOnce({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }) // deleted-clean: can remove
+        .mockResolvedValueOnce({
+          isClean: false,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["uncommitted changes"],
+        }) // deleted-dirty: has uncommitted changes
+        .mockResolvedValueOnce({
+          isClean: true,
+          hasUnpushedCommits: true,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["unpushed commits"],
+        }); // deleted-unpushed: has unpushed commits
 
       await service.sync();
 
@@ -276,30 +447,30 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith(path.join("/test/worktrees", "deleted-dirty"));
       expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith(path.join("/test/worktrees", "deleted-unpushed"));
 
-      // Verify all safety checks were performed
-      // checkWorktreeStatus is called 3 times: once for each deleted branch during pruning
-      // (no update checks since these branches don't exist remotely)
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
-      // All safety checks are called for every worktree
-      expect(mockGitService.hasUnpushedCommits).toHaveBeenCalledTimes(3); // Called for all worktrees
-      expect(mockGitService.hasStashedChanges).toHaveBeenCalledTimes(3);
-      expect(mockGitService.hasOperationInProgress).toHaveBeenCalledTimes(3);
-      expect(mockGitService.hasModifiedSubmodules).toHaveBeenCalledTimes(3);
+      // Verify all safety checks were performed via getFullWorktreeStatus
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledTimes(3);
     });
 
     it("should clean up orphaned directories that are not Git worktrees", async () => {
       // Mock file system with directories that don't match Git worktrees
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["feature-1", "orphaned-dir", "another-orphan"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["feature-1", "orphaned-dir", "another-orphan"];
+      });
 
       // Mock Git worktrees - only feature-1 is a valid worktree
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
 
       // Mock fs.stat to return directory info
-      const mockStat = { isDirectory: jest.fn().mockReturnValue(true) };
-      (fs.stat as jest.Mock<any>).mockResolvedValue(mockStat);
+      const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
+      (fs.stat as Mock<any>).mockResolvedValue(mockStat);
 
       // Mock fs.rm
-      (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
       await service.sync();
 
@@ -319,14 +490,21 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should handle errors during orphaned directory cleanup gracefully", async () => {
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["feature-1", "orphaned-dir"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["feature-1", "orphaned-dir"];
+      });
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
 
-      const mockStat = { isDirectory: jest.fn().mockReturnValue(true) };
-      (fs.stat as jest.Mock<any>).mockResolvedValue(mockStat);
+      const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
+      (fs.stat as Mock<any>).mockResolvedValue(mockStat);
 
       // Mock fs.rm to throw an error
-      (fs.rm as jest.Mock<any>).mockRejectedValue(new Error("Permission denied"));
+      (fs.rm as Mock<any>).mockRejectedValue(new Error("Permission denied"));
 
       // Should not throw, just log the error
       await service.sync();
@@ -342,7 +520,7 @@ describe("WorktreeSyncService", () => {
 
     it("should handle errors when reading worktree directory", async () => {
       // Mock fs.readdir to throw an error
-      (fs.readdir as jest.Mock<any>).mockRejectedValue(new Error("Permission denied"));
+      (fs.readdir as Mock<any>).mockRejectedValue(new Error("Permission denied"));
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
 
@@ -362,7 +540,14 @@ describe("WorktreeSyncService", () => {
         mockGitService.getCurrentBranch.mockResolvedValue(TEST_BRANCHES.main);
 
         // First sync - create worktrees
-        (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if ((dirPath as string).endsWith(".diverged")) {
+            const error: any = new Error("ENOENT: no such file or directory");
+            error.code = "ENOENT";
+            throw error;
+          }
+          return [];
+        });
         mockGitService.getWorktrees.mockResolvedValue([]);
 
         await service.sync();
@@ -387,7 +572,14 @@ describe("WorktreeSyncService", () => {
         mockGitService.getCurrentBranch.mockResolvedValue("main");
 
         // Mock file system showing nested structure
-        (fs.readdir as jest.Mock<any>).mockResolvedValue(["feat"]); // Parent directory
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if ((dirPath as string).endsWith(".diverged")) {
+            const error: any = new Error("ENOENT: no such file or directory");
+            error.code = "ENOENT";
+            throw error;
+          }
+          return ["feat"]; // Parent directory
+        });
 
         // Mock Git worktrees with nested paths
         mockGitService.getWorktrees.mockResolvedValue([
@@ -396,9 +588,9 @@ describe("WorktreeSyncService", () => {
         ]);
 
         // Mock fs.stat to identify 'feat' as a directory
-        const mockStat = { isDirectory: jest.fn().mockReturnValue(true) };
-        (fs.stat as jest.Mock<any>).mockResolvedValue(mockStat);
-        (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
+        const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
+        (fs.stat as Mock<any>).mockResolvedValue(mockStat);
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
         await service.sync();
 
@@ -411,14 +603,18 @@ describe("WorktreeSyncService", () => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main"]); // feat branches deleted from remote
         mockGitService.getCurrentBranch.mockResolvedValue("main");
 
-        (fs.readdir as jest.Mock<any>).mockResolvedValue(["feat"]);
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if ((dirPath as string).endsWith(".diverged")) {
+            const error: any = new Error("ENOENT: no such file or directory");
+            error.code = "ENOENT";
+            throw error;
+          }
+          return ["feat"];
+        });
         mockGitService.getWorktrees.mockResolvedValue([
           { path: "/test/worktrees/feat/LCR-8879", branch: "feat/LCR-8879" },
           { path: "/test/worktrees/feat/PHX-3198", branch: "feat/PHX-3198" },
         ]);
-
-        mockGitService.checkWorktreeStatus.mockResolvedValue(true); // All clean
-        mockGitService.hasUnpushedCommits.mockResolvedValue(false); // No unpushed
 
         await service.sync();
 
@@ -432,16 +628,23 @@ describe("WorktreeSyncService", () => {
         mockGitService.getCurrentBranch.mockResolvedValue("main");
 
         // Mock mixed directory structure
-        (fs.readdir as jest.Mock<any>).mockResolvedValue(["simple-branch", "feat", "orphaned-dir"]);
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if ((dirPath as string).endsWith(".diverged")) {
+            const error: any = new Error("ENOENT: no such file or directory");
+            error.code = "ENOENT";
+            throw error;
+          }
+          return ["simple-branch", "feat", "orphaned-dir"];
+        });
 
         mockGitService.getWorktrees.mockResolvedValue([
           { path: "/test/worktrees/simple-branch", branch: "simple-branch" },
           { path: "/test/worktrees/feat/nested-branch", branch: "feat/nested-branch" },
         ]);
 
-        const mockStat = { isDirectory: jest.fn().mockReturnValue(true) };
-        (fs.stat as jest.Mock<any>).mockResolvedValue(mockStat);
-        (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
+        const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
+        (fs.stat as Mock<any>).mockResolvedValue(mockStat);
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
         await service.sync();
 
@@ -458,14 +661,14 @@ describe("WorktreeSyncService", () => {
     describe("LFS error handling", () => {
       it("should set GIT_LFS_SKIP_SMUDGE when falling back to branch-by-branch fetch", async () => {
         // Mock fetchAll to fail with LFS error
-        mockGitService.fetchAll = jest.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed"));
+        mockGitService.fetchAll = vi.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed")) as any;
 
         let lfsSkipDuringFetch: string | undefined;
-        mockGitService.fetchBranch = jest.fn<any>().mockImplementation(() => {
+        mockGitService.fetchBranch = vi.fn<any>().mockImplementation(() => {
           // Capture the env var value during the fetch call
           lfsSkipDuringFetch = process.env.GIT_LFS_SKIP_SMUDGE;
           return Promise.resolve(undefined);
-        });
+        }) as any;
 
         // Store original env value
         const originalLfsSkip = process.env.GIT_LFS_SKIP_SMUDGE;
@@ -498,7 +701,7 @@ describe("WorktreeSyncService", () => {
         service["gitService"] = mockGitService;
 
         // Mock fetchAll to fail with LFS error
-        mockGitService.fetchAll = jest.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed"));
+        mockGitService.fetchAll = vi.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed")) as any;
 
         await expect(service.sync()).rejects.toThrow("LFS error retry limit exceeded");
 
@@ -538,11 +741,25 @@ describe("WorktreeSyncService", () => {
         { path: "/test/worktrees/feature-2", branch: "feature-2" },
       ]);
 
+      // Mock fs.readdir to handle .diverged directory
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["main", "feature-1", "feature-2"];
+      });
+
       // Mock different conditions
+      mockGitService.hasOperationInProgress.mockResolvedValue(false); // No operations in progress
+
       mockGitService.checkWorktreeStatus
         .mockResolvedValueOnce(true) // main: clean
         .mockResolvedValueOnce(false) // feature-1: has local changes
         .mockResolvedValueOnce(true); // feature-2: clean
+
+      mockGitService.canFastForward.mockResolvedValue(true); // All can fast-forward
 
       mockGitService.isWorktreeBehind
         .mockResolvedValueOnce(false) // main: up to date
@@ -551,7 +768,6 @@ describe("WorktreeSyncService", () => {
       await service.sync();
 
       // Should only check behind status for clean worktrees
-      expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
       expect(mockGitService.isWorktreeBehind).toHaveBeenCalledTimes(2); // Only for clean worktrees
 
       // Should only update feature-2 (clean and behind)
@@ -668,7 +884,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should log retry attempts", async () => {
-      const consoleSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
       const error = new Error("Network timeout");
       (error as any).code = "ETIMEDOUT";

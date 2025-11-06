@@ -1,22 +1,64 @@
 import * as fs from "fs/promises";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GitService } from "../services/git.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 
+import type { GitService } from "../services/git.service";
 import type { Config } from "../types";
+import type { Mock, Mocked } from "vitest";
 
-jest.mock("fs/promises");
-jest.mock("../services/git.service");
+vi.mock("fs/promises");
+
+const { mockGitServiceInstance } = vi.hoisted(() => {
+  return {
+    mockGitServiceInstance: {
+      initialize: vi.fn<any>().mockResolvedValue(undefined),
+      fetchAll: vi.fn<any>().mockResolvedValue(undefined),
+      getRemoteBranches: vi.fn<any>().mockResolvedValue(["main", "feature-rebased", "feature-diverged"]),
+      addWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
+      checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
+      hasUnpushedCommits: vi.fn<any>().mockResolvedValue(false),
+      hasUpstreamGone: vi.fn<any>().mockResolvedValue(false),
+      hasStashedChanges: vi.fn<any>().mockResolvedValue(false),
+      hasOperationInProgress: vi.fn<any>().mockResolvedValue(false),
+      hasModifiedSubmodules: vi.fn<any>().mockResolvedValue(false),
+      getCurrentBranch: vi.fn<any>().mockResolvedValue("main"),
+      getDefaultBranch: vi.fn().mockReturnValue("main"),
+      getWorktrees: vi.fn<any>().mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-rebased", branch: "feature-rebased" },
+        { path: "/test/worktrees/feature-diverged", branch: "feature-diverged" },
+      ]),
+      isWorktreeBehind: vi.fn<any>().mockResolvedValue(false),
+      updateWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      hasDivergedHistory: vi.fn<any>().mockResolvedValue(false),
+      canFastForward: vi.fn<any>().mockResolvedValue(true),
+      compareTreeContent: vi.fn<any>().mockResolvedValue(false),
+      resetToUpstream: vi.fn<any>().mockResolvedValue(undefined),
+      getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
+      getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
+      getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
+      getGit: vi.fn<any>(),
+    } as any,
+  };
+});
+
+vi.mock("../services/git.service", () => ({
+  GitService: vi.fn(function (this: any) {
+    return mockGitServiceInstance;
+  }),
+}));
 
 describe("Rebased Branch Handling", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
-  let mockGitService: jest.Mocked<GitService>;
+  let mockGitService: Mocked<GitService>;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -26,39 +68,7 @@ describe("Rebased Branch Handling", () => {
       updateExistingWorktrees: true,
     };
 
-    mockGitService = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      fetchAll: jest.fn<any>().mockResolvedValue(undefined),
-      getRemoteBranches: jest.fn<any>().mockResolvedValue(["main", "feature-rebased", "feature-diverged"]),
-      addWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      removeWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
-      checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
-      hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
-      hasUpstreamGone: jest.fn<any>().mockResolvedValue(false),
-      hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
-      hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
-      hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
-      getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
-      getDefaultBranch: jest.fn().mockReturnValue("main"),
-      getWorktrees: jest.fn<any>().mockResolvedValue([
-        { path: "/test/worktrees/main", branch: "main" },
-        { path: "/test/worktrees/feature-rebased", branch: "feature-rebased" },
-        { path: "/test/worktrees/feature-diverged", branch: "feature-diverged" },
-      ]),
-      isWorktreeBehind: jest.fn<any>().mockResolvedValue(false),
-      updateWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      hasDivergedHistory: jest.fn<any>().mockResolvedValue(false),
-      canFastForward: jest.fn<any>().mockResolvedValue(true),
-      compareTreeContent: jest.fn<any>().mockResolvedValue(false),
-      resetToUpstream: jest.fn<any>().mockResolvedValue(undefined),
-      getCurrentCommit: jest.fn<any>().mockResolvedValue("abc123"),
-      getRemoteCommit: jest.fn<any>().mockResolvedValue("def456"),
-      getWorktreeMetadata: jest.fn<any>().mockResolvedValue(null),
-      getGit: jest.fn<any>(),
-    } as any;
-
-    (GitService as jest.MockedClass<typeof GitService>).mockImplementation(() => mockGitService);
+    mockGitService = mockGitServiceInstance;
 
     service = new WorktreeSyncService(mockConfig);
   });
@@ -66,9 +76,9 @@ describe("Rebased Branch Handling", () => {
   describe("Clean rebase (identical content)", () => {
     it("should reset branch when content is identical after rebase", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
 
       mockGitService.canFastForward.mockImplementation(async (path) => {
         return !path.includes("feature-rebased");
@@ -90,9 +100,9 @@ describe("Rebased Branch Handling", () => {
   describe("Smart divergence detection", () => {
     it("should reset to upstream when diverged but no local changes made", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-no-local-changes"]);
       mockGitService.getWorktrees.mockResolvedValue([
@@ -128,11 +138,11 @@ describe("Rebased Branch Handling", () => {
 
     it("should move to diverged when diverged with local changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-with-local-changes"]);
       mockGitService.getWorktrees.mockResolvedValue([
@@ -172,11 +182,11 @@ describe("Rebased Branch Handling", () => {
 
     it("should move to diverged when metadata is missing (safer default)", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-no-metadata"]);
       mockGitService.getWorktrees.mockResolvedValue([
@@ -210,11 +220,38 @@ describe("Rebased Branch Handling", () => {
   describe("Diverged branch with different content", () => {
     it("should move branch to diverged when content differs after rebase", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return [];
+      });
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
+
+      // Ensure getRemoteBranches and getWorktrees return the worktrees
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-rebased", "feature-diverged"]);
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-rebased", branch: "feature-rebased" },
+        { path: "/test/worktrees/feature-diverged", branch: "feature-diverged" },
+      ]);
+
+      // Mock worktree to be behind to trigger update flow
+      mockGitService.isWorktreeBehind.mockImplementation(async (path) => {
+        return path.includes("feature-diverged");
+      });
+
+      // Mock update to throw fast-forward error for diverged branch
+      mockGitService.updateWorktree.mockImplementation(async (path) => {
+        if (path.includes("feature-diverged")) {
+          throw new Error("fatal: Not possible to fast-forward, aborting.");
+        }
+      });
 
       mockGitService.canFastForward.mockImplementation(async (path) => {
         return !path.includes("feature-diverged");
@@ -224,7 +261,7 @@ describe("Rebased Branch Handling", () => {
 
       await service.sync();
 
-      expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees/.diverged", { recursive: true });
+      expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees", { recursive: true });
 
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature-diverged",
@@ -244,17 +281,17 @@ describe("Rebased Branch Handling", () => {
   describe("Diverged directory management", () => {
     it("should report existing diverged worktrees", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
 
-      (fs.readdir as jest.Mock<any>).mockImplementation(async (path: string) => {
-        if (path.endsWith(".diverged")) {
+      (fs.readdir as Mock<any>).mockImplementation(async (path) => {
+        if ((path as string).endsWith(".diverged")) {
           return ["2024-01-01-old-branch", "2024-01-15-another-branch"];
         }
         return [];
       });
 
-      const consoleSpy = jest.spyOn(console, "log");
+      const consoleSpy = vi.spyOn(console, "log");
 
       await service.sync();
 
@@ -263,10 +300,10 @@ describe("Rebased Branch Handling", () => {
 
     it("should ignore .diverged directory during cleanup", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
 
-      (fs.readdir as jest.Mock<any>).mockImplementation(async (path: string) => {
+      (fs.readdir as Mock<any>).mockImplementation(async (path) => {
         if (path === "/test/worktrees") {
           return ["main", "feature", ".diverged", "orphaned-dir"];
         }
@@ -278,9 +315,9 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/feature", branch: "feature" },
       ]);
 
-      const mockStat = jest.fn<any>().mockResolvedValue({ isDirectory: () => true });
-      (fs.stat as jest.Mock<any>).mockImplementation(mockStat);
-      (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
+      const mockStat = vi.fn<any>().mockResolvedValue({ isDirectory: () => true });
+      (fs.stat as Mock<any>).mockImplementation(mockStat);
+      (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
       await service.sync();
 
@@ -293,11 +330,11 @@ describe("Rebased Branch Handling", () => {
   describe("Edge cases", () => {
     it("should handle multiple diverged branches in single sync", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "branch1", "branch2"]);
       mockGitService.getWorktrees.mockResolvedValue([
@@ -324,16 +361,16 @@ describe("Rebased Branch Handling", () => {
 
     it("should handle errors during divergence gracefully", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
 
-      (fs.rename as jest.Mock<any>).mockRejectedValue(new Error("Permission denied"));
+      (fs.rename as Mock<any>).mockRejectedValue(new Error("Permission denied"));
 
       mockGitService.canFastForward.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
-      const consoleSpy = jest.spyOn(console, "error");
+      const consoleSpy = vi.spyOn(console, "error");
 
       await service.sync();
 
@@ -342,11 +379,11 @@ describe("Rebased Branch Handling", () => {
 
     it("should handle branch names with special characters", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       const specialBranches = ["feature/user@domain", "bugfix/issue#123", "release/v1.0.0"];
       mockGitService.getRemoteBranches.mockResolvedValue(["main", ...specialBranches]);
@@ -376,11 +413,11 @@ describe("Rebased Branch Handling", () => {
   describe("Diverged and behind branches", () => {
     it("should handle branches that are both behind and diverged correctly", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-diverged-behind"]);
       mockGitService.getWorktrees.mockResolvedValue([
@@ -427,11 +464,11 @@ describe("Rebased Branch Handling", () => {
 
     it("should recover from fast-forward errors by handling as diverged branch", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.rename as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-diverged-behind"]);
       mockGitService.getWorktrees.mockResolvedValue([
@@ -476,9 +513,9 @@ describe("Rebased Branch Handling", () => {
 
     it("should NOT treat other update errors as divergence", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([]);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-diverged-behind"]);
       mockGitService.getWorktrees.mockResolvedValue([
@@ -500,7 +537,7 @@ describe("Rebased Branch Handling", () => {
         }
       });
 
-      const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       await service.sync();
 

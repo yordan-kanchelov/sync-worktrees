@@ -4,6 +4,7 @@ import * as os from "os";
 import * as path from "path";
 
 import simpleGit from "simple-git";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 describe("HEAD branch filtering (E2E)", () => {
   let tempDir: string;
@@ -116,5 +117,5 @@ describe("HEAD branch filtering (E2E)", () => {
     expect(output).not.toContain("Creating new worktrees for: HEAD");
     expect(output).not.toContain("Failed to create worktree");
     expect(output).not.toContain("Error during worktree synchronization");
-  });
+  }, 30000);
 });

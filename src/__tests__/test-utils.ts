@@ -2,7 +2,7 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
-import { jest } from "@jest/globals";
+import { vi } from "vitest";
 
 import type { Config } from "../types";
 import type { SimpleGit } from "simple-git";
@@ -32,12 +32,12 @@ export const TEST_PATHS = {
 // Mock Git Service Factory
 export function createMockGitService(overrides: Partial<SimpleGit> = {}): SimpleGit {
   const defaultMock = {
-    clone: jest.fn<any>().mockResolvedValue(undefined),
-    fetch: jest.fn<any>().mockResolvedValue(undefined),
-    env: jest.fn<any>().mockReturnThis(),
-    branch: jest.fn<any>().mockResolvedValue({ all: [], current: "main" }),
-    raw: jest.fn<any>().mockResolvedValue(""),
-    status: jest.fn<any>().mockResolvedValue({
+    clone: vi.fn<any>().mockResolvedValue(undefined),
+    fetch: vi.fn<any>().mockResolvedValue(undefined),
+    env: vi.fn<any>().mockReturnThis(),
+    branch: vi.fn<any>().mockResolvedValue({ all: [], current: "main" }),
+    raw: vi.fn<any>().mockResolvedValue(""),
+    status: vi.fn<any>().mockResolvedValue({
       isClean: () => true,
       files: [],
       modified: [],
@@ -46,7 +46,7 @@ export function createMockGitService(overrides: Partial<SimpleGit> = {}): Simple
       renamed: [],
       staged: [],
     }),
-    log: jest.fn<any>().mockResolvedValue({ all: [] }),
+    log: vi.fn<any>().mockResolvedValue({ all: [] }),
     ...overrides,
   };
 
@@ -80,19 +80,19 @@ export async function cleanupTempDirectories(): Promise<void> {
 
 // File System Mock Helpers
 export function mockFileSystem(): {
-  mkdir: jest.SpiedFunction<typeof fs.mkdir>;
-  access: jest.SpiedFunction<typeof fs.access>;
-  readdir: jest.SpiedFunction<typeof fs.readdir>;
-  rm: jest.SpiedFunction<typeof fs.rm>;
-  stat: jest.SpiedFunction<typeof fs.stat>;
+  mkdir: ReturnType<typeof vi.spyOn>;
+  access: ReturnType<typeof vi.spyOn>;
+  readdir: ReturnType<typeof vi.spyOn>;
+  rm: ReturnType<typeof vi.spyOn>;
+  stat: ReturnType<typeof vi.spyOn>;
   restore: () => void;
 } {
   const mocks = {
-    mkdir: jest.spyOn(fs, "mkdir").mockResolvedValue(undefined as any),
-    access: jest.spyOn(fs, "access").mockResolvedValue(undefined as any),
-    readdir: jest.spyOn(fs, "readdir").mockResolvedValue([] as any),
-    rm: jest.spyOn(fs, "rm").mockResolvedValue(undefined as any),
-    stat: jest.spyOn(fs, "stat").mockImplementation(() => {
+    mkdir: vi.spyOn(fs, "mkdir").mockResolvedValue(undefined as any),
+    access: vi.spyOn(fs, "access").mockResolvedValue(undefined as any),
+    readdir: vi.spyOn(fs, "readdir").mockResolvedValue([] as any),
+    rm: vi.spyOn(fs, "rm").mockResolvedValue(undefined as any),
+    stat: vi.spyOn(fs, "stat").mockImplementation(() => {
       throw new Error(`ENOENT: no such file or directory`);
     }),
   };
@@ -100,7 +100,7 @@ export function mockFileSystem(): {
   return {
     ...mocks,
     restore: () => Object.values(mocks).forEach((mock) => mock.mockRestore()),
-  };
+  } as any;
 }
 
 // Git Raw Output Helpers

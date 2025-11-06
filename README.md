@@ -121,10 +121,10 @@ sync-worktrees --config ./sync-worktrees.config.js --list
 
 ## Configuration File
 
-For managing multiple repositories, create a JavaScript config file:
+For managing multiple repositories, create a JavaScript ES module config file:
 
 ```javascript
-module.exports = {
+export default {
   // Optional defaults for all repositories
   defaults: {
     cronSchedule: "0 * * * *",  // Hourly
@@ -132,7 +132,7 @@ module.exports = {
     branchMaxAge: "30d",  // Only sync branches active in last 30 days
     updateExistingWorktrees: true  // Auto-update worktrees that are behind (default: true)
   },
-  
+
   // Retry configuration (optional - these are the defaults)
   retry: {
     maxAttempts: 'unlimited',  // or a number like 5
@@ -140,7 +140,7 @@ module.exports = {
     maxDelayMs: 600000,        // Max 10 minutes between retries
     backoffMultiplier: 2       // Double the delay each time
   },
-  
+
   repositories: [
     {
       name: "frontend",  // Unique identifier

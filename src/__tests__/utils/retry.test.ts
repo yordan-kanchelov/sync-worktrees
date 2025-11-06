@@ -1,15 +1,17 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import { retry } from "../../utils/retry";
 
 import type { RetryOptions } from "../../utils/retry";
 
 describe("retry", () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   describe("successful operations", () => {
     it("should return result on first successful attempt", async () => {
-      const mockFn = jest.fn().mockResolvedValue("success");
+      const mockFn = vi.fn().mockResolvedValue("success");
 
       const result = await retry(mockFn);
 
@@ -23,7 +25,7 @@ describe("retry", () => {
       const error2 = new Error("Timeout");
       (error2 as any).code = "ETIMEDOUT";
 
-      const mockFn = jest.fn().mockRejectedValueOnce(error1).mockRejectedValueOnce(error2).mockResolvedValue("success");
+      const mockFn = vi.fn().mockRejectedValueOnce(error1).mockRejectedValueOnce(error2).mockResolvedValue("success");
 
       const result = await retry(mockFn, { initialDelayMs: 10 });
 
@@ -35,7 +37,7 @@ describe("retry", () => {
   describe("retry attempts", () => {
     it("should retry unlimited times by default", async () => {
       let attempts = 0;
-      const mockFn = jest.fn().mockImplementation(() => {
+      const mockFn = vi.fn().mockImplementation(() => {
         attempts++;
         if (attempts < 10) {
           const error = new Error("Network error");
@@ -54,7 +56,7 @@ describe("retry", () => {
     it("should respect maxAttempts when set to a number", async () => {
       const error = new Error("Always fails");
       (error as any).code = "ECONNREFUSED";
-      const mockFn = jest.fn().mockRejectedValue(error);
+      const mockFn = vi.fn().mockRejectedValue(error);
 
       await expect(retry(mockFn, { maxAttempts: 3, initialDelayMs: 1 })).rejects.toThrow("Always fails");
 
@@ -63,7 +65,7 @@ describe("retry", () => {
 
     it("should retry unlimited times when maxAttempts is 'unlimited'", async () => {
       let attempts = 0;
-      const mockFn = jest.fn().mockImplementation(() => {
+      const mockFn = vi.fn().mockImplementation(() => {
         attempts++;
         if (attempts < 5) {
           const error = new Error("Network error");
@@ -83,7 +85,7 @@ describe("retry", () => {
   describe("retry delays", () => {
     it("should use exponential backoff", async () => {
       const delays: number[] = [];
-      const mockSetTimeout = jest.spyOn(global, "setTimeout");
+      const mockSetTimeout = vi.spyOn(global, "setTimeout");
       mockSetTimeout.mockImplementation((fn: any, delay?: number) => {
         delays.push(delay || 0);
         fn();
@@ -97,7 +99,7 @@ describe("retry", () => {
       const error3 = new Error("fail 3");
       (error3 as any).code = "ENOTFOUND";
 
-      const mockFn = jest
+      const mockFn = vi
         .fn()
         .mockRejectedValueOnce(error1)
         .mockRejectedValueOnce(error2)
@@ -116,7 +118,7 @@ describe("retry", () => {
 
     it("should respect maxDelayMs", async () => {
       const delays: number[] = [];
-      const mockSetTimeout = jest.spyOn(global, "setTimeout");
+      const mockSetTimeout = vi.spyOn(global, "setTimeout");
       mockSetTimeout.mockImplementation((fn: any, delay?: number) => {
         delays.push(delay || 0);
         fn();
@@ -129,7 +131,7 @@ describe("retry", () => {
         return error;
       };
 
-      const mockFn = jest
+      const mockFn = vi
         .fn()
         .mockRejectedValueOnce(createError("fail 1"))
         .mockRejectedValueOnce(createError("fail 2"))
@@ -153,7 +155,7 @@ describe("retry", () => {
       const networkError = new Error("Network failed");
       (networkError as any).code = "ECONNREFUSED";
 
-      const mockFn = jest.fn().mockRejectedValueOnce(networkError).mockResolvedValue("success");
+      const mockFn = vi.fn().mockRejectedValueOnce(networkError).mockResolvedValue("success");
 
       const result = await retry(mockFn, { initialDelayMs: 1 });
 
@@ -163,7 +165,7 @@ describe("retry", () => {
 
     it("should not retry on non-retryable errors by default", async () => {
       const error = new Error("Validation error");
-      const mockFn = jest.fn().mockRejectedValue(error);
+      const mockFn = vi.fn().mockRejectedValue(error);
 
       await expect(retry(mockFn)).rejects.toThrow("Validation error");
       expect(mockFn).toHaveBeenCalledTimes(1);
@@ -173,7 +175,7 @@ describe("retry", () => {
       const customError = new Error("Custom error");
       (customError as any).retryable = true;
 
-      const mockFn = jest.fn().mockRejectedValueOnce(customError).mockResolvedValue("success");
+      const mockFn = vi.fn().mockRejectedValueOnce(customError).mockResolvedValue("success");
 
       const options: RetryOptions = {
         initialDelayMs: 1,
@@ -188,7 +190,7 @@ describe("retry", () => {
 
     it("should retry on Git remote repository errors", async () => {
       const gitError = new Error("Could not read from remote repository");
-      const mockFn = jest.fn().mockRejectedValueOnce(gitError).mockResolvedValue("success");
+      const mockFn = vi.fn().mockRejectedValueOnce(gitError).mockResolvedValue("success");
 
       const result = await retry(mockFn, { initialDelayMs: 1 });
 
@@ -200,7 +202,7 @@ describe("retry", () => {
       const fsError = new Error("File busy");
       (fsError as any).code = "EBUSY";
 
-      const mockFn = jest.fn().mockRejectedValueOnce(fsError).mockResolvedValue("success");
+      const mockFn = vi.fn().mockRejectedValueOnce(fsError).mockResolvedValue("success");
 
       const result = await retry(mockFn, { initialDelayMs: 1 });
 
@@ -211,13 +213,13 @@ describe("retry", () => {
 
   describe("onRetry callback", () => {
     it("should call onRetry with error and attempt number", async () => {
-      const onRetry = jest.fn();
+      const onRetry = vi.fn();
       const error1 = new Error("Attempt 1");
       (error1 as any).code = "ECONNREFUSED";
       const error2 = new Error("Attempt 2");
       (error2 as any).code = "ETIMEDOUT";
 
-      const mockFn = jest.fn().mockRejectedValueOnce(error1).mockRejectedValueOnce(error2).mockResolvedValue("success");
+      const mockFn = vi.fn().mockRejectedValueOnce(error1).mockRejectedValueOnce(error2).mockResolvedValue("success");
 
       await retry(mockFn, {
         initialDelayMs: 1,
@@ -232,7 +234,7 @@ describe("retry", () => {
 
   describe("default retry configuration", () => {
     it("should have correct default values", async () => {
-      const mockFn = jest.fn().mockResolvedValue("success");
+      const mockFn = vi.fn().mockResolvedValue("success");
 
       await retry(mockFn);
 
@@ -242,7 +244,7 @@ describe("retry", () => {
 
     it("should default to 10 minute max delay", async () => {
       const delays: number[] = [];
-      const mockSetTimeout = jest.spyOn(global, "setTimeout");
+      const mockSetTimeout = vi.spyOn(global, "setTimeout");
       mockSetTimeout.mockImplementation((fn: any, delay?: number) => {
         delays.push(delay || 0);
         fn();
@@ -250,7 +252,7 @@ describe("retry", () => {
       });
 
       // Create enough failures to exceed 10 minutes with exponential backoff
-      const mockFn = jest.fn();
+      const mockFn = vi.fn();
       for (let i = 0; i < 15; i++) {
         const error = new Error(`Fail ${i}`);
         (error as any).code = "ECONNREFUSED";
@@ -276,7 +278,7 @@ describe("retry", () => {
       const lfsError = new Error("smudge filter lfs failed");
       let capturedContext: any;
 
-      const mockFn = jest.fn().mockRejectedValueOnce(lfsError).mockResolvedValue("success");
+      const mockFn = vi.fn().mockRejectedValueOnce(lfsError).mockResolvedValue("success");
 
       await retry(mockFn, {
         initialDelayMs: 1,
@@ -299,7 +301,7 @@ describe("retry", () => {
         let capturedContext: any;
         const error = new Error(errorMessage);
 
-        const mockFn = jest.fn().mockRejectedValueOnce(error).mockResolvedValue("success");
+        const mockFn = vi.fn().mockRejectedValueOnce(error).mockResolvedValue("success");
 
         await retry(mockFn, {
           initialDelayMs: 1,
@@ -314,9 +316,9 @@ describe("retry", () => {
 
     it("should call lfsRetryHandler when LFS error is detected", async () => {
       const lfsError = new Error("smudge filter lfs failed");
-      const lfsRetryHandler = jest.fn();
+      const lfsRetryHandler = vi.fn();
 
-      const mockFn = jest.fn().mockRejectedValueOnce(lfsError).mockResolvedValue("success");
+      const mockFn = vi.fn().mockRejectedValueOnce(lfsError).mockResolvedValue("success");
 
       await retry(mockFn, {
         initialDelayMs: 1,
@@ -332,7 +334,7 @@ describe("retry", () => {
 
     it("should limit LFS retries to maxLfsRetries", async () => {
       const lfsError = new Error("smudge filter lfs failed");
-      const mockFn = jest.fn().mockRejectedValue(lfsError);
+      const mockFn = vi.fn().mockRejectedValue(lfsError);
 
       await expect(
         retry(mockFn, {
@@ -348,7 +350,7 @@ describe("retry", () => {
 
     it("should respect default maxLfsRetries when not specified", async () => {
       const lfsError = new Error("Object does not exist on the server");
-      const mockFn = jest.fn().mockRejectedValue(lfsError);
+      const mockFn = vi.fn().mockRejectedValue(lfsError);
 
       await expect(
         retry(mockFn, {
@@ -363,7 +365,7 @@ describe("retry", () => {
     it("should not apply LFS retry limit to non-LFS errors", async () => {
       const networkError = new Error("Network error");
       (networkError as any).code = "ECONNREFUSED";
-      const mockFn = jest.fn().mockRejectedValue(networkError);
+      const mockFn = vi.fn().mockRejectedValue(networkError);
 
       await expect(
         retry(mockFn, {
@@ -379,7 +381,7 @@ describe("retry", () => {
 
     it("should include helpful message in LFS retry limit error", async () => {
       const lfsError = new Error("external filter 'git-lfs filter-process' failed");
-      const mockFn = jest.fn().mockRejectedValue(lfsError);
+      const mockFn = vi.fn().mockRejectedValue(lfsError);
 
       await expect(
         retry(mockFn, {

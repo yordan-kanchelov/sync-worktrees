@@ -1,3 +1,5 @@
+import { describe, expect, it, vi } from "vitest";
+
 import { filterBranchesByAge, formatDuration, parseDuration } from "../date-filter";
 
 describe("date-filter", () => {
@@ -64,7 +66,7 @@ describe("date-filter", () => {
     });
 
     it("should return all branches if duration format is invalid", () => {
-      const consoleSpy = jest.spyOn(console, "warn").mockImplementation();
+      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const result = filterBranchesByAge(branches, "invalid");
       expect(result).toHaveLength(4);
       expect(consoleSpy).toHaveBeenCalledWith("Invalid duration format: invalid. Using all branches.");
@@ -79,7 +81,7 @@ describe("date-filter", () => {
 
       // Mock Date.now() to return our fixed date
       const originalDateNow = Date.now;
-      Date.now = jest.fn(() => fixedNow.getTime());
+      Date.now = vi.fn(() => fixedNow.getTime());
 
       const result = filterBranchesByAge(exactCutoffBranches, "30d");
 

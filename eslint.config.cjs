@@ -97,7 +97,7 @@ module.exports = [
 
   // JavaScript config files
   {
-    files: ["eslint.config.js", "jest.config.js", "sync-worktrees.config*.js"],
+    files: ["eslint.config.js", "jest.config.js", "esbuild.config.js", "sync-worktrees.config*.js"],
     languageOptions: {
       globals: {
         ...globals.node,

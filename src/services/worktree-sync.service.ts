@@ -8,12 +8,14 @@ import { retry } from "../utils/retry";
 import { GitService } from "./git.service";
 
 import type { Config } from "../types";
+import type { WorktreeStatusDetails } from "./worktree-status.service";
 import type { RetryOptions } from "../utils/retry";
 
 export class WorktreeSyncService {
   private gitService: GitService;
+  private syncInProgress: boolean = false;
 
-  constructor(private config: Config) {
+  constructor(public readonly config: Config) {
     this.gitService = new GitService(config);
   }
 
@@ -21,7 +23,16 @@ export class WorktreeSyncService {
     await this.gitService.initialize();
   }
 
+  isSyncInProgress(): boolean {
+    return this.syncInProgress;
+  }
+
   async sync(): Promise<void> {
+    if (this.syncInProgress) {
+      console.warn("⚠️  Sync already in progress, skipping...");
+      return;
+    }
+    this.syncInProgress = true;
     console.log(`[${new Date().toISOString()}] Starting worktree synchronization...`);
 
     let lfsSkipEnabled = false;
@@ -128,10 +139,10 @@ export class WorktreeSyncService {
       console.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
       throw error;
     } finally {
-      // Clean up temporary LFS skip if it was enabled
       if (lfsSkipEnabled && !this.config.skipLfs) {
         delete process.env.GIT_LFS_SKIP_SMUDGE;
       }
+      this.syncInProgress = false;
       console.log(`[${new Date().toISOString()}] Synchronization finished.\n`);
     }
   }
@@ -166,36 +177,23 @@ export class WorktreeSyncService {
         const worktreePath = path.join(this.config.worktreeDir, branchName);
 
         try {
-          const isClean = await this.gitService.checkWorktreeStatus(worktreePath);
-          const hasUnpushed = await this.gitService.hasUnpushedCommits(worktreePath);
-          const hasStash = await this.gitService.hasStashedChanges(worktreePath);
-          const hasOperation = await this.gitService.hasOperationInProgress(worktreePath);
-          const hasDirtySubmodules = await this.gitService.hasModifiedSubmodules(worktreePath);
+          const status = await this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug);
 
-          const canDelete = isClean && !hasUnpushed && !hasStash && !hasOperation && !hasDirtySubmodules;
-
-          if (canDelete) {
+          if (status.canRemove) {
             await this.gitService.removeWorktree(worktreePath);
           } else {
-            // Check if upstream is gone for better messaging
-            const upstreamGone = hasUnpushed && (await this.gitService.hasUpstreamGone(worktreePath));
-
-            if (upstreamGone) {
+            if (status.upstreamGone && status.hasUnpushedCommits) {
               console.warn(`  - ⚠️ Cannot automatically remove '${branchName}' - upstream branch was deleted.`);
               console.log(`     Please review manually: cd ${worktreePath} && git log`);
               console.log(
                 `     If changes were squash-merged, you can safely remove with: git worktree remove ${worktreePath}`,
               );
             } else {
-              // Log specific reasons for skipping
-              const reasons: string[] = [];
-              if (!isClean) reasons.push("uncommitted changes");
-              if (hasUnpushed) reasons.push("unpushed commits");
-              if (hasStash) reasons.push("stashed changes");
-              if (hasOperation) reasons.push("operation in progress");
-              if (hasDirtySubmodules) reasons.push("modified submodules");
+              console.log(`  - ⚠️ Skipping removal of '${branchName}' due to: ${status.reasons.join(", ")}.`);
+            }
 
-              console.log(`  - ⚠️ Skipping removal of '${branchName}' due to: ${reasons.join(", ")}.`);
+            if (this.config.debug && status.details) {
+              this.logDebugDetails(branchName, status.details);
             }
           }
         } catch (error) {
@@ -205,6 +203,50 @@ export class WorktreeSyncService {
     } else {
       console.log("Step 3: No stale worktrees to prune.");
     }
+  }
+
+  private logDebugDetails(branchName: string, details: WorktreeStatusDetails): void {
+    console.log(`\n     🔍 Debug details for '${branchName}':`);
+
+    if (details.modifiedFiles > 0 && details.modifiedFilesList) {
+      console.log(`        - Modified files (${details.modifiedFiles}):`);
+      details.modifiedFilesList.forEach((file) => console.log(`          • ${file}`));
+    }
+    if (details.deletedFiles > 0 && details.deletedFilesList) {
+      console.log(`        - Deleted files (${details.deletedFiles}):`);
+      details.deletedFilesList.forEach((file) => console.log(`          • ${file}`));
+    }
+    if (details.renamedFiles > 0 && details.renamedFilesList) {
+      console.log(`        - Renamed files (${details.renamedFiles}):`);
+      details.renamedFilesList.forEach((file) => console.log(`          • ${file.from} → ${file.to}`));
+    }
+    if (details.createdFiles > 0 && details.createdFilesList) {
+      console.log(`        - Created files (${details.createdFiles}):`);
+      details.createdFilesList.forEach((file) => console.log(`          • ${file}`));
+    }
+    if (details.conflictedFiles > 0 && details.conflictedFilesList) {
+      console.log(`        - Conflicted files (${details.conflictedFiles}):`);
+      details.conflictedFilesList.forEach((file) => console.log(`          • ${file}`));
+    }
+    if (details.untrackedFiles > 0 && details.untrackedFilesList) {
+      console.log(`        - Untracked files (not ignored) (${details.untrackedFiles}):`);
+      details.untrackedFilesList.forEach((file) => console.log(`          • ${file}`));
+    }
+    if (details.unpushedCommitCount !== undefined && details.unpushedCommitCount > 0) {
+      console.log(`        - Unpushed commits: ${details.unpushedCommitCount}`);
+    }
+    if (details.stashCount !== undefined && details.stashCount > 0) {
+      console.log(`        - Stashed changes: ${details.stashCount}`);
+    }
+    if (details.operationType) {
+      console.log(`        - Operation in progress: ${details.operationType}`);
+    }
+    if (details.modifiedSubmodules && details.modifiedSubmodules.length > 0) {
+      console.log(`        - Modified submodules (${details.modifiedSubmodules.length}):`);
+      details.modifiedSubmodules.forEach((submodule) => console.log(`          • ${submodule}`));
+    }
+
+    console.log("");
   }
 
   private async fetchBranchByBranch(): Promise<void> {

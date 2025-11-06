@@ -1,8 +1,8 @@
 import * as fs from "fs/promises";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import * as cron from "node-cron";
 import simpleGit from "simple-git";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 
@@ -10,56 +10,57 @@ import { TEST_PATHS, createMockConfig } from "./test-utils";
 // import { parseArguments } from '../utils/cli'; // Skip due to ESM issues
 
 import type { SimpleGit } from "simple-git";
+import type { Mock, Mocked } from "vitest";
 
 // Mock all external dependencies
-jest.mock("fs/promises");
-jest.mock("simple-git");
-jest.mock("node-cron");
-// jest.mock('../utils/cli'); // Skip due to ESM issues
+vi.mock("fs/promises");
+vi.mock("simple-git");
+vi.mock("node-cron");
+// vi.mock('../utils/cli'); // Skip due to ESM issues
 
 describe("Integration Tests", () => {
-  let mockGit: jest.Mocked<SimpleGit>;
-  let mockScheduledTask: { start: jest.Mock; stop: jest.Mock };
+  let mockGit: Mocked<SimpleGit>;
+  let mockScheduledTask: { start: Mock; stop: Mock };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     // Setup mock git
     mockGit = {
-      fetch: jest.fn<any>().mockResolvedValue(undefined),
-      branch: jest.fn<any>().mockResolvedValue({
+      fetch: vi.fn<any>().mockResolvedValue(undefined),
+      branch: vi.fn<any>().mockResolvedValue({
         all: ["origin/main", "origin/feature-1", "origin/feature-2"],
         current: "main",
       }),
-      raw: jest.fn<any>().mockResolvedValue(""),
-      status: jest.fn<any>().mockResolvedValue({
-        isClean: jest.fn().mockReturnValue(true),
+      raw: vi.fn<any>().mockResolvedValue(""),
+      status: vi.fn<any>().mockResolvedValue({
+        isClean: vi.fn().mockReturnValue(true),
       }),
-      stashList: jest.fn<any>().mockResolvedValue({ total: 0 }),
-      clone: jest.fn<any>().mockResolvedValue(undefined),
-      addConfig: jest.fn<any>().mockResolvedValue(undefined),
-      revparse: jest.fn<any>().mockResolvedValue("abc123def456"),
+      stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
+      clone: vi.fn<any>().mockResolvedValue(undefined),
+      addConfig: vi.fn<any>().mockResolvedValue(undefined),
+      revparse: vi.fn<any>().mockResolvedValue("abc123def456"),
     } as any;
 
-    (simpleGit as unknown as jest.Mock).mockReturnValue(mockGit);
+    (simpleGit as unknown as Mock).mockReturnValue(mockGit);
 
     // Setup mock cron
     mockScheduledTask = {
-      start: jest.fn(),
-      stop: jest.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
     };
-    (cron.schedule as jest.Mock).mockReturnValue(mockScheduledTask);
+    (cron.schedule as Mock).mockReturnValue(mockScheduledTask);
 
     // Setup mock fs
-    (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-    (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-    (fs.readdir as jest.Mock<any>).mockResolvedValue(["main"]);
+    (fs.access as Mock<any>).mockResolvedValue(undefined);
+    (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+    (fs.readdir as Mock<any>).mockResolvedValue(["main"]);
   });
 
   describe("Full sync workflow", () => {
     it("should skip creating worktree for currently checked out branch", async () => {
       // Mock readdir to return empty (no existing worktrees)
-      (fs.readdir as jest.Mock<any>).mockResolvedValueOnce([]);
+      (fs.readdir as Mock<any>).mockResolvedValueOnce([]);
 
       // Mock fetch for initialization
       mockGit.fetch.mockResolvedValue({} as any);
@@ -186,7 +187,7 @@ describe("Integration Tests", () => {
       const config = createMockConfig({ runOnce: true });
 
       // Setup: existing worktrees include some to keep, some to remove
-      (fs.readdir as jest.Mock<any>).mockResolvedValue([
+      (fs.readdir as Mock<any>).mockResolvedValue([
         "main", // Keep (exists in remote)
         "feature-1", // Keep (exists in remote)
         "old-feature", // Remove (not in remote)
@@ -195,9 +196,10 @@ describe("Integration Tests", () => {
 
       // Mock git worktree list --porcelain
       const mockRawCalls: string[][] = [];
-      (mockGit.raw as jest.Mock<any>).mockImplementation(async (args: string[]) => {
-        mockRawCalls.push(args);
-        if (args[0] === "worktree" && args[1] === "list" && args[2] === "--porcelain") {
+      (mockGit.raw as Mock<any>).mockImplementation(async (args) => {
+        const argsArray = args as string[];
+        mockRawCalls.push(argsArray);
+        if (argsArray[0] === "worktree" && argsArray[1] === "list" && argsArray[2] === "--porcelain") {
           return `worktree /test/repo
 branch refs/heads/main
 
@@ -215,11 +217,11 @@ branch refs/heads/dirty-branch
       });
 
       // Mock fs.stat and fs.rm for orphaned directory cleanup
-      (fs.stat as jest.Mock<any>).mockResolvedValue({ isDirectory: jest.fn().mockReturnValue(true) });
-      (fs.rm as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.stat as Mock<any>).mockResolvedValue({ isDirectory: vi.fn().mockReturnValue(true) });
+      (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
       // Mock fs.access for hasOperationInProgress checks
-      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
 
       // Mock status checks and other safety checks
       const statusChecks = new Map([
@@ -227,21 +229,29 @@ branch refs/heads/dirty-branch
         ["/test/worktrees/dirty-branch", false], // Has changes, skip
       ]);
 
-      (mockGit.status as jest.Mock<any>).mockImplementation(async () => {
-        const currentPath = (simpleGit as unknown as jest.Mock<any>).mock.calls.slice(-1)[0][0] as string;
+      (mockGit.status as Mock<any>).mockImplementation(async () => {
+        const currentPath = (simpleGit as unknown as Mock<any>).mock.calls.slice(-1)[0][0] as string;
         const isClean = statusChecks.get(currentPath) ?? true;
-        return { isClean: jest.fn().mockReturnValue(isClean) } as any;
+        return {
+          modified: isClean ? [] : ["file.txt"],
+          deleted: [],
+          renamed: [],
+          created: [],
+          conflicted: [],
+          not_added: [],
+        } as any;
       });
 
       // Reset the mock implementation before defining the new one
-      (mockGit.raw as jest.Mock<any>).mockReset();
+      (mockGit.raw as Mock<any>).mockReset();
 
       // Mock the raw calls for safety checks on old-feature (clean worktree)
-      (mockGit.raw as jest.Mock<any>).mockImplementation(async (args: string[]) => {
-        mockRawCalls.push(args);
+      (mockGit.raw as Mock<any>).mockImplementation(async (args) => {
+        const argsArray = args as string[];
+        mockRawCalls.push(argsArray);
 
         // Handle different git commands
-        if (args[0] === "worktree" && args[1] === "list" && args[2] === "--porcelain") {
+        if (argsArray[0] === "worktree" && argsArray[1] === "list" && argsArray[2] === "--porcelain") {
           return `worktree /test/repo
 branch refs/heads/main
 
@@ -254,22 +264,22 @@ branch refs/heads/old-feature
 worktree /test/worktrees/dirty-branch
 branch refs/heads/dirty-branch
 `;
-        } else if (args[0] === "rev-list" && args[1] === "--count") {
+        } else if (argsArray[0] === "rev-list" && argsArray[1] === "--count") {
           // No unpushed commits
           return "0\n";
-        } else if (args[0] === "submodule" && args[1] === "status") {
+        } else if (argsArray[0] === "submodule" && argsArray[1] === "status") {
           // No submodules
           return "";
-        } else if (args[0] === "worktree" && args[1] === "add") {
+        } else if (argsArray[0] === "worktree" && argsArray[1] === "add") {
           // Worktree add commands
           return "";
-        } else if (args[0] === "branch" && !args[1]) {
+        } else if (argsArray[0] === "branch" && !argsArray[1]) {
           // Branch list for addWorktree
           return { all: [], current: "main" };
-        } else if (args[0] === "worktree" && args[1] === "remove") {
+        } else if (argsArray[0] === "worktree" && argsArray[1] === "remove") {
           // Worktree remove commands
           return "";
-        } else if (args[0] === "worktree" && args[1] === "prune") {
+        } else if (argsArray[0] === "worktree" && argsArray[1] === "prune") {
           // Worktree prune command
           return "";
         }
@@ -278,25 +288,25 @@ branch refs/heads/dirty-branch
       });
 
       // Also need to mock stashList and branch for new safety checks
-      (simpleGit as unknown as jest.Mock).mockImplementation((workPath?: unknown) => {
+      (simpleGit as unknown as Mock).mockImplementation((workPath?: unknown) => {
         const pathStr = workPath as string;
         if (pathStr && pathStr.includes("old-feature")) {
           return {
             ...mockGit,
-            stashList: jest.fn<any>().mockResolvedValue({ total: 0 }),
-            branch: jest.fn<any>().mockResolvedValue({ current: "old-feature" }),
+            stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
+            branch: vi.fn<any>().mockResolvedValue({ current: "old-feature" }),
           };
         } else if (pathStr && pathStr.includes("dirty-branch")) {
           return {
             ...mockGit,
-            stashList: jest.fn<any>().mockResolvedValue({ total: 0 }),
-            branch: jest.fn<any>().mockResolvedValue({ current: "dirty-branch" }),
+            stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
+            branch: vi.fn<any>().mockResolvedValue({ current: "dirty-branch" }),
           };
         } else if (pathStr && pathStr.includes(".bare")) {
           // For bare repo (used by addWorktree)
           return {
             ...mockGit,
-            branch: jest.fn<any>().mockResolvedValue({ all: [], current: "main" }),
+            branch: vi.fn<any>().mockResolvedValue({ all: [], current: "main" }),
           };
         }
         return mockGit;

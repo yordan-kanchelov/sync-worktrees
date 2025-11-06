@@ -1,3 +1,5 @@
+import { describe, expect, it } from "vitest";
+
 import { LFS_ERROR_PATTERNS, isLfsError, isLfsErrorFromError } from "../lfs-error";
 
 describe("LFS Error Detection", () => {

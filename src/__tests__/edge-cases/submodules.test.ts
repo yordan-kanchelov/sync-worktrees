@@ -1,22 +1,61 @@
 import * as fs from "fs/promises";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GitService } from "../../services/git.service";
 import { WorktreeSyncService } from "../../services/worktree-sync.service";
 
+import type { GitService } from "../../services/git.service";
 import type { Config } from "../../types";
+import type { Mock, Mocked } from "vitest";
 
-jest.mock("fs/promises");
-jest.mock("../../services/git.service");
+vi.mock("fs/promises");
+
+const { mockGitServiceInstance } = vi.hoisted(() => {
+  return {
+    mockGitServiceInstance: {
+      initialize: vi.fn<any>().mockResolvedValue(undefined),
+      fetchAll: vi.fn<any>().mockResolvedValue(undefined),
+      getRemoteBranches: vi.fn<any>().mockResolvedValue(["main"]),
+      addWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
+      checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
+      hasUnpushedCommits: vi.fn<any>().mockResolvedValue(false),
+      hasUpstreamGone: vi.fn<any>().mockResolvedValue(false),
+      hasStashedChanges: vi.fn<any>().mockResolvedValue(false),
+      hasOperationInProgress: vi.fn<any>().mockResolvedValue(false),
+      hasModifiedSubmodules: vi.fn<any>().mockResolvedValue(false),
+      getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      }),
+      getCurrentBranch: vi.fn<any>().mockResolvedValue("main"),
+      getDefaultBranch: vi.fn().mockReturnValue("main"),
+      getWorktrees: vi.fn<any>().mockResolvedValue([]),
+      getGit: vi.fn<any>(),
+    } as any,
+  };
+});
+
+vi.mock("../../services/git.service", () => ({
+  GitService: vi.fn(function (this: any) {
+    return mockGitServiceInstance;
+  }),
+}));
 
 describe("Submodule Edge Cases", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
-  let mockGitService: jest.Mocked<GitService>;
+  let mockGitService: Mocked<GitService>;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -25,26 +64,7 @@ describe("Submodule Edge Cases", () => {
       runOnce: false,
     };
 
-    mockGitService = {
-      initialize: jest.fn<any>().mockResolvedValue(undefined),
-      fetchAll: jest.fn<any>().mockResolvedValue(undefined),
-      getRemoteBranches: jest.fn<any>().mockResolvedValue(["main"]),
-      addWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      removeWorktree: jest.fn<any>().mockResolvedValue(undefined),
-      pruneWorktrees: jest.fn<any>().mockResolvedValue(undefined),
-      checkWorktreeStatus: jest.fn<any>().mockResolvedValue(true),
-      hasUnpushedCommits: jest.fn<any>().mockResolvedValue(false),
-      hasUpstreamGone: jest.fn<any>().mockResolvedValue(false),
-      hasStashedChanges: jest.fn<any>().mockResolvedValue(false),
-      hasOperationInProgress: jest.fn<any>().mockResolvedValue(false),
-      hasModifiedSubmodules: jest.fn<any>().mockResolvedValue(false),
-      getCurrentBranch: jest.fn<any>().mockResolvedValue("main"),
-      getDefaultBranch: jest.fn().mockReturnValue("main"),
-      getWorktrees: jest.fn<any>().mockResolvedValue([]),
-      getGit: jest.fn<any>(),
-    } as any;
-
-    (GitService as jest.MockedClass<typeof GitService>).mockImplementation(() => mockGitService);
+    mockGitService = mockGitServiceInstance;
 
     service = new WorktreeSyncService(mockConfig);
   });
@@ -52,16 +72,23 @@ describe("Submodule Edge Cases", () => {
   describe("Modified submodules", () => {
     it("should not delete worktree with modified submodules", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["feature-dirty-submodule"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["feature-dirty-submodule"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/feature-dirty-submodule", branch: "feature-dirty-submodule" },
       ]);
 
-      // Main worktree is clean but submodules are dirty
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["modified submodules"],
+      });
 
       await service.sync();
 
@@ -71,15 +98,23 @@ describe("Submodule Edge Cases", () => {
 
     it("should detect submodules with uncommitted changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["submodule-changes"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["submodule-changes"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/submodule-changes", branch: "submodule-changes" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true); // + prefix in status
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["modified submodules"],
+      });
 
       await service.sync();
 
@@ -88,15 +123,23 @@ describe("Submodule Edge Cases", () => {
 
     it("should detect submodules with different commits", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["submodule-commits"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["submodule-commits"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/submodule-commits", branch: "submodule-commits" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true); // - prefix in status
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["modified submodules"],
+      });
 
       await service.sync();
 
@@ -107,35 +150,48 @@ describe("Submodule Edge Cases", () => {
   describe("Uninitialized submodules", () => {
     it("should handle worktree with uninitialized submodules", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["uninit-submodules"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["uninit-submodules"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/uninit-submodules", branch: "uninit-submodules" },
       ]);
 
-      // Uninitialized submodules might not show as modified
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      });
 
       await service.sync();
 
-      // Can be removed if all checks pass
       expect(mockGitService.removeWorktree).toHaveBeenCalled();
     });
 
     it("should handle partially initialized submodules", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["partial-submodules"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["partial-submodules"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/partial-submodules", branch: "partial-submodules" },
       ]);
 
-      // Some submodules initialized, some not
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["modified submodules"],
+      });
 
       await service.sync();
 
@@ -146,15 +202,23 @@ describe("Submodule Edge Cases", () => {
   describe("Detached HEAD in submodules", () => {
     it("should not delete worktree with detached HEAD in submodule", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["submodule-detached"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["submodule-detached"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/submodule-detached", branch: "submodule-detached" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true); // Detached HEAD shows as modified
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["modified submodules"],
+      });
 
       await service.sync();
 
@@ -165,15 +229,23 @@ describe("Submodule Edge Cases", () => {
   describe("Nested submodules", () => {
     it("should detect changes in nested submodules", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["nested-submodules"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["nested-submodules"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/nested-submodules", branch: "nested-submodules" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true); // Nested submodule changes
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["modified submodules"],
+      });
 
       await service.sync();
 
@@ -184,66 +256,91 @@ describe("Submodule Edge Cases", () => {
   describe("Submodule conflicts", () => {
     it("should handle submodules with merge conflicts", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["submodule-conflicts"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["submodule-conflicts"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/submodule-conflicts", branch: "submodule-conflicts" },
       ]);
 
       // Both main repo and submodules have issues
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: false,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["uncommitted changes", "modified submodules"],
+      });
       mockGitService.hasOperationInProgress.mockResolvedValue(true);
 
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(
-        expect.stringContaining("uncommitted changes, operation in progress, modified submodules"),
-      );
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("uncommitted changes, modified submodules"));
     });
   });
 
   describe("Submodule errors", () => {
     it("should handle missing .gitmodules file", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["missing-gitmodules"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["missing-gitmodules"];
+      });
+
+      // Branch was deleted from remote
+      mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/missing-gitmodules", branch: "missing-gitmodules" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      // No submodules file means no submodules
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      });
 
       await service.sync();
 
-      // Can be removed if no submodules
       expect(mockGitService.removeWorktree).toHaveBeenCalled();
     });
 
     it("should handle corrupted submodule metadata", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["corrupted-submodule"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["corrupted-submodule"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/corrupted-submodule", branch: "corrupted-submodule" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
-      mockGitService.hasStashedChanges.mockResolvedValue(false);
-      mockGitService.hasOperationInProgress.mockResolvedValue(false);
-      // Corrupted submodule might cause check to fail - GitService returns false on error
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(false);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      });
 
       await service.sync();
 
-      // Should handle error gracefully - hasModifiedSubmodules returns false (no modifications)
       expect(mockGitService.removeWorktree).toHaveBeenCalled();
     });
   });
@@ -251,15 +348,23 @@ describe("Submodule Edge Cases", () => {
   describe("Submodule URL changes", () => {
     it("should detect submodules with changed URLs", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["submodule-url-change"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["submodule-url-change"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/submodule-url-change", branch: "submodule-url-change" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true); // URL change shows as modification
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["modified submodules"],
+      });
 
       await service.sync();
 
@@ -270,16 +375,23 @@ describe("Submodule Edge Cases", () => {
   describe("Combined submodule scenarios", () => {
     it("should handle submodules with stash and changes", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["submodule-complex"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["submodule-complex"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/submodule-complex", branch: "submodule-complex" },
       ]);
 
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasStashedChanges.mockResolvedValue(true);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: true,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["stashed changes", "modified submodules"],
+      });
 
       await service.sync();
 
@@ -289,19 +401,23 @@ describe("Submodule Edge Cases", () => {
 
     it("should handle main repo clean but submodules dirty", async () => {
       await service.initialize();
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as jest.Mock<any>).mockResolvedValue(["clean-main-dirty-sub"]);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.readdir as Mock<any>).mockResolvedValue(["clean-main-dirty-sub"]);
 
       mockGitService.getWorktrees.mockResolvedValue([
         { path: "/test/worktrees/clean-main-dirty-sub", branch: "clean-main-dirty-sub" },
       ]);
 
-      // Everything clean except submodules
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
-      mockGitService.hasStashedChanges.mockResolvedValue(false);
-      mockGitService.hasOperationInProgress.mockResolvedValue(false);
-      mockGitService.hasModifiedSubmodules.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: true,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["modified submodules"],
+      });
 
       await service.sync();
 

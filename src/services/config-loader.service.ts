@@ -1,5 +1,6 @@
 import * as fs from "fs/promises";
 import * as path from "path";
+import { pathToFileURL } from "url";
 
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
 
@@ -14,9 +15,14 @@ export class ConfigLoaderService {
     }
 
     try {
-      delete require.cache[absolutePath];
-      const configModule = require(absolutePath);
-      const config = configModule.default || configModule;
+      const fileUrl = pathToFileURL(absolutePath);
+      fileUrl.searchParams.set("t", Date.now().toString());
+      const configModule = await import(fileUrl.href);
+      const config = configModule.default;
+
+      if (!config) {
+        throw new Error("Config file must use 'export default' syntax");
+      }
 
       this.validateConfigFile(config);
 
@@ -164,7 +170,11 @@ export class ConfigLoaderService {
     }
 
     if (repo.retry || defaults?.retry || globalRetry) {
-      resolved.retry = { ...globalRetry, ...defaults?.retry, ...repo.retry };
+      resolved.retry = {
+        ...(globalRetry || {}),
+        ...(defaults?.retry || {}),
+        ...(repo.retry || {}),
+      };
     }
 
     if (repo.updateExistingWorktrees !== undefined || defaults?.updateExistingWorktrees !== undefined) {

@@ -1,8 +1,8 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import simpleGit from "simple-git";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   TEST_PATHS,
@@ -13,63 +13,73 @@ import {
   createWorktreeListOutput,
 } from "../../__tests__/test-utils";
 import { GitService } from "../git.service";
-import { WorktreeMetadataService } from "../worktree-metadata.service";
 
 import type { Config } from "../../types";
 import type { SimpleGit } from "simple-git";
+import type { Mock, Mocked, MockedFunction } from "vitest";
+
+// Use vi.hoisted to create mock instance that can be accessed in both factory and tests
+const { mockMetadataServiceInstance } = vi.hoisted(() => {
+  return {
+    mockMetadataServiceInstance: {
+      createInitialMetadata: vi.fn<any>().mockResolvedValue(undefined),
+      createInitialMetadataFromPath: vi.fn<any>().mockResolvedValue(undefined),
+      updateLastSync: vi.fn<any>().mockResolvedValue(undefined),
+      updateLastSyncFromPath: vi.fn<any>().mockResolvedValue(undefined),
+      loadMetadata: vi.fn<any>().mockResolvedValue(null),
+      loadMetadataFromPath: vi.fn<any>().mockResolvedValue(null),
+      deleteMetadata: vi.fn<any>().mockResolvedValue(undefined),
+      deleteMetadataFromPath: vi.fn<any>().mockResolvedValue(undefined),
+      saveMetadata: vi.fn<any>().mockResolvedValue(undefined),
+      getMetadataPath: vi.fn<any>().mockResolvedValue("/test/path"),
+      getMetadataPathFromWorktreePath: vi.fn<any>().mockResolvedValue("/test/path"),
+    },
+  };
+});
 
 // Mock the modules
-jest.mock("fs/promises");
-jest.mock("simple-git");
-jest.mock("../worktree-metadata.service");
+vi.mock("fs/promises");
+vi.mock("simple-git");
+vi.mock("../worktree-metadata.service", () => {
+  return {
+    WorktreeMetadataService: vi.fn(function (this: any) {
+      return mockMetadataServiceInstance;
+    }),
+  };
+});
 
 describe("GitService", () => {
   let gitService: GitService;
   let mockConfig: Config;
-  let mockGit: jest.Mocked<SimpleGit>;
+  let mockGit: Mocked<SimpleGit>;
   let mockMetadataService: any;
 
   beforeEach(() => {
     // Reset all mocks
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     // Setup mock config
     mockConfig = createMockConfig();
 
-    // Setup mock metadata service
-    mockMetadataService = {
-      createInitialMetadata: jest.fn<any>().mockResolvedValue(undefined),
-      createInitialMetadataFromPath: jest.fn<any>().mockResolvedValue(undefined),
-      updateLastSync: jest.fn<any>().mockResolvedValue(undefined),
-      updateLastSyncFromPath: jest.fn<any>().mockResolvedValue(undefined),
-      loadMetadata: jest.fn<any>().mockResolvedValue(null),
-      loadMetadataFromPath: jest.fn<any>().mockResolvedValue(null),
-      deleteMetadata: jest.fn<any>().mockResolvedValue(undefined),
-      deleteMetadataFromPath: jest.fn<any>().mockResolvedValue(undefined),
-      saveMetadata: jest.fn<any>().mockResolvedValue(undefined),
-      getMetadataPath: jest.fn<any>().mockResolvedValue("/test/path"),
-      getMetadataPathFromWorktreePath: jest.fn<any>().mockResolvedValue("/test/path"),
-    };
-    (WorktreeMetadataService as jest.MockedClass<typeof WorktreeMetadataService>).mockImplementation(
-      () => mockMetadataService as any,
-    );
+    // Reference the hoisted mock instance
+    mockMetadataService = mockMetadataServiceInstance;
 
-    // Setup mock git instance with jest mocks
+    // Setup mock git instance
     mockGit = createMockGitService({
-      fetch: jest.fn<any>().mockResolvedValue(undefined),
-      branch: jest.fn<any>().mockResolvedValue({
+      fetch: vi.fn<any>().mockResolvedValue(undefined) as any,
+      branch: vi.fn<any>().mockResolvedValue({
         all: ["origin/main", "origin/feature-1", "origin/feature-2", "local-branch"],
         current: "main",
-      }),
-      raw: jest.fn<any>().mockResolvedValue(""),
-      status: jest.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })),
-      clone: jest.fn<any>().mockResolvedValue(undefined),
-      addConfig: jest.fn<any>().mockResolvedValue(undefined),
-      revparse: jest.fn<any>().mockResolvedValue("abc123"),
-    }) as jest.Mocked<SimpleGit>;
+      }) as any,
+      raw: vi.fn<any>().mockResolvedValue("") as any,
+      status: vi.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })) as any,
+      clone: vi.fn<any>().mockResolvedValue(undefined) as any,
+      addConfig: vi.fn<any>().mockResolvedValue(undefined) as any,
+      revparse: vi.fn<any>().mockResolvedValue("abc123") as any,
+    }) as Mocked<SimpleGit>;
 
     // Mock simpleGit factory
-    (simpleGit as unknown as jest.Mock).mockReturnValue(mockGit);
+    (simpleGit as unknown as Mock).mockReturnValue(mockGit);
 
     gitService = new GitService(mockConfig);
   });
@@ -77,9 +87,9 @@ describe("GitService", () => {
   describe("initialize", () => {
     it("should use existing bare repository when it exists", async () => {
       // Mock fs.access to succeed (bare repo exists)
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       // Mock config check to throw error (config doesn't exist)
       mockGit.raw
         .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
@@ -99,9 +109,9 @@ describe("GitService", () => {
 
     it("should clone as bare repository when it doesn't exist", async () => {
       // Mock fs.access to fail (bare repo doesn't exist)
-      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.access as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       // Mock fs.mkdir
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       // Mock config check and worktree list
       mockGit.raw
         .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
@@ -121,9 +131,9 @@ describe("GitService", () => {
 
     it("should create main worktree if it doesn't exist", async () => {
       // Mock fs.access to succeed (bare repo exists)
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       // Mock config check and worktree list
       mockGit.raw
         .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
@@ -160,9 +170,9 @@ describe("GitService", () => {
       const relativeGitService = new GitService(relativeConfig);
 
       // Mock fs.access to succeed (bare repo exists)
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       // Mock config check and worktree list
       mockGit.raw
         .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
@@ -191,9 +201,9 @@ describe("GitService", () => {
 
     it("should not add duplicate fetch config when it already exists", async () => {
       // Mock fs.access to succeed (bare repo exists)
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       // Mock config check to return existing fetch config
       mockGit.raw
         .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*") // First call: config exists
@@ -214,8 +224,8 @@ describe("GitService", () => {
 
   describe("addWorktree - parent directories", () => {
     it("should create parent directories for nested branch paths", async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       mockGit.raw
         .mockRejectedValueOnce(new Error("config not found"))
         .mockResolvedValueOnce(
@@ -234,7 +244,7 @@ describe("GitService", () => {
 
   describe("fetchBranch", () => {
     it("should fetch single branch and update remote refs (no LFS)", async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       mockGit.raw
         .mockRejectedValueOnce(new Error("config not found"))
         .mockResolvedValueOnce(
@@ -250,7 +260,7 @@ describe("GitService", () => {
     it("should respect LFS skip when fetching branch", async () => {
       const cfg: Config = { ...mockConfig, skipLfs: true };
       const svc = new GitService(cfg);
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       mockGit.raw
         .mockRejectedValueOnce(new Error("config not found"))
         .mockResolvedValueOnce(
@@ -266,14 +276,14 @@ describe("GitService", () => {
 
   describe("hasOperationInProgress (worktree .git file)", () => {
     it("resolves gitdir from .git file and detects operation markers", async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       const worktreePath = "/test/worktree";
       const gitFilePath = path.join(worktreePath, ".git");
       // .git is a file
-      (fs.stat as jest.Mock<any>).mockResolvedValueOnce({ isFile: () => true });
-      (fs.readFile as jest.Mock<any>).mockResolvedValueOnce("gitdir: /real/git/dir\n");
+      (fs.stat as Mock<any>).mockResolvedValueOnce({ isFile: () => true });
+      (fs.readFile as Mock<any>).mockResolvedValueOnce("gitdir: /real/git/dir\n");
       // MERGE_HEAD exists in resolved dir
-      (fs.access as jest.Mock<any>).mockResolvedValueOnce(undefined);
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined);
 
       const result = await gitService.hasOperationInProgress(worktreePath);
       expect(result).toBe(true);
@@ -285,7 +295,7 @@ describe("GitService", () => {
 
   describe("getRemoteCommit", () => {
     it("uses the bare repository to resolve refs", async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       mockGit.raw
         .mockRejectedValueOnce(new Error("config not found"))
         .mockResolvedValueOnce(
@@ -294,10 +304,10 @@ describe("GitService", () => {
 
       await gitService.initialize();
 
-      (simpleGit as unknown as jest.Mock).mockClear();
+      (simpleGit as unknown as Mock).mockClear();
       // next simpleGit() call should be with bare repo path
       await gitService.getRemoteCommit("origin/main");
-      const calls = (simpleGit as unknown as jest.Mock).mock.calls;
+      const calls = (simpleGit as unknown as Mock).mock.calls;
       expect(calls[calls.length - 1][0]).toBe(TEST_PATHS.bareRepo);
     });
   });
@@ -308,8 +318,8 @@ describe("GitService", () => {
     });
 
     it("should return git instance when initialized", async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
-      (fs.mkdir as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       mockGit.raw.mockResolvedValueOnce("worktree /test/worktrees/main\nbranch refs/heads/main\n\n" as any);
       await gitService.initialize();
 
@@ -320,7 +330,7 @@ describe("GitService", () => {
 
   describe("fetchAll", () => {
     beforeEach(async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
     });
 
@@ -333,7 +343,7 @@ describe("GitService", () => {
 
   describe("getRemoteBranches", () => {
     beforeEach(async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
     });
 
@@ -367,7 +377,7 @@ describe("GitService", () => {
 
   describe("getRemoteBranchesWithActivity", () => {
     beforeEach(async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
     });
 
@@ -448,7 +458,7 @@ describe("GitService", () => {
 
   describe("addWorktree", () => {
     beforeEach(async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
     });
 
@@ -479,15 +489,15 @@ describe("GitService", () => {
       } as any);
 
       const worktreeGitMock = {
-        branch: jest.fn<any>().mockResolvedValue(undefined),
-        revparse: jest.fn<any>().mockResolvedValue("abc123"),
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
       };
 
       // Store original implementation
-      const originalImplementation = (simpleGit as unknown as jest.Mock).getMockImplementation();
+      const originalImplementation = (simpleGit as unknown as Mock).getMockImplementation();
 
       // Mock simpleGit to return worktreeGitMock for the worktree path, but mockGit for other paths
-      (simpleGit as unknown as jest.Mock).mockImplementation((path?: any) => {
+      (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
         if (path && path.includes("feature-1")) {
           return worktreeGitMock;
         }
@@ -502,7 +512,7 @@ describe("GitService", () => {
 
       // Restore original implementation
       if (originalImplementation) {
-        (simpleGit as unknown as jest.Mock).mockImplementation(originalImplementation);
+        (simpleGit as unknown as Mock).mockImplementation(originalImplementation);
       }
     });
 
@@ -538,7 +548,7 @@ describe("GitService", () => {
 
     it("should clean up orphaned directory before creating worktree", async () => {
       // Mock - directory exists when checking in addWorktree
-      (fs.access as jest.Mock<any>).mockResolvedValueOnce(undefined);
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined);
 
       // Reset mockGit.raw and set up responses
       mockGit.raw.mockReset();
@@ -568,7 +578,7 @@ describe("GitService", () => {
 
     it("should skip if directory is already a valid worktree", async () => {
       // Mock - directory exists when checking in addWorktree
-      (fs.access as jest.Mock<any>).mockResolvedValueOnce(undefined);
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined);
 
       // Reset mockGit.raw and set up responses
       mockGit.raw.mockReset();
@@ -587,7 +597,7 @@ describe("GitService", () => {
 
     it("should clean up orphaned directory in fallback path when tracking fails", async () => {
       // Mock - directory exists when checking in addWorktree fallback
-      (fs.access as jest.Mock<any>)
+      (fs.access as Mock<any>)
         .mockRejectedValueOnce(new Error("Not found")) // First check - directory doesn't exist
         .mockResolvedValueOnce(undefined); // Second check in fallback - directory exists
 
@@ -606,7 +616,7 @@ describe("GitService", () => {
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
       expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
-      expect(mockGit.raw).toHaveBeenCalledTimes(3); // Failed tracking add, worktree list, successful fallback add
+      expect(mockGit.raw).toHaveBeenCalledTimes(4); // Failed tracking add, worktree list, successful fallback add, LFS ls-files
     });
 
     it("should throw error when metadata creation fails", async () => {
@@ -635,9 +645,193 @@ describe("GitService", () => {
     });
   });
 
+  describe("addWorktree - LFS verification", () => {
+    beforeEach(async () => {
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+    });
+
+    it("should verify LFS files are downloaded when LFS is not skipped", async () => {
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      const lfsFiles = "file1.png\nfile2.png\nfile3.png\n";
+      const worktreeGitMock = {
+        raw: vi.fn<any>().mockResolvedValue(lfsFiles),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+      };
+
+      (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
+        if (path && path.includes("feature-1")) {
+          return worktreeGitMock;
+        }
+        return mockGit;
+      });
+
+      const mockFileHandle = {
+        read: vi.fn<any>().mockResolvedValue({
+          bytesRead: 18,
+        }),
+        close: vi.fn<any>().mockResolvedValue(undefined),
+      };
+
+      (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
+
+      const bufferSpy = vi.spyOn(Buffer, "alloc");
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(worktreeGitMock.raw).toHaveBeenCalledWith(["lfs", "ls-files", "--name-only"]);
+      expect(fs.open).toHaveBeenCalled();
+      expect(bufferSpy).toHaveBeenCalledWith(200);
+      expect(mockFileHandle.close).toHaveBeenCalled();
+
+      bufferSpy.mockRestore();
+    });
+
+    it("should skip LFS verification when skipLfs is enabled", async () => {
+      const configWithSkipLfs = createMockConfig({ skipLfs: true });
+
+      const gitServiceWithSkipLfs = new GitService(configWithSkipLfs);
+
+      mockMetadataService.createInitialMetadataFromPath.mockResolvedValueOnce(undefined);
+
+      await gitServiceWithSkipLfs.initialize();
+
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      const worktreeGitMock = {
+        raw: vi.fn<any>().mockResolvedValue("file1.png\n"),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+
+      (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
+        if (path && path.includes("feature-1")) {
+          return worktreeGitMock;
+        }
+        return mockGit;
+      });
+
+      await gitServiceWithSkipLfs.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(worktreeGitMock.raw).not.toHaveBeenCalledWith(["lfs", "ls-files", "--name-only"]);
+    });
+
+    it("should wait for LFS files to be downloaded if they are pointers", async () => {
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      const lfsFiles = "file1.png\n";
+      const worktreeGitMock = {
+        raw: vi.fn<any>().mockResolvedValue(lfsFiles),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+      };
+
+      (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
+        if (path && path.includes("feature-1")) {
+          return worktreeGitMock;
+        }
+        return mockGit;
+      });
+
+      let callCount = 0;
+      const mockFileHandle = {
+        read: vi.fn().mockImplementation((buffer: Buffer) => {
+          callCount++;
+          if (callCount === 1) {
+            buffer.write("version https://git-lfs.github.com/spec/v1", "utf8");
+            return Promise.resolve({ bytesRead: 43 });
+          }
+          buffer.write("actual image data", "utf8");
+          return Promise.resolve({ bytesRead: 17 });
+        }),
+        close: vi.fn<any>().mockResolvedValue(undefined),
+      };
+
+      (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(fs.open).toHaveBeenCalledTimes(2);
+      expect(mockFileHandle.close).toHaveBeenCalledTimes(2);
+    });
+
+    it("should warn if LFS files are not downloaded after timeout", async () => {
+      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      const lfsFiles = "file1.png\n";
+      const worktreeGitMock = {
+        raw: vi.fn<any>().mockResolvedValue(lfsFiles),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+      };
+
+      (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
+        if (path && path.includes("feature-1")) {
+          return worktreeGitMock;
+        }
+        return mockGit;
+      });
+
+      const mockFileHandle = {
+        read: vi.fn().mockImplementation((buffer: Buffer) => {
+          buffer.write("version https://git-lfs.github.com/spec/v1", "utf8");
+          return Promise.resolve({ bytesRead: 43 });
+        }),
+        close: vi.fn<any>().mockResolvedValue(undefined),
+      };
+
+      (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Some LFS files may not be fully downloaded"),
+      );
+
+      consoleWarnSpy.mockRestore();
+    }, 40000);
+
+    it("should skip verification if no LFS files exist", async () => {
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      const worktreeGitMock = {
+        raw: vi.fn<any>().mockResolvedValue(""),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+      };
+
+      (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
+        if (path && path.includes("feature-1")) {
+          return worktreeGitMock;
+        }
+        return mockGit;
+      });
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(worktreeGitMock.raw).toHaveBeenCalledWith(["lfs", "ls-files", "--name-only"]);
+      expect(fs.readFile).not.toHaveBeenCalled();
+    });
+  });
+
   describe("removeWorktree", () => {
     beforeEach(async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
     });
 
@@ -650,7 +844,7 @@ describe("GitService", () => {
 
   describe("pruneWorktrees", () => {
     beforeEach(async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
     });
 
@@ -664,9 +858,9 @@ describe("GitService", () => {
   describe("checkWorktreeStatus", () => {
     it("should return true when worktree is clean", async () => {
       const mockWorktreeGit = createMockGitService({
-        status: jest.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })),
+        status: vi.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })) as any,
       });
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const isClean = await gitService.checkWorktreeStatus(TEST_PATHS.worktree + "/feature-1");
 
@@ -676,9 +870,9 @@ describe("GitService", () => {
 
     it("should return false when worktree has changes", async () => {
       const mockWorktreeGit = createMockGitService({
-        status: jest.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: false })),
+        status: vi.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: false })) as any,
       });
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const isClean = await gitService.checkWorktreeStatus(TEST_PATHS.worktree + "/feature-1");
 
@@ -691,12 +885,12 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "feature-1",
         }),
-        raw: jest.fn<any>().mockResolvedValue("3\n"), // 3 unpushed commits
+        raw: vi.fn<any>().mockResolvedValue("3\n"), // 3 unpushed commits
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-1");
 
@@ -708,12 +902,12 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "feature-1",
         }),
-        raw: jest.fn<any>().mockResolvedValue("0\n"), // No unpushed commits
+        raw: vi.fn<any>().mockResolvedValue("0\n"), // No unpushed commits
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-1");
 
@@ -724,15 +918,15 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "feature-1",
           detached: false,
         }),
-        raw: jest.fn<any>().mockRejectedValue(new Error("Command failed")),
+        raw: vi.fn<any>().mockRejectedValue(new Error("Command failed")),
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
-      const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-1");
 
       expect(hasUnpushed).toBe(false);
@@ -745,10 +939,10 @@ describe("GitService", () => {
       await gitService.initialize();
 
       // Mock gitService methods
-      jest.spyOn(gitService, "hasUpstreamGone").mockResolvedValue(true);
+      vi.spyOn(gitService, "hasUpstreamGone").mockResolvedValue(true);
 
       // Mock metadata service to return saved metadata (use path-based method)
-      (mockMetadataService.loadMetadataFromPath as jest.Mock<any>).mockResolvedValue({
+      (mockMetadataService.loadMetadataFromPath as Mock<any>).mockResolvedValue({
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-deleted",
@@ -757,15 +951,15 @@ describe("GitService", () => {
       });
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "feature-deleted",
         }),
-        raw: jest
+        raw: vi
           .fn<any>()
           .mockResolvedValueOnce("2\n") // 2 commits after last sync
           .mockResolvedValueOnce("5\n"), // 5 total unpushed (fallback, should not be called)
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-deleted");
 
@@ -782,9 +976,9 @@ describe("GitService", () => {
     it("should return false when upstream is gone but no new commits since last sync", async () => {
       await gitService.initialize();
 
-      jest.spyOn(gitService, "hasUpstreamGone").mockResolvedValue(true);
+      vi.spyOn(gitService, "hasUpstreamGone").mockResolvedValue(true);
 
-      (mockMetadataService.loadMetadata as jest.Mock<any>).mockResolvedValue({
+      (mockMetadataService.loadMetadata as Mock<any>).mockResolvedValue({
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-deleted",
@@ -793,12 +987,12 @@ describe("GitService", () => {
       });
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "feature-deleted",
         }),
-        raw: jest.fn<any>().mockResolvedValue("0\n"), // 0 commits after last sync
+        raw: vi.fn<any>().mockResolvedValue("0\n"), // 0 commits after last sync
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-deleted");
 
@@ -809,13 +1003,13 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "",
           detached: true,
         }),
-        raw: jest.fn<any>(),
+        raw: vi.fn<any>(),
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/detached");
 
@@ -830,7 +1024,7 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest
+        branch: vi
           .fn<any>()
           .mockResolvedValueOnce({
             current: "feature-deleted",
@@ -844,9 +1038,9 @@ describe("GitService", () => {
             all: ["origin/main", "origin/feature-1"], // feature-deleted not in remotes
             current: "",
           }),
-        raw: jest.fn<any>().mockResolvedValue("origin/feature-deleted\n"),
+        raw: vi.fn<any>().mockResolvedValue("origin/feature-deleted\n"),
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/feature-deleted");
 
@@ -859,7 +1053,7 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest
+        branch: vi
           .fn<any>()
           .mockResolvedValueOnce({
             current: "feature-1",
@@ -873,9 +1067,9 @@ describe("GitService", () => {
             all: ["origin/main", "origin/feature-1"], // feature-1 exists in remotes
             current: "",
           }),
-        raw: jest.fn<any>().mockResolvedValue("origin/feature-1\n"),
+        raw: vi.fn<any>().mockResolvedValue("origin/feature-1\n"),
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/feature-1");
 
@@ -888,12 +1082,12 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "local-only",
         }),
-        raw: jest.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured")),
+        raw: vi.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured")),
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/local-only");
 
@@ -905,10 +1099,10 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "feat/autocue-frontend",
         }),
-        raw: jest
+        raw: vi
           .fn<any>()
           .mockRejectedValue(
             new Error(
@@ -916,7 +1110,7 @@ describe("GitService", () => {
             ),
           ),
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/feat/autocue-frontend");
 
@@ -932,13 +1126,13 @@ describe("GitService", () => {
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "",
           detached: true,
         }),
-        raw: jest.fn<any>(),
+        raw: vi.fn<any>(),
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       const upstreamGone = await gitService.hasUpstreamGone("/test/worktrees/detached");
 
@@ -1043,15 +1237,15 @@ branch refs/heads/feature-2`);
 
   describe("hasStashedChanges", () => {
     beforeEach(async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
     });
 
     it("should return true when worktree has stashed changes", async () => {
       const mockWorktreeGit = {
-        stashList: jest.fn<any>().mockResolvedValue({ total: 2 }),
+        stashList: vi.fn<any>().mockResolvedValue({ total: 2 }),
       } as any;
-      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+      (simpleGit as MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
 
       const result = await gitService.hasStashedChanges("/test/worktree");
 
@@ -1061,9 +1255,9 @@ branch refs/heads/feature-2`);
 
     it("should return false when worktree has no stashed changes", async () => {
       const mockWorktreeGit = {
-        stashList: jest.fn<any>().mockResolvedValue({ total: 0 }),
+        stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
       } as any;
-      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+      (simpleGit as MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
 
       const result = await gitService.hasStashedChanges("/test/worktree");
 
@@ -1072,11 +1266,11 @@ branch refs/heads/feature-2`);
 
     it("should return true when stash check fails", async () => {
       const mockWorktreeGit = {
-        stashList: jest.fn<any>().mockRejectedValue(new Error("Failed to check stash")),
+        stashList: vi.fn<any>().mockRejectedValue(new Error("Failed to check stash")),
       } as any;
-      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+      (simpleGit as MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
 
-      const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const result = await gitService.hasStashedChanges("/test/worktree");
 
       expect(result).toBe(true); // Conservative approach
@@ -1090,15 +1284,15 @@ branch refs/heads/feature-2`);
 
   describe("hasModifiedSubmodules", () => {
     beforeEach(async () => {
-      (fs.access as jest.Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
     });
 
     it("should return true when submodules are modified", async () => {
       const mockWorktreeGit = {
-        raw: jest.fn<any>().mockResolvedValue("+1234567 submodule1 (modified)"),
+        raw: vi.fn<any>().mockResolvedValue("+1234567 submodule1 (modified)"),
       } as any;
-      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+      (simpleGit as MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
 
       const result = await gitService.hasModifiedSubmodules("/test/worktree");
 
@@ -1108,9 +1302,9 @@ branch refs/heads/feature-2`);
 
     it("should return true when submodules have different commits", async () => {
       const mockWorktreeGit = {
-        raw: jest.fn<any>().mockResolvedValue("-1234567 submodule1 (new commits)"),
+        raw: vi.fn<any>().mockResolvedValue("-1234567 submodule1 (new commits)"),
       } as any;
-      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+      (simpleGit as MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
 
       const result = await gitService.hasModifiedSubmodules("/test/worktree");
 
@@ -1119,9 +1313,9 @@ branch refs/heads/feature-2`);
 
     it("should return false when no submodules or all clean", async () => {
       const mockWorktreeGit = {
-        raw: jest.fn<any>().mockResolvedValue(" 1234567 submodule1 (clean)"),
+        raw: vi.fn<any>().mockResolvedValue(" 1234567 submodule1 (clean)"),
       } as any;
-      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+      (simpleGit as MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
 
       const result = await gitService.hasModifiedSubmodules("/test/worktree");
 
@@ -1130,9 +1324,9 @@ branch refs/heads/feature-2`);
 
     it("should return false when submodule command fails", async () => {
       const mockWorktreeGit = {
-        raw: jest.fn<any>().mockRejectedValue(new Error("No submodules")),
+        raw: vi.fn<any>().mockRejectedValue(new Error("No submodules")),
       } as any;
-      (simpleGit as jest.MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
+      (simpleGit as MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
 
       const result = await gitService.hasModifiedSubmodules("/test/worktree");
 
@@ -1141,7 +1335,7 @@ branch refs/heads/feature-2`);
   });
 
   describe("hasOperationInProgress", () => {
-    let bareGit: jest.Mocked<SimpleGit>;
+    let bareGit: Mocked<SimpleGit>;
 
     beforeEach(async () => {
       bareGit = mockGit;
@@ -1149,7 +1343,7 @@ branch refs/heads/feature-2`);
         { path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" },
       ]);
 
-      (fs.access as jest.Mock<any>)
+      (fs.access as Mock<any>)
         .mockResolvedValueOnce(undefined) // bare repo exists
         .mockRejectedValueOnce(new Error("config not found")); // config check
 
@@ -1158,7 +1352,7 @@ branch refs/heads/feature-2`);
     });
 
     it("should return true when merge is in progress", async () => {
-      (fs.access as jest.Mock<any>)
+      (fs.access as Mock<any>)
         .mockRejectedValueOnce(new Error("Not found")) // MERGE_HEAD
         .mockResolvedValueOnce(undefined); // MERGE_HEAD exists
 
@@ -1169,8 +1363,8 @@ branch refs/heads/feature-2`);
     });
 
     it("should return true when rebase is in progress", async () => {
-      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("Not found"));
-      (fs.access as jest.Mock<any>)
+      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
         .mockRejectedValueOnce(new Error("Not found")) // MERGE_HEAD
         .mockRejectedValueOnce(new Error("Not found")) // CHERRY_PICK_HEAD
         .mockRejectedValueOnce(new Error("Not found")) // REVERT_HEAD
@@ -1183,7 +1377,7 @@ branch refs/heads/feature-2`);
     });
 
     it("should return false when no operation is in progress", async () => {
-      (fs.access as jest.Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
 
       const result = await gitService.hasOperationInProgress("/test/worktree");
 
@@ -1198,13 +1392,13 @@ branch refs/heads/feature-2`);
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "feature-1",
         }),
-        merge: jest.fn<any>().mockResolvedValue(undefined),
-        revparse: jest.fn<any>().mockResolvedValue("newcommit123\n"),
+        merge: vi.fn<any>().mockResolvedValue(undefined),
+        revparse: vi.fn<any>().mockResolvedValue("newcommit123\n"),
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       await gitService.updateWorktree("/test/worktrees/feature-1");
 
@@ -1222,13 +1416,13 @@ branch refs/heads/feature-2`);
       await gitService.initialize();
 
       const mockWorktreeGit = {
-        branch: jest.fn<any>().mockResolvedValue({
+        branch: vi.fn<any>().mockResolvedValue({
           current: "main",
         }),
-        merge: jest.fn<any>().mockResolvedValue(undefined),
-        revparse: jest.fn<any>().mockResolvedValue("newcommit123\n"),
+        merge: vi.fn<any>().mockResolvedValue(undefined),
+        revparse: vi.fn<any>().mockResolvedValue("newcommit123\n"),
       };
-      (simpleGit as unknown as jest.Mock).mockReturnValue(mockWorktreeGit);
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
       await gitService.updateWorktree("/test/worktrees/main");
 
