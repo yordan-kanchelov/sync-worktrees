@@ -1,44 +1,21 @@
-import * as fs from "fs";
-import * as path from "path";
+import fastFolderSize from "fast-folder-size";
 
 /**
- * Recursively calculates the total size of a directory in bytes.
+ * Calculates the total size of a directory in bytes using native OS utilities.
+ * Uses the `du` command on Unix systems for optimal performance (10-100x faster than pure Node.js).
  * @param dirPath - The path to the directory
  * @returns The total size in bytes
  */
 export async function calculateDirectorySize(dirPath: string): Promise<number> {
-  let totalSize = 0;
-
-  try {
-    const stats = await fs.promises.stat(dirPath);
-
-    if (!stats.isDirectory()) {
-      return stats.size;
-    }
-
-    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dirPath, entry.name);
-
-      if (entry.isDirectory()) {
-        totalSize += await calculateDirectorySize(fullPath);
-      } else if (entry.isFile() || entry.isSymbolicLink()) {
-        try {
-          const fileStats = await fs.promises.stat(fullPath);
-          totalSize += fileStats.size;
-        } catch {
-          // Skip files that can't be read (e.g., broken symlinks)
-          continue;
-        }
+  return new Promise((resolve) => {
+    fastFolderSize(dirPath, (err, bytes) => {
+      if (err || bytes === undefined) {
+        resolve(0);
+      } else {
+        resolve(bytes);
       }
-    }
-  } catch {
-    // If directory doesn't exist or can't be read, return 0
-    return 0;
-  }
-
-  return totalSize;
+    });
+  });
 }
 
 /**

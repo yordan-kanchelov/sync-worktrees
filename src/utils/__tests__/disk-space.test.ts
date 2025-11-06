@@ -2,15 +2,20 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { calculateDirectorySize, calculateSyncDiskSpace, formatBytes } from "../disk-space";
+
+vi.mock("fast-folder-size", () => ({
+  default: vi.fn(),
+}));
 
 describe("disk-space", () => {
   let tempDir: string;
 
   beforeEach(async () => {
     tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "disk-space-test-"));
+    vi.clearAllMocks();
   });
 
   afterEach(async () => {
@@ -48,20 +53,34 @@ describe("disk-space", () => {
 
   describe("calculateDirectorySize", () => {
     it("should return 0 for non-existent directory", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
+      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
+        callback(new Error("ENOENT"));
+        return {} as any;
+      });
+
       const size = await calculateDirectorySize(path.join(tempDir, "nonexistent"));
       expect(size).toBe(0);
     });
 
-    it("should return size for a single file", async () => {
-      const filePath = path.join(tempDir, "test.txt");
-      const content = "Hello, World!";
-      await fs.promises.writeFile(filePath, content);
+    it("should return size for a directory", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
+      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
+        callback(null, 1024);
+        return {} as any;
+      });
 
-      const size = await calculateDirectorySize(filePath);
-      expect(size).toBe(Buffer.byteLength(content));
+      const size = await calculateDirectorySize(tempDir);
+      expect(size).toBe(1024);
     });
 
-    it("should calculate size of empty directory", async () => {
+    it("should return 0 for empty directory", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
+      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
+        callback(null, 0);
+        return {} as any;
+      });
+
       const emptyDir = path.join(tempDir, "empty");
       await fs.promises.mkdir(emptyDir);
 
@@ -69,160 +88,128 @@ describe("disk-space", () => {
       expect(size).toBe(0);
     });
 
-    it("should calculate size of directory with files", async () => {
-      const dir = path.join(tempDir, "with-files");
-      await fs.promises.mkdir(dir);
+    it("should handle undefined bytes from fastFolderSize", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
+      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
+        callback(null, undefined);
+        return {} as any;
+      });
 
-      const file1Content = "File 1 content";
-      const file2Content = "File 2 content longer";
-
-      await fs.promises.writeFile(path.join(dir, "file1.txt"), file1Content);
-      await fs.promises.writeFile(path.join(dir, "file2.txt"), file2Content);
-
-      const size = await calculateDirectorySize(dir);
-      const expectedSize = Buffer.byteLength(file1Content) + Buffer.byteLength(file2Content);
-
-      expect(size).toBe(expectedSize);
+      const size = await calculateDirectorySize(tempDir);
+      expect(size).toBe(0);
     });
 
-    it("should calculate size recursively for nested directories", async () => {
-      const parentDir = path.join(tempDir, "parent");
-      const childDir = path.join(parentDir, "child");
+    it("should handle errors gracefully", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
+      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
+        callback(new Error("Permission denied"));
+        return {} as any;
+      });
 
-      await fs.promises.mkdir(parentDir);
-      await fs.promises.mkdir(childDir);
-
-      const parentFileContent = "Parent file";
-      const childFileContent = "Child file content";
-
-      await fs.promises.writeFile(path.join(parentDir, "parent.txt"), parentFileContent);
-      await fs.promises.writeFile(path.join(childDir, "child.txt"), childFileContent);
-
-      const size = await calculateDirectorySize(parentDir);
-      const expectedSize = Buffer.byteLength(parentFileContent) + Buffer.byteLength(childFileContent);
-
-      expect(size).toBe(expectedSize);
-    });
-
-    it("should handle multiple nested levels", async () => {
-      const level1 = path.join(tempDir, "level1");
-      const level2 = path.join(level1, "level2");
-      const level3 = path.join(level2, "level3");
-
-      await fs.promises.mkdir(level1);
-      await fs.promises.mkdir(level2);
-      await fs.promises.mkdir(level3);
-
-      await fs.promises.writeFile(path.join(level1, "file1.txt"), "A");
-      await fs.promises.writeFile(path.join(level2, "file2.txt"), "BB");
-      await fs.promises.writeFile(path.join(level3, "file3.txt"), "CCC");
-
-      const size = await calculateDirectorySize(level1);
-      expect(size).toBe(6); // 1 + 2 + 3 bytes
-    });
-
-    it("should skip broken symlinks gracefully", async () => {
-      const dir = path.join(tempDir, "with-symlink");
-      await fs.promises.mkdir(dir);
-
-      const validFile = path.join(dir, "valid.txt");
-      await fs.promises.writeFile(validFile, "Valid content");
-
-      // Create a broken symlink
-      const symlinkPath = path.join(dir, "broken-symlink");
-      const nonExistentTarget = path.join(tempDir, "nonexistent");
-      await fs.promises.symlink(nonExistentTarget, symlinkPath);
-
-      const size = await calculateDirectorySize(dir);
-      expect(size).toBe(Buffer.byteLength("Valid content"));
+      const size = await calculateDirectorySize(tempDir);
+      expect(size).toBe(0);
     });
   });
 
   describe("calculateSyncDiskSpace", () => {
-    it("should return N/A for empty arrays", async () => {
+    it("should return 0 B for empty arrays", async () => {
       const result = await calculateSyncDiskSpace([], []);
       expect(result).toBe("0 B");
     });
 
-    it("should calculate total size for .bare directories", async () => {
+    it("should calculate total size for bare directories", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
       const repoPath = path.join(tempDir, "repo");
-      const barePath = path.join(repoPath, ".bare");
 
-      await fs.promises.mkdir(repoPath, { recursive: true });
-      await fs.promises.mkdir(barePath);
-
-      await fs.promises.writeFile(path.join(barePath, "config"), "git config content");
+      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
+        callback(null, 1024 * 1024);
+        return {} as any;
+      });
 
       const result = await calculateSyncDiskSpace([repoPath], []);
-      expect(result).not.toBe("N/A");
-      expect(result).not.toBe("0 B");
+      expect(result).toBe("1.00 MB");
     });
 
     it("should calculate total size for worktree directories", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
       const worktreeDir = path.join(tempDir, "worktrees");
-      const branch1 = path.join(worktreeDir, "branch1");
 
-      await fs.promises.mkdir(branch1, { recursive: true });
-      await fs.promises.writeFile(path.join(branch1, "file.txt"), "worktree content");
+      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
+        callback(null, 512 * 1024);
+        return {} as any;
+      });
 
       const result = await calculateSyncDiskSpace([], [worktreeDir]);
-      expect(result).not.toBe("N/A");
-      expect(result).not.toBe("0 B");
+      expect(result).toBe("512.00 KB");
     });
 
-    it("should calculate combined size of .bare and worktree directories", async () => {
-      const repoPath = path.join(tempDir, "repo");
-      const barePath = path.join(repoPath, ".bare");
+    it("should calculate combined size of bare and worktree directories", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
+      const barePath = path.join(tempDir, ".bare");
       const worktreeDir = path.join(tempDir, "worktrees");
 
-      await fs.promises.mkdir(barePath, { recursive: true });
-      await fs.promises.mkdir(worktreeDir, { recursive: true });
-
-      const bareContent = "bare content";
-      const worktreeContent = "worktree content";
-
-      await fs.promises.writeFile(path.join(barePath, "config"), bareContent);
-      await fs.promises.writeFile(path.join(worktreeDir, "file.txt"), worktreeContent);
+      let callCount = 0;
+      vi.mocked(fastFolderSize).mockImplementation((_path: string, callback: any) => {
+        callCount++;
+        if (callCount === 1) {
+          callback(null, 1024);
+        } else {
+          callback(null, 2048);
+        }
+        return {} as any;
+      });
 
       const result = await calculateSyncDiskSpace([barePath], [worktreeDir]);
-
-      // The total size should be the sum of both contents
-      const expectedBytes = Buffer.byteLength(bareContent) + Buffer.byteLength(worktreeContent);
-
-      expect(result).toBe(formatBytes(expectedBytes));
+      expect(result).toBe(formatBytes(3072));
     });
 
     it("should handle multiple repositories and worktree directories", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
       const bare1Path = path.join(tempDir, ".bare", "repo1");
       const bare2Path = path.join(tempDir, ".bare", "repo2");
       const worktree1Dir = path.join(tempDir, "worktrees1");
       const worktree2Dir = path.join(tempDir, "worktrees2");
 
-      await fs.promises.mkdir(bare1Path, { recursive: true });
-      await fs.promises.mkdir(bare2Path, { recursive: true });
-      await fs.promises.mkdir(worktree1Dir, { recursive: true });
-      await fs.promises.mkdir(worktree2Dir, { recursive: true });
-
-      await fs.promises.writeFile(path.join(bare1Path, "file"), "A");
-      await fs.promises.writeFile(path.join(bare2Path, "file"), "BB");
-      await fs.promises.writeFile(path.join(worktree1Dir, "file"), "CCC");
-      await fs.promises.writeFile(path.join(worktree2Dir, "file"), "DDDD");
+      const sizes = [1, 2, 3, 4];
+      let callIndex = 0;
+      vi.mocked(fastFolderSize).mockImplementation((_path: string, callback: any) => {
+        callback(null, sizes[callIndex++]);
+        return {} as any;
+      });
 
       const result = await calculateSyncDiskSpace([bare1Path, bare2Path], [worktree1Dir, worktree2Dir]);
-
-      expect(result).toBe(formatBytes(10)); // 1 + 2 + 3 + 4 = 10 bytes
+      expect(result).toBe(formatBytes(10));
     });
 
-    it("should gracefully handle non-existent bare repository directories", async () => {
-      const bareRepoPath = path.join(tempDir, "nonexistent-bare");
+    it("should gracefully handle non-existent directories", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
+      vi.mocked(fastFolderSize).mockImplementation((_path: string, callback: any) => {
+        callback(new Error("ENOENT"));
+        return {} as any;
+      });
 
-      const result = await calculateSyncDiskSpace([bareRepoPath], []);
+      const result = await calculateSyncDiskSpace([path.join(tempDir, "nonexistent")], []);
       expect(result).toBe("0 B");
     });
 
-    it("should gracefully handle non-existent worktree directories", async () => {
-      const result = await calculateSyncDiskSpace([], [path.join(tempDir, "nonexistent")]);
-      expect(result).toBe("0 B");
+    it("should handle mixed success and failure", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
+      const path1 = path.join(tempDir, "exists");
+      const path2 = path.join(tempDir, "missing");
+
+      let callCount = 0;
+      vi.mocked(fastFolderSize).mockImplementation((_path: string, callback: any) => {
+        callCount++;
+        if (callCount === 1) {
+          callback(null, 1024);
+        } else {
+          callback(new Error("ENOENT"));
+        }
+        return {} as any;
+      });
+
+      const result = await calculateSyncDiskSpace([path1, path2], []);
+      expect(result).toBe("1.00 KB");
     });
   });
 });

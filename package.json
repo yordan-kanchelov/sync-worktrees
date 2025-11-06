@@ -53,6 +53,7 @@
   "dependencies": {
     "@inquirer/prompts": "^7.6.0",
     "cron-parser": "^5.4.0",
+    "fast-folder-size": "^2.4.0",
     "ink": "^6.4.0",
     "node-cron": "^4.2.0",
     "react": "^19.2.0",
