@@ -3,6 +3,7 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
+import { ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 
@@ -19,7 +20,7 @@ export class GitService {
   private git: SimpleGit | null = null;
   private bareRepoPath: string;
   private mainWorktreePath: string;
-  private defaultBranch: string = "main"; // Will be updated after detection
+  private defaultBranch: string = GIT_CONSTANTS.DEFAULT_BRANCH; // Will be updated after detection
   private metadataService: WorktreeMetadataService;
   private statusService: WorktreeStatusService;
   private logger: Logger;
@@ -30,7 +31,7 @@ export class GitService {
   ) {
     this.logger = logger ?? Logger.createDefault(undefined, config.debug);
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
-    this.mainWorktreePath = path.join(this.config.worktreeDir, "main"); // Temporary, will be updated
+    this.mainWorktreePath = path.join(this.config.worktreeDir, GIT_CONSTANTS.DEFAULT_BRANCH); // Temporary, will be updated
     this.metadataService = new WorktreeMetadataService();
     this.statusService = new WorktreeStatusService({ skipLfs: this.config.skipLfs });
   }
@@ -46,7 +47,9 @@ export class GitService {
       // Clone as bare repository
       this.logger.info(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
-      const cloneGit = this.isLfsSkipEnabled() ? simpleGit().env({ GIT_LFS_SKIP_SMUDGE: "1" }) : simpleGit();
+      const cloneGit = this.isLfsSkipEnabled()
+        ? simpleGit().env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
+        : simpleGit();
       await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare"]);
       this.logger.info("✅ Clone successful.");
     }
@@ -101,7 +104,7 @@ export class GitService {
           await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
           // Set upstream tracking after creating worktree
           const worktreeGit = this.isLfsSkipEnabled()
-            ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+            ? simpleGit(absoluteWorktreePath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
             : simpleGit(absoluteWorktreePath);
           await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
         } else {
@@ -149,7 +152,7 @@ export class GitService {
 
       if (!mainWorktreeRegistered) {
         // Only warn in non-test environments as this is common in tests due to Git state
-        if (process.env.NODE_ENV !== "test") {
+        if (process.env.NODE_ENV !== ENV_CONSTANTS.NODE_ENV_TEST) {
           this.logger.warn(`Main worktree was created but not found in worktree list. This may cause issues.`);
         }
       }
@@ -176,7 +179,7 @@ export class GitService {
     this.logger.info("Fetching latest data from remote...");
 
     if (this.isLfsSkipEnabled()) {
-      await git.env({ GIT_LFS_SKIP_SMUDGE: "1" }).fetch(["--all", "--prune"]);
+      await git.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }).fetch(["--all", "--prune"]);
     } else {
       await git.fetch(["--all", "--prune"]);
     }
@@ -187,7 +190,7 @@ export class GitService {
 
     // Update only the remote ref for the branch to keep refs/remotes/origin/* fresh
     if (this.isLfsSkipEnabled()) {
-      await git.env({ GIT_LFS_SKIP_SMUDGE: "1" }).fetch(["origin", branchName, "--prune"]);
+      await git.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }).fetch(["origin", branchName, "--prune"]);
     } else {
       await git.fetch(["origin", branchName, "--prune"]);
     }
@@ -277,7 +280,7 @@ export class GitService {
               const buffer = Buffer.alloc(200);
               const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
               const header = buffer.subarray(0, bytesRead).toString("utf8");
-              if (header.startsWith("version https://git-lfs.github.com/spec/")) {
+              if (header.startsWith(GIT_CONSTANTS.LFS_HEADER)) {
                 allDownloaded = false;
                 notDownloaded.push(file);
               }
@@ -315,7 +318,7 @@ export class GitService {
   private async createWorktreeMetadata(bareGit: SimpleGit, worktreePath: string, branchName: string): Promise<void> {
     try {
       const worktreeGit = this.isLfsSkipEnabled()
-        ? simpleGit(worktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+        ? simpleGit(worktreePath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
         : simpleGit(worktreePath);
       const currentCommit = await worktreeGit.revparse(["HEAD"]);
       const parentCommit = await bareGit.revparse([this.defaultBranch]);
@@ -336,7 +339,7 @@ export class GitService {
 
   async addWorktree(branchName: string, worktreePath: string): Promise<void> {
     const bareGit = this.isLfsSkipEnabled()
-      ? simpleGit(this.bareRepoPath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+      ? simpleGit(this.bareRepoPath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
       : simpleGit(this.bareRepoPath);
     // Use absolute path for worktree add to avoid relative path issues
     const absoluteWorktreePath = path.resolve(worktreePath);
@@ -371,7 +374,7 @@ export class GitService {
         await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
 
         const worktreeGit = this.isLfsSkipEnabled()
-          ? simpleGit(absoluteWorktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+          ? simpleGit(absoluteWorktreePath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
           : simpleGit(absoluteWorktreePath);
         await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
       } else {
@@ -732,8 +735,7 @@ export class GitService {
         // If all else fails, try to detect from remote branches
         try {
           const remoteBranches = await bareGit.branch(["-r"]);
-          // Common default branch names in order of preference
-          const commonDefaults = ["main", "master", "develop", "trunk"];
+          const commonDefaults = GIT_CONSTANTS.COMMON_DEFAULT_BRANCHES;
           for (const defaultName of commonDefaults) {
             if (remoteBranches.all.some((branch) => branch === `origin/${defaultName}`)) {
               return defaultName;
@@ -745,11 +747,11 @@ export class GitService {
       }
     }
     // Final fallback
-    return "main";
+    return GIT_CONSTANTS.DEFAULT_BRANCH;
   }
 
   private isLfsSkipEnabled(): boolean {
-    return this.config.skipLfs || process.env.GIT_LFS_SKIP_SMUDGE === "1";
+    return this.config.skipLfs || process.env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] === "1";
   }
 
   async getWorktrees(): Promise<{ path: string; branch: string }[]> {
@@ -781,7 +783,7 @@ export class GitService {
 
   async updateWorktree(worktreePath: string): Promise<void> {
     const worktreeGit = this.isLfsSkipEnabled()
-      ? simpleGit(worktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+      ? simpleGit(worktreePath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
       : simpleGit(worktreePath);
 
     // Perform a fast-forward merge
@@ -866,7 +868,7 @@ export class GitService {
 
   async resetToUpstream(worktreePath: string, branch: string): Promise<void> {
     const worktreeGit = this.isLfsSkipEnabled()
-      ? simpleGit(worktreePath).env({ GIT_LFS_SKIP_SMUDGE: "1" })
+      ? simpleGit(worktreePath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
       : simpleGit(worktreePath);
 
     await worktreeGit.reset(["--hard", `origin/${branch}`]);

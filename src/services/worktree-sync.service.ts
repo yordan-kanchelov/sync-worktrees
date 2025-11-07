@@ -3,7 +3,7 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG } from "../constants";
+import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { retry } from "../utils/retry";
@@ -428,7 +428,7 @@ export class WorktreeSyncService {
   ): Promise<void> {
     this.logger.info("Step 4: Checking for worktrees that need updates...");
 
-    const divergedDir = path.join(this.config.worktreeDir, ".diverged");
+    const divergedDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
     try {
       const diverged = await fs.readdir(divergedDir);
       if (diverged.length > 0) {
@@ -500,11 +500,7 @@ export class WorktreeSyncService {
             } catch (error) {
               const errorMessage = getErrorMessage(error);
 
-              if (
-                errorMessage.includes("Not possible to fast-forward") ||
-                errorMessage.includes("fatal: Not possible to fast-forward, aborting") ||
-                errorMessage.includes("cannot fast-forward")
-              ) {
+              if (ERROR_MESSAGES.FAST_FORWARD_FAILED.some((msg) => errorMessage.includes(msg))) {
                 this.logger.info(
                   `    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`,
                 );
@@ -624,7 +620,7 @@ export class WorktreeSyncService {
 
   private async divergeWorktree(worktreePath: string, branchName: string): Promise<string> {
     // Create .diverged directory inside worktreeDir
-    const divergedBaseDir = path.join(this.config.worktreeDir, ".diverged");
+    const divergedBaseDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
 
     const timestamp = new Date().toISOString().split("T")[0];
     const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
@@ -653,7 +649,7 @@ export class WorktreeSyncService {
     const metadata = {
       originalBranch: branchName,
       divergedAt: new Date().toISOString(),
-      reason: "diverged-history-with-changes",
+      reason: METADATA_CONSTANTS.DIVERGED_REASON,
       originalPath: worktreePath,
       localCommit: await this.gitService.getCurrentCommit(divergedPath),
       remoteCommit: await this.gitService.getRemoteCommit(`origin/${branchName}`),
@@ -665,7 +661,10 @@ export class WorktreeSyncService {
   Original worktree location: ${worktreePath}`,
     };
 
-    await fs.writeFile(path.join(divergedPath, ".diverged-info.json"), JSON.stringify(metadata, null, 2));
+    await fs.writeFile(
+      path.join(divergedPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE),
+      JSON.stringify(metadata, null, 2),
+    );
 
     return divergedPath;
   }

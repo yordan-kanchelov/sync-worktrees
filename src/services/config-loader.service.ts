@@ -2,7 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
 
-import { DEFAULT_CONFIG } from "../constants";
+import { CONFIG_CONSTANTS, DEFAULT_CONFIG } from "../constants";
 
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
 
@@ -223,7 +223,7 @@ export class ConfigLoaderService {
       name: repo.name,
       repoUrl: repo.repoUrl,
       worktreeDir: this.resolvePath(repo.worktreeDir, configDir),
-      cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? "0 * * * *",
+      cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? DEFAULT_CONFIG.CRON_SCHEDULE,
       runOnce: repo.runOnce ?? defaults?.runOnce ?? false,
     };
 
@@ -279,7 +279,7 @@ export class ConfigLoaderService {
     return repositories.filter((repo) => {
       return patterns.some((pattern) => {
         if (pattern.includes("*")) {
-          const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
+          const regex = new RegExp("^" + pattern.replace(/\*/g, CONFIG_CONSTANTS.WILDCARD_PATTERN) + "$");
           return regex.test(repo.name);
         }
         return repo.name === pattern;
