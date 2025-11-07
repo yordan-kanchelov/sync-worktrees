@@ -15,6 +15,15 @@ export interface RetryOptions {
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;
+  /**
+   * Add random jitter to retry delays to prevent thundering herd problem
+   * in concurrent operations. Jitter is a random value between 0 and jitterMs
+   * added to the calculated delay.
+   *
+   * Recommended for parallel operations to spread out retries.
+   * Default: 0 (no jitter)
+   */
+  jitterMs?: number;
   shouldRetry?: (error: unknown, context?: LfsErrorContext) => boolean;
   onRetry?: (error: unknown, attempt: number, context?: LfsErrorContext) => void;
   lfsRetryHandler?: (context: LfsErrorContext) => void;
@@ -26,6 +35,7 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
   initialDelayMs: 1000,
   maxDelayMs: 600000, // 10 minutes
   backoffMultiplier: 2,
+  jitterMs: 0,
   shouldRetry: (error, context) => {
     const err = error as ErrorWithCode;
 
@@ -102,7 +112,12 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
         opts.lfsRetryHandler(lfsContext);
       }
 
-      const delay = Math.min(opts.initialDelayMs * Math.pow(opts.backoffMultiplier, attempt - 1), opts.maxDelayMs);
+      const baseDelay = Math.min(opts.initialDelayMs * Math.pow(opts.backoffMultiplier, attempt - 1), opts.maxDelayMs);
+
+      // Add jitter to prevent thundering herd in concurrent operations
+      // Jitter is a random value between 0 and jitterMs
+      const jitter = opts.jitterMs > 0 ? Math.random() * opts.jitterMs : 0;
+      const delay = baseDelay + jitter;
 
       opts.onRetry(error, attempt, lfsContext);
 
