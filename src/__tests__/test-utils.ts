@@ -4,6 +4,7 @@ import * as path from "path";
 
 import { vi } from "vitest";
 
+import type { Logger } from "../services/logger.service";
 import type { Config } from "../types";
 import type { SimpleGit } from "simple-git";
 
@@ -62,6 +63,16 @@ export function createMockConfig(overrides: Partial<Config> = {}): Config {
     runOnce: false,
     ...overrides,
   };
+}
+
+// Mock Logger Factory
+export function createMockLogger(): Logger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  } as unknown as Logger;
 }
 
 // Temporary Directory Helper

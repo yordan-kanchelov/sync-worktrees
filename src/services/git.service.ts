@@ -6,6 +6,7 @@ import simpleGit from "simple-git";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 
+import { Logger } from "./logger.service";
 import { WorktreeMetadataService } from "./worktree-metadata.service";
 import { WorktreeStatusService } from "./worktree-status.service";
 
@@ -21,8 +22,13 @@ export class GitService {
   private defaultBranch: string = "main"; // Will be updated after detection
   private metadataService: WorktreeMetadataService;
   private statusService: WorktreeStatusService;
+  private logger: Logger;
 
-  constructor(private config: Config) {
+  constructor(
+    private config: Config,
+    logger?: Logger,
+  ) {
+    this.logger = logger ?? Logger.createDefault(undefined, config.debug);
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, "main"); // Temporary, will be updated
     this.metadataService = new WorktreeMetadataService();
@@ -35,14 +41,14 @@ export class GitService {
     try {
       // Check if bare repo already exists
       await fs.access(path.join(this.bareRepoPath, "HEAD"));
-      console.log(`Bare repository at "${this.bareRepoPath}" already exists. Using it.`);
+      this.logger.info(`Bare repository at "${this.bareRepoPath}" already exists. Using it.`);
     } catch {
       // Clone as bare repository
-      console.log(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
+      this.logger.info(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
       const cloneGit = this.isLfsSkipEnabled() ? simpleGit().env({ GIT_LFS_SKIP_SMUDGE: "1" }) : simpleGit();
       await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare"]);
-      console.log("✅ Clone successful.");
+      this.logger.info("✅ Clone successful.");
     }
 
     // Configure bare repository for worktrees
@@ -62,13 +68,13 @@ export class GitService {
     }
 
     // Fetch all remote branches to ensure they exist locally
-    console.log("Fetching remote branches...");
+    this.logger.info("Fetching remote branches...");
     await bareGit.fetch(["--all"]);
 
     // Detect the default branch
     this.defaultBranch = await this.detectDefaultBranch(bareGit);
     this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
-    console.log(`Detected default branch: ${this.defaultBranch}`);
+    this.logger.info(`Detected default branch: ${this.defaultBranch}`);
 
     // Check if main worktree exists
     let needsMainWorktree = true;
@@ -81,7 +87,7 @@ export class GitService {
 
     if (needsMainWorktree) {
       // Create main worktree if it doesn't exist
-      console.log(`Creating ${this.defaultBranch} worktree at "${this.mainWorktreePath}"...`);
+      this.logger.info(`Creating ${this.defaultBranch} worktree at "${this.mainWorktreePath}"...`);
       await fs.mkdir(this.config.worktreeDir, { recursive: true });
       // Use absolute path for worktree add to avoid relative path issues
       const absoluteWorktreePath = path.resolve(this.mainWorktreePath);
@@ -114,18 +120,18 @@ export class GitService {
         const errorMessage = getErrorMessage(error);
         // Check if error is because directory already exists
         if (errorMessage.includes("already exists")) {
-          console.log(
+          this.logger.info(
             `${this.defaultBranch} worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`,
           );
         } else {
           // Fallback to simple add if tracking setup fails
-          console.warn(`Failed to create ${this.defaultBranch} worktree with tracking, using simple add: ${error}`);
+          this.logger.warn(`Failed to create ${this.defaultBranch} worktree with tracking, using simple add: ${error}`);
           try {
             await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
           } catch (fallbackError) {
             const fallbackErrorMessage = getErrorMessage(fallbackError);
             if (fallbackErrorMessage.includes("already exists")) {
-              console.log(
+              this.logger.info(
                 `${this.defaultBranch} worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`,
               );
             } else {
@@ -144,7 +150,7 @@ export class GitService {
       if (!mainWorktreeRegistered) {
         // Only warn in non-test environments as this is common in tests due to Git state
         if (process.env.NODE_ENV !== "test") {
-          console.warn(`Main worktree was created but not found in worktree list. This may cause issues.`);
+          this.logger.warn(`Main worktree was created but not found in worktree list. This may cause issues.`);
         }
       }
     }
@@ -167,7 +173,7 @@ export class GitService {
 
   async fetchAll(): Promise<void> {
     const git = this.getGit();
-    console.log("Fetching latest data from remote...");
+    this.logger.info("Fetching latest data from remote...");
 
     if (this.isLfsSkipEnabled()) {
       await git.env({ GIT_LFS_SKIP_SMUDGE: "1" }).fetch(["--all", "--prune"]);
@@ -245,7 +251,7 @@ export class GitService {
       }
 
       if (this.config.debug) {
-        console.log(`  - Verifying ${lfsFileList.length} LFS files are downloaded...`);
+        this.logger.info(`  - Verifying ${lfsFileList.length} LFS files are downloaded...`);
       }
 
       const sampleSize = Math.min(5, lfsFileList.length);
@@ -286,7 +292,7 @@ export class GitService {
 
         if (allDownloaded) {
           if (this.config.debug) {
-            console.log(`  - ✅ LFS files verified (${samplesToCheck.length} samples checked)`);
+            this.logger.info(`  - ✅ LFS files verified (${samplesToCheck.length} samples checked)`);
           }
           return;
         }
@@ -297,12 +303,12 @@ export class GitService {
         }
       }
 
-      console.warn(
+      this.logger.warn(
         `  - ⚠️ Warning: Some LFS files may not be fully downloaded after ${maxRetries} seconds. ` +
           `This might cause issues if tools access the worktree immediately.`,
       );
     } catch (error) {
-      console.warn(`  - ⚠️ Warning: Could not verify LFS files for '${branchName}': ${error}`);
+      this.logger.warn(`  - ⚠️ Warning: Could not verify LFS files for '${branchName}': ${error}`);
     }
   }
 
@@ -323,7 +329,7 @@ export class GitService {
         parentCommit.trim(),
       );
     } catch (metadataError) {
-      console.error(`  - ❌ Failed to create metadata for '${branchName}': ${metadataError}`);
+      this.logger.error(`  - ❌ Failed to create metadata for '${branchName}': ${metadataError}`);
       throw new Error(`Metadata creation failed for ${branchName}. This worktree cannot be auto-managed.`);
     }
   }
@@ -345,11 +351,11 @@ export class GitService {
       const isValidWorktree = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
 
       if (isValidWorktree) {
-        console.log(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
+        this.logger.info(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
         return;
       } else {
         // Directory exists but is not a valid worktree - clean it up
-        console.log(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}'`);
+        this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}'`);
         await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
       }
     } catch {
@@ -381,7 +387,7 @@ export class GitService {
         ]);
       }
 
-      console.log(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
+      this.logger.info(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
 
       // Verify LFS files are properly downloaded (if not skipping LFS)
       if (!this.isLfsSkipEnabled()) {
@@ -405,11 +411,11 @@ export class GitService {
         const existingWorktree = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
 
         if (existingWorktree && !existingWorktree.isPrunable) {
-          console.log(`  - Worktree for '${branchName}' was created by concurrent operation`);
+          this.logger.info(`  - Worktree for '${branchName}' was created by concurrent operation`);
           return;
         }
 
-        console.warn(`  - Worktree already registered but missing. Pruning and retrying...`);
+        this.logger.warn(`  - Worktree already registered but missing. Pruning and retrying...`);
         await bareGit.raw(["worktree", "prune"]);
         // Clean up directory if it exists
         try {
@@ -428,7 +434,7 @@ export class GitService {
             absoluteWorktreePath,
             `origin/${branchName}`,
           ]);
-          console.log(`  - Created worktree for '${branchName}' after pruning`);
+          this.logger.info(`  - Created worktree for '${branchName}' after pruning`);
 
           // Verify LFS files are properly downloaded (if not skipping LFS)
           if (!this.isLfsSkipEnabled()) {
@@ -438,14 +444,14 @@ export class GitService {
           await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
           return;
         } catch (retryError) {
-          console.error(`  - Failed to create worktree after pruning: ${retryError}`);
+          this.logger.error(`  - Failed to create worktree after pruning: ${retryError}`);
           throw retryError;
         }
       }
 
       // If the worktree add fails with tracking, fall back to non-tracking version
       // This handles edge cases where the remote branch might not exist yet
-      console.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${error}`);
+      this.logger.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${error}`);
 
       // Check again if directory exists before fallback attempt
       try {
@@ -455,11 +461,11 @@ export class GitService {
         const isValidWorktree = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
 
         if (isValidWorktree) {
-          console.log(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
+          this.logger.info(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
           return;
         } else {
           // Directory exists but is not a valid worktree - clean it up
-          console.log(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}' before fallback attempt`);
+          this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}' before fallback attempt`);
           await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
         }
       } catch {
@@ -468,7 +474,7 @@ export class GitService {
 
       try {
         await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
-        console.log(`  - Created worktree for '${branchName}' (without tracking)`);
+        this.logger.info(`  - Created worktree for '${branchName}' (without tracking)`);
 
         // Verify LFS files are properly downloaded (if not skipping LFS)
         if (!this.isLfsSkipEnabled()) {
@@ -486,7 +492,7 @@ export class GitService {
           const existingWorktree = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
 
           if (existingWorktree && !existingWorktree.isPrunable) {
-            console.log(`  - Worktree for '${branchName}' was created by concurrent operation during fallback`);
+            this.logger.info(`  - Worktree for '${branchName}' was created by concurrent operation during fallback`);
             return;
           }
         }
@@ -501,20 +507,20 @@ export class GitService {
     const bareGit = simpleGit(this.bareRepoPath);
 
     await bareGit.raw(["worktree", "remove", worktreePath, "--force"]);
-    console.log(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
+    this.logger.info(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
 
     // Clean up metadata using the worktree path
     try {
       await this.metadataService.deleteMetadataFromPath(this.bareRepoPath, worktreePath);
     } catch (metadataError) {
-      console.warn(`Failed to delete metadata for worktree: ${metadataError}`);
+      this.logger.warn(`Failed to delete metadata for worktree: ${metadataError}`);
     }
   }
 
   async pruneWorktrees(): Promise<void> {
     const bareGit = simpleGit(this.bareRepoPath);
     await bareGit.raw(["worktree", "prune"]);
-    console.log("Pruned worktree metadata.");
+    this.logger.info("Pruned worktree metadata.");
   }
 
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {
@@ -568,7 +574,7 @@ export class GitService {
       return unpushedCount > 0;
     } catch (error) {
       // If the command fails (e.g., branch doesn't exist), assume it's safe
-      console.error(`Error checking unpushed commits: ${error}`);
+      this.logger.error(`Error checking unpushed commits: ${error}`);
       return false;
     }
   }
@@ -629,7 +635,7 @@ export class GitService {
         return false;
       }
 
-      console.error(
+      this.logger.error(
         `Unexpected error checking upstream status for ${worktreePath}. ` +
           `This might indicate a real issue rather than a missing upstream. ` +
           `Error: ${errorMessage}`,
@@ -646,7 +652,7 @@ export class GitService {
       return stashList.total > 0;
     } catch (error) {
       // If stash check fails, assume it's unsafe to delete
-      console.error(`Error checking stash: ${error}`);
+      this.logger.error(`Error checking stash: ${error}`);
       return true;
     }
   }
@@ -801,7 +807,7 @@ export class GitService {
         this.defaultBranch,
       );
     } catch (metadataError) {
-      console.warn(`Failed to update metadata for worktree: ${metadataError}`);
+      this.logger.warn(`Failed to update metadata for worktree: ${metadataError}`);
     }
   }
 
@@ -811,7 +817,7 @@ export class GitService {
     // Validate branch matches
     const branchInfo = await worktreeGit.branch();
     if (branchInfo.current !== expectedBranch) {
-      console.warn(`Branch mismatch in hasDivergedHistory: expected ${expectedBranch}, got ${branchInfo.current}`);
+      this.logger.warn(`Branch mismatch in hasDivergedHistory: expected ${expectedBranch}, got ${branchInfo.current}`);
       return false; // Conservative: assume can fast-forward
     }
 
@@ -853,7 +859,7 @@ export class GitService {
 
       return localTree.trim() === remoteTree.trim();
     } catch (error) {
-      console.error(`Error comparing tree content: ${error}`);
+      this.logger.error(`Error comparing tree content: ${error}`);
       return false; // Assume trees are different if we can't compare
     }
   }
@@ -876,7 +882,7 @@ export class GitService {
         this.defaultBranch,
       );
     } catch (metadataError) {
-      console.warn(`Failed to update metadata after reset: ${metadataError}`);
+      this.logger.warn(`Failed to update metadata after reset: ${metadataError}`);
     }
   }
 

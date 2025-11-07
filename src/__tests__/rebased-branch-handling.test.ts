@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 
+import { createMockLogger } from "./test-utils";
+
 import type { GitService } from "../services/git.service";
+import type { Logger } from "../services/logger.service";
 import type { Config } from "../types";
 import type { Mock, Mocked } from "vitest";
 
@@ -56,9 +59,11 @@ describe("Rebased Branch Handling", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
   let mockGitService: Mocked<GitService>;
+  let mockLogger: Logger;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLogger = createMockLogger();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -66,6 +71,7 @@ describe("Rebased Branch Handling", () => {
       cronSchedule: "0 * * * *",
       runOnce: true,
       updateExistingWorktrees: true,
+      logger: mockLogger,
     };
 
     mockGitService = mockGitServiceInstance;
@@ -291,11 +297,9 @@ describe("Rebased Branch Handling", () => {
         return [];
       });
 
-      const consoleSpy = vi.spyOn(console, "log");
-
       await service.sync();
 
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("📦 Note: 2 diverged worktree(s)"));
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("📦 Note: 2 diverged worktree(s)"));
     });
 
     it("should ignore .diverged directory during cleanup", async () => {
@@ -370,11 +374,12 @@ describe("Rebased Branch Handling", () => {
       mockGitService.canFastForward.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
-      const consoleSpy = vi.spyOn(console, "error");
-
       await service.sync();
 
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Error checking worktree"), expect.any(Error));
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining("Error checking worktree"),
+        expect.any(Error),
+      );
     });
 
     it("should handle branch names with special characters", async () => {
@@ -537,8 +542,6 @@ describe("Rebased Branch Handling", () => {
         }
       });
 
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
       await service.sync();
 
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
@@ -547,7 +550,7 @@ describe("Rebased Branch Handling", () => {
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("feature-diverged-behind", expect.any(String));
 
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect(mockLogger.error).toHaveBeenCalledWith(
         expect.stringContaining("Failed to update 'feature-diverged-behind':"),
         expect.objectContaining({
           message: expect.stringContaining("Could not resolve host"),

@@ -6,9 +6,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 
-import { TEST_PATHS, createMockConfig } from "./test-utils";
+import { TEST_PATHS, createMockConfig, createMockLogger } from "./test-utils";
 // import { parseArguments } from '../utils/cli'; // Skip due to ESM issues
 
+import type { Logger } from "../services/logger.service";
 import type { SimpleGit } from "simple-git";
 import type { Mock, Mocked } from "vitest";
 
@@ -21,9 +22,11 @@ vi.mock("node-cron");
 describe("Integration Tests", () => {
   let mockGit: Mocked<SimpleGit>;
   let mockScheduledTask: { start: Mock; stop: Mock };
+  let mockLogger: Logger;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLogger = createMockLogger();
 
     // Setup mock git
     mockGit = {
@@ -93,7 +96,7 @@ describe("Integration Tests", () => {
         .mockResolvedValueOnce({ all: [], current: "main" } as any) // for main worktree
         .mockResolvedValueOnce({ all: [], current: "main" } as any); // for feature-2 worktree
 
-      const config = createMockConfig({ runOnce: true });
+      const config = createMockConfig({ runOnce: true, logger: mockLogger });
 
       const service = new WorktreeSyncService(config);
       await service.initialize();
@@ -139,7 +142,7 @@ describe("Integration Tests", () => {
 
   describe("Cron scheduling", () => {
     it("should run once and exit when runOnce is true", async () => {
-      const config = createMockConfig({ runOnce: true });
+      const config = createMockConfig({ runOnce: true, logger: mockLogger });
 
       const service = new WorktreeSyncService(config);
       await service.initialize();
@@ -152,7 +155,7 @@ describe("Integration Tests", () => {
 
   describe("Error handling", () => {
     it("should handle and recover from sync errors", async () => {
-      const config = createMockConfig({ runOnce: true });
+      const config = createMockConfig({ runOnce: true, logger: mockLogger });
 
       const service = new WorktreeSyncService(config);
       await service.initialize();
@@ -162,14 +165,14 @@ describe("Integration Tests", () => {
 
       // Should throw but log the error
       await expect(service.sync()).rejects.toThrow("Network error");
-      expect(console.error).toHaveBeenCalledWith(
+      expect(mockLogger.error).toHaveBeenCalledWith(
         "\n❌ Error during worktree synchronization after all retry attempts:",
         expect.any(Error),
       );
     });
 
     it("should continue sync even if individual worktree operations fail", async () => {
-      const config = createMockConfig({ runOnce: true });
+      const config = createMockConfig({ runOnce: true, logger: mockLogger });
 
       // Make first worktree add fail
       mockGit.raw.mockRejectedValueOnce(new Error("Worktree already exists")).mockResolvedValue("");
@@ -184,7 +187,7 @@ describe("Integration Tests", () => {
 
   describe("Complex scenarios", () => {
     it("should handle mixed operations: add, remove, and skip", async () => {
-      const config = createMockConfig({ runOnce: true });
+      const config = createMockConfig({ runOnce: true, logger: mockLogger });
 
       // Setup: existing worktrees include some to keep, some to remove
       (fs.readdir as Mock<any>).mockResolvedValue([
@@ -337,7 +340,7 @@ branch refs/heads/dirty-branch
       expect(operationCalls).not.toContainEqual(["worktree", "remove", "/test/worktrees/dirty-branch", "--force"]);
 
       // Should log warning about dirty-branch
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Skipping removal of 'dirty-branch'"));
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Skipping removal of 'dirty-branch'"));
     });
   });
 });

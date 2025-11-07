@@ -2,10 +2,12 @@ import * as fs from "fs/promises";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createMockLogger } from "../../__tests__/test-utils";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { Config } from "../../types";
 import type { GitService } from "../git.service";
+import type { Logger } from "../logger.service";
 import type { Mock, Mocked } from "vitest";
 
 vi.mock("fs/promises");
@@ -15,9 +17,12 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
   let mockGitService: Mocked<GitService>;
+  let mockLogger: Logger;
 
   beforeEach(() => {
     vi.clearAllMocks();
+
+    mockLogger = createMockLogger();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
@@ -25,6 +30,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       cronSchedule: "0 * * * *",
       runOnce: true,
       updateExistingWorktrees: true,
+      logger: mockLogger,
     };
 
     service = new WorktreeSyncService(mockConfig);
@@ -196,9 +202,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
   describe("No worktrees need updating", () => {
     it("should log that all worktrees are up to date", async () => {
-      const consoleSpy = vi.spyOn(console, "log");
-
-      // All worktrees are up to date (not behind)
       mockGitService.isWorktreeBehind.mockResolvedValue(false);
 
       await service.sync();
@@ -207,7 +210,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       expect(mockGitService.isWorktreeBehind).toHaveBeenCalledTimes(3);
       expect(mockGitService.updateWorktree).not.toHaveBeenCalled();
 
-      expect(consoleSpy).toHaveBeenCalledWith("  - All worktrees are up to date.");
+      expect(mockLogger.info).toHaveBeenCalledWith("  - All worktrees are up to date.");
     });
   });
 });

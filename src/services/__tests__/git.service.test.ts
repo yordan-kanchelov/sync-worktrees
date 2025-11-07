@@ -10,11 +10,13 @@ import {
   buildGitStatusResponse,
   createMockConfig,
   createMockGitService,
+  createMockLogger,
   createWorktreeListOutput,
 } from "../../__tests__/test-utils";
 import { GitService } from "../git.service";
 
 import type { Config } from "../../types";
+import type { Logger } from "../logger.service";
 import type { SimpleGit } from "simple-git";
 import type { Mock, Mocked, MockedFunction } from "vitest";
 
@@ -53,10 +55,14 @@ describe("GitService", () => {
   let mockConfig: Config;
   let mockGit: Mocked<SimpleGit>;
   let mockMetadataService: any;
+  let mockLogger: Logger;
 
   beforeEach(() => {
     // Reset all mocks
     vi.clearAllMocks();
+
+    // Setup mock logger
+    mockLogger = createMockLogger();
 
     // Setup mock config
     mockConfig = createMockConfig();
@@ -81,7 +87,7 @@ describe("GitService", () => {
     // Mock simpleGit factory
     (simpleGit as unknown as Mock).mockReturnValue(mockGit);
 
-    gitService = new GitService(mockConfig);
+    gitService = new GitService(mockConfig, mockLogger);
   });
 
   describe("initialize", () => {
@@ -821,8 +827,6 @@ describe("GitService", () => {
     });
 
     it("should warn if LFS files are not downloaded after timeout", async () => {
-      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
       mockGit.branch.mockResolvedValueOnce({
         all: [],
         current: "main",
@@ -853,11 +857,9 @@ describe("GitService", () => {
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining("Some LFS files may not be fully downloaded"),
       );
-
-      consoleWarnSpy.mockRestore();
     }, 40000);
 
     it("should skip verification if no LFS files exist", async () => {
@@ -982,13 +984,10 @@ describe("GitService", () => {
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-1");
 
       expect(hasUnpushed).toBe(false);
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Error checking unpushed commits"));
-
-      consoleSpy.mockRestore();
+      expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining("Error checking unpushed commits"));
     });
 
     it("should use metadata when upstream is gone", async () => {
@@ -1371,15 +1370,12 @@ prunable
       } as any;
       (simpleGit as MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
 
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const result = await gitService.hasStashedChanges("/test/worktree");
 
       expect(result).toBe(true); // Conservative approach
-      expect(consoleSpy).toHaveBeenCalledWith(
+      expect(mockLogger.error).toHaveBeenCalledWith(
         expect.stringContaining("Error checking stash: Error: Failed to check stash"),
       );
-
-      consoleSpy.mockRestore();
     });
   });
 

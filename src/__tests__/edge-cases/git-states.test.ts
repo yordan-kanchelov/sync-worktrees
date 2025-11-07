@@ -3,8 +3,10 @@ import * as fs from "fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeSyncService } from "../../services/worktree-sync.service";
+import { createMockLogger } from "../test-utils";
 
 import type { GitService } from "../../services/git.service";
+import type { Logger } from "../../services/logger.service";
 import type { Config } from "../../types";
 import type { Mock, Mocked } from "vitest";
 
@@ -53,15 +55,18 @@ describe("Git States Edge Cases", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
   let mockGitService: Mocked<GitService>;
+  let mockLogger: Logger;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLogger = createMockLogger();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
       worktreeDir: "/test/worktrees",
       cronSchedule: "0 * * * *",
       runOnce: false,
+      logger: mockLogger,
     };
 
     mockGitService = mockGitServiceInstance;
@@ -86,7 +91,10 @@ describe("Git States Edge Cases", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Error checking worktree"), expect.any(Error));
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining("Error checking worktree"),
+        expect.any(Error),
+      );
     });
 
     it("should handle worktree with HEAD pointing to non-existent branch", async () => {
@@ -149,7 +157,7 @@ describe("Git States Edge Cases", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      const allLogs = (console.log as Mock).mock.calls.map((call) => call.join(" "));
+      const allLogs = (mockLogger.info as Mock).mock.calls.map((call) => call.join(" "));
       expect(allLogs.some((log) => /uncommitted changes|operation in progress/.test(log))).toBe(true);
     });
 
@@ -212,7 +220,7 @@ describe("Git States Edge Cases", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      const allLogs = (console.log as Mock).mock.calls.map((call) => call.join(" "));
+      const allLogs = (mockLogger.info as Mock).mock.calls.map((call) => call.join(" "));
       expect(allLogs.some((log) => /operation in progress/.test(log))).toBe(true);
     });
 
@@ -274,7 +282,7 @@ describe("Git States Edge Cases", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(
+      expect(mockLogger.info).toHaveBeenCalledWith(
         expect.stringContaining("uncommitted changes, unpushed commits, operation in progress"),
       );
     });

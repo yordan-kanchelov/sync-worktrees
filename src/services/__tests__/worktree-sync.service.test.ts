@@ -3,11 +3,12 @@ import * as path from "path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TEST_BRANCHES } from "../../__tests__/test-utils";
+import { TEST_BRANCHES, createMockLogger } from "../../__tests__/test-utils";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { Config } from "../../types";
 import type { GitService } from "../git.service";
+import type { Logger } from "../logger.service";
 import type { Mock, Mocked } from "vitest";
 
 // Use vi.hoisted to create mock instance that can be accessed in both factory and tests
@@ -60,15 +61,19 @@ describe("WorktreeSyncService", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
   let mockGitService: Mocked<GitService>;
+  let mockLogger: Logger;
 
   beforeEach(() => {
     vi.clearAllMocks();
+
+    mockLogger = createMockLogger();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
       worktreeDir: "/test/worktrees",
       cronSchedule: "0 * * * *",
       runOnce: false,
+      logger: mockLogger,
     };
 
     // Reference the hoisted mock instance
@@ -259,9 +264,6 @@ describe("WorktreeSyncService", () => {
         reasons: ["unpushed commits"],
       });
 
-      const consoleLogSpy = vi.spyOn(console, "log");
-      const consoleWarnSpy = vi.spyOn(console, "warn");
-
       await service.sync();
 
       expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
@@ -270,12 +272,11 @@ describe("WorktreeSyncService", () => {
       );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
 
-      // Check for special upstream gone message (now uses console.warn)
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining("Cannot automatically remove 'deleted-upstream-branch' - upstream branch was deleted"),
       );
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Please review manually: cd"));
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("git worktree remove"));
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Please review manually: cd"));
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("git worktree remove"));
     });
 
     it("should skip worktrees with both local changes and unpushed commits", async () => {
@@ -316,8 +317,7 @@ describe("WorktreeSyncService", () => {
 
       await expect(service.sync()).rejects.toThrow("Fetch failed");
 
-      // The error gets wrapped because retry exhausts all attempts (even though it's only 1 attempt for non-retryable errors)
-      expect(console.error).toHaveBeenCalledWith(
+      expect(mockLogger.error).toHaveBeenCalledWith(
         "\n❌ Error during worktree synchronization after all retry attempts:",
         error,
       );
@@ -339,8 +339,10 @@ describe("WorktreeSyncService", () => {
 
       await service.sync();
 
-      // Should log error but continue
-      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Error checking worktree"), expect.any(Error));
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining("Error checking worktree"),
+        expect.any(Error),
+      );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
     });
@@ -506,15 +508,13 @@ describe("WorktreeSyncService", () => {
       // Mock fs.rm to throw an error
       (fs.rm as Mock<any>).mockRejectedValue(new Error("Permission denied"));
 
-      // Should not throw, just log the error
       await service.sync();
 
-      expect(console.error).toHaveBeenCalledWith(
+      expect(mockLogger.error).toHaveBeenCalledWith(
         expect.stringContaining("Failed to remove orphaned directory"),
         expect.any(Error),
       );
 
-      // Should continue with the rest of the sync
       expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
     });
 
@@ -524,12 +524,10 @@ describe("WorktreeSyncService", () => {
 
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
 
-      // Should not throw, just log the error
       await service.sync();
 
-      expect(console.error).toHaveBeenCalledWith("Error during orphaned directory cleanup:", expect.any(Error));
+      expect(mockLogger.error).toHaveBeenCalledWith("Error during orphaned directory cleanup:", expect.any(Error));
 
-      // Should continue with the rest of the sync
       expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
     });
 
@@ -594,9 +592,8 @@ describe("WorktreeSyncService", () => {
 
         await service.sync();
 
-        // Should NOT remove the 'feat' directory as it contains valid worktrees
         expect(fs.rm).not.toHaveBeenCalled();
-        expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("Removed orphaned directory: feat"));
+        expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("Removed orphaned directory: feat"));
       });
 
       it("should remove slash-named worktrees correctly when branch is deleted", async () => {
@@ -779,13 +776,17 @@ describe("WorktreeSyncService", () => {
   describe("retry behavior", () => {
     let retryConfig: Config;
     let retrySyncService: WorktreeSyncService;
+    let mockRetryLogger: Logger;
 
     beforeEach(async () => {
+      mockRetryLogger = createMockLogger();
+
       retryConfig = {
         repoUrl: "https://github.com/test/repo.git",
         worktreeDir: "/test/worktrees",
         cronSchedule: "0 * * * *",
         runOnce: false,
+        logger: mockRetryLogger,
         retry: {
           maxAttempts: 3,
           initialDelayMs: 10,
@@ -884,8 +885,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should log retry attempts", async () => {
-      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-
       const error = new Error("Network timeout");
       (error as any).code = "ETIMEDOUT";
 
@@ -901,11 +900,9 @@ describe("WorktreeSyncService", () => {
 
       await retrySyncService.sync();
 
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("⚠️  Sync attempt 1 failed"));
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("🔄 Retrying synchronization"));
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("⚠️  Sync attempt 2 failed"));
-
-      consoleSpy.mockRestore();
+      expect(mockRetryLogger.info).toHaveBeenCalledWith(expect.stringContaining("⚠️  Sync attempt 1 failed"));
+      expect(mockRetryLogger.info).toHaveBeenCalledWith(expect.stringContaining("🔄 Retrying synchronization"));
+      expect(mockRetryLogger.info).toHaveBeenCalledWith(expect.stringContaining("⚠️  Sync attempt 2 failed"));
     });
 
     it("should complete sync if only non-critical operations fail", async () => {

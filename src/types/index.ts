@@ -1,3 +1,5 @@
+import type { Logger } from "../services/logger.service";
+
 export interface RetryConfig {
   maxAttempts?: number | "unlimited";
   maxLfsRetries?: number;
@@ -43,6 +45,7 @@ export interface Config {
   skipLfs?: boolean;
   updateExistingWorktrees?: boolean;
   debug?: boolean;
+  logger?: Logger;
 }
 
 export interface RepositoryConfig extends Config {

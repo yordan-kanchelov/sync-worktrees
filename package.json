@@ -52,6 +52,7 @@
   "homepage": "https://github.com/yordan-kanchelov/sync-worktrees#readme",
   "dependencies": {
     "@inquirer/prompts": "^7.6.0",
+    "cli-table3": "^0.6.5",
     "cron-parser": "^5.4.0",
     "fast-folder-size": "^2.4.0",
     "ink": "^6.4.0",

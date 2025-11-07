@@ -3,8 +3,10 @@ import * as fs from "fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeSyncService } from "../../services/worktree-sync.service";
+import { createMockLogger } from "../test-utils";
 
 import type { GitService } from "../../services/git.service";
+import type { Logger } from "../../services/logger.service";
 import type { Config } from "../../types";
 import type { Mock, Mocked } from "vitest";
 
@@ -53,15 +55,19 @@ describe("Concurrent Operations and Race Conditions", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
   let mockGitService: Mocked<GitService>;
+  let mockLogger: Logger;
 
   beforeEach(() => {
     vi.clearAllMocks();
+
+    mockLogger = createMockLogger();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
       worktreeDir: "/test/worktrees",
       cronSchedule: "0 * * * *",
       runOnce: false,
+      logger: mockLogger,
     };
 
     mockGitService = mockGitServiceInstance;
@@ -158,7 +164,7 @@ describe("Concurrent Operations and Race Conditions", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("operation in progress"));
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("operation in progress"));
     });
 
     it("should handle commits being added during checks", async () => {
@@ -317,7 +323,7 @@ describe("Concurrent Operations and Race Conditions", () => {
 
       await service.sync();
 
-      expect(console.error).toHaveBeenCalledWith(
+      expect(mockLogger.error).toHaveBeenCalledWith(
         expect.stringContaining("Failed to remove orphaned directory"),
         expect.any(Error),
       );

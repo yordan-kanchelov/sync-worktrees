@@ -1,3 +1,5 @@
+import Table from "cli-table3";
+
 export interface TimingResult {
   name: string;
   duration: number;
@@ -95,29 +97,32 @@ export function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
-export function formatTimingTable(totalDuration: number, phaseResults: TimingResult[]): string {
-  const lines: string[] = [];
+export function formatTimingTable(totalDuration: number, phaseResults: TimingResult[], repoName?: string): string {
+  const header = repoName ? `Performance Summary - [${repoName}]` : "Performance Summary";
 
-  lines.push("┌─────────────────────────────────────────────────────┐");
-  lines.push("│ Performance Summary                                  │");
-  lines.push("├─────────────────────────────┬───────────┬───────────┤");
-  lines.push("│ Operation                   │ Duration  │ Efficiency│");
-  lines.push("├─────────────────────────────┼───────────┼───────────┤");
+  const table = new Table({
+    head: ["Operation", "Duration", "Efficiency"],
+    colWidths: [35, 12, 12],
+    style: {
+      head: ["cyan", "bold"],
+      border: ["gray"],
+    },
+  });
 
-  const totalLine = `│ Total Sync                  │ ${formatDuration(totalDuration).padEnd(9)} │           │`;
-  lines.push(totalLine);
+  table.push([{ colSpan: 3, content: header, hAlign: "center" }]);
 
-  for (const result of phaseResults) {
+  table.push(["Total Sync", formatDuration(totalDuration), ""]);
+
+  for (let i = 0; i < phaseResults.length; i++) {
+    const result = phaseResults[i];
+    const isLast = i === phaseResults.length - 1;
     const countStr = result.count ? ` (${result.count})` : "";
-    const name = `   ├─ ${result.name}${countStr}`;
-    const namePadded = name.padEnd(28);
-    const duration = formatDuration(result.duration).padEnd(9);
-    const efficiency = result.efficiency ? `${result.efficiency}%`.padEnd(9) : "".padEnd(9);
+    const prefix = isLast ? "└─" : "├─";
+    const name = `  ${prefix} ${result.name}${countStr}`;
+    const efficiency = result.efficiency ? `${result.efficiency}%` : "";
 
-    lines.push(`│ ${namePadded} │ ${duration} │ ${efficiency} │`);
+    table.push([name, formatDuration(result.duration), efficiency]);
   }
 
-  lines.push("└─────────────────────────────┴───────────┴───────────┘");
-
-  return lines.join("\n");
+  return table.toString();
 }
