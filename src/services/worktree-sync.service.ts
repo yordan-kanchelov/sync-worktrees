@@ -179,6 +179,7 @@ export class WorktreeSyncService {
               console.log(`  ✅ Created worktree for '${branchName}'`);
             } catch (error) {
               console.error(`  ❌ Failed to create worktree for '${branchName}':`, getErrorMessage(error));
+              throw error;
             }
           }),
         ),
@@ -239,8 +240,13 @@ export class WorktreeSyncService {
         const removeResults = await Promise.allSettled(
           toRemove.map(({ branchName, worktreePath }) =>
             removeLimit(async () => {
-              await this.gitService.removeWorktree(worktreePath);
-              console.log(`  ✅ Removed worktree for '${branchName}'`);
+              try {
+                await this.gitService.removeWorktree(worktreePath);
+                console.log(`  ✅ Removed worktree for '${branchName}'`);
+              } catch (error) {
+                console.error(`  ❌ Failed to remove worktree for '${branchName}':`, getErrorMessage(error));
+                throw error;
+              }
             }),
           ),
         );

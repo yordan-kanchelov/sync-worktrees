@@ -3,6 +3,7 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 
 import { DEFAULT_CONFIG } from "../constants";
+
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
 
 export class ConfigLoaderService {

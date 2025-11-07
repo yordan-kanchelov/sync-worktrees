@@ -402,9 +402,9 @@ export class GitService {
       if (errorMessage.includes("already registered worktree")) {
         // Check if worktree was actually created by a concurrent operation
         const worktrees = await this.getWorktreesFromBare(bareGit);
-        const alreadyExists = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
+        const existingWorktree = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
 
-        if (alreadyExists) {
+        if (existingWorktree && !existingWorktree.isPrunable) {
           console.log(`  - Worktree for '${branchName}' was created by concurrent operation`);
           return;
         }
@@ -483,9 +483,9 @@ export class GitService {
         // If fallback also fails with "already registered", check if created by concurrent op
         if (fallbackErrorMessage.includes("already registered worktree")) {
           const worktrees = await this.getWorktreesFromBare(bareGit);
-          const alreadyExists = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
+          const existingWorktree = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
 
-          if (alreadyExists) {
+          if (existingWorktree && !existingWorktree.isPrunable) {
             console.log(`  - Worktree for '${branchName}' was created by concurrent operation during fallback`);
             return;
           }
@@ -897,13 +897,15 @@ export class GitService {
     return this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
   }
 
-  private async getWorktreesFromBare(bareGit: SimpleGit): Promise<{ path: string; branch: string }[]> {
+  private async getWorktreesFromBare(
+    bareGit: SimpleGit,
+  ): Promise<{ path: string; branch: string; isPrunable?: boolean }[]> {
     const result = await bareGit.raw(["worktree", "list", "--porcelain"]);
 
-    const worktrees: { path: string; branch: string }[] = [];
+    const worktrees: { path: string; branch: string; isPrunable?: boolean }[] = [];
     const lines = result.trim().split("\n");
 
-    let currentWorktree: { path?: string; branch?: string; detached?: boolean } = {};
+    let currentWorktree: { path?: string; branch?: string; detached?: boolean; prunable?: boolean } = {};
 
     for (const line of lines) {
       if (line.startsWith("worktree ")) {
@@ -912,11 +914,17 @@ export class GitService {
         currentWorktree.branch = line.substring(7).replace("refs/heads/", "");
       } else if (line === "detached") {
         currentWorktree.detached = true;
+      } else if (line === "prunable") {
+        currentWorktree.prunable = true;
       } else if (line.trim() === "") {
         if (currentWorktree.path) {
           // Only include worktrees that have a branch (not detached)
           if (currentWorktree.branch && !currentWorktree.detached) {
-            worktrees.push({ path: currentWorktree.path, branch: currentWorktree.branch });
+            worktrees.push({
+              path: currentWorktree.path,
+              branch: currentWorktree.branch,
+              isPrunable: currentWorktree.prunable || false,
+            });
           }
         }
         currentWorktree = {};
@@ -925,7 +933,11 @@ export class GitService {
 
     // Handle the last worktree if there's no trailing empty line
     if (currentWorktree.path && currentWorktree.branch && !currentWorktree.detached) {
-      worktrees.push({ path: currentWorktree.path, branch: currentWorktree.branch });
+      worktrees.push({
+        path: currentWorktree.path,
+        branch: currentWorktree.branch,
+        isPrunable: currentWorktree.prunable || false,
+      });
     }
 
     return worktrees;
