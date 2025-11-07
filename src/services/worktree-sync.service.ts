@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../constants";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { retry } from "../utils/retry";
+import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
 
 import { GitService } from "./git.service";
 
@@ -37,6 +38,9 @@ export class WorktreeSyncService {
     }
     this.syncInProgress = true;
     console.log(`[${new Date().toISOString()}] Starting worktree synchronization...`);
+
+    const totalTimer = new Timer();
+    const phaseTimer = new PhaseTimer();
 
     let lfsSkipEnabled = false;
 
@@ -70,6 +74,7 @@ export class WorktreeSyncService {
         await this.gitService.pruneWorktrees();
 
         console.log("Step 1: Fetching latest data from remote...");
+        phaseTimer.startPhase("Phase 1: Fetch");
 
         try {
           await this.gitService.fetchAll();
@@ -86,6 +91,8 @@ export class WorktreeSyncService {
             throw fetchError;
           }
         }
+
+        phaseTimer.endPhase();
 
         let remoteBranches: string[];
 
@@ -126,17 +133,19 @@ export class WorktreeSyncService {
         // Clean up orphaned directories
         await this.cleanupOrphanedDirectories(worktrees);
 
-        await this.createNewWorktrees(remoteBranches, worktreeBranches, defaultBranch);
+        await this.createNewWorktreesWithTiming(remoteBranches, worktreeBranches, defaultBranch, phaseTimer);
 
-        await this.pruneOldWorktrees(remoteBranches, worktreeBranches);
+        await this.pruneOldWorktreesWithTiming(remoteBranches, worktreeBranches, phaseTimer);
 
         // Update existing worktrees if enabled
         if (this.config.updateExistingWorktrees !== false) {
-          await this.updateExistingWorktrees(worktrees, remoteBranches);
+          await this.updateExistingWorktreesWithTiming(worktrees, remoteBranches, phaseTimer);
         }
 
+        phaseTimer.startPhase("Phase 5: Cleanup");
         await this.gitService.pruneWorktrees();
         console.log("Step 5: Pruned worktree metadata.");
+        phaseTimer.endPhase();
       }, retryOptions);
     } catch (error) {
       console.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
@@ -147,7 +156,32 @@ export class WorktreeSyncService {
       }
       this.syncInProgress = false;
       console.log(`[${new Date().toISOString()}] Synchronization finished.\n`);
+
+      if (this.config.debug) {
+        const totalDuration = totalTimer.stop();
+        const phaseResults = phaseTimer.getResults();
+        console.log(formatTimingTable(totalDuration, phaseResults));
+      }
     }
+  }
+
+  private async createNewWorktreesWithTiming(
+    remoteBranches: string[],
+    existingWorktreeBranches: string[],
+    defaultBranch: string,
+    phaseTimer: PhaseTimer,
+  ): Promise<void> {
+    const maxConcurrent =
+      this.config.parallelism?.maxWorktreeCreation ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
+    phaseTimer.startPhase("Phase 2: Create", maxConcurrent);
+
+    await this.createNewWorktrees(remoteBranches, existingWorktreeBranches, defaultBranch);
+
+    const newBranches = remoteBranches
+      .filter((b) => !existingWorktreeBranches.includes(b))
+      .filter((b) => b !== defaultBranch);
+    phaseTimer.setPhaseCount("Phase 2: Create", newBranches.length);
+    phaseTimer.endPhase();
   }
 
   private async createNewWorktrees(
@@ -190,6 +224,21 @@ export class WorktreeSyncService {
     } else {
       console.log("Step 2: No new branches to create worktrees for.");
     }
+  }
+
+  private async pruneOldWorktreesWithTiming(
+    remoteBranches: string[],
+    existingWorktreeBranches: string[],
+    phaseTimer: PhaseTimer,
+  ): Promise<void> {
+    const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+    phaseTimer.startPhase("Phase 3: Prune", maxConcurrent);
+
+    await this.pruneOldWorktrees(remoteBranches, existingWorktreeBranches);
+
+    const deletedBranches = existingWorktreeBranches.filter((branch) => !remoteBranches.includes(branch));
+    phaseTimer.setPhaseCount("Phase 3: Prune", deletedBranches.length);
+    phaseTimer.endPhase();
   }
 
   private async pruneOldWorktrees(remoteBranches: string[], existingWorktreeBranches: string[]): Promise<void> {
@@ -351,6 +400,22 @@ export class WorktreeSyncService {
       console.log(`⚠️  Failed to fetch ${failedBranches.length} branches due to errors.`);
       console.log(`   These branches will be skipped: ${failedBranches.join(", ")}`);
     }
+  }
+
+  private async updateExistingWorktreesWithTiming(
+    worktrees: { path: string; branch: string }[],
+    remoteBranches: string[],
+    phaseTimer: PhaseTimer,
+  ): Promise<void> {
+    const maxConcurrent =
+      this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES;
+    phaseTimer.startPhase("Phase 4: Update", maxConcurrent);
+
+    await this.updateExistingWorktrees(worktrees, remoteBranches);
+
+    const activeWorktrees = worktrees.filter((w) => remoteBranches.includes(w.branch));
+    phaseTimer.setPhaseCount("Phase 4: Update", activeWorktrees.length);
+    phaseTimer.endPhase();
   }
 
   private async updateExistingWorktrees(
@@ -554,7 +619,7 @@ export class WorktreeSyncService {
     const divergedBaseDir = path.join(this.config.worktreeDir, ".diverged");
 
     const timestamp = new Date().toISOString().split("T")[0];
-    const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+    const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
     const safeBranchName = branchName.replace(/\//g, "-");
     const divergedName = `${timestamp}-${safeBranchName}-${uniqueSuffix}`;
     const divergedPath = path.join(divergedBaseDir, divergedName);

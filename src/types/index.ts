@@ -15,7 +15,7 @@ export interface RetryConfig {
  * Tune these values based on your system resources and repository count.
  */
 export interface ParallelismConfig {
-  /** Max concurrent repositories to sync (default: 10) */
+  /** Max concurrent repositories to sync (default: 2) */
   maxRepositories?: number;
   /**
    * Max concurrent worktree creations (default: 1).

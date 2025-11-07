@@ -43,7 +43,7 @@ export default {
 
   // Parallelism configuration for performance tuning (optional)
   parallelism: {
-    maxRepositories: 10,      // Max concurrent repositories to sync (default: 10)
+    maxRepositories: 2,       // Max concurrent repositories to sync (default: 2)
     maxWorktreeCreation: 1,   // Max concurrent worktree creations (default: 1 - KEEP LOW!)
     maxWorktreeUpdates: 3,    // Max concurrent worktree updates (default: 3)
     maxWorktreeRemoval: 3,    // Max concurrent worktree removals (default: 3)
@@ -58,7 +58,7 @@ export default {
   // - Total concurrent operations = maxRepositories × per-repo limits (must be ≤ 100)
   // - On powerful machines with SSDs, you can increase these values for better performance
   // - Use jitterMs in retry config to prevent all concurrent operations from retrying at once
-  // - Example safe config: maxRepositories=3, maxStatusChecks=20 = ~81 total operations
+  // - Example safe config: maxRepositories=2, maxStatusChecks=20 = ~54 total operations
   
   // Array of repository configurations
   repositories: [

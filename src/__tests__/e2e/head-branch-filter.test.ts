@@ -70,7 +70,7 @@ describe("HEAD branch filtering (E2E)", () => {
       configPath,
       `export default {
         defaults: {
-          parallelism: { maxWorktreeCreation: 1 }
+          parallelism: { maxWorktreeCreation: 1, maxRepositories: 1 }
         },
         repositories: [{
           name: "test-repo",
