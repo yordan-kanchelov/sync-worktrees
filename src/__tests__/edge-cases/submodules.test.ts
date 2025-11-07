@@ -3,8 +3,10 @@ import * as fs from "fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeSyncService } from "../../services/worktree-sync.service";
+import { createMockLogger } from "../test-utils";
 
 import type { GitService } from "../../services/git.service";
+import type { Logger } from "../../services/logger.service";
 import type { Config } from "../../types";
 import type { Mock, Mocked } from "vitest";
 
@@ -53,15 +55,19 @@ describe("Submodule Edge Cases", () => {
   let service: WorktreeSyncService;
   let mockConfig: Config;
   let mockGitService: Mocked<GitService>;
+  let mockLogger: Logger;
 
   beforeEach(() => {
     vi.clearAllMocks();
+
+    mockLogger = createMockLogger();
 
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
       worktreeDir: "/test/worktrees",
       cronSchedule: "0 * * * *",
       runOnce: false,
+      logger: mockLogger,
     };
 
     mockGitService = mockGitServiceInstance;
@@ -93,7 +99,7 @@ describe("Submodule Edge Cases", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("modified submodules"));
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("modified submodules"));
     });
 
     it("should detect submodules with uncommitted changes", async () => {
@@ -279,7 +285,7 @@ describe("Submodule Edge Cases", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("uncommitted changes, modified submodules"));
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("uncommitted changes, modified submodules"));
     });
   });
 
@@ -396,7 +402,7 @@ describe("Submodule Edge Cases", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("stashed changes, modified submodules"));
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("stashed changes, modified submodules"));
     });
 
     it("should handle main repo clean but submodules dirty", async () => {
@@ -422,7 +428,7 @@ describe("Submodule Edge Cases", () => {
       await service.sync();
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining("modified submodules"));
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("modified submodules"));
     });
   });
 });

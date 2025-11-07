@@ -4,9 +4,12 @@ import * as path from "path";
 
 import { confirm } from "@inquirer/prompts";
 import * as cron from "node-cron";
+import pLimit from "p-limit";
 
+import { DEFAULT_CONFIG } from "./constants";
 import { ConfigLoaderService } from "./services/config-loader.service";
 import { InteractiveUIService } from "./services/InteractiveUIService";
+import { Logger } from "./services/logger.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { isInteractiveMode, parseArguments, reconstructCliCommand } from "./utils/cli";
 import { promptForConfig } from "./utils/interactive";
@@ -14,9 +17,15 @@ import { promptForConfig } from "./utils/interactive";
 import type { Config, RepositoryConfig } from "./types";
 
 async function runSingleRepository(config: Config): Promise<void> {
-  console.log("\n📋 CLI Command (for future reference):");
-  console.log(`   ${reconstructCliCommand(config)}`);
-  console.log("");
+  const logger = Logger.createDefault(undefined, config.debug);
+
+  logger.info("\n📋 CLI Command (for future reference):");
+  logger.info(`   ${reconstructCliCommand(config)}`);
+  logger.info("");
+
+  if (!config.logger) {
+    config.logger = logger;
+  }
 
   const syncService = new WorktreeSyncService(config);
 
@@ -24,7 +33,7 @@ async function runSingleRepository(config: Config): Promise<void> {
     await syncService.initialize();
 
     if (config.runOnce) {
-      console.log("Running the sync process once as requested by --runOnce flag.");
+      logger.info("Running the sync process once as requested by --runOnce flag.");
       await syncService.sync();
     } else {
       const uiService = new InteractiveUIService([syncService], undefined, config.cronSchedule);
@@ -40,13 +49,13 @@ async function runSingleRepository(config: Config): Promise<void> {
           uiService.updateLastSyncTime();
           void uiService.calculateAndUpdateDiskSpace();
         } catch (error) {
-          console.error(`Error during scheduled sync: ${(error as Error).message}`);
+          logger.error(`Error during scheduled sync: ${(error as Error).message}`, error);
           uiService.setStatus("idle");
         }
       });
     }
   } catch (error) {
-    console.error("❌ Fatal Error during initialization:", (error as Error).message);
+    logger.error("❌ Fatal Error during initialization:", error as Error);
     process.exit(1);
   }
 }
@@ -55,29 +64,67 @@ async function runMultipleRepositories(
   repositories: RepositoryConfig[],
   runOnce: boolean,
   configPath?: string,
+  maxParallel?: number,
 ): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
+  const globalLogger = Logger.createDefault();
 
-  console.log(`\n🔄 Syncing ${repositories.length} repositories...`);
+  globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
 
-  for (const repoConfig of repositories) {
-    console.log(`\n📦 Repository: ${repoConfig.name}`);
-    console.log(`   URL: ${repoConfig.repoUrl}`);
-    console.log(`   Worktrees: ${repoConfig.worktreeDir}`);
-    if (repoConfig.bareRepoDir) {
-      console.log(`   Bare repo: ${repoConfig.bareRepoDir}`);
-    }
+  // Apply default limit to prevent resource exhaustion with many repositories
+  // Each repository internally parallelizes worktree operations, so total concurrent
+  // operations = maxRepositories × (maxWorktreeCreation + maxWorktreeUpdates + maxStatusChecks)
+  const limit = pLimit(maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
 
-    const syncService = new WorktreeSyncService(repoConfig);
-    services.set(repoConfig.name, syncService);
+  const initResults = await Promise.allSettled(
+    repositories.map((repoConfig) =>
+      limit(async () => {
+        const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug);
 
-    try {
-      await syncService.initialize();
-      await syncService.sync();
-    } catch (error) {
-      console.error(`❌ Error syncing repository '${repoConfig.name}':`, (error as Error).message);
+        repoLogger.info(`\n📦 Repository: ${repoConfig.name}`);
+        repoLogger.info(`   URL: ${repoConfig.repoUrl}`);
+        repoLogger.info(`   Worktrees: ${repoConfig.worktreeDir}`);
+        if (repoConfig.bareRepoDir) {
+          repoLogger.info(`   Bare repo: ${repoConfig.bareRepoDir}`);
+        }
+
+        if (!repoConfig.logger) {
+          repoConfig.logger = repoLogger;
+        }
+
+        const syncService = new WorktreeSyncService(repoConfig);
+        await syncService.initialize();
+        return { name: repoConfig.name, service: syncService };
+      }),
+    ),
+  );
+
+  const servicesToSync: Array<{ name: string; service: WorktreeSyncService }> = [];
+
+  for (const result of initResults) {
+    if (result.status === "fulfilled") {
+      services.set(result.value.name, result.value.service);
+      servicesToSync.push(result.value);
+    } else {
+      globalLogger.error(`❌ Failed to initialize repository:`, result.reason);
     }
   }
+
+  const syncResults = await Promise.allSettled(
+    servicesToSync.map(({ name, service }) =>
+      limit(async () => {
+        try {
+          await service.sync();
+        } catch (error) {
+          globalLogger.error(`❌ Error syncing repository '${name}':`, error);
+          throw error;
+        }
+      }),
+    ),
+  );
+
+  const successCount = syncResults.filter((r) => r.status === "fulfilled").length;
+  globalLogger.info(`\n✅ Successfully synced ${successCount}/${servicesToSync.length} repositories`);
 
   if (!runOnce) {
     const uniqueSchedules = [...new Set(repositories.map((r) => r.cronSchedule))];
@@ -101,28 +148,34 @@ async function runMultipleRepositories(
           const reposToSync = repositories.filter((r) => r.cronSchedule === repoConfig.cronSchedule);
 
           uiService.setStatus("syncing");
-          for (const repo of reposToSync) {
-            const service = services.get(repo.name);
-            if (!service) continue;
 
-            console.log(`Running scheduled sync for: ${repo.name}`);
-            try {
-              await service.sync();
-            } catch (error) {
-              console.error(`Error syncing '${repo.name}': ${(error as Error).message}`);
-            }
-          }
+          await Promise.allSettled(
+            reposToSync.map((repo) =>
+              limit(async () => {
+                const service = services.get(repo.name);
+                if (!service) return;
+
+                globalLogger.info(`Running scheduled sync for: ${repo.name}`);
+                try {
+                  await service.sync();
+                } catch (error) {
+                  globalLogger.error(`Error syncing '${repo.name}':`, error);
+                }
+              }),
+            ),
+          );
+
           uiService.updateLastSyncTime();
           void uiService.calculateAndUpdateDiskSpace();
         });
       }
     }
 
-    console.log(`All ${repositories.length} repositories scheduled`);
+    globalLogger.info(`All ${repositories.length} repositories scheduled`);
 
     for (const [schedule] of cronJobs) {
       const repoCount = repositories.filter((r) => r.cronSchedule === schedule).length;
-      console.log(`${schedule}: ${repoCount} repository(ies)`);
+      globalLogger.info(`${schedule}: ${repoCount} repository(ies)`);
     }
   }
 }
@@ -212,7 +265,12 @@ async function main(): Promise<void> {
         }));
       }
 
-      await runMultipleRepositories(repositories, globalRunOnce, options.config);
+      const maxParallel =
+        configFile.parallelism?.maxRepositories ??
+        configFile.defaults?.parallelism?.maxRepositories ??
+        DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+
+      await runMultipleRepositories(repositories, globalRunOnce, options.config, maxParallel);
     } catch (error) {
       if (error instanceof Error && error.message.includes("Config file not found")) {
         console.error(`\n❌ Config file not found: ${options.config}`);

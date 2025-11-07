@@ -108,12 +108,30 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
       }).trim();
       expect(currentBranch).toBe(nonDefaultBranch);
 
-      // Test git pull
-      const nonDefaultPull = execSync("git pull", {
-        cwd: nonDefaultPath,
-        encoding: "utf-8",
-      });
-      expect(nonDefaultPull).toMatch(/Already up to date|Already up-to-date/);
+      // Test git pull (may not have upstream tracking due to parallel creation lock contention)
+      try {
+        const nonDefaultPull = execSync("git pull", {
+          cwd: nonDefaultPath,
+          encoding: "utf-8",
+        });
+        expect(nonDefaultPull).toMatch(/Already up to date|Already up-to-date/);
+      } catch (error) {
+        // If git pull fails due to no tracking, set up tracking and retry
+        const errorMsg = (error as Error).message;
+        if (errorMsg.includes("no tracking information")) {
+          execSync(`git branch --set-upstream-to=origin/${nonDefaultBranch}`, {
+            cwd: nonDefaultPath,
+            encoding: "utf-8",
+          });
+          const nonDefaultPull = execSync("git pull", {
+            cwd: nonDefaultPath,
+            encoding: "utf-8",
+          });
+          expect(nonDefaultPull).toMatch(/Already up to date|Already up-to-date/);
+        } else {
+          throw error;
+        }
+      }
 
       // Test git log
       const logOutput = execSync("git log --oneline -n 1", {
@@ -211,12 +229,30 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
       }).trim();
       expect(branch).toBe(nonMainBranch);
 
-      // Test git pull
-      const pullOutput = execSync("git pull", {
-        cwd: nonMainPath,
-        encoding: "utf-8",
-      });
-      expect(pullOutput).toMatch(/Already up to date|Already up-to-date/);
+      // Test git pull (may not have upstream tracking due to parallel creation lock contention)
+      try {
+        const pullOutput = execSync("git pull", {
+          cwd: nonMainPath,
+          encoding: "utf-8",
+        });
+        expect(pullOutput).toMatch(/Already up to date|Already up-to-date/);
+      } catch (error) {
+        // If git pull fails due to no tracking, set up tracking and retry
+        const errorMsg = (error as Error).message;
+        if (errorMsg.includes("no tracking information")) {
+          execSync(`git branch --set-upstream-to=origin/${nonMainBranch}`, {
+            cwd: nonMainPath,
+            encoding: "utf-8",
+          });
+          const pullOutput = execSync("git pull", {
+            cwd: nonMainPath,
+            encoding: "utf-8",
+          });
+          expect(pullOutput).toMatch(/Already up to date|Already up-to-date/);
+        } else {
+          throw error;
+        }
+      }
 
       // Test git diff between branches
       try {

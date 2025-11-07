@@ -3,8 +3,14 @@ export const GIT_CONSTANTS = {
   REMOTE_NAME: "origin",
   HEAD_REF: "/HEAD",
   DEFAULT_BRANCH: "main",
+  COMMON_DEFAULT_BRANCHES: ["main", "master", "develop", "trunk"],
   BARE_DIR_NAME: ".bare",
   DIVERGED_DIR_NAME: ".diverged",
+  LFS_HEADER: "version https://git-lfs.github.com/spec/",
+  SUBMODULE_STATUS_ADDED: "+",
+  SUBMODULE_STATUS_REMOVED: "-",
+  GITDIR_PREFIX: "gitdir:",
+  GIT_CHECK_IGNORE_NO_MATCH: "exit code: 1",
   REFS: {
     HEADS: "refs/heads/",
     REMOTES: "refs/remotes/origin",
@@ -30,6 +36,15 @@ export const DEFAULT_CONFIG = {
     INITIAL_DELAY_MS: 1000,
     MAX_DELAY_MS: 30000,
     BACKOFF_MULTIPLIER: 2,
+    JITTER_MS: 500,
+  },
+  PARALLELISM: {
+    MAX_REPOSITORIES: 2,
+    MAX_WORKTREE_CREATION: 1,
+    MAX_WORKTREE_UPDATES: 3,
+    MAX_WORKTREE_REMOVAL: 3,
+    MAX_STATUS_CHECKS: 20,
+    MAX_SAFE_TOTAL_CONCURRENT_OPS: 100,
   },
   UPDATE_EXISTING_WORKTREES: true,
 } as const;
@@ -58,11 +73,27 @@ export const TEST_TIMEOUT = {
   E2E: 60000,
 } as const;
 
+export const ENV_CONSTANTS = {
+  GIT_LFS_SKIP_SMUDGE: "GIT_LFS_SKIP_SMUDGE",
+  NODE_ENV_TEST: "test",
+} as const;
+
 export const PATH_CONSTANTS = {
   GIT_DIR: ".git",
   README: "README",
 } as const;
 
+export const CONFIG_CONSTANTS = {
+  WILDCARD_PATTERN: ".*",
+} as const;
+
 export const METADATA_CONSTANTS = {
   MAX_HISTORY_ENTRIES: 10,
+  METADATA_FILENAME: "sync-metadata.json",
+  WORKTREE_METADATA_PATH: ".git/worktrees",
+  DIVERGED_INFO_FILE: ".diverged-info.json",
+  DIVERGED_REASON: "diverged-history-with-changes",
+  ACTION_CREATED: "created",
+  ACTION_UPDATED: "updated",
+  ACTION_FETCHED: "fetched",
 } as const;

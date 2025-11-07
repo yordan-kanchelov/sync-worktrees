@@ -751,4 +751,351 @@ describe("ConfigLoaderService", () => {
       });
     });
   });
+
+  describe("parallelism configuration validation", () => {
+    it("should accept valid global parallelism configuration", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 5,
+            maxWorktreeCreation: 2,
+            maxWorktreeUpdates: 4,
+            maxWorktreeRemoval: 4,
+            maxStatusChecks: 10
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.parallelism).toEqual({
+        maxRepositories: 5,
+        maxWorktreeCreation: 2,
+        maxWorktreeUpdates: 4,
+        maxWorktreeRemoval: 4,
+        maxStatusChecks: 10,
+      });
+    });
+
+    it("should accept parallelism config in defaults", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          defaults: {
+            parallelism: {
+              maxRepositories: 3,
+              maxWorktreeCreation: 1,
+              maxWorktreeUpdates: 2,
+              maxStatusChecks: 10
+            }
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.defaults?.parallelism).toEqual({
+        maxRepositories: 3,
+        maxWorktreeCreation: 1,
+        maxWorktreeUpdates: 2,
+        maxStatusChecks: 10,
+      });
+    });
+
+    it("should reject non-object parallelism configuration", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: "invalid",
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'parallelism' in global must be an object",
+      );
+    });
+
+    it("should reject invalid maxRepositories", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 0
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid 'maxRepositories' in global parallelism config. Must be a positive number",
+      );
+    });
+
+    it("should reject invalid maxWorktreeCreation", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxWorktreeCreation: -1
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid 'maxWorktreeCreation' in global parallelism config. Must be a positive number",
+      );
+    });
+
+    it("should reject invalid maxWorktreeUpdates", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxWorktreeUpdates: 0
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid 'maxWorktreeUpdates' in global parallelism config. Must be a positive number",
+      );
+    });
+
+    it("should reject invalid maxWorktreeRemoval", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxWorktreeRemoval: 0
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid 'maxWorktreeRemoval' in global parallelism config. Must be a positive number",
+      );
+    });
+
+    it("should reject invalid maxStatusChecks", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxStatusChecks: 0
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid 'maxStatusChecks' in global parallelism config. Must be a positive number",
+      );
+    });
+
+    it("should reject excessive total concurrent operations", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 20,
+            maxWorktreeCreation: 10,
+            maxWorktreeUpdates: 10,
+            maxWorktreeRemoval: 10,
+            maxStatusChecks: 50
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/exceeds safe limit/);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/Consider reducing maxRepositories/);
+    });
+
+    it("should calculate safe limit correctly", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 100,
+            maxStatusChecks: 20
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/maximum safe maxRepositories is/);
+    });
+
+    it("should accept safe concurrent operations", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 3,
+            maxWorktreeCreation: 1,
+            maxWorktreeUpdates: 3,
+            maxWorktreeRemoval: 3,
+            maxStatusChecks: 20
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+      expect(config.parallelism).toBeDefined();
+    });
+
+    it("should validate parallelism in defaults", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          defaults: {
+            parallelism: {
+              maxRepositories: 0
+            }
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid 'maxRepositories' in defaults parallelism config",
+      );
+    });
+  });
+
+  describe("resolveRepositoryConfig - parallelism", () => {
+    it("should merge parallelism configs correctly", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        parallelism: { maxWorktreeCreation: 2 },
+      };
+
+      const defaults = {
+        parallelism: { maxWorktreeUpdates: 5 },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, defaults, tempDir);
+
+      expect(resolved.parallelism).toEqual({
+        maxWorktreeCreation: 2,
+        maxWorktreeUpdates: 5,
+      });
+    });
+
+    it("should handle no parallelism config", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo);
+
+      expect(resolved.parallelism).toBeUndefined();
+    });
+
+    it("should prioritize repo parallelism over defaults", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        parallelism: {
+          maxWorktreeCreation: 3,
+          maxWorktreeUpdates: 6,
+        },
+      };
+
+      const defaults = {
+        parallelism: {
+          maxWorktreeCreation: 1,
+          maxWorktreeUpdates: 3,
+          maxStatusChecks: 10,
+        },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, defaults, tempDir);
+
+      expect(resolved.parallelism).toEqual({
+        maxWorktreeCreation: 3,
+        maxWorktreeUpdates: 6,
+        maxStatusChecks: 10,
+      });
+    });
+  });
 });

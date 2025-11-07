@@ -3,7 +3,7 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { METADATA_CONSTANTS } from "../constants";
+import { GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 
 import type { SyncMetadata } from "../types/sync-metadata";
 
@@ -20,7 +20,12 @@ export class WorktreeMetadataService {
   async getMetadataPath(bareRepoPath: string, worktreeName: string): Promise<string> {
     // Git stores worktree metadata in .git/worktrees/[worktree-name]/
     // We'll store our metadata alongside Git's metadata
-    return path.join(bareRepoPath, ".git", "worktrees", worktreeName, "sync-metadata.json");
+    return path.join(
+      bareRepoPath,
+      METADATA_CONSTANTS.WORKTREE_METADATA_PATH,
+      worktreeName,
+      METADATA_CONSTANTS.METADATA_FILENAME,
+    );
   }
 
   async getMetadataPathFromWorktreePath(bareRepoPath: string, worktreePath: string): Promise<string> {
@@ -74,7 +79,12 @@ export class WorktreeMetadataService {
         const possibleBranchWithSlash = path.join(path.basename(parentDir), branchName);
 
         // Try the old path with potential slash in branch name
-        const oldPath = path.join(bareRepoPath, ".git", "worktrees", possibleBranchWithSlash, "sync-metadata.json");
+        const oldPath = path.join(
+          bareRepoPath,
+          METADATA_CONSTANTS.WORKTREE_METADATA_PATH,
+          possibleBranchWithSlash,
+          METADATA_CONSTANTS.METADATA_FILENAME,
+        );
         const content = await fs.readFile(oldPath, "utf-8");
         const metadata = JSON.parse(content) as SyncMetadata;
 
@@ -199,7 +209,7 @@ export class WorktreeMetadataService {
           // No configured upstream, use constructed value
         }
 
-        const parentBranch = defaultBranch || "main";
+        const parentBranch = defaultBranch || GIT_CONSTANTS.DEFAULT_BRANCH;
 
         await this.createInitialMetadataFromPath(
           bareRepoPath,

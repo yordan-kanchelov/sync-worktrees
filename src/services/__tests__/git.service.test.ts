@@ -10,11 +10,13 @@ import {
   buildGitStatusResponse,
   createMockConfig,
   createMockGitService,
+  createMockLogger,
   createWorktreeListOutput,
 } from "../../__tests__/test-utils";
 import { GitService } from "../git.service";
 
 import type { Config } from "../../types";
+import type { Logger } from "../logger.service";
 import type { SimpleGit } from "simple-git";
 import type { Mock, Mocked, MockedFunction } from "vitest";
 
@@ -53,10 +55,14 @@ describe("GitService", () => {
   let mockConfig: Config;
   let mockGit: Mocked<SimpleGit>;
   let mockMetadataService: any;
+  let mockLogger: Logger;
 
   beforeEach(() => {
     // Reset all mocks
     vi.clearAllMocks();
+
+    // Setup mock logger
+    mockLogger = createMockLogger();
 
     // Setup mock config
     mockConfig = createMockConfig();
@@ -81,7 +87,7 @@ describe("GitService", () => {
     // Mock simpleGit factory
     (simpleGit as unknown as Mock).mockReturnValue(mockGit);
 
-    gitService = new GitService(mockConfig);
+    gitService = new GitService(mockConfig, mockLogger);
   });
 
   describe("initialize", () => {
@@ -643,6 +649,62 @@ describe("GitService", () => {
       ]);
       expect(mockMetadataService.createInitialMetadataFromPath).toHaveBeenCalled();
     });
+
+    it("should handle stale worktree registration (registered but prunable)", async () => {
+      const worktreePath = "/test/worktrees/feature-1";
+
+      (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found")); // Directory doesn't exist initially
+
+      mockGit.raw.mockReset();
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree")) // Initial add fails - already registered
+        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\nprunable\n\n`) // Worktree list shows it's registered but prunable
+        .mockResolvedValueOnce("") // Prune succeeds
+        .mockResolvedValueOnce("") // Retry add succeeds
+        .mockResolvedValueOnce(""); // LFS ls-files
+
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      await gitService.addWorktree("feature-1", worktreePath);
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "prune"]);
+      expect(fs.rm).toHaveBeenCalledWith(worktreePath, { recursive: true, force: true });
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "worktree",
+        "add",
+        "--track",
+        "-b",
+        "feature-1",
+        worktreePath,
+        "origin/feature-1",
+      ]);
+    });
+
+    it("should handle concurrent creation when worktree is registered AND not prunable", async () => {
+      const worktreePath = "/test/worktrees/feature-1";
+
+      (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found")); // Directory doesn't exist initially
+
+      mockGit.raw.mockReset();
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree")) // Initial add fails - already registered
+        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\n\n`); // Worktree list shows it's registered and NOT prunable
+
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      await gitService.addWorktree("feature-1", worktreePath);
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "prune"]);
+      expect(fs.rm).not.toHaveBeenCalled();
+    });
   });
 
   describe("addWorktree - LFS verification", () => {
@@ -765,8 +827,6 @@ describe("GitService", () => {
     });
 
     it("should warn if LFS files are not downloaded after timeout", async () => {
-      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
       mockGit.branch.mockResolvedValueOnce({
         all: [],
         current: "main",
@@ -797,11 +857,9 @@ describe("GitService", () => {
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining("Some LFS files may not be fully downloaded"),
       );
-
-      consoleWarnSpy.mockRestore();
     }, 40000);
 
     it("should skip verification if no LFS files exist", async () => {
@@ -926,13 +984,10 @@ describe("GitService", () => {
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const hasUnpushed = await gitService.hasUnpushedCommits("/test/worktrees/feature-1");
 
       expect(hasUnpushed).toBe(false);
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Error checking unpushed commits"));
-
-      consoleSpy.mockRestore();
+      expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining("Error checking unpushed commits"));
     });
 
     it("should use metadata when upstream is gone", async () => {
@@ -1157,9 +1212,9 @@ describe("GitService", () => {
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main" },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1" },
-        { path: "/path/to/worktrees/feature-2", branch: "feature-2" },
+        { path: "/path/to/repo", branch: "main", isPrunable: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false },
       ]);
     });
 
@@ -1175,8 +1230,8 @@ branch refs/heads/feature-1`);
       const worktrees = await gitService.getWorktrees();
 
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main" },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1" },
+        { path: "/path/to/repo", branch: "main", isPrunable: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
       ]);
     });
 
@@ -1205,8 +1260,8 @@ branch refs/heads/feature-1
       const worktrees = await gitService.getWorktrees();
 
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main" },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1" },
+        { path: "/path/to/repo", branch: "main", isPrunable: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
       ]);
     });
 
@@ -1228,9 +1283,54 @@ branch refs/heads/feature-2`);
       const worktrees = await gitService.getWorktrees();
 
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main" },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1" },
-        { path: "/path/to/worktrees/feature-2", branch: "feature-2" },
+        { path: "/path/to/repo", branch: "main", isPrunable: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false },
+      ]);
+    });
+
+    it("should detect prunable worktrees", async () => {
+      await gitService.initialize();
+
+      mockGit.raw.mockResolvedValue(`worktree /path/to/repo
+branch refs/heads/main
+
+worktree /path/to/worktrees/feature-1
+branch refs/heads/feature-1
+
+worktree /path/to/worktrees/stale-worktree
+branch refs/heads/stale-branch
+prunable
+
+worktree /path/to/worktrees/feature-2
+branch refs/heads/feature-2`);
+
+      const worktrees = await gitService.getWorktrees();
+
+      expect(worktrees).toEqual([
+        { path: "/path/to/repo", branch: "main", isPrunable: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
+        { path: "/path/to/worktrees/stale-worktree", branch: "stale-branch", isPrunable: true },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false },
+      ]);
+    });
+
+    it("should handle mixed prunable and valid worktrees", async () => {
+      await gitService.initialize();
+
+      mockGit.raw.mockResolvedValue(`worktree /path/to/repo
+branch refs/heads/main
+
+worktree /path/to/worktrees/incomplete
+branch refs/heads/incomplete-branch
+prunable
+`);
+
+      const worktrees = await gitService.getWorktrees();
+
+      expect(worktrees).toEqual([
+        { path: "/path/to/repo", branch: "main", isPrunable: false },
+        { path: "/path/to/worktrees/incomplete", branch: "incomplete-branch", isPrunable: true },
       ]);
     });
   });
@@ -1270,15 +1370,12 @@ branch refs/heads/feature-2`);
       } as any;
       (simpleGit as MockedFunction<typeof simpleGit>).mockReturnValue(mockWorktreeGit);
 
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const result = await gitService.hasStashedChanges("/test/worktree");
 
       expect(result).toBe(true); // Conservative approach
-      expect(consoleSpy).toHaveBeenCalledWith(
+      expect(mockLogger.error).toHaveBeenCalledWith(
         expect.stringContaining("Error checking stash: Error: Failed to check stash"),
       );
-
-      consoleSpy.mockRestore();
     });
   });
 

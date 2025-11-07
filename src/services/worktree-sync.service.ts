@@ -1,11 +1,16 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import pLimit from "p-limit";
+
+import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { retry } from "../utils/retry";
+import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
 
 import { GitService } from "./git.service";
+import { Logger } from "./logger.service";
 
 import type { Config } from "../types";
 import type { WorktreeStatusDetails } from "./worktree-status.service";
@@ -13,10 +18,12 @@ import type { RetryOptions } from "../utils/retry";
 
 export class WorktreeSyncService {
   private gitService: GitService;
+  private logger: Logger;
   private syncInProgress: boolean = false;
 
   constructor(public readonly config: Config) {
-    this.gitService = new GitService(config);
+    this.logger = config.logger ?? Logger.createDefault(undefined, config.debug);
+    this.gitService = new GitService(config, this.logger);
   }
 
   async initialize(): Promise<void> {
@@ -29,11 +36,14 @@ export class WorktreeSyncService {
 
   async sync(): Promise<void> {
     if (this.syncInProgress) {
-      console.warn("⚠️  Sync already in progress, skipping...");
+      this.logger.warn("⚠️  Sync already in progress, skipping...");
       return;
     }
     this.syncInProgress = true;
-    console.log(`[${new Date().toISOString()}] Starting worktree synchronization...`);
+    this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
+
+    const totalTimer = new Timer();
+    const phaseTimer = new PhaseTimer();
 
     let lfsSkipEnabled = false;
 
@@ -45,17 +55,17 @@ export class WorktreeSyncService {
       backoffMultiplier: this.config.retry?.backoffMultiplier ?? 2,
       onRetry: (error, attempt, context) => {
         const errorMessage = getErrorMessage(error);
-        console.log(`\n⚠️  Sync attempt ${attempt} failed: ${errorMessage}`);
+        this.logger.info(`\n⚠️  Sync attempt ${attempt} failed: ${errorMessage}`);
 
         if (context?.isLfsError && !this.config.skipLfs) {
-          console.log(`🔄 LFS error detected. Will retry with LFS skipped...`);
+          this.logger.info(`🔄 LFS error detected. Will retry with LFS skipped...`);
         } else {
-          console.log(`🔄 Retrying synchronization...\n`);
+          this.logger.info(`🔄 Retrying synchronization...\n`);
         }
       },
       lfsRetryHandler: () => {
         if (!this.config.skipLfs && !lfsSkipEnabled) {
-          console.log("⚠️  Temporarily disabling LFS downloads for this sync...");
+          this.logger.info("⚠️  Temporarily disabling LFS downloads for this sync...");
           process.env.GIT_LFS_SKIP_SMUDGE = "1";
           lfsSkipEnabled = true;
         }
@@ -66,7 +76,8 @@ export class WorktreeSyncService {
       await retry(async () => {
         await this.gitService.pruneWorktrees();
 
-        console.log("Step 1: Fetching latest data from remote...");
+        this.logger.info("Step 1: Fetching latest data from remote...");
+        phaseTimer.startPhase("Phase 1: Fetch");
 
         try {
           await this.gitService.fetchAll();
@@ -74,8 +85,8 @@ export class WorktreeSyncService {
           const errorMessage = getErrorMessage(fetchError);
 
           if (isLfsError(errorMessage) && !lfsSkipEnabled && !this.config.skipLfs) {
-            console.log("⚠️  Fetch all failed due to LFS error. Attempting branch-by-branch fetch...");
-            console.log("⚠️  Temporarily disabling LFS downloads for branch-by-branch fetch...");
+            this.logger.info("⚠️  Fetch all failed due to LFS error. Attempting branch-by-branch fetch...");
+            this.logger.info("⚠️  Temporarily disabling LFS downloads for branch-by-branch fetch...");
             process.env.GIT_LFS_SKIP_SMUDGE = "1";
             lfsSkipEnabled = true;
             await this.fetchBranchByBranch();
@@ -84,6 +95,8 @@ export class WorktreeSyncService {
           }
         }
 
+        phaseTimer.endPhase();
+
         let remoteBranches: string[];
 
         if (this.config.branchMaxAge) {
@@ -91,26 +104,26 @@ export class WorktreeSyncService {
           const filteredBranches = filterBranchesByAge(branchesWithActivity, this.config.branchMaxAge);
           remoteBranches = filteredBranches.map((b) => b.branch);
 
-          console.log(`Found ${branchesWithActivity.length} remote branches.`);
-          console.log(
+          this.logger.info(`Found ${branchesWithActivity.length} remote branches.`);
+          this.logger.info(
             `After filtering by age (${formatDuration(this.config.branchMaxAge)}): ${remoteBranches.length} branches.`,
           );
 
           if (branchesWithActivity.length > remoteBranches.length) {
             const excludedCount = branchesWithActivity.length - remoteBranches.length;
-            console.log(`  - Excluded ${excludedCount} stale branches.`);
+            this.logger.info(`  - Excluded ${excludedCount} stale branches.`);
           }
         } else {
           // Use original method if no age filtering
           remoteBranches = await this.gitService.getRemoteBranches();
-          console.log(`Found ${remoteBranches.length} remote branches.`);
+          this.logger.info(`Found ${remoteBranches.length} remote branches.`);
         }
 
         // Always retain the default branch, even if excluded by age filters
         const defaultBranch = this.gitService.getDefaultBranch();
         if (!remoteBranches.includes(defaultBranch)) {
           remoteBranches.push(defaultBranch);
-          console.log(`Ensuring default branch '${defaultBranch}' is retained.`);
+          this.logger.info(`Ensuring default branch '${defaultBranch}' is retained.`);
         }
 
         await fs.mkdir(this.config.worktreeDir, { recursive: true });
@@ -118,33 +131,61 @@ export class WorktreeSyncService {
         // Get actual Git worktrees instead of just directories
         const worktrees = await this.gitService.getWorktrees();
         const worktreeBranches = worktrees.map((w) => w.branch);
-        console.log(`Found ${worktrees.length} existing Git worktrees.`);
+        this.logger.info(`Found ${worktrees.length} existing Git worktrees.`);
 
         // Clean up orphaned directories
         await this.cleanupOrphanedDirectories(worktrees);
 
-        await this.createNewWorktrees(remoteBranches, worktreeBranches, defaultBranch);
+        await this.createNewWorktreesWithTiming(remoteBranches, worktreeBranches, defaultBranch, phaseTimer);
 
-        await this.pruneOldWorktrees(remoteBranches, worktreeBranches);
+        await this.pruneOldWorktreesWithTiming(remoteBranches, worktreeBranches, phaseTimer);
 
         // Update existing worktrees if enabled
         if (this.config.updateExistingWorktrees !== false) {
-          await this.updateExistingWorktrees(worktrees, remoteBranches);
+          await this.updateExistingWorktreesWithTiming(worktrees, remoteBranches, phaseTimer);
         }
 
+        phaseTimer.startPhase("Phase 5: Cleanup");
         await this.gitService.pruneWorktrees();
-        console.log("Step 5: Pruned worktree metadata.");
+        this.logger.info("Step 5: Pruned worktree metadata.");
+        phaseTimer.endPhase();
       }, retryOptions);
     } catch (error) {
-      console.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
+      this.logger.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
       throw error;
     } finally {
       if (lfsSkipEnabled && !this.config.skipLfs) {
         delete process.env.GIT_LFS_SKIP_SMUDGE;
       }
       this.syncInProgress = false;
-      console.log(`[${new Date().toISOString()}] Synchronization finished.\n`);
+      this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
+
+      if (this.config.debug) {
+        const totalDuration = totalTimer.stop();
+        const phaseResults = phaseTimer.getResults();
+        const repoName = (this.config as { name?: string }).name;
+        this.logger.table(formatTimingTable(totalDuration, phaseResults, repoName));
+      }
     }
+  }
+
+  private async createNewWorktreesWithTiming(
+    remoteBranches: string[],
+    existingWorktreeBranches: string[],
+    defaultBranch: string,
+    phaseTimer: PhaseTimer,
+  ): Promise<void> {
+    const maxConcurrent =
+      this.config.parallelism?.maxWorktreeCreation ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
+    phaseTimer.startPhase("Phase 2: Create", maxConcurrent);
+
+    await this.createNewWorktrees(remoteBranches, existingWorktreeBranches, defaultBranch);
+
+    const newBranches = remoteBranches
+      .filter((b) => !existingWorktreeBranches.includes(b))
+      .filter((b) => b !== defaultBranch);
+    phaseTimer.setPhaseCount("Phase 2: Create", newBranches.length);
+    phaseTimer.endPhase();
   }
 
   private async createNewWorktrees(
@@ -157,104 +198,191 @@ export class WorktreeSyncService {
       .filter((b) => b !== defaultBranch);
 
     if (newBranches.length > 0) {
-      console.log(`Step 2: Creating new worktrees for: ${newBranches.join(", ")}`);
-      for (const branchName of newBranches) {
-        const worktreePath = path.join(this.config.worktreeDir, branchName);
-        await this.gitService.addWorktree(branchName, worktreePath);
-      }
+      this.logger.info(`Step 2: Creating ${newBranches.length} new worktrees...`);
+
+      // Worktree creation has concurrency=1 by default because Git's worktree.lock
+      // can cause race conditions when multiple operations run simultaneously.
+      // If concurrent operations try to create the same worktree, we gracefully handle
+      // the "already registered" error by checking if the worktree actually exists.
+      const maxConcurrent =
+        this.config.parallelism?.maxWorktreeCreation ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
+      const limit = pLimit(maxConcurrent);
+
+      const results = await Promise.allSettled(
+        newBranches.map((branchName) =>
+          limit(async () => {
+            const worktreePath = path.join(this.config.worktreeDir, branchName);
+            try {
+              await this.gitService.addWorktree(branchName, worktreePath);
+              this.logger.info(`  ✅ Created worktree for '${branchName}'`);
+            } catch (error) {
+              this.logger.error(`  ❌ Failed to create worktree for '${branchName}':`, getErrorMessage(error));
+              throw error;
+            }
+          }),
+        ),
+      );
+
+      const successCount = results.filter((r) => r.status === "fulfilled").length;
+      this.logger.info(`  Created ${successCount}/${newBranches.length} worktrees successfully`);
     } else {
-      console.log("Step 2: No new branches to create worktrees for.");
+      this.logger.info("Step 2: No new branches to create worktrees for.");
     }
+  }
+
+  private async pruneOldWorktreesWithTiming(
+    remoteBranches: string[],
+    existingWorktreeBranches: string[],
+    phaseTimer: PhaseTimer,
+  ): Promise<void> {
+    const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+    phaseTimer.startPhase("Phase 3: Prune", maxConcurrent);
+
+    await this.pruneOldWorktrees(remoteBranches, existingWorktreeBranches);
+
+    const deletedBranches = existingWorktreeBranches.filter((branch) => !remoteBranches.includes(branch));
+    phaseTimer.setPhaseCount("Phase 3: Prune", deletedBranches.length);
+    phaseTimer.endPhase();
   }
 
   private async pruneOldWorktrees(remoteBranches: string[], existingWorktreeBranches: string[]): Promise<void> {
     const deletedBranches = existingWorktreeBranches.filter((branch) => !remoteBranches.includes(branch));
 
     if (deletedBranches.length > 0) {
-      console.log(`Step 3: Checking for stale worktrees to prune: ${deletedBranches.join(", ")}`);
+      this.logger.info(`Step 3: Checking ${deletedBranches.length} stale worktrees to prune...`);
 
-      for (const branchName of deletedBranches) {
-        const worktreePath = path.join(this.config.worktreeDir, branchName);
+      // Two-phase approach: First check status in parallel (read-only, safe),
+      // then remove worktrees in parallel (mutation, needs lower concurrency)
+      const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+      const limit = pLimit(maxConcurrent);
 
-        try {
-          const status = await this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug);
+      const statusResults = await Promise.allSettled(
+        deletedBranches.map((branchName) =>
+          limit(async () => {
+            const worktreePath = path.join(this.config.worktreeDir, branchName);
+            const status = await this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug);
+            return { branchName, worktreePath, status };
+          }),
+        ),
+      );
 
+      const toRemove: Array<{ branchName: string; worktreePath: string }> = [];
+      const toSkip: Array<{
+        branchName: string;
+        status: Awaited<ReturnType<GitService["getFullWorktreeStatus"]>>;
+      }> = [];
+
+      for (const result of statusResults) {
+        if (result.status === "fulfilled") {
+          const { branchName, worktreePath, status } = result.value;
           if (status.canRemove) {
-            await this.gitService.removeWorktree(worktreePath);
+            toRemove.push({ branchName, worktreePath });
           } else {
-            if (status.upstreamGone && status.hasUnpushedCommits) {
-              console.warn(`  - ⚠️ Cannot automatically remove '${branchName}' - upstream branch was deleted.`);
-              console.log(`     Please review manually: cd ${worktreePath} && git log`);
-              console.log(
-                `     If changes were squash-merged, you can safely remove with: git worktree remove ${worktreePath}`,
-              );
-            } else {
-              console.log(`  - ⚠️ Skipping removal of '${branchName}' due to: ${status.reasons.join(", ")}.`);
-            }
-
-            if (this.config.debug && status.details) {
-              this.logDebugDetails(branchName, status.details);
-            }
+            toSkip.push({ branchName, status });
           }
-        } catch (error) {
-          console.error(`  - Error checking worktree '${branchName}':`, error);
+        } else {
+          this.logger.error(`  - Error checking worktree:`, result.reason);
+        }
+      }
+
+      if (toRemove.length > 0) {
+        const removeLimit = pLimit(
+          this.config.parallelism?.maxWorktreeRemoval ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL,
+        );
+
+        const removeResults = await Promise.allSettled(
+          toRemove.map(({ branchName, worktreePath }) =>
+            removeLimit(async () => {
+              try {
+                await this.gitService.removeWorktree(worktreePath);
+                this.logger.info(`  ✅ Removed worktree for '${branchName}'`);
+              } catch (error) {
+                this.logger.error(`  ❌ Failed to remove worktree for '${branchName}':`, getErrorMessage(error));
+                throw error;
+              }
+            }),
+          ),
+        );
+
+        const removedCount = removeResults.filter((r) => r.status === "fulfilled").length;
+        this.logger.info(`  Removed ${removedCount}/${toRemove.length} worktrees successfully`);
+      }
+
+      if (toSkip.length > 0) {
+        this.logger.info(`  Skipped ${toSkip.length} worktree(s) with local changes or unpushed commits`);
+      }
+
+      for (const { branchName, status } of toSkip) {
+        if (status.upstreamGone && status.hasUnpushedCommits) {
+          const worktreePath = path.join(this.config.worktreeDir, branchName);
+          this.logger.warn(`  - ⚠️ Cannot automatically remove '${branchName}' - upstream branch was deleted.`);
+          this.logger.info(`     Please review manually: cd ${worktreePath} && git log`);
+          this.logger.info(
+            `     If changes were squash-merged, you can safely remove with: git worktree remove ${worktreePath}`,
+          );
+        } else {
+          this.logger.info(`  - ⚠️ Skipping removal of '${branchName}' due to: ${status.reasons.join(", ")}.`);
+        }
+
+        if (this.config.debug && status.details) {
+          this.logDebugDetails(branchName, status.details);
         }
       }
     } else {
-      console.log("Step 3: No stale worktrees to prune.");
+      this.logger.info("Step 3: No stale worktrees to prune.");
     }
   }
 
   private logDebugDetails(branchName: string, details: WorktreeStatusDetails): void {
-    console.log(`\n     🔍 Debug details for '${branchName}':`);
+    this.logger.info(`\n     🔍 Debug details for '${branchName}':`);
 
     if (details.modifiedFiles > 0 && details.modifiedFilesList) {
-      console.log(`        - Modified files (${details.modifiedFiles}):`);
-      details.modifiedFilesList.forEach((file) => console.log(`          • ${file}`));
+      this.logger.info(`        - Modified files (${details.modifiedFiles}):`);
+      details.modifiedFilesList.forEach((file) => this.logger.info(`          • ${file}`));
     }
     if (details.deletedFiles > 0 && details.deletedFilesList) {
-      console.log(`        - Deleted files (${details.deletedFiles}):`);
-      details.deletedFilesList.forEach((file) => console.log(`          • ${file}`));
+      this.logger.info(`        - Deleted files (${details.deletedFiles}):`);
+      details.deletedFilesList.forEach((file) => this.logger.info(`          • ${file}`));
     }
     if (details.renamedFiles > 0 && details.renamedFilesList) {
-      console.log(`        - Renamed files (${details.renamedFiles}):`);
-      details.renamedFilesList.forEach((file) => console.log(`          • ${file.from} → ${file.to}`));
+      this.logger.info(`        - Renamed files (${details.renamedFiles}):`);
+      details.renamedFilesList.forEach((file) => this.logger.info(`          • ${file.from} → ${file.to}`));
     }
     if (details.createdFiles > 0 && details.createdFilesList) {
-      console.log(`        - Created files (${details.createdFiles}):`);
-      details.createdFilesList.forEach((file) => console.log(`          • ${file}`));
+      this.logger.info(`        - Created files (${details.createdFiles}):`);
+      details.createdFilesList.forEach((file) => this.logger.info(`          • ${file}`));
     }
     if (details.conflictedFiles > 0 && details.conflictedFilesList) {
-      console.log(`        - Conflicted files (${details.conflictedFiles}):`);
-      details.conflictedFilesList.forEach((file) => console.log(`          • ${file}`));
+      this.logger.info(`        - Conflicted files (${details.conflictedFiles}):`);
+      details.conflictedFilesList.forEach((file) => this.logger.info(`          • ${file}`));
     }
     if (details.untrackedFiles > 0 && details.untrackedFilesList) {
-      console.log(`        - Untracked files (not ignored) (${details.untrackedFiles}):`);
-      details.untrackedFilesList.forEach((file) => console.log(`          • ${file}`));
+      this.logger.info(`        - Untracked files (not ignored) (${details.untrackedFiles}):`);
+      details.untrackedFilesList.forEach((file) => this.logger.info(`          • ${file}`));
     }
     if (details.unpushedCommitCount !== undefined && details.unpushedCommitCount > 0) {
-      console.log(`        - Unpushed commits: ${details.unpushedCommitCount}`);
+      this.logger.info(`        - Unpushed commits: ${details.unpushedCommitCount}`);
     }
     if (details.stashCount !== undefined && details.stashCount > 0) {
-      console.log(`        - Stashed changes: ${details.stashCount}`);
+      this.logger.info(`        - Stashed changes: ${details.stashCount}`);
     }
     if (details.operationType) {
-      console.log(`        - Operation in progress: ${details.operationType}`);
+      this.logger.info(`        - Operation in progress: ${details.operationType}`);
     }
     if (details.modifiedSubmodules && details.modifiedSubmodules.length > 0) {
-      console.log(`        - Modified submodules (${details.modifiedSubmodules.length}):`);
-      details.modifiedSubmodules.forEach((submodule) => console.log(`          • ${submodule}`));
+      this.logger.info(`        - Modified submodules (${details.modifiedSubmodules.length}):`);
+      details.modifiedSubmodules.forEach((submodule) => this.logger.info(`          • ${submodule}`));
     }
 
-    console.log("");
+    this.logger.info("");
   }
 
   private async fetchBranchByBranch(): Promise<void> {
-    console.log("Fetching branches individually to isolate LFS errors...");
+    this.logger.info("Fetching branches individually to isolate LFS errors...");
 
     // First, get the list of remote branches (this shouldn't fail due to LFS)
     const remoteBranches = await this.gitService.getRemoteBranches();
-    console.log(`Found ${remoteBranches.length} remote branches to fetch.`);
+    this.logger.info(`Found ${remoteBranches.length} remote branches to fetch.`);
 
     const failedBranches: string[] = [];
     let successCount = 0;
@@ -265,113 +393,135 @@ export class WorktreeSyncService {
         successCount++;
       } catch (error) {
         const errorMessage = getErrorMessage(error);
-        console.log(`  ⚠️  Failed to fetch branch '${branch}': ${errorMessage}`);
+        this.logger.info(`  ⚠️  Failed to fetch branch '${branch}': ${errorMessage}`);
         failedBranches.push(branch);
       }
     }
 
-    console.log(`Branch-by-branch fetch completed: ${successCount}/${remoteBranches.length} successful`);
+    this.logger.info(`Branch-by-branch fetch completed: ${successCount}/${remoteBranches.length} successful`);
 
     if (failedBranches.length > 0) {
-      console.log(`⚠️  Failed to fetch ${failedBranches.length} branches due to errors.`);
-      console.log(`   These branches will be skipped: ${failedBranches.join(", ")}`);
+      this.logger.info(`⚠️  Failed to fetch ${failedBranches.length} branches due to errors.`);
+      this.logger.info(`   These branches will be skipped: ${failedBranches.join(", ")}`);
     }
+  }
+
+  private async updateExistingWorktreesWithTiming(
+    worktrees: { path: string; branch: string }[],
+    remoteBranches: string[],
+    phaseTimer: PhaseTimer,
+  ): Promise<void> {
+    const maxConcurrent =
+      this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES;
+    phaseTimer.startPhase("Phase 4: Update", maxConcurrent);
+
+    await this.updateExistingWorktrees(worktrees, remoteBranches);
+
+    const activeWorktrees = worktrees.filter((w) => remoteBranches.includes(w.branch));
+    phaseTimer.setPhaseCount("Phase 4: Update", activeWorktrees.length);
+    phaseTimer.endPhase();
   }
 
   private async updateExistingWorktrees(
     worktrees: { path: string; branch: string }[],
     remoteBranches: string[],
   ): Promise<void> {
-    const worktreesToUpdate: { path: string; branch: string }[] = [];
+    this.logger.info("Step 4: Checking for worktrees that need updates...");
 
-    console.log("Step 4: Checking for worktrees that need updates...");
-
-    // Check for diverged worktrees
-    const divergedDir = path.join(this.config.worktreeDir, ".diverged");
+    const divergedDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
     try {
       const diverged = await fs.readdir(divergedDir);
       if (diverged.length > 0) {
-        console.log(`📦 Note: ${diverged.length} diverged worktree(s) in ${path.relative(process.cwd(), divergedDir)}`);
+        this.logger.info(
+          `📦 Note: ${diverged.length} diverged worktree(s) in ${path.relative(process.cwd(), divergedDir)}`,
+        );
       }
     } catch {
       // No diverged directory, that's fine
     }
 
-    // Only check worktrees whose branches still exist remotely
     const activeWorktrees = worktrees.filter((w) => remoteBranches.includes(w.branch));
 
-    // Check each active worktree to see if it's behind and clean
-    for (const worktree of activeWorktrees) {
-      try {
-        // First check if the worktree directory actually exists
-        try {
-          await fs.access(worktree.path);
-        } catch {
-          // Directory doesn't exist, skip it
-          continue;
-        }
+    // Two-phase approach: Check which worktrees need updates (parallel, read-only),
+    // then perform updates (parallel with lower concurrency to avoid conflicts)
+    const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+    const limit = pLimit(maxConcurrent);
 
-        // Skip if an operation is in progress (merge/rebase/etc.)
-        const hasOp = await this.gitService.hasOperationInProgress(worktree.path);
-        if (hasOp) {
-          continue;
-        }
+    const checkResults = await Promise.allSettled(
+      activeWorktrees.map((worktree) =>
+        limit(async () => {
+          try {
+            await fs.access(worktree.path);
+          } catch {
+            return null;
+          }
 
-        const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
-        if (!isClean) {
-          continue; // Skip worktrees with local changes
-        }
+          const hasOp = await this.gitService.hasOperationInProgress(worktree.path);
+          if (hasOp) return null;
 
-        // Check if we can fast-forward before attempting update
-        const canFastForward = await this.gitService.canFastForward(worktree.path, worktree.branch);
-        if (!canFastForward) {
-          // Handle diverged branch
-          await this.handleDivergedBranch(worktree);
-          continue;
-        }
+          const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
+          if (!isClean) return null;
 
-        const isBehind = await this.gitService.isWorktreeBehind(worktree.path);
-        if (isBehind) {
-          worktreesToUpdate.push(worktree);
-        }
-      } catch (error) {
-        console.error(`  - Error checking worktree '${worktree.branch}':`, error);
+          const canFastForward = await this.gitService.canFastForward(worktree.path, worktree.branch);
+          if (!canFastForward) {
+            await this.handleDivergedBranch(worktree);
+            return null;
+          }
+
+          const isBehind = await this.gitService.isWorktreeBehind(worktree.path);
+          return isBehind ? worktree : null;
+        }),
+      ),
+    );
+
+    const worktreesToUpdate: { path: string; branch: string }[] = [];
+    for (const result of checkResults) {
+      if (result.status === "fulfilled" && result.value) {
+        worktreesToUpdate.push(result.value);
+      } else if (result.status === "rejected") {
+        this.logger.error(`  - Error checking worktree:`, result.reason);
       }
     }
 
     if (worktreesToUpdate.length > 0) {
-      console.log(`  - Found ${worktreesToUpdate.length} worktrees behind their upstream branches.`);
+      this.logger.info(`  - Found ${worktreesToUpdate.length} worktrees behind their upstream branches.`);
 
-      for (const worktree of worktreesToUpdate) {
-        try {
-          console.log(`  - Updating worktree '${worktree.branch}'...`);
-          await this.gitService.updateWorktree(worktree.path);
-          console.log(`    ✅ Successfully updated '${worktree.branch}'.`);
-        } catch (error) {
-          // Check if this is specifically a fast-forward error indicating diverged history
-          const errorMessage = getErrorMessage(error);
+      const updateLimit = pLimit(
+        this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES,
+      );
 
-          // Only treat as diverged if it's specifically a fast-forward failure
-          // Other errors (network issues, permission problems, etc.) should not trigger divergence handling
-          if (
-            errorMessage.includes("Not possible to fast-forward") ||
-            errorMessage.includes("fatal: Not possible to fast-forward, aborting") ||
-            errorMessage.includes("cannot fast-forward")
-          ) {
-            console.log(`    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`);
+      const updateResults = await Promise.allSettled(
+        worktreesToUpdate.map((worktree) =>
+          updateLimit(async () => {
             try {
-              await this.handleDivergedBranch(worktree);
-            } catch (divergedError) {
-              console.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
+              this.logger.info(`  - Updating worktree '${worktree.branch}'...`);
+              await this.gitService.updateWorktree(worktree.path);
+              this.logger.info(`    ✅ Successfully updated '${worktree.branch}'.`);
+            } catch (error) {
+              const errorMessage = getErrorMessage(error);
+
+              if (ERROR_MESSAGES.FAST_FORWARD_FAILED.some((msg) => errorMessage.includes(msg))) {
+                this.logger.info(
+                  `    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`,
+                );
+                try {
+                  await this.handleDivergedBranch(worktree);
+                } catch (divergedError) {
+                  this.logger.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
+                }
+              } else {
+                this.logger.error(`    ❌ Failed to update '${worktree.branch}':`, error);
+              }
+              throw error;
             }
-          } else {
-            // Other errors: network issues, permission problems, disk space, etc.
-            console.error(`    ❌ Failed to update '${worktree.branch}':`, error);
-          }
-        }
-      }
+          }),
+        ),
+      );
+
+      const successCount = updateResults.filter((r) => r.status === "fulfilled").length;
+      this.logger.info(`  Updated ${successCount}/${worktreesToUpdate.length} worktrees successfully`);
     } else {
-      console.log("  - All worktrees are up to date.");
+      this.logger.info("  - All worktrees are up to date.");
     }
   }
 
@@ -398,7 +548,7 @@ export class WorktreeSyncService {
       }
 
       if (orphanedDirs.length > 0) {
-        console.log(`Found ${orphanedDirs.length} orphaned directories: ${orphanedDirs.join(", ")}`);
+        this.logger.info(`Found ${orphanedDirs.length} orphaned directories: ${orphanedDirs.join(", ")}`);
 
         for (const dir of orphanedDirs) {
           const dirPath = path.join(this.config.worktreeDir, dir);
@@ -406,50 +556,50 @@ export class WorktreeSyncService {
             const stat = await fs.stat(dirPath);
             if (stat.isDirectory()) {
               await fs.rm(dirPath, { recursive: true, force: true });
-              console.log(`  - Removed orphaned directory: ${dir}`);
+              this.logger.info(`  - Removed orphaned directory: ${dir}`);
             }
           } catch (error) {
-            console.error(`  - Failed to remove orphaned directory ${dir}:`, error);
+            this.logger.error(`  - Failed to remove orphaned directory ${dir}:`, error);
           }
         }
       }
     } catch (error) {
-      console.error("Error during orphaned directory cleanup:", error);
+      this.logger.error("Error during orphaned directory cleanup:", error);
     }
   }
 
   private async handleDivergedBranch(worktree: { path: string; branch: string }): Promise<void> {
-    console.log(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
+    this.logger.info(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
 
     const treesIdentical = await this.gitService.compareTreeContent(worktree.path, worktree.branch);
 
     if (treesIdentical) {
-      console.log(`✅ Branch '${worktree.branch}' was rebased but files are identical. Resetting to upstream...`);
+      this.logger.info(`✅ Branch '${worktree.branch}' was rebased but files are identical. Resetting to upstream...`);
       await this.gitService.resetToUpstream(worktree.path, worktree.branch);
-      console.log(`   Successfully updated '${worktree.branch}' to match upstream.`);
+      this.logger.info(`   Successfully updated '${worktree.branch}' to match upstream.`);
     } else {
       const hasLocalChanges = await this.hasLocalChangesSinceLastSync(worktree.path);
 
       if (!hasLocalChanges) {
-        console.log(
+        this.logger.info(
           `✅ Branch '${worktree.branch}' has diverged but you made no local changes. Resetting to upstream...`,
         );
         await this.gitService.resetToUpstream(worktree.path, worktree.branch);
-        console.log(`   Successfully updated '${worktree.branch}' to match upstream.`);
+        this.logger.info(`   Successfully updated '${worktree.branch}' to match upstream.`);
       } else {
-        console.log(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
+        this.logger.info(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
 
         const divergedPath = await this.divergeWorktree(worktree.path, worktree.branch);
         const relativePath = path.relative(process.cwd(), divergedPath);
 
-        console.log(`   Moved to: ${relativePath}`);
-        console.log(`   Your local changes are preserved. To review:`);
-        console.log(`     cd ${relativePath}`);
-        console.log(`     git diff origin/${worktree.branch}`);
+        this.logger.info(`   Moved to: ${relativePath}`);
+        this.logger.info(`   Your local changes are preserved. To review:`);
+        this.logger.info(`     cd ${relativePath}`);
+        this.logger.info(`     git diff origin/${worktree.branch}`);
 
         await this.gitService.removeWorktree(worktree.path);
         await this.gitService.addWorktree(worktree.branch, worktree.path);
-        console.log(`   Created fresh worktree from upstream at: ${worktree.path}`);
+        this.logger.info(`   Created fresh worktree from upstream at: ${worktree.path}`);
       }
     }
   }
@@ -470,10 +620,10 @@ export class WorktreeSyncService {
 
   private async divergeWorktree(worktreePath: string, branchName: string): Promise<string> {
     // Create .diverged directory inside worktreeDir
-    const divergedBaseDir = path.join(this.config.worktreeDir, ".diverged");
+    const divergedBaseDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
 
     const timestamp = new Date().toISOString().split("T")[0];
-    const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+    const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
     const safeBranchName = branchName.replace(/\//g, "-");
     const divergedName = `${timestamp}-${safeBranchName}-${uniqueSuffix}`;
     const divergedPath = path.join(divergedBaseDir, divergedName);
@@ -499,7 +649,7 @@ export class WorktreeSyncService {
     const metadata = {
       originalBranch: branchName,
       divergedAt: new Date().toISOString(),
-      reason: "diverged-history-with-changes",
+      reason: METADATA_CONSTANTS.DIVERGED_REASON,
       originalPath: worktreePath,
       localCommit: await this.gitService.getCurrentCommit(divergedPath),
       remoteCommit: await this.gitService.getRemoteCommit(`origin/${branchName}`),
@@ -511,7 +661,10 @@ export class WorktreeSyncService {
   Original worktree location: ${worktreePath}`,
     };
 
-    await fs.writeFile(path.join(divergedPath, ".diverged-info.json"), JSON.stringify(metadata, null, 2));
+    await fs.writeFile(
+      path.join(divergedPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE),
+      JSON.stringify(metadata, null, 2),
+    );
 
     return divergedPath;
   }

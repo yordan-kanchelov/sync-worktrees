@@ -3,7 +3,7 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { GIT_OPERATIONS, PATH_CONSTANTS } from "../constants";
+import { GIT_CONSTANTS, GIT_OPERATIONS, PATH_CONSTANTS } from "../constants";
 import { GitOperationError, WorktreeNotCleanError } from "../errors";
 import { getErrorMessage } from "../utils/lfs-error";
 
@@ -190,7 +190,10 @@ export class WorktreeStatusService {
 
       for (const line of lines) {
         const firstChar = line.charAt(0);
-        if (firstChar === "+" || firstChar === "-") {
+        if (
+          firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_ADDED ||
+          firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_REMOVED
+        ) {
           return true;
         }
       }
@@ -303,7 +306,10 @@ export class WorktreeStatusService {
 
       for (const line of lines) {
         const firstChar = line.charAt(0);
-        if (firstChar === "+" || firstChar === "-") {
+        if (
+          firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_ADDED ||
+          firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_REMOVED
+        ) {
           const match = line.match(/^[+-]\s*(\S+)/);
           if (match) {
             modifiedSubmodules.push(match[1]);
@@ -367,7 +373,7 @@ export class WorktreeStatusService {
     } catch (error) {
       const errorMessage = getErrorMessage(error);
 
-      if (errorMessage.includes("exit code: 1")) {
+      if (errorMessage.includes(GIT_CONSTANTS.GIT_CHECK_IGNORE_NO_MATCH)) {
         return files;
       }
 
@@ -393,7 +399,7 @@ export class WorktreeStatusService {
 
       if (stat.isFile()) {
         const content = await fs.readFile(gitPath, "utf-8");
-        const gitdirMatch = content.match(/^gitdir:\s*(.+)$/m);
+        const gitdirMatch = content.match(new RegExp(`^${GIT_CONSTANTS.GITDIR_PREFIX}\\s*(.+)$`, "m"));
         if (gitdirMatch) {
           return path.resolve(worktreePath, gitdirMatch[1].trim());
         }

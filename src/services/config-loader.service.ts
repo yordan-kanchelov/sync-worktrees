@@ -2,6 +2,8 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
 
+import { CONFIG_CONSTANTS, DEFAULT_CONFIG } from "../constants";
+
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
 
 export class ConfigLoaderService {
@@ -141,6 +143,74 @@ export class ConfigLoaderService {
         throw new Error("Invalid 'backoffMultiplier' in retry config");
       }
     }
+
+    if (configObj.parallelism !== undefined) {
+      this.validateParallelismConfig(configObj.parallelism, "global");
+    }
+
+    if (configObj.defaults && typeof configObj.defaults === "object") {
+      const defaults = configObj.defaults as Record<string, unknown>;
+      if (defaults.parallelism !== undefined) {
+        this.validateParallelismConfig(defaults.parallelism, "defaults");
+      }
+    }
+  }
+
+  private validateParallelismConfig(parallelism: unknown, context: string): void {
+    if (typeof parallelism !== "object" || parallelism === null) {
+      throw new Error(`'parallelism' in ${context} must be an object`);
+    }
+
+    const config = parallelism as Record<string, unknown>;
+
+    if (config.maxRepositories !== undefined) {
+      if (typeof config.maxRepositories !== "number" || config.maxRepositories < 1) {
+        throw new Error(`Invalid 'maxRepositories' in ${context} parallelism config. Must be a positive number`);
+      }
+    }
+
+    if (config.maxWorktreeCreation !== undefined) {
+      if (typeof config.maxWorktreeCreation !== "number" || config.maxWorktreeCreation < 1) {
+        throw new Error(`Invalid 'maxWorktreeCreation' in ${context} parallelism config. Must be a positive number`);
+      }
+    }
+
+    if (config.maxWorktreeUpdates !== undefined) {
+      if (typeof config.maxWorktreeUpdates !== "number" || config.maxWorktreeUpdates < 1) {
+        throw new Error(`Invalid 'maxWorktreeUpdates' in ${context} parallelism config. Must be a positive number`);
+      }
+    }
+
+    if (config.maxWorktreeRemoval !== undefined) {
+      if (typeof config.maxWorktreeRemoval !== "number" || config.maxWorktreeRemoval < 1) {
+        throw new Error(`Invalid 'maxWorktreeRemoval' in ${context} parallelism config. Must be a positive number`);
+      }
+    }
+
+    if (config.maxStatusChecks !== undefined) {
+      if (typeof config.maxStatusChecks !== "number" || config.maxStatusChecks < 1) {
+        throw new Error(`Invalid 'maxStatusChecks' in ${context} parallelism config. Must be a positive number`);
+      }
+    }
+
+    const maxRepos = (config.maxRepositories as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+    const maxCreation = (config.maxWorktreeCreation as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
+    const maxUpdates = (config.maxWorktreeUpdates as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES;
+    const maxRemoval = (config.maxWorktreeRemoval as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL;
+    const maxStatus = (config.maxStatusChecks as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+
+    const maxPerRepoOps = maxCreation + maxUpdates + maxRemoval + maxStatus;
+    const totalMaxConcurrent = maxRepos * maxPerRepoOps;
+
+    if (totalMaxConcurrent > DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS) {
+      const safeMaxRepos = Math.floor(DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS / maxPerRepoOps);
+      throw new Error(
+        `Total concurrent operations (${totalMaxConcurrent}) exceeds safe limit (${DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS}). ` +
+          `With current per-repository limits (creation: ${maxCreation}, updates: ${maxUpdates}, removal: ${maxRemoval}, status: ${maxStatus}), ` +
+          `maximum safe maxRepositories is ${safeMaxRepos}. ` +
+          `Consider reducing maxRepositories or lowering per-operation limits.`,
+      );
+    }
   }
 
   resolveRepositoryConfig(
@@ -153,7 +223,7 @@ export class ConfigLoaderService {
       name: repo.name,
       repoUrl: repo.repoUrl,
       worktreeDir: this.resolvePath(repo.worktreeDir, configDir),
-      cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? "0 * * * *",
+      cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? DEFAULT_CONFIG.CRON_SCHEDULE,
       runOnce: repo.runOnce ?? defaults?.runOnce ?? false,
     };
 
@@ -174,6 +244,13 @@ export class ConfigLoaderService {
         ...(globalRetry || {}),
         ...(defaults?.retry || {}),
         ...(repo.retry || {}),
+      };
+    }
+
+    if (repo.parallelism || defaults?.parallelism) {
+      resolved.parallelism = {
+        ...(defaults?.parallelism || {}),
+        ...(repo.parallelism || {}),
       };
     }
 
@@ -202,7 +279,7 @@ export class ConfigLoaderService {
     return repositories.filter((repo) => {
       return patterns.some((pattern) => {
         if (pattern.includes("*")) {
-          const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
+          const regex = new RegExp("^" + pattern.replace(/\*/g, CONFIG_CONSTANTS.WILDCARD_PATTERN) + "$");
           return regex.test(repo.name);
         }
         return repo.name === pattern;
