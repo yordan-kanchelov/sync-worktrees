@@ -46,6 +46,7 @@ export interface Config {
   updateExistingWorktrees?: boolean;
   debug?: boolean;
   logger?: Logger;
+  filesToCopyOnBranchCreate?: string[];
 }
 
 export interface RepositoryConfig extends Config {

@@ -36,14 +36,19 @@ export class GitService {
     this.statusService = new WorktreeStatusService({ skipLfs: this.config.skipLfs });
   }
 
+  updateLogger(logger: Logger): void {
+    this.logger = logger;
+  }
+
   async initialize(): Promise<SimpleGit> {
     const { repoUrl } = this.config;
 
+    let needsClone = false;
     try {
       // Check if bare repo already exists
       await fs.access(path.join(this.bareRepoPath, "HEAD"));
-      this.logger.info(`Bare repository at "${this.bareRepoPath}" already exists. Using it.`);
     } catch {
+      needsClone = true;
       // Clone as bare repository
       this.logger.info(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
@@ -70,14 +75,16 @@ export class GitService {
       await bareGit.addConfig("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
     }
 
-    // Fetch all remote branches to ensure they exist locally
-    this.logger.info("Fetching remote branches...");
-    await bareGit.fetch(["--all"]);
+    // Only fetch during initialization if we just cloned (need branches for initial setup)
+    // Otherwise, defer fetching to the sync() call
+    if (needsClone) {
+      this.logger.info("Fetching remote branches...");
+      await bareGit.fetch(["--all"]);
+    }
 
-    // Detect the default branch
+    // Detect the default branch (works from local refs even without fetch)
     this.defaultBranch = await this.detectDefaultBranch(bareGit);
     this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
-    this.logger.info(`Detected default branch: ${this.defaultBranch}`);
 
     // Check if main worktree exists
     let needsMainWorktree = true;
@@ -168,6 +175,10 @@ export class GitService {
       throw new Error("Git service not initialized. Call initialize() first.");
     }
     return this.git;
+  }
+
+  isInitialized(): boolean {
+    return this.git !== null;
   }
 
   getDefaultBranch(): string {
@@ -851,6 +862,24 @@ export class GitService {
     }
   }
 
+  async isLocalAheadOfRemote(worktreePath: string, branch: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+    try {
+      // Get the merge base between HEAD and the remote branch
+      const mergeBase = await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`]);
+      const mergeBaseSha = mergeBase.trim();
+
+      // Get remote branch SHA
+      const remoteSha = await worktreeGit.revparse([`origin/${branch}`]);
+      const remoteShaTrimmed = remoteSha.trim();
+
+      // If merge base equals remote, local is ahead (remote is ancestor of local)
+      return mergeBaseSha === remoteShaTrimmed;
+    } catch {
+      return false;
+    }
+  }
+
   async compareTreeContent(worktreePath: string, branch: string): Promise<boolean> {
     const worktreeGit = simpleGit(worktreePath);
     try {
@@ -899,6 +928,38 @@ export class GitService {
     const git = simpleGit(this.bareRepoPath);
     const commit = await git.revparse([ref]);
     return commit.trim();
+  }
+
+  async branchExists(branchName: string): Promise<{ local: boolean; remote: boolean }> {
+    const bareGit = simpleGit(this.bareRepoPath);
+
+    const localBranches = await bareGit.branch();
+    const local = localBranches.all.includes(branchName);
+
+    const remoteBranches = await bareGit.branch(["-r"]);
+    const remote = remoteBranches.all.includes(`origin/${branchName}`);
+
+    return { local, remote };
+  }
+
+  async getLocalBranches(): Promise<string[]> {
+    const bareGit = simpleGit(this.bareRepoPath);
+    const branches = await bareGit.branch();
+    return branches.all;
+  }
+
+  async createBranch(branchName: string, baseBranch: string): Promise<void> {
+    const bareGit = simpleGit(this.bareRepoPath);
+
+    await bareGit.raw(["branch", branchName, `origin/${baseBranch}`]);
+    this.logger.info(`Created branch '${branchName}' from '${baseBranch}'`);
+  }
+
+  async pushBranch(branchName: string): Promise<void> {
+    const bareGit = simpleGit(this.bareRepoPath);
+
+    await bareGit.push(["origin", `${branchName}:${branchName}`, "-u"]);
+    this.logger.info(`Pushed branch '${branchName}' to remote`);
   }
 
   async getWorktreeMetadata(worktreePath: string): Promise<SyncMetadata | null> {

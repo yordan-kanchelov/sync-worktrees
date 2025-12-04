@@ -74,6 +74,14 @@ const StatusBar: React.FC<StatusBarProps> = ({ status, repositoryCount, lastSync
           <Text>
             Disk Space: <Text color="magenta">{diskSpaceUsed || "Calculating..."}</Text>
           </Text>
+          <Text dimColor>
+            <Text color="yellow">s</Text>ync{" "}
+            <Text color="yellow">c</Text>reate{" "}
+            <Text color="yellow">o</Text>pen{" "}
+            <Text color="yellow">r</Text>eload{" "}
+            <Text color="yellow">?</Text>help{" "}
+            <Text color="yellow">q</Text>uit
+          </Text>
         </Box>
       </Box>
     </Box>

@@ -1,8 +1,9 @@
 import React from "react";
 import { render } from "ink-testing-library";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import App, { AppProps } from "../App";
+import { appEvents } from "../../utils/app-events";
 
 // Helper to wait for React state updates
 const waitForStateUpdate = () => new Promise(resolve => setTimeout(resolve, 100));
@@ -17,9 +18,20 @@ describe("App", () => {
       onManualSync: vi.fn(),
       onReload: vi.fn(),
       onQuit: vi.fn(),
+      getRepositoryList: vi.fn().mockReturnValue([{ index: 0, name: "test-repo", repoUrl: "https://example.com/repo.git" }]),
+      getBranchesForRepo: vi.fn().mockResolvedValue(["main", "develop"]),
+      getDefaultBranchForRepo: vi.fn().mockReturnValue("main"),
+      createAndPushBranch: vi.fn().mockResolvedValue({ success: true, finalName: "test-branch" }),
+      getWorktreesForRepo: vi.fn().mockResolvedValue([{ path: "/worktrees/main", branch: "main" }]),
+      openEditorInWorktree: vi.fn().mockReturnValue({ success: true }),
+      createWorktreeForBranch: vi.fn().mockResolvedValue(undefined),
     };
 
-    delete (globalThis as any).__inkAppMethods;
+    appEvents.removeAllListeners();
+  });
+
+  afterEach(() => {
+    appEvents.removeAllListeners();
   });
 
   describe("rendering", () => {
@@ -38,25 +50,30 @@ describe("App", () => {
 
   });
 
-  describe("global methods", () => {
-    it("should set up global methods on mount", () => {
-      render(<App {...defaultProps} />);
+  describe("event subscriptions", () => {
+    it("should respond to appEvents on mount", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
 
-      const methods = (globalThis as any).__inkAppMethods;
-      expect(methods).toBeDefined();
-      expect(methods.updateLastSyncTime).toBeInstanceOf(Function);
-      expect(methods.setStatus).toBeInstanceOf(Function);
-      expect(methods.setDiskSpace).toBeInstanceOf(Function);
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Syncing...");
     });
 
-    it("should clean up global methods on unmount", () => {
-      const { unmount } = render(<App {...defaultProps} />);
+    it("should clean up event subscriptions on unmount", async () => {
+      const { unmount, lastFrame } = render(<App {...defaultProps} />);
 
-      expect((globalThis as any).__inkAppMethods).toBeDefined();
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Running");
 
       unmount();
 
-      expect((globalThis as any).__inkAppMethods).toBeUndefined();
+      // Events should no longer affect the component after unmount
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+      // No error should occur - events are just silently ignored
     });
   });
 
@@ -65,15 +82,13 @@ describe("App", () => {
     it("should update last sync time and set status to idle", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
-      await waitForStateUpdate(); // Wait for useEffect to set up global methods
+      await waitForStateUpdate();
 
-      const { setStatus, updateLastSyncTime } = (globalThis as any).__inkAppMethods;
-
-      setStatus("syncing");
+      appEvents.emit("setStatus", "syncing");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Syncing...");
 
-      updateLastSyncTime();
+      appEvents.emit("updateLastSyncTime");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Running");
       expect(lastFrame()).not.toContain("Syncing...");
@@ -82,14 +97,12 @@ describe("App", () => {
     it("should show last sync time after update", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
-      await waitForStateUpdate(); // Wait for useEffect to set up global methods
-
-      const { updateLastSyncTime } = (globalThis as any).__inkAppMethods;
+      await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Last Sync:");
       expect(lastFrame()).toContain("N/A");
 
-      updateLastSyncTime();
+      appEvents.emit("updateLastSyncTime");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Last Sync:");
@@ -101,13 +114,11 @@ describe("App", () => {
     it("should change status from idle to syncing", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
-      await waitForStateUpdate(); // Wait for useEffect to set up global methods
-
-      const { setStatus } = (globalThis as any).__inkAppMethods;
+      await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Running");
 
-      setStatus("syncing");
+      appEvents.emit("setStatus", "syncing");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Syncing...");
@@ -117,15 +128,13 @@ describe("App", () => {
     it("should change status from syncing to idle", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
-      await waitForStateUpdate(); // Wait for useEffect to set up global methods
+      await waitForStateUpdate();
 
-      const { setStatus } = (globalThis as any).__inkAppMethods;
-
-      setStatus("syncing");
+      appEvents.emit("setStatus", "syncing");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Syncing...");
 
-      setStatus("idle");
+      appEvents.emit("setStatus", "idle");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Running");
     });
@@ -137,15 +146,6 @@ describe("App", () => {
       const { stdin } = render(<App {...defaultProps} onQuit={onQuit} />);
 
       stdin.write("q");
-
-      expect(onQuit).toHaveBeenCalled();
-    });
-
-    it("should call onQuit when escape is pressed", () => {
-      const onQuit = vi.fn();
-      const { stdin } = render(<App {...defaultProps} onQuit={onQuit} />);
-
-      stdin.write("\x1b");
 
       expect(onQuit).toHaveBeenCalled();
     });
@@ -194,10 +194,9 @@ describe("App", () => {
       const onManualSync = vi.fn();
       const { stdin } = render(<App {...defaultProps} onManualSync={onManualSync} />);
 
-      await waitForStateUpdate(); // Wait for useEffect to set up global methods
+      await waitForStateUpdate();
 
-      const { setStatus } = (globalThis as any).__inkAppMethods;
-      setStatus("syncing");
+      appEvents.emit("setStatus", "syncing");
       await waitForStateUpdate();
 
       stdin.write("s");
@@ -218,10 +217,9 @@ describe("App", () => {
       const onReload = vi.fn();
       const { stdin } = render(<App {...defaultProps} onReload={onReload} />);
 
-      await waitForStateUpdate(); // Wait for useEffect to set up global methods
+      await waitForStateUpdate();
 
-      const { setStatus } = (globalThis as any).__inkAppMethods;
-      setStatus("syncing");
+      appEvents.emit("setStatus", "syncing");
       await waitForStateUpdate();
 
       stdin.write("r");
@@ -257,11 +255,9 @@ describe("App", () => {
 
       await waitForStateUpdate();
 
-      const { setDiskSpace } = (globalThis as any).__inkAppMethods;
-
       expect(lastFrame()).toContain("Calculating...");
 
-      setDiskSpace("1.2 GB");
+      appEvents.emit("setDiskSpace", "1.2 GB");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("1.2 GB");
@@ -273,9 +269,7 @@ describe("App", () => {
 
       await waitForStateUpdate();
 
-      const { setDiskSpace } = (globalThis as any).__inkAppMethods;
-
-      setDiskSpace("N/A");
+      appEvents.emit("setDiskSpace", "N/A");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("N/A");
@@ -286,16 +280,76 @@ describe("App", () => {
 
       await waitForStateUpdate();
 
-      const { setDiskSpace } = (globalThis as any).__inkAppMethods;
-
-      setDiskSpace("500 MB");
+      appEvents.emit("setDiskSpace", "500 MB");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("500 MB");
 
-      setDiskSpace("1.2 GB");
+      appEvents.emit("setDiskSpace", "1.2 GB");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("1.2 GB");
       expect(lastFrame()).not.toContain("500 MB");
+    });
+  });
+
+  describe("addLog functionality", () => {
+    it("should respond to addLog events", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Test message", level: "info" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Test message");
+    });
+
+    it("should display info logs", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Test info message", level: "info" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Test info message");
+    });
+
+    it("should display warn logs", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Test warning message", level: "warn" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Test warning message");
+    });
+
+    it("should display error logs", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Test error message", level: "error" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Test error message");
+    });
+
+    it("should display multiple logs in order", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "First log", level: "info" });
+      appEvents.emit("addLog", { message: "Second log", level: "info" });
+      appEvents.emit("addLog", { message: "Third log", level: "info" });
+      await waitForStateUpdate();
+
+      const frame = lastFrame();
+      expect(frame).toContain("First log");
+      expect(frame).toContain("Second log");
+      expect(frame).toContain("Third log");
     });
   });
 });

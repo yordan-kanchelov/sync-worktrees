@@ -30,8 +30,21 @@ export class WorktreeSyncService {
     await this.gitService.initialize();
   }
 
+  isInitialized(): boolean {
+    return this.gitService.isInitialized();
+  }
+
   isSyncInProgress(): boolean {
     return this.syncInProgress;
+  }
+
+  getGitService(): GitService {
+    return this.gitService;
+  }
+
+  updateLogger(logger: Logger): void {
+    this.logger = logger;
+    this.gitService.updateLogger(logger);
   }
 
   async sync(): Promise<void> {
@@ -464,6 +477,12 @@ export class WorktreeSyncService {
 
           const canFastForward = await this.gitService.canFastForward(worktree.path, worktree.branch);
           if (!canFastForward) {
+            // Check if local is just ahead of remote (not truly diverged)
+            const isAhead = await this.gitService.isLocalAheadOfRemote(worktree.path, worktree.branch);
+            if (isAhead) {
+              this.logger.info(`⏭️  Skipping '${worktree.branch}' - has unpushed commits`);
+              return null;
+            }
             await this.handleDivergedBranch(worktree);
             return null;
           }
