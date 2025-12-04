@@ -16,6 +16,7 @@ const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance } = vi.hoisted
     mockWorktreeSyncServiceInstance: {
       sync: vi.fn<any>(),
       initialize: vi.fn<any>(),
+      isInitialized: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
       updateLogger: vi.fn<any>(),
       config: {} as any,
@@ -69,6 +70,7 @@ describe("InteractiveUIService", () => {
     mockSyncService = {
       sync: vi.fn<any>().mockResolvedValue(undefined),
       initialize: vi.fn<any>().mockResolvedValue(undefined),
+      isInitialized: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
       updateLogger: vi.fn<any>(),
       config: mockConfig,
@@ -76,6 +78,7 @@ describe("InteractiveUIService", () => {
 
     mockWorktreeSyncServiceInstance.sync.mockResolvedValue(undefined);
     mockWorktreeSyncServiceInstance.initialize.mockResolvedValue(undefined);
+    mockWorktreeSyncServiceInstance.isInitialized.mockReturnValue(false);
     mockWorktreeSyncServiceInstance.isSyncInProgress.mockReturnValue(false);
     mockWorktreeSyncServiceInstance.config = mockConfig;
 
@@ -252,6 +255,8 @@ describe("InteractiveUIService", () => {
       const mockService2 = {
         ...mockSyncService,
         sync: vi.fn<any>().mockResolvedValue(undefined),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(false),
         isSyncInProgress: vi.fn<any>().mockReturnValue(false),
       };
       const service = new InteractiveUIService([mockSyncService, mockService2 as any]);

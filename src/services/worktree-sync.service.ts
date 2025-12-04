@@ -30,6 +30,10 @@ export class WorktreeSyncService {
     await this.gitService.initialize();
   }
 
+  isInitialized(): boolean {
+    return this.gitService.isInitialized();
+  }
+
   isSyncInProgress(): boolean {
     return this.syncInProgress;
   }

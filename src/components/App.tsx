@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Box, useInput, useStdout } from "ink";
 import StatusBar from "./StatusBar";
 import HelpModal from "./HelpModal";
@@ -34,7 +34,7 @@ export interface LogEntry {
   timestamp: Date;
 }
 
-const MAX_LOG_ENTRIES = 1000;
+const MAX_LOG_ENTRIES = 5000;
 
 const App: React.FC<AppProps> = ({
   repositoryCount,
@@ -78,6 +78,9 @@ const App: React.FC<AppProps> = ({
       return newLogs;
     });
   }, []);
+
+  const addLogRef = useRef(addLog);
+  addLogRef.current = addLog;
 
   useInput((input) => {
     if (showHelp) {
@@ -140,14 +143,17 @@ const App: React.FC<AppProps> = ({
         setDiskSpaceUsed(diskSpace);
       }),
       appEvents.on("addLog", ({ message, level }: { message: string; level: "info" | "warn" | "error" }) => {
-        addLog(message, level);
+        addLogRef.current(message, level);
       }),
     ];
+
+    appEvents.emit("uiReady");
 
     return () => {
       unsubscribers.forEach((unsub) => unsub());
     };
-  }, [addLog]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const statusBarHeight = 5;
   const terminalRows = stdout.rows ?? 24;

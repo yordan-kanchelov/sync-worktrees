@@ -70,48 +70,49 @@ async function runMultipleRepositories(
   const services = new Map<string, WorktreeSyncService>();
   const globalLogger = Logger.createDefault();
 
-  globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
-
   // Apply default limit to prevent resource exhaustion with many repositories
   // Each repository internally parallelizes worktree operations, so total concurrent
   // operations = maxRepositories × (maxWorktreeCreation + maxWorktreeUpdates + maxStatusChecks)
   const limit = pLimit(maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
 
-  const initResults = await Promise.allSettled(
-    repositories.map((repoConfig) =>
-      limit(async () => {
-        const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug);
-
-        repoLogger.info(`\n📦 Repository: ${repoConfig.name}`);
-        repoLogger.info(`   URL: ${repoConfig.repoUrl}`);
-        repoLogger.info(`   Worktrees: ${repoConfig.worktreeDir}`);
-        if (repoConfig.bareRepoDir) {
-          repoLogger.info(`   Bare repo: ${repoConfig.bareRepoDir}`);
-        }
-
-        if (!repoConfig.logger) {
-          repoConfig.logger = repoLogger;
-        }
-
-        const syncService = new WorktreeSyncService(repoConfig);
-        await syncService.initialize();
-        return { name: repoConfig.name, service: syncService };
-      }),
-    ),
-  );
-
-  const servicesToSync: Array<{ name: string; service: WorktreeSyncService }> = [];
-
-  for (const result of initResults) {
-    if (result.status === "fulfilled") {
-      services.set(result.value.name, result.value.service);
-      servicesToSync.push(result.value);
-    } else {
-      globalLogger.error(`❌ Failed to initialize repository:`, result.reason);
-    }
-  }
-
   if (runOnce) {
+    // For runOnce mode, initialize services immediately with console logging
+    globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
+
+    const initResults = await Promise.allSettled(
+      repositories.map((repoConfig) =>
+        limit(async () => {
+          const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug);
+
+          repoLogger.info(`\n📦 Repository: ${repoConfig.name}`);
+          repoLogger.info(`   URL: ${repoConfig.repoUrl}`);
+          repoLogger.info(`   Worktrees: ${repoConfig.worktreeDir}`);
+          if (repoConfig.bareRepoDir) {
+            repoLogger.info(`   Bare repo: ${repoConfig.bareRepoDir}`);
+          }
+
+          if (!repoConfig.logger) {
+            repoConfig.logger = repoLogger;
+          }
+
+          const syncService = new WorktreeSyncService(repoConfig);
+          await syncService.initialize();
+          return { name: repoConfig.name, service: syncService };
+        }),
+      ),
+    );
+
+    const servicesToSync: Array<{ name: string; service: WorktreeSyncService }> = [];
+
+    for (const result of initResults) {
+      if (result.status === "fulfilled") {
+        services.set(result.value.name, result.value.service);
+        servicesToSync.push(result.value);
+      } else {
+        globalLogger.error(`❌ Failed to initialize repository:`, result.reason);
+      }
+    }
+
     const syncResults = await Promise.allSettled(
       servicesToSync.map(({ name, service }) =>
         limit(async () => {
@@ -128,6 +129,13 @@ async function runMultipleRepositories(
     const successCount = syncResults.filter((r) => r.status === "fulfilled").length;
     globalLogger.info(`\n✅ Successfully synced ${successCount}/${servicesToSync.length} repositories`);
   } else {
+    // For interactive mode, create services without initialization
+    // They will be initialized lazily when first sync is triggered
+    for (const repoConfig of repositories) {
+      const syncService = new WorktreeSyncService(repoConfig);
+      services.set(repoConfig.name, syncService);
+    }
+
     const uniqueSchedules = [...new Set(repositories.map((r) => r.cronSchedule))];
     const displaySchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
     const allServices = Array.from(services.values());
@@ -155,11 +163,14 @@ async function runMultipleRepositories(
                 const service = services.get(repo.name);
                 if (!service) return;
 
-                globalLogger.info(`Running scheduled sync for: ${repo.name}`);
+                uiService.addLog(`Running scheduled sync for: ${repo.name}`);
                 try {
+                  if (!service.isInitialized()) {
+                    await service.initialize();
+                  }
                   await service.sync();
                 } catch (error) {
-                  globalLogger.error(`Error syncing '${repo.name}':`, error);
+                  uiService.addLog(`Error syncing '${repo.name}': ${error}`, "error");
                 }
               }),
             ),
@@ -171,11 +182,11 @@ async function runMultipleRepositories(
       }
     }
 
-    globalLogger.info(`All ${repositories.length} repositories scheduled`);
+    uiService.addLog(`📋 ${repositories.length} repositories configured`);
 
     for (const [schedule] of cronJobs) {
       const repoCount = repositories.filter((r) => r.cronSchedule === schedule).length;
-      globalLogger.info(`${schedule}: ${repoCount} repository(ies)`);
+      uiService.addLog(`⏰ ${schedule}: ${repoCount} repository(ies)`);
     }
 
     if (syncOnStart) {

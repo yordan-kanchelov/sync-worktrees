@@ -3,6 +3,7 @@ type AppEventMap = {
   setStatus: "idle" | "syncing";
   setDiskSpace: string;
   addLog: { message: string; level: "info" | "warn" | "error" };
+  uiReady: void;
 };
 
 type EventCallback<T> = T extends void ? () => void : (payload: T) => void;

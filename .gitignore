@@ -8,6 +8,9 @@ coverage/
 .nyc_output/
 *.tsbuildinfo
 
+# npm pack artifacts
+*.tgz
+
 # Changesets temp files
 .changeset/_tmp.md
 .changeset/pre.json

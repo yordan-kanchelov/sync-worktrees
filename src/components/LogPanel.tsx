@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Box, Text, useInput } from "ink";
 import type { LogEntry } from "./App";
 
@@ -11,6 +11,8 @@ export interface LogPanelProps {
 const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
   const [scrollOffset, setScrollOffset] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [pendingG, setPendingG] = useState(false);
+  const gTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const borderLines = 2;
   const headerLine = 1;
@@ -18,33 +20,69 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
   const maxOffset = Math.max(0, logs.length - visibleLines);
 
   useEffect(() => {
-    if (autoScroll && scrollOffset !== maxOffset) {
+    if (autoScroll) {
       setScrollOffset(maxOffset);
     }
-  }, [logs.length, maxOffset, autoScroll, scrollOffset]);
+  }, [logs.length, maxOffset, autoScroll]);
+
+  useEffect(() => {
+    return () => {
+      if (gTimeoutRef.current) {
+        clearTimeout(gTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useInput(
     (input, key) => {
       if (!isActive) return;
 
-      if (key.upArrow) {
+      if (key.upArrow || input === "k") {
         setScrollOffset((prev) => Math.max(0, prev - 1));
         setAutoScroll(false);
-      } else if (key.downArrow) {
-        const newOffset = Math.min(maxOffset, scrollOffset + 1);
-        setScrollOffset(newOffset);
-        if (newOffset >= maxOffset) {
-          setAutoScroll(true);
-        }
+        setPendingG(false);
+      } else if (key.downArrow || input === "j") {
+        setScrollOffset((prev) => {
+          const newOffset = Math.min(maxOffset, prev + 1);
+          if (newOffset >= maxOffset) {
+            setAutoScroll(true);
+          }
+          return newOffset;
+        });
+        setPendingG(false);
       } else if (key.pageUp) {
         setScrollOffset((prev) => Math.max(0, prev - visibleLines));
         setAutoScroll(false);
+        setPendingG(false);
       } else if (key.pageDown) {
-        const newOffset = Math.min(maxOffset, scrollOffset + visibleLines);
-        setScrollOffset(newOffset);
-        if (newOffset >= maxOffset) {
-          setAutoScroll(true);
+        setScrollOffset((prev) => {
+          const newOffset = Math.min(maxOffset, prev + visibleLines);
+          if (newOffset >= maxOffset) {
+            setAutoScroll(true);
+          }
+          return newOffset;
+        });
+        setPendingG(false);
+      } else if (input === "g") {
+        if (pendingG) {
+          // gg - go to top
+          setScrollOffset(0);
+          setAutoScroll(false);
+          setPendingG(false);
+          if (gTimeoutRef.current) {
+            clearTimeout(gTimeoutRef.current);
+            gTimeoutRef.current = null;
+          }
+        } else {
+          setPendingG(true);
+          gTimeoutRef.current = setTimeout(() => {
+            setPendingG(false);
+          }, 500);
         }
+      } else if (input === "G") {
+        setScrollOffset(maxOffset);
+        setAutoScroll(true);
+        setPendingG(false);
       }
     },
     { isActive },

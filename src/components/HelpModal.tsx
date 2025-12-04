@@ -19,19 +19,58 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
         </Box>
 
         <Box flexDirection="column" gap={0}>
+          <Text bold color="green" dimColor>
+            Navigation
+          </Text>
           <Box>
             <Box width={15}>
               <Text bold color="yellow">
-                ?
+                j
               </Text>
-              <Text> or </Text>
+              <Text> / </Text>
               <Text bold color="yellow">
-                h
+                ↓
               </Text>
             </Box>
-            <Text>Toggle this help screen</Text>
+            <Text>Scroll down one line</Text>
           </Box>
 
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
+                k
+              </Text>
+              <Text> / </Text>
+              <Text bold color="yellow">
+                ↑
+              </Text>
+            </Box>
+            <Text>Scroll up one line</Text>
+          </Box>
+
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
+                gg
+              </Text>
+            </Box>
+            <Text>Jump to top</Text>
+          </Box>
+
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
+                G
+              </Text>
+            </Box>
+            <Text>Jump to bottom (re-enables auto-scroll)</Text>
+          </Box>
+
+          <Box marginTop={1}>
+            <Text bold color="green" dimColor>
+              Actions
+            </Text>
+          </Box>
           <Box>
             <Box width={15}>
               <Text bold color="yellow">
@@ -71,9 +110,22 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
           <Box>
             <Box width={15}>
               <Text bold color="yellow">
+                ?
+              </Text>
+              <Text> / </Text>
+              <Text bold color="yellow">
+                h
+              </Text>
+            </Box>
+            <Text>Toggle this help screen</Text>
+          </Box>
+
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
                 q
               </Text>
-              <Text> or </Text>
+              <Text> / </Text>
               <Text bold color="yellow">
                 Esc
               </Text>

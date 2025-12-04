@@ -22,7 +22,6 @@ export class InteractiveUIService {
   private repositoryCount: number;
   private logBuffer: Array<{ message: string; level: "info" | "warn" | "error" }> = [];
   private uiReady = false;
-  private bufferFlushInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(syncServices: WorktreeSyncService[], configPath?: string, cronSchedule?: string) {
     if (syncServices.length === 0) {
@@ -35,8 +34,8 @@ export class InteractiveUIService {
     this.repositoryCount = syncServices.length;
 
     this.setupCronJobs();
-    this.renderUI();
     this.startBufferFlushCheck();
+    this.renderUI();
     this.injectLoggersIntoServices();
 
     // Add initial log after a short delay to verify the pipeline works
@@ -46,17 +45,11 @@ export class InteractiveUIService {
   }
 
   private startBufferFlushCheck(): void {
-    this.bufferFlushInterval = setInterval(() => {
-      if (!this.uiReady && this.logBuffer.length > 0) {
-        // Give the UI a moment to mount and subscribe to events
-        this.uiReady = true;
-        this.flushLogBuffer();
-        if (this.bufferFlushInterval) {
-          clearInterval(this.bufferFlushInterval);
-          this.bufferFlushInterval = null;
-        }
-      }
-    }, 50);
+    const unsubscribe = appEvents.on("uiReady", () => {
+      this.uiReady = true;
+      this.flushLogBuffer();
+      unsubscribe();
+    });
   }
 
   private createOutputFn(): LogOutputFn {
@@ -109,6 +102,9 @@ export class InteractiveUIService {
       const task = cron.schedule(schedule, async () => {
         this.setStatus("syncing");
         try {
+          if (!service.isInitialized()) {
+            await service.initialize();
+          }
           await service.sync();
         } catch (error) {
           console.error(`Error syncing: ${(error as Error).message}`);
@@ -169,6 +165,9 @@ export class InteractiveUIService {
 
     try {
       for (const service of this.syncServices) {
+        if (!service.isInitialized()) {
+          await service.initialize();
+        }
         await service.sync();
       }
 
@@ -468,10 +467,6 @@ export class InteractiveUIService {
   }
 
   public destroy(): void {
-    if (this.bufferFlushInterval) {
-      clearInterval(this.bufferFlushInterval);
-      this.bufferFlushInterval = null;
-    }
     this.cancelCronJobs();
     if (this.app) {
       this.app.unmount();
