@@ -36,6 +36,10 @@ export class GitService {
     this.statusService = new WorktreeStatusService({ skipLfs: this.config.skipLfs });
   }
 
+  updateLogger(logger: Logger): void {
+    this.logger = logger;
+  }
+
   async initialize(): Promise<SimpleGit> {
     const { repoUrl } = this.config;
 
@@ -899,6 +903,38 @@ export class GitService {
     const git = simpleGit(this.bareRepoPath);
     const commit = await git.revparse([ref]);
     return commit.trim();
+  }
+
+  async branchExists(branchName: string): Promise<{ local: boolean; remote: boolean }> {
+    const bareGit = simpleGit(this.bareRepoPath);
+
+    const localBranches = await bareGit.branch();
+    const local = localBranches.all.includes(branchName);
+
+    const remoteBranches = await bareGit.branch(["-r"]);
+    const remote = remoteBranches.all.includes(`origin/${branchName}`);
+
+    return { local, remote };
+  }
+
+  async getLocalBranches(): Promise<string[]> {
+    const bareGit = simpleGit(this.bareRepoPath);
+    const branches = await bareGit.branch();
+    return branches.all;
+  }
+
+  async createBranch(branchName: string, baseBranch: string): Promise<void> {
+    const bareGit = simpleGit(this.bareRepoPath);
+
+    await bareGit.raw(["branch", branchName, `origin/${baseBranch}`]);
+    this.logger.info(`Created branch '${branchName}' from '${baseBranch}'`);
+  }
+
+  async pushBranch(branchName: string): Promise<void> {
+    const bareGit = simpleGit(this.bareRepoPath);
+
+    await bareGit.push(["origin", `${branchName}:${branchName}`, "-u"]);
+    this.logger.info(`Pushed branch '${branchName}' to remote`);
   }
 
   async getWorktreeMetadata(worktreePath: string): Promise<SyncMetadata | null> {

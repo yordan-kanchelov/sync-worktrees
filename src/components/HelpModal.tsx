@@ -44,6 +44,24 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
           <Box>
             <Box width={15}>
               <Text bold color="yellow">
+                c
+              </Text>
+            </Box>
+            <Text>Create a new branch</Text>
+          </Box>
+
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
+                o
+              </Text>
+            </Box>
+            <Text>Open editor in worktree</Text>
+          </Box>
+
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
                 r
               </Text>
             </Box>

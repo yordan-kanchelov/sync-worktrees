@@ -12,6 +12,7 @@ export interface CliOptions extends Partial<Config> {
   skipLfs?: boolean;
   noUpdateExisting?: boolean;
   debug?: boolean;
+  syncOnStart?: boolean;
 }
 
 export function parseArguments(): CliOptions {
@@ -79,6 +80,11 @@ export function parseArguments(): CliOptions {
       description: "Enable debug mode to show detailed reasons why worktrees are not cleaned up.",
       default: false,
     })
+    .option("sync-on-start", {
+      type: "boolean",
+      description: "Run sync immediately when starting the interactive UI (config mode only).",
+      default: false,
+    })
     .help()
     .alias("help", "h")
     .parseSync();
@@ -96,6 +102,7 @@ export function parseArguments(): CliOptions {
     skipLfs: argv.skipLfs,
     noUpdateExisting: argv["no-update-existing"] as boolean,
     debug: argv.debug,
+    syncOnStart: argv["sync-on-start"] as boolean,
   };
 }
 

@@ -89,6 +89,10 @@ export class ConfigLoaderService {
       if (repoObj.runOnce !== undefined && typeof repoObj.runOnce !== "boolean") {
         throw new Error(`Repository '${repoObj.name}' has invalid 'runOnce' property`);
       }
+
+      if (repoObj.filesToCopyOnBranchCreate !== undefined) {
+        this.validateFilesToCopyConfig(repoObj.filesToCopyOnBranchCreate, `Repository '${repoObj.name}'`);
+      }
     });
 
     if (configObj.defaults) {
@@ -106,6 +110,9 @@ export class ConfigLoaderService {
       }
       if (defaults.retry !== undefined && typeof defaults.retry !== "object") {
         throw new Error("Invalid 'retry' in defaults");
+      }
+      if (defaults.filesToCopyOnBranchCreate !== undefined) {
+        this.validateFilesToCopyConfig(defaults.filesToCopyOnBranchCreate, "defaults");
       }
     }
 
@@ -213,6 +220,21 @@ export class ConfigLoaderService {
     }
   }
 
+  private validateFilesToCopyConfig(filesToCopy: unknown, context: string): void {
+    if (!Array.isArray(filesToCopy)) {
+      throw new Error(`'filesToCopyOnBranchCreate' in ${context} must be an array`);
+    }
+
+    for (let i = 0; i < filesToCopy.length; i++) {
+      const pattern = filesToCopy[i];
+      if (typeof pattern !== "string" || pattern.trim() === "") {
+        throw new Error(
+          `'filesToCopyOnBranchCreate' in ${context} must contain only non-empty strings (invalid at index ${i})`,
+        );
+      }
+    }
+  }
+
   resolveRepositoryConfig(
     repo: RepositoryConfig,
     defaults?: Partial<Config>,
@@ -256,6 +278,10 @@ export class ConfigLoaderService {
 
     if (repo.updateExistingWorktrees !== undefined || defaults?.updateExistingWorktrees !== undefined) {
       resolved.updateExistingWorktrees = repo.updateExistingWorktrees ?? defaults?.updateExistingWorktrees ?? true;
+    }
+
+    if (repo.filesToCopyOnBranchCreate || defaults?.filesToCopyOnBranchCreate) {
+      resolved.filesToCopyOnBranchCreate = repo.filesToCopyOnBranchCreate ?? defaults?.filesToCopyOnBranchCreate;
     }
 
     return resolved;

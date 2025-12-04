@@ -34,6 +34,15 @@ export class WorktreeSyncService {
     return this.syncInProgress;
   }
 
+  getGitService(): GitService {
+    return this.gitService;
+  }
+
+  updateLogger(logger: Logger): void {
+    this.logger = logger;
+    this.gitService.updateLogger(logger);
+  }
+
   async sync(): Promise<void> {
     if (this.syncInProgress) {
       this.logger.warn("⚠️  Sync already in progress, skipping...");

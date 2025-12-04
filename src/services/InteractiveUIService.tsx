@@ -1,11 +1,16 @@
 import React from "react";
+import * as path from "path";
 import { render, Instance } from "ink";
 import * as cron from "node-cron";
+import { spawn } from "child_process";
 import App from "../components/App";
 import { WorktreeSyncService } from "./worktree-sync.service";
 import { ConfigLoaderService } from "./config-loader.service";
+import { FileCopyService } from "./file-copy.service";
+import { Logger, LogOutputFn, LogLevel } from "./logger.service";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
+import { appEvents } from "../utils/app-events";
 import type { RepositoryConfig } from "../types";
 
 export class InteractiveUIService {
@@ -15,9 +20,9 @@ export class InteractiveUIService {
   private cronSchedule?: string;
   private cronJobs: cron.ScheduledTask[] = [];
   private repositoryCount: number;
-  private originalConsoleLog: typeof console.log;
-  private originalConsoleWarn: typeof console.warn;
-  private originalConsoleError: typeof console.error;
+  private logBuffer: Array<{ message: string; level: "info" | "warn" | "error" }> = [];
+  private uiReady = false;
+  private bufferFlushInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(syncServices: WorktreeSyncService[], configPath?: string, cronSchedule?: string) {
     if (syncServices.length === 0) {
@@ -29,36 +34,65 @@ export class InteractiveUIService {
     this.cronSchedule = cronSchedule;
     this.repositoryCount = syncServices.length;
 
-    this.originalConsoleLog = console.log.bind(console);
-    this.originalConsoleWarn = console.warn.bind(console);
-    this.originalConsoleError = console.error.bind(console);
-
-    this.redirectConsole();
     this.setupCronJobs();
     this.renderUI();
+    this.startBufferFlushCheck();
+    this.injectLoggersIntoServices();
+
+    // Add initial log after a short delay to verify the pipeline works
+    setTimeout(() => {
+      this.addLog("🚀 sync-worktrees UI initialized", "info");
+    }, 100);
   }
 
-  private redirectConsole(): void {
-    console.log = (...args: unknown[]): void => {
-      const message = args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg, null, 2))).join(" ");
-      this.originalConsoleLog(message);
-    };
+  private startBufferFlushCheck(): void {
+    this.bufferFlushInterval = setInterval(() => {
+      if (!this.uiReady && this.logBuffer.length > 0) {
+        // Give the UI a moment to mount and subscribe to events
+        this.uiReady = true;
+        this.flushLogBuffer();
+        if (this.bufferFlushInterval) {
+          clearInterval(this.bufferFlushInterval);
+          this.bufferFlushInterval = null;
+        }
+      }
+    }, 50);
+  }
 
-    console.warn = (...args: unknown[]): void => {
-      const message = args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg, null, 2))).join(" ");
-      this.originalConsoleWarn(message);
-    };
-
-    console.error = (...args: unknown[]): void => {
-      const message = args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg, null, 2))).join(" ");
-      this.originalConsoleError(message);
+  private createOutputFn(): LogOutputFn {
+    return (message: string, level: LogLevel) => {
+      const uiLevel = level === "debug" ? "info" : level;
+      this.addLog(message, uiLevel);
     };
   }
 
-  private restoreConsole(): void {
-    console.log = this.originalConsoleLog;
-    console.warn = this.originalConsoleWarn;
-    console.error = this.originalConsoleError;
+  private injectLoggersIntoServices(): void {
+    const outputFn = this.createOutputFn();
+    for (const service of this.syncServices) {
+      const config = service.config as RepositoryConfig;
+      service.updateLogger(
+        new Logger({
+          repoName: config.name,
+          debug: config.debug,
+          outputFn,
+        }),
+      );
+    }
+  }
+
+  public addLog(message: string, level: "info" | "warn" | "error" = "info"): void {
+    if (this.uiReady) {
+      appEvents.emit("addLog", { message, level });
+    } else {
+      this.logBuffer.push({ message, level });
+    }
+  }
+
+  private flushLogBuffer(): void {
+    for (const log of this.logBuffer) {
+      appEvents.emit("addLog", { message: log.message, level: log.level });
+    }
+    this.logBuffer = [];
   }
 
   private setupCronJobs(): void {
@@ -108,11 +142,29 @@ export class InteractiveUIService {
         onManualSync={() => this.handleManualSync()}
         onReload={() => this.handleReload()}
         onQuit={() => this.handleQuit()}
-      />
+        getRepositoryList={() => this.getRepositoryList()}
+        getBranchesForRepo={(index: number) => this.getBranchesForRepo(index)}
+        getDefaultBranchForRepo={(index: number) => this.getDefaultBranchForRepo(index)}
+        createAndPushBranch={(repoIndex: number, baseBranch: string, branchName: string) =>
+          this.createAndPushBranch(repoIndex, baseBranch, branchName)
+        }
+        getWorktreesForRepo={(index: number) => this.getWorktreesForRepo(index)}
+        openEditorInWorktree={(path: string) => this.openEditorInWorktree(path)}
+        copyBranchFiles={(repoIndex: number, baseBranch: string, targetBranch: string) =>
+          this.copyBranchFiles(repoIndex, baseBranch, targetBranch)
+        }
+        createWorktreeForBranch={(repoIndex: number, branchName: string) =>
+          this.createWorktreeForBranch(repoIndex, branchName)
+        }
+      />,
     );
   }
 
   private async handleManualSync(): Promise<void> {
+    await this.triggerInitialSync();
+  }
+
+  public async triggerInitialSync(): Promise<void> {
     this.setStatus("syncing");
 
     try {
@@ -123,7 +175,7 @@ export class InteractiveUIService {
       this.updateLastSyncTime();
       await this.calculateAndUpdateDiskSpace();
     } catch (error) {
-      console.error("Manual sync failed:", error);
+      console.error("Sync failed:", error);
     } finally {
       this.setStatus("idle");
     }
@@ -229,24 +281,15 @@ export class InteractiveUIService {
   }
 
   public updateLastSyncTime(): void {
-    const methods = (globalThis as any).__inkAppMethods;
-    if (methods && methods.updateLastSyncTime) {
-      methods.updateLastSyncTime();
-    }
+    appEvents.emit("updateLastSyncTime");
   }
 
   public setStatus(status: "idle" | "syncing"): void {
-    const methods = (globalThis as any).__inkAppMethods;
-    if (methods && methods.setStatus) {
-      methods.setStatus(status);
-    }
+    appEvents.emit("setStatus", status);
   }
 
   public setDiskSpace(diskSpace: string): void {
-    const methods = (globalThis as any).__inkAppMethods;
-    if (methods && methods.setDiskSpace) {
-      methods.setDiskSpace(diskSpace);
-    }
+    appEvents.emit("setDiskSpace", diskSpace);
   }
 
   public async calculateAndUpdateDiskSpace(): Promise<void> {
@@ -264,13 +307,182 @@ export class InteractiveUIService {
     }
   }
 
+  public getRepositoryList(): Array<{ index: number; name: string; repoUrl: string }> {
+    return this.syncServices.map((service, index) => ({
+      index,
+      name: (service.config as RepositoryConfig).name || `repo-${index}`,
+      repoUrl: service.config.repoUrl,
+    }));
+  }
+
+  public async getBranchesForRepo(repoIndex: number): Promise<string[]> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      throw new Error(`Invalid repository index: ${repoIndex}`);
+    }
+
+    const service = this.syncServices[repoIndex];
+    const gitService = service.getGitService();
+    return gitService.getRemoteBranches();
+  }
+
+  public getDefaultBranchForRepo(repoIndex: number): string {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      throw new Error(`Invalid repository index: ${repoIndex}`);
+    }
+
+    const service = this.syncServices[repoIndex];
+    const gitService = service.getGitService();
+    return gitService.getDefaultBranch();
+  }
+
+  public async createAndPushBranch(
+    repoIndex: number,
+    baseBranch: string,
+    branchName: string,
+  ): Promise<{ success: boolean; finalName: string; error?: string }> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      return { success: false, finalName: branchName, error: `Invalid repository index: ${repoIndex}` };
+    }
+
+    const service = this.syncServices[repoIndex];
+    const gitService = service.getGitService();
+
+    try {
+      let finalName = branchName;
+      let suffix = 0;
+
+      while (true) {
+        const exists = await gitService.branchExists(finalName);
+        if (!exists.local && !exists.remote) {
+          break;
+        }
+        suffix++;
+        finalName = `${branchName}-${suffix}`;
+      }
+
+      await gitService.createBranch(finalName, baseBranch);
+      await gitService.pushBranch(finalName);
+
+      return { success: true, finalName };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { success: false, finalName: branchName, error: errorMessage };
+    }
+  }
+
+  public async getWorktreesForRepo(repoIndex: number): Promise<Array<{ path: string; branch: string }>> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      throw new Error(`Invalid repository index: ${repoIndex}`);
+    }
+
+    const service = this.syncServices[repoIndex];
+    const gitService = service.getGitService();
+    return gitService.getWorktrees();
+  }
+
+  public async createWorktreeForBranch(repoIndex: number, branchName: string): Promise<void> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      throw new Error(`Invalid repository index: ${repoIndex}`);
+    }
+
+    const service = this.syncServices[repoIndex];
+    const gitService = service.getGitService();
+    const worktreeDir = service.config.worktreeDir;
+    const worktreePath = path.join(worktreeDir, branchName);
+
+    await gitService.addWorktree(branchName, worktreePath);
+  }
+
+  public openEditorInWorktree(worktreePath: string): { success: boolean; error?: string } {
+    const editor = process.env.EDITOR || process.env.VISUAL || "code";
+
+    try {
+      const child = spawn(editor, [worktreePath], {
+        detached: true,
+        stdio: "ignore",
+      });
+
+      let launchError: Error | null = null;
+
+      child.on("error", (err) => {
+        launchError = err;
+        this.addLog(`Failed to open editor '${editor}': ${err.message}`, "error");
+        this.addLog("Set EDITOR or VISUAL environment variable to your preferred editor", "warn");
+      });
+
+      child.unref();
+
+      // Give a brief moment for spawn errors to surface
+      if (launchError) {
+        return { success: false, error: (launchError as Error).message };
+      }
+
+      return { success: true };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.addLog(`Failed to open editor '${editor}': ${errorMessage}`, "error");
+      return { success: false, error: errorMessage };
+    }
+  }
+
+  public async copyBranchFiles(repoIndex: number, baseBranch: string, targetBranch: string): Promise<void> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      return;
+    }
+
+    const service = this.syncServices[repoIndex];
+    const config = service.config;
+
+    if (!config.filesToCopyOnBranchCreate?.length) {
+      return;
+    }
+
+    const gitService = service.getGitService();
+    const worktrees = await gitService.getWorktrees();
+
+    const sourceWorktree = worktrees.find((w) => w.branch === baseBranch);
+    const targetWorktree = worktrees.find((w) => w.branch === targetBranch);
+
+    if (!sourceWorktree || !targetWorktree) {
+      console.warn(`Could not find worktrees for file copy: source=${baseBranch}, target=${targetBranch}`);
+      return;
+    }
+
+    const fileCopyService = new FileCopyService();
+
+    try {
+      const result = await fileCopyService.copyFiles(
+        sourceWorktree.path,
+        targetWorktree.path,
+        config.filesToCopyOnBranchCreate,
+      );
+
+      if (result.copied.length > 0) {
+        console.log(`📋 Copied ${result.copied.length} file(s) to new branch: ${result.copied.join(", ")}`);
+      }
+      if (result.errors.length > 0) {
+        console.warn(`⚠️ Failed to copy ${result.errors.length} file(s):`);
+        for (const err of result.errors) {
+          console.warn(`  - ${err.file}: ${err.error}`);
+        }
+      }
+    } catch (error) {
+      console.error(`Failed to copy files to new branch: ${error}`);
+    }
+  }
+
   public destroy(): void {
+    if (this.bufferFlushInterval) {
+      clearInterval(this.bufferFlushInterval);
+      this.bufferFlushInterval = null;
+    }
     this.cancelCronJobs();
-    this.restoreConsole();
     if (this.app) {
       this.app.unmount();
       this.app = null;
     }
-    delete (globalThis as any).__inkAppMethods;
+    appEvents.removeAllListeners();
+    this.uiReady = false;
+    this.logBuffer = [];
   }
 }

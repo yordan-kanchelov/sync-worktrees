@@ -1,6 +1,7 @@
 import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { appEvents } from "../../utils/app-events";
 import { InteractiveUIService } from "../InteractiveUIService";
 
 import type { Config } from "../../types";
@@ -16,6 +17,7 @@ const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance } = vi.hoisted
       sync: vi.fn<any>(),
       initialize: vi.fn<any>(),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+      updateLogger: vi.fn<any>(),
       config: {} as any,
     } as any,
   };
@@ -41,9 +43,6 @@ vi.mock("ink", () => ({
 
 describe("InteractiveUIService", () => {
   let mockSyncService: Mocked<WorktreeSyncService>;
-  let originalConsoleLog: typeof console.log;
-  let originalConsoleWarn: typeof console.warn;
-  let originalConsoleError: typeof console.error;
   let mockRender: Mock;
   let mockUnmount: Mock;
 
@@ -60,10 +59,6 @@ describe("InteractiveUIService", () => {
       return { unmount: mockUnmount };
     });
 
-    originalConsoleLog = console.log;
-    originalConsoleWarn = console.warn;
-    originalConsoleError = console.error;
-
     const mockConfig: Config = {
       repoUrl: "https://github.com/test/repo.git",
       worktreeDir: "/test/worktrees",
@@ -75,6 +70,7 @@ describe("InteractiveUIService", () => {
       sync: vi.fn<any>().mockResolvedValue(undefined),
       initialize: vi.fn<any>().mockResolvedValue(undefined),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+      updateLogger: vi.fn<any>(),
       config: mockConfig,
     } as any;
 
@@ -84,12 +80,11 @@ describe("InteractiveUIService", () => {
     mockWorktreeSyncServiceInstance.config = mockConfig;
 
     delete (globalThis as any).__inkAppMethods;
+    appEvents.removeAllListeners();
   });
 
   afterEach(() => {
-    console.log = originalConsoleLog;
-    console.warn = originalConsoleWarn;
-    console.error = originalConsoleError;
+    appEvents.removeAllListeners();
   });
 
   describe("constructor", () => {
@@ -111,86 +106,56 @@ describe("InteractiveUIService", () => {
       service.destroy();
     });
 
-    it("should set up global methods for ink components", () => {
+    it("should be able to emit events after initialization", () => {
       const service = new InteractiveUIService([mockSyncService]);
+      const statusSpy = vi.fn();
+      const updateSpy = vi.fn();
 
-      const methods = (globalThis as any).__inkAppMethods;
-      expect(methods).toBeDefined();
-      expect(typeof methods.updateLastSyncTime).toBe("function");
-      expect(typeof methods.setStatus).toBe("function");
+      appEvents.on("setStatus", statusSpy);
+      appEvents.on("updateLastSyncTime", updateSpy);
+
+      service.setStatus("syncing");
+      service.updateLastSyncTime();
+
+      expect(statusSpy).toHaveBeenCalledWith("syncing");
+      expect(updateSpy).toHaveBeenCalled();
 
       service.destroy();
     });
   });
 
-  describe("console redirection", () => {
-    it("should redirect console.log", () => {
+  describe("logger injection", () => {
+    it("should inject loggers into sync services", () => {
       const service = new InteractiveUIService([mockSyncService]);
 
-      console.log("test message");
-
-      expect(originalConsoleLog).toHaveBeenCalledWith("test message");
+      expect(mockSyncService.updateLogger).toHaveBeenCalled();
 
       service.destroy();
     });
 
-    it("should redirect console.warn", () => {
-      const service = new InteractiveUIService([mockSyncService]);
+    it("should inject loggers into multiple sync services", () => {
+      const mockSyncService2 = {
+        sync: vi.fn<any>().mockResolvedValue(undefined),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        config: { ...mockSyncService.config, name: "repo-2" },
+      } as any;
 
-      console.warn("warning message");
+      const service = new InteractiveUIService([mockSyncService, mockSyncService2]);
 
-      expect(originalConsoleWarn).toHaveBeenCalledWith("warning message");
-
-      service.destroy();
-    });
-
-    it("should redirect console.error", () => {
-      const service = new InteractiveUIService([mockSyncService]);
-
-      console.error("error message");
-
-      expect(originalConsoleError).toHaveBeenCalledWith("error message");
+      expect(mockSyncService.updateLogger).toHaveBeenCalled();
+      expect(mockSyncService2.updateLogger).toHaveBeenCalled();
 
       service.destroy();
-    });
-
-    it("should handle non-string console arguments", () => {
-      const service = new InteractiveUIService([mockSyncService]);
-
-      console.log({ foo: "bar" }, 123);
-
-      expect(originalConsoleLog).toHaveBeenCalledWith(expect.stringContaining('"foo"'));
-
-      service.destroy();
-    });
-
-    it("should restore console after destroy", () => {
-      const service = new InteractiveUIService([mockSyncService]);
-
-      const redirectedLog = console.log;
-      const redirectedWarn = console.warn;
-      const redirectedError = console.error;
-
-      expect(redirectedLog).not.toBe(originalConsoleLog);
-      expect(redirectedWarn).not.toBe(originalConsoleWarn);
-      expect(redirectedError).not.toBe(originalConsoleError);
-
-      service.destroy();
-
-      expect(typeof console.log).toBe("function");
-      expect(typeof console.warn).toBe("function");
-      expect(typeof console.error).toBe("function");
-      expect(console.log).not.toBe(redirectedLog);
-      expect(console.warn).not.toBe(redirectedWarn);
-      expect(console.error).not.toBe(redirectedError);
     });
   });
 
   describe("updateLastSyncTime method", () => {
-    it("should update last sync time through global methods", () => {
+    it("should emit updateLastSyncTime event", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const updateSpy = vi.fn();
-      (globalThis as any).__inkAppMethods.updateLastSyncTime = updateSpy;
+      appEvents.on("updateLastSyncTime", updateSpy);
 
       service.updateLastSyncTime();
 
@@ -199,9 +164,9 @@ describe("InteractiveUIService", () => {
       service.destroy();
     });
 
-    it("should handle missing global methods gracefully", () => {
+    it("should not throw when no listeners", () => {
       const service = new InteractiveUIService([mockSyncService]);
-      delete (globalThis as any).__inkAppMethods;
+      appEvents.removeAllListeners();
 
       expect(() => service.updateLastSyncTime()).not.toThrow();
 
@@ -210,10 +175,10 @@ describe("InteractiveUIService", () => {
   });
 
   describe("setStatus method", () => {
-    it("should set status through global methods", () => {
+    it("should emit setStatus event", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const setStatusSpy = vi.fn();
-      (globalThis as any).__inkAppMethods.setStatus = setStatusSpy;
+      appEvents.on("setStatus", setStatusSpy);
 
       service.setStatus("syncing");
 
@@ -225,7 +190,7 @@ describe("InteractiveUIService", () => {
     it("should handle both idle and syncing statuses", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const setStatusSpy = vi.fn();
-      (globalThis as any).__inkAppMethods.setStatus = setStatusSpy;
+      appEvents.on("setStatus", setStatusSpy);
 
       service.setStatus("idle");
       service.setStatus("syncing");
@@ -249,12 +214,16 @@ describe("InteractiveUIService", () => {
       expect(mockUnmount).toHaveBeenCalled();
     });
 
-    it("should clean up global methods", () => {
+    it("should clean up event listeners", () => {
       const service = new InteractiveUIService([mockSyncService]);
+      const statusSpy = vi.fn();
+      appEvents.on("setStatus", statusSpy);
 
       service.destroy();
 
-      expect((globalThis as any).__inkAppMethods).toBeUndefined();
+      // After destroy, emitting events should not call listeners (they were removed)
+      appEvents.emit("setStatus", "syncing");
+      expect(statusSpy).not.toHaveBeenCalled();
     });
 
     it("should be safe to call multiple times", () => {
@@ -307,11 +276,48 @@ describe("InteractiveUIService", () => {
     });
   });
 
+  describe("triggerInitialSync", () => {
+    it("should sync all services when called directly", async () => {
+      const service = new InteractiveUIService([mockSyncService]);
+
+      await service.triggerInitialSync();
+
+      expect(mockSyncService.sync).toHaveBeenCalled();
+
+      service.destroy();
+    });
+
+    it("should set status to syncing then idle", async () => {
+      const service = new InteractiveUIService([mockSyncService]);
+      const statusChanges: string[] = [];
+      appEvents.on("setStatus", (status: string) => statusChanges.push(status));
+
+      await service.triggerInitialSync();
+
+      expect(statusChanges).toContain("syncing");
+      expect(statusChanges[statusChanges.length - 1]).toBe("idle");
+
+      service.destroy();
+    });
+
+    it("should update last sync time after sync", async () => {
+      const service = new InteractiveUIService([mockSyncService]);
+      const updateSpy = vi.fn();
+      appEvents.on("updateLastSyncTime", updateSpy);
+
+      await service.triggerInitialSync();
+
+      expect(updateSpy).toHaveBeenCalled();
+
+      service.destroy();
+    });
+  });
+
   describe("handleReload", () => {
     it("should skip reload when no config file in single-repo mode", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const setStatusSpy = vi.fn();
-      (globalThis as any).__inkAppMethods.setStatus = setStatusSpy;
+      appEvents.on("setStatus", setStatusSpy);
 
       const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
 
