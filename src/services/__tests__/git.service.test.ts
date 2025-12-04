@@ -1531,4 +1531,85 @@ prunable
       expect(mockMetadataService.updateLastSync).not.toHaveBeenCalled();
     });
   });
+
+  describe("isLocalAheadOfRemote", () => {
+    beforeEach(async () => {
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+    });
+
+    it("should return true when local is ahead of remote", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
+        revparse: vi.fn<any>().mockResolvedValue("abc123\n"),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe(true);
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["merge-base", "HEAD", "origin/feature-1"]);
+      expect(mockWorktreeGit.revparse).toHaveBeenCalledWith(["origin/feature-1"]);
+    });
+
+    it("should return false when local is behind remote", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
+        revparse: vi.fn<any>().mockResolvedValue("def456\n"),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe(false);
+    });
+
+    it("should return false when merge-base differs from remote (truly diverged)", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
+        revparse: vi.fn<any>().mockResolvedValue("xyz789\n"),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe(false);
+    });
+
+    it("should return false when truly diverged (neither ancestor of other)", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockResolvedValue("commonancestor\n"),
+        revparse: vi.fn<any>().mockResolvedValue("remotecommit\n"),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe(false);
+    });
+
+    it("should return false when merge-base fails", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockRejectedValue(new Error("fatal: Not a valid object name")),
+        revparse: vi.fn<any>().mockResolvedValue("abc123\n"),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe(false);
+    });
+
+    it("should return false when revparse fails", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
+        revparse: vi.fn<any>().mockRejectedValue(new Error("fatal: Not a valid object name")),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe(false);
+    });
+  });
 });

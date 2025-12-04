@@ -862,6 +862,24 @@ export class GitService {
     }
   }
 
+  async isLocalAheadOfRemote(worktreePath: string, branch: string): Promise<boolean> {
+    const worktreeGit = simpleGit(worktreePath);
+    try {
+      // Get the merge base between HEAD and the remote branch
+      const mergeBase = await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`]);
+      const mergeBaseSha = mergeBase.trim();
+
+      // Get remote branch SHA
+      const remoteSha = await worktreeGit.revparse([`origin/${branch}`]);
+      const remoteShaTrimmed = remoteSha.trim();
+
+      // If merge base equals remote, local is ahead (remote is ancestor of local)
+      return mergeBaseSha === remoteShaTrimmed;
+    } catch {
+      return false;
+    }
+  }
+
   async compareTreeContent(worktreePath: string, branch: string): Promise<boolean> {
     const worktreeGit = simpleGit(worktreePath);
     try {

@@ -44,6 +44,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
+      isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
       getGit: vi.fn<any>(),
     } as any,
   };

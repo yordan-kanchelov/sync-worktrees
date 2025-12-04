@@ -477,6 +477,12 @@ export class WorktreeSyncService {
 
           const canFastForward = await this.gitService.canFastForward(worktree.path, worktree.branch);
           if (!canFastForward) {
+            // Check if local is just ahead of remote (not truly diverged)
+            const isAhead = await this.gitService.isLocalAheadOfRemote(worktree.path, worktree.branch);
+            if (isAhead) {
+              this.logger.info(`⏭️  Skipping '${worktree.branch}' - has unpushed commits`);
+              return null;
+            }
             await this.handleDivergedBranch(worktree);
             return null;
           }
