@@ -1,5 +1,40 @@
 # sync-worktrees
 
+## 2.2.0
+
+### Minor Changes
+
+- 345a430: Add interactive UI commands and improvements
+
+  ### New UI Commands
+  - Press `c` to open the **Branch Creation Wizard** - create and push new branches with validation
+  - Press `o` to open the **Editor Wizard** - quickly open your editor in any worktree
+  - Arrow keys to scroll through logs in the new **Log Panel**
+
+  ### New Configuration Option
+  - `filesToCopyOnBranchCreate` - specify files to automatically copy from the base branch when creating new branches (e.g., `.env.local`, config files)
+
+  ### CLI Changes
+  - Add `--sync-on-start` flag for config mode - UI now starts immediately without initial sync by default
+  - Use `--sync-on-start` to restore previous behavior (sync on startup)
+
+  ### New Services
+  - `FileCopyService` - handles copying configured files to new branches
+  - `triggerInitialSync()` public method on `InteractiveUIService`
+
+  ### Internal Improvements
+  - Event-based UI communication via `appEvents` utility
+  - Enhanced logger with UI output function support
+  - Git service additions: `branchExists`, `createBranch`, `pushBranch`
+
+### Patch Changes
+
+- 345a430: Fix false "diverged branch" detection when local is ahead of remote
+
+  Previously, when a local branch had unpushed commits (ahead of remote), the sync would incorrectly treat it as a diverged branch and move the worktree to `.diverged/`. This happened because `canFastForward` returns false when local is ahead of remote.
+
+  Now, when a branch cannot fast-forward, we check if local is simply ahead of remote (has unpushed commits). If so, we skip the worktree with a message instead of treating it as diverged. Truly diverged branches (where local and remote have different commits not in a linear history) are still handled correctly.
+
 ## 2.1.0
 
 ### Minor Changes
