@@ -402,23 +402,19 @@ export class InteractiveUIService {
         stdio: "ignore",
       });
 
-      let launchError: Error | null = null;
-
       child.on("error", (err) => {
-        launchError = err;
         this.addLog(`Failed to open editor '${editor}': ${err.message}`, "error");
         this.addLog("Set EDITOR or VISUAL environment variable to your preferred editor", "warn");
       });
 
       child.unref();
 
-      // Give a brief moment for spawn errors to surface
-      if (launchError) {
-        return { success: false, error: (launchError as Error).message };
-      }
-
+      // Return success optimistically - spawn errors are async and will be logged
+      // to the UI when they occur. For detached processes, we can't reliably
+      // catch spawn errors synchronously.
       return { success: true };
     } catch (err) {
+      // This catches synchronous errors like ENOENT when the command doesn't exist
       const errorMessage = err instanceof Error ? err.message : String(err);
       this.addLog(`Failed to open editor '${editor}': ${errorMessage}`, "error");
       return { success: false, error: errorMessage };
