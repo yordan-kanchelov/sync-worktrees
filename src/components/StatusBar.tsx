@@ -24,8 +24,8 @@ const StatusBar: React.FC<StatusBarProps> = ({ status, repositoryCount, lastSync
       setNextSyncTime(interval.next().toDate());
 
       const timer = setInterval(() => {
-        const nextInterval = CronExpressionParser.parse(cronSchedule);
-        setNextSyncTime(nextInterval.next().toDate());
+        const fresh = CronExpressionParser.parse(cronSchedule);
+        setNextSyncTime(fresh.next().toDate());
       }, 60000);
 
       return () => clearInterval(timer);
@@ -78,6 +78,7 @@ const StatusBar: React.FC<StatusBarProps> = ({ status, repositoryCount, lastSync
             <Text color="yellow">s</Text>ync{" "}
             <Text color="yellow">c</Text>reate{" "}
             <Text color="yellow">o</Text>pen{" "}
+            <Text color="yellow">w</Text>tree{" "}
             <Text color="yellow">r</Text>eload{" "}
             <Text color="yellow">?</Text>help{" "}
             <Text color="yellow">q</Text>uit

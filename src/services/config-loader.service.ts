@@ -2,6 +2,8 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
 
+import * as cron from "node-cron";
+
 import { CONFIG_CONSTANTS, DEFAULT_CONFIG } from "../constants";
 
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
@@ -74,6 +76,13 @@ export class ConfigLoaderService {
         throw new Error(`Repository '${repoObj.name}' must have a 'repoUrl' property`);
       }
 
+      if (!this.isValidGitUrl(repoObj.repoUrl)) {
+        throw new Error(
+          `Repository '${repoObj.name}' has invalid 'repoUrl': '${repoObj.repoUrl}'. ` +
+            `Expected an HTTP(S), SSH, or Git protocol URL`,
+        );
+      }
+
       if (!repoObj.worktreeDir || typeof repoObj.worktreeDir !== "string") {
         throw new Error(`Repository '${repoObj.name}' must have a 'worktreeDir' property`);
       }
@@ -86,12 +95,20 @@ export class ConfigLoaderService {
         throw new Error(`Repository '${repoObj.name}' has invalid 'cronSchedule' property`);
       }
 
+      if (typeof repoObj.cronSchedule === "string" && !cron.validate(repoObj.cronSchedule)) {
+        throw new Error(`Repository '${repoObj.name}' has invalid cron expression: '${repoObj.cronSchedule}'`);
+      }
+
       if (repoObj.runOnce !== undefined && typeof repoObj.runOnce !== "boolean") {
         throw new Error(`Repository '${repoObj.name}' has invalid 'runOnce' property`);
       }
 
       if (repoObj.filesToCopyOnBranchCreate !== undefined) {
         this.validateFilesToCopyConfig(repoObj.filesToCopyOnBranchCreate, `Repository '${repoObj.name}'`);
+      }
+
+      if (repoObj.hooks !== undefined) {
+        this.validateHooksConfig(repoObj.hooks, `Repository '${repoObj.name}'`);
       }
     });
 
@@ -105,6 +122,9 @@ export class ConfigLoaderService {
       if (defaults.cronSchedule !== undefined && typeof defaults.cronSchedule !== "string") {
         throw new Error("Invalid 'cronSchedule' in defaults");
       }
+      if (typeof defaults.cronSchedule === "string" && !cron.validate(defaults.cronSchedule)) {
+        throw new Error(`Invalid cron expression in defaults: '${defaults.cronSchedule}'`);
+      }
       if (defaults.runOnce !== undefined && typeof defaults.runOnce !== "boolean") {
         throw new Error("Invalid 'runOnce' in defaults");
       }
@@ -113,6 +133,10 @@ export class ConfigLoaderService {
       }
       if (defaults.filesToCopyOnBranchCreate !== undefined) {
         this.validateFilesToCopyConfig(defaults.filesToCopyOnBranchCreate, "defaults");
+      }
+
+      if (defaults.hooks !== undefined) {
+        this.validateHooksConfig(defaults.hooks, "defaults");
       }
     }
 
@@ -148,6 +172,14 @@ export class ConfigLoaderService {
         (typeof retry.backoffMultiplier !== "number" || retry.backoffMultiplier < 1)
       ) {
         throw new Error("Invalid 'backoffMultiplier' in retry config");
+      }
+
+      const initialDelay = (retry.initialDelayMs as number) ?? DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS;
+      const maxDelay = (retry.maxDelayMs as number) ?? DEFAULT_CONFIG.RETRY.MAX_DELAY_MS;
+      if (initialDelay > maxDelay) {
+        throw new Error(
+          `Invalid retry config: 'initialDelayMs' (${initialDelay}) must not exceed 'maxDelayMs' (${maxDelay})`,
+        );
       }
     }
 
@@ -235,6 +267,29 @@ export class ConfigLoaderService {
     }
   }
 
+  private validateHooksConfig(hooks: unknown, context: string): void {
+    if (typeof hooks !== "object" || hooks === null) {
+      throw new Error(`'hooks' in ${context} must be an object`);
+    }
+
+    const hooksObj = hooks as Record<string, unknown>;
+
+    if (hooksObj.onBranchCreated !== undefined) {
+      if (!Array.isArray(hooksObj.onBranchCreated)) {
+        throw new Error(`'hooks.onBranchCreated' in ${context} must be an array`);
+      }
+
+      for (let i = 0; i < hooksObj.onBranchCreated.length; i++) {
+        const command = hooksObj.onBranchCreated[i];
+        if (typeof command !== "string" || command.trim() === "") {
+          throw new Error(
+            `'hooks.onBranchCreated' in ${context} must contain only non-empty strings (invalid at index ${i})`,
+          );
+        }
+      }
+    }
+  }
+
   resolveRepositoryConfig(
     repo: RepositoryConfig,
     defaults?: Partial<Config>,
@@ -281,10 +336,30 @@ export class ConfigLoaderService {
     }
 
     if (repo.filesToCopyOnBranchCreate || defaults?.filesToCopyOnBranchCreate) {
-      resolved.filesToCopyOnBranchCreate = repo.filesToCopyOnBranchCreate ?? defaults?.filesToCopyOnBranchCreate;
+      const files = repo.filesToCopyOnBranchCreate ?? defaults?.filesToCopyOnBranchCreate;
+      resolved.filesToCopyOnBranchCreate = files?.map((f) => this.resolvePath(f, configDir));
+    }
+
+    if (repo.hooks || defaults?.hooks) {
+      resolved.hooks = {
+        ...(defaults?.hooks || {}),
+        ...(repo.hooks || {}),
+      };
     }
 
     return resolved;
+  }
+
+  private isValidGitUrl(url: string): boolean {
+    // HTTP(S) URLs
+    if (/^https?:\/\/.+/.test(url)) return true;
+    // SSH URLs (git@host:path or ssh://...)
+    if (/^(ssh:\/\/|git@).+/.test(url)) return true;
+    // Git protocol
+    if (/^git:\/\/.+/.test(url)) return true;
+    // Local file paths (absolute)
+    if (/^(file:\/\/|\/|[A-Za-z]:\\)/.test(url)) return true;
+    return false;
   }
 
   private resolvePath(inputPath: string, baseDir?: string): string {
@@ -305,7 +380,10 @@ export class ConfigLoaderService {
     return repositories.filter((repo) => {
       return patterns.some((pattern) => {
         if (pattern.includes("*")) {
-          const regex = new RegExp("^" + pattern.replace(/\*/g, CONFIG_CONSTANTS.WILDCARD_PATTERN) + "$");
+          const escapedPattern = pattern
+            .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*/g, CONFIG_CONSTANTS.WILDCARD_PATTERN);
+          const regex = new RegExp("^" + escapedPattern + "$");
           return regex.test(repo.name);
         }
         return repo.name === pattern;

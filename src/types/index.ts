@@ -1,4 +1,5 @@
 import type { Logger } from "../services/logger.service";
+import type { WorktreeStatusResult } from "../services/worktree-status.service";
 
 export interface RetryConfig {
   maxAttempts?: number | "unlimited";
@@ -6,6 +7,18 @@ export interface RetryConfig {
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;
+}
+
+export interface HookContext {
+  branchName: string;
+  worktreePath: string;
+  repoName: string;
+  baseBranch: string;
+  repoUrl: string;
+}
+
+export interface HooksConfig {
+  onBranchCreated?: string[];
 }
 
 /**
@@ -47,6 +60,7 @@ export interface Config {
   debug?: boolean;
   logger?: Logger;
   filesToCopyOnBranchCreate?: string[];
+  hooks?: HooksConfig;
 }
 
 export interface RepositoryConfig extends Config {
@@ -64,4 +78,10 @@ export interface WorktreeStatus {
   branchName: string;
   worktreePath: string;
   hasLocalChanges: boolean;
+}
+
+export interface WorktreeStatusEntry {
+  branch: string;
+  path: string;
+  status: WorktreeStatusResult;
 }

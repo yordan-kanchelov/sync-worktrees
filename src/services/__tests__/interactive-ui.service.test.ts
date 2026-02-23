@@ -12,6 +12,8 @@ const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance } = vi.hoisted
   return {
     mockConfigLoaderInstance: {
       loadConfigFile: vi.fn<any>(),
+      resolveRepositoryConfig: vi.fn<any>().mockImplementation((repo: any) => repo),
+      filterRepositories: vi.fn<any>().mockImplementation((repos: any) => repos),
     } as any,
     mockWorktreeSyncServiceInstance: {
       sync: vi.fn<any>(),
@@ -206,10 +208,10 @@ describe("InteractiveUIService", () => {
   });
 
   describe("destroy method", () => {
-    it("should restore console and unmount app", () => {
+    it("should restore console and unmount app", async () => {
       const service = new InteractiveUIService([mockSyncService]);
 
-      service.destroy();
+      await service.destroy();
 
       expect(typeof console.log).toBe("function");
       expect(typeof console.warn).toBe("function");
@@ -217,25 +219,40 @@ describe("InteractiveUIService", () => {
       expect(mockUnmount).toHaveBeenCalled();
     });
 
-    it("should clean up event listeners", () => {
+    it("should clean up event listeners", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const statusSpy = vi.fn();
       appEvents.on("setStatus", statusSpy);
 
-      service.destroy();
+      await service.destroy();
 
       // After destroy, emitting events should not call listeners (they were removed)
       appEvents.emit("setStatus", "syncing");
       expect(statusSpy).not.toHaveBeenCalled();
     });
 
-    it("should be safe to call multiple times", () => {
+    it("should be safe to call multiple times", async () => {
       const service = new InteractiveUIService([mockSyncService]);
 
-      expect(() => {
-        service.destroy();
-        service.destroy();
-      }).not.toThrow();
+      await service.destroy();
+      await service.destroy();
+    });
+
+    it("should prevent updates after destroy (isDestroyed guard)", async () => {
+      const service = new InteractiveUIService([mockSyncService]);
+      const statusSpy = vi.fn();
+      const updateSpy = vi.fn();
+      appEvents.on("setStatus", statusSpy);
+      appEvents.on("updateLastSyncTime", updateSpy);
+
+      await service.destroy();
+
+      // After destroy, these should be no-ops
+      service.setStatus("syncing");
+      service.updateLastSyncTime();
+
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(updateSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -316,6 +333,114 @@ describe("InteractiveUIService", () => {
 
       service.destroy();
     });
+
+    it("should run services in parallel respecting maxParallel limit", async () => {
+      const syncOrder: number[] = [];
+      let concurrentCount = 0;
+      let maxConcurrent = 0;
+
+      const createMockService = (id: number) => ({
+        ...mockSyncService,
+        sync: vi.fn<any>().mockImplementation(async () => {
+          concurrentCount++;
+          maxConcurrent = Math.max(maxConcurrent, concurrentCount);
+          syncOrder.push(id);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          concurrentCount--;
+        }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        config: { ...mockSyncService.config, name: `repo-${id}` },
+        updateLogger: vi.fn(),
+      });
+
+      const services = [createMockService(1), createMockService(2), createMockService(3), createMockService(4)];
+
+      // maxParallel = 2 means at most 2 services should run concurrently
+      const service = new InteractiveUIService(services as any, undefined, undefined, 2);
+
+      await service.triggerInitialSync();
+
+      // All services should have synced
+      expect(services[0].sync).toHaveBeenCalled();
+      expect(services[1].sync).toHaveBeenCalled();
+      expect(services[2].sync).toHaveBeenCalled();
+      expect(services[3].sync).toHaveBeenCalled();
+
+      // Max concurrent should respect the limit
+      expect(maxConcurrent).toBeLessThanOrEqual(2);
+
+      service.destroy();
+    });
+
+    it("should use default parallelism when maxParallel not specified", async () => {
+      let concurrentCount = 0;
+      let maxConcurrent = 0;
+
+      const createMockService = (id: number) => ({
+        ...mockSyncService,
+        sync: vi.fn<any>().mockImplementation(async () => {
+          concurrentCount++;
+          maxConcurrent = Math.max(maxConcurrent, concurrentCount);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          concurrentCount--;
+        }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        config: { ...mockSyncService.config, name: `repo-${id}` },
+        updateLogger: vi.fn(),
+      });
+
+      const services = [createMockService(1), createMockService(2), createMockService(3)];
+
+      // No maxParallel specified - should use default (2)
+      const service = new InteractiveUIService(services as any);
+
+      await service.triggerInitialSync();
+
+      // All services should have synced
+      services.forEach((s) => expect(s.sync).toHaveBeenCalled());
+
+      // Default is 2, so max concurrent should be at most 2
+      expect(maxConcurrent).toBeLessThanOrEqual(2);
+
+      service.destroy();
+    });
+
+    it("should handle errors in parallel sync without affecting other services", async () => {
+      const successService = {
+        ...mockSyncService,
+        sync: vi.fn<any>().mockResolvedValue(undefined),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        config: { ...mockSyncService.config, name: "success-repo" },
+        updateLogger: vi.fn(),
+      };
+
+      const failingService = {
+        ...mockSyncService,
+        sync: vi.fn<any>().mockRejectedValue(new Error("Sync failed")),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        config: { ...mockSyncService.config, name: "failing-repo" },
+        updateLogger: vi.fn(),
+      };
+
+      const service = new InteractiveUIService([successService, failingService] as any, undefined, undefined, 2);
+
+      // Should not throw - errors are handled gracefully
+      await service.triggerInitialSync();
+
+      // Both services should have been called
+      expect(successService.sync).toHaveBeenCalled();
+      expect(failingService.sync).toHaveBeenCalled();
+
+      service.destroy();
+    });
   });
 
   describe("handleReload", () => {
@@ -369,6 +494,47 @@ describe("InteractiveUIService", () => {
       service.destroy();
     });
 
+    it("should prevent concurrent reloads (re-entry guard)", async () => {
+      let resolveLoadConfig: () => void;
+      const loadConfigPromise = new Promise<void>((resolve) => {
+        resolveLoadConfig = resolve;
+      });
+
+      mockConfigLoaderInstance.loadConfigFile.mockImplementation(async () => {
+        await loadConfigPromise;
+        return {
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        };
+      });
+
+      const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+      const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+
+      // Start first reload
+      const firstReload = onReload();
+
+      // Second reload should be a no-op since first is still in progress
+      const secondReload = onReload();
+
+      // Release the config loading
+      resolveLoadConfig!();
+      await firstReload;
+      await secondReload;
+
+      // loadConfigFile should only be called once (second reload was skipped)
+      expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalledTimes(1);
+
+      service.destroy();
+    });
+
     describe("cron job management on reload", () => {
       it("should cancel existing cron jobs before reload", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
@@ -395,7 +561,7 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
-      it("should create new cron jobs after reload", async () => {
+      it("should create new cron jobs after reload (grouped by schedule)", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
           repositories: [
             {
@@ -422,7 +588,7 @@ describe("InteractiveUIService", () => {
 
         const cronJobs = (service as any).cronJobs;
         expect(cronJobs).toBeDefined();
-        expect(cronJobs.length).toBe(2);
+        expect(cronJobs.length).toBe(1);
 
         service.destroy();
       });
@@ -446,12 +612,14 @@ describe("InteractiveUIService", () => {
           "0 * * * *",
         );
 
+        // Constructor no longer creates cron jobs (index.ts handles cron setup)
         let cronJobs = (service as any).cronJobs;
-        expect(cronJobs.length).toBe(3);
+        expect(cronJobs.length).toBe(0);
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
+        // After reload, cron jobs are created via setupCronJobs
         cronJobs = (service as any).cronJobs;
         expect(cronJobs.length).toBe(1);
 
@@ -515,7 +683,8 @@ describe("InteractiveUIService", () => {
         await onReload();
 
         const cronJobs = (service as any).cronJobs;
-        expect(cronJobs.length).toBe(2);
+        // 2 non-runOnce repos with same schedule = 1 grouped cron job
+        expect(cronJobs.length).toBe(1);
 
         service.destroy();
       });
@@ -596,7 +765,7 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
-      it("should re-render App component with updated repository count", async () => {
+      it("should emit updateRepositoryCount event after reload", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
           repositories: [
             {
@@ -611,14 +780,14 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockSyncService, mockSyncService], "/test/config.js");
 
-        const initialRenderCall = mockRender.mock.calls[0][0];
-        expect(initialRenderCall.props.repositoryCount).toBe(2);
+        const repoCountSpy = vi.fn();
+        appEvents.on("updateRepositoryCount", repoCountSpy);
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        const reloadRenderCall = mockRender.mock.calls[mockRender.mock.calls.length - 1][0];
-        expect(reloadRenderCall.props.repositoryCount).toBe(1);
+        expect(repoCountSpy).toHaveBeenCalledWith(1);
+        expect(mockRender).toHaveBeenCalledTimes(1);
 
         service.destroy();
       });
@@ -775,7 +944,7 @@ describe("InteractiveUIService", () => {
                 name: "test-repo-2",
                 repoUrl: "https://github.com/test/repo2.git",
                 worktreeDir: "/test/worktrees2",
-                cronSchedule: "0 * * * *",
+                cronSchedule: "*/30 * * * *",
                 runOnce: false,
               },
             ],
@@ -801,11 +970,144 @@ describe("InteractiveUIService", () => {
 
         await onReload();
         expect((service as any).repositoryCount).toBe(2);
+        // 2 repos with different schedules = 2 cron jobs
         expect((service as any).cronJobs.length).toBe(2);
 
         await onReload();
         expect((service as any).repositoryCount).toBe(1);
         expect((service as any).cronJobs.length).toBe(1);
+
+        service.destroy();
+      });
+    });
+
+    describe("config resolution on reload", () => {
+      it("should call resolveRepositoryConfig for each repository", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          defaults: { cronSchedule: "*/15 * * * *" },
+          retry: { maxAttempts: 5 },
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+
+        await onReload();
+
+        expect(mockConfigLoaderInstance.resolveRepositoryConfig).toHaveBeenCalledTimes(1);
+        expect(mockConfigLoaderInstance.resolveRepositoryConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ name: "test-repo" }),
+          expect.objectContaining({ cronSchedule: "*/15 * * * *" }),
+          expect.any(String),
+          expect.objectContaining({ maxAttempts: 5 }),
+        );
+
+        service.destroy();
+      });
+
+      it("should re-inject loggers after reload", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+
+        mockWorktreeSyncServiceInstance.updateLogger.mockClear();
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        expect(mockWorktreeSyncServiceInstance.updateLogger).toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it("should emit updateCronSchedule event after reload", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "*/30 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
+
+        const cronScheduleSpy = vi.fn();
+        appEvents.on("updateCronSchedule", cronScheduleSpy);
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        expect(cronScheduleSpy).toHaveBeenCalledWith("*/30 * * * *");
+
+        service.destroy();
+      });
+
+      it("should apply CLI filter override during reload", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *", undefined, {
+          filter: "test-*",
+        });
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        expect(mockConfigLoaderInstance.filterRepositories).toHaveBeenCalledWith(expect.any(Array), "test-*");
+
+        service.destroy();
+      });
+
+      it("should not re-render UI on reload (uses events instead)", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        // render should only be called once (in constructor), not again on reload
+        expect(mockRender).toHaveBeenCalledTimes(1);
 
         service.destroy();
       });
@@ -905,11 +1207,23 @@ describe("InteractiveUIService", () => {
 
     describe("getBranchesForRepo", () => {
       it("should return branches for valid repo index", async () => {
+        mockSyncService.isInitialized.mockReturnValue(true);
         const service = new InteractiveUIService([mockSyncService]);
         const branches = await service.getBranchesForRepo(0);
 
         expect(branches).toEqual(["main", "develop", "feature/test"]);
         expect(mockGitService.getRemoteBranches).toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it("should return empty array if service not initialized", async () => {
+        mockSyncService.isInitialized.mockReturnValue(false);
+        const service = new InteractiveUIService([mockSyncService]);
+        const branches = await service.getBranchesForRepo(0);
+
+        expect(branches).toEqual([]);
+        expect(mockGitService.getRemoteBranches).not.toHaveBeenCalled();
 
         service.destroy();
       });
@@ -959,16 +1273,17 @@ describe("InteractiveUIService", () => {
       });
 
       it("should append suffix if branch already exists", async () => {
-        mockGitService.branchExists
-          .mockResolvedValueOnce({ local: true, remote: false })
-          .mockResolvedValueOnce({ local: false, remote: true })
-          .mockResolvedValueOnce({ local: false, remote: false });
+        mockGitService.createBranch
+          .mockRejectedValueOnce(new Error("already exists"))
+          .mockRejectedValueOnce(new Error("already exists"))
+          .mockResolvedValueOnce(undefined);
 
         const service = new InteractiveUIService([mockSyncService]);
         const result = await service.createAndPushBranch(0, "main", "feature/test");
 
         expect(result.success).toBe(true);
         expect(result.finalName).toBe("feature/test-2");
+        expect(mockGitService.createBranch).toHaveBeenCalledTimes(3);
 
         service.destroy();
       });

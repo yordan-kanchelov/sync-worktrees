@@ -21,6 +21,8 @@ describe("WorktreeMetadataService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     service = new WorktreeMetadataService();
+    // saveMetadata uses atomic write (write to .tmp then rename)
+    (fs.rename as Mock<any>).mockResolvedValue(undefined);
   });
 
   describe("getMetadataPath", () => {
@@ -29,27 +31,13 @@ describe("WorktreeMetadataService", () => {
       expect(metadataPath).toBe("/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json");
     });
 
-    it("should handle branch names with slashes correctly", async () => {
-      // When a branch is named "fix/test-branch" and worktree is at "/worktrees/fix/test-branch"
-      // Git stores internal metadata at .git/worktrees/test-branch/ (uses basename of path)
-      // NOT at .git/worktrees/fix/test-branch/ (which would be a nested directory)
+    it("should handle branch names with slashes by replacing with dashes", async () => {
       const branchWithSlash = "fix/test-branch";
-      const worktreePath = "/test/worktrees/fix/test-branch";
 
-      // Current implementation (WRONG) - uses branch name directly
-      const wrongPath = await service.getMetadataPath(mockBareRepoPath, branchWithSlash);
-      expect(wrongPath).toBe("/test/bare/repo/.git/worktrees/fix/test-branch/sync-metadata.json");
+      const metadataPath = await service.getMetadataPath(mockBareRepoPath, branchWithSlash);
 
-      // This creates a nested directory structure that doesn't match Git's internal structure
-      // Git would actually use: /test/bare/repo/.git/worktrees/test-branch/sync-metadata.json
-
-      // Expected behavior: should use basename of worktree path
-      const worktreeBasename = path.basename(worktreePath);
-      const expectedPath = path.join(mockBareRepoPath, ".git", "worktrees", worktreeBasename, "sync-metadata.json");
-      expect(expectedPath).toBe("/test/bare/repo/.git/worktrees/test-branch/sync-metadata.json");
-
-      // This demonstrates the bug: wrongPath !== expectedPath
-      expect(wrongPath).not.toBe(expectedPath);
+      // getMetadataPath replaces slashes with dashes to avoid nested dirs while keeping uniqueness
+      expect(metadataPath).toBe("/test/bare/repo/.git/worktrees/fix-test-branch/sync-metadata.json");
     });
 
     it("should migrate metadata from old path to new path for branches with slashes", async () => {
@@ -77,11 +65,15 @@ describe("WorktreeMetadataService", () => {
       // Should have loaded from old path
       expect(result).toEqual(oldMetadata);
 
-      // Should have migrated to new path (using basename)
+      // Should have migrated to new path (using basename) via atomic write
       expect(fs.writeFile).toHaveBeenCalledWith(
-        "/test/bare/repo/.git/worktrees/test-branch/sync-metadata.json",
+        "/test/bare/repo/.git/worktrees/test-branch/sync-metadata.json.tmp",
         JSON.stringify(oldMetadata, null, 2),
         "utf-8",
+      );
+      expect(fs.rename).toHaveBeenCalledWith(
+        "/test/bare/repo/.git/worktrees/test-branch/sync-metadata.json.tmp",
+        "/test/bare/repo/.git/worktrees/test-branch/sync-metadata.json",
       );
 
       // Should have cleaned up old path
@@ -118,9 +110,13 @@ describe("WorktreeMetadataService", () => {
         { recursive: true },
       );
       expect(fs.writeFile).toHaveBeenCalledWith(
-        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json",
+        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json.tmp",
         JSON.stringify(mockMetadata, null, 2),
         "utf-8",
+      );
+      expect(fs.rename).toHaveBeenCalledWith(
+        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json.tmp",
+        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json",
       );
     });
   });
@@ -262,14 +258,18 @@ describe("WorktreeMetadataService", () => {
       expect(savedData.syncHistory[9].commit).toBe("new456");
     });
 
-    it("should warn if no metadata exists", async () => {
+    it("should create initial metadata when none exists", async () => {
       (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456");
 
-      expect(consoleSpy).toHaveBeenCalledWith("No metadata found for worktree feature-branch, skipping update");
-      expect(fs.writeFile).not.toHaveBeenCalled();
+      expect(consoleSpy).toHaveBeenCalledWith(
+        "No metadata found for worktree feature-branch, creating initial metadata",
+      );
+      expect(fs.writeFile).toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
@@ -312,9 +312,13 @@ describe("WorktreeMetadataService", () => {
       };
 
       expect(fs.writeFile).toHaveBeenCalledWith(
-        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json",
+        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json.tmp",
         JSON.stringify(expectedMetadata, null, 2),
         "utf-8",
+      );
+      expect(fs.rename).toHaveBeenCalledWith(
+        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json.tmp",
+        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json",
       );
     });
   });

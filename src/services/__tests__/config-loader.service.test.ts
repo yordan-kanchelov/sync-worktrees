@@ -409,6 +409,53 @@ describe("ConfigLoaderService", () => {
       expect(filtered).toHaveLength(2);
       expect(filtered.map((r) => r.name).sort()).toEqual(["backend-api", "frontend-app"]);
     });
+
+    it("should escape regex metacharacters in filter patterns", () => {
+      const reposWithDots = [
+        ...repos,
+        {
+          name: "my.app",
+          repoUrl: "https://github.com/test/myapp.git",
+          worktreeDir: "/",
+          cronSchedule: "",
+          runOnce: false,
+        },
+        {
+          name: "myXapp",
+          repoUrl: "https://github.com/test/myxapp.git",
+          worktreeDir: "/",
+          cronSchedule: "",
+          runOnce: false,
+        },
+      ];
+
+      const filtered = configLoader.filterRepositories(reposWithDots, "my.app");
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].name).toBe("my.app");
+    });
+
+    it("should escape regex metacharacters with wildcards", () => {
+      const reposWithSpecial = [
+        {
+          name: "my.app-v1",
+          repoUrl: "https://github.com/test/myapp.git",
+          worktreeDir: "/",
+          cronSchedule: "",
+          runOnce: false,
+        },
+        {
+          name: "myXapp-v1",
+          repoUrl: "https://github.com/test/myxapp.git",
+          worktreeDir: "/",
+          cronSchedule: "",
+          runOnce: false,
+        },
+      ];
+
+      const filtered = configLoader.filterRepositories(reposWithSpecial, "my.app*");
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].name).toBe("my.app-v1");
+    });
   });
 
   describe("retry configuration validation", () => {
@@ -834,12 +881,18 @@ describe("ConfigLoaderService", () => {
       );
     });
 
-    it("should reject invalid maxRepositories", async () => {
-      const configPath = path.join(tempDir, "config.js");
+    it.each([
+      { field: "maxRepositories", invalidValue: 0 },
+      { field: "maxWorktreeCreation", invalidValue: -1 },
+      { field: "maxWorktreeUpdates", invalidValue: 0 },
+      { field: "maxWorktreeRemoval", invalidValue: 0 },
+      { field: "maxStatusChecks", invalidValue: 0 },
+    ])("should reject invalid $field", async ({ field, invalidValue }) => {
+      const configPath = path.join(tempDir, `invalid-${field}.config.js`);
       const configContent = `
         export default {
           parallelism: {
-            maxRepositories: 0
+            ${field}: ${invalidValue}
           },
           repositories: [{
             name: "test-repo",
@@ -851,91 +904,7 @@ describe("ConfigLoaderService", () => {
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid 'maxRepositories' in global parallelism config. Must be a positive number",
-      );
-    });
-
-    it("should reject invalid maxWorktreeCreation", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          parallelism: {
-            maxWorktreeCreation: -1
-          },
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid 'maxWorktreeCreation' in global parallelism config. Must be a positive number",
-      );
-    });
-
-    it("should reject invalid maxWorktreeUpdates", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          parallelism: {
-            maxWorktreeUpdates: 0
-          },
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid 'maxWorktreeUpdates' in global parallelism config. Must be a positive number",
-      );
-    });
-
-    it("should reject invalid maxWorktreeRemoval", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          parallelism: {
-            maxWorktreeRemoval: 0
-          },
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid 'maxWorktreeRemoval' in global parallelism config. Must be a positive number",
-      );
-    });
-
-    it("should reject invalid maxStatusChecks", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          parallelism: {
-            maxStatusChecks: 0
-          },
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid 'maxStatusChecks' in global parallelism config. Must be a positive number",
+        `Invalid '${field}' in global parallelism config. Must be a positive number`,
       );
     });
 
@@ -1095,6 +1064,318 @@ describe("ConfigLoaderService", () => {
         maxWorktreeCreation: 3,
         maxWorktreeUpdates: 6,
         maxStatusChecks: 10,
+      });
+    });
+  });
+
+  describe("hooks configuration validation", () => {
+    it("should accept valid hooks configuration in repository", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            hooks: {
+              onBranchCreated: ["echo hello", "code {WORKTREE_PATH}"]
+            }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.repositories[0].hooks?.onBranchCreated).toEqual(["echo hello", "code {WORKTREE_PATH}"]);
+    });
+
+    it("should accept valid hooks configuration in defaults", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          defaults: {
+            hooks: {
+              onBranchCreated: ["echo default hook"]
+            }
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.defaults?.hooks?.onBranchCreated).toEqual(["echo default hook"]);
+    });
+
+    it("should accept empty hooks object", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            hooks: {}
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.repositories[0].hooks).toEqual({});
+    });
+
+    it("should accept empty onBranchCreated array", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            hooks: {
+              onBranchCreated: []
+            }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.repositories[0].hooks?.onBranchCreated).toEqual([]);
+    });
+
+    it("should reject non-object hooks in repository", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            hooks: "invalid"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'hooks' in Repository 'test-repo' must be an object",
+      );
+    });
+
+    it("should reject non-object hooks in defaults", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          defaults: {
+            hooks: "invalid"
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("'hooks' in defaults must be an object");
+    });
+
+    it("should reject non-array onBranchCreated", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            hooks: {
+              onBranchCreated: "single command"
+            }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'hooks.onBranchCreated' in Repository 'test-repo' must be an array",
+      );
+    });
+
+    it("should reject non-string command in onBranchCreated", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            hooks: {
+              onBranchCreated: ["valid", 123]
+            }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'hooks.onBranchCreated' in Repository 'test-repo' must contain only non-empty strings (invalid at index 1)",
+      );
+    });
+
+    it("should reject empty string command in onBranchCreated", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            hooks: {
+              onBranchCreated: ["valid", ""]
+            }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'hooks.onBranchCreated' in Repository 'test-repo' must contain only non-empty strings (invalid at index 1)",
+      );
+    });
+
+    it("should reject whitespace-only command in onBranchCreated", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            hooks: {
+              onBranchCreated: ["valid", "   "]
+            }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'hooks.onBranchCreated' in Repository 'test-repo' must contain only non-empty strings (invalid at index 1)",
+      );
+    });
+  });
+
+  describe("resolveRepositoryConfig - hooks", () => {
+    it("should use defaults hooks when repo has none", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const defaults = {
+        hooks: { onBranchCreated: ["default-command"] },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, defaults, tempDir);
+
+      expect(resolved.hooks?.onBranchCreated).toEqual(["default-command"]);
+    });
+
+    it("should override defaults hooks with repo hooks", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        hooks: { onBranchCreated: ["repo-command"] },
+      };
+
+      const defaults = {
+        hooks: { onBranchCreated: ["default-command"] },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, defaults, tempDir);
+
+      expect(resolved.hooks?.onBranchCreated).toEqual(["repo-command"]);
+    });
+
+    it("should resolve filesToCopyOnBranchCreate paths relative to config dir", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        filesToCopyOnBranchCreate: [".env.local", "./configs/settings.json"],
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, {}, "/base/dir");
+
+      expect(resolved.filesToCopyOnBranchCreate).toEqual(["/base/dir/.env.local", "/base/dir/configs/settings.json"]);
+    });
+
+    it("should preserve absolute filesToCopyOnBranchCreate paths", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        filesToCopyOnBranchCreate: ["/absolute/.env.local"],
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, {}, "/base/dir");
+
+      expect(resolved.filesToCopyOnBranchCreate).toEqual(["/absolute/.env.local"]);
+    });
+
+    it("should not set hooks when neither repo nor defaults have hooks", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo);
+
+      expect(resolved.hooks).toBeUndefined();
+    });
+
+    it("should merge hooks object with repo overriding defaults", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        hooks: { onBranchCreated: ["repo-only-command"] },
+      };
+
+      const defaults = {
+        hooks: { onBranchCreated: ["default-only-command"] },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, defaults, tempDir);
+
+      expect(resolved.hooks).toEqual({
+        onBranchCreated: ["repo-only-command"],
       });
     });
   });

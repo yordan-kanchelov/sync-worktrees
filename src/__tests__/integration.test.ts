@@ -220,7 +220,10 @@ branch refs/heads/dirty-branch
       });
 
       // Mock fs.stat and fs.rm for orphaned directory cleanup
-      (fs.stat as Mock<any>).mockResolvedValue({ isDirectory: vi.fn().mockReturnValue(true) });
+      (fs.stat as Mock<any>).mockResolvedValue({
+        isDirectory: vi.fn().mockReturnValue(true),
+        isFile: vi.fn().mockReturnValue(false),
+      });
       (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
       // Mock fs.access for hasOperationInProgress checks

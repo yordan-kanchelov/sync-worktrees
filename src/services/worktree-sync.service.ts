@@ -79,7 +79,7 @@ export class WorktreeSyncService {
       lfsRetryHandler: () => {
         if (!this.config.skipLfs && !lfsSkipEnabled) {
           this.logger.info("⚠️  Temporarily disabling LFS downloads for this sync...");
-          process.env.GIT_LFS_SKIP_SMUDGE = "1";
+          this.gitService.setLfsSkipEnabled(true);
           lfsSkipEnabled = true;
         }
       },
@@ -100,7 +100,7 @@ export class WorktreeSyncService {
           if (isLfsError(errorMessage) && !lfsSkipEnabled && !this.config.skipLfs) {
             this.logger.info("⚠️  Fetch all failed due to LFS error. Attempting branch-by-branch fetch...");
             this.logger.info("⚠️  Temporarily disabling LFS downloads for branch-by-branch fetch...");
-            process.env.GIT_LFS_SKIP_SMUDGE = "1";
+            this.gitService.setLfsSkipEnabled(true);
             lfsSkipEnabled = true;
             await this.fetchBranchByBranch();
           } else {
@@ -168,7 +168,7 @@ export class WorktreeSyncService {
       throw error;
     } finally {
       if (lfsSkipEnabled && !this.config.skipLfs) {
-        delete process.env.GIT_LFS_SKIP_SMUDGE;
+        this.gitService.setLfsSkipEnabled(false);
       }
       this.syncInProgress = false;
       this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
@@ -275,6 +275,8 @@ export class WorktreeSyncService {
             const worktreePath = path.join(this.config.worktreeDir, branchName);
             const status = await this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug);
             return { branchName, worktreePath, status };
+          }).catch((error) => {
+            throw Object.assign(error instanceof Error ? error : new Error(String(error)), { branchName });
           }),
         ),
       );
@@ -294,7 +296,9 @@ export class WorktreeSyncService {
             toSkip.push({ branchName, status });
           }
         } else {
-          this.logger.error(`  - Error checking worktree:`, result.reason);
+          const branchName = (result.reason as Error & { branchName?: string })?.branchName ?? "unknown";
+          this.logger.error(`  - Error checking worktree '${branchName}':`, result.reason);
+          this.logger.warn(`  - ⚠️ Skipping removal of '${branchName}' due to status check failure (conservative)`);
         }
       }
 
@@ -307,6 +311,14 @@ export class WorktreeSyncService {
           toRemove.map(({ branchName, worktreePath }) =>
             removeLimit(async () => {
               try {
+                // Re-validate status immediately before removal to close TOCTOU window
+                const recheck = await this.gitService.getFullWorktreeStatus(worktreePath, false);
+                if (!recheck.canRemove) {
+                  this.logger.warn(
+                    `  ⚠️ Skipping removal of '${branchName}' - status changed since initial check: ${recheck.reasons.join(", ")}`,
+                  );
+                  return;
+                }
                 await this.gitService.removeWorktree(worktreePath);
                 this.logger.info(`  ✅ Removed worktree for '${branchName}'`);
               } catch (error) {
@@ -393,21 +405,30 @@ export class WorktreeSyncService {
   private async fetchBranchByBranch(): Promise<void> {
     this.logger.info("Fetching branches individually to isolate LFS errors...");
 
-    // First, get the list of remote branches (this shouldn't fail due to LFS)
     const remoteBranches = await this.gitService.getRemoteBranches();
     this.logger.info(`Found ${remoteBranches.length} remote branches to fetch.`);
 
+    const fetchLimit = pLimit(3);
     const failedBranches: string[] = [];
     let successCount = 0;
 
-    for (const branch of remoteBranches) {
-      try {
-        await this.gitService.fetchBranch(branch);
+    const results = await Promise.allSettled(
+      remoteBranches.map((branch) =>
+        fetchLimit(async () => {
+          await this.gitService.fetchBranch(branch);
+          return branch;
+        }),
+      ),
+    );
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.status === "fulfilled") {
         successCount++;
-      } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        this.logger.info(`  ⚠️  Failed to fetch branch '${branch}': ${errorMessage}`);
-        failedBranches.push(branch);
+      } else {
+        const errorMessage = getErrorMessage(result.reason);
+        this.logger.info(`  ⚠️  Failed to fetch branch '${remoteBranches[i]}': ${errorMessage}`);
+        failedBranches.push(remoteBranches[i]);
       }
     }
 
@@ -455,14 +476,15 @@ export class WorktreeSyncService {
 
     const activeWorktrees = worktrees.filter((w) => remoteBranches.includes(w.branch));
 
-    // Two-phase approach: Check which worktrees need updates (parallel, read-only),
-    // then perform updates (parallel with lower concurrency to avoid conflicts)
+    type UpdateCheckResult = { action: "update" | "diverged"; worktree: { path: string; branch: string } } | null;
+
+    // Phase 4a: Check which worktrees need updates (parallel, read-only, high concurrency)
     const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
     const limit = pLimit(maxConcurrent);
 
     const checkResults = await Promise.allSettled(
       activeWorktrees.map((worktree) =>
-        limit(async () => {
+        limit(async (): Promise<UpdateCheckResult> => {
           try {
             await fs.access(worktree.path);
           } catch {
@@ -477,68 +499,97 @@ export class WorktreeSyncService {
 
           const canFastForward = await this.gitService.canFastForward(worktree.path, worktree.branch);
           if (!canFastForward) {
-            // Check if local is just ahead of remote (not truly diverged)
             const isAhead = await this.gitService.isLocalAheadOfRemote(worktree.path, worktree.branch);
             if (isAhead) {
               this.logger.info(`⏭️  Skipping '${worktree.branch}' - has unpushed commits`);
               return null;
             }
-            await this.handleDivergedBranch(worktree);
-            return null;
+            return { action: "diverged", worktree };
           }
 
           const isBehind = await this.gitService.isWorktreeBehind(worktree.path);
-          return isBehind ? worktree : null;
+          return isBehind ? { action: "update", worktree } : null;
         }),
       ),
     );
 
     const worktreesToUpdate: { path: string; branch: string }[] = [];
+    const divergedWorktrees: { path: string; branch: string }[] = [];
+
     for (const result of checkResults) {
       if (result.status === "fulfilled" && result.value) {
-        worktreesToUpdate.push(result.value);
+        if (result.value.action === "update") {
+          worktreesToUpdate.push(result.value.worktree);
+        } else {
+          divergedWorktrees.push(result.value.worktree);
+        }
       } else if (result.status === "rejected") {
         this.logger.error(`  - Error checking worktree:`, result.reason);
       }
     }
 
-    if (worktreesToUpdate.length > 0) {
-      this.logger.info(`  - Found ${worktreesToUpdate.length} worktrees behind their upstream branches.`);
+    // Phase 4b: Perform mutations (updates + diverged handling) with lower concurrency
+    const updateLimit = pLimit(
+      this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES,
+    );
 
-      const updateLimit = pLimit(
-        this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES,
-      );
+    const mutationTasks: Promise<{ type: "update" | "diverged"; branch: string }>[] = [];
 
-      const updateResults = await Promise.allSettled(
-        worktreesToUpdate.map((worktree) =>
-          updateLimit(async () => {
-            try {
-              this.logger.info(`  - Updating worktree '${worktree.branch}'...`);
-              await this.gitService.updateWorktree(worktree.path);
-              this.logger.info(`    ✅ Successfully updated '${worktree.branch}'.`);
-            } catch (error) {
-              const errorMessage = getErrorMessage(error);
+    for (const worktree of worktreesToUpdate) {
+      mutationTasks.push(
+        updateLimit(async () => {
+          try {
+            this.logger.info(`  - Updating worktree '${worktree.branch}'...`);
+            await this.gitService.updateWorktree(worktree.path);
+            this.logger.info(`    ✅ Successfully updated '${worktree.branch}'.`);
+          } catch (error) {
+            const errorMessage = getErrorMessage(error);
 
-              if (ERROR_MESSAGES.FAST_FORWARD_FAILED.some((msg) => errorMessage.includes(msg))) {
-                this.logger.info(
-                  `    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`,
-                );
-                try {
-                  await this.handleDivergedBranch(worktree);
-                } catch (divergedError) {
-                  this.logger.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
-                }
-              } else {
-                this.logger.error(`    ❌ Failed to update '${worktree.branch}':`, error);
+            if (ERROR_MESSAGES.FAST_FORWARD_FAILED.some((msg) => errorMessage.includes(msg))) {
+              this.logger.info(
+                `    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`,
+              );
+              try {
+                await this.handleDivergedBranch(worktree);
+              } catch (divergedError) {
+                this.logger.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
               }
-              throw error;
+            } else {
+              this.logger.error(`    ❌ Failed to update '${worktree.branch}':`, error);
             }
-          }),
-        ),
+            throw error;
+          }
+          return { type: "update" as const, branch: worktree.branch };
+        }),
       );
+    }
 
-      const successCount = updateResults.filter((r) => r.status === "fulfilled").length;
-      this.logger.info(`  Updated ${successCount}/${worktreesToUpdate.length} worktrees successfully`);
+    for (const worktree of divergedWorktrees) {
+      mutationTasks.push(
+        updateLimit(async () => {
+          try {
+            await this.handleDivergedBranch(worktree);
+          } catch (error) {
+            this.logger.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, error);
+            throw error;
+          }
+          return { type: "diverged" as const, branch: worktree.branch };
+        }),
+      );
+    }
+
+    if (mutationTasks.length > 0) {
+      if (worktreesToUpdate.length > 0) {
+        this.logger.info(`  - Found ${worktreesToUpdate.length} worktrees behind their upstream branches.`);
+      }
+      if (divergedWorktrees.length > 0) {
+        this.logger.info(`  - Found ${divergedWorktrees.length} diverged worktrees to handle.`);
+      }
+
+      const mutationResults = await Promise.allSettled(mutationTasks);
+
+      const successCount = mutationResults.filter((r) => r.status === "fulfilled").length;
+      this.logger.info(`  Processed ${successCount}/${mutationTasks.length} worktrees successfully`);
     } else {
       this.logger.info("  - All worktrees are up to date.");
     }

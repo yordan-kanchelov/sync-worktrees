@@ -4,6 +4,8 @@ type AppEventMap = {
   setDiskSpace: string;
   addLog: { message: string; level: "info" | "warn" | "error" };
   uiReady: void;
+  updateRepositoryCount: number;
+  updateCronSchedule: string | undefined;
 };
 
 type EventCallback<T> = T extends void ? () => void : (payload: T) => void;
@@ -20,7 +22,13 @@ class AppEventEmitter {
     this.listeners.get(event)!.add(callback as AnyEventCallback);
 
     return () => {
-      this.listeners.get(event)?.delete(callback as AnyEventCallback);
+      const set = this.listeners.get(event);
+      if (set) {
+        set.delete(callback as AnyEventCallback);
+        if (set.size === 0) {
+          this.listeners.delete(event);
+        }
+      }
     };
   }
 
@@ -30,8 +38,8 @@ class AppEventEmitter {
       for (const callback of callbacks) {
         try {
           (callback as (payload?: AppEventMap[K]) => void)(args[0]);
-        } catch {
-          // Silently handle callback errors
+        } catch (error) {
+          console.error(`[app-events] Error in '${String(event)}' listener:`, error);
         }
       }
     }

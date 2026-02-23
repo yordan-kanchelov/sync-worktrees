@@ -378,7 +378,7 @@ describe("Rebased Branch Handling", () => {
       await service.sync();
 
       expect(mockLogger.error).toHaveBeenCalledWith(
-        expect.stringContaining("Error checking worktree"),
+        expect.stringContaining("Failed to handle diverged branch"),
         expect.any(Error),
       );
     });

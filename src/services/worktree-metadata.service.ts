@@ -18,12 +18,13 @@ export class WorktreeMetadataService {
   }
 
   async getMetadataPath(bareRepoPath: string, worktreeName: string): Promise<string> {
-    // Git stores worktree metadata in .git/worktrees/[worktree-name]/
-    // We'll store our metadata alongside Git's metadata
+    // Replace slashes with dashes to avoid nested directory creation
+    // while keeping uniqueness (e.g., "feature/test" -> "feature-test")
+    const sanitizedName = worktreeName.replace(/\//g, "-");
     return path.join(
       bareRepoPath,
       METADATA_CONSTANTS.WORKTREE_METADATA_PATH,
-      worktreeName,
+      sanitizedName,
       METADATA_CONSTANTS.METADATA_FILENAME,
     );
   }
@@ -36,12 +37,22 @@ export class WorktreeMetadataService {
 
   async saveMetadata(bareRepoPath: string, worktreeName: string, metadata: SyncMetadata): Promise<void> {
     const metadataPath = await this.getMetadataPath(bareRepoPath, worktreeName);
-
-    // Ensure directory exists
     await fs.mkdir(path.dirname(metadataPath), { recursive: true });
 
-    // Write metadata as JSON
-    await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), "utf-8");
+    // Write to temp file then rename for atomicity — prevents corruption on crash
+    const tmpPath = metadataPath + ".tmp";
+    await fs.writeFile(tmpPath, JSON.stringify(metadata, null, 2), "utf-8");
+    try {
+      await fs.rename(tmpPath, metadataPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EXDEV") {
+        // Cross-device rename not supported: copy contents then remove temp file
+        await fs.copyFile(tmpPath, metadataPath);
+        await fs.unlink(tmpPath);
+      } else {
+        throw err;
+      }
+    }
   }
 
   async loadMetadata(bareRepoPath: string, worktreeName: string): Promise<SyncMetadata | null> {
@@ -148,12 +159,18 @@ export class WorktreeMetadataService {
     const existing = await this.loadMetadata(bareRepoPath, worktreeName);
 
     if (!existing) {
-      // If no metadata exists, we can't update it
-      console.warn(`No metadata found for worktree ${worktreeName}, skipping update`);
+      console.warn(`No metadata found for worktree ${worktreeName}, creating initial metadata`);
+      await this.createInitialMetadata(
+        bareRepoPath,
+        worktreeName,
+        commit,
+        `origin/${worktreeName}`,
+        GIT_CONSTANTS.DEFAULT_BRANCH,
+        commit,
+      );
       return;
     }
 
-    // Update metadata
     existing.lastSyncCommit = commit;
     existing.lastSyncDate = new Date().toISOString();
 

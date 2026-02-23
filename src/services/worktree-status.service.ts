@@ -72,12 +72,21 @@ export class WorktreeStatusService {
     includeDetails = false,
     lastSyncCommit?: string,
   ): Promise<WorktreeStatusResult> {
-    const isClean = await this.checkWorktreeStatus(worktreePath);
-    const hasUnpushedCommits = await this.hasUnpushedCommits(worktreePath, lastSyncCommit);
-    const hasStashedChanges = await this.hasStashedChanges(worktreePath);
-    const hasOperationInProgress = await this.hasOperationInProgress(worktreePath);
-    const hasModifiedSubmodules = await this.hasModifiedSubmodules(worktreePath);
-    const upstreamGone = await this.hasUpstreamGone(worktreePath);
+    const [
+      isClean,
+      hasUnpushedCommits,
+      hasStashedChanges,
+      hasOperationInProgress,
+      hasModifiedSubmodules,
+      upstreamGone,
+    ] = await Promise.all([
+      this.checkWorktreeStatus(worktreePath),
+      this.hasUnpushedCommits(worktreePath, lastSyncCommit),
+      this.hasStashedChanges(worktreePath),
+      this.hasOperationInProgress(worktreePath),
+      this.hasModifiedSubmodules(worktreePath),
+      this.hasUpstreamGone(worktreePath),
+    ]);
 
     const reasons: string[] = [];
     if (!isClean) reasons.push("uncommitted changes");
@@ -133,7 +142,7 @@ export class WorktreeStatusService {
       return unpushedCount > 0;
     } catch (error) {
       console.error(`Error checking unpushed commits: ${error}`);
-      return false;
+      return true;
     }
   }
 
@@ -165,7 +174,7 @@ export class WorktreeStatusService {
       }
 
       console.error(`Unexpected error checking upstream status for ${worktreePath}: ${errorMessage}`);
-      return false;
+      return true;
     }
   }
 
@@ -198,8 +207,9 @@ export class WorktreeStatusService {
         }
       }
       return false;
-    } catch {
-      return false;
+    } catch (error) {
+      console.error(`Error checking submodule status: ${error}`);
+      return true;
     }
   }
 
@@ -226,8 +236,9 @@ export class WorktreeStatusService {
       }
 
       return false;
-    } catch {
-      return false;
+    } catch (error) {
+      console.error(`Error checking operation in progress for ${worktreePath}: ${error}`);
+      return true;
     }
   }
 
@@ -377,8 +388,7 @@ export class WorktreeStatusService {
         return files;
       }
 
-      console.warn(`Warning: Could not check gitignore status for files in ${worktreePath}: ${errorMessage}`);
-      return files;
+      throw error;
     }
   }
 
@@ -403,6 +413,7 @@ export class WorktreeStatusService {
         if (gitdirMatch) {
           return path.resolve(worktreePath, gitdirMatch[1].trim());
         }
+        throw new GitOperationError("resolve-git-dir", `Failed to parse gitdir from .git file at ${gitPath}`);
       }
 
       return gitPath;

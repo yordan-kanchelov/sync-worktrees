@@ -56,75 +56,23 @@ describe("WorktreeStatusService", () => {
       expect(simpleGit).toHaveBeenCalledWith("/test/worktree");
     });
 
-    it("should return false for worktree with modified files", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: ["file.ts"],
+    it.each([
+      { field: "modified", value: ["file.ts"] },
+      { field: "deleted", value: ["old-file.ts"] },
+      { field: "renamed", value: [{ from: "old.ts", to: "new.ts" }] },
+      { field: "created", value: ["new-file.ts"] },
+      { field: "conflicted", value: ["conflicted.ts"] },
+    ])("should return false for worktree with $field files", async ({ field, value }) => {
+      const status = {
+        modified: [],
         deleted: [],
         renamed: [],
         created: [],
         conflicted: [],
         not_added: [],
-      } as any);
-
-      const result = await service.checkWorktreeStatus("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return false for worktree with deleted files", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: ["old-file.ts"],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-
-      const result = await service.checkWorktreeStatus("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return false for worktree with renamed files", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [{ from: "old.ts", to: "new.ts" }],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-
-      const result = await service.checkWorktreeStatus("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return false for worktree with staged files", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: ["new-file.ts"],
-        conflicted: [],
-        not_added: [],
-      } as any);
-
-      const result = await service.checkWorktreeStatus("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return false for worktree with conflicts", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: ["conflicted.ts"],
-        not_added: [],
-      } as any);
+        [field]: value,
+      };
+      mockGit.status.mockResolvedValue(status as any);
 
       const result = await service.checkWorktreeStatus("/test/worktree");
 
@@ -193,10 +141,7 @@ describe("WorktreeStatusService", () => {
       mockGit.raw.mockRejectedValue(new Error("check-ignore failed"));
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      const result = await service.checkWorktreeStatus("/test/worktree");
-
-      expect(result).toBe(false);
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Warning: Could not check gitignore status"));
+      await expect(service.checkWorktreeStatus("/test/worktree")).rejects.toThrow("check-ignore failed");
       consoleSpy.mockRestore();
     });
   });
@@ -211,13 +156,30 @@ describe("WorktreeStatusService", () => {
         conflicted: [],
         not_added: [],
       } as any);
-      mockGit.raw.mockResolvedValue("0\n");
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
+          return "origin/main\n";
+        }
+        if (firstArg[0] === "submodule") {
+          return "";
+        }
+        return "0\n";
+      }) as any);
+      mockGit.branch.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg && firstArg[0] === "-r") {
+          return { all: ["origin/main"] } as any;
+        }
+        return { current: "main", detached: false } as any;
+      }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+      (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
       (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
 
       const result = await service.getFullWorktreeStatus("/test/worktree");
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isClean: true,
         hasUnpushedCommits: false,
         hasStashedChanges: false,
@@ -261,7 +223,12 @@ describe("WorktreeStatusService", () => {
         conflicted: [],
         not_added: [".DS_Store"],
       } as any);
-      mockGit.raw.mockResolvedValueOnce(".DS_Store\n").mockResolvedValueOnce("0\n");
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "check-ignore") return ".DS_Store\n";
+        if (firstArg[0] === "submodule") return "";
+        return "0\n";
+      }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
       (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
 
@@ -300,15 +267,26 @@ describe("WorktreeStatusService", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
     });
 
-    it("should return false on error", async () => {
+    it("should return true on error (conservative)", async () => {
       mockGit.raw.mockRejectedValue(new Error("Git error"));
       const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const result = await service.hasUnpushedCommits("/test/worktree");
 
-      expect(result).toBe(false);
+      expect(result).toBe(true);
       expect(consoleSpy).toHaveBeenCalled();
       consoleSpy.mockRestore();
+    });
+
+    it("should return true on unexpected hasUpstreamGone error (conservative)", async () => {
+      mockGit.raw.mockRejectedValue(new Error("Unexpected git failure"));
+      mockGit.branch
+        .mockResolvedValueOnce({ current: "feature", detached: false } as any)
+        .mockResolvedValueOnce({ current: "feature", detached: false } as any);
+
+      const result = await service.hasUpstreamGone("/test/worktree");
+
+      expect(result).toBe(true);
     });
   });
 
@@ -398,12 +376,15 @@ describe("WorktreeStatusService", () => {
       expect(result).toBe(false);
     });
 
-    it("should return false on error", async () => {
+    it("should return true on error (conservative)", async () => {
       mockGit.raw.mockRejectedValue(new Error("No submodules"));
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const result = await service.hasModifiedSubmodules("/test/worktree");
 
-      expect(result).toBe(false);
+      expect(result).toBe(true);
+      expect(consoleSpy).toHaveBeenCalled();
+      consoleSpy.mockRestore();
     });
   });
 
@@ -425,6 +406,17 @@ describe("WorktreeStatusService", () => {
       const result = await service.hasOperationInProgress("/test/worktree");
 
       expect(result).toBe(false);
+    });
+
+    it("should return true on outer error (conservative)", async () => {
+      (fs.stat as Mock<any>).mockRejectedValue(new Error("Cannot access .git"));
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const result = await service.hasOperationInProgress("/test/worktree");
+
+      expect(result).toBe(true);
+      expect(consoleSpy).toHaveBeenCalled();
+      consoleSpy.mockRestore();
     });
 
     it("should resolve .git file to actual git directory", async () => {
@@ -505,29 +497,16 @@ describe("WorktreeStatusService", () => {
         conflicted: [],
         not_added: [".DS_Store"],
       } as any);
-      mockGit.raw.mockResolvedValueOnce(".DS_Store\n").mockResolvedValueOnce("0\n");
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "check-ignore") return ".DS_Store\n";
+        if (firstArg[0] === "submodule") return "";
+        return "0\n";
+      }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
       (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
 
       await expect(service.validateWorktreeForRemoval("/test/worktree")).resolves.not.toThrow();
-    });
-  });
-
-  describe("LFS configuration", () => {
-    it("should respect skipLfs configuration", () => {
-      const lfsService = new WorktreeStatusService({ skipLfs: true });
-
-      lfsService.checkWorktreeStatus("/test/worktree");
-
-      expect(mockGit.env).toHaveBeenCalledWith({ GIT_LFS_SKIP_SMUDGE: "1" });
-    });
-
-    it("should not set LFS env when skipLfs is false", () => {
-      const lfsService = new WorktreeStatusService({ skipLfs: false });
-
-      lfsService.checkWorktreeStatus("/test/worktree");
-
-      expect(mockGit.env).not.toHaveBeenCalled();
     });
   });
 

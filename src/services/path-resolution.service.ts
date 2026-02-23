@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import * as path from "path";
 
 export class PathResolutionService {
@@ -6,16 +7,29 @@ export class PathResolutionService {
   }
 
   normalizeWorktreePath(worktreePath: string, worktreeBaseDir: string): string {
-    const relativePath = path.relative(worktreeBaseDir, worktreePath);
-    if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    const resolved = path.resolve(worktreePath);
+    const resolvedBase = path.resolve(worktreeBaseDir);
+    if (!resolved.startsWith(resolvedBase + path.sep) && resolved !== resolvedBase) {
       throw new Error(`Worktree path '${worktreePath}' is outside base directory '${worktreeBaseDir}'`);
     }
-    return relativePath;
+    return path.relative(resolvedBase, resolved);
   }
 
   isPathInsideBaseDir(targetPath: string, baseDir: string): boolean {
-    const relative = path.relative(baseDir, targetPath);
-    return !relative.startsWith("..") && !path.isAbsolute(relative);
+    let resolved: string;
+    let resolvedBase: string;
+
+    try {
+      // Use realpath to resolve symlinks for accurate security checks
+      resolved = fs.realpathSync(targetPath);
+      resolvedBase = fs.realpathSync(baseDir);
+    } catch {
+      // If paths don't exist yet, fall back to path.resolve
+      resolved = path.resolve(targetPath);
+      resolvedBase = path.resolve(baseDir);
+    }
+
+    return resolved.startsWith(resolvedBase + path.sep) || resolved === resolvedBase;
   }
 
   extractBranchFromWorktreePath(worktreePath: string, worktreeBaseDir: string): string {

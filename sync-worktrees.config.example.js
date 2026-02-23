@@ -164,15 +164,46 @@ export default {
     
     {
       name: "read-only-reference",
-      
+
       repoUrl: "https://github.com/user/reference.git",
       worktreeDir: "./worktrees/reference",
-      
+
       // Disable automatic updates for read-only reference repositories
       updateExistingWorktrees: false,
-      
+
       // Check less frequently since we won't update
       cronSchedule: "0 0 * * 0"  // Once per week
+    },
+
+    {
+      name: "project-with-hooks",
+
+      repoUrl: "https://github.com/user/project.git",
+      worktreeDir: "./worktrees/project",
+
+      // Hooks configuration - commands to run on specific lifecycle events
+      // All hooks run in background (fire-and-forget) and log output to UI
+      hooks: {
+        // Commands to run after creating a new branch worktree via the 'c' command
+        // Available placeholders: {BRANCH_NAME}, {WORKTREE_PATH}, {REPO_NAME}, {BASE_BRANCH}, {REPO_URL}
+        // Also available as env vars: SYNC_WORKTREES_BRANCH_NAME, SYNC_WORKTREES_WORKTREE_PATH, etc.
+        onBranchCreated: [
+          // Open VS Code in the new worktree
+          "code {WORKTREE_PATH}",
+
+          // Open a new terminal window in the worktree (macOS)
+          // "open -a 'Terminal' {WORKTREE_PATH}",
+
+          // Open Ghostty terminal in the worktree directory
+          // "ghostty --working-directory={WORKTREE_PATH}",
+
+          // Start a tmux session with the branch name
+          // "tmux new-session -d -s {BRANCH_NAME} -c {WORKTREE_PATH}",
+
+          // Run a custom setup script using environment variables
+          // "cd $SYNC_WORKTREES_WORKTREE_PATH && ./setup-dev.sh"
+        ]
+      }
     }
   ]
 };

@@ -6,8 +6,10 @@ export interface HelpModalProps {
 }
 
 const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
-  useInput(() => {
-    onClose();
+  useInput((input, key) => {
+    if (input === "?" || input === "h" || key.escape) {
+      onClose();
+    }
   });
   return (
     <Box justifyContent="center" alignItems="center" flexDirection="column" marginTop={2} marginBottom={2}>
@@ -101,6 +103,15 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
           <Box>
             <Box width={15}>
               <Text bold color="yellow">
+                w
+              </Text>
+            </Box>
+            <Text>View worktree status</Text>
+          </Box>
+
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
                 r
               </Text>
             </Box>
@@ -135,7 +146,7 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
         </Box>
 
         <Box justifyContent="center" marginTop={1}>
-          <Text dimColor>Press any key to close</Text>
+          <Text dimColor>Press ? / h / ESC to close</Text>
         </Box>
       </Box>
     </Box>

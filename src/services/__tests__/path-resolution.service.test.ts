@@ -59,6 +59,18 @@ describe("PathResolutionService", () => {
     it("should return false for path traversal attempts", () => {
       expect(service.isPathInsideBaseDir("/base/../outside", "/base")).toBe(false);
     });
+
+    it("should return true when path equals base directory", () => {
+      expect(service.isPathInsideBaseDir("/base", "/base")).toBe(true);
+    });
+  });
+
+  describe("normalizeWorktreePath - traversal", () => {
+    it("should throw for path traversal with ..", () => {
+      expect(() => {
+        service.normalizeWorktreePath("/base/worktrees/../../etc/passwd", "/base/worktrees");
+      }).toThrow("is outside base directory");
+    });
   });
 
   describe("extractBranchFromWorktreePath", () => {

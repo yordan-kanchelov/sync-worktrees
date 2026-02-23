@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useInput } from "ink";
 
 const isValidGitBranchName = (name: string): { valid: boolean; error?: string } => {
@@ -35,46 +35,88 @@ export interface BranchCreationWizardProps {
   repositories: Array<{ index: number; name: string; repoUrl: string }>;
   getBranchesForRepo: (index: number) => Promise<string[]>;
   getDefaultBranchForRepo: (index: number) => string;
+  fetchForRepo?: (index: number) => Promise<void>;
   createAndPushBranch: (
     repoIndex: number,
     baseBranch: string,
     branchName: string,
   ) => Promise<{ success: boolean; finalName: string; error?: string }>;
   onClose: () => void;
-  onComplete: (
-    success: boolean,
-    context?: {
-      repoIndex: number;
-      baseBranch: string;
-      newBranch: string;
-    },
-  ) => void;
+  onComplete: (success: boolean) => void;
+  onBranchCreated?: (context: {
+    repoIndex: number;
+    baseBranch: string;
+    newBranch: string;
+  }) => void;
 }
 
 const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   repositories,
   getBranchesForRepo,
   getDefaultBranchForRepo,
+  fetchForRepo,
   createAndPushBranch,
   onClose,
   onComplete,
+  onBranchCreated,
 }) => {
   const [step, setStep] = useState<WizardStep>(repositories.length > 1 ? "SELECT_PROJECT" : "SELECT_BRANCH");
-  const [selectedProjectIndex, setSelectedProjectIndex] = useState(repositories.length === 1 ? 0 : 0);
+  const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
+  const [selectedRepoIndex, setSelectedRepoIndex] = useState(
+    repositories.length === 1 ? repositories[0].index : -1,
+  );
+  const [projectFilter, setProjectFilter] = useState("");
   const [branches, setBranches] = useState<string[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>("");
   const [selectedBranchIndex, setSelectedBranchIndex] = useState(0);
+  const [branchFilter, setBranchFilter] = useState("");
   const [branchName, setBranchName] = useState("");
   const [existingSuffix, setExistingSuffix] = useState<number | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [result, setResult] = useState<{ success: boolean; finalName: string; error?: string } | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const branchesLoadedRef = useRef(false);
+  const [isFetching, setIsFetching] = useState(false);
+
+  const filteredProjects = useMemo(() => {
+    if (!projectFilter) return repositories;
+    const lowerFilter = projectFilter.toLowerCase();
+    return repositories.filter((repo) => repo.name.toLowerCase().includes(lowerFilter));
+  }, [repositories, projectFilter]);
+
+  const filteredBranches = useMemo(() => {
+    if (!branchFilter) return branches;
+    const lowerFilter = branchFilter.toLowerCase();
+    return branches.filter((branch) => branch.toLowerCase().includes(lowerFilter));
+  }, [branches, branchFilter]);
+
+  useEffect(() => {
+    if (filteredProjects.length > 0) {
+      setSelectedProjectIndex((prev) => Math.min(prev, filteredProjects.length - 1));
+    }
+  }, [filteredProjects.length]);
+
+  useEffect(() => {
+    if (filteredBranches.length > 0) {
+      setSelectedBranchIndex((prev) => Math.min(prev, filteredBranches.length - 1));
+    }
+  }, [filteredBranches.length]);
+
   const loadBranches = useCallback(
     async (repoIndex: number) => {
       setLoading(true);
+      setIsFetching(false);
       try {
-        const branchList = await getBranchesForRepo(repoIndex);
+        let branchList = await getBranchesForRepo(repoIndex);
+
+        // If no branches found and we haven't tried fetching yet, fetch and retry
+        if (branchList.length === 0 && fetchForRepo) {
+          setIsFetching(true);
+          await fetchForRepo(repoIndex);
+          branchList = await getBranchesForRepo(repoIndex);
+        }
+
         const defaultBr = getDefaultBranchForRepo(repoIndex);
         setBranches(branchList);
         setDefaultBranch(defaultBr);
@@ -84,8 +126,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         setBranches([]);
       }
       setLoading(false);
+      setIsFetching(false);
     },
-    [getBranchesForRepo, getDefaultBranchForRepo],
+    [getBranchesForRepo, getDefaultBranchForRepo, fetchForRepo],
   );
 
   const checkBranchExists = useCallback(
@@ -119,10 +162,11 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   );
 
   useEffect(() => {
-    if (step === "SELECT_BRANCH" && branches.length === 0 && !loading) {
-      loadBranches(selectedProjectIndex);
+    if (step === "SELECT_BRANCH" && !branchesLoadedRef.current && !loading && selectedRepoIndex >= 0) {
+      branchesLoadedRef.current = true;
+      loadBranches(selectedRepoIndex);
     }
-  }, [step, selectedProjectIndex, branches.length, loading, loadBranches]);
+  }, [step, selectedRepoIndex, loading, loadBranches]);
 
   useEffect(() => {
     if (step === "ENTER_NAME") {
@@ -141,9 +185,16 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
     }
 
     setStep("CREATING");
-    const baseBranch = branches[selectedBranchIndex];
-    const createResult = await createAndPushBranch(selectedProjectIndex, baseBranch, trimmedName);
+    const baseBranch = filteredBranches[selectedBranchIndex];
+    const createResult = await createAndPushBranch(selectedRepoIndex, baseBranch, trimmedName);
     setResult(createResult);
+    if (createResult.success && onBranchCreated) {
+      onBranchCreated({
+        repoIndex: selectedRepoIndex,
+        baseBranch,
+        newBranch: createResult.finalName,
+      });
+    }
     setStep("RESULT");
   };
 
@@ -156,6 +207,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
       } else if (step === "SELECT_BRANCH") {
         if (repositories.length > 1) {
           setBranches([]);
+          setBranchFilter("");
+          branchesLoadedRef.current = false;
+          setIsFetching(false);
           setStep("SELECT_PROJECT");
         } else {
           onClose();
@@ -165,15 +219,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         setExistingSuffix(null);
         setStep("SELECT_BRANCH");
       } else if (step === "RESULT") {
-        const context =
-          result?.success
-            ? {
-                repoIndex: selectedProjectIndex,
-                baseBranch: branches[selectedBranchIndex],
-                newBranch: result.finalName,
-              }
-            : undefined;
-        onComplete(result?.success ?? false, context);
+        onComplete(result?.success ?? false);
       }
       return;
     }
@@ -182,40 +228,50 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
       if (key.upArrow) {
         setSelectedProjectIndex((prev) => Math.max(0, prev - 1));
       } else if (key.downArrow) {
-        setSelectedProjectIndex((prev) => Math.min(repositories.length - 1, prev + 1));
-      } else if (key.return) {
-        loadBranches(selectedProjectIndex);
-        setStep("SELECT_BRANCH");
+        setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+      } else if (key.return && filteredProjects.length > 0) {
+        const selectedRepo = filteredProjects[selectedProjectIndex];
+        if (selectedRepo) {
+          setSelectedRepoIndex(selectedRepo.index);
+          branchesLoadedRef.current = false;
+          setIsFetching(false);
+          loadBranches(selectedRepo.index);
+          setStep("SELECT_BRANCH");
+        }
+      } else if (key.backspace || key.delete) {
+        setProjectFilter((prev) => prev.slice(0, -1));
+        setSelectedProjectIndex(0);
+      } else if (input && !key.ctrl && !key.meta) {
+        setProjectFilter((prev) => prev + input);
+        setSelectedProjectIndex(0);
       }
     } else if (step === "SELECT_BRANCH") {
       if (key.upArrow) {
         setSelectedBranchIndex((prev) => Math.max(0, prev - 1));
       } else if (key.downArrow) {
-        setSelectedBranchIndex((prev) => Math.min(branches.length - 1, prev + 1));
-      } else if (key.return && branches.length > 0) {
+        setSelectedBranchIndex((prev) => Math.min(filteredBranches.length - 1, prev + 1));
+      } else if (key.return && filteredBranches.length > 0) {
         setStep("ENTER_NAME");
+      } else if (key.backspace || key.delete) {
+        setBranchFilter((prev) => prev.slice(0, -1));
+        setSelectedBranchIndex(0);
+      } else if (input && !key.ctrl && !key.meta) {
+        setBranchFilter((prev) => prev + input);
+        setSelectedBranchIndex(0);
       }
     } else if (step === "ENTER_NAME") {
       if (key.return && branchName.trim()) {
-        void handleCreateBranch();
+        handleCreateBranch().catch((err) => console.error("Branch creation failed:", err));
       } else if (key.backspace || key.delete) {
         setBranchName((prev) => prev.slice(0, -1));
       } else if (input && !key.ctrl && !key.meta) {
-        const validChar = /^[a-zA-Z0-9/_-]$/.test(input);
+        const validChar = /^[a-zA-Z0-9/._-]$/.test(input);
         if (validChar) {
           setBranchName((prev) => prev + input);
         }
       }
     } else if (step === "RESULT") {
-      const context =
-        result?.success
-          ? {
-              repoIndex: selectedProjectIndex,
-              baseBranch: branches[selectedBranchIndex],
-              newBranch: result.finalName,
-            }
-          : undefined;
-      onComplete(result?.success ?? false, context);
+      onComplete(result?.success ?? false);
     }
   });
 
@@ -233,25 +289,57 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
   const getTotalSteps = () => (repositories.length === 1 ? 2 : 3);
 
-  const renderProjectSelection = () => (
-    <Box flexDirection="column" gap={1}>
-      <Text>Select repository:</Text>
-      <Box flexDirection="column">
-        {repositories.map((repo, idx) => (
-          <Box key={repo.index}>
-            <Text color={idx === selectedProjectIndex ? "cyan" : undefined}>
-              {idx === selectedProjectIndex ? "> " : "  "}
-              {repo.name}
-            </Text>
-          </Box>
-        ))}
+  const renderProjectSelection = () => {
+    const visibleCount = 8;
+    const halfVisible = Math.floor(visibleCount / 2);
+    let startIdx = Math.max(0, selectedProjectIndex - halfVisible);
+    const endIdx = Math.min(filteredProjects.length, startIdx + visibleCount);
+    if (endIdx - startIdx < visibleCount) {
+      startIdx = Math.max(0, endIdx - visibleCount);
+    }
+
+    const visibleProjects = filteredProjects.slice(startIdx, endIdx);
+
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text>Select repository:</Text>
+        <Box>
+          <Text>Filter: </Text>
+          <Text color="cyan">{projectFilter || "_"}</Text>
+          <Text dimColor>
+            {" "}
+            ({filteredProjects.length}/{repositories.length} matches)
+          </Text>
+        </Box>
+        <Box flexDirection="column">
+          {filteredProjects.length === 0 ? (
+            <Text color="yellow">No matches</Text>
+          ) : (
+            <>
+              {startIdx > 0 && <Text dimColor>  ...</Text>}
+              {visibleProjects.map((repo, idx) => {
+                const actualIdx = startIdx + idx;
+                const isSelected = actualIdx === selectedProjectIndex;
+                return (
+                  <Box key={repo.index}>
+                    <Text color={isSelected ? "cyan" : undefined}>
+                      {isSelected ? "> " : "  "}
+                      {repo.name}
+                    </Text>
+                  </Box>
+                );
+              })}
+              {endIdx < filteredProjects.length && <Text dimColor>  ...</Text>}
+            </>
+          )}
+        </Box>
       </Box>
-    </Box>
-  );
+    );
+  };
 
   const renderBranchSelection = () => {
     if (loading) {
-      return <Text color="yellow">Loading branches...</Text>;
+      return <Text color="yellow">Loading branches{isFetching ? " (fetching from remote...)" : "..."}</Text>;
     }
 
     if (branches.length === 0) {
@@ -261,40 +349,54 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
     const visibleCount = 8;
     const halfVisible = Math.floor(visibleCount / 2);
     let startIdx = Math.max(0, selectedBranchIndex - halfVisible);
-    const endIdx = Math.min(branches.length, startIdx + visibleCount);
+    const endIdx = Math.min(filteredBranches.length, startIdx + visibleCount);
     if (endIdx - startIdx < visibleCount) {
       startIdx = Math.max(0, endIdx - visibleCount);
     }
 
-    const visibleBranches = branches.slice(startIdx, endIdx);
+    const visibleBranches = filteredBranches.slice(startIdx, endIdx);
 
     return (
       <Box flexDirection="column" gap={1}>
         <Text>Select base branch:</Text>
+        <Box>
+          <Text>Filter: </Text>
+          <Text color="cyan">{branchFilter || "_"}</Text>
+          <Text dimColor>
+            {" "}
+            ({filteredBranches.length}/{branches.length} matches)
+          </Text>
+        </Box>
         <Box flexDirection="column">
-          {startIdx > 0 && <Text dimColor>  ...</Text>}
-          {visibleBranches.map((branch, idx) => {
-            const actualIdx = startIdx + idx;
-            const isSelected = actualIdx === selectedBranchIndex;
-            const isDefault = branch === defaultBranch;
-            return (
-              <Box key={branch}>
-                <Text color={isSelected ? "cyan" : undefined}>
-                  {isSelected ? "> " : "  "}
-                  {branch}
-                  {isDefault && <Text color="green"> (default)</Text>}
-                </Text>
-              </Box>
-            );
-          })}
-          {endIdx < branches.length && <Text dimColor>  ...</Text>}
+          {filteredBranches.length === 0 ? (
+            <Text color="yellow">No matches</Text>
+          ) : (
+            <>
+              {startIdx > 0 && <Text dimColor>  ...</Text>}
+              {visibleBranches.map((branch, idx) => {
+                const actualIdx = startIdx + idx;
+                const isSelected = actualIdx === selectedBranchIndex;
+                const isDefault = branch === defaultBranch;
+                return (
+                  <Box key={branch}>
+                    <Text color={isSelected ? "cyan" : undefined}>
+                      {isSelected ? "> " : "  "}
+                      {branch}
+                      {isDefault && <Text color="green"> (default)</Text>}
+                    </Text>
+                  </Box>
+                );
+              })}
+              {endIdx < filteredBranches.length && <Text dimColor>  ...</Text>}
+            </>
+          )}
         </Box>
       </Box>
     );
   };
 
   const renderNameInput = () => {
-    const baseBranch = branches[selectedBranchIndex] || "";
+    const baseBranch = filteredBranches[selectedBranchIndex] || "";
     const finalName = existingSuffix !== null ? `${branchName}-${existingSuffix}` : branchName;
     const endsWithSlash = branchName.endsWith("/");
 
@@ -344,9 +446,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
             Created: <Text color="cyan">{result.finalName}</Text>
           </Text>
           <Text>
-            From: <Text color="cyan">{branches[selectedBranchIndex]}</Text>
+            From: <Text color="cyan">{filteredBranches[selectedBranchIndex]}</Text>
           </Text>
-          <Text dimColor>Syncing now to create the worktree...</Text>
+          <Text color="green">Worktree sync started in background</Text>
         </Box>
       );
     }
@@ -377,12 +479,12 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   const renderFooter = () => {
     if (step === "CREATING") return null;
     if (step === "RESULT") {
-      return <Text dimColor>Press any key to continue</Text>;
+      return <Text dimColor>Press any key to close</Text>;
     }
     if (step === "ENTER_NAME") {
       return <Text dimColor>Enter to create • ESC to go back</Text>;
     }
-    return <Text dimColor>↑/↓ to navigate • Enter to select • ESC to cancel</Text>;
+    return <Text dimColor>↑/↓ navigate • Type to filter • Enter to select • ESC to cancel</Text>;
   };
 
   return (
@@ -402,7 +504,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         {repositories.length > 1 && step !== "SELECT_PROJECT" && step !== "CREATING" && step !== "RESULT" && (
           <Box marginBottom={1}>
             <Text>
-              Repository: <Text color="cyan">{repositories[selectedProjectIndex].name}</Text>
+              Repository: <Text color="cyan">{repositories.find((r) => r.index === selectedRepoIndex)?.name}</Text>
             </Text>
           </Box>
         )}

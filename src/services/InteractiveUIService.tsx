@@ -2,16 +2,25 @@ import React from "react";
 import * as path from "path";
 import { render, Instance } from "ink";
 import * as cron from "node-cron";
+import pLimit from "p-limit";
 import { spawn } from "child_process";
 import App from "../components/App";
+import { DEFAULT_CONFIG } from "../constants";
 import { WorktreeSyncService } from "./worktree-sync.service";
 import { ConfigLoaderService } from "./config-loader.service";
 import { FileCopyService } from "./file-copy.service";
+import { HookExecutionService } from "./hook-execution.service";
 import { Logger, LogOutputFn, LogLevel } from "./logger.service";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { appEvents } from "../utils/app-events";
-import type { RepositoryConfig } from "../types";
+import type { RepositoryConfig, HookContext, WorktreeStatusEntry } from "../types";
+
+export interface ReloadOptions {
+  filter?: string;
+  noUpdateExisting?: boolean;
+  debug?: boolean;
+}
 
 export class InteractiveUIService {
   private app: Instance | null = null;
@@ -22,8 +31,19 @@ export class InteractiveUIService {
   private repositoryCount: number;
   private logBuffer: Array<{ message: string; level: "info" | "warn" | "error" }> = [];
   private uiReady = false;
+  private hookExecutionService = new HookExecutionService();
+  private limit: ReturnType<typeof pLimit>;
+  private reloadInProgress = false;
+  private isDestroyed = false;
+  private reloadOptions: ReloadOptions;
 
-  constructor(syncServices: WorktreeSyncService[], configPath?: string, cronSchedule?: string) {
+  constructor(
+    syncServices: WorktreeSyncService[],
+    configPath?: string,
+    cronSchedule?: string,
+    maxParallel?: number,
+    reloadOptions?: ReloadOptions,
+  ) {
     if (syncServices.length === 0) {
       throw new Error("InteractiveUIService requires at least one WorktreeSyncService");
     }
@@ -32,8 +52,9 @@ export class InteractiveUIService {
     this.configPath = configPath;
     this.cronSchedule = cronSchedule;
     this.repositoryCount = syncServices.length;
+    this.limit = pLimit(maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
+    this.reloadOptions = reloadOptions ?? {};
 
-    this.setupCronJobs();
     this.startBufferFlushCheck();
     this.renderUI();
     this.injectLoggersIntoServices();
@@ -74,6 +95,7 @@ export class InteractiveUIService {
   }
 
   public addLog(message: string, level: "info" | "warn" | "error" = "info"): void {
+    if (this.isDestroyed) return;
     if (this.uiReady) {
       appEvents.emit("addLog", { message, level });
     } else {
@@ -88,33 +110,42 @@ export class InteractiveUIService {
     this.logBuffer = [];
   }
 
-  private setupCronJobs(): void {
-    if (!this.cronSchedule) {
-      return;
-    }
+  public setupCronJobs(): void {
+    const scheduleGroups = new Map<string, WorktreeSyncService[]>();
 
     for (const service of this.syncServices) {
-      if (service.config.runOnce) {
-        continue;
-      }
-
+      if (service.config.runOnce) continue;
       const schedule = service.config.cronSchedule || this.cronSchedule;
+      if (!schedule) continue;
+
+      if (!scheduleGroups.has(schedule)) {
+        scheduleGroups.set(schedule, []);
+      }
+      scheduleGroups.get(schedule)!.push(service);
+    }
+
+    for (const [schedule, services] of scheduleGroups) {
       const task = cron.schedule(schedule, async () => {
         this.setStatus("syncing");
         try {
-          if (!service.isInitialized()) {
-            await service.initialize();
-          }
-          await service.sync();
-        } catch (error) {
-          console.error(`Error syncing: ${(error as Error).message}`);
+          await Promise.allSettled(
+            services.map((service) =>
+              this.limit(async () => {
+                if (!service.isInitialized()) {
+                  await service.initialize();
+                }
+                await service.sync();
+              }),
+            ),
+          );
         } finally {
           this.setStatus("idle");
+          this.updateLastSyncTime();
+          this.calculateAndUpdateDiskSpace().catch((err) => {
+            this.addLog(`Failed to calculate disk space: ${err instanceof Error ? err.message : String(err)}`, "error");
+          });
         }
-        this.updateLastSyncTime();
-        await this.calculateAndUpdateDiskSpace();
       });
-
       this.cronJobs.push(task);
     }
   }
@@ -141,16 +172,21 @@ export class InteractiveUIService {
         getRepositoryList={() => this.getRepositoryList()}
         getBranchesForRepo={(index: number) => this.getBranchesForRepo(index)}
         getDefaultBranchForRepo={(index: number) => this.getDefaultBranchForRepo(index)}
+        fetchForRepo={(index: number) => this.fetchForRepo(index)}
         createAndPushBranch={(repoIndex: number, baseBranch: string, branchName: string) =>
           this.createAndPushBranch(repoIndex, baseBranch, branchName)
         }
         getWorktreesForRepo={(index: number) => this.getWorktreesForRepo(index)}
+        getWorktreeStatusForRepo={(index: number) => this.getWorktreeStatusForRepo(index)}
         openEditorInWorktree={(path: string) => this.openEditorInWorktree(path)}
         copyBranchFiles={(repoIndex: number, baseBranch: string, targetBranch: string) =>
           this.copyBranchFiles(repoIndex, baseBranch, targetBranch)
         }
         createWorktreeForBranch={(repoIndex: number, branchName: string) =>
           this.createWorktreeForBranch(repoIndex, branchName)
+        }
+        executeOnBranchCreatedHooks={(repoIndex: number, context: HookContext) =>
+          this.executeOnBranchCreatedHooks(repoIndex, context)
         }
       />,
     );
@@ -164,23 +200,31 @@ export class InteractiveUIService {
     this.setStatus("syncing");
 
     try {
-      for (const service of this.syncServices) {
-        if (!service.isInitialized()) {
-          await service.initialize();
-        }
-        await service.sync();
-      }
+      await Promise.allSettled(
+        this.syncServices.map((service) =>
+          this.limit(async () => {
+            if (!service.isInitialized()) {
+              await service.initialize();
+            }
+            await service.sync();
+          }),
+        ),
+      );
 
       this.updateLastSyncTime();
       await this.calculateAndUpdateDiskSpace();
     } catch (error) {
-      console.error("Sync failed:", error);
+      this.addLog(`Sync failed: ${error instanceof Error ? error.message : String(error)}`, "error");
     } finally {
       this.setStatus("idle");
     }
   }
 
   private async handleReload(): Promise<void> {
+    if (this.reloadInProgress) {
+      return;
+    }
+    this.reloadInProgress = true;
     try {
       if (!this.configPath) {
         this.setStatus("idle");
@@ -189,22 +233,53 @@ export class InteractiveUIService {
 
       await this.waitForInProgressSyncs();
 
-      this.cancelCronJobs();
-
-      console.log("Reloading configuration...");
+      this.addLog("Reloading configuration...");
       this.setStatus("syncing");
 
+      // Validate and load new config BEFORE canceling old cron jobs
+      // to prevent a window with no cron running on validation failure
       const configLoader = new ConfigLoaderService();
       const configFile = await configLoader.loadConfigFile(this.configPath);
+      const configDir = path.dirname(path.resolve(this.configPath));
+
+      let repositories = configFile.repositories.map((repo) =>
+        configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
+      );
+
+      if (this.reloadOptions.filter) {
+        repositories = configLoader.filterRepositories(repositories, this.reloadOptions.filter);
+      }
+
+      if (this.reloadOptions.noUpdateExisting) {
+        repositories = repositories.map((repo) => ({
+          ...repo,
+          updateExistingWorktrees: false,
+        }));
+      }
+
+      if (this.reloadOptions.debug) {
+        repositories = repositories.map((repo) => ({
+          ...repo,
+          debug: true,
+        }));
+      }
+
+      const initResults = await Promise.allSettled(
+        repositories.map((repoConfig) =>
+          this.limit(async () => {
+            const service = new WorktreeSyncService(repoConfig);
+            await service.initialize();
+            return service;
+          }),
+        ),
+      );
 
       const newServices: WorktreeSyncService[] = [];
-      for (const repoConfig of configFile.repositories) {
-        try {
-          const service = new WorktreeSyncService(repoConfig);
-          await service.initialize();
-          newServices.push(service);
-        } catch (error) {
-          console.error(`Failed to initialize repository ${repoConfig.name}: ${(error as Error).message}`);
+      for (const result of initResults) {
+        if (result.status === "fulfilled") {
+          newServices.push(result.value);
+        } else {
+          this.addLog(`Failed to initialize repository: ${result.reason}`, "error");
         }
       }
 
@@ -212,43 +287,62 @@ export class InteractiveUIService {
         throw new Error("No repositories could be initialized from the configuration");
       }
 
+      // Cancel old cron jobs only after new config is validated and services initialized
+      this.cancelCronJobs();
+
       this.syncServices = newServices;
       this.repositoryCount = this.syncServices.length;
+      this.injectLoggersIntoServices();
+
+      const uniqueSchedules = [...new Set(repositories.map((r) => r.cronSchedule))];
+      this.cronSchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
 
       this.setupCronJobs();
 
+      appEvents.emit("updateRepositoryCount", this.repositoryCount);
+      appEvents.emit("updateCronSchedule", this.cronSchedule);
+
       const failures: Array<{ repo: string; error: string }> = [];
 
-      for (const service of this.syncServices) {
-        try {
-          await service.sync();
-        } catch (error) {
-          const repoName = (service.config as RepositoryConfig).name || service.config.repoUrl;
-          const errorMessage = (error as Error).message;
-          console.error(`Failed to sync repository ${repoName}: ${errorMessage}`);
+      const syncResults = await Promise.allSettled(
+        this.syncServices.map((service) =>
+          this.limit(async () => {
+            await service.sync();
+            return service;
+          }).catch((error) => {
+            const repoName = (service.config as RepositoryConfig).name || service.config.repoUrl;
+            throw Object.assign(error instanceof Error ? error : new Error(String(error)), { repoName });
+          }),
+        ),
+      );
+
+      for (const result of syncResults) {
+        if (result.status === "rejected") {
+          const repoName = (result.reason as any)?.repoName ?? "unknown";
+          const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
+          this.addLog(`Failed to sync repository '${repoName}': ${errorMessage}`, "error");
           failures.push({ repo: repoName, error: errorMessage });
         }
       }
 
-      this.renderUI();
       this.updateLastSyncTime();
       await this.calculateAndUpdateDiskSpace();
       this.setStatus("idle");
 
       if (failures.length > 0) {
-        console.warn(`Reload completed with ${failures.length} repository failure(s)`);
+        this.addLog(`Reload completed with ${failures.length} repository failure(s)`, "warn");
       }
     } catch (error) {
-      console.error(`Reload failed: ${(error as Error).message}`);
+      this.addLog(`Reload failed: ${(error as Error).message}`, "error");
       this.setupCronJobs();
       this.setStatus("idle");
+    } finally {
+      this.reloadInProgress = false;
     }
   }
 
   private async handleQuit(): Promise<void> {
-    await this.waitForInProgressSyncs();
-
-    this.destroy();
+    await this.destroy();
     process.exit(0);
   }
 
@@ -258,6 +352,8 @@ export class InteractiveUIService {
     if (inProgressServices.length === 0) {
       return;
     }
+
+    this.addLog(`Waiting for ${inProgressServices.length} in-progress sync(s) to finish...`, "info");
 
     const syncChecks = inProgressServices.map(async (service) => {
       const timeout = 30000;
@@ -274,20 +370,26 @@ export class InteractiveUIService {
 
     try {
       await Promise.all(syncChecks);
-    } catch (error) {
-      // Silently handle timeout
+    } catch {
+      this.addLog(
+        "Warning: Timeout waiting for sync operations to complete after 30s. Proceeding with potential data loss risk.",
+        "warn",
+      );
     }
   }
 
   public updateLastSyncTime(): void {
+    if (this.isDestroyed) return;
     appEvents.emit("updateLastSyncTime");
   }
 
   public setStatus(status: "idle" | "syncing"): void {
+    if (this.isDestroyed) return;
     appEvents.emit("setStatus", status);
   }
 
   public setDiskSpace(diskSpace: string): void {
+    if (this.isDestroyed) return;
     appEvents.emit("setDiskSpace", diskSpace);
   }
 
@@ -301,7 +403,7 @@ export class InteractiveUIService {
       const diskSpace = await calculateSyncDiskSpace(bareRepoDirs, worktreeDirs);
       this.setDiskSpace(diskSpace);
     } catch (error) {
-      console.error("Failed to calculate disk space:", error);
+      this.addLog(`Failed to calculate disk space: ${error instanceof Error ? error.message : String(error)}`, "error");
       this.setDiskSpace("N/A");
     }
   }
@@ -320,6 +422,9 @@ export class InteractiveUIService {
     }
 
     const service = this.syncServices[repoIndex];
+    if (!service.isInitialized()) {
+      return [];
+    }
     const gitService = service.getGitService();
     return gitService.getRemoteBranches();
   }
@@ -334,6 +439,19 @@ export class InteractiveUIService {
     return gitService.getDefaultBranch();
   }
 
+  public async fetchForRepo(repoIndex: number): Promise<void> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      throw new Error(`Invalid repository index: ${repoIndex}`);
+    }
+
+    const service = this.syncServices[repoIndex];
+    if (!service.isInitialized()) {
+      await service.initialize();
+    }
+    const gitService = service.getGitService();
+    await gitService.fetchAll();
+  }
+
   public async createAndPushBranch(
     repoIndex: number,
     baseBranch: string,
@@ -346,27 +464,27 @@ export class InteractiveUIService {
     const service = this.syncServices[repoIndex];
     const gitService = service.getGitService();
 
-    try {
-      let finalName = branchName;
-      let suffix = 0;
+    const maxAttempts = 10;
+    let finalName = branchName;
+    let suffix = 0;
 
-      while (true) {
-        const exists = await gitService.branchExists(finalName);
-        if (!exists.local && !exists.remote) {
-          break;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        await gitService.createBranch(finalName, baseBranch);
+        await gitService.pushBranch(finalName);
+        return { success: true, finalName };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (errorMessage.includes("already exists")) {
+          suffix++;
+          finalName = `${branchName}-${suffix}`;
+          continue;
         }
-        suffix++;
-        finalName = `${branchName}-${suffix}`;
+        return { success: false, finalName: branchName, error: errorMessage };
       }
-
-      await gitService.createBranch(finalName, baseBranch);
-      await gitService.pushBranch(finalName);
-
-      return { success: true, finalName };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return { success: false, finalName: branchName, error: errorMessage };
     }
+
+    return { success: false, finalName: branchName, error: `Failed to create branch after ${maxAttempts} attempts` };
   }
 
   public async getWorktreesForRepo(repoIndex: number): Promise<Array<{ path: string; branch: string }>> {
@@ -377,6 +495,27 @@ export class InteractiveUIService {
     const service = this.syncServices[repoIndex];
     const gitService = service.getGitService();
     return gitService.getWorktrees();
+  }
+
+  public async getWorktreeStatusForRepo(repoIndex: number): Promise<WorktreeStatusEntry[]> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      throw new Error(`Invalid repository index: ${repoIndex}`);
+    }
+
+    const service = this.syncServices[repoIndex];
+    const gitService = service.getGitService();
+    const worktrees = await gitService.getWorktrees();
+
+    const results = await Promise.allSettled(
+      worktrees.map(async (wt) => {
+        const status = await gitService.getFullWorktreeStatus(wt.path, true);
+        return { branch: wt.branch, path: wt.path, status };
+      }),
+    );
+
+    return results
+      .filter((r): r is PromiseFulfilledResult<WorktreeStatusEntry> => r.status === "fulfilled")
+      .map((r) => r.value);
   }
 
   public async createWorktreeForBranch(repoIndex: number, branchName: string): Promise<void> {
@@ -420,6 +559,40 @@ export class InteractiveUIService {
     }
   }
 
+  public executeOnBranchCreatedHooks(repoIndex: number, context: HookContext): void {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      return;
+    }
+
+    const service = this.syncServices[repoIndex];
+    const config = service.config;
+
+    if (!config.hooks?.onBranchCreated?.length) {
+      return;
+    }
+
+    this.addLog(`Running ${config.hooks.onBranchCreated.length} hook(s) for branch '${context.branchName}'...`, "info");
+
+    this.hookExecutionService.executeOnBranchCreated(config.hooks, context, {
+      onStdout: (data) => {
+        this.addLog(`[hook] ${data}`, "info");
+      },
+      onStderr: (data) => {
+        this.addLog(`[hook] ${data}`, "warn");
+      },
+      onError: (command, error) => {
+        this.addLog(`[hook] Failed to execute '${command}': ${error.message}`, "error");
+      },
+      onComplete: (command, exitCode) => {
+        if (exitCode === 0) {
+          this.addLog(`[hook] Command completed successfully`, "info");
+        } else if (exitCode !== null) {
+          this.addLog(`[hook] Command exited with code ${exitCode}`, "warn");
+        }
+      },
+    });
+  }
+
   public async copyBranchFiles(repoIndex: number, baseBranch: string, targetBranch: string): Promise<void> {
     if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
       return;
@@ -439,7 +612,7 @@ export class InteractiveUIService {
     const targetWorktree = worktrees.find((w) => w.branch === targetBranch);
 
     if (!sourceWorktree || !targetWorktree) {
-      console.warn(`Could not find worktrees for file copy: source=${baseBranch}, target=${targetBranch}`);
+      this.addLog(`Could not find worktrees for file copy: source=${baseBranch}, target=${targetBranch}`, "warn");
       return;
     }
 
@@ -453,21 +626,31 @@ export class InteractiveUIService {
       );
 
       if (result.copied.length > 0) {
-        console.log(`📋 Copied ${result.copied.length} file(s) to new branch: ${result.copied.join(", ")}`);
+        this.addLog(`📋 Copied ${result.copied.length} file(s) to new branch: ${result.copied.join(", ")}`, "info");
       }
       if (result.errors.length > 0) {
-        console.warn(`⚠️ Failed to copy ${result.errors.length} file(s):`);
+        this.addLog(`⚠️ Failed to copy ${result.errors.length} file(s):`, "warn");
         for (const err of result.errors) {
-          console.warn(`  - ${err.file}: ${err.error}`);
+          this.addLog(`  - ${err.file}: ${err.error}`, "warn");
         }
       }
     } catch (error) {
-      console.error(`Failed to copy files to new branch: ${error}`);
+      this.addLog(`Failed to copy files to new branch: ${error}`, "error");
     }
   }
 
-  public destroy(): void {
+  public async destroy(): Promise<void> {
+    this.isDestroyed = true;
     this.cancelCronJobs();
+
+    // Wait for in-flight sync operations before tearing down
+    try {
+      await this.waitForInProgressSyncs();
+    } catch {
+      // Best effort - proceed with teardown even if syncs don't finish
+    }
+
+    this.hookExecutionService.cleanup();
     if (this.app) {
       this.app.unmount();
       this.app = null;
