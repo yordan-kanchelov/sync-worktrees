@@ -208,6 +208,24 @@ describe("GitService", () => {
       ]);
     });
 
+    it("should gracefully handle existing directory when creating main worktree", async () => {
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("config not found")) // config check
+        .mockResolvedValueOnce("" as any) // worktree list empty => needsMainWorktree = true
+        .mockRejectedValueOnce(new Error("already exists")); // worktree add fails
+      mockGit.branch.mockResolvedValueOnce({
+        all: [],
+        current: "main",
+      } as any);
+
+      await gitService.initialize();
+
+      // Should NOT call fs.rm - handles the error gracefully instead
+      expect(fs.rm).not.toHaveBeenCalled();
+    });
+
     it("should not add duplicate fetch config when it already exists", async () => {
       // Mock fs.access to succeed (bare repo exists)
       (fs.access as Mock<any>).mockResolvedValue(undefined);
@@ -422,8 +440,6 @@ describe("GitService", () => {
     beforeEach(async () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
-      // Clear fs.rm calls from initialize's orphaned directory cleanup
-      vi.mocked(fs.rm).mockClear();
     });
 
     it("should add worktree with tracking when branch doesn't exist locally", async () => {

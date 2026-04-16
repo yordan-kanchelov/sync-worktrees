@@ -1,3 +1,6 @@
+import * as fs from "fs/promises";
+import * as path from "path";
+
 import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -25,6 +28,13 @@ const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance } = vi.hoisted
     } as any,
   };
 });
+
+vi.mock("fs/promises");
+vi.mock("../../utils/disk-space", () => ({
+  calculateSyncDiskSpace: vi.fn().mockResolvedValue({ totalSize: 0, formattedSize: "0 B" }),
+  calculateDirectorySize: vi.fn().mockResolvedValue(1024),
+  formatBytes: vi.fn().mockReturnValue("1.0 KB"),
+}));
 
 vi.mock("../worktree-sync.service", () => ({
   WorktreeSyncService: vi.fn(function (this: any, config: any) {
@@ -1392,6 +1402,147 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockServiceWithFiles as any]);
         await expect(service.copyBranchFiles(0, "main", "feature/new")).resolves.not.toThrow();
+
+        service.destroy();
+      });
+    });
+
+    describe("deleteDivergedDirectory", () => {
+      it("should delete diverged directory for valid inputs", async () => {
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await service.deleteDivergedDirectory(0, "2024-01-15-feature-x-abc123");
+
+        expect(fs.rm).toHaveBeenCalledWith(path.join("/test/worktrees", ".diverged", "2024-01-15-feature-x-abc123"), {
+          recursive: true,
+          force: true,
+        });
+
+        service.destroy();
+      });
+
+      it("should throw for invalid repo index", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.deleteDivergedDirectory(-1, "test")).rejects.toThrow("Invalid repository index: -1");
+        await expect(service.deleteDivergedDirectory(5, "test")).rejects.toThrow("Invalid repository index: 5");
+
+        service.destroy();
+      });
+
+      it("should reject path traversal attempts", async () => {
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.deleteDivergedDirectory(0, "../../evil-target")).rejects.toThrow(
+          "Path traversal rejected",
+        );
+        expect(fs.rm).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it("should reject deeply nested traversal attempts", async () => {
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.deleteDivergedDirectory(0, "../../../etc/passwd")).rejects.toThrow(
+          "Path traversal rejected",
+        );
+        expect(fs.rm).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+    });
+
+    describe("getDivergedDirectoriesForRepo", () => {
+      it("should return empty array for invalid repo index", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const result = await service.getDivergedDirectoriesForRepo(-1);
+        expect(result).toEqual([]);
+
+        const result2 = await service.getDivergedDirectoriesForRepo(5);
+        expect(result2).toEqual([]);
+
+        service.destroy();
+      });
+
+      it("should return empty array when .diverged directory does not exist", async () => {
+        (fs.readdir as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const result = await service.getDivergedDirectoriesForRepo(0);
+        expect(result).toEqual([]);
+
+        service.destroy();
+      });
+
+      it("should parse entries from .diverged directory with metadata files", async () => {
+        const mockDirents = [{ name: "2024-01-15-feature-x-abc123", isDirectory: () => true, isFile: () => false }];
+        (fs.readdir as Mock<any>).mockResolvedValue(mockDirents);
+        (fs.readFile as Mock<any>).mockResolvedValue(
+          JSON.stringify({ originalBranch: "feature/x", divergedAt: "2024-01-15T10:00:00Z" }),
+        );
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.getDivergedDirectoriesForRepo(0);
+
+        expect(result).toHaveLength(1);
+        expect(result[0].originalBranch).toBe("feature/x");
+        expect(result[0].divergedAt).toBe("2024-01-15T10:00:00Z");
+        expect(result[0].sizeFormatted).toBe("1.0 KB");
+
+        service.destroy();
+      });
+
+      it("should fallback to parsing directory name when metadata file is missing", async () => {
+        const mockDirents = [{ name: "2024-03-20-my-branch-abc123", isDirectory: () => true, isFile: () => false }];
+        (fs.readdir as Mock<any>).mockResolvedValue(mockDirents);
+        (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.getDivergedDirectoriesForRepo(0);
+
+        expect(result).toHaveLength(1);
+        expect(result[0].originalBranch).toBe("my-branch");
+        expect(result[0].divergedAt).toBe("2024-03-20");
+
+        service.destroy();
+      });
+
+      it("should filter out non-directory entries", async () => {
+        const mockDirents = [
+          { name: "a-dir", isDirectory: () => true, isFile: () => false },
+          { name: "a-file.txt", isDirectory: () => false, isFile: () => true },
+        ];
+        (fs.readdir as Mock<any>).mockResolvedValue(mockDirents);
+        (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.getDivergedDirectoriesForRepo(0);
+
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("a-dir");
+
+        service.destroy();
+      });
+
+      it("should sort entries by divergedAt descending", async () => {
+        const mockDirents = [
+          { name: "2024-01-01-old-abc", isDirectory: () => true, isFile: () => false },
+          { name: "2024-06-15-new-def", isDirectory: () => true, isFile: () => false },
+        ];
+        (fs.readdir as Mock<any>).mockResolvedValue(mockDirents);
+        (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.getDivergedDirectoriesForRepo(0);
+
+        expect(result).toHaveLength(2);
+        expect(result[0].divergedAt).toBe("2024-06-15");
+        expect(result[1].divergedAt).toBe("2024-01-01");
 
         service.destroy();
       });

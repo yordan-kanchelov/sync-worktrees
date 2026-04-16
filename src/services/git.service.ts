@@ -99,39 +99,39 @@ export class GitService {
       // Use absolute path for worktree add to avoid relative path issues
       const absoluteWorktreePath = path.resolve(this.mainWorktreePath);
 
-      // Clean up orphaned directory that isn't a registered worktree
-      try {
-        await fs.access(absoluteWorktreePath);
-        this.logger.info(
-          `Directory already exists at '${absoluteWorktreePath}' but is not a registered worktree. Cleaning up...`,
-        );
-        await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
-      } catch {
-        // Directory doesn't exist, which is expected
-      }
-
       // Check if local branch exists
       const branches = await bareGit.branch();
       const defaultBranchExists = branches.all.includes(this.defaultBranch);
 
-      if (defaultBranchExists) {
-        await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
-        // Set upstream tracking after creating worktree
-        const worktreeGit = this.isLfsSkipEnabled()
-          ? simpleGit(absoluteWorktreePath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
-          : simpleGit(absoluteWorktreePath);
-        await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
-      } else {
-        // Create new branch tracking the remote branch
-        await bareGit.raw([
-          "worktree",
-          "add",
-          "--track",
-          "-b",
-          this.defaultBranch,
-          absoluteWorktreePath,
-          `origin/${this.defaultBranch}`,
-        ]);
+      try {
+        if (defaultBranchExists) {
+          await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
+          // Set upstream tracking after creating worktree
+          const worktreeGit = this.isLfsSkipEnabled()
+            ? simpleGit(absoluteWorktreePath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
+            : simpleGit(absoluteWorktreePath);
+          await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
+        } else {
+          // Create new branch tracking the remote branch
+          await bareGit.raw([
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            this.defaultBranch,
+            absoluteWorktreePath,
+            `origin/${this.defaultBranch}`,
+          ]);
+        }
+      } catch (error) {
+        const errorMessage = getErrorMessage(error);
+        if (errorMessage.includes("already exists")) {
+          this.logger.info(
+            `${this.defaultBranch} worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`,
+          );
+        } else {
+          throw error;
+        }
       }
 
       // Ensure the worktree is registered by checking it exists in the list

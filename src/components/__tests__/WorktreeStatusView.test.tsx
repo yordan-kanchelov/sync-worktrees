@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import WorktreeStatusView, { WorktreeStatusViewProps } from "../WorktreeStatusView";
 import type { WorktreeStatusResult } from "../../services/worktree-status.service";
-import type { WorktreeStatusEntry } from "../../types";
+import type { WorktreeStatusEntry, DivergedDirectoryInfo } from "../../types";
 
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -521,6 +521,175 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Loading worktree status...");
+    });
+  });
+
+  describe("diverged directories", () => {
+    const makeDiverged = (overrides: Partial<DivergedDirectoryInfo> = {}): DivergedDirectoryInfo => ({
+      name: "2024-01-15-feature-x-abc123",
+      path: "/worktrees/.diverged/2024-01-15-feature-x-abc123",
+      originalBranch: "feature/x",
+      divergedAt: "2024-01-15T10:00:00Z",
+      sizeBytes: 1024,
+      sizeFormatted: "1.0 KB",
+      ...overrides,
+    });
+
+    const divergedEntries: DivergedDirectoryInfo[] = [
+      makeDiverged(),
+      makeDiverged({
+        name: "2024-02-20-bugfix-y-def456",
+        path: "/worktrees/.diverged/2024-02-20-bugfix-y-def456",
+        originalBranch: "bugfix/y",
+        divergedAt: "2024-02-20",
+        sizeBytes: 2048,
+        sizeFormatted: "2.0 KB",
+      }),
+    ];
+
+    it("should render diverged entries alongside worktrees", async () => {
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue(divergedEntries),
+      };
+      const { lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Diverged Directories");
+      expect(lastFrame()).toContain("feature/x");
+      expect(lastFrame()).toContain("bugfix/y");
+    });
+
+    it("should show delete hint when diverged entry is selected", async () => {
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
+        deleteDivergedDirectory: vi.fn().mockResolvedValue(undefined),
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      // Navigate past all worktree entries (4 default) + separator to first diverged
+      for (let i = 0; i < 5; i++) {
+        stdin.write("\u001B[B");
+        await waitForStateUpdate();
+      }
+
+      expect(lastFrame()).toContain("d to delete");
+    });
+
+    it("should show delete confirmation on d key", async () => {
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        getWorktreeStatusForRepo: vi.fn().mockResolvedValue([makeEntry("main")]),
+        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
+        deleteDivergedDirectory: vi.fn().mockResolvedValue(undefined),
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      // Navigate past worktree entry + separator to diverged
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+
+      stdin.write("d");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Delete");
+      expect(lastFrame()).toContain("y/n");
+    });
+
+    it("should delete on y confirmation", async () => {
+      const deleteMock = vi.fn().mockResolvedValue(undefined);
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        getWorktreeStatusForRepo: vi.fn().mockResolvedValue([makeEntry("main")]),
+        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
+        deleteDivergedDirectory: deleteMock,
+      };
+      const { stdin } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      // Navigate to diverged entry
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+
+      stdin.write("d");
+      await waitForStateUpdate();
+
+      stdin.write("y");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(deleteMock).toHaveBeenCalledWith(0, "2024-01-15-feature-x-abc123");
+    });
+
+    it("should cancel delete on n key", async () => {
+      const deleteMock = vi.fn().mockResolvedValue(undefined);
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        getWorktreeStatusForRepo: vi.fn().mockResolvedValue([makeEntry("main")]),
+        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
+        deleteDivergedDirectory: deleteMock,
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      // Navigate to diverged entry
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+
+      stdin.write("d");
+      await waitForStateUpdate();
+
+      stdin.write("n");
+      await waitForStateUpdate();
+
+      expect(deleteMock).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("y/n");
+    });
+
+    it("should skip separator during navigation", async () => {
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        getWorktreeStatusForRepo: vi.fn().mockResolvedValue([makeEntry("main")]),
+        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      // Start on "main", press down twice (should skip separator)
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+
+      // Should be on the diverged entry, not stuck on separator
+      expect(lastFrame()).toContain("d to delete");
     });
   });
 });

@@ -21,7 +21,7 @@ const cleanupFns: Array<() => void | Promise<void>> = [];
 
 function setupSignalHandlers(): void {
   let shuttingDown = false;
-  const handler = async (signal: string) => {
+  const handler = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`\nReceived ${signal}, shutting down gracefully...`);

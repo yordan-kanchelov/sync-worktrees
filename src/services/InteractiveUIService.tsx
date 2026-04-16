@@ -592,7 +592,12 @@ export class InteractiveUIService {
 
     const service = this.syncServices[repoIndex];
     const worktreeDir = service.config.worktreeDir;
-    const targetPath = path.join(worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME, name);
+    const divergedBase = path.resolve(path.join(worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME));
+    const targetPath = path.resolve(path.join(divergedBase, name));
+
+    if (!targetPath.startsWith(divergedBase + path.sep) && targetPath !== divergedBase) {
+      throw new Error(`Path traversal rejected: "${name}" resolves outside the diverged directory`);
+    }
 
     await fs.rm(targetPath, { recursive: true, force: true });
     this.addLog(`🗑️ Deleted diverged directory: ${name}`, "info");
