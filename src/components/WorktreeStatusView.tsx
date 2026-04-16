@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { Box, Text, useInput } from "ink";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
-import type { WorktreeStatusEntry } from "../types";
+import type { WorktreeStatusEntry, DivergedDirectoryInfo } from "../types";
+import { getErrorMessage } from "../utils/lfs-error";
 
 export type { WorktreeStatusEntry };
 
@@ -11,8 +12,15 @@ type ViewStep = "SELECT_PROJECT" | "VIEW_STATUS" | "ERROR";
 export interface WorktreeStatusViewProps {
   repositories: Array<{ index: number; name: string; repoUrl: string }>;
   getWorktreeStatusForRepo: (index: number) => Promise<WorktreeStatusEntry[]>;
+  getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
+  deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
   onClose: () => void;
 }
+
+type ListItem =
+  | { type: "worktree"; entry: WorktreeStatusEntry }
+  | { type: "separator" }
+  | { type: "diverged"; entry: DivergedDirectoryInfo };
 
 const getStatusFlags = (status: WorktreeStatusResult): React.ReactNode => {
   const flags: React.ReactNode[] = [];
@@ -99,17 +107,37 @@ const getStatusSummary = (status: WorktreeStatusResult): string => {
   return parts.length > 0 ? `(${parts.join(", ")})` : "";
 };
 
-const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({ repositories, getWorktreeStatusForRepo, onClose }) => {
+const formatDivergedDate = (dateStr: string): string => {
+  if (!dateStr) return "unknown date";
+  if (dateStr.length === 10) return dateStr;
+  try {
+    return new Date(dateStr).toLocaleDateString("en-CA");
+  } catch {
+    return dateStr;
+  }
+};
+
+const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
+  repositories,
+  getWorktreeStatusForRepo,
+  getDivergedDirectoriesForRepo,
+  deleteDivergedDirectory,
+  onClose,
+}) => {
   const [step, setStep] = useState<ViewStep>(repositories.length > 1 ? "SELECT_PROJECT" : "VIEW_STATUS");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
   const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? 0 : -1);
 
   const [entries, setEntries] = useState<WorktreeStatusEntry[]>([]);
+  const [divergedEntries, setDivergedEntries] = useState<DivergedDirectoryInfo[]>([]);
   const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
   const [entryFilter, setEntryFilter] = useState("");
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -125,21 +153,50 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({ repositories, g
     return entries.filter((entry) => entry.branch.toLowerCase().includes(lowerFilter));
   }, [entries, entryFilter]);
 
+  const filteredDiverged = useMemo(() => {
+    if (!entryFilter) return divergedEntries;
+    const lowerFilter = entryFilter.toLowerCase();
+    return divergedEntries.filter((entry) => entry.originalBranch.toLowerCase().includes(lowerFilter));
+  }, [divergedEntries, entryFilter]);
+
+  const combinedList = useMemo((): ListItem[] => {
+    const items: ListItem[] = filteredEntries.map((entry) => ({ type: "worktree" as const, entry }));
+    if (filteredDiverged.length > 0) {
+      items.push({ type: "separator" as const });
+      for (const entry of filteredDiverged) {
+        items.push({ type: "diverged" as const, entry });
+      }
+    }
+    return items;
+  }, [filteredEntries, filteredDiverged]);
+
+  const selectableIndices = useMemo(() => {
+    return combinedList.reduce<number[]>((acc, item, idx) => {
+      if (item.type !== "separator") acc.push(idx);
+      return acc;
+    }, []);
+  }, [combinedList]);
+
   const loadStatus = useCallback(
     async (repoIndex: number) => {
       setLoading(true);
       try {
-        const statusEntries = await getWorktreeStatusForRepo(repoIndex);
+        const [statusEntries, divergedDirs] = await Promise.all([
+          getWorktreeStatusForRepo(repoIndex),
+          getDivergedDirectoriesForRepo?.(repoIndex) ?? Promise.resolve([]),
+        ]);
         setEntries(statusEntries);
+        setDivergedEntries(divergedDirs);
         setSelectedEntryIndex(0);
         setExpandedEntry(null);
+        setConfirmDelete(null);
       } catch (err) {
         setError(`Failed to load worktree status: ${err}`);
         setStep("ERROR");
       }
       setLoading(false);
     },
-    [getWorktreeStatusForRepo],
+    [getWorktreeStatusForRepo, getDivergedDirectoriesForRepo],
   );
 
   useEffect(() => {
@@ -148,15 +205,64 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({ repositories, g
     }
   }, [step, entries.length, loading, loadStatus]);
 
+  const navigateUp = useCallback(() => {
+    setSelectedEntryIndex((prev) => {
+      const currentSelectableIdx = selectableIndices.indexOf(prev);
+      if (currentSelectableIdx <= 0) return selectableIndices[0] ?? 0;
+      return selectableIndices[currentSelectableIdx - 1];
+    });
+  }, [selectableIndices]);
+
+  const navigateDown = useCallback(() => {
+    setSelectedEntryIndex((prev) => {
+      const currentSelectableIdx = selectableIndices.indexOf(prev);
+      if (currentSelectableIdx === -1) return selectableIndices[0] ?? 0;
+      if (currentSelectableIdx >= selectableIndices.length - 1) return prev;
+      return selectableIndices[currentSelectableIdx + 1];
+    });
+  }, [selectableIndices]);
+
+  const selectedItem = combinedList[selectedEntryIndex];
+  const isDivergedSelected = selectedItem?.type === "diverged";
+
   useInput((input, key) => {
+    if (confirmDelete !== null) {
+      if (input === "y" || input === "Y") {
+        const item = combinedList[confirmDelete];
+        if (item?.type === "diverged" && deleteDivergedDirectory && selectedRepoIndexRef.current >= 0) {
+          setDeleting(true);
+          deleteDivergedDirectory(selectedRepoIndexRef.current, item.entry.name)
+            .then(() => {
+              setDivergedEntries((prev) => prev.filter((d) => d.name !== item.entry.name));
+              setConfirmDelete(null);
+              setDeleting(false);
+              setExpandedEntry(null);
+            })
+            .catch((err: unknown) => {
+              setError(`Failed to delete: ${getErrorMessage(err)}`);
+              setConfirmDelete(null);
+              setDeleting(false);
+            });
+        }
+        return;
+      }
+      if (input === "n" || input === "N" || key.escape) {
+        setConfirmDelete(null);
+        return;
+      }
+      return;
+    }
+
     if (key.escape) {
       if (step === "SELECT_PROJECT") {
         onClose();
       } else if (step === "VIEW_STATUS") {
         if (repositories.length > 1) {
           setEntries([]);
+          setDivergedEntries([]);
           setEntryFilter("");
           setExpandedEntry(null);
+          setConfirmDelete(null);
           selectedRepoIndexRef.current = -1;
           setStep("SELECT_PROJECT");
         } else {
@@ -189,11 +295,13 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({ repositories, g
       }
     } else if (step === "VIEW_STATUS" && !loading) {
       if (key.upArrow) {
-        setSelectedEntryIndex((prev) => Math.max(0, prev - 1));
+        navigateUp();
       } else if (key.downArrow) {
-        setSelectedEntryIndex((prev) => Math.min(filteredEntries.length - 1, prev + 1));
-      } else if (key.return && filteredEntries.length > 0) {
+        navigateDown();
+      } else if (key.return && combinedList.length > 0) {
         setExpandedEntry((prev) => (prev === selectedEntryIndex ? null : selectedEntryIndex));
+      } else if (input === "d" && isDivergedSelected && deleteDivergedDirectory) {
+        setConfirmDelete(selectedEntryIndex);
       } else if (key.backspace || key.delete) {
         setEntryFilter((prev) => prev.slice(0, -1));
         setSelectedEntryIndex(0);
@@ -296,24 +404,36 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({ repositories, g
     );
   };
 
+  const renderDivergedDetailPanel = (entry: DivergedDirectoryInfo) => {
+    return (
+      <Box flexDirection="column" marginLeft={4} marginTop={0} marginBottom={1}>
+        <Text dimColor>Path: {entry.path}</Text>
+        <Text dimColor> Original branch: {entry.originalBranch}</Text>
+        {entry.divergedAt && <Text dimColor> Diverged: {entry.divergedAt}</Text>}
+        <Text dimColor> Size: {entry.sizeFormatted}</Text>
+      </Box>
+    );
+  };
+
   const renderStatusList = () => {
     if (loading) {
       return <Text color="yellow">Loading worktree status...</Text>;
     }
 
-    if (entries.length === 0) {
+    if (entries.length === 0 && divergedEntries.length === 0) {
       return <Text color="red">No worktrees found</Text>;
     }
 
     const visibleCount = 8;
     const halfVisible = Math.floor(visibleCount / 2);
     let startIdx = Math.max(0, selectedEntryIndex - halfVisible);
-    const endIdx = Math.min(filteredEntries.length, startIdx + visibleCount);
+    const endIdx = Math.min(combinedList.length, startIdx + visibleCount);
     if (endIdx - startIdx < visibleCount) {
       startIdx = Math.max(0, endIdx - visibleCount);
     }
 
-    const visibleEntries = filteredEntries.slice(startIdx, endIdx);
+    const visibleItems = combinedList.slice(startIdx, endIdx);
+    const filteredCount = filteredEntries.length + filteredDiverged.length;
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -322,41 +442,86 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({ repositories, g
           <Text color="cyan">{entryFilter || "_"}</Text>
           <Text dimColor>
             {" "}
-            ({filteredEntries.length}/{entries.length} matches)
+            ({filteredCount}/{entries.length + divergedEntries.length} matches)
           </Text>
         </Box>
         <Box flexDirection="column">
-          {filteredEntries.length === 0 ? (
+          {filteredCount === 0 ? (
             <Text color="yellow">No matches</Text>
           ) : (
             <>
               {startIdx > 0 && <Text dimColor> ...</Text>}
-              {visibleEntries.map((entry, idx) => {
+              {visibleItems.map((item, idx) => {
                 const actualIdx = startIdx + idx;
+
+                if (item.type === "separator") {
+                  return (
+                    <Box key="separator" marginTop={1}>
+                      <Text dimColor>── Diverged Directories ──</Text>
+                    </Box>
+                  );
+                }
+
+                if (item.type === "worktree") {
+                  const isSelected = actualIdx === selectedEntryIndex;
+                  const isExpanded = expandedEntry === actualIdx;
+                  const summary = getStatusSummary(item.entry.status);
+
+                  return (
+                    <Box key={item.entry.path} flexDirection="column">
+                      <Box>
+                        <Text color={isSelected ? "cyan" : undefined}>
+                          {isSelected ? "> " : "  "}
+                        </Text>
+                        <Box width={24}>
+                          <Text color={isSelected ? "cyan" : undefined}>{item.entry.branch}</Text>
+                        </Box>
+                        <Text> </Text>
+                        {getStatusFlags(item.entry.status)}
+                        {summary && (
+                          <Text dimColor> {summary}</Text>
+                        )}
+                      </Box>
+                      {isExpanded && renderDetailPanel(item.entry)}
+                    </Box>
+                  );
+                }
+
                 const isSelected = actualIdx === selectedEntryIndex;
                 const isExpanded = expandedEntry === actualIdx;
-                const summary = getStatusSummary(entry.status);
+                const isConfirming = confirmDelete === actualIdx;
+                const dateStr = formatDivergedDate(item.entry.divergedAt);
 
                 return (
-                  <Box key={entry.path} flexDirection="column">
+                  <Box key={item.entry.path} flexDirection="column">
                     <Box>
                       <Text color={isSelected ? "cyan" : undefined}>
                         {isSelected ? "> " : "  "}
                       </Text>
-                      <Box width={24}>
-                        <Text color={isSelected ? "cyan" : undefined}>{entry.branch}</Text>
-                      </Box>
-                      <Text> </Text>
-                      {getStatusFlags(entry.status)}
-                      {summary && (
-                        <Text dimColor> {summary}</Text>
+                      {isConfirming ? (
+                        deleting ? (
+                          <Text color="yellow">Deleting...</Text>
+                        ) : (
+                          <Text color="red">
+                            Delete {item.entry.name}? (y/n)
+                          </Text>
+                        )
+                      ) : (
+                        <>
+                          <Text color={isSelected ? "cyan" : "yellow"}>📦 </Text>
+                          <Box width={24}>
+                            <Text color={isSelected ? "cyan" : undefined}>{item.entry.originalBranch}</Text>
+                          </Box>
+                          <Text dimColor> {item.entry.sizeFormatted.padStart(10)}</Text>
+                          <Text dimColor>  (diverged {dateStr})</Text>
+                        </>
                       )}
                     </Box>
-                    {isExpanded && renderDetailPanel(entry)}
+                    {isExpanded && !isConfirming && renderDivergedDetailPanel(item.entry)}
                   </Box>
                 );
               })}
-              {endIdx < filteredEntries.length && <Text dimColor> ...</Text>}
+              {endIdx < combinedList.length && <Text dimColor> ...</Text>}
             </>
           )}
         </Box>
@@ -385,10 +550,15 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({ repositories, g
   const renderFooter = () => {
     if (step === "ERROR") return null;
     if (step === "VIEW_STATUS" && loading) return null;
+    if (confirmDelete !== null) {
+      return <Text dimColor>y to confirm • n or ESC to cancel</Text>;
+    }
     return (
       <Text dimColor>
         {step === "VIEW_STATUS"
-          ? "↑/↓ navigate • Type to filter • Enter to expand • ESC to close"
+          ? isDivergedSelected
+            ? "↑/↓ navigate • Type to filter • Enter to expand • d to delete • ESC to close"
+            : "↑/↓ navigate • Type to filter • Enter to expand • ESC to close"
           : "↑/↓ navigate • Type to filter • Enter to select • ESC to cancel"}
       </Text>
     );

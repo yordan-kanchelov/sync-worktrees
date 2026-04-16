@@ -422,6 +422,8 @@ describe("GitService", () => {
     beforeEach(async () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       await gitService.initialize();
+      // Clear fs.rm calls from initialize's orphaned directory cleanup
+      vi.mocked(fs.rm).mockClear();
     });
 
     it("should add worktree with tracking when branch doesn't exist locally", async () => {

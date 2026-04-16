@@ -14,7 +14,10 @@ import { Logger, LogOutputFn, LogLevel } from "./logger.service";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { appEvents } from "../utils/app-events";
-import type { RepositoryConfig, HookContext, WorktreeStatusEntry } from "../types";
+import * as fs from "fs/promises";
+import { calculateDirectorySize, formatBytes } from "../utils/disk-space";
+import { GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import type { RepositoryConfig, HookContext, WorktreeStatusEntry, DivergedDirectoryInfo } from "../types";
 
 export interface ReloadOptions {
   filter?: string;
@@ -178,6 +181,10 @@ export class InteractiveUIService {
         }
         getWorktreesForRepo={(index: number) => this.getWorktreesForRepo(index)}
         getWorktreeStatusForRepo={(index: number) => this.getWorktreeStatusForRepo(index)}
+        getDivergedDirectoriesForRepo={(index: number) => this.getDivergedDirectoriesForRepo(index)}
+        deleteDivergedDirectory={(repoIndex: number, name: string) =>
+          this.deleteDivergedDirectory(repoIndex, name)
+        }
         openEditorInWorktree={(path: string) => this.openEditorInWorktree(path)}
         copyBranchFiles={(repoIndex: number, baseBranch: string, targetBranch: string) =>
           this.copyBranchFiles(repoIndex, baseBranch, targetBranch)
@@ -516,6 +523,79 @@ export class InteractiveUIService {
     return results
       .filter((r): r is PromiseFulfilledResult<WorktreeStatusEntry> => r.status === "fulfilled")
       .map((r) => r.value);
+  }
+
+  public async getDivergedDirectoriesForRepo(repoIndex: number): Promise<DivergedDirectoryInfo[]> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      return [];
+    }
+
+    const service = this.syncServices[repoIndex];
+    const worktreeDir = service.config.worktreeDir;
+    const divergedDir = path.join(worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
+
+    let dirEntries: import("fs").Dirent[];
+    try {
+      dirEntries = await fs.readdir(divergedDir, { withFileTypes: true, encoding: "utf-8" });
+    } catch {
+      return [];
+    }
+
+    const subdirs = dirEntries.filter((e) => e.isDirectory());
+
+    const results = await Promise.allSettled(
+      subdirs.map(async (entry) => {
+        const fullPath = path.join(divergedDir, entry.name);
+        const infoFilePath = path.join(fullPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE);
+
+        let originalBranch = entry.name;
+        let divergedAt = "";
+
+        try {
+          const infoContent = await fs.readFile(infoFilePath, "utf-8");
+          const info = JSON.parse(infoContent);
+          if (info.originalBranch) originalBranch = info.originalBranch;
+          if (info.divergedAt) divergedAt = info.divergedAt;
+        } catch {
+          // Extract date and branch from directory name pattern: YYYY-MM-DD-branch-suffix
+          const match = entry.name.match(/^(\d{4}-\d{2}-\d{2})-(.+?)(?:-[a-f0-9]+)?$/);
+          if (match) {
+            divergedAt = match[1];
+            originalBranch = match[2];
+          }
+        }
+
+        const sizeBytes = await calculateDirectorySize(fullPath);
+        const sizeFormatted = formatBytes(sizeBytes);
+
+        return {
+          name: entry.name,
+          path: fullPath,
+          originalBranch,
+          divergedAt,
+          sizeBytes,
+          sizeFormatted,
+        };
+      }),
+    );
+
+    return results
+      .filter((r): r is PromiseFulfilledResult<DivergedDirectoryInfo> => r.status === "fulfilled")
+      .map((r) => r.value)
+      .sort((a, b) => b.divergedAt.localeCompare(a.divergedAt));
+  }
+
+  public async deleteDivergedDirectory(repoIndex: number, name: string): Promise<void> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      throw new Error(`Invalid repository index: ${repoIndex}`);
+    }
+
+    const service = this.syncServices[repoIndex];
+    const worktreeDir = service.config.worktreeDir;
+    const targetPath = path.join(worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME, name);
+
+    await fs.rm(targetPath, { recursive: true, force: true });
+    this.addLog(`🗑️ Deleted diverged directory: ${name}`, "info");
   }
 
   public async createWorktreeForBranch(repoIndex: number, branchName: string): Promise<void> {

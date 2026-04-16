@@ -147,6 +147,24 @@ describe("WorktreeStatusService", () => {
   });
 
   describe("getFullWorktreeStatus", () => {
+    it("should return safe-to-remove status when directory does not exist", async () => {
+      (fs.access as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+      const result = await service.getFullWorktreeStatus("/test/nonexistent-worktree");
+
+      expect(result).toMatchObject({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      });
+      expect(simpleGit).not.toHaveBeenCalledWith("/test/nonexistent-worktree");
+    });
+
     it("should return complete status for clean worktree", async () => {
       mockGit.status.mockResolvedValue({
         modified: [],
@@ -175,7 +193,7 @@ describe("WorktreeStatusService", () => {
       }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       const result = await service.getFullWorktreeStatus("/test/worktree");
 
@@ -210,7 +228,6 @@ describe("WorktreeStatusService", () => {
       expect(result.canRemove).toBe(false);
       expect(result.reasons).toContain("uncommitted changes");
       expect(result.reasons).toContain("unpushed commits");
-      expect(result.reasons).toContain("stashed changes");
       expect(result.reasons).toContain("operation in progress");
     });
 
@@ -230,7 +247,7 @@ describe("WorktreeStatusService", () => {
         return "0\n";
       }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       const result = await service.getFullWorktreeStatus("/test/worktree");
 
@@ -443,7 +460,7 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("0\n");
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       await expect(service.validateWorktreeForRemoval("/test/worktree")).resolves.not.toThrow();
     });
@@ -459,7 +476,7 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("0\n");
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       await expect(service.validateWorktreeForRemoval("/test/worktree")).rejects.toThrow(WorktreeNotCleanError);
     });
@@ -475,7 +492,7 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("3\n");
       mockGit.stashList.mockResolvedValue({ total: 1 } as any);
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       try {
         await service.validateWorktreeForRemoval("/test/worktree");
@@ -484,7 +501,6 @@ describe("WorktreeStatusService", () => {
         expect(error).toBeInstanceOf(WorktreeNotCleanError);
         expect((error as WorktreeNotCleanError).reasons).toContain("uncommitted changes");
         expect((error as WorktreeNotCleanError).reasons).toContain("unpushed commits");
-        expect((error as WorktreeNotCleanError).reasons).toContain("stashed changes");
       }
     });
 
@@ -504,7 +520,7 @@ describe("WorktreeStatusService", () => {
         return "0\n";
       }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       await expect(service.validateWorktreeForRemoval("/test/worktree")).resolves.not.toThrow();
     });
@@ -611,7 +627,7 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("2\n");
       mockGit.stashList.mockResolvedValue({ total: 1 } as any);
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       const status = await service.getFullWorktreeStatus("/test/worktree", true);
 
@@ -632,7 +648,7 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("2\n");
       mockGit.stashList.mockResolvedValue({ total: 1 } as any);
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       const status = await service.getFullWorktreeStatus("/test/worktree", false);
 
@@ -650,7 +666,7 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("2\n");
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       const status = await service.getFullWorktreeStatus("/test/worktree", false, "abc123");
 
@@ -669,7 +685,7 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("0\n");
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
 
       const status = await service.getFullWorktreeStatus("/test/worktree", false, "lastSyncCommit123");
 

@@ -72,6 +72,21 @@ export class WorktreeStatusService {
     includeDetails = false,
     lastSyncCommit?: string,
   ): Promise<WorktreeStatusResult> {
+    try {
+      await fs.access(worktreePath);
+    } catch {
+      return {
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      };
+    }
+
     const [
       isClean,
       hasUnpushedCommits,
@@ -91,12 +106,10 @@ export class WorktreeStatusService {
     const reasons: string[] = [];
     if (!isClean) reasons.push("uncommitted changes");
     if (hasUnpushedCommits) reasons.push("unpushed commits");
-    if (hasStashedChanges) reasons.push("stashed changes");
     if (hasOperationInProgress) reasons.push("operation in progress");
     if (hasModifiedSubmodules) reasons.push("modified submodules");
 
-    const canRemove =
-      isClean && !hasUnpushedCommits && !hasStashedChanges && !hasOperationInProgress && !hasModifiedSubmodules;
+    const canRemove = isClean && !hasUnpushedCommits && !hasOperationInProgress && !hasModifiedSubmodules;
 
     let details: WorktreeStatusDetails | undefined;
     if (includeDetails) {

@@ -8,7 +8,7 @@ import WorktreeStatusView from "./WorktreeStatusView";
 import LogPanel from "./LogPanel";
 import { appEvents } from "../utils/app-events";
 
-import type { HookContext, WorktreeStatusEntry } from "../types";
+import type { HookContext, WorktreeStatusEntry, DivergedDirectoryInfo } from "../types";
 
 export type { HookContext, WorktreeStatusEntry };
 
@@ -33,6 +33,8 @@ export interface AppProps {
   createWorktreeForBranch: (repoIndex: number, branchName: string) => Promise<void>;
   executeOnBranchCreatedHooks?: (repoIndex: number, context: HookContext) => void;
   getWorktreeStatusForRepo?: (index: number) => Promise<WorktreeStatusEntry[]>;
+  getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
+  deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
 }
 
 export interface LogEntry {
@@ -61,6 +63,8 @@ const App: React.FC<AppProps> = ({
   createWorktreeForBranch,
   executeOnBranchCreatedHooks,
   getWorktreeStatusForRepo,
+  getDivergedDirectoriesForRepo,
+  deleteDivergedDirectory,
 }) => {
   const [showHelp, setShowHelp] = useState(false);
   const [showBranchWizard, setShowBranchWizard] = useState(false);
@@ -250,6 +254,8 @@ const App: React.FC<AppProps> = ({
         <WorktreeStatusView
           repositories={getRepositoryList()}
           getWorktreeStatusForRepo={getWorktreeStatusForRepo}
+          getDivergedDirectoriesForRepo={getDivergedDirectoriesForRepo}
+          deleteDivergedDirectory={deleteDivergedDirectory}
           onClose={() => setShowWorktreeStatus(false)}
         />
       )}

@@ -85,3 +85,12 @@ export interface WorktreeStatusEntry {
   path: string;
   status: WorktreeStatusResult;
 }
+
+export interface DivergedDirectoryInfo {
+  name: string;
+  path: string;
+  originalBranch: string;
+  divergedAt: string;
+  sizeBytes: number;
+  sizeFormatted: string;
+}

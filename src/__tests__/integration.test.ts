@@ -226,8 +226,21 @@ branch refs/heads/dirty-branch
       });
       (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
-      // Mock fs.access for hasOperationInProgress checks
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      // Mock fs.access: resolve for directory existence checks, reject for operation file checks
+      (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+        const pathStr = p as string;
+        if (
+          pathStr.includes("MERGE_HEAD") ||
+          pathStr.includes("CHERRY_PICK_HEAD") ||
+          pathStr.includes("REVERT_HEAD") ||
+          pathStr.includes("BISECT_LOG") ||
+          pathStr.includes("rebase-merge") ||
+          pathStr.includes("rebase-apply")
+        ) {
+          throw new Error("Not found");
+        }
+        return undefined;
+      });
 
       // Mock status checks and other safety checks
       const statusChecks = new Map([
