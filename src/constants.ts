@@ -95,6 +95,12 @@ export const METADATA_CONSTANTS = {
   ACTION_FETCHED: "fetched",
 } as const;
 
+export const TERMINAL_CONSTANTS = {
+  ENV_OVERRIDE: "SYNC_WORKTREES_TERMINAL",
+  ENV_FALLBACK: "TERMINAL",
+  LINUX_CANDIDATES: ["gnome-terminal", "konsole", "alacritty", "kitty", "xterm"],
+} as const;
+
 export const HOOK_CONSTANTS = {
   ENV_PREFIX: "SYNC_WORKTREES_",
   ENV_VARS: {

@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 
 import { DEFAULT_CONFIG, HOOK_CONSTANTS } from "../constants";
+import { shellEscape } from "../utils/shell-escape";
 
 import type { HookContext, HooksConfig } from "../types";
 import type { ChildProcess } from "child_process";
@@ -63,10 +64,6 @@ export class HookExecutionService {
     this.activeProcesses.clear();
   }
 
-  private shellEscape(value: string): string {
-    return "'" + value.replace(/'/g, "'\\''") + "'";
-  }
-
   private buildEnvironment(context: HookContext): NodeJS.ProcessEnv {
     return {
       ...process.env,
@@ -80,11 +77,11 @@ export class HookExecutionService {
 
   private resolveCommandPlaceholders(command: string, context: HookContext): string {
     return command
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.BRANCH_NAME, this.shellEscape(context.branchName))
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.WORKTREE_PATH, this.shellEscape(context.worktreePath))
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.REPO_NAME, this.shellEscape(context.repoName))
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.BASE_BRANCH, this.shellEscape(context.baseBranch))
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.REPO_URL, this.shellEscape(context.repoUrl));
+      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.BRANCH_NAME, shellEscape(context.branchName))
+      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.WORKTREE_PATH, shellEscape(context.worktreePath))
+      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.REPO_NAME, shellEscape(context.repoName))
+      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.BASE_BRANCH, shellEscape(context.baseBranch))
+      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.REPO_URL, shellEscape(context.repoUrl));
   }
 
   private executeCommandInBackground(

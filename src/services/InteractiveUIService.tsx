@@ -3,20 +3,23 @@ import * as path from "path";
 import { render, Instance } from "ink";
 import * as cron from "node-cron";
 import pLimit from "p-limit";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
+import { existsSync } from "fs";
 import App from "../components/App";
 import { DEFAULT_CONFIG } from "../constants";
 import { WorktreeSyncService } from "./worktree-sync.service";
 import { ConfigLoaderService } from "./config-loader.service";
 import { FileCopyService } from "./file-copy.service";
 import { HookExecutionService } from "./hook-execution.service";
+import { PathResolutionService } from "./path-resolution.service";
 import { Logger, LogOutputFn, LogLevel } from "./logger.service";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { appEvents } from "../utils/app-events";
+import { shellEscape } from "../utils/shell-escape";
 import * as fs from "fs/promises";
 import { calculateDirectorySize, formatBytes } from "../utils/disk-space";
-import { GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import { GIT_CONSTANTS, METADATA_CONSTANTS, TERMINAL_CONSTANTS } from "../constants";
 import type { RepositoryConfig, HookContext, WorktreeStatusEntry, DivergedDirectoryInfo } from "../types";
 
 export interface ReloadOptions {
@@ -35,6 +38,7 @@ export class InteractiveUIService {
   private logBuffer: Array<{ message: string; level: "info" | "warn" | "error" }> = [];
   private uiReady = false;
   private hookExecutionService = new HookExecutionService();
+  private pathResolution = new PathResolutionService();
   private limit: ReturnType<typeof pLimit>;
   private reloadInProgress = false;
   private isDestroyed = false;
@@ -186,6 +190,9 @@ export class InteractiveUIService {
           this.deleteDivergedDirectory(repoIndex, name)
         }
         openEditorInWorktree={(path: string) => this.openEditorInWorktree(path)}
+        openTerminalInWorktree={(repoIndex: number, path: string, branchName: string) =>
+          this.openTerminalInWorktree(repoIndex, path, branchName)
+        }
         copyBranchFiles={(repoIndex: number, baseBranch: string, targetBranch: string) =>
           this.copyBranchFiles(repoIndex, baseBranch, targetBranch)
         }
@@ -418,9 +425,14 @@ export class InteractiveUIService {
   public getRepositoryList(): Array<{ index: number; name: string; repoUrl: string }> {
     return this.syncServices.map((service, index) => ({
       index,
-      name: (service.config as RepositoryConfig).name || `repo-${index}`,
+      name: this.getRepoName(index),
       repoUrl: service.config.repoUrl,
     }));
+  }
+
+  private getRepoName(index: number): string {
+    const service = this.syncServices[index];
+    return (service.config as RepositoryConfig).name || `repo-${index}`;
   }
 
   public async getBranchesForRepo(repoIndex: number): Promise<string[]> {
@@ -641,6 +653,125 @@ export class InteractiveUIService {
       const errorMessage = err instanceof Error ? err.message : String(err);
       this.addLog(`Failed to open editor '${editor}': ${errorMessage}`, "error");
       return { success: false, error: errorMessage };
+    }
+  }
+
+  public openTerminalInWorktree(
+    repoIndex: number,
+    worktreePath: string,
+    branchName: string,
+  ): { success: boolean; error?: string } {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      const message = `Invalid repository index: ${repoIndex}`;
+      this.addLog(message, "error");
+      return { success: false, error: message };
+    }
+    const repoName = this.getRepoName(repoIndex);
+    const sanitizedBranch = this.pathResolution.sanitizeBranchName(branchName);
+    const sessionName = `${repoName}-${sanitizedBranch}`;
+    const tmuxCommand = `tmux new-session -A -s ${shellEscape(sessionName)} -c ${shellEscape(worktreePath)}`;
+
+    const launcher = this.resolveTerminalLauncher(tmuxCommand, worktreePath, sessionName);
+    if (!launcher) {
+      const message =
+        "No terminal launcher found. Set SYNC_WORKTREES_TERMINAL or $TERMINAL to a terminal emulator command.";
+      this.addLog(message, "error");
+      return { success: false, error: message };
+    }
+
+    try {
+      const child = spawn(launcher.command, launcher.args, {
+        detached: true,
+        stdio: "ignore",
+      });
+
+      child.on("error", (err) => {
+        this.addLog(`Failed to open terminal '${launcher.command}': ${err.message}`, "error");
+        this.addLog("Set SYNC_WORKTREES_TERMINAL to your preferred terminal command", "warn");
+      });
+
+      child.unref();
+
+      return { success: true };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.addLog(`Failed to open terminal '${launcher.command}': ${errorMessage}`, "error");
+      return { success: false, error: errorMessage };
+    }
+  }
+
+  private resolveTerminalLauncher(
+    tmuxCommand: string,
+    worktreePath: string,
+    sessionName: string,
+  ): { command: string; args: string[] } | null {
+    const override = this.parseCommandString(process.env[TERMINAL_CONSTANTS.ENV_OVERRIDE]);
+    if (override) {
+      // Wrap the tmux command in `sh -c` so terminal emulators that exec their trailing
+      // arg as a program name (e.g. `alacritty -e`, `kitty -e`) can run the composite command.
+      const args =
+        process.platform === "win32"
+          ? [...override.args, tmuxCommand]
+          : [...override.args, "sh", "-c", tmuxCommand];
+      return { command: override.command, args };
+    }
+
+    switch (process.platform) {
+      case "darwin": {
+        // Ghostty cannot be launched directly from the CLI on macOS; use `open -na` instead.
+        const ghosttyPaths = ["/Applications/Ghostty.app", `${process.env.HOME}/Applications/Ghostty.app`];
+        if (ghosttyPaths.some((p) => existsSync(p))) {
+          return {
+            command: "open",
+            args: ["-na", "Ghostty.app", "--args", "-e", "sh", "-c", tmuxCommand],
+          };
+        }
+        const script = `tell application "Terminal" to do script "${tmuxCommand.replace(/"/g, '\\"')}"`;
+        return { command: "osascript", args: ["-e", script] };
+      }
+      case "linux": {
+        const envTerminal = this.parseCommandString(process.env[TERMINAL_CONSTANTS.ENV_FALLBACK]);
+        if (envTerminal) {
+          return { command: envTerminal.command, args: [...envTerminal.args, "-e", "sh", "-c", tmuxCommand] };
+        }
+        for (const candidate of TERMINAL_CONSTANTS.LINUX_CANDIDATES) {
+          if (this.commandExists(candidate)) {
+            if (candidate === "gnome-terminal") {
+              return { command: candidate, args: ["--", "sh", "-c", tmuxCommand] };
+            }
+            return { command: candidate, args: ["-e", "sh", "-c", tmuxCommand] };
+          }
+        }
+        return null;
+      }
+      case "win32": {
+        if (this.commandExists("wt.exe") || this.commandExists("wt")) {
+          return {
+            command: "wt",
+            args: ["new-tab", "--startingDirectory", worktreePath, "tmux", "new-session", "-A", "-s", sessionName],
+          };
+        }
+        return null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  private parseCommandString(raw: string | undefined): { command: string; args: string[] } | null {
+    if (!raw || raw.trim().length === 0) return null;
+    const parts = raw.trim().split(/\s+/);
+    return { command: parts[0], args: parts.slice(1) };
+  }
+
+  private commandExists(command: string): boolean {
+    try {
+      const result = spawnSync(process.platform === "win32" ? "where" : "which", [command], {
+        stdio: "ignore",
+      });
+      return result.status === 0;
+    } catch {
+      return false;
     }
   }
 

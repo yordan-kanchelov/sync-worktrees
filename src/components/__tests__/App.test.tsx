@@ -24,6 +24,7 @@ describe("App", () => {
       createAndPushBranch: vi.fn().mockResolvedValue({ success: true, finalName: "test-branch" }),
       getWorktreesForRepo: vi.fn().mockResolvedValue([{ path: "/worktrees/main", branch: "main" }]),
       openEditorInWorktree: vi.fn().mockReturnValue({ success: true }),
+      openTerminalInWorktree: vi.fn().mockReturnValue({ success: true }),
       createWorktreeForBranch: vi.fn().mockResolvedValue(undefined),
       getWorktreeStatusForRepo: vi.fn().mockResolvedValue([]),
     };

@@ -97,7 +97,7 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
                 o
               </Text>
             </Box>
-            <Text>Open editor in worktree</Text>
+            <Text>Open worktree in terminal or editor</Text>
           </Box>
 
           <Box>

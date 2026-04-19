@@ -9,23 +9,49 @@ import { InteractiveUIService } from "../InteractiveUIService";
 
 import type { Config } from "../../types";
 import type { WorktreeSyncService } from "../worktree-sync.service";
+import type * as ChildProcessModule from "child_process";
+import type * as FsModule from "fs";
 import type { Mock, Mocked } from "vitest";
 
-const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance } = vi.hoisted(() => {
+const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance, mockSpawn, mockSpawnSync, mockExistsSync } =
+  vi.hoisted(() => {
+    return {
+      mockConfigLoaderInstance: {
+        loadConfigFile: vi.fn<any>(),
+        resolveRepositoryConfig: vi.fn<any>().mockImplementation((repo: any) => repo),
+        filterRepositories: vi.fn<any>().mockImplementation((repos: any) => repos),
+      } as any,
+      mockWorktreeSyncServiceInstance: {
+        sync: vi.fn<any>(),
+        initialize: vi.fn<any>(),
+        isInitialized: vi.fn<any>().mockReturnValue(false),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        config: {} as any,
+      } as any,
+      mockSpawn: vi.fn<any>().mockImplementation(() => ({
+        on: vi.fn(),
+        unref: vi.fn(),
+      })),
+      mockSpawnSync: vi.fn<any>().mockImplementation(() => ({ status: 1, stdout: "", stderr: "" })),
+      mockExistsSync: vi.fn<any>().mockReturnValue(false),
+    };
+  });
+
+vi.mock("child_process", async () => {
+  const actual = await vi.importActual<typeof ChildProcessModule>("child_process");
   return {
-    mockConfigLoaderInstance: {
-      loadConfigFile: vi.fn<any>(),
-      resolveRepositoryConfig: vi.fn<any>().mockImplementation((repo: any) => repo),
-      filterRepositories: vi.fn<any>().mockImplementation((repos: any) => repos),
-    } as any,
-    mockWorktreeSyncServiceInstance: {
-      sync: vi.fn<any>(),
-      initialize: vi.fn<any>(),
-      isInitialized: vi.fn<any>().mockReturnValue(false),
-      isSyncInProgress: vi.fn<any>().mockReturnValue(false),
-      updateLogger: vi.fn<any>(),
-      config: {} as any,
-    } as any,
+    ...actual,
+    spawn: mockSpawn,
+    spawnSync: mockSpawnSync,
+  };
+});
+
+vi.mock("fs", async () => {
+  const actual = await vi.importActual<typeof FsModule>("fs");
+  return {
+    ...actual,
+    existsSync: mockExistsSync,
   };
 });
 
@@ -1368,6 +1394,132 @@ describe("InteractiveUIService", () => {
         const result = service.openEditorInWorktree("/test/worktrees/main");
 
         expect(result.success).toBe(true);
+
+        service.destroy();
+      });
+    });
+
+    describe("openTerminalInWorktree", () => {
+      const originalPlatform = process.platform;
+      const originalEnvOverride = process.env.SYNC_WORKTREES_TERMINAL;
+      const originalEnvTerminal = process.env.TERMINAL;
+
+      afterEach(() => {
+        Object.defineProperty(process, "platform", { value: originalPlatform });
+        if (originalEnvOverride === undefined) {
+          delete process.env.SYNC_WORKTREES_TERMINAL;
+        } else {
+          process.env.SYNC_WORKTREES_TERMINAL = originalEnvOverride;
+        }
+        if (originalEnvTerminal === undefined) {
+          delete process.env.TERMINAL;
+        } else {
+          process.env.TERMINAL = originalEnvTerminal;
+        }
+      });
+
+      beforeEach(() => {
+        mockSpawn.mockClear();
+        mockSpawn.mockImplementation(() => ({ on: vi.fn(), unref: vi.fn() }));
+        mockSpawnSync.mockClear();
+        mockSpawnSync.mockImplementation(() => ({ status: 1, stdout: "", stderr: "" }));
+        mockExistsSync.mockClear();
+        mockExistsSync.mockReturnValue(false);
+      });
+
+      it("should prefer Ghostty on darwin when Ghostty.app is installed", () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        mockExistsSync.mockImplementation((...args: unknown[]) => String(args[0]).includes("Ghostty.app"));
+
+        const namedSyncService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: "my-repo" },
+        } as any;
+        const service = new InteractiveUIService([namedSyncService]);
+        const result = service.openTerminalInWorktree(0, "/worktrees/feat-x", "feat/x");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "open");
+        expect(call).toBeDefined();
+        const args = call[1] as string[];
+        expect(args.slice(0, 5)).toEqual(["-na", "Ghostty.app", "--args", "-e", "sh"]);
+        expect(args[5]).toBe("-c");
+        expect(args[6]).toContain("my-repo-feat-x");
+        expect(args[6]).toContain("/worktrees/feat-x");
+
+        service.destroy();
+      });
+
+      it("should use osascript on darwin and include tmux session name of <repo>-<branch>", () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+
+        const namedSyncService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: "my-repo" },
+        } as any;
+        const service = new InteractiveUIService([namedSyncService]);
+        const result = service.openTerminalInWorktree(0, "/test/worktrees/feat-x", "feat/x");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "osascript");
+        expect(call).toBeDefined();
+        expect(call[1][0]).toBe("-e");
+        expect(call[1][1]).toContain("Terminal");
+        expect(call[1][1]).toContain("my-repo-feat-x");
+        expect(call[1][1]).toContain("/test/worktrees/feat-x");
+
+        service.destroy();
+      });
+
+      it("should honour SYNC_WORKTREES_TERMINAL env override", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        process.env.SYNC_WORKTREES_TERMINAL = "alacritty -e";
+
+        const namedSyncService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: "repo" },
+        } as any;
+        const service = new InteractiveUIService([namedSyncService]);
+        const result = service.openTerminalInWorktree(0, "/path", "branch");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "alacritty");
+        expect(call).toBeDefined();
+        const args = call[1] as string[];
+        expect(args.slice(0, 3)).toEqual(["-e", "sh", "-c"]);
+        const tmuxCmd = args[args.length - 1];
+        expect(tmuxCmd).toContain("tmux new-session -A -s");
+        expect(tmuxCmd).toContain("repo-branch");
+        expect(tmuxCmd).toContain("/path");
+
+        service.destroy();
+      });
+
+      it("should return error for invalid repository index", () => {
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openTerminalInWorktree(5, "/path", "branch");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("Invalid repository index");
+
+        service.destroy();
+      });
+
+      it("should return error when spawn throws synchronously", () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+
+        mockSpawn.mockImplementation(() => {
+          throw new Error("ENOENT");
+        });
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openTerminalInWorktree(0, "/path", "branch");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("ENOENT");
 
         service.destroy();
       });

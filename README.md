@@ -68,6 +68,29 @@ sync-worktrees --repoUrl https://github.com/user/repo.git --worktreeDir ./worktr
 sync-worktrees --config ./sync-worktrees.config.js
 ```
 
+### Opening a worktree from the TUI
+
+Press `o` in the interactive TUI to open the selected worktree. The wizard supports two modes, toggled with `Tab`:
+
+- **Terminal** (default) — launches a new terminal window with a `tmux` session attached to the worktree directory. Session name is `<repo>-<sanitized-branch>`; re-opening the same worktree attaches to the existing session instead of creating a duplicate.
+- **Editor** — launches `$EDITOR` / `$VISUAL` (falls back to `code`) in the worktree.
+
+Terminal mode requires [`tmux`](https://github.com/tmux/tmux) to be installed.
+
+#### Environment variables
+
+| Variable | Purpose | Default behavior |
+|----------|---------|------------------|
+| `SYNC_WORKTREES_TERMINAL` | Override the terminal launcher on any platform. Value is a command string; the tmux invocation is appended via `sh -c`. Example: `SYNC_WORKTREES_TERMINAL="alacritty -e"`. | See per-platform defaults below. |
+| `TERMINAL` | Linux-only fallback when `SYNC_WORKTREES_TERMINAL` is unset. Same format. | Probes `gnome-terminal`, `konsole`, `alacritty`, `kitty`, `xterm` in order. |
+| `EDITOR` / `VISUAL` | Editor mode launcher. | Falls back to `code`. |
+
+Per-platform terminal defaults (when no env override is set):
+
+- **macOS** — Ghostty if `Ghostty.app` is installed, otherwise Terminal.app via AppleScript.
+- **Linux** — `$TERMINAL` if set; otherwise the first found among the candidates above.
+- **Windows** — Windows Terminal (`wt.exe`) if available.
+
 ## Options
 
 | Option | Alias | Description | Required | Default |
@@ -357,6 +380,7 @@ This ensures you never lose work due to force pushes while keeping your worktree
 
 - Node.js >= 22.0.0
 - Git
+- [`tmux`](https://github.com/tmux/tmux) (optional, required only for Terminal mode in the TUI)
 
 ## Contributing
 

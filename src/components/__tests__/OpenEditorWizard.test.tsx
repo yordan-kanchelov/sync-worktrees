@@ -21,6 +21,7 @@ describe("OpenEditorWizard", () => {
         { path: "/worktrees/feature-auth", branch: "feature/auth" },
       ]),
       openEditorInWorktree: vi.fn().mockReturnValue({ success: true }),
+      openTerminalInWorktree: vi.fn().mockReturnValue({ success: true }),
       onClose: vi.fn(),
     };
   });
@@ -28,7 +29,7 @@ describe("OpenEditorWizard", () => {
   describe("rendering", () => {
     it("should render wizard title", () => {
       const { lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
-      expect(lastFrame()).toContain("Open in Editor");
+      expect(lastFrame()).toContain("Open Worktree");
     });
 
     it("should show project selection when multiple repositories", () => {
@@ -202,26 +203,81 @@ describe("OpenEditorWizard", () => {
     });
   });
 
-  describe("opening editor", () => {
-    it("should call openEditorInWorktree on selection", async () => {
-      const openEditorInWorktree = vi.fn().mockReturnValue({ success: true });
+  describe("opening worktree", () => {
+    it("should default to terminal mode", async () => {
       const singleRepoProps = {
         ...defaultProps,
         repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
-        openEditorInWorktree,
+      };
+      const { lastFrame } = render(<OpenEditorWizard {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Terminal (tmux)");
+      expect(lastFrame()).toContain("Tab to switch to Editor");
+    });
+
+    it("should call openTerminalInWorktree by default with repo index and branch", async () => {
+      const openTerminalInWorktree = vi.fn().mockReturnValue({ success: true });
+      const singleRepoProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "my-repo", repoUrl: "https://example.com/repo.git" }],
+        openTerminalInWorktree,
       };
       const { stdin } = render(<OpenEditorWizard {...singleRepoProps} />);
 
-      await waitForStateUpdate(); // Wait for worktrees to load
+      await waitForStateUpdate();
       await waitForStateUpdate();
 
       stdin.write("\r"); // Enter to select worktree
       await waitForStateUpdate();
 
-      expect(openEditorInWorktree).toHaveBeenCalledWith("/worktrees/main");
+      expect(openTerminalInWorktree).toHaveBeenCalledWith(0, "/worktrees/main", "main");
     });
 
-    it("should call onClose after opening editor", async () => {
+    it("should toggle to editor mode on Tab", async () => {
+      const singleRepoProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      };
+      const { stdin, lastFrame } = render(<OpenEditorWizard {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      stdin.write("\t"); // Tab
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Mode:");
+      expect(lastFrame()).toContain("Editor");
+      expect(lastFrame()).toContain("Tab to switch to Terminal");
+    });
+
+    it("should call openEditorInWorktree when in editor mode", async () => {
+      const openEditorInWorktree = vi.fn().mockReturnValue({ success: true });
+      const openTerminalInWorktree = vi.fn().mockReturnValue({ success: true });
+      const singleRepoProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        openEditorInWorktree,
+        openTerminalInWorktree,
+      };
+      const { stdin } = render(<OpenEditorWizard {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      stdin.write("\t"); // Tab to switch to editor
+      await waitForStateUpdate();
+      stdin.write("\r"); // Enter
+      await waitForStateUpdate();
+
+      expect(openEditorInWorktree).toHaveBeenCalledWith("/worktrees/main");
+      expect(openTerminalInWorktree).not.toHaveBeenCalled();
+    });
+
+    it("should call onClose after opening", async () => {
       const onClose = vi.fn();
       const singleRepoProps = {
         ...defaultProps,

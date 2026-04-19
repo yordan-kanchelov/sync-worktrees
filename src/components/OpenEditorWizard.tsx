@@ -3,10 +3,17 @@ import { Box, Text, useInput } from "ink";
 
 type WizardStep = "SELECT_PROJECT" | "SELECT_WORKTREE" | "OPENING" | "ERROR";
 
+export type OpenAction = "terminal" | "editor";
+
 export interface OpenEditorWizardProps {
   repositories: Array<{ index: number; name: string; repoUrl: string }>;
   getWorktreesForRepo: (index: number) => Promise<Array<{ path: string; branch: string }>>;
   openEditorInWorktree: (worktreePath: string) => { success: boolean; error?: string };
+  openTerminalInWorktree: (
+    repoIndex: number,
+    worktreePath: string,
+    branchName: string,
+  ) => { success: boolean; error?: string };
   onClose: () => void;
 }
 
@@ -14,6 +21,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   repositories,
   getWorktreesForRepo,
   openEditorInWorktree,
+  openTerminalInWorktree,
   onClose,
 }) => {
   const [step, setStep] = useState<WizardStep>(repositories.length > 1 ? "SELECT_PROJECT" : "SELECT_WORKTREE");
@@ -25,6 +33,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   const [selectedWorktreeIndex, setSelectedWorktreeIndex] = useState(0);
   const [worktreeFilter, setWorktreeFilter] = useState("");
   const [loading, setLoading] = useState(false);
+  const [openAction, setOpenAction] = useState<OpenAction>("terminal");
 
   const [error, setError] = useState<string | null>(null);
 
@@ -62,16 +71,19 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     }
   }, [step, worktrees.length, loading, loadWorktrees]);
 
-  const handleOpenEditor = () => {
+  const handleOpen = () => {
     const worktree = filteredWorktrees[selectedWorktreeIndex];
     if (!worktree) return;
 
     setStep("OPENING");
-    const result = openEditorInWorktree(worktree.path);
+    const result =
+      openAction === "terminal"
+        ? openTerminalInWorktree(selectedRepoIndexRef.current, worktree.path, worktree.branch)
+        : openEditorInWorktree(worktree.path);
     if (result.success) {
       onClose();
     } else {
-      setError(result.error || "Failed to open editor");
+      setError(result.error || (openAction === "terminal" ? "Failed to open terminal" : "Failed to open editor"));
       setStep("ERROR");
     }
   };
@@ -117,12 +129,14 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
         setSelectedProjectIndex(0);
       }
     } else if (step === "SELECT_WORKTREE") {
-      if (key.upArrow) {
+      if (key.tab) {
+        setOpenAction((prev) => (prev === "terminal" ? "editor" : "terminal"));
+      } else if (key.upArrow) {
         setSelectedWorktreeIndex((prev) => Math.max(0, prev - 1));
       } else if (key.downArrow) {
         setSelectedWorktreeIndex((prev) => Math.min(filteredWorktrees.length - 1, prev + 1));
       } else if (key.return && filteredWorktrees.length > 0) {
-        handleOpenEditor();
+        handleOpen();
       } else if (key.backspace || key.delete) {
         setWorktreeFilter((prev) => prev.slice(0, -1));
         setSelectedWorktreeIndex(0);
@@ -213,6 +227,13 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
 
     return (
       <Box flexDirection="column" gap={1}>
+        <Box>
+          <Text>Mode: </Text>
+          <Text color="cyan" bold>
+            {openAction === "terminal" ? "Terminal (tmux)" : "Editor"}
+          </Text>
+          <Text dimColor> (Tab to switch to {openAction === "terminal" ? "Editor" : "Terminal"})</Text>
+        </Box>
         <Text>Select worktree:</Text>
         <Box>
           <Text>Filter: </Text>
@@ -250,7 +271,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
 
   const renderOpening = () => (
     <Box flexDirection="column" gap={1}>
-      <Text color="yellow">Opening editor...</Text>
+      <Text color="yellow">{openAction === "terminal" ? "Opening terminal..." : "Opening editor..."}</Text>
     </Box>
   );
 
@@ -277,6 +298,11 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   const renderFooter = () => {
     if (step === "OPENING") return null;
     if (step === "ERROR") return null;
+    if (step === "SELECT_WORKTREE") {
+      return (
+        <Text dimColor>↑/↓ navigate • Type to filter • Tab switch mode • Enter to select • ESC to cancel</Text>
+      );
+    }
     return <Text dimColor>↑/↓ navigate • Type to filter • Enter to select • ESC to cancel</Text>;
   };
 
@@ -285,7 +311,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
       <Box borderStyle="round" borderColor="blue" paddingX={2} paddingY={1} flexDirection="column" width={60}>
         <Box marginBottom={1}>
           <Text bold color="blue">
-            📂 Open in Editor{" "}
+            📂 Open Worktree{" "}
             {step !== "OPENING" && step !== "ERROR" && (
               <Text dimColor>
                 (Step {getStepNumber()}/{getTotalSteps()})

@@ -29,6 +29,11 @@ export interface AppProps {
   ) => Promise<{ success: boolean; finalName: string; error?: string }>;
   getWorktreesForRepo: (index: number) => Promise<Array<{ path: string; branch: string }>>;
   openEditorInWorktree: (worktreePath: string) => { success: boolean; error?: string };
+  openTerminalInWorktree: (
+    repoIndex: number,
+    worktreePath: string,
+    branchName: string,
+  ) => { success: boolean; error?: string };
   copyBranchFiles?: (repoIndex: number, baseBranch: string, targetBranch: string) => Promise<void>;
   createWorktreeForBranch: (repoIndex: number, branchName: string) => Promise<void>;
   executeOnBranchCreatedHooks?: (repoIndex: number, context: HookContext) => void;
@@ -59,6 +64,7 @@ const App: React.FC<AppProps> = ({
   createAndPushBranch,
   getWorktreesForRepo,
   openEditorInWorktree,
+  openTerminalInWorktree,
   copyBranchFiles,
   createWorktreeForBranch,
   executeOnBranchCreatedHooks,
@@ -246,6 +252,7 @@ const App: React.FC<AppProps> = ({
           repositories={getRepositoryList()}
           getWorktreesForRepo={getWorktreesForRepo}
           openEditorInWorktree={openEditorInWorktree}
+          openTerminalInWorktree={openTerminalInWorktree}
           onClose={() => setShowOpenEditorWizard(false)}
         />
       )}
