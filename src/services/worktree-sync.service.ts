@@ -4,6 +4,7 @@ import * as path from "path";
 import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { retry } from "../utils/retry";
@@ -114,22 +115,44 @@ export class WorktreeSyncService {
 
         if (this.config.branchMaxAge) {
           const branchesWithActivity = await this.gitService.getRemoteBranchesWithActivity();
-          const filteredBranches = filterBranchesByAge(branchesWithActivity, this.config.branchMaxAge);
+          this.logger.info(`Found ${branchesWithActivity.length} remote branches.`);
+
+          const branchNames = filterBranchesByName(
+            branchesWithActivity.map((b) => b.branch),
+            this.config.branchInclude,
+            this.config.branchExclude,
+          );
+
+          if (branchNames.length < branchesWithActivity.length) {
+            this.logger.info(
+              `After branch name filtering: ${branchNames.length} of ${branchesWithActivity.length} branches.`,
+            );
+          }
+
+          const branchNameSet = new Set(branchNames);
+          const filteredByName = branchesWithActivity.filter((b) => branchNameSet.has(b.branch));
+          const filteredBranches = filterBranchesByAge(filteredByName, this.config.branchMaxAge);
           remoteBranches = filteredBranches.map((b) => b.branch);
 
-          this.logger.info(`Found ${branchesWithActivity.length} remote branches.`);
           this.logger.info(
             `After filtering by age (${formatDuration(this.config.branchMaxAge)}): ${remoteBranches.length} branches.`,
           );
 
-          if (branchesWithActivity.length > remoteBranches.length) {
-            const excludedCount = branchesWithActivity.length - remoteBranches.length;
+          if (filteredByName.length > remoteBranches.length) {
+            const excludedCount = filteredByName.length - remoteBranches.length;
             this.logger.info(`  - Excluded ${excludedCount} stale branches.`);
           }
         } else {
-          // Use original method if no age filtering
-          remoteBranches = await this.gitService.getRemoteBranches();
-          this.logger.info(`Found ${remoteBranches.length} remote branches.`);
+          const allBranches = await this.gitService.getRemoteBranches();
+          this.logger.info(`Found ${allBranches.length} remote branches.`);
+
+          remoteBranches = filterBranchesByName(allBranches, this.config.branchInclude, this.config.branchExclude);
+
+          if (remoteBranches.length < allBranches.length) {
+            this.logger.info(
+              `After branch name filtering: ${remoteBranches.length} of ${allBranches.length} branches.`,
+            );
+          }
         }
 
         // Always retain the default branch, even if excluded by age filters

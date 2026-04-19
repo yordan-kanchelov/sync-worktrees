@@ -1379,4 +1379,69 @@ describe("ConfigLoaderService", () => {
       });
     });
   });
+
+  describe("resolveRepositoryConfig - branchInclude/branchExclude", () => {
+    it("should resolve branchInclude from repo config", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        branchInclude: ["feature/*", "main"],
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo);
+      expect(resolved.branchInclude).toEqual(["feature/*", "main"]);
+    });
+
+    it("should resolve branchExclude from defaults", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const defaults = {
+        branchExclude: ["wip-*", "tmp-*"],
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, defaults);
+      expect(resolved.branchExclude).toEqual(["wip-*", "tmp-*"]);
+    });
+
+    it("should prefer repo-level branchInclude over defaults", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        branchInclude: ["release-*"],
+      };
+
+      const defaults = {
+        branchInclude: ["feature/*"],
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, defaults);
+      expect(resolved.branchInclude).toEqual(["release-*"]);
+    });
+
+    it("should leave branchInclude/branchExclude undefined when not set", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo);
+      expect(resolved.branchInclude).toBeUndefined();
+      expect(resolved.branchExclude).toBeUndefined();
+    });
+  });
 });

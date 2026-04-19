@@ -4,7 +4,8 @@ import { pathToFileURL } from "url";
 
 import * as cron from "node-cron";
 
-import { CONFIG_CONSTANTS, DEFAULT_CONFIG } from "../constants";
+import { DEFAULT_CONFIG } from "../constants";
+import { matchesPattern } from "../utils/branch-filter";
 
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
 
@@ -312,6 +313,14 @@ export class ConfigLoaderService {
       resolved.branchMaxAge = repo.branchMaxAge ?? defaults?.branchMaxAge;
     }
 
+    if (repo.branchInclude || defaults?.branchInclude) {
+      resolved.branchInclude = repo.branchInclude ?? defaults?.branchInclude;
+    }
+
+    if (repo.branchExclude || defaults?.branchExclude) {
+      resolved.branchExclude = repo.branchExclude ?? defaults?.branchExclude;
+    }
+
     if (repo.skipLfs !== undefined || defaults?.skipLfs !== undefined) {
       resolved.skipLfs = repo.skipLfs ?? defaults?.skipLfs ?? false;
     }
@@ -378,16 +387,7 @@ export class ConfigLoaderService {
     const patterns = filter.split(",").map((p) => p.trim());
 
     return repositories.filter((repo) => {
-      return patterns.some((pattern) => {
-        if (pattern.includes("*")) {
-          const escapedPattern = pattern
-            .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-            .replace(/\*/g, CONFIG_CONSTANTS.WILDCARD_PATTERN);
-          const regex = new RegExp("^" + escapedPattern + "$");
-          return regex.test(repo.name);
-        }
-        return repo.name === pattern;
-      });
+      return patterns.some((pattern) => matchesPattern(repo.name, pattern));
     });
   }
 }

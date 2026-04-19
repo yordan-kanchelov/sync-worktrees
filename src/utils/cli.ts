@@ -9,6 +9,8 @@ export interface CliOptions extends Partial<Config> {
   list?: boolean;
   bareRepoDir?: string;
   branchMaxAge?: string;
+  branchInclude?: string[];
+  branchExclude?: string[];
   skipLfs?: boolean;
   noUpdateExisting?: boolean;
   debug?: boolean;
@@ -64,6 +66,14 @@ export function parseArguments(): CliOptions {
       type: "string",
       description: "Maximum age of branches to sync (e.g., '30d', '6m', '1y').",
     })
+    .option("branchInclude", {
+      type: "string",
+      description: "Only sync branches matching these patterns (comma-separated, supports wildcards).",
+    })
+    .option("branchExclude", {
+      type: "string",
+      description: "Exclude branches matching these patterns (comma-separated, supports wildcards).",
+    })
     .option("skipLfs", {
       type: "boolean",
       description: "Skip Git LFS downloads when fetching and creating worktrees.",
@@ -99,6 +109,8 @@ export function parseArguments(): CliOptions {
     runOnce: argv.runOnce,
     bareRepoDir: argv.bareRepoDir,
     branchMaxAge: argv.branchMaxAge,
+    branchInclude: argv.branchInclude ? argv.branchInclude.split(",").map((p: string) => p.trim()) : undefined,
+    branchExclude: argv.branchExclude ? argv.branchExclude.split(",").map((p: string) => p.trim()) : undefined,
     skipLfs: argv.skipLfs,
     noUpdateExisting: argv["no-update-existing"] as boolean,
     debug: argv.debug,
@@ -135,6 +147,14 @@ export function reconstructCliCommand(config: Config): string {
 
   if (config.branchMaxAge) {
     args.push(`--branchMaxAge "${config.branchMaxAge}"`);
+  }
+
+  if (config.branchInclude?.length) {
+    args.push(`--branchInclude "${config.branchInclude.join(",")}"`);
+  }
+
+  if (config.branchExclude?.length) {
+    args.push(`--branchExclude "${config.branchExclude.join(",")}"`);
   }
 
   if (config.skipLfs) {

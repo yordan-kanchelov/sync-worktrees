@@ -84,10 +84,6 @@ export const PATH_CONSTANTS = {
   README: "README",
 } as const;
 
-export const CONFIG_CONSTANTS = {
-  WILDCARD_PATTERN: ".*",
-} as const;
-
 export const METADATA_CONSTANTS = {
   MAX_HISTORY_ENTRIES: 10,
   METADATA_FILENAME: "sync-metadata.json",

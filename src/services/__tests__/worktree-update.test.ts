@@ -180,6 +180,96 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     });
   });
 
+  describe("Branch name filtering with branchInclude", () => {
+    it("should only create worktrees for branches matching include patterns", async () => {
+      mockConfig.branchInclude = ["feature*"];
+      service = new WorktreeSyncService(mockConfig);
+      (service as any).gitService = mockGitService;
+
+      (mockGitService.getRemoteBranches as Mock).mockResolvedValue([
+        "main",
+        "feature/login",
+        "feature/signup",
+        "bugfix/typo",
+      ]);
+      (mockGitService.getWorktrees as Mock).mockResolvedValue([]);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+
+      await service.sync();
+
+      expect(mockGitService.addWorktree).toHaveBeenCalledTimes(2);
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/login", expect.any(String));
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/signup", expect.any(String));
+    });
+  });
+
+  describe("Branch name filtering with branchExclude", () => {
+    it("should exclude branches matching exclude patterns", async () => {
+      mockConfig.branchExclude = ["bugfix/*", "wip-*"];
+      service = new WorktreeSyncService(mockConfig);
+      (service as any).gitService = mockGitService;
+
+      (mockGitService.getRemoteBranches as Mock).mockResolvedValue([
+        "main",
+        "feature/login",
+        "bugfix/typo",
+        "wip-test",
+      ]);
+      (mockGitService.getWorktrees as Mock).mockResolvedValue([]);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+
+      await service.sync();
+
+      expect(mockGitService.addWorktree).toHaveBeenCalledTimes(1);
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/login", expect.any(String));
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("bugfix/typo", expect.anything());
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("wip-test", expect.anything());
+    });
+  });
+
+  describe("Branch name filtering runs before age filtering", () => {
+    it("should apply name filter then age filter", async () => {
+      const now = new Date();
+      const oldDate = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000); // 60 days ago
+
+      mockConfig.branchInclude = ["feature/*", "main"];
+      mockConfig.branchMaxAge = "30d";
+      service = new WorktreeSyncService(mockConfig);
+      (service as any).gitService = mockGitService;
+
+      (mockGitService.getRemoteBranchesWithActivity as Mock).mockResolvedValue([
+        { branch: "main", lastActivity: now },
+        { branch: "feature/new", lastActivity: now },
+        { branch: "feature/old", lastActivity: oldDate },
+        { branch: "bugfix/typo", lastActivity: now },
+      ]);
+      (mockGitService.getWorktrees as Mock).mockResolvedValue([]);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+
+      await service.sync();
+
+      // bugfix/typo excluded by name filter, feature/old excluded by age
+      expect(mockGitService.addWorktree).toHaveBeenCalledTimes(1);
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/new", expect.any(String));
+    });
+  });
+
+  describe("Default branch retained even if excluded by name filter", () => {
+    it("should retain default branch regardless of branchExclude", async () => {
+      mockConfig.branchExclude = ["main"];
+      service = new WorktreeSyncService(mockConfig);
+      (service as any).gitService = mockGitService;
+
+      (mockGitService.getRemoteBranches as Mock).mockResolvedValue(["main", "feature/login"]);
+      (mockGitService.getWorktrees as Mock).mockResolvedValue([]);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+
+      await service.sync();
+
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Ensuring default branch"));
+    });
+  });
+
   describe("Update functionality disabled", () => {
     beforeEach(() => {
       mockConfig.updateExistingWorktrees = false;

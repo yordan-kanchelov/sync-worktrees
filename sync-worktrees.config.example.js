@@ -150,6 +150,22 @@ export default {
     },
     
     {
+      name: "filtered-branches",
+
+      repoUrl: "https://github.com/user/filtered.git",
+      worktreeDir: "./worktrees/filtered",
+
+      // Only sync feature and release branches
+      branchInclude: ["feature/*", "release-*"],
+
+      // Exclude WIP branches even within the included patterns
+      branchExclude: ["feature/wip-*"],
+
+      // Can combine with age filtering - name filter runs first
+      branchMaxAge: "30d"
+    },
+
+    {
       name: "large-media-project",
       
       repoUrl: "https://github.com/user/large-media.git",

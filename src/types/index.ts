@@ -55,6 +55,8 @@ export interface Config {
   retry?: RetryConfig;
   parallelism?: ParallelismConfig;
   branchMaxAge?: string;
+  branchInclude?: string[];
+  branchExclude?: string[];
   skipLfs?: boolean;
   updateExistingWorktrees?: boolean;
   debug?: boolean;

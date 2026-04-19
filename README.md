@@ -81,6 +81,8 @@ sync-worktrees --config ./sync-worktrees.config.js
 | `--cronSchedule` | `-s` | Cron pattern for scheduling | No | `0 * * * *` (hourly) |
 | `--runOnce` | - | Execute once and exit | No | `false` |
 | `--branchMaxAge` | `-a` | Maximum age of branches to sync (e.g., '30d', '6m', '1y') | No | - |
+| `--branchInclude` | - | Only sync branches matching these patterns (comma-separated, wildcards supported) | No | - |
+| `--branchExclude` | - | Exclude branches matching these patterns (comma-separated, wildcards supported) | No | - |
 | `--skip-lfs` | - | Skip Git LFS downloads when fetching and creating worktrees | No | `false` |
 | `--no-update-existing` | - | Disable automatic updates of existing worktrees | No | `false` |
 | `--help` | `-h` | Show help | No | - |
@@ -102,6 +104,16 @@ sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchMaxAge
 
 # Sync branches active in the last 6 months, check every hour
 sync-worktrees -u git@github.com:user/repo.git -w ./worktrees --branchMaxAge 6m
+
+# Only sync feature and release branches
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchInclude "feature/*,release-*"
+
+# Sync all branches except WIP and temporary ones
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchExclude "wip-*,tmp-*"
+
+# Combine include, exclude, and age filtering
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
+  --branchInclude "feature/*,release-*" --branchExclude "feature/wip-*" --branchMaxAge 30d
 
 # Disable automatic updates of existing worktrees
 sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --no-update-existing
@@ -130,6 +142,7 @@ export default {
     cronSchedule: "0 * * * *",  // Hourly
     runOnce: false,
     branchMaxAge: "30d",  // Only sync branches active in last 30 days
+    branchExclude: ["wip-*", "tmp-*"],  // Exclude WIP and temporary branches
     updateExistingWorktrees: true  // Auto-update worktrees that are behind (default: true)
   },
 
@@ -153,6 +166,7 @@ export default {
       repoUrl: process.env.BACKEND_REPO_URL,  // Environment variables supported
       worktreeDir: "/absolute/path/backend-worktrees",
       branchMaxAge: "6m",  // Override: only sync branches active in last 6 months
+      branchInclude: ["feature/*", "release-*", "main"],  // Only sync specific branches
       // Uses default schedule
       retry: { maxAttempts: 10 }  // Override retry for this repo
     }
@@ -204,6 +218,51 @@ defaults: {
 ```
 
 The tool automatically handles LFS errors by retrying with LFS disabled (max 2 retries by default, configurable via `retry.maxLfsRetries`).
+
+### Branch Name Filtering
+
+You can control which branches get synced using include and exclude patterns. This is useful for repositories where you only care about specific branch types (e.g., feature branches) or want to skip certain patterns (e.g., WIP branches).
+
+**Pattern syntax**: Patterns support `*` wildcards that match any characters (including `/` in branch names).
+- `feature/*` - matches `feature/login`, `feature/auth/oauth`, etc.
+- `release-*` - matches `release-1.0`, `release-2.0-beta`, etc.
+- `*-hotfix` - matches `urgent-hotfix`, `prod-hotfix`, etc.
+
+**Filtering semantics**:
+- `branchInclude` - only branches matching at least one pattern are synced
+- `branchExclude` - branches matching any pattern are skipped
+- When both are set, include runs first, then exclude removes from the result
+- The default branch (e.g., `main`) is always retained regardless of filters
+
+**Examples**:
+```bash
+# Command line
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
+  --branchInclude "feature/*,release-*"
+
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
+  --branchExclude "wip-*,tmp-*"
+
+# Config file - global default
+defaults: {
+  branchExclude: ["wip-*", "tmp-*"]
+}
+
+# Config file - per repository
+repositories: [{
+  name: "frontend",
+  branchInclude: ["feature/*", "release-*"],
+  branchExclude: ["feature/wip-*"],
+}]
+```
+
+**Combining with age filtering**: Branch name filtering runs first, then age filtering (`branchMaxAge`) is applied to the remaining branches. This lets you narrow down to specific branch types and further filter by activity.
+
+```bash
+# Only feature branches active in the last 30 days
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
+  --branchInclude "feature/*" --branchMaxAge 30d
+```
 
 ### Branch Age Filtering
 
