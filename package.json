@@ -5,7 +5,8 @@
   "description": "Automatically synchronize Git worktrees with remote branches - perfect for multi-branch development workflows",
   "main": "dist/index.js",
   "bin": {
-    "sync-worktrees": "./dist/index.js"
+    "sync-worktrees": "./dist/index.js",
+    "sync-worktrees-mcp": "./dist/mcp-server.js"
   },
   "scripts": {
     "build": "node esbuild.config.js",
@@ -52,6 +53,7 @@
   "homepage": "https://github.com/yordan-kanchelov/sync-worktrees#readme",
   "dependencies": {
     "@inquirer/prompts": "^7.6.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "cli-table3": "^0.6.5",
     "cron-parser": "^5.4.0",
     "fast-folder-size": "^2.4.0",
@@ -61,7 +63,8 @@
     "p-limit": "^7.2.0",
     "react": "^19.2.0",
     "simple-git": "^3.28.0",
-    "yargs": "^18.0.0"
+    "yargs": "^18.0.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.5",

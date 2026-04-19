@@ -6,15 +6,18 @@ import simpleGit from "simple-git";
 import { ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
+import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import { Logger } from "./logger.service";
 import { WorktreeMetadataService } from "./worktree-metadata.service";
 import { WorktreeStatusService } from "./worktree-status.service";
 
-import type { Config } from "../types";
 import type { WorktreeStatusResult } from "./worktree-status.service";
+import type { Config } from "../types";
 import type { SyncMetadata } from "../types/sync-metadata";
 import type { SimpleGit } from "simple-git";
+
+export type GitServiceOptions = Pick<Config, "repoUrl" | "worktreeDir" | "bareRepoDir" | "skipLfs" | "debug">;
 
 export class GitService {
   private git: SimpleGit | null = null;
@@ -27,7 +30,7 @@ export class GitService {
   private lfsSkipOverride = false;
 
   constructor(
-    private config: Config,
+    private config: GitServiceOptions,
     logger?: Logger,
   ) {
     this.logger = logger ?? Logger.createDefault(undefined, config.debug);
@@ -840,45 +843,12 @@ export class GitService {
     bareGit: SimpleGit,
   ): Promise<{ path: string; branch: string; isPrunable?: boolean }[]> {
     const result = await bareGit.raw(["worktree", "list", "--porcelain"]);
-
-    const worktrees: { path: string; branch: string; isPrunable?: boolean }[] = [];
-    const lines = result.trim().split("\n");
-
-    let currentWorktree: { path?: string; branch?: string; detached?: boolean; prunable?: boolean } = {};
-
-    for (const line of lines) {
-      if (line.startsWith("worktree ")) {
-        currentWorktree.path = line.substring(9);
-      } else if (line.startsWith("branch ")) {
-        currentWorktree.branch = line.substring(7).replace("refs/heads/", "");
-      } else if (line === "detached") {
-        currentWorktree.detached = true;
-      } else if (line === "prunable") {
-        currentWorktree.prunable = true;
-      } else if (line.trim() === "") {
-        if (currentWorktree.path) {
-          // Only include worktrees that have a branch (not detached)
-          if (currentWorktree.branch && !currentWorktree.detached) {
-            worktrees.push({
-              path: currentWorktree.path,
-              branch: currentWorktree.branch,
-              isPrunable: currentWorktree.prunable || false,
-            });
-          }
-        }
-        currentWorktree = {};
-      }
-    }
-
-    // Handle the last worktree if there's no trailing empty line
-    if (currentWorktree.path && currentWorktree.branch && !currentWorktree.detached) {
-      worktrees.push({
-        path: currentWorktree.path,
-        branch: currentWorktree.branch,
-        isPrunable: currentWorktree.prunable || false,
-      });
-    }
-
-    return worktrees;
+    return parseWorktreeListPorcelain(result)
+      .filter((w) => !w.detached && w.branch !== null)
+      .map((w) => ({
+        path: w.path,
+        branch: w.branch as string,
+        isPrunable: w.prunable,
+      }));
   }
 }

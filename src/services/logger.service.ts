@@ -91,4 +91,30 @@ export class Logger {
   static createDefault(repoName?: string, debug?: boolean): Logger {
     return new Logger({ repoName, debug });
   }
+
+  withPassthrough(passthrough: LogOutputFn): Logger {
+    const upstream = this.outputFn;
+    return new Logger({
+      repoName: this.repoName,
+      debug: this.debugEnabled,
+      outputFn: (msg: string, level: LogLevel): void => {
+        if (upstream) {
+          upstream(msg, level);
+        } else {
+          defaultConsoleOutput(msg, level);
+        }
+        try {
+          passthrough(msg, level);
+        } catch {
+          // swallow - passthrough must never break primary logging
+        }
+      },
+    });
+  }
+}
+
+function defaultConsoleOutput(msg: string, level: LogLevel): void {
+  if (level === "warn") console.warn(msg);
+  else if (level === "error") console.error(msg);
+  else console.log(msg);
 }
