@@ -22,11 +22,43 @@ const REPO_NAME_DESCRIBE =
 
 const PATH_DESCRIBE_SUFFIX = "Absolute path preferred; relative paths resolve from the server's CWD.";
 
+const SERVER_INSTRUCTIONS =
+  "Before running git worktree operations, call `detect_context` to learn the current repo, current branch, and which capabilities are available. " +
+  "It reports whether the working directory is inside a sync-worktrees-managed workspace, lists sibling worktrees, and explains why any capability is disabled.";
+
 export function createServer(context: RepositoryContext): McpServer {
-  const server = new McpServer({
-    name: "sync-worktrees",
-    version: "1.0.0",
-  });
+  const server = new McpServer(
+    {
+      name: "sync-worktrees",
+      version: "1.0.0",
+    },
+    {
+      instructions: SERVER_INSTRUCTIONS,
+    },
+  );
+
+  server.registerResource(
+    "workspace",
+    "sync-worktrees://workspace",
+    {
+      title: "Workspace context",
+      description:
+        "Current sync-worktrees workspace context: whether CWD is inside a managed worktree, the current branch, sibling worktrees, and available capabilities. Returns { isWorktree: false } when CWD is outside any workspace.",
+      mimeType: "application/json",
+    },
+    async (uri) => {
+      const discovered = await context.detectFromPath(process.cwd());
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(discovered, null, 2),
+          },
+        ],
+      };
+    },
+  );
 
   server.registerTool(
     "detect_context",

@@ -242,6 +242,7 @@ export async function handleCreateWorktree(
     );
   }
   await git.addWorktree(branchName, worktreePath);
+  ctx.invalidateDiscovered();
 
   return formatToolResponse({
     success: true,
@@ -273,6 +274,7 @@ export async function handleRemoveWorktree(
   }
 
   await git.removeWorktree(params.path);
+  ctx.invalidateDiscovered();
 
   return formatToolResponse({
     success: true,
@@ -297,6 +299,7 @@ export async function handleSync(
     const start = Date.now();
     await service.sync();
     const duration = Date.now() - start;
+    ctx.invalidateDiscovered();
     return formatToolResponse({ success: true, duration });
   } finally {
     dispose();
@@ -317,6 +320,7 @@ export async function handleUpdateWorktree(
   const worktreePath = await ensureRepoWorktreePath(ctx, params, git);
 
   await git.updateWorktree(params.path);
+  ctx.invalidateDiscovered();
 
   return formatToolResponse({
     success: true,
@@ -338,6 +342,7 @@ export async function handleInitialize(
   try {
     await service.initialize();
     const git = service.getGitService();
+    ctx.invalidateDiscovered();
     return formatToolResponse({
       success: true,
       defaultBranch: git.getDefaultBranch(),
