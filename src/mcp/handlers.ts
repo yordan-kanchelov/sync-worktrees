@@ -16,6 +16,10 @@ import type { ProgressEvent } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 type CapabilityKey = keyof Capabilities;
+type RepoScopedParams = { repoName?: string };
+type WorktreePathParams = RepoScopedParams & { path: string };
+type RepoService = Awaited<ReturnType<RepositoryContext["getService"]>>;
+type RepoGitService = ReturnType<RepoService["getGitService"]>;
 
 function ensureCapability(discovered: DiscoveredRepoContext | null, key: CapabilityKey, toolName: string): void {
   if (!discovered) return;
@@ -30,6 +34,45 @@ async function ensureNotSyncing(ctx: RepositoryContext, repoName?: string): Prom
   if (entry.service.isSyncInProgress()) {
     throw new SyncInProgressError(entry.name);
   }
+}
+
+async function getReadyService(
+  ctx: RepositoryContext,
+  repoName: string | undefined,
+  options: {
+    capability?: CapabilityKey;
+    toolName?: string;
+    ensureInitialized?: boolean;
+    ensureNotSyncing?: boolean;
+  } = {},
+): Promise<{ discovered: DiscoveredRepoContext | null; service: RepoService; git: RepoGitService }> {
+  const discovered = ctx.getDiscoveredContext(repoName);
+  if (options.capability && options.toolName) {
+    ensureCapability(discovered, options.capability, options.toolName);
+  }
+  if (options.ensureNotSyncing) {
+    await ensureNotSyncing(ctx, repoName);
+  }
+
+  const service = await ctx.getService(repoName);
+  if (options.ensureInitialized && !service.isInitialized()) {
+    await service.initialize();
+  }
+
+  return {
+    discovered,
+    service,
+    git: service.getGitService(),
+  };
+}
+
+async function ensureRepoWorktreePath(
+  ctx: RepositoryContext,
+  params: WorktreePathParams,
+  git: RepoGitService,
+): Promise<string> {
+  await ensurePathBelongsToRepo(ctx, params.path, params.repoName, git);
+  return path.resolve(params.path);
 }
 
 async function ensurePathBelongsToRepo(
@@ -87,11 +130,10 @@ export async function handleListWorktrees(
   params: { repoName?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const discovered = ctx.getDiscoveredContext(params.repoName);
-  ensureCapability(discovered, "canListWorktrees", "list_worktrees");
-
-  const service = await ctx.getService(params.repoName);
-  const git = service.getGitService();
+  const { discovered, git } = await getReadyService(ctx, params.repoName, {
+    capability: "canListWorktrees",
+    toolName: "list_worktrees",
+  });
 
   let worktrees: Array<{ path: string; branch: string }>;
   try {
@@ -141,19 +183,18 @@ export async function handleGetWorktreeStatus(
   params: { path: string; repoName?: string; includeDetails?: boolean },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const discovered = ctx.getDiscoveredContext(params.repoName);
-  ensureCapability(discovered, "canGetStatus", "get_worktree_status");
-
-  const service = await ctx.getService(params.repoName);
-  const git = service.getGitService();
-  await ensurePathBelongsToRepo(ctx, params.path, params.repoName, git);
+  const { git } = await getReadyService(ctx, params.repoName, {
+    capability: "canGetStatus",
+    toolName: "get_worktree_status",
+  });
+  const resolvedPath = await ensureRepoWorktreePath(ctx, params, git);
   const [status, divergence] = await Promise.all([
     git.getFullWorktreeStatus(params.path, params.includeDetails ?? false),
     getDivergence(params.path),
   ]);
 
   return formatToolResponse({
-    path: path.resolve(params.path),
+    path: resolvedPath,
     ...status,
     divergence,
   });
@@ -164,15 +205,12 @@ export async function handleCreateWorktree(
   params: { branchName: string; baseBranch?: string; push?: boolean; repoName?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const discovered = ctx.getDiscoveredContext(params.repoName);
-  ensureCapability(discovered, "canCreateWorktree", "create_worktree");
-  await ensureNotSyncing(ctx, params.repoName);
-
-  const service = await ctx.getService(params.repoName);
-  if (!service.isInitialized()) {
-    await service.initialize();
-  }
-  const git = service.getGitService();
+  const { service, git } = await getReadyService(ctx, params.repoName, {
+    capability: "canCreateWorktree",
+    toolName: "create_worktree",
+    ensureInitialized: true,
+    ensureNotSyncing: true,
+  });
 
   const { branchName, baseBranch, push } = params;
   const existence = await git.branchExists(branchName);
@@ -219,16 +257,13 @@ export async function handleRemoveWorktree(
   params: { path: string; force?: boolean; repoName?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const discovered = ctx.getDiscoveredContext(params.repoName);
-  ensureCapability(discovered, "canRemoveWorktree", "remove_worktree");
-  await ensureNotSyncing(ctx, params.repoName);
-
-  const service = await ctx.getService(params.repoName);
-  if (!service.isInitialized()) {
-    await service.initialize();
-  }
-  const git = service.getGitService();
-  await ensurePathBelongsToRepo(ctx, params.path, params.repoName, git);
+  const { git } = await getReadyService(ctx, params.repoName, {
+    capability: "canRemoveWorktree",
+    toolName: "remove_worktree",
+    ensureInitialized: true,
+    ensureNotSyncing: true,
+  });
+  const removedPath = await ensureRepoWorktreePath(ctx, params, git);
 
   if (!params.force) {
     const status = await git.getFullWorktreeStatus(params.path, false);
@@ -242,7 +277,7 @@ export async function handleRemoveWorktree(
 
   return formatToolResponse({
     success: true,
-    removedPath: path.resolve(params.path),
+    removedPath,
   });
 }
 
@@ -251,13 +286,11 @@ export async function handleSync(
   params: { repoName?: string },
   extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const discovered = ctx.getDiscoveredContext(params.repoName);
-  ensureCapability(discovered, "canSync", "sync");
-
-  const service = await ctx.getService(params.repoName);
-  if (!service.isInitialized()) {
-    await service.initialize();
-  }
+  const { service } = await getReadyService(ctx, params.repoName, {
+    capability: "canSync",
+    toolName: "sync",
+    ensureInitialized: true,
+  });
 
   const dispose = attachProgressReporter(service, extra);
   try {
@@ -279,23 +312,20 @@ export async function handleUpdateWorktree(
   params: { path: string; repoName?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const discovered = ctx.getDiscoveredContext(params.repoName);
-  ensureCapability(discovered, "canUpdateWorktree", "update_worktree");
-  await ensureNotSyncing(ctx, params.repoName);
-
-  const service = await ctx.getService(params.repoName);
-  if (!service.isInitialized()) {
-    await service.initialize();
-  }
-  const git = service.getGitService();
-  await ensurePathBelongsToRepo(ctx, params.path, params.repoName, git);
+  const { git } = await getReadyService(ctx, params.repoName, {
+    capability: "canUpdateWorktree",
+    toolName: "update_worktree",
+    ensureInitialized: true,
+    ensureNotSyncing: true,
+  });
+  const worktreePath = await ensureRepoWorktreePath(ctx, params, git);
 
   await git.updateWorktree(params.path);
   ctx.invalidateDiscovered();
 
   return formatToolResponse({
     success: true,
-    worktreePath: path.resolve(params.path),
+    worktreePath,
   });
 }
 
@@ -304,11 +334,11 @@ export async function handleInitialize(
   params: { repoName?: string },
   extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const discovered = ctx.getDiscoveredContext(params.repoName);
-  ensureCapability(discovered, "canInitialize", "initialize");
-  await ensureNotSyncing(ctx, params.repoName);
-
-  const service = await ctx.getService(params.repoName);
+  const { service } = await getReadyService(ctx, params.repoName, {
+    capability: "canInitialize",
+    toolName: "initialize",
+    ensureNotSyncing: true,
+  });
   const dispose = attachProgressReporter(service, extra);
   try {
     await service.initialize();

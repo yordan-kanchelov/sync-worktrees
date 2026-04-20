@@ -492,6 +492,28 @@ describe("InteractiveUIService", () => {
 
       service.destroy();
     });
+
+    it("should log per-repository sync failures", async () => {
+      const service = new InteractiveUIService([mockSyncService]);
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("addLog", (entry: { message: string; level: string }) => logs.push(entry));
+
+      service.getEvents().emit("uiReady");
+      mockSyncService.sync.mockRejectedValue(new Error("Sync failed"));
+      vi.spyOn(mockSyncService, "config", "get").mockReturnValue({
+        ...(mockSyncService.config as object),
+        name: "failing-repo",
+      } as typeof mockSyncService.config & { name: string });
+
+      await service.triggerInitialSync();
+
+      expect(logs).toContainEqual({
+        message: "Failed to sync repository 'failing-repo': Sync failed",
+        level: "error",
+      });
+
+      service.destroy();
+    });
   });
 
   describe("handleReload", () => {
@@ -963,7 +985,7 @@ describe("InteractiveUIService", () => {
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(2);
+        expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(4);
         expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalledTimes(2);
 
         service.destroy();

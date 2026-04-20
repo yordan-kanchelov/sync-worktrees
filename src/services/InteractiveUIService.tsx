@@ -140,25 +140,7 @@ export class InteractiveUIService {
 
     for (const [schedule, services] of scheduleGroups) {
       const task = cron.schedule(schedule, async () => {
-        this.setStatus("syncing");
-        try {
-          await Promise.allSettled(
-            services.map((service) =>
-              this.limit(async () => {
-                if (!service.isInitialized()) {
-                  await service.initialize();
-                }
-                await service.sync();
-              }),
-            ),
-          );
-        } finally {
-          this.setStatus("idle");
-          this.updateLastSyncTime();
-          this.calculateAndUpdateDiskSpace().catch((err) => {
-            this.addLog(`Failed to calculate disk space: ${err instanceof Error ? err.message : String(err)}`, "error");
-          });
-        }
+        await this.runSyncCycle(services, { logErrors: false });
       });
       this.cronJobs.push(task);
     }
@@ -219,27 +201,7 @@ export class InteractiveUIService {
   }
 
   public async triggerInitialSync(): Promise<void> {
-    this.setStatus("syncing");
-
-    try {
-      await Promise.allSettled(
-        this.syncServices.map((service) =>
-          this.limit(async () => {
-            if (!service.isInitialized()) {
-              await service.initialize();
-            }
-            await service.sync();
-          }),
-        ),
-      );
-
-      this.updateLastSyncTime();
-      await this.calculateAndUpdateDiskSpace();
-    } catch (error) {
-      this.addLog(`Sync failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-    } finally {
-      this.setStatus("idle");
-    }
+    await this.runSyncCycle(this.syncServices, { logErrors: true });
   }
 
   private async handleReload(): Promise<void> {
@@ -305,34 +267,15 @@ export class InteractiveUIService {
       this.events.emit("updateRepositoryCount", this.repositoryCount);
       this.events.emit("updateCronSchedule", this.cronSchedule);
 
-      const failures: Array<{ repo: string; error: string }> = [];
-
-      const syncResults = await Promise.allSettled(
-        this.syncServices.map((service) =>
-          this.limit(async () => {
-            await service.sync();
-            return service;
-          }).catch((error) => {
-            const repoName = (service.config as RepositoryConfig).name || service.config.repoUrl;
-            throw Object.assign(error instanceof Error ? error : new Error(String(error)), { repoName });
-          }),
-        ),
-      );
-
-      for (const result of syncResults) {
-        if (result.status === "rejected") {
-          const repoName = (result.reason as any)?.repoName ?? "unknown";
-          const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
-          this.addLog(`Failed to sync repository '${repoName}': ${errorMessage}`, "error");
-          failures.push({ repo: repoName, error: errorMessage });
-        }
-      }
-
+      const failures = await this.runSyncServices(this.syncServices);
       this.updateLastSyncTime();
       await this.calculateAndUpdateDiskSpace();
       this.setStatus("idle");
 
       if (failures.length > 0) {
+        for (const failure of failures) {
+          this.addLog(`Failed to sync repository '${failure.repo}': ${failure.error}`, "error");
+        }
         this.addLog(`Reload completed with ${failures.length} repository failure(s)`, "warn");
       }
     } catch (error) {
@@ -762,6 +705,61 @@ export class InteractiveUIService {
     } catch {
       return false;
     }
+  }
+
+  private async runSyncCycle(
+    services: WorktreeSyncService[],
+    options: { logErrors: boolean },
+  ): Promise<Array<{ repo: string; error: string }>> {
+    this.setStatus("syncing");
+
+    try {
+      const failures = await this.runSyncServices(services);
+
+      if (options.logErrors) {
+        if (failures.length > 0) {
+          for (const failure of failures) {
+            this.addLog(`Failed to sync repository '${failure.repo}': ${failure.error}`, "error");
+          }
+        }
+      }
+
+      this.updateLastSyncTime();
+      await this.calculateAndUpdateDiskSpace();
+      return failures;
+    } finally {
+      this.setStatus("idle");
+    }
+  }
+
+  private async runSyncServices(
+    services: WorktreeSyncService[],
+  ): Promise<Array<{ repo: string; error: string }>> {
+    const syncResults = await Promise.allSettled(
+      services.map((service) =>
+        this.limit(async () => {
+          if (!service.isInitialized()) {
+            await service.initialize();
+          }
+          await service.sync();
+          return service;
+        }).catch((error) => {
+          const repoName = (service.config as RepositoryConfig).name || service.config.repoUrl;
+          throw Object.assign(error instanceof Error ? error : new Error(String(error)), { repoName });
+        }),
+      ),
+    );
+
+    const failures: Array<{ repo: string; error: string }> = [];
+    for (const result of syncResults) {
+      if (result.status === "rejected") {
+        const repoName = (result.reason as { repoName?: string })?.repoName ?? "unknown";
+        const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        failures.push({ repo: repoName, error: errorMessage });
+      }
+    }
+
+    return failures;
   }
 
   public executeOnBranchCreatedHooks(repoIndex: number, context: HookContext): void {
