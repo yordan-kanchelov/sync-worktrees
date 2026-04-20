@@ -50,7 +50,16 @@ interface RepoEntry {
   discovered?: DiscoveredRepoContext;
 }
 
+interface CachedDiscovery {
+  result: DiscoveredRepoContext;
+  cachedAt: number;
+  worktreeAdminDir: string | null;
+  worktreeHeadMtimeMs: number | null;
+  worktreesDirMtimeMs: number | null;
+}
+
 const AUTO_DETECT_PREFIX = "__auto_detected__:";
+const DISCOVERY_CACHE_TTL_MS = 5000;
 
 const EMPTY_CAPABILITIES: Capabilities = {
   canListWorktrees: false,
@@ -76,6 +85,7 @@ export class RepositoryContext {
   private currentRepo: string | null = null;
   private configPath: string | null = null;
   private configLoader = new ConfigLoaderService();
+  private discoveryCache = new Map<string, CachedDiscovery>();
 
   async loadConfig(configPath: string): Promise<RepositoryConfig[]> {
     const absolutePath = path.resolve(configPath);
@@ -112,27 +122,79 @@ export class RepositoryContext {
   }
 
   async detectFromPath(dirPath: string): Promise<DiscoveredRepoContext> {
-    const reasons: string[] = [];
     const absolutePath = path.resolve(dirPath);
+
+    const cached = this.discoveryCache.get(absolutePath);
+    if (cached && (await this.isCacheFresh(cached))) {
+      return cached.result;
+    }
+
+    const { result, adminDir } = await this.detectFromPathUncached(absolutePath);
+
+    if (result.isWorktree && result.bareRepoPath && adminDir) {
+      const [worktreeHeadMtimeMs, worktreesDirMtimeMs] = await Promise.all([
+        safeMtimeMs(path.join(adminDir, "HEAD")),
+        safeMtimeMs(path.join(result.bareRepoPath, "worktrees")),
+      ]);
+      this.discoveryCache.set(absolutePath, {
+        result,
+        cachedAt: Date.now(),
+        worktreeAdminDir: adminDir,
+        worktreeHeadMtimeMs,
+        worktreesDirMtimeMs,
+      });
+    }
+
+    return result;
+  }
+
+  invalidateDiscovered(): void {
+    this.discoveryCache.clear();
+  }
+
+  private async isCacheFresh(cached: CachedDiscovery): Promise<boolean> {
+    if (Date.now() - cached.cachedAt >= DISCOVERY_CACHE_TTL_MS) return false;
+    if (!cached.worktreeAdminDir || !cached.result.bareRepoPath) return true;
+
+    const [currentHeadMtime, currentWorktreesDirMtime] = await Promise.all([
+      safeMtimeMs(path.join(cached.worktreeAdminDir, "HEAD")),
+      safeMtimeMs(path.join(cached.result.bareRepoPath, "worktrees")),
+    ]);
+
+    return (
+      currentHeadMtime === cached.worktreeHeadMtimeMs && currentWorktreesDirMtime === cached.worktreesDirMtimeMs
+    );
+  }
+
+  private async detectFromPathUncached(
+    absolutePath: string,
+  ): Promise<{ result: DiscoveredRepoContext; adminDir: string | null }> {
+    const reasons: string[] = [];
 
     const located = await findWorktreeRoot(absolutePath);
     const worktreeRoot = located?.worktreeRoot ?? absolutePath;
 
-    const unsupported = (reason: string, isWorktree = false): DiscoveredRepoContext => {
+    const unsupported = (
+      reason: string,
+      isWorktree = false,
+    ): { result: DiscoveredRepoContext; adminDir: string | null } => {
       reasons.push(reason);
       return {
-        isWorktree,
-        kind: "unsupported",
-        currentBranch: null,
-        currentWorktreePath: worktreeRoot,
-        bareRepoPath: null,
-        repoUrl: null,
-        worktreeDir: null,
-        allWorktrees: [],
-        configLoaded: this.configPath !== null,
-        repoName: null,
-        capabilities: EMPTY_CAPABILITIES,
-        reasons,
+        result: {
+          isWorktree,
+          kind: "unsupported",
+          currentBranch: null,
+          currentWorktreePath: worktreeRoot,
+          bareRepoPath: null,
+          repoUrl: null,
+          worktreeDir: null,
+          allWorktrees: [],
+          configLoaded: this.configPath !== null,
+          repoName: null,
+          capabilities: EMPTY_CAPABILITIES,
+          reasons,
+        },
+        adminDir: null,
       };
     };
 
@@ -157,6 +219,7 @@ export class RepositoryContext {
     }
 
     const bareRepoPath = path.resolve(worktreesMatch[1]);
+    const adminDir = path.resolve(gitdir);
 
     let repoUrl: string | null = null;
     let worktrees: DiscoveredWorktree[] = [];
@@ -182,18 +245,21 @@ export class RepositoryContext {
     } catch (err) {
       reasons.push(`Failed to read bare repo at ${bareRepoPath}: ${(err as Error).message}`);
       return {
-        isWorktree: true,
-        kind: "unsupported",
-        currentBranch: null,
-        currentWorktreePath: worktreeRoot,
-        bareRepoPath,
-        repoUrl: null,
-        worktreeDir: null,
-        allWorktrees: [],
-        configLoaded: this.configPath !== null,
-        repoName: null,
-        capabilities: EMPTY_CAPABILITIES,
-        reasons,
+        result: {
+          isWorktree: true,
+          kind: "unsupported",
+          currentBranch: null,
+          currentWorktreePath: worktreeRoot,
+          bareRepoPath,
+          repoUrl: null,
+          worktreeDir: null,
+          allWorktrees: [],
+          configLoaded: this.configPath !== null,
+          repoName: null,
+          capabilities: EMPTY_CAPABILITIES,
+          reasons,
+        },
+        adminDir,
       };
     }
 
@@ -276,7 +342,7 @@ export class RepositoryContext {
       }
     }
 
-    return discovered;
+    return { result: discovered, adminDir };
   }
 
   async getService(repoName?: string): Promise<WorktreeSyncService> {
@@ -353,6 +419,15 @@ function parseWorktreeList(output: string, currentPath: string): DiscoveredWorkt
 type FindResult =
   | { kind: "worktree-file"; worktreeRoot: string; gitFileContent: string }
   | { kind: "regular-git-dir"; worktreeRoot: string };
+
+async function safeMtimeMs(filePath: string): Promise<number | null> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.mtimeMs;
+  } catch {
+    return null;
+  }
+}
 
 async function findWorktreeRoot(startPath: string): Promise<FindResult | null> {
   let current = path.resolve(startPath);

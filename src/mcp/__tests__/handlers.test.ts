@@ -118,6 +118,7 @@ function makeCtx(opts: {
     getCurrentRepo: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
     getRepositoryList: vi.fn<any>().mockReturnValue([]),
     setCurrentRepo: vi.fn<any>(),
+    invalidateDiscovered: vi.fn<any>(),
   } as unknown as RepositoryContext;
 
   return { ctx, git, service };

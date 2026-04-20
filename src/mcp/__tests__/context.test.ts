@@ -168,6 +168,82 @@ describe("RepositoryContext.detectFromPath", () => {
   });
 });
 
+describe("RepositoryContext.detectFromPath caching", () => {
+  let fixture: Awaited<ReturnType<typeof makeWorktreeFixture>>;
+
+  beforeEach(async () => {
+    fixture = await makeWorktreeFixture();
+    mockRemoteUrl.mockReset();
+    mockWorktreeList.mockReset();
+  });
+
+  afterEach(async () => {
+    await fixture.cleanup();
+  });
+
+  it("returns cached result on second call within TTL without re-running git", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    await ctx.detectFromPath(fixture.currentWorktree);
+    const firstCallCount = mockWorktreeList.mock.calls.length;
+
+    await ctx.detectFromPath(fixture.currentWorktree);
+    expect(mockWorktreeList.mock.calls.length).toBe(firstCallCount);
+  });
+
+  it("re-detects after invalidateDiscovered()", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    await ctx.detectFromPath(fixture.currentWorktree);
+    const firstCallCount = mockWorktreeList.mock.calls.length;
+
+    ctx.invalidateDiscovered();
+    await ctx.detectFromPath(fixture.currentWorktree);
+    expect(mockWorktreeList.mock.calls.length).toBe(firstCallCount + 1);
+  });
+
+  it("re-detects when worktree HEAD mtime changes", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+
+    const adminDir = path.join(fixture.bareRepo, "worktrees", "feature-x");
+    const headPath = path.join(adminDir, "HEAD");
+    await fs.writeFile(headPath, "ref: refs/heads/feature-x\n", "utf-8");
+
+    const ctx = new RepositoryContext();
+    await ctx.detectFromPath(fixture.currentWorktree);
+    const firstCallCount = mockWorktreeList.mock.calls.length;
+
+    const future = new Date(Date.now() + 10_000);
+    await fs.utimes(headPath, future, future);
+
+    await ctx.detectFromPath(fixture.currentWorktree);
+    expect(mockWorktreeList.mock.calls.length).toBe(firstCallCount + 1);
+  });
+
+  it("does not cache unsupported results", async () => {
+    const plain = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-plain-cache-"));
+
+    const ctx = new RepositoryContext();
+    await ctx.detectFromPath(plain);
+    await ctx.detectFromPath(plain);
+
+    expect((ctx as any).discoveryCache.size).toBe(0);
+
+    await fs.rm(plain, { recursive: true, force: true });
+  });
+});
+
 describe("RepositoryContext.getService", () => {
   it("throws when no repo specified and none registered", async () => {
     const ctx = new RepositoryContext();
