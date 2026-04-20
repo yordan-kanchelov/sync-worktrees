@@ -56,3 +56,27 @@ describe("SyncInProgressError", () => {
     expect(err.message).toContain("my-repo");
   });
 });
+
+
+describe("wrapHandler", () => {
+  it("returns handler result on success", async () => {
+    const { wrapHandler } = await import("../utils");
+    const expected = { content: [{ type: "text", text: '{"ok":true}' }] };
+    const wrapped = wrapHandler(async () => expected as any);
+
+    await expect(wrapped({} as never, {} as never)).resolves.toEqual(expected);
+  });
+
+  it("formats thrown errors", async () => {
+    const { wrapHandler } = await import("../utils");
+    const wrapped = wrapHandler(async () => {
+      throw new Error("kapow");
+    });
+
+    const result = await wrapped({} as never, {} as never);
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("INTERNAL_ERROR");
+    expect(body.message).toBe("kapow");
+  });
+});

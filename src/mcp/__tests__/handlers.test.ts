@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   handleCreateWorktree,
   handleGetWorktreeStatus,
+  handleInitialize,
   handleListWorktrees,
   handleLoadConfig,
   handleRemoveWorktree,
@@ -290,6 +291,18 @@ describe("handleSync", () => {
     expect(typeof body.duration).toBe("number");
     expect(service.sync).toHaveBeenCalled();
   });
+
+  it("initializes service before syncing when needed", async () => {
+    const { ctx, service } = makeCtx({});
+    service.isInitialized.mockReturnValue(false);
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(service.initialize).toHaveBeenCalled();
+    expect(service.sync).toHaveBeenCalled();
+  });
 });
 
 describe("handleUpdateWorktree", () => {
@@ -375,6 +388,22 @@ describe("handleSetCurrentRepository", () => {
   });
 });
 
+describe("handleInitialize", () => {
+  it("initializes service and returns repo defaults", async () => {
+    const { ctx, service, git } = makeCtx({});
+    service.config.worktreeDir = "/repo/worktrees";
+    git.getDefaultBranch.mockReturnValue("main");
+
+    const result = await invoke(handleInitialize, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.defaultBranch).toBe("main");
+    expect(body.worktreeDir).toBe("/repo/worktrees");
+    expect(service.initialize).toHaveBeenCalled();
+  });
+});
+
 describe("list_worktrees lastSyncAt", () => {
   it("surfaces lastSyncDate from metadata as lastSyncAt", async () => {
     const iso = "2026-04-19T10:00:00.000Z";
@@ -420,5 +449,72 @@ describe("list_worktrees lastSyncAt", () => {
     const result = await invoke(handleListWorktrees, ctx, {});
     const body = parseResponse(result);
     expect(body.worktrees[0].lastSyncAt).toBeNull();
+  });
+});
+
+
+describe("handleListWorktrees fallbacks", () => {
+  it("falls back to discovered worktrees when git.getWorktrees fails", async () => {
+    const { ctx, git } = makeCtx({
+      discovered: makeDiscovered({
+        currentWorktreePath: "/repo/main",
+        allWorktrees: [
+          { path: "/repo/main", branch: "main" },
+          { path: "/repo/worktrees/feature", branch: "feature" },
+        ],
+      }),
+      git: {
+        getWorktrees: vi.fn<any>().mockRejectedValue(new Error("git unavailable")),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.worktrees).toHaveLength(2);
+    expect(body.worktrees[0].isCurrent).toBe(true);
+    expect(body.worktrees[1].branch).toBe("feature");
+    expect(git.getFullWorktreeStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns an empty list when service lookup succeeds but no worktrees are available", async () => {
+    const { ctx } = makeCtx({
+      discovered: null,
+      git: {
+        getWorktrees: vi.fn<any>().mockRejectedValue(new Error("git unavailable")),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.worktrees).toEqual([]);
+  });
+});
+
+describe("handleCreateWorktree collisions", () => {
+  it("errors when sanitized worktree path collides with another branch", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/worktrees/feature-x", branch: "feature-x-old" }]),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("collides with existing branch");
   });
 });
