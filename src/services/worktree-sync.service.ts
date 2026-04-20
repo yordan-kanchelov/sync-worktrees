@@ -18,11 +18,21 @@ import type { Config } from "../types";
 import type { WorktreeStatusDetails } from "./worktree-status.service";
 import type { RetryOptions } from "../utils/retry";
 
+export type SyncResult = { started: true } | { started: false; reason: "in_progress" };
+
+export interface ProgressEvent {
+  phase: string;
+  message: string;
+}
+
+export type ProgressListener = (event: ProgressEvent) => void;
+
 export class WorktreeSyncService {
   private gitService: GitService;
   private logger: Logger;
   private syncInProgress: boolean = false;
   private pathResolution = new PathResolutionService();
+  private progressListeners = new Set<ProgressListener>();
 
   constructor(public readonly config: Config) {
     this.logger = config.logger ?? Logger.createDefault(undefined, config.debug);
@@ -30,7 +40,9 @@ export class WorktreeSyncService {
   }
 
   async initialize(): Promise<void> {
+    this.emitProgress({ phase: "initialize", message: "Initializing repository" });
     await this.gitService.initialize();
+    this.emitProgress({ phase: "initialize", message: "Repository initialized" });
   }
 
   isInitialized(): boolean {
@@ -50,10 +62,25 @@ export class WorktreeSyncService {
     this.gitService.updateLogger(logger);
   }
 
-  async sync(): Promise<void> {
+  onProgress(listener: ProgressListener): () => void {
+    this.progressListeners.add(listener);
+    return () => this.progressListeners.delete(listener);
+  }
+
+  private emitProgress(event: ProgressEvent): void {
+    for (const listener of this.progressListeners) {
+      try {
+        listener(event);
+      } catch {
+        // listener must not break sync flow
+      }
+    }
+  }
+
+  async sync(): Promise<SyncResult> {
     if (this.syncInProgress) {
       this.logger.warn("⚠️  Sync already in progress, skipping...");
-      return;
+      return { started: false, reason: "in_progress" };
     }
     this.syncInProgress = true;
     this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
@@ -94,6 +121,7 @@ export class WorktreeSyncService {
 
         this.logger.info("Step 1: Fetching latest data from remote...");
         phaseTimer.startPhase("Phase 1: Fetch");
+        this.emitProgress({ phase: "fetch", message: "Fetching latest data from remote" });
 
         try {
           await this.gitService.fetchAll();
@@ -183,6 +211,7 @@ export class WorktreeSyncService {
         }
 
         phaseTimer.startPhase("Phase 5: Cleanup");
+        this.emitProgress({ phase: "cleanup", message: "Pruning worktree metadata" });
         await this.gitService.pruneWorktrees();
         this.logger.info("Step 5: Pruned worktree metadata.");
         phaseTimer.endPhase();
@@ -204,6 +233,8 @@ export class WorktreeSyncService {
         this.logger.table(formatTimingTable(totalDuration, phaseResults, repoName));
       }
     }
+
+    return { started: true };
   }
 
   private async createNewWorktreesWithTiming(
@@ -215,6 +246,7 @@ export class WorktreeSyncService {
     const maxConcurrent =
       this.config.parallelism?.maxWorktreeCreation ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
     phaseTimer.startPhase("Phase 2: Create", maxConcurrent);
+    this.emitProgress({ phase: "create", message: "Creating worktrees for new branches" });
 
     await this.createNewWorktrees(remoteBranches, worktrees, defaultBranch);
 
@@ -292,6 +324,7 @@ export class WorktreeSyncService {
   ): Promise<void> {
     const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
     phaseTimer.startPhase("Phase 3: Prune", maxConcurrent);
+    this.emitProgress({ phase: "prune", message: "Pruning stale worktrees" });
 
     await this.pruneOldWorktrees(remoteBranches, worktrees);
 
@@ -492,6 +525,7 @@ export class WorktreeSyncService {
     const maxConcurrent =
       this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES;
     phaseTimer.startPhase("Phase 4: Update", maxConcurrent);
+    this.emitProgress({ phase: "update", message: "Updating existing worktrees" });
 
     await this.updateExistingWorktrees(worktrees, remoteBranches);
 

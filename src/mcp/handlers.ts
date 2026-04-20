@@ -5,13 +5,14 @@ import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { PathResolutionService } from "../services/path-resolution.service";
+import { pathsEqual } from "../utils/path-compare";
 
 import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } from "./utils";
 
 import type { Capabilities, DiscoveredRepoContext, RepositoryContext } from "./context";
 import type { HandlerExtra } from "./utils";
-import type { Logger } from "../services/logger.service";
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
+import type { ProgressEvent } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 type CapabilityKey = keyof Capabilities;
@@ -37,17 +38,15 @@ async function ensurePathBelongsToRepo(
   repoName: string | undefined,
   git: { getWorktrees: () => Promise<Array<{ path: string }>> },
 ): Promise<void> {
-  const resolved = path.resolve(targetPath);
-
   const discovered = ctx.getDiscoveredContext(repoName);
   if (discovered?.allWorktrees.length) {
-    const match = discovered.allWorktrees.some((w) => path.resolve(w.path) === resolved);
+    const match = discovered.allWorktrees.some((w) => pathsEqual(w.path, targetPath));
     if (match) return;
   }
 
   try {
     const worktrees = await git.getWorktrees();
-    if (worktrees.some((w) => path.resolve(w.path) === resolved)) return;
+    if (worktrees.some((w) => pathsEqual(w.path, targetPath))) return;
   } catch {
     // fall through to rejection
   }
@@ -105,14 +104,14 @@ export async function handleListWorktrees(
     }
   }
 
-  const currentPath = discovered?.currentWorktreePath ? path.resolve(discovered.currentWorktreePath) : null;
+  const currentPath = discovered?.currentWorktreePath ?? null;
 
   const limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
   const results = await Promise.all(
     worktrees.map((wt) =>
       limit(async () => {
         const resolvedPath = path.resolve(wt.path);
-        const isCurrent = currentPath !== null && resolvedPath === currentPath;
+        const isCurrent = currentPath !== null && pathsEqual(wt.path, currentPath);
 
         const [status, divergence, metadata] = await Promise.all([
           git.getFullWorktreeStatus(wt.path, false).catch(() => null),
@@ -187,17 +186,12 @@ export async function handleCreateWorktree(
     }
     await git.createBranch(branchName, baseBranch);
     created = true;
-    if (push) {
-      await git.pushBranch(branchName);
-      pushed = true;
-    }
   }
 
   const worktreeDir = service.config.worktreeDir;
   const worktreePath = new PathResolutionService().getBranchWorktreePath(worktreeDir, branchName);
-  const resolvedPath = path.resolve(worktreePath);
   const existing = await git.getWorktrees();
-  const collision = existing.find((w) => path.resolve(w.path) === resolvedPath && w.branch !== branchName);
+  const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
   if (collision) {
     throw new Error(
       `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
@@ -205,6 +199,11 @@ export async function handleCreateWorktree(
   }
   await git.addWorktree(branchName, worktreePath);
   ctx.invalidateDiscovered();
+
+  if (created && push) {
+    await git.pushBranch(branchName);
+    pushed = true;
+  }
 
   return formatToolResponse({
     success: true,
@@ -254,7 +253,6 @@ export async function handleSync(
 ): Promise<CallToolResult> {
   const discovered = ctx.getDiscoveredContext(params.repoName);
   ensureCapability(discovered, "canSync", "sync");
-  await ensureNotSyncing(ctx, params.repoName);
 
   const service = await ctx.getService(params.repoName);
   if (!service.isInitialized()) {
@@ -264,7 +262,10 @@ export async function handleSync(
   const dispose = attachProgressReporter(service, extra);
   try {
     const start = Date.now();
-    await service.sync();
+    const result = await service.sync();
+    if (!result.started) {
+      throw new SyncInProgressError(ctx.getEntry(params.repoName)?.name ?? params.repoName ?? "unknown");
+    }
     const duration = Date.now() - start;
     ctx.invalidateDiscovered();
     return formatToolResponse({ success: true, duration });
@@ -352,36 +353,30 @@ export async function handleSetCurrentRepository(
   });
 }
 
-const PROGRESS_MARKERS = /^(Phase\s|Step\s|Cloning|Fetching|Creating|Pruning|Updating|✅|🔄)/;
-
 function attachProgressReporter(
   service: {
-    updateLogger: (l: Logger) => void;
-    config: { logger?: Logger };
+    onProgress?: (listener: (event: ProgressEvent) => void) => () => void;
   },
   extra: HandlerExtra | undefined,
 ): () => void {
   const token = extra?._meta?.progressToken;
   if (token === undefined || !extra) return () => {};
-
-  const originalLogger = service.config.logger;
-  if (!originalLogger) return () => {};
+  if (!service.onProgress) return () => {};
 
   let progressCounter = 0;
-  const wrapped = originalLogger.withPassthrough((msg, level) => {
-    if (level !== "info") return;
-    if (!PROGRESS_MARKERS.test(msg.replace(/^\[[^\]]+\]\s*/, ""))) return;
+  const unsubscribe = service.onProgress((event) => {
     progressCounter++;
     void extra
       .sendNotification({
         method: "notifications/progress",
-        params: { progressToken: token, progress: progressCounter, message: msg },
+        params: {
+          progressToken: token,
+          progress: progressCounter,
+          message: `[${event.phase}] ${event.message}`,
+        },
       })
       .catch(() => {});
   });
 
-  service.updateLogger(wrapped);
-  return () => {
-    service.updateLogger(originalLogger);
-  };
+  return unsubscribe;
 }

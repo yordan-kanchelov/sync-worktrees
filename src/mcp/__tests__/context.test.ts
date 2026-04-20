@@ -255,3 +255,75 @@ describe("RepositoryContext.getService", () => {
     await expect(ctx.getService("missing")).rejects.toThrow(/not found/);
   });
 });
+
+describe("RepositoryContext.detectFromPath currentRepo bootstrap invariants", () => {
+  let fixture: Awaited<ReturnType<typeof makeWorktreeFixture>>;
+
+  beforeEach(async () => {
+    fixture = await makeWorktreeFixture();
+    mockRemoteUrl.mockReset();
+    mockWorktreeList.mockReset();
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+  });
+
+  afterEach(async () => {
+    await fixture.cleanup();
+  });
+
+  it("bootstraps currentRepo when null and single entry results", async () => {
+    const ctx = new RepositoryContext();
+    expect(ctx.getCurrentRepo()).toBeNull();
+
+    await ctx.detectFromPath(fixture.currentWorktree);
+    expect(ctx.getCurrentRepo()).not.toBeNull();
+  });
+
+  it("does not overwrite existing currentRepo when probing new path", async () => {
+    const ctx = new RepositoryContext();
+    (ctx as any).repos.set("pinned", {
+      name: "pinned",
+      config: {
+        repoUrl: "https://example.com/other.git",
+        bareRepoDir: "/some/other/.bare",
+        worktreeDir: "/some/other/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+    (ctx as any).currentRepo = "pinned";
+
+    await ctx.detectFromPath(fixture.currentWorktree);
+    expect(ctx.getCurrentRepo()).toBe("pinned");
+  });
+
+  it("does not auto-select when multiple repo entries exist and currentRepo is null", async () => {
+    const ctx = new RepositoryContext();
+    (ctx as any).repos.set("other", {
+      name: "other",
+      config: {
+        repoUrl: "https://example.com/other.git",
+        bareRepoDir: "/some/other/.bare",
+        worktreeDir: "/some/other/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+
+    await ctx.detectFromPath(fixture.currentWorktree);
+    expect(ctx.getCurrentRepo()).toBeNull();
+  });
+
+  it("reuses existing detected entry on repeat probes (no duplicate)", async () => {
+    const ctx = new RepositoryContext();
+    await ctx.detectFromPath(fixture.currentWorktree);
+    const sizeAfterFirst = (ctx as any).repos.size;
+    ctx.invalidateDiscovered();
+    await ctx.detectFromPath(fixture.currentWorktree);
+    expect((ctx as any).repos.size).toBe(sizeAfterFirst);
+  });
+});

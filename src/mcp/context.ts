@@ -152,6 +152,13 @@ export class RepositoryContext {
     this.discoveryCache.clear();
   }
 
+  private bootstrapCurrentRepo(candidate: string): void {
+    if (this.currentRepo !== null) return;
+    if (!this.repos.has(candidate)) return;
+    if (this.repos.size !== 1) return;
+    this.currentRepo = candidate;
+  }
+
   private async isCacheFresh(cached: CachedDiscovery): Promise<boolean> {
     if (Date.now() - cached.cachedAt >= DISCOVERY_CACHE_TTL_MS) return false;
     if (!cached.worktreeAdminDir || !cached.result.bareRepoPath) return true;
@@ -161,9 +168,7 @@ export class RepositoryContext {
       safeMtimeMs(path.join(cached.result.bareRepoPath, "worktrees")),
     ]);
 
-    return (
-      currentHeadMtime === cached.worktreeHeadMtimeMs && currentWorktreesDirMtime === cached.worktreesDirMtimeMs
-    );
+    return currentHeadMtime === cached.worktreeHeadMtimeMs && currentWorktreesDirMtime === cached.worktreesDirMtimeMs;
   }
 
   private async detectFromPathUncached(
@@ -298,7 +303,6 @@ export class RepositoryContext {
       kind = "managed";
       capabilities.canSync = true;
       capabilities.canInitialize = true;
-      this.currentRepo = matchedConfig.name;
     } else if (repoUrl) {
       const syntheticConfig: Config = {
         repoUrl,
@@ -308,16 +312,21 @@ export class RepositoryContext {
         runOnce: true,
       };
       const detectedKey = `${AUTO_DETECT_PREFIX}${path.basename(bareRepoPath)}@${bareRepoPath}`;
-      this.repos.set(detectedKey, {
-        name: detectedKey,
-        config: syntheticConfig,
-        source: "detected",
-      });
+      if (!this.repos.has(detectedKey)) {
+        this.repos.set(detectedKey, {
+          name: detectedKey,
+          config: syntheticConfig,
+          source: "detected",
+        });
+      }
       repoName = detectedKey;
-      this.currentRepo = detectedKey;
       reasons.push("sync/initialize unavailable: no config file loaded (running in auto-detect mode)");
     } else {
       reasons.push("sync/initialize unavailable: no config file and no remote URL");
+    }
+
+    if (repoName) {
+      this.bootstrapCurrentRepo(repoName);
     }
 
     const discovered: DiscoveredRepoContext = {

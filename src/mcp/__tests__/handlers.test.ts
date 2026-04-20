@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   handleCreateWorktree,
   handleGetWorktreeStatus,
+  handleInitialize,
   handleListWorktrees,
   handleLoadConfig,
   handleRemoveWorktree,
@@ -103,7 +104,7 @@ function makeCtx(opts: {
     isInitialized: vi.fn<any>().mockReturnValue(true),
     isSyncInProgress: vi.fn<any>().mockReturnValue(opts.syncInProgress ?? false),
     initialize: vi.fn<any>().mockResolvedValue(undefined),
-    sync: vi.fn<any>().mockResolvedValue(undefined),
+    sync: vi.fn<any>().mockResolvedValue({ started: true }),
     getGitService: () => git,
   };
 
@@ -227,6 +228,54 @@ describe("handleCreateWorktree", () => {
     const body = parseResponse(result);
     expect(body.code).toBe("SYNC_IN_PROGRESS");
   });
+
+  it("does not push when addWorktree fails", async () => {
+    const addWorktreeError = new Error("addWorktree failed");
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+        addWorktree: vi.fn<any>().mockRejectedValue(addWorktreeError),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, {
+      branchName: "new-branch",
+      baseBranch: "main",
+      push: true,
+    });
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
+    expect(git.createBranch).toHaveBeenCalled();
+    expect(git.pushBranch).not.toHaveBeenCalled();
+  });
+
+  it("pushes only after addWorktree succeeds", async () => {
+    const callOrder: string[] = [];
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+        createBranch: vi.fn<any>().mockImplementation(async () => {
+          callOrder.push("createBranch");
+        }),
+        addWorktree: vi.fn<any>().mockImplementation(async () => {
+          callOrder.push("addWorktree");
+        }),
+        pushBranch: vi.fn<any>().mockImplementation(async () => {
+          callOrder.push("pushBranch");
+        }),
+      },
+    });
+
+    await invoke(handleCreateWorktree, ctx, {
+      branchName: "new-branch",
+      baseBranch: "main",
+      push: true,
+    });
+
+    expect(callOrder).toEqual(["createBranch", "addWorktree", "pushBranch"]);
+    expect(git.addWorktree).toHaveBeenCalled();
+    expect(git.pushBranch).toHaveBeenCalledWith("new-branch");
+  });
 });
 
 describe("handleRemoveWorktree", () => {
@@ -290,6 +339,116 @@ describe("handleSync", () => {
     expect(body.success).toBe(true);
     expect(typeof body.duration).toBe("number");
     expect(service.sync).toHaveBeenCalled();
+  });
+
+  it("returns SYNC_IN_PROGRESS when sync returns started:false", async () => {
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({ started: false, reason: "in_progress" });
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+    expect(body.code).toBe("SYNC_IN_PROGRESS");
+  });
+
+  it("sends progress notifications from structured events", async () => {
+    const { ctx, service } = makeCtx({});
+    const progressListeners: Array<(e: { phase: string; message: string }) => void> = [];
+    service.onProgress = vi.fn<any>().mockImplementation((listener: any) => {
+      progressListeners.push(listener);
+      return () => {
+        const idx = progressListeners.indexOf(listener);
+        if (idx >= 0) progressListeners.splice(idx, 1);
+      };
+    });
+    service.sync.mockImplementation(async () => {
+      for (const l of progressListeners) l({ phase: "fetch", message: "Fetching" });
+      for (const l of progressListeners) l({ phase: "create", message: "Creating" });
+      return { started: true };
+    });
+
+    const sendNotification = vi.fn<any>().mockResolvedValue(undefined);
+    const extra = { _meta: { progressToken: "tok-1" }, sendNotification };
+    await handleSync(ctx, {}, extra as any);
+
+    expect(sendNotification).toHaveBeenCalledTimes(2);
+    const firstCall = sendNotification.mock.calls[0][0] as { params: { message: string } };
+    const secondCall = sendNotification.mock.calls[1][0] as { params: { message: string } };
+    expect(firstCall.params.message).toContain("[fetch]");
+    expect(secondCall.params.message).toContain("[create]");
+  });
+
+  it("unsubscribes progress listener even when sync throws", async () => {
+    const { ctx, service } = makeCtx({});
+    const unsubscribe = vi.fn<any>();
+    service.onProgress = vi.fn<any>().mockReturnValue(unsubscribe);
+    service.sync.mockRejectedValue(new Error("boom"));
+
+    const sendNotification = vi.fn<any>().mockResolvedValue(undefined);
+    const extra = { _meta: { progressToken: "tok-1" }, sendNotification };
+    await expect(handleSync(ctx, {}, extra as any)).rejects.toThrow("boom");
+    expect(unsubscribe).toHaveBeenCalled();
+  });
+});
+
+describe("handleInitialize", () => {
+  it("sends progress notifications when service emits events", async () => {
+    const { ctx, service } = makeCtx({});
+    service.isInitialized.mockReturnValue(false);
+    const progressListeners: Array<(e: { phase: string; message: string }) => void> = [];
+    service.onProgress = vi.fn<any>().mockImplementation((listener: any) => {
+      progressListeners.push(listener);
+      return () => {
+        const idx = progressListeners.indexOf(listener);
+        if (idx >= 0) progressListeners.splice(idx, 1);
+      };
+    });
+    service.initialize.mockImplementation(async () => {
+      for (const l of progressListeners) l({ phase: "initialize", message: "Initializing repository" });
+    });
+
+    const sendNotification = vi.fn<any>().mockResolvedValue(undefined);
+    const extra = { _meta: { progressToken: "init-1" }, sendNotification };
+    await handleInitialize(ctx, {}, extra as any);
+
+    expect(sendNotification).toHaveBeenCalled();
+    const call = sendNotification.mock.calls[0][0] as { params: { message: string } };
+    expect(call.params.message).toContain("[initialize]");
+  });
+});
+
+describe("case-insensitive path handling in handlers", () => {
+  const originalPlatform = process.platform;
+
+  function setPlatform(platform: NodeJS.Platform): void {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+  }
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  });
+
+  it("accepts mixed-case worktree path when running on darwin", async () => {
+    setPlatform("darwin");
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/Users/foo/Repo/Feature", branch: "feature" }]),
+      },
+    });
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/users/foo/repo/feature" });
+    const body = parseResponse(result);
+    expect(body.success).toBe(true);
+    expect(git.updateWorktree).toHaveBeenCalledWith("/users/foo/repo/feature");
+  });
+
+  it("rejects mixed-case worktree path on linux (case-sensitive)", async () => {
+    setPlatform("linux");
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/Users/foo/Repo/Feature", branch: "feature" }]),
+      },
+    });
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/users/foo/repo/feature" });
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
   });
 });
 
