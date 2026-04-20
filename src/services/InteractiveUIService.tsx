@@ -15,7 +15,7 @@ import { PathResolutionService } from "./path-resolution.service";
 import { Logger, LogOutputFn, LogLevel } from "./logger.service";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
-import { appEvents } from "../utils/app-events";
+import { AppEventEmitter } from "../utils/app-events";
 import { shellEscape } from "../utils/shell-escape";
 import * as fs from "fs/promises";
 import { calculateDirectorySize, formatBytes } from "../utils/disk-space";
@@ -43,6 +43,7 @@ export class InteractiveUIService {
   private reloadInProgress = false;
   private isDestroyed = false;
   private reloadOptions: ReloadOptions;
+  private events: AppEventEmitter;
 
   constructor(
     syncServices: WorktreeSyncService[],
@@ -50,7 +51,9 @@ export class InteractiveUIService {
     cronSchedule?: string,
     maxParallel?: number,
     reloadOptions?: ReloadOptions,
+    events?: AppEventEmitter,
   ) {
+    this.events = events ?? new AppEventEmitter();
     if (syncServices.length === 0) {
       throw new Error("InteractiveUIService requires at least one WorktreeSyncService");
     }
@@ -72,8 +75,12 @@ export class InteractiveUIService {
     }, 100);
   }
 
+  public getEvents(): AppEventEmitter {
+    return this.events;
+  }
+
   private startBufferFlushCheck(): void {
-    const unsubscribe = appEvents.on("uiReady", () => {
+    const unsubscribe = this.events.on("uiReady", () => {
       this.uiReady = true;
       this.flushLogBuffer();
       unsubscribe();
@@ -104,7 +111,7 @@ export class InteractiveUIService {
   public addLog(message: string, level: "info" | "warn" | "error" = "info"): void {
     if (this.isDestroyed) return;
     if (this.uiReady) {
-      appEvents.emit("addLog", { message, level });
+      this.events.emit("addLog", { message, level });
     } else {
       this.logBuffer.push({ message, level });
     }
@@ -112,7 +119,7 @@ export class InteractiveUIService {
 
   private flushLogBuffer(): void {
     for (const log of this.logBuffer) {
-      appEvents.emit("addLog", { message: log.message, level: log.level });
+      this.events.emit("addLog", { message: log.message, level: log.level });
     }
     this.logBuffer = [];
   }
@@ -171,6 +178,7 @@ export class InteractiveUIService {
 
     this.app = render(
       <App
+        events={this.events}
         repositoryCount={this.repositoryCount}
         cronSchedule={this.cronSchedule}
         onManualSync={() => this.handleManualSync()}
@@ -253,30 +261,11 @@ export class InteractiveUIService {
       // Validate and load new config BEFORE canceling old cron jobs
       // to prevent a window with no cron running on validation failure
       const configLoader = new ConfigLoaderService();
-      const configFile = await configLoader.loadConfigFile(this.configPath);
-      const configDir = path.dirname(path.resolve(this.configPath));
-
-      let repositories = configFile.repositories.map((repo) =>
-        configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
-      );
-
-      if (this.reloadOptions.filter) {
-        repositories = configLoader.filterRepositories(repositories, this.reloadOptions.filter);
-      }
-
-      if (this.reloadOptions.noUpdateExisting) {
-        repositories = repositories.map((repo) => ({
-          ...repo,
-          updateExistingWorktrees: false,
-        }));
-      }
-
-      if (this.reloadOptions.debug) {
-        repositories = repositories.map((repo) => ({
-          ...repo,
-          debug: true,
-        }));
-      }
+      const { repositories } = await configLoader.buildRepositories(this.configPath, {
+        filter: this.reloadOptions.filter,
+        noUpdateExisting: this.reloadOptions.noUpdateExisting,
+        debug: this.reloadOptions.debug,
+      });
 
       const initResults = await Promise.allSettled(
         repositories.map((repoConfig) =>
@@ -313,8 +302,8 @@ export class InteractiveUIService {
 
       this.setupCronJobs();
 
-      appEvents.emit("updateRepositoryCount", this.repositoryCount);
-      appEvents.emit("updateCronSchedule", this.cronSchedule);
+      this.events.emit("updateRepositoryCount", this.repositoryCount);
+      this.events.emit("updateCronSchedule", this.cronSchedule);
 
       const failures: Array<{ repo: string; error: string }> = [];
 
@@ -394,17 +383,17 @@ export class InteractiveUIService {
 
   public updateLastSyncTime(): void {
     if (this.isDestroyed) return;
-    appEvents.emit("updateLastSyncTime");
+    this.events.emit("updateLastSyncTime");
   }
 
   public setStatus(status: "idle" | "syncing"): void {
     if (this.isDestroyed) return;
-    appEvents.emit("setStatus", status);
+    this.events.emit("setStatus", status);
   }
 
   public setDiskSpace(diskSpace: string): void {
     if (this.isDestroyed) return;
-    appEvents.emit("setDiskSpace", diskSpace);
+    this.events.emit("setDiskSpace", diskSpace);
   }
 
   public async calculateAndUpdateDiskSpace(): Promise<void> {
@@ -623,7 +612,7 @@ export class InteractiveUIService {
     const service = this.syncServices[repoIndex];
     const gitService = service.getGitService();
     const worktreeDir = service.config.worktreeDir;
-    const worktreePath = path.join(worktreeDir, branchName);
+    const worktreePath = this.pathResolution.getBranchWorktreePath(worktreeDir, branchName);
 
     await gitService.addWorktree(branchName, worktreePath);
   }
@@ -871,7 +860,7 @@ export class InteractiveUIService {
       this.app.unmount();
       this.app = null;
     }
-    appEvents.removeAllListeners();
+    this.events.removeAllListeners();
     this.uiReady = false;
     this.logBuffer = [];
   }

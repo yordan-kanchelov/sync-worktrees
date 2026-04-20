@@ -104,11 +104,12 @@ describe("HelpModal", () => {
       expect(onClose).not.toHaveBeenCalled();
     });
 
-    it("should call onClose when escape is pressed", () => {
+    it("should call onClose when escape is pressed", async () => {
       const onClose = vi.fn();
       const { stdin } = render(<HelpModal onClose={onClose} />);
 
       stdin.write("\x1b");
+      await new Promise((resolve) => setImmediate(resolve));
 
       expect(onClose).toHaveBeenCalled();
     });

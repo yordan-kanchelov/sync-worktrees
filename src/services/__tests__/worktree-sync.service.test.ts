@@ -541,18 +541,18 @@ describe("WorktreeSyncService", () => {
 
         await service.sync();
 
-        // Should create worktrees with full paths including slashes
+        // Slash branches are flattened to sanitized names to avoid nested-path collisions
         expect(mockGitService.addWorktree).toHaveBeenCalledWith(
           "feat/LCR-8879",
-          path.join("/test/worktrees", "feat/LCR-8879"),
+          path.join("/test/worktrees", "feat-LCR-8879"),
         );
         expect(mockGitService.addWorktree).toHaveBeenCalledWith(
           "feat/PHX-3198",
-          path.join("/test/worktrees", "feat/PHX-3198"),
+          path.join("/test/worktrees", "feat-PHX-3198"),
         );
         expect(mockGitService.addWorktree).toHaveBeenCalledWith(
           "bugfix/issue-123",
-          path.join("/test/worktrees", "bugfix/issue-123"),
+          path.join("/test/worktrees", "bugfix-issue-123"),
         );
       });
 

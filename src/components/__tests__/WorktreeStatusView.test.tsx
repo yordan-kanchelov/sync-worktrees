@@ -158,11 +158,12 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).not.toContain("Select repository");
     });
 
-    it("should close on ESC", () => {
+    it("should close on ESC", async () => {
       const onClose = vi.fn();
       const { stdin } = render(<WorktreeStatusView {...defaultProps} onClose={onClose} />);
 
       stdin.write("\x1b");
+      await waitForStateUpdate();
       expect(onClose).toHaveBeenCalled();
     });
   });
@@ -404,6 +405,7 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
 
       stdin.write("\x1b");
+      await waitForStateUpdate();
       expect(onClose).toHaveBeenCalled();
     });
   });

@@ -538,7 +538,7 @@ describe("WorktreeMetadataService", () => {
         "fatal: not a git repository",
       );
 
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("❌ Failed to create metadata"));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("❌ Failed to create metadata"), expect.anything());
 
       consoleSpy.mockRestore();
       logSpy.mockRestore();

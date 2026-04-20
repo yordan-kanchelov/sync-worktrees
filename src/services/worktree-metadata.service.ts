@@ -5,9 +5,17 @@ import simpleGit from "simple-git";
 
 import { GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 
+import { Logger } from "./logger.service";
+
 import type { SyncMetadata } from "../types/sync-metadata";
 
 export class WorktreeMetadataService {
+  private logger: Logger;
+
+  constructor(logger?: Logger) {
+    this.logger = logger ?? Logger.createDefault();
+  }
+
   /**
    * Gets the internal worktree directory name from a worktree path.
    * Git uses the basename of the worktree path as the internal directory name.
@@ -75,7 +83,7 @@ export class WorktreeMetadataService {
       const metadata = JSON.parse(content) as SyncMetadata;
 
       if (!(await this.validateMetadata(metadata))) {
-        console.warn(`Corrupted metadata for ${worktreePath}, treating as missing`);
+        this.logger.warn(`Corrupted metadata for ${worktreePath}, treating as missing`);
         return null;
       }
 
@@ -100,7 +108,7 @@ export class WorktreeMetadataService {
         const metadata = JSON.parse(content) as SyncMetadata;
 
         if (!(await this.validateMetadata(metadata))) {
-          console.warn(`Corrupted metadata at old path ${oldPath}, treating as missing`);
+          this.logger.warn(`Corrupted metadata at old path ${oldPath}, treating as missing`);
           return null;
         }
 
@@ -159,7 +167,7 @@ export class WorktreeMetadataService {
     const existing = await this.loadMetadata(bareRepoPath, worktreeName);
 
     if (!existing) {
-      console.warn(`No metadata found for worktree ${worktreeName}, creating initial metadata`);
+      this.logger.warn(`No metadata found for worktree ${worktreeName}, creating initial metadata`);
       await this.createInitialMetadata(
         bareRepoPath,
         worktreeName,
@@ -198,8 +206,8 @@ export class WorktreeMetadataService {
     const existing = await this.loadMetadataFromPath(bareRepoPath, worktreePath);
 
     if (!existing) {
-      console.warn(`No metadata found for worktree ${worktreeDirName}`);
-      console.log(`  Attempting to create initial metadata...`);
+      this.logger.warn(`No metadata found for worktree ${worktreeDirName}`);
+      this.logger.info(`  Attempting to create initial metadata...`);
 
       try {
         const worktreeGit = simpleGit(worktreePath);
@@ -236,10 +244,10 @@ export class WorktreeMetadataService {
           parentBranch,
           currentCommit.trim(),
         );
-        console.log(`  ✅ Created metadata for ${worktreeDirName}`);
+        this.logger.info(`  ✅ Created metadata for ${worktreeDirName}`);
         return;
       } catch (error) {
-        console.error(`  ❌ Failed to create metadata: ${error}`);
+        this.logger.error(`  ❌ Failed to create metadata`, error);
         throw error;
       }
     }

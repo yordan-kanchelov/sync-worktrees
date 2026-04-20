@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-import * as path from "path";
-
 import { confirm } from "@inquirer/prompts";
 import * as cron from "node-cron";
 import pLimit from "p-limit";
@@ -190,19 +188,11 @@ async function listRepositories(configPath: string, filter?: string): Promise<vo
   const configLoader = new ConfigLoaderService();
 
   try {
-    const configFile = await configLoader.loadConfigFile(configPath);
-    const configDir = path.dirname(path.resolve(configPath));
+    const { repositories } = await configLoader.buildRepositories(configPath, { filter });
 
-    let repositories = configFile.repositories.map((repo) =>
-      configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
-    );
-
-    if (filter) {
-      repositories = configLoader.filterRepositories(repositories, filter);
-      if (repositories.length === 0) {
-        console.error(`❌ No repositories match filter: ${filter}`);
-        process.exit(1);
-      }
+    if (filter && repositories.length === 0) {
+      console.error(`❌ No repositories match filter: ${filter}`);
+      process.exit(1);
     }
 
     console.log("\n📋 Configured repositories:\n");
@@ -240,37 +230,18 @@ async function main(): Promise<void> {
     }
 
     try {
-      const configFile = await configLoader.loadConfigFile(options.config);
-      const configDir = path.dirname(path.resolve(options.config));
+      const { repositories, configFile } = await configLoader.buildRepositories(options.config, {
+        filter: options.filter,
+        noUpdateExisting: options.noUpdateExisting,
+        debug: options.debug,
+      });
 
-      let repositories = configFile.repositories.map((repo) =>
-        configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
-      );
-
-      if (options.filter) {
-        repositories = configLoader.filterRepositories(repositories, options.filter);
-        if (repositories.length === 0) {
-          console.error(`❌ No repositories match filter: ${options.filter}`);
-          process.exit(1);
-        }
+      if (options.filter && repositories.length === 0) {
+        console.error(`❌ No repositories match filter: ${options.filter}`);
+        process.exit(1);
       }
 
       const globalRunOnce = options.runOnce ?? configFile.defaults?.runOnce ?? false;
-
-      // Apply CLI overrides
-      if (options.noUpdateExisting) {
-        repositories = repositories.map((repo) => ({
-          ...repo,
-          updateExistingWorktrees: false,
-        }));
-      }
-
-      if (options.debug) {
-        repositories = repositories.map((repo) => ({
-          ...repo,
-          debug: true,
-        }));
-      }
 
       const maxParallel =
         configFile.parallelism?.maxRepositories ??

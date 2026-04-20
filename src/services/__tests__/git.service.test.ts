@@ -313,11 +313,14 @@ describe("GitService", () => {
 
       await gitService.initialize();
 
-      (simpleGit as unknown as Mock).mockClear();
-      // next simpleGit() call should be with bare repo path
-      await gitService.getRemoteCommit("origin/main");
-      const calls = (simpleGit as unknown as Mock).mock.calls;
-      expect(calls[calls.length - 1][0]).toBe(TEST_PATHS.bareRepo);
+      const simpleGitMock = simpleGit as unknown as Mock;
+      const bareCalls = simpleGitMock.mock.calls.filter((args) => args[0] === TEST_PATHS.bareRepo);
+      expect(bareCalls.length).toBeGreaterThan(0);
+
+      mockGit.revparse.mockResolvedValue("commitsha\n" as any);
+      const commit = await gitService.getRemoteCommit("origin/main");
+      expect(mockGit.revparse).toHaveBeenCalledWith(["origin/main"]);
+      expect(commit).toBe("commitsha");
     });
   });
 
@@ -1162,18 +1165,13 @@ prunable
     it("should update metadata for main worktree", async () => {
       await gitService.initialize();
 
-      const mockWorktreeGit = {
-        branch: vi.fn<any>().mockResolvedValue({
-          current: "main",
-        }),
-        merge: vi.fn<any>().mockResolvedValue(undefined),
-        revparse: vi.fn<any>().mockResolvedValue("newcommit123\n"),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+      mockGit.branch.mockResolvedValue({ current: "main" } as any);
+      (mockGit as any).merge = vi.fn<any>().mockResolvedValue(undefined);
+      mockGit.revparse.mockResolvedValue("newcommit123\n" as any);
 
       await gitService.updateWorktree("/test/worktrees/main");
 
-      expect(mockWorktreeGit.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      expect((mockGit as any).merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
       expect(mockMetadataService.updateLastSyncFromPath).toHaveBeenCalledWith(
         ".bare/repo",
         "/test/worktrees/main",

@@ -390,4 +390,30 @@ export class ConfigLoaderService {
       return patterns.some((pattern) => matchesPattern(repo.name, pattern));
     });
   }
+
+  async buildRepositories(
+    configPath: string,
+    overrides?: { filter?: string; noUpdateExisting?: boolean; debug?: boolean },
+  ): Promise<{ repositories: RepositoryConfig[]; configFile: ConfigFile; configDir: string }> {
+    const configFile = await this.loadConfigFile(configPath);
+    const configDir = path.dirname(path.resolve(configPath));
+
+    let repositories = configFile.repositories.map((repo) =>
+      this.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
+    );
+
+    if (overrides?.filter) {
+      repositories = this.filterRepositories(repositories, overrides.filter);
+    }
+
+    if (overrides?.noUpdateExisting) {
+      repositories = repositories.map((repo) => ({ ...repo, updateExistingWorktrees: false }));
+    }
+
+    if (overrides?.debug) {
+      repositories = repositories.map((repo) => ({ ...repo, debug: true }));
+    }
+
+    return { repositories, configFile, configDir };
+  }
 }

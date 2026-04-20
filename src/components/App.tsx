@@ -6,13 +6,13 @@ import BranchCreationWizard from "./BranchCreationWizard";
 import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
 import LogPanel from "./LogPanel";
-import { appEvents } from "../utils/app-events";
-
+import type { AppEventEmitter } from "../utils/app-events";
 import type { HookContext, WorktreeStatusEntry, DivergedDirectoryInfo } from "../types";
 
 export type { HookContext, WorktreeStatusEntry };
 
 export interface AppProps {
+  events: AppEventEmitter;
   repositoryCount: number;
   cronSchedule?: string;
   onManualSync: () => void;
@@ -52,6 +52,7 @@ export interface LogEntry {
 const MAX_LOG_ENTRIES = 5000;
 
 const App: React.FC<AppProps> = ({
+  events,
   repositoryCount,
   cronSchedule,
   onManualSync,
@@ -158,28 +159,28 @@ const App: React.FC<AppProps> = ({
 
   useEffect(() => {
     const unsubscribers = [
-      appEvents.on("updateLastSyncTime", () => {
+      events.on("updateLastSyncTime", () => {
         setLastSyncTime(new Date());
         setStatus("idle");
       }),
-      appEvents.on("setStatus", (newStatus: "idle" | "syncing") => {
+      events.on("setStatus", (newStatus: "idle" | "syncing") => {
         setStatus(newStatus);
       }),
-      appEvents.on("setDiskSpace", (diskSpace: string) => {
+      events.on("setDiskSpace", (diskSpace: string) => {
         setDiskSpaceUsed(diskSpace);
       }),
-      appEvents.on("addLog", ({ message, level }: { message: string; level: "info" | "warn" | "error" }) => {
+      events.on("addLog", ({ message, level }: { message: string; level: "info" | "warn" | "error" }) => {
         addLogRef.current(message, level);
       }),
-      appEvents.on("updateRepositoryCount", (count: number) => {
+      events.on("updateRepositoryCount", (count: number) => {
         setRepoCount(count);
       }),
-      appEvents.on("updateCronSchedule", (newSchedule: string | undefined) => {
+      events.on("updateCronSchedule", (newSchedule: string | undefined) => {
         setSchedule(newSchedule);
       }),
     ];
 
-    appEvents.emit("uiReady");
+    events.emit("uiReady");
 
     return () => {
       unsubscribers.forEach((unsub) => unsub());
@@ -232,7 +233,7 @@ const App: React.FC<AppProps> = ({
                 }
               } catch (error) {
                 const errorMsg = error instanceof Error ? error.message : String(error);
-                appEvents.emit("addLog", {
+                events.emit("addLog", {
                   message: `Failed to create worktree: ${errorMsg}`,
                   level: "error",
                 });

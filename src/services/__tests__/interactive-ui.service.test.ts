@@ -4,7 +4,6 @@ import * as path from "path";
 import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { appEvents } from "../../utils/app-events";
 import { InteractiveUIService } from "../InteractiveUIService";
 
 import type { Config } from "../../types";
@@ -16,11 +15,33 @@ import type { Mock, Mocked } from "vitest";
 const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance, mockSpawn, mockSpawnSync, mockExistsSync } =
   vi.hoisted(() => {
     return {
-      mockConfigLoaderInstance: {
-        loadConfigFile: vi.fn<any>(),
-        resolveRepositoryConfig: vi.fn<any>().mockImplementation((repo: any) => repo),
-        filterRepositories: vi.fn<any>().mockImplementation((repos: any) => repos),
-      } as any,
+      mockConfigLoaderInstance: (() => {
+        const inst: any = {
+          loadConfigFile: vi.fn<any>(),
+          resolveRepositoryConfig: vi.fn<any>().mockImplementation((repo: any) => repo),
+          filterRepositories: vi.fn<any>().mockImplementation((repos: any, filter: any) => {
+            if (!filter) return repos;
+            return repos.filter((r: any) => r.name?.startsWith(String(filter).replace("*", "")));
+          }),
+        };
+        inst.buildRepositories = vi.fn<any>().mockImplementation(async (configPath: any, overrides: any) => {
+          const configFile = await inst.loadConfigFile(configPath);
+          let repositories = configFile.repositories.map((r: any) =>
+            inst.resolveRepositoryConfig(r, configFile.defaults, "/test", configFile.retry),
+          );
+          if (overrides?.filter) {
+            repositories = inst.filterRepositories(repositories, overrides.filter);
+          }
+          if (overrides?.noUpdateExisting) {
+            repositories = repositories.map((r: any) => ({ ...r, updateExistingWorktrees: false }));
+          }
+          if (overrides?.debug) {
+            repositories = repositories.map((r: any) => ({ ...r, debug: true }));
+          }
+          return { repositories, configFile, configDir: "" };
+        });
+        return inst;
+      })(),
       mockWorktreeSyncServiceInstance: {
         sync: vi.fn<any>(),
         initialize: vi.fn<any>(),
@@ -121,11 +142,6 @@ describe("InteractiveUIService", () => {
     mockWorktreeSyncServiceInstance.config = mockConfig;
 
     delete (globalThis as any).__inkAppMethods;
-    appEvents.removeAllListeners();
-  });
-
-  afterEach(() => {
-    appEvents.removeAllListeners();
   });
 
   describe("constructor", () => {
@@ -152,8 +168,8 @@ describe("InteractiveUIService", () => {
       const statusSpy = vi.fn();
       const updateSpy = vi.fn();
 
-      appEvents.on("setStatus", statusSpy);
-      appEvents.on("updateLastSyncTime", updateSpy);
+      service.getEvents().on("setStatus", statusSpy);
+      service.getEvents().on("updateLastSyncTime", updateSpy);
 
       service.setStatus("syncing");
       service.updateLastSyncTime();
@@ -196,7 +212,7 @@ describe("InteractiveUIService", () => {
     it("should emit updateLastSyncTime event", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const updateSpy = vi.fn();
-      appEvents.on("updateLastSyncTime", updateSpy);
+      service.getEvents().on("updateLastSyncTime", updateSpy);
 
       service.updateLastSyncTime();
 
@@ -207,7 +223,6 @@ describe("InteractiveUIService", () => {
 
     it("should not throw when no listeners", () => {
       const service = new InteractiveUIService([mockSyncService]);
-      appEvents.removeAllListeners();
 
       expect(() => service.updateLastSyncTime()).not.toThrow();
 
@@ -219,7 +234,7 @@ describe("InteractiveUIService", () => {
     it("should emit setStatus event", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const setStatusSpy = vi.fn();
-      appEvents.on("setStatus", setStatusSpy);
+      service.getEvents().on("setStatus", setStatusSpy);
 
       service.setStatus("syncing");
 
@@ -231,7 +246,7 @@ describe("InteractiveUIService", () => {
     it("should handle both idle and syncing statuses", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const setStatusSpy = vi.fn();
-      appEvents.on("setStatus", setStatusSpy);
+      service.getEvents().on("setStatus", setStatusSpy);
 
       service.setStatus("idle");
       service.setStatus("syncing");
@@ -258,12 +273,12 @@ describe("InteractiveUIService", () => {
     it("should clean up event listeners", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const statusSpy = vi.fn();
-      appEvents.on("setStatus", statusSpy);
+      service.getEvents().on("setStatus", statusSpy);
 
       await service.destroy();
 
       // After destroy, emitting events should not call listeners (they were removed)
-      appEvents.emit("setStatus", "syncing");
+      service.getEvents().emit("setStatus", "syncing");
       expect(statusSpy).not.toHaveBeenCalled();
     });
 
@@ -278,8 +293,8 @@ describe("InteractiveUIService", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const statusSpy = vi.fn();
       const updateSpy = vi.fn();
-      appEvents.on("setStatus", statusSpy);
-      appEvents.on("updateLastSyncTime", updateSpy);
+      service.getEvents().on("setStatus", statusSpy);
+      service.getEvents().on("updateLastSyncTime", updateSpy);
 
       await service.destroy();
 
@@ -348,7 +363,7 @@ describe("InteractiveUIService", () => {
     it("should set status to syncing then idle", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const statusChanges: string[] = [];
-      appEvents.on("setStatus", (status: string) => statusChanges.push(status));
+      service.getEvents().on("setStatus", (status: string) => statusChanges.push(status));
 
       await service.triggerInitialSync();
 
@@ -361,7 +376,7 @@ describe("InteractiveUIService", () => {
     it("should update last sync time after sync", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const updateSpy = vi.fn();
-      appEvents.on("updateLastSyncTime", updateSpy);
+      service.getEvents().on("updateLastSyncTime", updateSpy);
 
       await service.triggerInitialSync();
 
@@ -483,7 +498,7 @@ describe("InteractiveUIService", () => {
     it("should skip reload when no config file in single-repo mode", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const setStatusSpy = vi.fn();
-      appEvents.on("setStatus", setStatusSpy);
+      service.getEvents().on("setStatus", setStatusSpy);
 
       const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
 
@@ -817,7 +832,7 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService, mockSyncService], "/test/config.js");
 
         const repoCountSpy = vi.fn();
-        appEvents.on("updateRepositoryCount", repoCountSpy);
+        service.getEvents().on("updateRepositoryCount", repoCountSpy);
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
@@ -1090,7 +1105,7 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
 
         const cronScheduleSpy = vi.fn();
-        appEvents.on("updateCronSchedule", cronScheduleSpy);
+        service.getEvents().on("updateCronSchedule", cronScheduleSpy);
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
@@ -1372,7 +1387,7 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
         await service.createWorktreeForBranch(0, "feature/new");
 
-        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/new", "/test/worktrees/feature/new");
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/new", "/test/worktrees/feature-new");
 
         service.destroy();
       });

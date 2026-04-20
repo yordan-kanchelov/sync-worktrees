@@ -6,6 +6,10 @@ export class PathResolutionService {
     return branchName.replace(/\//g, "-").replace(/[^a-zA-Z0-9_-]/g, "_");
   }
 
+  getBranchWorktreePath(worktreeDir: string, branchName: string): string {
+    return path.join(worktreeDir, this.sanitizeBranchName(branchName));
+  }
+
   normalizeWorktreePath(worktreePath: string, worktreeBaseDir: string): string {
     const resolved = path.resolve(worktreePath);
     const resolvedBase = path.resolve(worktreeBaseDir);

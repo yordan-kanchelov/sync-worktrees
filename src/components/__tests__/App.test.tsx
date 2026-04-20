@@ -1,18 +1,21 @@
 import React from "react";
 import { render } from "ink-testing-library";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import App, { AppProps } from "../App";
-import { appEvents } from "../../utils/app-events";
+import { AppEventEmitter } from "../../utils/app-events";
 
 // Helper to wait for React state updates
 const waitForStateUpdate = () => new Promise(resolve => setTimeout(resolve, 100));
 
 describe("App", () => {
   let defaultProps: AppProps;
+  let appEvents: AppEventEmitter;
 
   beforeEach(() => {
+    appEvents = new AppEventEmitter();
     defaultProps = {
+      events: appEvents,
       repositoryCount: 3,
       cronSchedule: "0 * * * *",
       onManualSync: vi.fn(),
@@ -28,12 +31,6 @@ describe("App", () => {
       createWorktreeForBranch: vi.fn().mockResolvedValue(undefined),
       getWorktreeStatusForRepo: vi.fn().mockResolvedValue([]),
     };
-
-    appEvents.removeAllListeners();
-  });
-
-  afterEach(() => {
-    appEvents.removeAllListeners();
   });
 
   describe("rendering", () => {

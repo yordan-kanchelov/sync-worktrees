@@ -242,24 +242,15 @@ branch refs/heads/dirty-branch
         return undefined;
       });
 
-      // Mock status checks and other safety checks
-      const statusChecks = new Map([
-        ["/test/worktrees/old-feature", true], // Clean, can remove
-        ["/test/worktrees/dirty-branch", false], // Has changes, skip
-      ]);
-
-      (mockGit.status as Mock<any>).mockImplementation(async () => {
-        const currentPath = (simpleGit as unknown as Mock<any>).mock.calls.slice(-1)[0][0] as string;
-        const isClean = statusChecks.get(currentPath) ?? true;
-        return {
-          modified: isClean ? [] : ["file.txt"],
-          deleted: [],
-          renamed: [],
-          created: [],
-          conflicted: [],
-          not_added: [],
-        } as any;
-      });
+      const cleanStatus = {
+        modified: [],
+        deleted: [],
+        renamed: [],
+        created: [],
+        conflicted: [],
+        not_added: [],
+      };
+      const dirtyStatus = { ...cleanStatus, modified: ["file.txt"] };
 
       // Reset the mock implementation before defining the new one
       (mockGit.raw as Mock<any>).mockReset();
@@ -314,12 +305,14 @@ branch refs/heads/dirty-branch
             ...mockGit,
             stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
             branch: vi.fn<any>().mockResolvedValue({ current: "old-feature" }),
+            status: vi.fn<any>().mockResolvedValue(cleanStatus),
           };
         } else if (pathStr && pathStr.includes("dirty-branch")) {
           return {
             ...mockGit,
             stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
             branch: vi.fn<any>().mockResolvedValue({ current: "dirty-branch" }),
+            status: vi.fn<any>().mockResolvedValue(dirtyStatus),
           };
         } else if (pathStr && pathStr.includes(".bare")) {
           // For bare repo (used by addWorktree)

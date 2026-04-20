@@ -12,7 +12,7 @@ type EventCallback<T> = T extends void ? () => void : (payload: T) => void;
 
 type AnyEventCallback = EventCallback<AppEventMap[keyof AppEventMap]>;
 
-class AppEventEmitter {
+export class AppEventEmitter {
   private listeners: Map<keyof AppEventMap, Set<AnyEventCallback>> = new Map();
 
   on<K extends keyof AppEventMap>(event: K, callback: EventCallback<AppEventMap[K]>): () => void {
@@ -49,5 +49,3 @@ class AppEventEmitter {
     this.listeners.clear();
   }
 }
-
-export const appEvents = new AppEventEmitter();

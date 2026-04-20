@@ -4,6 +4,7 @@ import pLimit from "p-limit";
 import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG } from "../constants";
+import { PathResolutionService } from "../services/path-resolution.service";
 
 import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } from "./utils";
 
@@ -193,7 +194,15 @@ export async function handleCreateWorktree(
   }
 
   const worktreeDir = service.config.worktreeDir;
-  const worktreePath = path.join(worktreeDir, branchName.replace(/\//g, "-"));
+  const worktreePath = new PathResolutionService().getBranchWorktreePath(worktreeDir, branchName);
+  const resolvedPath = path.resolve(worktreePath);
+  const existing = await git.getWorktrees();
+  const collision = existing.find((w) => path.resolve(w.path) === resolvedPath && w.branch !== branchName);
+  if (collision) {
+    throw new Error(
+      `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
+    );
+  }
   await git.addWorktree(branchName, worktreePath);
 
   return formatToolResponse({

@@ -179,7 +179,7 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
     // Verify same number of worktrees
     const worktreesAfter = await fs.readdir(worktreeDir);
     expect(worktreesAfter.length).toBe(worktrees.length);
-  }, 30000);
+  }, 180000);
 
   it("should handle github/gitignore repository with many branches", async () => {
     const testDir = path.join(tmpBase, "gitignore-test");
@@ -270,5 +270,5 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
         console.log(`Could not diff main..${nonMainBranch}`);
       }
     }
-  }, 30000);
+  }, 600000);
 });

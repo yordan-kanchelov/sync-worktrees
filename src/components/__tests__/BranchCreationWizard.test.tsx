@@ -84,11 +84,12 @@ describe("BranchCreationWizard", () => {
       expect(lastFrame()).toContain("Select base branch");
     });
 
-    it("should close wizard on ESC", () => {
+    it("should close wizard on ESC", async () => {
       const onClose = vi.fn();
       const { stdin } = render(<BranchCreationWizard {...defaultProps} onClose={onClose} />);
 
       stdin.write("\x1b"); // ESC
+      await waitForStateUpdate();
       expect(onClose).toHaveBeenCalled();
     });
   });
