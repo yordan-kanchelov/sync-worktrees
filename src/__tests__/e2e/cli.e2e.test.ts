@@ -4,6 +4,11 @@ import * as path from "path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { PathResolutionService } from "../../services/path-resolution.service";
+
+const pathRes = new PathResolutionService();
+const currentBranch = (cwd: string): string => execSync("git branch --show-current", { cwd, encoding: "utf-8" }).trim();
+
 // This test requires git to be installed and internet access
 // To skip: SKIP_E2E_TESTS=true pnpm test
 const shouldSkip = process.env.SKIP_E2E_TESTS === "true";
@@ -54,11 +59,11 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
     const worktrees = await fs.readdir(worktreeDir);
     console.log("Created worktrees:", worktrees);
     expect(worktrees.length).toBeGreaterThanOrEqual(2); // At least master and one other branch
-    const masterDir = worktrees.find((w) => w === "master" || w.startsWith("master-"));
-    expect(masterDir).toBeDefined();
+    const masterDir = "master";
+    expect(worktrees).toContain(masterDir);
 
     // Step 4: Test git operations in master worktree
-    const masterWorktreePath = path.join(worktreeDir, masterDir!);
+    const masterWorktreePath = path.join(worktreeDir, masterDir);
 
     // Check git status
     const status = execSync("git status --porcelain", {
@@ -67,12 +72,7 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
     });
     expect(status).toBe(""); // Should be clean
 
-    // Check current branch
-    const branch = execSync("git branch --show-current", {
-      cwd: masterWorktreePath,
-      encoding: "utf-8",
-    }).trim();
-    expect(branch).toBe("master");
+    expect(currentBranch(masterWorktreePath)).toBe("master");
 
     // Check README exists
     const readmeExists = await fs
@@ -93,10 +93,7 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
     const nonDefaultDir = worktrees.find((w) => w !== masterDir);
     if (nonDefaultDir) {
       const nonDefaultPath = path.join(worktreeDir, nonDefaultDir);
-      const nonDefaultBranch = execSync("git branch --show-current", {
-        cwd: nonDefaultPath,
-        encoding: "utf-8",
-      }).trim();
+      const nonDefaultBranch = currentBranch(nonDefaultPath);
       console.log(`Testing git operations on non-default branch: ${nonDefaultBranch} (dir: ${nonDefaultDir})`);
 
       // Test git status
@@ -107,7 +104,7 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
       expect(nonDefaultStatus).toBe(""); // Should be clean
 
       expect(nonDefaultBranch).not.toBe("master");
-      expect(nonDefaultBranch.length).toBeGreaterThan(0);
+      expect(pathRes.sanitizeBranchName(nonDefaultBranch)).toBe(nonDefaultDir);
 
       // Test git pull (may not have upstream tracking due to parallel creation lock contention)
       try {
@@ -202,11 +199,11 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
     const worktrees = await fs.readdir(worktreeDir);
     console.log(`Created ${worktrees.length} worktrees for gitignore repo`);
     expect(worktrees.length).toBeGreaterThan(3); // Should have several branches
-    const mainDir = worktrees.find((w) => w === "main" || w.startsWith("main-"));
-    expect(mainDir).toBeDefined();
+    const mainDir = "main";
+    expect(worktrees).toContain(mainDir);
 
     // Check a worktree has .gitignore files
-    const mainPath = path.join(worktreeDir, mainDir!);
+    const mainPath = path.join(worktreeDir, mainDir);
     const files = await fs.readdir(mainPath);
     const gitignoreFiles = files.filter((f) => f.endsWith(".gitignore"));
     expect(gitignoreFiles.length).toBeGreaterThan(0);
@@ -215,10 +212,7 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
     const nonMainDir = worktrees.find((w) => w !== mainDir);
     if (nonMainDir) {
       const nonMainPath = path.join(worktreeDir, nonMainDir);
-      const nonMainBranch = execSync("git branch --show-current", {
-        cwd: nonMainPath,
-        encoding: "utf-8",
-      }).trim();
+      const nonMainBranch = currentBranch(nonMainPath);
       console.log(`Testing git operations on non-default branch: ${nonMainBranch} (dir: ${nonMainDir})`);
 
       // Test git status
@@ -229,7 +223,7 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
       expect(status).toBe(""); // Should be clean
 
       expect(nonMainBranch).not.toBe("main");
-      expect(nonMainBranch.length).toBeGreaterThan(0);
+      expect(pathRes.sanitizeBranchName(nonMainBranch)).toBe(nonMainDir);
 
       // Test git pull (may not have upstream tracking due to parallel creation lock contention)
       try {
