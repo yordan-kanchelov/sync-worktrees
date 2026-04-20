@@ -161,9 +161,7 @@ export class RepositoryContext {
       safeMtimeMs(path.join(cached.result.bareRepoPath, "worktrees")),
     ]);
 
-    return (
-      currentHeadMtime === cached.worktreeHeadMtimeMs && currentWorktreesDirMtime === cached.worktreesDirMtimeMs
-    );
+    return currentHeadMtime === cached.worktreeHeadMtimeMs && currentWorktreesDirMtime === cached.worktreesDirMtimeMs;
   }
 
   private async detectFromPathUncached(
