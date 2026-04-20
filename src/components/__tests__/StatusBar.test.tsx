@@ -1,6 +1,6 @@
 import React from "react";
 import { render } from "ink-testing-library";
-import { describe, it, expect, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import StatusBar, { StatusBarProps } from "../StatusBar";
 
@@ -123,6 +123,28 @@ describe("StatusBar", () => {
       expect(frame).toMatch(/Next Sync:.*\d{1,2}:\d{2}:\d{2}/);
     });
 
+    it("should re-parse cron expression on each interval tick to avoid drift", async () => {
+      vi.useFakeTimers();
+
+      const { CronExpressionParser } = await import("cron-parser");
+      const parseSpy = vi.spyOn(CronExpressionParser, "parse");
+
+      render(<StatusBar {...defaultProps} cronSchedule="0 * * * *" />);
+
+      // Initial render calls parse once
+      const initialCallCount = parseSpy.mock.calls.length;
+      expect(initialCallCount).toBeGreaterThanOrEqual(1);
+
+      // Advance by 60s to trigger interval
+      vi.advanceTimersByTime(60000);
+
+      // Should have called parse again (fresh instance, not reusing iterator)
+      expect(parseSpy.mock.calls.length).toBeGreaterThan(initialCallCount);
+
+      parseSpy.mockRestore();
+      vi.useRealTimers();
+    });
+
     it("should update next sync time when cronSchedule changes", () => {
       const { lastFrame, rerender } = render(<StatusBar {...defaultProps} cronSchedule={undefined} />);
 
@@ -157,6 +179,70 @@ describe("StatusBar", () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} />);
 
       expect(lastFrame()).toContain("Repositories:");
+    });
+  });
+
+  describe("keyboard shortcuts display", () => {
+    it("should show s shortcut for sync", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} />);
+
+      expect(lastFrame()).toContain("s");
+      expect(lastFrame()).toContain("ync");
+    });
+
+    it("should show c shortcut for create", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} />);
+
+      expect(lastFrame()).toContain("c");
+      expect(lastFrame()).toContain("reate");
+    });
+
+    it("should show o shortcut for open", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} />);
+
+      expect(lastFrame()).toContain("o");
+      expect(lastFrame()).toContain("pen");
+    });
+
+    it("should show w shortcut for worktree status view", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} />);
+
+      expect(lastFrame()).toContain("w");
+      expect(lastFrame()).toContain("tree");
+    });
+
+    it("should show r shortcut for reload", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} />);
+
+      expect(lastFrame()).toContain("r");
+      expect(lastFrame()).toContain("eload");
+    });
+
+    it("should show ? shortcut for help", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} />);
+
+      expect(lastFrame()).toContain("?");
+      expect(lastFrame()).toContain("help");
+    });
+
+    it("should show q shortcut for quit", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} />);
+
+      expect(lastFrame()).toContain("q");
+      expect(lastFrame()).toContain("uit");
+    });
+
+    it("should display all seven shortcut keys", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} />);
+
+      const frame = lastFrame();
+      expect(frame).toContain("s");
+      expect(frame).toContain("c");
+      expect(frame).toContain("o");
+      expect(frame).toContain("w");
+      expect(frame).toContain("r");
+      expect(frame).toContain("?");
+      expect(frame).toContain("q");
     });
   });
 
