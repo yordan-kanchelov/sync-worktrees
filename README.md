@@ -28,6 +28,7 @@ sync-worktrees maintains a **separate working directory for each remote branch**
 - 🔁 Automatic retry with exponential backoff for network and filesystem errors
 - 🕐 Branch age filtering - only sync branches active within a specified time period
 - 🔀 Smart handling of rebased/force-pushed branches with automatic divergence detection
+- 🤖 MCP server for AI assistants - inspect and manage worktrees from Claude Desktop, Claude Code, Cursor, etc.
 
 ## Installation
 
@@ -90,6 +91,61 @@ Per-platform terminal defaults (when no env override is set):
 - **macOS** — Ghostty if `Ghostty.app` is installed, otherwise Terminal.app via AppleScript.
 - **Linux** — `$TERMINAL` if set; otherwise the first found among the candidates above.
 - **Windows** — Windows Terminal (`wt.exe`) if available.
+
+## MCP Server
+
+sync-worktrees ships a [Model Context Protocol](https://modelcontextprotocol.io) server so AI assistants (Claude Desktop, Claude Code, Cursor, Windsurf, etc.) can inspect and manage your worktrees directly. Installing the package exposes a second binary, `sync-worktrees-mcp`, that speaks MCP over stdio.
+
+### Setup
+
+Add the server to your MCP client config. Use `npx` if the package is not installed globally:
+
+```json
+{
+  "mcpServers": {
+    "sync-worktrees": {
+      "command": "npx",
+      "args": ["-y", "sync-worktrees-mcp"],
+      "env": {
+        "SYNC_WORKTREES_CONFIG": "/absolute/path/to/sync-worktrees.config.js"
+      }
+    }
+  }
+}
+```
+
+If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. Sync and initialize require a loaded config (or call `load_config` at runtime).
+
+Client-specific locations:
+
+| Client | Config file |
+|--------|-------------|
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
+| Claude Code | `claude mcp add sync-worktrees -- npx -y sync-worktrees-mcp` |
+| Cursor | `~/.cursor/mcp.json` (or project-level `.cursor/mcp.json`) |
+
+### Available tools
+
+| Tool | Purpose |
+|------|---------|
+| `detect_context` | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report capabilities. |
+| `list_worktrees` | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. |
+| `get_worktree_status` | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress). |
+| `create_worktree` | Create a worktree for a branch; optionally create the branch from `baseBranch` and push. |
+| `remove_worktree` | Remove a worktree after safety checks; `force=true` skips validation. |
+| `update_worktree` | Fast-forward one worktree to match upstream. |
+| `sync` | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. |
+| `initialize` | Clone the bare repo and create the main worktree. Requires config. Streams progress. |
+| `load_config` | Load or reload a config file at runtime. |
+| `set_current_repository` | Select the active repo when multiple are configured. |
+
+All tools that target a single repo accept an optional `repoName`. When omitted, they use the current repository — set by auto-detect, the first entry in the config, or `set_current_repository`.
+
+### Safety
+
+- `remove_worktree` refuses to delete worktrees with uncommitted changes, unpushed commits, stashes, or operations in progress (merge/rebase/cherry-pick/revert/bisect). Pass `force=true` to override.
+- `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk.
+- Path-targeted tools verify the supplied path is a registered worktree of the selected repository.
 
 ## Options
 
@@ -381,6 +437,7 @@ This ensures you never lose work due to force pushes while keeping your worktree
 - Node.js >= 22.0.0
 - Git
 - [`tmux`](https://github.com/tmux/tmux) (optional, required only for Terminal mode in the TUI)
+- An MCP-capable client (optional, only for the `sync-worktrees-mcp` server)
 
 ## Contributing
 
