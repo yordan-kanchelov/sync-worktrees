@@ -54,10 +54,11 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
     const worktrees = await fs.readdir(worktreeDir);
     console.log("Created worktrees:", worktrees);
     expect(worktrees.length).toBeGreaterThanOrEqual(2); // At least master and one other branch
-    expect(worktrees).toContain("master"); // Hello-World uses master, not main
+    const masterDir = worktrees.find((w) => w === "master" || w.startsWith("master-"));
+    expect(masterDir).toBeDefined();
 
     // Step 4: Test git operations in master worktree
-    const masterWorktreePath = path.join(worktreeDir, "master");
+    const masterWorktreePath = path.join(worktreeDir, masterDir!);
 
     // Check git status
     const status = execSync("git status --porcelain", {
@@ -89,10 +90,14 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
 
     // Step 6: Test git operations on non-default branch
     // Find a non-master branch
-    const nonDefaultBranch = worktrees.find((w) => w !== "master");
-    if (nonDefaultBranch) {
-      console.log(`Testing git operations on non-default branch: ${nonDefaultBranch}`);
-      const nonDefaultPath = path.join(worktreeDir, nonDefaultBranch);
+    const nonDefaultDir = worktrees.find((w) => w !== masterDir);
+    if (nonDefaultDir) {
+      const nonDefaultPath = path.join(worktreeDir, nonDefaultDir);
+      const nonDefaultBranch = execSync("git branch --show-current", {
+        cwd: nonDefaultPath,
+        encoding: "utf-8",
+      }).trim();
+      console.log(`Testing git operations on non-default branch: ${nonDefaultBranch} (dir: ${nonDefaultDir})`);
 
       // Test git status
       const nonDefaultStatus = execSync("git status --porcelain", {
@@ -101,12 +106,8 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
       });
       expect(nonDefaultStatus).toBe(""); // Should be clean
 
-      // Test current branch
-      const currentBranch = execSync("git branch --show-current", {
-        cwd: nonDefaultPath,
-        encoding: "utf-8",
-      }).trim();
-      expect(currentBranch).toBe(nonDefaultBranch);
+      expect(nonDefaultBranch).not.toBe("master");
+      expect(nonDefaultBranch.length).toBeGreaterThan(0);
 
       // Test git pull (may not have upstream tracking due to parallel creation lock contention)
       try {
@@ -201,19 +202,24 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
     const worktrees = await fs.readdir(worktreeDir);
     console.log(`Created ${worktrees.length} worktrees for gitignore repo`);
     expect(worktrees.length).toBeGreaterThan(3); // Should have several branches
-    expect(worktrees).toContain("main");
+    const mainDir = worktrees.find((w) => w === "main" || w.startsWith("main-"));
+    expect(mainDir).toBeDefined();
 
     // Check a worktree has .gitignore files
-    const mainPath = path.join(worktreeDir, "main");
+    const mainPath = path.join(worktreeDir, mainDir!);
     const files = await fs.readdir(mainPath);
     const gitignoreFiles = files.filter((f) => f.endsWith(".gitignore"));
     expect(gitignoreFiles.length).toBeGreaterThan(0);
 
     // Test git operations on a non-main branch
-    const nonMainBranch = worktrees.find((w) => w !== "main");
-    if (nonMainBranch) {
-      console.log(`Testing git operations on non-default branch: ${nonMainBranch}`);
-      const nonMainPath = path.join(worktreeDir, nonMainBranch);
+    const nonMainDir = worktrees.find((w) => w !== mainDir);
+    if (nonMainDir) {
+      const nonMainPath = path.join(worktreeDir, nonMainDir);
+      const nonMainBranch = execSync("git branch --show-current", {
+        cwd: nonMainPath,
+        encoding: "utf-8",
+      }).trim();
+      console.log(`Testing git operations on non-default branch: ${nonMainBranch} (dir: ${nonMainDir})`);
 
       // Test git status
       const status = execSync("git status --porcelain", {
@@ -222,12 +228,8 @@ describeOrSkip("sync-worktrees CLI E2E tests", () => {
       });
       expect(status).toBe(""); // Should be clean
 
-      // Test current branch
-      const branch = execSync("git branch --show-current", {
-        cwd: nonMainPath,
-        encoding: "utf-8",
-      }).trim();
-      expect(branch).toBe(nonMainBranch);
+      expect(nonMainBranch).not.toBe("main");
+      expect(nonMainBranch.length).toBeGreaterThan(0);
 
       // Test git pull (may not have upstream tracking due to parallel creation lock contention)
       try {

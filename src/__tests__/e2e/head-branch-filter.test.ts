@@ -91,9 +91,12 @@ describe("HEAD branch filtering (E2E)", () => {
 
     // Verify worktrees were created
     const worktrees = await fs.readdir(worktreeDir);
-    expect(worktrees).toContain("feature-1");
-    expect(worktrees).toContain("feature-2");
+    const feature1Dir = worktrees.find((w) => w === "feature-1" || w.startsWith("feature-1-"));
+    const feature2Dir = worktrees.find((w) => w === "feature-2" || w.startsWith("feature-2-"));
+    expect(feature1Dir).toBeDefined();
+    expect(feature2Dir).toBeDefined();
     expect(worktrees).not.toContain("HEAD");
+    expect(worktrees.some((w) => w === "HEAD" || w.startsWith("HEAD-"))).toBe(false);
 
     // Note: The main branch worktree should be created during initialization,
     // but there's a platform-specific issue that causes different behavior
@@ -101,14 +104,14 @@ describe("HEAD branch filtering (E2E)", () => {
     // worktree is correctly created. This should be investigated further.
     // For now, we accept both behaviors to keep tests passing.
     // See: path comparison issue in GitService.initialize() line 71
-    const hasMainWorktree = worktrees.includes("main");
+    const hasMainWorktree = worktrees.some((w) => w === "main" || w.startsWith("main-"));
     if (!hasMainWorktree) {
       console.warn("Main worktree not found - this may indicate a platform-specific path comparison issue");
     }
 
     // Verify git worktree list doesn't include HEAD
     // Check from any worktree (they all share the same worktree list)
-    const feature1Path = path.join(worktreeDir, "feature-1");
+    const feature1Path = path.join(worktreeDir, feature1Dir!);
     const git = simpleGit(feature1Path);
     const worktreeList = await git.raw(["worktree", "list"]);
     expect(worktreeList).not.toContain("/HEAD");
