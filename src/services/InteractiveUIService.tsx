@@ -209,6 +209,7 @@ export class InteractiveUIService {
       return;
     }
     this.reloadInProgress = true;
+    let cronJobsCancelled = false;
     try {
       if (!this.configPath) {
         this.setStatus("idle");
@@ -254,6 +255,7 @@ export class InteractiveUIService {
 
       // Cancel old cron jobs only after new config is validated and services initialized
       this.cancelCronJobs();
+      cronJobsCancelled = true;
 
       this.syncServices = newServices;
       this.repositoryCount = this.syncServices.length;
@@ -280,7 +282,9 @@ export class InteractiveUIService {
       }
     } catch (error) {
       this.addLog(`Reload failed: ${(error as Error).message}`, "error");
-      this.setupCronJobs();
+      if (cronJobsCancelled) {
+        this.setupCronJobs();
+      }
       this.setStatus("idle");
     } finally {
       this.reloadInProgress = false;
@@ -536,10 +540,15 @@ export class InteractiveUIService {
 
     const service = this.syncServices[repoIndex];
     const worktreeDir = service.config.worktreeDir;
-    const divergedBase = path.resolve(path.join(worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME));
-    const targetPath = path.resolve(path.join(divergedBase, name));
+    const divergedBase = path.resolve(worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
 
-    if (!targetPath.startsWith(divergedBase + path.sep) && targetPath !== divergedBase) {
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+      throw new Error(`Invalid diverged directory name: "${name}"`);
+    }
+
+    const targetPath = path.join(divergedBase, name);
+
+    if (!this.pathResolution.isPathInsideBaseDir(targetPath, divergedBase)) {
       throw new Error(`Path traversal rejected: "${name}" resolves outside the diverged directory`);
     }
 

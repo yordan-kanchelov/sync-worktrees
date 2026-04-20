@@ -31,53 +31,10 @@ describe("WorktreeMetadataService", () => {
       expect(metadataPath).toBe("/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json");
     });
 
-    it("should handle branch names with slashes by replacing with dashes", async () => {
-      const branchWithSlash = "fix/test-branch";
-
-      const metadataPath = await service.getMetadataPath(mockBareRepoPath, branchWithSlash);
-
-      // getMetadataPath replaces slashes with dashes to avoid nested dirs while keeping uniqueness
-      expect(metadataPath).toBe("/test/bare/repo/.git/worktrees/fix-test-branch/sync-metadata.json");
-    });
-
-    it("should migrate metadata from old path to new path for branches with slashes", async () => {
-      const worktreePath = "/test/worktrees/fix/test-branch";
-      const oldMetadata = {
-        lastSyncCommit: "abc123",
-        lastSyncDate: "2024-01-15T10:00:00Z",
-        upstreamBranch: "origin/fix/test-branch",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
-      };
-
-      // Mock readFile to fail for new path (doesn't exist yet) and succeed for old path
-      (fs.readFile as Mock<any>)
-        .mockRejectedValueOnce(new Error("ENOENT")) // First try: new path doesn't exist
-        .mockResolvedValueOnce(JSON.stringify(oldMetadata)); // Fallback: old path exists
-
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.unlink as Mock<any>).mockResolvedValue(undefined);
-      (fs.rmdir as Mock<any>).mockResolvedValue(undefined);
-
-      const result = await service.loadMetadataFromPath(mockBareRepoPath, worktreePath);
-
-      // Should have loaded from old path
-      expect(result).toEqual(oldMetadata);
-
-      // Should have migrated to new path (using basename) via atomic write
-      expect(fs.writeFile).toHaveBeenCalledWith(
-        "/test/bare/repo/.git/worktrees/test-branch/sync-metadata.json.tmp",
-        JSON.stringify(oldMetadata, null, 2),
-        "utf-8",
+    it("should reject worktree names containing path separators", async () => {
+      await expect(service.getMetadataPath(mockBareRepoPath, "fix/test-branch")).rejects.toThrow(
+        /filesystem-safe worktree directory name/,
       );
-      expect(fs.rename).toHaveBeenCalledWith(
-        "/test/bare/repo/.git/worktrees/test-branch/sync-metadata.json.tmp",
-        "/test/bare/repo/.git/worktrees/test-branch/sync-metadata.json",
-      );
-
-      // Should have cleaned up old path
-      expect(fs.unlink).toHaveBeenCalledWith("/test/bare/repo/.git/worktrees/fix/test-branch/sync-metadata.json");
     });
   });
 
@@ -258,7 +215,7 @@ describe("WorktreeMetadataService", () => {
       expect(savedData.syncHistory[9].commit).toBe("new456");
     });
 
-    it("should create initial metadata when none exists", async () => {
+    it("should skip writing metadata when none exists and upstream context is unavailable", async () => {
       (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
@@ -266,10 +223,8 @@ describe("WorktreeMetadataService", () => {
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456");
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "No metadata found for worktree feature-branch, creating initial metadata",
-      );
-      expect(fs.writeFile).toHaveBeenCalled();
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("upstream/parent context is unavailable"));
+      expect(fs.writeFile).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
@@ -433,50 +388,6 @@ describe("WorktreeMetadataService", () => {
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.stringContaining("Corrupted metadata for /test/worktrees/feature"),
       );
-
-      consoleSpy.mockRestore();
-    });
-
-    it("should migrate and validate metadata from old path", async () => {
-      const validMetadata: SyncMetadata = {
-        lastSyncCommit: "abc123",
-        lastSyncDate: "2024-01-15T10:00:00Z",
-        upstreamBranch: "origin/fix/test-branch",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
-      };
-
-      (fs.readFile as Mock<any>)
-        .mockRejectedValueOnce(new Error("ENOENT"))
-        .mockResolvedValueOnce(JSON.stringify(validMetadata));
-
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.unlink as Mock<any>).mockResolvedValue(undefined);
-      (fs.rmdir as Mock<any>).mockResolvedValue(undefined);
-
-      const result = await service.loadMetadataFromPath(mockBareRepoPath, "/test/worktrees/fix/test-branch");
-
-      expect(result).toEqual(validMetadata);
-    });
-
-    it("should return null when old path metadata is corrupted", async () => {
-      const corruptedMetadata = {
-        lastSyncCommit: "invalid-hash!@#",
-        lastSyncDate: "2024-01-15T10:00:00Z",
-        upstreamBranch: "origin/fix/test",
-      };
-
-      (fs.readFile as Mock<any>)
-        .mockRejectedValueOnce(new Error("ENOENT"))
-        .mockResolvedValueOnce(JSON.stringify(corruptedMetadata));
-
-      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      const result = await service.loadMetadataFromPath(mockBareRepoPath, "/test/worktrees/fix/test-branch");
-
-      expect(result).toBeNull();
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Corrupted metadata at old path"));
 
       consoleSpy.mockRestore();
     });

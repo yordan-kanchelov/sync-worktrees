@@ -7,6 +7,10 @@ import type { HookContext } from "../../types";
 
 const WAIT_TIME = 500;
 
+const NODE = process.execPath;
+
+const nodeScript = (body: string): string => `"${NODE}" -e "${body.replace(/"/g, '\\"')}"`;
+
 describe("HookExecutionService", () => {
   let service: HookExecutionService;
   let mockContext: HookContext;
@@ -39,7 +43,9 @@ describe("HookExecutionService", () => {
       const stdoutCallback = vi.fn();
 
       service.executeOnBranchCreated(
-        { onBranchCreated: [`echo $${HOOK_CONSTANTS.ENV_VARS.BRANCH_NAME}`] },
+        {
+          onBranchCreated: [nodeScript(`process.stdout.write(process.env['${HOOK_CONSTANTS.ENV_VARS.BRANCH_NAME}'])`)],
+        },
         mockContext,
         { onStdout: stdoutCallback },
       );
@@ -55,7 +61,9 @@ describe("HookExecutionService", () => {
       service.executeOnBranchCreated(
         {
           onBranchCreated: [
-            `echo "$${HOOK_CONSTANTS.ENV_VARS.BRANCH_NAME},$${HOOK_CONSTANTS.ENV_VARS.REPO_NAME},$${HOOK_CONSTANTS.ENV_VARS.BASE_BRANCH}"`,
+            nodeScript(
+              `process.stdout.write([process.env['${HOOK_CONSTANTS.ENV_VARS.BRANCH_NAME}'], process.env['${HOOK_CONSTANTS.ENV_VARS.REPO_NAME}'], process.env['${HOOK_CONSTANTS.ENV_VARS.BASE_BRANCH}']].join(','))`,
+            ),
           ],
         },
         mockContext,
@@ -70,17 +78,23 @@ describe("HookExecutionService", () => {
     it.each([
       {
         desc: "two placeholders",
-        template: "echo {BRANCH_NAME} {WORKTREE_PATH}",
+        template:
+          nodeScript("process.stdout.write([process.argv[1], process.argv[2]].join(' '))") +
+          " {BRANCH_NAME} {WORKTREE_PATH}",
         expected: "feature/test-branch /tmp",
       },
       {
         desc: "three placeholders",
-        template: "echo {BRANCH_NAME} {REPO_NAME} {BASE_BRANCH}",
+        template:
+          nodeScript("process.stdout.write([process.argv[1], process.argv[2], process.argv[3]].join(' '))") +
+          " {BRANCH_NAME} {REPO_NAME} {BASE_BRANCH}",
         expected: "feature/test-branch test-repo main",
       },
       {
         desc: "repeated placeholder",
-        template: "echo {BRANCH_NAME} {BRANCH_NAME} {BRANCH_NAME}",
+        template:
+          nodeScript("process.stdout.write([process.argv[1], process.argv[2], process.argv[3]].join(' '))") +
+          " {BRANCH_NAME} {BRANCH_NAME} {BRANCH_NAME}",
         expected: "feature/test-branch feature/test-branch feature/test-branch",
       },
     ])("should replace placeholders correctly ($desc)", async ({ template, expected }) => {
@@ -97,32 +111,34 @@ describe("HookExecutionService", () => {
 
     it("should call onComplete callback when command succeeds", async () => {
       const completeCallback = vi.fn();
+      const command = nodeScript("process.stdout.write('success')");
 
-      service.executeOnBranchCreated({ onBranchCreated: ["echo success"] }, mockContext, {
+      service.executeOnBranchCreated({ onBranchCreated: [command] }, mockContext, {
         onComplete: completeCallback,
       });
 
       await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
-      expect(completeCallback).toHaveBeenCalledWith("echo success", 0);
+      expect(completeCallback).toHaveBeenCalledWith(command, 0);
     });
 
     it("should call onComplete with non-zero exit code for failing command", async () => {
       const completeCallback = vi.fn();
+      const command = nodeScript("process.exit(1)");
 
-      service.executeOnBranchCreated({ onBranchCreated: ["exit 1"] }, mockContext, {
+      service.executeOnBranchCreated({ onBranchCreated: [command] }, mockContext, {
         onComplete: completeCallback,
       });
 
       await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
-      expect(completeCallback).toHaveBeenCalledWith("exit 1", 1);
+      expect(completeCallback).toHaveBeenCalledWith(command, 1);
     });
 
     it("should call onStderr for commands that write to stderr", async () => {
       const stderrCallback = vi.fn();
 
-      service.executeOnBranchCreated({ onBranchCreated: ["echo error >&2"] }, mockContext, {
+      service.executeOnBranchCreated({ onBranchCreated: [nodeScript("process.stderr.write('error')")] }, mockContext, {
         onStderr: stderrCallback,
       });
 
@@ -136,7 +152,11 @@ describe("HookExecutionService", () => {
 
       service.executeOnBranchCreated(
         {
-          onBranchCreated: ["echo first", "echo second", "echo third"],
+          onBranchCreated: [
+            nodeScript("process.stdout.write('first')"),
+            nodeScript("process.stdout.write('second')"),
+            nodeScript("process.stdout.write('third')"),
+          ],
         },
         mockContext,
         { onStdout: stdoutCallback },
@@ -153,7 +173,7 @@ describe("HookExecutionService", () => {
     it("should not block when command takes long time", () => {
       const startTime = Date.now();
 
-      service.executeOnBranchCreated({ onBranchCreated: ["sleep 5"] }, mockContext);
+      service.executeOnBranchCreated({ onBranchCreated: [nodeScript("setTimeout(() => {}, 5000)")] }, mockContext);
 
       const elapsed = Date.now() - startTime;
 
@@ -171,9 +191,13 @@ describe("HookExecutionService", () => {
         worktreePath: "/tmp",
       };
 
-      service.executeOnBranchCreated({ onBranchCreated: ["echo {BRANCH_NAME}"] }, contextWithSpecialChars, {
-        onStdout: stdoutCallback,
-      });
+      service.executeOnBranchCreated(
+        {
+          onBranchCreated: [nodeScript("process.stdout.write(process.argv[1])") + " {BRANCH_NAME}"],
+        },
+        contextWithSpecialChars,
+        { onStdout: stdoutCallback },
+      );
 
       await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
@@ -183,7 +207,7 @@ describe("HookExecutionService", () => {
     it("should not call callbacks for empty output", async () => {
       const stdoutCallback = vi.fn();
 
-      service.executeOnBranchCreated({ onBranchCreated: ["true"] }, mockContext, {
+      service.executeOnBranchCreated({ onBranchCreated: [nodeScript("process.exit(0)")] }, mockContext, {
         onStdout: stdoutCallback,
       });
 
@@ -197,7 +221,11 @@ describe("HookExecutionService", () => {
 
       service.executeOnBranchCreated(
         {
-          onBranchCreated: [`echo {BRANCH_NAME} "$${HOOK_CONSTANTS.ENV_VARS.REPO_NAME}"`],
+          onBranchCreated: [
+            nodeScript(
+              `process.stdout.write(process.argv[1] + ' ' + process.env['${HOOK_CONSTANTS.ENV_VARS.REPO_NAME}'])`,
+            ) + " {BRANCH_NAME}",
+          ],
         },
         mockContext,
         { onStdout: stdoutCallback },
@@ -216,9 +244,13 @@ describe("HookExecutionService", () => {
         branchName: "'; echo INJECTED; '",
       };
 
-      service.executeOnBranchCreated({ onBranchCreated: ["echo {BRANCH_NAME}"] }, maliciousContext, {
-        onStdout: stdoutCallback,
-      });
+      service.executeOnBranchCreated(
+        {
+          onBranchCreated: [nodeScript("process.stdout.write(process.argv[1])") + " {BRANCH_NAME}"],
+        },
+        maliciousContext,
+        { onStdout: stdoutCallback },
+      );
 
       await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
@@ -227,13 +259,12 @@ describe("HookExecutionService", () => {
     });
 
     it("should clean up active processes", async () => {
-      service.executeOnBranchCreated({ onBranchCreated: ["sleep 10"] }, mockContext);
+      service.executeOnBranchCreated({ onBranchCreated: [nodeScript("setTimeout(() => {}, 10000)")] }, mockContext);
 
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       service.cleanup();
 
-      // After cleanup, activeProcesses should be empty
       expect((service as any).activeProcesses.size).toBe(0);
     });
 
@@ -245,41 +276,61 @@ describe("HookExecutionService", () => {
         worktreePath: "/tmp",
       };
 
-      service.executeOnBranchCreated({ onBranchCreated: ["pwd"] }, contextWithTmpPath, {
-        onStdout: stdoutCallback,
-      });
+      service.executeOnBranchCreated(
+        { onBranchCreated: [nodeScript("process.stdout.write(process.cwd())")] },
+        contextWithTmpPath,
+        { onStdout: stdoutCallback },
+      );
 
       await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
-      expect(stdoutCallback).toHaveBeenCalledWith(expect.stringContaining("/tmp"));
+      expect(stdoutCallback).toHaveBeenCalledWith(expect.stringContaining("tmp"));
     });
 
     it("should track active processes and remove on completion", async () => {
-      service.executeOnBranchCreated({ onBranchCreated: ["echo done"] }, mockContext);
+      service.executeOnBranchCreated({ onBranchCreated: [nodeScript("process.stdout.write('done')")] }, mockContext);
 
-      // Process should be tracked initially
       expect((service as any).activeProcesses.size).toBeGreaterThanOrEqual(0);
 
       await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
-      // After completion, process should be removed
       expect((service as any).activeProcesses.size).toBe(0);
+    });
+
+    it("should skip hook execution and warn when running on Windows", () => {
+      const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const stdoutCallback = vi.fn();
+
+      try {
+        service.executeOnBranchCreated({ onBranchCreated: [nodeScript("process.stdout.write('x')")] }, mockContext, {
+          onStdout: stdoutCallback,
+        });
+
+        expect(stdoutCallback).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("POSIX"));
+      } finally {
+        if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+        warnSpy.mockRestore();
+      }
     });
 
     it("should call onError callback when command times out", async () => {
       const errorCallback = vi.fn();
+      const command = nodeScript("setTimeout(() => {}, 10000)");
 
       service.setTimeoutMs(100);
 
       try {
-        service.executeOnBranchCreated({ onBranchCreated: ["sleep 10"] }, mockContext, {
+        service.executeOnBranchCreated({ onBranchCreated: [command] }, mockContext, {
           onError: errorCallback,
         });
 
         await new Promise((resolve) => setTimeout(resolve, 300));
 
         expect(errorCallback).toHaveBeenCalledWith(
-          "sleep 10",
+          command,
           expect.objectContaining({
             message: expect.stringContaining("timed out"),
           }),

@@ -4,7 +4,11 @@ import * as path from "path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_BRANCHES, createMockLogger } from "../../__tests__/test-utils";
+import { PathResolutionService } from "../path-resolution.service";
 import { WorktreeSyncService } from "../worktree-sync.service";
+
+const pathResolution = new PathResolutionService();
+const wtPath = (dir: string, branch: string): string => pathResolution.getBranchWorktreePath(dir, branch);
 
 import type { Config } from "../../types";
 import type { GitService } from "../git.service";
@@ -156,8 +160,8 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.getWorktrees).toHaveBeenCalled();
 
       // Should create new worktree for feature-2 (but not main, as it's the current branch)
-      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-2", path.join("/test/worktrees", "feature-2"));
-      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("main", path.join("/test/worktrees", "main"));
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-2", wtPath("/test/worktrees", "feature-2"));
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("main", wtPath("/test/worktrees", "main"));
 
       // Should check and remove old-branch
       expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
@@ -342,10 +346,10 @@ describe("WorktreeSyncService", () => {
 
       // Should skip main (current branch) and create the other 3
       expect(mockGitService.addWorktree).toHaveBeenCalledTimes(3);
-      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", path.join("/test/worktrees", "feature-1"));
-      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-2", path.join("/test/worktrees", "feature-2"));
-      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-3", path.join("/test/worktrees", "feature-3"));
-      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("main", path.join("/test/worktrees", "main"));
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", wtPath("/test/worktrees", "feature-1"));
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-2", wtPath("/test/worktrees", "feature-2"));
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-3", wtPath("/test/worktrees", "feature-3"));
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("main", wtPath("/test/worktrees", "main"));
     });
 
     it("should remove multiple stale worktrees", async () => {
@@ -544,15 +548,15 @@ describe("WorktreeSyncService", () => {
         // Slash branches are flattened to sanitized names to avoid nested-path collisions
         expect(mockGitService.addWorktree).toHaveBeenCalledWith(
           "feat/LCR-8879",
-          path.join("/test/worktrees", "feat-LCR-8879"),
+          wtPath("/test/worktrees", "feat/LCR-8879"),
         );
         expect(mockGitService.addWorktree).toHaveBeenCalledWith(
           "feat/PHX-3198",
-          path.join("/test/worktrees", "feat-PHX-3198"),
+          wtPath("/test/worktrees", "feat/PHX-3198"),
         );
         expect(mockGitService.addWorktree).toHaveBeenCalledWith(
           "bugfix/issue-123",
-          path.join("/test/worktrees", "bugfix-issue-123"),
+          wtPath("/test/worktrees", "bugfix/issue-123"),
         );
       });
 
@@ -890,6 +894,21 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.compareTreeContent).not.toHaveBeenCalled();
       expect(mockGitService.resetToUpstream).not.toHaveBeenCalled();
       expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("has unpushed commits"));
+    });
+
+    it("should count update task as success when fast-forward fails but diverged recovery succeeds", async () => {
+      mockGitService.canFastForward.mockResolvedValue(true);
+      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+      mockGitService.updateWorktree.mockRejectedValue(new Error("Not possible to fast-forward, aborting"));
+      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      mockGitService.compareTreeContent.mockResolvedValue(true);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasOperationInProgress.mockResolvedValue(false);
+
+      await service.sync();
+
+      expect(mockGitService.resetToUpstream).toHaveBeenCalledWith("/test/worktrees/feature-1", "feature-1");
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Processed 1/1 worktrees successfully"));
     });
   });
 

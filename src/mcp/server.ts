@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { buildUnsupportedContext } from "./context";
 import {
   handleCreateWorktree,
   handleDetectContext,
@@ -47,7 +48,12 @@ export function createServer(context: RepositoryContext): McpServer {
       mimeType: "application/json",
     },
     async (uri) => {
-      const discovered = await context.detectFromPath(process.cwd());
+      let discovered: unknown;
+      try {
+        discovered = await context.detectFromPath(process.cwd());
+      } catch (err) {
+        discovered = buildUnsupportedContext(process.cwd(), err instanceof Error ? err.message : String(err));
+      }
       return {
         contents: [
           {

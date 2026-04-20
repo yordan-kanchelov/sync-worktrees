@@ -191,6 +191,65 @@ describe("BranchCreationWizard", () => {
     });
   });
 
+  describe("empty-filter navigation", () => {
+    it("should keep a valid project selection after filtering to empty then clearing", async () => {
+      const getBranchesForRepo = vi.fn().mockResolvedValue(["main"]);
+      const props: BranchCreationWizardProps = {
+        ...defaultProps,
+        repositories: [
+          { index: 0, name: "alpha-repo", repoUrl: "https://example.com/alpha.git" },
+          { index: 1, name: "beta-repo", repoUrl: "https://example.com/beta.git" },
+        ],
+        getBranchesForRepo,
+      };
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      stdin.write("zz");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B"); // down arrow while filter empty
+      await waitForStateUpdate();
+      stdin.write("\u007F"); // backspace
+      stdin.write("\u007F"); // backspace
+      await waitForStateUpdate();
+
+      stdin.write("\r"); // Enter
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(getBranchesForRepo).toHaveBeenCalled();
+      expect(getBranchesForRepo.mock.calls[0][0]).toBeGreaterThanOrEqual(0);
+      expect(lastFrame()).toContain("Select base branch");
+    });
+
+    it("should keep a valid branch selection after filtering to empty then clearing", async () => {
+      const getBranchesForRepo = vi.fn().mockResolvedValue(["main", "develop", "feature/test"]);
+      const props: BranchCreationWizardProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "single-repo", repoUrl: "https://example.com/repo.git" }],
+        getBranchesForRepo,
+      };
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Select base branch");
+
+      stdin.write("zzz");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\u007F");
+      stdin.write("\u007F");
+      stdin.write("\u007F");
+      await waitForStateUpdate();
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Enter new branch name");
+    });
+  });
+
   describe("repo index correctness", () => {
     it("should use correct repo index when filter is active", async () => {
       const createAndPushBranch = vi.fn().mockResolvedValue({ success: true, finalName: "new-branch" });

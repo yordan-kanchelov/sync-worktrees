@@ -5,6 +5,7 @@ import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { PathResolutionService } from "../services/path-resolution.service";
+import { isValidGitBranchName } from "../utils/git-validation";
 import { pathsEqual } from "../utils/path-compare";
 
 import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } from "./utils";
@@ -20,6 +21,8 @@ type RepoScopedParams = { repoName?: string };
 type WorktreePathParams = RepoScopedParams & { path: string };
 type RepoService = Awaited<ReturnType<RepositoryContext["getService"]>>;
 type RepoGitService = ReturnType<RepoService["getGitService"]>;
+
+const pathResolution = new PathResolutionService();
 
 function ensureCapability(discovered: DiscoveredRepoContext | null, key: CapabilityKey, toolName: string): void {
   if (!discovered) return;
@@ -205,6 +208,13 @@ export async function handleCreateWorktree(
   params: { branchName: string; baseBranch?: string; push?: boolean; repoName?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
+  const { branchName, baseBranch, push } = params;
+
+  const validation = isValidGitBranchName(branchName);
+  if (!validation.valid) {
+    throw new Error(`Invalid branch name '${branchName}': ${validation.error}`);
+  }
+
   const { service, git } = await getReadyService(ctx, params.repoName, {
     capability: "canCreateWorktree",
     toolName: "create_worktree",
@@ -212,7 +222,6 @@ export async function handleCreateWorktree(
     ensureNotSyncing: true,
   });
 
-  const { branchName, baseBranch, push } = params;
   const existence = await git.branchExists(branchName);
 
   let created = false;
@@ -227,7 +236,7 @@ export async function handleCreateWorktree(
   }
 
   const worktreeDir = service.config.worktreeDir;
-  const worktreePath = new PathResolutionService().getBranchWorktreePath(worktreeDir, branchName);
+  const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
   const existing = await git.getWorktrees();
   const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
   if (collision) {

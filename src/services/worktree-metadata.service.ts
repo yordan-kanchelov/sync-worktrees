@@ -26,13 +26,15 @@ export class WorktreeMetadataService {
   }
 
   async getMetadataPath(bareRepoPath: string, worktreeName: string): Promise<string> {
-    // Replace slashes with dashes to avoid nested directory creation
-    // while keeping uniqueness (e.g., "feature/test" -> "feature-test")
-    const sanitizedName = worktreeName.replace(/\//g, "-");
+    if (worktreeName.includes("/") || worktreeName.includes("\\")) {
+      throw new Error(
+        `getMetadataPath requires a filesystem-safe worktree directory name, got '${worktreeName}'. Use getMetadataPathFromWorktreePath when starting from a raw branch name.`,
+      );
+    }
     return path.join(
       bareRepoPath,
       METADATA_CONSTANTS.WORKTREE_METADATA_PATH,
-      sanitizedName,
+      worktreeName,
       METADATA_CONSTANTS.METADATA_FILENAME,
     );
   }
@@ -89,46 +91,7 @@ export class WorktreeMetadataService {
 
       return metadata;
     } catch {
-      // Fallback: try loading from old path (using branch name with slashes)
-      // This handles migration from the old broken path structure
-      try {
-        const branchName = path.basename(worktreePath);
-        // Check if branch name might have had slashes (parent dir would exist)
-        const parentDir = path.dirname(worktreePath);
-        const possibleBranchWithSlash = path.join(path.basename(parentDir), branchName);
-
-        // Try the old path with potential slash in branch name
-        const oldPath = path.join(
-          bareRepoPath,
-          METADATA_CONSTANTS.WORKTREE_METADATA_PATH,
-          possibleBranchWithSlash,
-          METADATA_CONSTANTS.METADATA_FILENAME,
-        );
-        const content = await fs.readFile(oldPath, "utf-8");
-        const metadata = JSON.parse(content) as SyncMetadata;
-
-        if (!(await this.validateMetadata(metadata))) {
-          this.logger.warn(`Corrupted metadata at old path ${oldPath}, treating as missing`);
-          return null;
-        }
-
-        // Migrate to new path
-        await this.saveMetadata(bareRepoPath, this.getWorktreeDirectoryName(worktreePath), metadata);
-
-        // Clean up old path
-        try {
-          await fs.unlink(oldPath);
-          // Try to remove empty parent directory
-          await fs.rm(path.dirname(oldPath), { recursive: false, force: true });
-        } catch {
-          // Ignore cleanup errors
-        }
-
-        return metadata;
-      } catch {
-        // Return null if file doesn't exist or can't be parsed
-        return null;
-      }
+      return null;
     }
   }
 
@@ -167,14 +130,8 @@ export class WorktreeMetadataService {
     const existing = await this.loadMetadata(bareRepoPath, worktreeName);
 
     if (!existing) {
-      this.logger.warn(`No metadata found for worktree ${worktreeName}, creating initial metadata`);
-      await this.createInitialMetadata(
-        bareRepoPath,
-        worktreeName,
-        commit,
-        `origin/${worktreeName}`,
-        GIT_CONSTANTS.DEFAULT_BRANCH,
-        commit,
+      this.logger.warn(
+        `No metadata found for worktree ${worktreeName}; skipping update because upstream/parent context is unavailable`,
       );
       return;
     }

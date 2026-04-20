@@ -331,16 +331,18 @@ branch refs/heads/dirty-branch
       // Filter out the worktree list calls
       const operationCalls = mockRawCalls.filter((args) => !(args[1] === "list" && args[2] === "--porcelain"));
 
-      // Should add feature-2 with tracking
-      expect(operationCalls).toContainEqual([
-        "worktree",
-        "add",
-        "--track",
-        "-b",
-        "feature-2",
-        "/test/worktrees/feature-2",
-        "origin/feature-2",
-      ]);
+      // Should add feature-2 with tracking (path is hashed for collision resistance)
+      expect(operationCalls).toContainEqual(
+        expect.arrayContaining([
+          "worktree",
+          "add",
+          "--track",
+          "-b",
+          "feature-2",
+          expect.stringMatching(/^\/test\/worktrees\/feature-2-[a-f0-9]{8}$/),
+          "origin/feature-2",
+        ]),
+      );
 
       // Should remove old-feature with full path
       expect(operationCalls).toContainEqual(["worktree", "remove", "/test/worktrees/old-feature", "--force"]);

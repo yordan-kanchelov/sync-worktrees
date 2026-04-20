@@ -71,6 +71,26 @@ describe("createServer", () => {
     }
   });
 
+  it("workspace resource returns unsupported payload when detectFromPath throws", async () => {
+    const ctx = new RepositoryContext();
+    vi.spyOn(ctx, "detectFromPath").mockRejectedValue(new Error("boom"));
+    const server = createServer(ctx);
+
+    const registered = (server as any)._registeredResources as Record<
+      string,
+      { readCallback: (uri: URL) => Promise<{ contents: Array<{ text: string }> }> }
+    >;
+    const handler = registered["sync-worktrees://workspace"].readCallback;
+
+    const result = await handler(new URL("sync-worktrees://workspace"));
+    const payload = JSON.parse(result.contents[0].text);
+
+    expect(payload.isWorktree).toBe(false);
+    expect(payload.kind).toBe("unsupported");
+    expect(Array.isArray(payload.reasons)).toBe(true);
+    expect(payload.reasons.join(" ")).toContain("boom");
+  });
+
   it("workspace resource returns discovered context when cwd is inside a worktree", async () => {
     const rootRaw = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-server-wt-"));
     const root = await fs.realpath(rootRaw);

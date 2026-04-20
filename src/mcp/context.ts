@@ -71,6 +71,23 @@ const EMPTY_CAPABILITIES: Capabilities = {
   canInitialize: false,
 };
 
+export function buildUnsupportedContext(currentPath: string, reason: string): DiscoveredRepoContext {
+  return {
+    isWorktree: false,
+    kind: "unsupported",
+    currentBranch: null,
+    currentWorktreePath: currentPath,
+    bareRepoPath: null,
+    repoUrl: null,
+    worktreeDir: null,
+    allWorktrees: [],
+    configLoaded: false,
+    repoName: null,
+    capabilities: EMPTY_CAPABILITIES,
+    reasons: [reason],
+  };
+}
+
 function createStderrLogger(repoName?: string): Logger {
   return new Logger({
     repoName,
@@ -218,13 +235,14 @@ export class RepositoryContext {
     }
 
     const gitdir = gitdirMatch[1].trim();
-    const worktreesMatch = gitdir.match(/^(.+?)[/\\]worktrees[/\\][^/\\]+$/);
+    const resolvedGitdir = path.isAbsolute(gitdir) ? gitdir : path.resolve(worktreeRoot, gitdir);
+    const worktreesMatch = resolvedGitdir.match(/^(.+?)[/\\]worktrees[/\\][^/\\]+$/);
     if (!worktreesMatch) {
       return unsupported("gitdir does not follow worktree structure (missing /worktrees/<name>)");
     }
 
     const bareRepoPath = path.resolve(worktreesMatch[1]);
-    const adminDir = path.resolve(gitdir);
+    const adminDir = path.resolve(resolvedGitdir);
 
     let repoUrl: string | null = null;
     let worktrees: DiscoveredWorktree[] = [];

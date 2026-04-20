@@ -1,33 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useInput } from "ink";
 
-const isValidGitBranchName = (name: string): { valid: boolean; error?: string } => {
-  if (!name.trim()) {
-    return { valid: false, error: "Branch name cannot be empty" };
-  }
-  if (name.startsWith("-")) {
-    return { valid: false, error: "Branch name cannot start with '-'" };
-  }
-  if (name.endsWith(".lock")) {
-    return { valid: false, error: "Branch name cannot end with '.lock'" };
-  }
-  if (name.includes("..")) {
-    return { valid: false, error: "Branch name cannot contain '..'" };
-  }
-  if (name.includes("@{")) {
-    return { valid: false, error: "Branch name cannot contain '@{'" };
-  }
-  if (name.startsWith(".") || name.endsWith(".")) {
-    return { valid: false, error: "Branch name cannot start or end with '.'" };
-  }
-  if (name.includes("//")) {
-    return { valid: false, error: "Branch name cannot contain consecutive slashes" };
-  }
-  if (/[\x00-\x1f\x7f~^:?*\[\\]/.test(name)) {
-    return { valid: false, error: "Branch name contains invalid characters" };
-  }
-  return { valid: true };
-};
+import { isValidGitBranchName } from "../utils/git-validation";
 
 type WizardStep = "SELECT_PROJECT" | "SELECT_BRANCH" | "ENTER_NAME" | "CREATING" | "RESULT";
 
@@ -93,13 +67,13 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
   useEffect(() => {
     if (filteredProjects.length > 0) {
-      setSelectedProjectIndex((prev) => Math.min(prev, filteredProjects.length - 1));
+      setSelectedProjectIndex((prev) => Math.max(0, Math.min(prev, filteredProjects.length - 1)));
     }
   }, [filteredProjects.length]);
 
   useEffect(() => {
     if (filteredBranches.length > 0) {
-      setSelectedBranchIndex((prev) => Math.min(prev, filteredBranches.length - 1));
+      setSelectedBranchIndex((prev) => Math.max(0, Math.min(prev, filteredBranches.length - 1)));
     }
   }, [filteredBranches.length]);
 
@@ -228,7 +202,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
       if (key.upArrow) {
         setSelectedProjectIndex((prev) => Math.max(0, prev - 1));
       } else if (key.downArrow) {
-        setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        if (filteredProjects.length > 0) {
+          setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        }
       } else if (key.return && filteredProjects.length > 0) {
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
@@ -249,7 +225,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
       if (key.upArrow) {
         setSelectedBranchIndex((prev) => Math.max(0, prev - 1));
       } else if (key.downArrow) {
-        setSelectedBranchIndex((prev) => Math.min(filteredBranches.length - 1, prev + 1));
+        if (filteredBranches.length > 0) {
+          setSelectedBranchIndex((prev) => Math.min(filteredBranches.length - 1, prev + 1));
+        }
       } else if (key.return && filteredBranches.length > 0) {
         setStep("ENTER_NAME");
       } else if (key.backspace || key.delete) {

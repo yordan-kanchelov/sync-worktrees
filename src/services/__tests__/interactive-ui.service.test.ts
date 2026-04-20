@@ -634,6 +634,23 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
+      it("should not duplicate cron jobs when config load fails before cancel", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockRejectedValue(new Error("Failed to load config"));
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
+        const preExistingJob = { stop: vi.fn() };
+        (service as any).cronJobs = [preExistingJob];
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        const cronJobs = (service as any).cronJobs;
+        expect(cronJobs).toHaveLength(1);
+        expect(preExistingJob.stop).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+
       it("should create new cron jobs after reload (grouped by schedule)", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
           repositories: [
@@ -1409,7 +1426,10 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
         await service.createWorktreeForBranch(0, "feature/new");
 
-        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/new", "/test/worktrees/feature-new");
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith(
+          "feature/new",
+          expect.stringMatching(/^\/test\/worktrees\/feature-new-[a-f0-9]{8}$/),
+        );
 
         service.destroy();
       });
@@ -1625,7 +1645,7 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
 
         await expect(service.deleteDivergedDirectory(0, "../../evil-target")).rejects.toThrow(
-          "Path traversal rejected",
+          /Invalid diverged directory name|Path traversal rejected/,
         );
         expect(fs.rm).not.toHaveBeenCalled();
 
@@ -1637,8 +1657,24 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
 
         await expect(service.deleteDivergedDirectory(0, "../../../etc/passwd")).rejects.toThrow(
-          "Path traversal rejected",
+          /Invalid diverged directory name|Path traversal rejected/,
         );
+        expect(fs.rm).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it.each([
+        ["empty string", ""],
+        ["single dot", "."],
+        ["double dot", ".."],
+        ["forward slash", "nested/evil"],
+        ["backslash", "nested\\evil"],
+      ])("should reject %s name without calling fs.rm", async (_label, badName) => {
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.deleteDivergedDirectory(0, badName)).rejects.toThrow();
         expect(fs.rm).not.toHaveBeenCalled();
 
         service.destroy();

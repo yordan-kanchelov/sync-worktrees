@@ -105,7 +105,7 @@ Add the server to your MCP client config. Use `npx` if the package is not instal
   "mcpServers": {
     "sync-worktrees": {
       "command": "npx",
-      "args": ["-y", "sync-worktrees-mcp"],
+      "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
       "env": {
         "SYNC_WORKTREES_CONFIG": "/absolute/path/to/sync-worktrees.config.js"
       }
@@ -121,7 +121,7 @@ Client-specific locations:
 | Client | Config file |
 |--------|-------------|
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
-| Claude Code | `claude mcp add sync-worktrees -- npx -y sync-worktrees-mcp` |
+| Claude Code | `claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp` |
 | Cursor | `~/.cursor/mcp.json` (or project-level `.cursor/mcp.json`) |
 
 ### Available tools

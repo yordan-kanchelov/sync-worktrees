@@ -249,6 +249,29 @@ describe("handleCreateWorktree", () => {
     expect(git.pushBranch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["leading dash", "-D"],
+    ["double dot", "foo..bar"],
+    ["trailing .lock", "feature.lock"],
+    ["empty", ""],
+    ["control char", "foo\x00bar"],
+  ])("rejects invalid branch name (%s) before touching git", async (_label, badName) => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>(),
+        createBranch: vi.fn<any>(),
+        addWorktree: vi.fn<any>(),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: badName, baseBranch: "main" });
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
+    expect(git.branchExists).not.toHaveBeenCalled();
+    expect(git.createBranch).not.toHaveBeenCalled();
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
   it("pushes only after addWorktree succeeds", async () => {
     const callOrder: string[] = [];
     const { ctx, git } = makeCtx({
@@ -661,18 +684,20 @@ describe("handleListWorktrees fallbacks", () => {
 });
 
 describe("handleCreateWorktree collisions", () => {
-  it("errors when sanitized worktree path collides with another branch", async () => {
-    const { ctx } = makeCtx({
+  it("produces distinct paths for collision-prone branch names", async () => {
+    const { ctx, git } = makeCtx({
       git: {
         branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
-        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/worktrees/feature-x", branch: "feature-x-old" }]),
       },
     });
 
-    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
-    const body = parseResponse(result);
+    await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const firstPath = (git.addWorktree as any).mock.calls[0][1];
 
-    expect(body.error).toBe(true);
-    expect(body.message).toContain("collides with existing branch");
+    (git.addWorktree as any).mockClear();
+    await invoke(handleCreateWorktree, ctx, { branchName: "feature-x" });
+    const secondPath = (git.addWorktree as any).mock.calls[0][1];
+
+    expect(firstPath).not.toBe(secondPath);
   });
 });

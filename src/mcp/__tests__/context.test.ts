@@ -153,6 +153,26 @@ describe("RepositoryContext.detectFromPath", () => {
     expect(result.capabilities.canInitialize).toBe(true);
   });
 
+  it("resolves relative gitdir path against the worktree root", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+
+    const relativeGitdir = path.relative(
+      fixture.currentWorktree,
+      path.join(fixture.bareRepo, "worktrees", "feature-x"),
+    );
+    await fs.writeFile(path.join(fixture.currentWorktree, ".git"), `gitdir: ${relativeGitdir}\n`, "utf-8");
+
+    const ctx = new RepositoryContext();
+    const result = await ctx.detectFromPath(fixture.currentWorktree);
+
+    expect(result.isWorktree).toBe(true);
+    expect(result.bareRepoPath).toBe(path.resolve(fixture.bareRepo));
+    expect(result.currentBranch).toBe("feature-x");
+  });
+
   it("includes helpful reason when no remote URL detected", async () => {
     mockRemoteUrl.mockRejectedValue(new Error("no remote"));
     mockWorktreeList.mockResolvedValue(

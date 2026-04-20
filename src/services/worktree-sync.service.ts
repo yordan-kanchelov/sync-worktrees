@@ -648,11 +648,12 @@ export class WorktreeSyncService {
                 await this.handleDivergedBranch(worktree);
               } catch (divergedError) {
                 this.logger.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
+                throw divergedError;
               }
             } else {
               this.logger.error(`    ❌ Failed to update '${worktree.branch}':`, error);
+              throw error;
             }
-            throw error;
           }
           return { type: "update" as const, branch: worktree.branch };
         }),
