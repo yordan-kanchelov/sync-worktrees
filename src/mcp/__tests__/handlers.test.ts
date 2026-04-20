@@ -133,8 +133,8 @@ describe("handleListWorktrees", () => {
     const { ctx, git } = makeCtx({
       git: {
         getWorktrees: vi.fn<any>().mockResolvedValue([
-          { path: "/repo/main", branch: "main" },
-          { path: "/repo/worktrees/feature", branch: "feature" },
+          { path: "/repo/main", branch: "main", isCurrent: true },
+          { path: "/repo/worktrees/feature", branch: "feature", isCurrent: false },
         ]),
         getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
           isClean: true,
@@ -260,7 +260,7 @@ describe("handleRemoveWorktree", () => {
 
   it("rejects path not belonging to the repository", async () => {
     const { ctx, git } = makeCtx({
-      git: { getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/main", branch: "main" }]) },
+      git: { getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/main", branch: "main", isCurrent: true }]) },
     });
     const result = await invoke(handleRemoveWorktree, ctx, { path: "/unrelated", force: true });
     const body = parseResponse(result);
@@ -409,7 +409,7 @@ describe("list_worktrees lastSyncAt", () => {
     const iso = "2026-04-19T10:00:00.000Z";
     const { ctx } = makeCtx({
       git: {
-        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/main", branch: "main" }]),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/main", branch: "main", isCurrent: true }]),
         getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
           isClean: true,
           hasUnpushedCommits: false,
@@ -432,7 +432,7 @@ describe("list_worktrees lastSyncAt", () => {
   it("returns null lastSyncAt when metadata missing", async () => {
     const { ctx } = makeCtx({
       git: {
-        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/main", branch: "main" }]),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/main", branch: "main", isCurrent: true }]),
         getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
           isClean: true,
           hasUnpushedCommits: false,
@@ -452,15 +452,14 @@ describe("list_worktrees lastSyncAt", () => {
   });
 });
 
-
 describe("handleListWorktrees fallbacks", () => {
   it("falls back to discovered worktrees when git.getWorktrees fails", async () => {
     const { ctx, git } = makeCtx({
       discovered: makeDiscovered({
         currentWorktreePath: "/repo/main",
         allWorktrees: [
-          { path: "/repo/main", branch: "main" },
-          { path: "/repo/worktrees/feature", branch: "feature" },
+          { path: "/repo/main", branch: "main", isCurrent: true },
+          { path: "/repo/worktrees/feature", branch: "feature", isCurrent: false },
         ],
       }),
       git: {

@@ -57,7 +57,6 @@ describe("SyncInProgressError", () => {
   });
 });
 
-
 describe("wrapHandler", () => {
   it("returns handler result on success", async () => {
     const { wrapHandler } = await import("../utils");
