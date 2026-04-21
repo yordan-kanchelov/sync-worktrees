@@ -134,8 +134,7 @@ describe("RepositoryContext.detectFromPath", () => {
     );
 
     const ctx = new RepositoryContext();
-    (ctx as any).repos.set("configured", {
-      name: "configured",
+    ctx.__registerForTest("configured", {
       config: {
         repoUrl: "https://github.com/test/repo.git",
         bareRepoDir: path.resolve(fixture.bareRepo),
@@ -243,9 +242,14 @@ describe("RepositoryContext.detectFromPath caching", () => {
     const ctx = new RepositoryContext();
     await ctx.detectFromPath(fixture.currentWorktree);
     const firstCallCount = mockWorktreeList.mock.calls.length;
+    const beforeMtimeMs = (await fs.stat(headPath)).mtimeMs;
 
     const future = new Date(Date.now() + 10_000);
     await fs.utimes(headPath, future, future);
+    const afterMtimeMs = (await fs.stat(headPath)).mtimeMs;
+    // Guard against coarse-resolution filesystems: the test premise requires
+    // the utimes call to actually change mtime observed by fs.stat.
+    expect(afterMtimeMs).toBeGreaterThan(beforeMtimeMs);
 
     await ctx.detectFromPath(fixture.currentWorktree);
     expect(mockWorktreeList.mock.calls.length).toBe(firstCallCount + 1);
@@ -258,7 +262,7 @@ describe("RepositoryContext.detectFromPath caching", () => {
     await ctx.detectFromPath(plain);
     await ctx.detectFromPath(plain);
 
-    expect((ctx as any).discoveryCache.size).toBe(0);
+    expect(ctx.__discoveryCacheSizeForTest()).toBe(0);
 
     await fs.rm(plain, { recursive: true, force: true });
   });
@@ -303,8 +307,7 @@ describe("RepositoryContext.detectFromPath currentRepo bootstrap invariants", ()
 
   it("does not overwrite existing currentRepo when probing new path", async () => {
     const ctx = new RepositoryContext();
-    (ctx as any).repos.set("pinned", {
-      name: "pinned",
+    ctx.__registerForTest("pinned", {
       config: {
         repoUrl: "https://example.com/other.git",
         bareRepoDir: "/some/other/.bare",
@@ -314,7 +317,7 @@ describe("RepositoryContext.detectFromPath currentRepo bootstrap invariants", ()
       },
       source: "config" as const,
     });
-    (ctx as any).currentRepo = "pinned";
+    ctx.__setCurrentRepoForTest("pinned");
 
     await ctx.detectFromPath(fixture.currentWorktree);
     expect(ctx.getCurrentRepo()).toBe("pinned");
@@ -322,8 +325,7 @@ describe("RepositoryContext.detectFromPath currentRepo bootstrap invariants", ()
 
   it("does not auto-select when multiple repo entries exist and currentRepo is null", async () => {
     const ctx = new RepositoryContext();
-    (ctx as any).repos.set("other", {
-      name: "other",
+    ctx.__registerForTest("other", {
       config: {
         repoUrl: "https://example.com/other.git",
         bareRepoDir: "/some/other/.bare",
@@ -341,9 +343,9 @@ describe("RepositoryContext.detectFromPath currentRepo bootstrap invariants", ()
   it("reuses existing detected entry on repeat probes (no duplicate)", async () => {
     const ctx = new RepositoryContext();
     await ctx.detectFromPath(fixture.currentWorktree);
-    const sizeAfterFirst = (ctx as any).repos.size;
+    const sizeAfterFirst = ctx.__repoCountForTest();
     ctx.invalidateDiscovered();
     await ctx.detectFromPath(fixture.currentWorktree);
-    expect((ctx as any).repos.size).toBe(sizeAfterFirst);
+    expect(ctx.__repoCountForTest()).toBe(sizeAfterFirst);
   });
 });

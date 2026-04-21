@@ -269,11 +269,13 @@ export class InteractiveUIService {
       this.events.emit("updateRepositoryCount", this.repositoryCount);
       this.events.emit("updateCronSchedule", this.cronSchedule);
 
-      const failures = await this.runSyncServices(this.syncServices);
-      this.updateLastSyncTime();
-      await this.calculateAndUpdateDiskSpace();
+      const { failures, skipped, attempted } = await this.runSyncServices(this.syncServices);
+      await this.recordSyncOutcome({ failures, skipped, attempted });
       this.setStatus("idle");
 
+      for (const skip of skipped) {
+        this.addLog(`Sync skipped for '${skip.repo}': ${skip.reason}`, "warn");
+      }
       if (failures.length > 0) {
         for (const failure of failures) {
           this.addLog(`Failed to sync repository '${failure.repo}': ${failure.error}`, "error");
@@ -723,35 +725,51 @@ export class InteractiveUIService {
     this.setStatus("syncing");
 
     try {
-      const failures = await this.runSyncServices(services);
+      const { failures, skipped, attempted } = await this.runSyncServices(services);
 
       if (options.logErrors) {
-        if (failures.length > 0) {
-          for (const failure of failures) {
-            this.addLog(`Failed to sync repository '${failure.repo}': ${failure.error}`, "error");
-          }
+        for (const failure of failures) {
+          this.addLog(`Failed to sync repository '${failure.repo}': ${failure.error}`, "error");
         }
       }
+      for (const skip of skipped) {
+        this.addLog(`Sync skipped for '${skip.repo}': ${skip.reason}`, "warn");
+      }
 
-      this.updateLastSyncTime();
-      await this.calculateAndUpdateDiskSpace();
+      await this.recordSyncOutcome({ failures, skipped, attempted });
       return failures;
     } finally {
       this.setStatus("idle");
     }
   }
 
-  private async runSyncServices(
-    services: WorktreeSyncService[],
-  ): Promise<Array<{ repo: string; error: string }>> {
+  private async recordSyncOutcome(outcome: {
+    failures: Array<{ repo: string; error: string }>;
+    skipped: Array<{ repo: string; reason: string }>;
+    attempted: number;
+  }): Promise<void> {
+    const allSkipped =
+      outcome.attempted > 0 &&
+      outcome.skipped.length === outcome.attempted &&
+      outcome.failures.length === 0;
+    if (allSkipped) return;
+    this.updateLastSyncTime();
+    await this.calculateAndUpdateDiskSpace();
+  }
+
+  private async runSyncServices(services: WorktreeSyncService[]): Promise<{
+    failures: Array<{ repo: string; error: string }>;
+    skipped: Array<{ repo: string; reason: string }>;
+    attempted: number;
+  }> {
     const syncResults = await Promise.allSettled(
       services.map((service) =>
         this.limit(async () => {
           if (!service.isInitialized()) {
             await service.initialize();
           }
-          await service.sync();
-          return service;
+          const result = await service.sync();
+          return { service, result };
         }).catch((error) => {
           const repoName = (service.config as RepositoryConfig).name || service.config.repoUrl;
           throw Object.assign(error instanceof Error ? error : new Error(String(error)), { repoName });
@@ -760,15 +778,21 @@ export class InteractiveUIService {
     );
 
     const failures: Array<{ repo: string; error: string }> = [];
-    for (const result of syncResults) {
+    const skipped: Array<{ repo: string; reason: string }> = [];
+    for (let i = 0; i < syncResults.length; i++) {
+      const result = syncResults[i];
       if (result.status === "rejected") {
         const repoName = (result.reason as { repoName?: string })?.repoName ?? "unknown";
         const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
         failures.push({ repo: repoName, error: errorMessage });
+      } else if (result.value.result && result.value.result.started === false) {
+        const repoName =
+          (services[i].config as RepositoryConfig).name || services[i].config.repoUrl;
+        skipped.push({ repo: repoName, reason: `sync skipped: ${result.value.result.reason}` });
       }
     }
 
-    return failures;
+    return { failures, skipped, attempted: services.length };
   }
 
   public executeOnBranchCreatedHooks(repoIndex: number, context: HookContext): void {

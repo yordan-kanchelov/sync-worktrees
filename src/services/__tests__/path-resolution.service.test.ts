@@ -92,6 +92,7 @@ describe("PathResolutionService", () => {
     let baseDir: string;
     let outsideDir: string;
     let symlinkInsideBase: string;
+    let symlinkSupported = true;
 
     beforeAll(async () => {
       tmpRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "path-res-")));
@@ -100,7 +101,17 @@ describe("PathResolutionService", () => {
       await fs.mkdir(baseDir, { recursive: true });
       await fs.mkdir(outsideDir, { recursive: true });
       symlinkInsideBase = path.join(baseDir, "escape");
-      await fs.symlink(outsideDir, symlinkInsideBase, "dir");
+      try {
+        await fs.symlink(outsideDir, symlinkInsideBase, "dir");
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        // Windows CI without SeCreateSymbolicLink privilege returns EPERM/UNKNOWN.
+        if (code === "EPERM" || code === "EACCES" || code === "UNKNOWN" || code === "ENOSYS") {
+          symlinkSupported = false;
+          return;
+        }
+        throw err;
+      }
     });
 
     afterAll(async () => {
@@ -108,11 +119,13 @@ describe("PathResolutionService", () => {
     });
 
     it("normalizeWorktreePath should reject symlink escaping base", () => {
+      if (!symlinkSupported) return;
       const target = path.join(symlinkInsideBase, "child");
       expect(() => service.normalizeWorktreePath(target, baseDir)).toThrow("is outside base directory");
     });
 
     it("isPathInsideBaseDir should return false for symlink escaping base", () => {
+      if (!symlinkSupported) return;
       const target = path.join(symlinkInsideBase, "child");
       expect(service.isPathInsideBaseDir(target, baseDir)).toBe(false);
     });

@@ -502,7 +502,9 @@ export class WorktreeSyncService {
     const remoteBranches = await this.gitService.getRemoteBranches();
     this.logger.info(`Found ${remoteBranches.length} remote branches to fetch.`);
 
-    const fetchLimit = pLimit(3);
+    const fetchLimit = pLimit(
+      this.config.parallelism?.maxBranchFetches ?? DEFAULT_CONFIG.PARALLELISM.MAX_BRANCH_FETCHES,
+    );
     const failedBranches: string[] = [];
     let successCount = 0;
 
@@ -801,9 +803,7 @@ export class WorktreeSyncService {
     try {
       await fs.rename(worktreePath, divergedPath);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("EXDEV")) {
-        // Cross-device link not permitted: copy then remove
+      if ((err as NodeJS.ErrnoException).code === ERROR_MESSAGES.EXDEV) {
         await fs.cp(worktreePath, divergedPath, { recursive: true });
         await fs.rm(worktreePath, { recursive: true, force: true });
       } else {

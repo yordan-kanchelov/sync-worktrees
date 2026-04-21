@@ -203,33 +203,19 @@ export class ConfigLoaderService {
 
     const config = parallelism as Record<string, unknown>;
 
-    if (config.maxRepositories !== undefined) {
-      if (typeof config.maxRepositories !== "number" || config.maxRepositories < 1) {
-        throw new Error(`Invalid 'maxRepositories' in ${context} parallelism config. Must be a positive number`);
-      }
-    }
+    const positiveIntFields = [
+      "maxRepositories",
+      "maxWorktreeCreation",
+      "maxWorktreeUpdates",
+      "maxWorktreeRemoval",
+      "maxStatusChecks",
+      "maxBranchFetches",
+    ] as const;
 
-    if (config.maxWorktreeCreation !== undefined) {
-      if (typeof config.maxWorktreeCreation !== "number" || config.maxWorktreeCreation < 1) {
-        throw new Error(`Invalid 'maxWorktreeCreation' in ${context} parallelism config. Must be a positive number`);
-      }
-    }
-
-    if (config.maxWorktreeUpdates !== undefined) {
-      if (typeof config.maxWorktreeUpdates !== "number" || config.maxWorktreeUpdates < 1) {
-        throw new Error(`Invalid 'maxWorktreeUpdates' in ${context} parallelism config. Must be a positive number`);
-      }
-    }
-
-    if (config.maxWorktreeRemoval !== undefined) {
-      if (typeof config.maxWorktreeRemoval !== "number" || config.maxWorktreeRemoval < 1) {
-        throw new Error(`Invalid 'maxWorktreeRemoval' in ${context} parallelism config. Must be a positive number`);
-      }
-    }
-
-    if (config.maxStatusChecks !== undefined) {
-      if (typeof config.maxStatusChecks !== "number" || config.maxStatusChecks < 1) {
-        throw new Error(`Invalid 'maxStatusChecks' in ${context} parallelism config. Must be a positive number`);
+    for (const field of positiveIntFields) {
+      const value = config[field];
+      if (value !== undefined && (typeof value !== "number" || value < 1)) {
+        throw new Error(`Invalid '${field}' in ${context} parallelism config. Must be a positive number`);
       }
     }
 

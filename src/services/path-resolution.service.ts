@@ -2,6 +2,8 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
+import { isCaseInsensitiveFs } from "../utils/path-compare";
+
 const BRANCH_STEM_MAX = 80;
 const BRANCH_HASH_LEN = 8;
 
@@ -40,10 +42,18 @@ export class PathResolutionService {
     }
   }
 
+  private isResolvedPathInsideBase(resolved: string, resolvedBase: string): boolean {
+    const fold = (p: string): string => (isCaseInsensitiveFs() ? p.toLowerCase() : p);
+    const a = fold(resolved);
+    const b = fold(resolvedBase);
+    if (a === b) return true;
+    return a.length > b.length && a.charAt(b.length) === path.sep && a.startsWith(b);
+  }
+
   normalizeWorktreePath(worktreePath: string, worktreeBaseDir: string): string {
     const resolved = this.resolveRealPath(worktreePath);
     const resolvedBase = this.resolveRealPath(worktreeBaseDir);
-    if (!resolved.startsWith(resolvedBase + path.sep) && resolved !== resolvedBase) {
+    if (!this.isResolvedPathInsideBase(resolved, resolvedBase)) {
       throw new Error(`Worktree path '${worktreePath}' is outside base directory '${worktreeBaseDir}'`);
     }
     return path.relative(resolvedBase, resolved);
@@ -52,7 +62,7 @@ export class PathResolutionService {
   isPathInsideBaseDir(targetPath: string, baseDir: string): boolean {
     const resolved = this.resolveRealPath(targetPath);
     const resolvedBase = this.resolveRealPath(baseDir);
-    return resolved.startsWith(resolvedBase + path.sep) || resolved === resolvedBase;
+    return this.isResolvedPathInsideBase(resolved, resolvedBase);
   }
 
   extractBranchFromWorktreePath(worktreePath: string, worktreeBaseDir: string): string {

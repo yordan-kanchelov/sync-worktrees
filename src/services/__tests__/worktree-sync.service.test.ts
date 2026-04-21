@@ -869,7 +869,9 @@ describe("WorktreeSyncService", () => {
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
       mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
 
-      (fs.rename as Mock<any>).mockRejectedValue(new Error("EXDEV: cross-device link not permitted"));
+      (fs.rename as Mock<any>).mockRejectedValue(
+        Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" }),
+      );
       (fs.cp as Mock<any>).mockResolvedValue(undefined);
       (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
@@ -909,6 +911,69 @@ describe("WorktreeSyncService", () => {
 
       expect(mockGitService.resetToUpstream).toHaveBeenCalledWith("/test/worktrees/feature-1", "feature-1");
       expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Processed 1/1 worktrees successfully"));
+    });
+
+    it("should surface failure and skip worktree recreation when both rename and copy fallback fail", async () => {
+      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasOperationInProgress.mockResolvedValue(false);
+      mockGitService.getWorktreeMetadata.mockResolvedValue({
+        lastSyncCommit: "old-commit",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature-1",
+        createdFrom: { branch: "main", commit: "old-commit" },
+        syncHistory: [],
+      });
+      mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
+      mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
+
+      (fs.rename as Mock<any>).mockRejectedValue(
+        Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" }),
+      );
+      (fs.cp as Mock<any>).mockRejectedValue(new Error("copy failed"));
+
+      await service.sync();
+
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+      expect(mockGitService.addWorktree).not.toHaveBeenCalled();
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to handle diverged branch"),
+        expect.any(Error),
+      );
+    });
+
+    it("writes .diverged-info.json with branch, commits and timestamp when diverging", async () => {
+      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasOperationInProgress.mockResolvedValue(false);
+      mockGitService.getWorktreeMetadata.mockResolvedValue({
+        lastSyncCommit: "old-commit",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature-1",
+        createdFrom: { branch: "main", commit: "old-commit" },
+        syncHistory: [],
+      });
+      mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
+      mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
+
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+
+      await service.sync();
+
+      const infoCall = (fs.writeFile as Mock<any>).mock.calls.find((call) =>
+        String(call[0]).endsWith(".diverged-info.json"),
+      );
+      expect(infoCall).toBeDefined();
+      const parsed = JSON.parse(infoCall![1] as string);
+      expect(parsed.originalBranch).toBe("feature-1");
+      expect(parsed.localCommit).toBe("new-local-commit");
+      expect(parsed.remoteCommit).toBe("remote-commit");
+      expect(typeof parsed.divergedAt).toBe("string");
+      expect(Number.isNaN(Date.parse(parsed.divergedAt))).toBe(false);
     });
   });
 

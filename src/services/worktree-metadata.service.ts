@@ -3,7 +3,7 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import { ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 
 import { Logger } from "./logger.service";
 
@@ -49,18 +49,25 @@ export class WorktreeMetadataService {
     const metadataPath = await this.getMetadataPath(bareRepoPath, worktreeName);
     await fs.mkdir(path.dirname(metadataPath), { recursive: true });
 
-    // Write to temp file then rename for atomicity — prevents corruption on crash
-    const tmpPath = metadataPath + ".tmp";
-    await fs.writeFile(tmpPath, JSON.stringify(metadata, null, 2), "utf-8");
+    // Write to temp file then rename for atomicity — prevents corruption on crash.
+    // Unique suffix avoids collisions between concurrent writers for the same worktree.
+    const tmpPath = `${metadataPath}.${process.pid}.${Date.now()}.tmp`;
+    let renamed = false;
     try {
-      await fs.rename(tmpPath, metadataPath);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EXDEV") {
-        // Cross-device rename not supported: copy contents then remove temp file
-        await fs.copyFile(tmpPath, metadataPath);
-        await fs.unlink(tmpPath);
-      } else {
-        throw err;
+      await fs.writeFile(tmpPath, JSON.stringify(metadata, null, 2), "utf-8");
+      try {
+        await fs.rename(tmpPath, metadataPath);
+        renamed = true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === ERROR_MESSAGES.EXDEV) {
+          await fs.copyFile(tmpPath, metadataPath);
+        } else {
+          throw err;
+        }
+      }
+    } finally {
+      if (!renamed) {
+        await fs.unlink(tmpPath).catch(() => undefined);
       }
     }
   }

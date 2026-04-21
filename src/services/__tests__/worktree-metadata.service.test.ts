@@ -67,12 +67,16 @@ describe("WorktreeMetadataService", () => {
         { recursive: true },
       );
       expect(fs.writeFile).toHaveBeenCalledWith(
-        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json.tmp",
+        expect.stringMatching(
+          /^\/test\/bare\/repo\/\.git\/worktrees\/feature-branch\/sync-metadata\.json\.\d+\.\d+\.tmp$/,
+        ),
         JSON.stringify(mockMetadata, null, 2),
         "utf-8",
       );
       expect(fs.rename).toHaveBeenCalledWith(
-        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json.tmp",
+        expect.stringMatching(
+          /^\/test\/bare\/repo\/\.git\/worktrees\/feature-branch\/sync-metadata\.json\.\d+\.\d+\.tmp$/,
+        ),
         "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json",
       );
     });
@@ -267,12 +271,16 @@ describe("WorktreeMetadataService", () => {
       };
 
       expect(fs.writeFile).toHaveBeenCalledWith(
-        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json.tmp",
+        expect.stringMatching(
+          /^\/test\/bare\/repo\/\.git\/worktrees\/feature-branch\/sync-metadata\.json\.\d+\.\d+\.tmp$/,
+        ),
         JSON.stringify(expectedMetadata, null, 2),
         "utf-8",
       );
       expect(fs.rename).toHaveBeenCalledWith(
-        "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json.tmp",
+        expect.stringMatching(
+          /^\/test\/bare\/repo\/\.git\/worktrees\/feature-branch\/sync-metadata\.json\.\d+\.\d+\.tmp$/,
+        ),
         "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json",
       );
     });

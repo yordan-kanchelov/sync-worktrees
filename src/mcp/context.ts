@@ -169,6 +169,26 @@ export class RepositoryContext {
     this.discoveryCache.clear();
   }
 
+  /** @internal Test-only helper — registers a repo entry without going through config loading. */
+  __registerForTest(name: string, entry: Omit<RepoEntry, "name">): void {
+    this.repos.set(name, { ...entry, name });
+  }
+
+  /** @internal Test-only helper — sets the current repo pointer. */
+  __setCurrentRepoForTest(name: string | null): void {
+    this.currentRepo = name;
+  }
+
+  /** @internal Test-only helper — returns the size of the internal repo map. */
+  __repoCountForTest(): number {
+    return this.repos.size;
+  }
+
+  /** @internal Test-only helper — returns the size of the discovery cache. */
+  __discoveryCacheSizeForTest(): number {
+    return this.discoveryCache.size;
+  }
+
   private bootstrapCurrentRepo(candidate: string): void {
     if (this.currentRepo !== null) return;
     if (!this.repos.has(candidate)) return;

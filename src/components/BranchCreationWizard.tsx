@@ -209,7 +209,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
           setSelectedRepoIndex(selectedRepo.index);
-          branchesLoadedRef.current = false;
+          branchesLoadedRef.current = true;
           setIsFetching(false);
           loadBranches(selectedRepo.index);
           setStep("SELECT_BRANCH");

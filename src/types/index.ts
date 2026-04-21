@@ -44,6 +44,8 @@ export interface ParallelismConfig {
   maxWorktreeRemoval?: number;
   /** Max concurrent status checks (default: 20) */
   maxStatusChecks?: number;
+  /** Max concurrent per-branch fetches when falling back from bulk fetch (default: 3) */
+  maxBranchFetches?: number;
 }
 
 export interface Config {
