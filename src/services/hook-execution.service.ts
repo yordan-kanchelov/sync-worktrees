@@ -17,7 +17,6 @@ export class HookExecutionService {
   private activeProcesses = new Set<ChildProcess>();
   private killTimers = new Set<ReturnType<typeof setTimeout>>();
   private timeoutMs: number = DEFAULT_CONFIG.HOOK_TIMEOUT_MS;
-  private windowsWarningLogged = false;
 
   setTimeoutMs(ms: number): void {
     this.timeoutMs = ms;
@@ -29,16 +28,6 @@ export class HookExecutionService {
     callbacks: HookExecutionCallbacks = {},
   ): void {
     if (!hooks?.onBranchCreated?.length) {
-      return;
-    }
-
-    if (process.platform === "win32") {
-      if (!this.windowsWarningLogged) {
-        this.windowsWarningLogged = true;
-        console.warn(
-          "sync-worktrees hooks are POSIX-only and will not run on Windows (cmd.exe shell quoting is not safe for substituted values). Skipping onBranchCreated hooks.",
-        );
-      }
       return;
     }
 

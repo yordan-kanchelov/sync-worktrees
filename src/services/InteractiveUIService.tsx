@@ -614,7 +614,7 @@ export class InteractiveUIService {
     const sessionName = `${repoName}-${sanitizedBranch}`;
     const tmuxCommand = `tmux new-session -A -s ${shellEscape(sessionName)} -c ${shellEscape(worktreePath)}`;
 
-    const launcher = this.resolveTerminalLauncher(tmuxCommand, worktreePath, sessionName);
+    const launcher = this.resolveTerminalLauncher(tmuxCommand);
     if (!launcher) {
       const message =
         "No terminal launcher found. Set SYNC_WORKTREES_TERMINAL or $TERMINAL to a terminal emulator command.";
@@ -643,20 +643,12 @@ export class InteractiveUIService {
     }
   }
 
-  private resolveTerminalLauncher(
-    tmuxCommand: string,
-    worktreePath: string,
-    sessionName: string,
-  ): { command: string; args: string[] } | null {
+  private resolveTerminalLauncher(tmuxCommand: string): { command: string; args: string[] } | null {
     const override = this.parseCommandString(process.env[TERMINAL_CONSTANTS.ENV_OVERRIDE]);
     if (override) {
       // Wrap the tmux command in `sh -c` so terminal emulators that exec their trailing
       // arg as a program name (e.g. `alacritty -e`, `kitty -e`) can run the composite command.
-      const args =
-        process.platform === "win32"
-          ? [...override.args, tmuxCommand]
-          : [...override.args, "sh", "-c", tmuxCommand];
-      return { command: override.command, args };
+      return { command: override.command, args: [...override.args, "sh", "-c", tmuxCommand] };
     }
 
     switch (process.platform) {
@@ -687,15 +679,6 @@ export class InteractiveUIService {
         }
         return null;
       }
-      case "win32": {
-        if (this.commandExists("wt.exe") || this.commandExists("wt")) {
-          return {
-            command: "wt",
-            args: ["new-tab", "--startingDirectory", worktreePath, "tmux", "new-session", "-A", "-s", sessionName],
-          };
-        }
-        return null;
-      }
       default:
         return null;
     }
@@ -709,9 +692,7 @@ export class InteractiveUIService {
 
   private commandExists(command: string): boolean {
     try {
-      const result = spawnSync(process.platform === "win32" ? "where" : "which", [command], {
-        stdio: "ignore",
-      });
+      const result = spawnSync("which", [command], { stdio: "ignore" });
       return result.status === 0;
     } catch {
       return false;

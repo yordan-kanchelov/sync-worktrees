@@ -297,25 +297,6 @@ describe("HookExecutionService", () => {
       expect((service as any).activeProcesses.size).toBe(0);
     });
 
-    it("should skip hook execution and warn when running on Windows", () => {
-      const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const stdoutCallback = vi.fn();
-
-      try {
-        service.executeOnBranchCreated({ onBranchCreated: [nodeScript("process.stdout.write('x')")] }, mockContext, {
-          onStdout: stdoutCallback,
-        });
-
-        expect(stdoutCallback).not.toHaveBeenCalled();
-        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("POSIX"));
-      } finally {
-        if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
-        warnSpy.mockRestore();
-      }
-    });
-
     it("should call onError callback when command times out", async () => {
       const errorCallback = vi.fn();
       const command = nodeScript("setTimeout(() => {}, 10000)");

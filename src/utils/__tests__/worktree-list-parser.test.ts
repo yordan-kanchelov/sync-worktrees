@@ -79,14 +79,4 @@ describe("parseWorktreeListPorcelain", () => {
     const result = parseWorktreeListPorcelain(output);
     expect(result[0].locked).toBe(true);
   });
-
-  it("handles CRLF line endings", () => {
-    const output = ["worktree /repo/main", "HEAD abc123", "branch refs/heads/main", "detached", ""].join("\r\n");
-    const result = parseWorktreeListPorcelain(output);
-    expect(result).toHaveLength(1);
-    expect(result[0].path).toBe("/repo/main");
-    expect(result[0].head).toBe("abc123");
-    expect(result[0].branch).toBe("main");
-    expect(result[0].detached).toBe(true);
-  });
 });

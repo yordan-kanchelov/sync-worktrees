@@ -27,8 +27,7 @@ export function parseWorktreeListPorcelain(output: string): ParsedWorktree[] {
     current = {};
   };
 
-  for (const rawLine of output.split("\n")) {
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+  for (const line of output.split("\n")) {
     if (line.startsWith("worktree ")) {
       flush();
       current.path = line.substring("worktree ".length);

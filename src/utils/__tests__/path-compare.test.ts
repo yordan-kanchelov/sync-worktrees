@@ -7,10 +7,6 @@ describe("isCaseInsensitiveFs", () => {
     expect(isCaseInsensitiveFs("darwin")).toBe(true);
   });
 
-  it("returns true for win32", () => {
-    expect(isCaseInsensitiveFs("win32")).toBe(true);
-  });
-
   it("returns false for linux", () => {
     expect(isCaseInsensitiveFs("linux")).toBe(false);
   });
@@ -34,10 +30,6 @@ describe("normalizePathForCompare", () => {
 describe("pathsEqual", () => {
   it("matches mixed case on darwin", () => {
     expect(pathsEqual("/Users/Foo/Repo", "/users/foo/repo", "darwin")).toBe(true);
-  });
-
-  it("matches mixed case on win32", () => {
-    expect(pathsEqual("C:\\Users\\Foo", "c:\\users\\foo", "win32")).toBe(true);
   });
 
   it("is case-sensitive on linux", () => {

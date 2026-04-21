@@ -38,6 +38,10 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "files": [
     "dist",
     "README.md",

@@ -90,7 +90,6 @@ Per-platform terminal defaults (when no env override is set):
 
 - **macOS** — Ghostty if `Ghostty.app` is installed, otherwise Terminal.app via AppleScript.
 - **Linux** — `$TERMINAL` if set; otherwise the first found among the candidates above.
-- **Windows** — Windows Terminal (`wt.exe`) if available.
 
 ## MCP Server
 

@@ -105,7 +105,7 @@ describe("PathResolutionService", () => {
         await fs.symlink(outsideDir, symlinkInsideBase, "dir");
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
-        // Windows CI without SeCreateSymbolicLink privilege returns EPERM/UNKNOWN.
+        // Environments without symlink privileges return EPERM/EACCES/UNKNOWN/ENOSYS.
         if (code === "EPERM" || code === "EACCES" || code === "UNKNOWN" || code === "ENOSYS") {
           symlinkSupported = false;
           return;
