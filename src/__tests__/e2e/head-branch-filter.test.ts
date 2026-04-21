@@ -107,7 +107,8 @@ describe("HEAD branch filtering (E2E)", () => {
     // worktree is correctly created. This should be investigated further.
     // For now, we accept both behaviors to keep tests passing.
     // See: path comparison issue in GitService.initialize() line 71
-    if (!worktrees.includes("main")) {
+    const mainDir = pathRes.sanitizeBranchName("main");
+    if (!worktrees.includes(mainDir)) {
       console.warn("Main worktree not found - this may indicate a platform-specific path comparison issue");
     }
 

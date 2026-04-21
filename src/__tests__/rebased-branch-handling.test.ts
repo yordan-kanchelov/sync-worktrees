@@ -178,7 +178,9 @@ describe("Rebased Branch Handling", () => {
       expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees/.diverged", { recursive: true });
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature-with-local-changes",
-        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-with-local-changes-[a-z0-9]+$/),
+        expect.stringMatching(
+          /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-with-local-changes-[a-z0-9]{8}-[a-z0-9]+$/,
+        ),
       );
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-with-local-changes");
       expect(mockGitService.addWorktree).toHaveBeenCalledWith(
@@ -214,7 +216,9 @@ describe("Rebased Branch Handling", () => {
       expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees/.diverged", { recursive: true });
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature-no-metadata",
-        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-no-metadata-[a-z0-9]+$/),
+        expect.stringMatching(
+          /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-no-metadata-[a-z0-9]{8}-[a-z0-9]+$/,
+        ),
       );
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-no-metadata");
       expect(mockGitService.addWorktree).toHaveBeenCalledWith(
@@ -272,7 +276,9 @@ describe("Rebased Branch Handling", () => {
 
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature-diverged",
-        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-[a-z0-9]+$/),
+        expect.stringMatching(
+          /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-[a-z0-9]{8}-[a-z0-9]+$/,
+        ),
       );
 
       expect(fs.writeFile).toHaveBeenCalledWith(
@@ -360,7 +366,7 @@ describe("Rebased Branch Handling", () => {
 
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/branch2",
-        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-branch2-[a-z0-9]+$/),
+        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-branch2-[a-z0-9]{8}-[a-z0-9]+$/),
       );
     });
 
@@ -407,11 +413,15 @@ describe("Rebased Branch Handling", () => {
 
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature/user@domain",
-        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-user@domain-[a-z0-9]+$/),
+        expect.stringMatching(
+          /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-user_domain-[a-z0-9]{8}-[a-z0-9]+$/,
+        ),
       );
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/bugfix/issue#123",
-        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-bugfix-issue#123-[a-z0-9]+$/),
+        expect.stringMatching(
+          /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-bugfix-issue_123-[a-z0-9]{8}-[a-z0-9]+$/,
+        ),
       );
     });
   });
@@ -458,7 +468,9 @@ describe("Rebased Branch Handling", () => {
 
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature-diverged-behind",
-        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-behind-[a-z0-9]+$/),
+        expect.stringMatching(
+          /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-behind-[a-z0-9]{8}-[a-z0-9]+$/,
+        ),
       );
 
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
@@ -507,7 +519,9 @@ describe("Rebased Branch Handling", () => {
 
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature-diverged-behind",
-        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-behind-[a-z0-9]+$/),
+        expect.stringMatching(
+          /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-behind-[a-z0-9]{8}-[a-z0-9]+$/,
+        ),
       );
 
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");

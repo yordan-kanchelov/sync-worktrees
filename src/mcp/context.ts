@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG } from "../constants";
 import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
+import { isCaseInsensitiveFs } from "../utils/path-compare";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import type { Config, RepositoryConfig } from "../types";
@@ -322,11 +323,13 @@ export class RepositoryContext {
       reasons.push("create_worktree unavailable: no remote origin URL detected");
     }
 
+    const foldPath = (p: string): string => (isCaseInsensitiveFs() ? p.toLowerCase() : p);
+    const foldedBare = foldPath(bareRepoPath);
     let matchedConfig: RepoEntry | null = null;
     for (const entry of this.repos.values()) {
       if (entry.source === "config") {
         const entryBare = entry.config.bareRepoDir ? path.resolve(entry.config.bareRepoDir) : null;
-        if (entryBare && entryBare === bareRepoPath) {
+        if (entryBare && foldPath(entryBare) === foldedBare) {
           matchedConfig = entry;
           break;
         }
@@ -449,6 +452,8 @@ export class RepositoryContext {
 
 function parseWorktreeList(output: string, currentPath: string): DiscoveredWorktree[] {
   const resolvedCurrent = path.resolve(currentPath);
+  const fold = (p: string): string => (isCaseInsensitiveFs() ? p.toLowerCase() : p);
+  const foldedCurrent = fold(resolvedCurrent);
   const results: DiscoveredWorktree[] = [];
   for (const wt of parseWorktreeListPorcelain(output)) {
     const resolved = path.resolve(wt.path);
@@ -457,7 +462,7 @@ function parseWorktreeList(output: string, currentPath: string): DiscoveredWorkt
     results.push({
       path: resolved,
       branch,
-      isCurrent: resolved === resolvedCurrent,
+      isCurrent: fold(resolved) === foldedCurrent,
     });
   }
   return results;

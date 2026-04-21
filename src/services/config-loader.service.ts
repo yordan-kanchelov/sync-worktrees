@@ -80,7 +80,7 @@ export class ConfigLoaderService {
       if (!this.isValidGitUrl(repoObj.repoUrl)) {
         throw new Error(
           `Repository '${repoObj.name}' has invalid 'repoUrl': '${repoObj.repoUrl}'. ` +
-            `Expected an HTTP(S), SSH, or Git protocol URL`,
+            `Expected an HTTP(S), SSH, Git protocol URL, or a local/file path (file://, absolute filesystem path)`,
         );
       }
 

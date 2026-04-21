@@ -792,7 +792,7 @@ export class WorktreeSyncService {
 
     const timestamp = new Date().toISOString().split("T")[0];
     const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
-    const safeBranchName = branchName.replace(/\//g, "-");
+    const safeBranchName = this.pathResolution.sanitizeBranchName(branchName);
     const divergedName = `${timestamp}-${safeBranchName}-${uniqueSuffix}`;
     const divergedPath = path.join(divergedBaseDir, divergedName);
 

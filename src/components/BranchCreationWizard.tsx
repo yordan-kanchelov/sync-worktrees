@@ -160,16 +160,25 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
     setStep("CREATING");
     const baseBranch = filteredBranches[selectedBranchIndex];
-    const createResult = await createAndPushBranch(selectedRepoIndex, baseBranch, trimmedName);
-    setResult(createResult);
-    if (createResult.success && onBranchCreated) {
-      onBranchCreated({
-        repoIndex: selectedRepoIndex,
-        baseBranch,
-        newBranch: createResult.finalName,
+    try {
+      const createResult = await createAndPushBranch(selectedRepoIndex, baseBranch, trimmedName);
+      setResult(createResult);
+      if (createResult.success && onBranchCreated) {
+        onBranchCreated({
+          repoIndex: selectedRepoIndex,
+          baseBranch,
+          newBranch: createResult.finalName,
+        });
+      }
+    } catch (err) {
+      setResult({
+        success: false,
+        finalName: trimmedName,
+        error: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      setStep("RESULT");
     }
-    setStep("RESULT");
   };
 
   useInput((input, key) => {
