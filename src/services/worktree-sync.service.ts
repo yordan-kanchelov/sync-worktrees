@@ -791,9 +791,10 @@ export class WorktreeSyncService {
     const divergedBaseDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
 
     const timestamp = new Date().toISOString().split("T")[0];
-    const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
+    const timestampHash = Date.now().toString(36).substring(0, 8);
+    const randomSuffix = Math.random().toString(36).substring(2, 7);
     const safeBranchName = this.pathResolution.sanitizeBranchName(branchName);
-    const divergedName = `${timestamp}-${safeBranchName}-${uniqueSuffix}`;
+    const divergedName = `${timestamp}-${safeBranchName}-${timestampHash}-${randomSuffix}`;
     const divergedPath = path.join(divergedBaseDir, divergedName);
 
     // Ensure diverged directory exists
