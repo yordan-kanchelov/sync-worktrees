@@ -44,29 +44,27 @@ pnpm add -g sync-worktrees
 
 ## Usage
 
-### Interactive Mode
+Run `sync-worktrees` in any directory:
 
-When running without all required arguments, sync-worktrees will prompt you interactively:
+- **First run** — no config found → interactive wizard asks for repo URL, worktree directory, and schedule, then saves `sync-worktrees.config.js` in the current directory and starts syncing.
+- **Subsequent runs** — `sync-worktrees` auto-loads `sync-worktrees.config.js` (or `.mjs` / `.cjs`) from the current directory. No flags needed.
 
 ```bash
-# Interactive setup - prompts for missing values
-sync-worktrees
-
-# Or provide partial arguments and be prompted for the rest
-sync-worktrees --repoUrl https://github.com/user/repo.git
+cd ~/projects/my-sync-dir
+sync-worktrees           # wizard → saves config → runs
+sync-worktrees           # re-uses the saved config
 ```
 
-### Command Line
+To manage multiple repositories, edit the generated config file and add entries under `repositories`. See [Configuration File](#configuration-file).
+
+### Explicit config path
+
+Useful when the config lives outside the current directory:
 
 ```bash
-# Single repository (one-time sync)
-sync-worktrees --repoUrl https://github.com/user/repo.git --worktreeDir ./worktrees --runOnce
-
-# Single repository (scheduled hourly)
-sync-worktrees --repoUrl https://github.com/user/repo.git --worktreeDir ./worktrees
-
-# Multiple repositories (using config file)
-sync-worktrees --config ./sync-worktrees.config.js
+sync-worktrees --config /path/to/sync-worktrees.config.js
+sync-worktrees --config ./config.js --filter "frontend-*"
+sync-worktrees --config ./config.js --list
 ```
 
 ### Opening a worktree from the TUI
@@ -148,66 +146,17 @@ All tools that target a single repo accept an optional `repoName`. When omitted,
 
 ## Options
 
-| Option | Alias | Description | Required | Default |
-|--------|-------|-------------|----------|---------|
-| `--config` | `-c` | Path to JavaScript config file | No | - |
-| `--filter` | `-f` | Filter repositories by name (wildcards supported) | No | - |
-| `--list` | `-l` | List configured repositories and exit | No | `false` |
-| `--repoUrl` | `-u` | Git repository URL (HTTPS or SSH) | Yes* | - |
-| `--bareRepoDir` | `-b` | Directory for bare repository | No | `.bare/<repo-name>` |
-| `--worktreeDir` | `-w` | Directory for storing worktrees | Yes* | - |
-| `--cronSchedule` | `-s` | Cron pattern for scheduling | No | `0 * * * *` (hourly) |
-| `--runOnce` | - | Execute once and exit | No | `false` |
-| `--branchMaxAge` | `-a` | Maximum age of branches to sync (e.g., '30d', '6m', '1y') | No | - |
-| `--branchInclude` | - | Only sync branches matching these patterns (comma-separated, wildcards supported) | No | - |
-| `--branchExclude` | - | Exclude branches matching these patterns (comma-separated, wildcards supported) | No | - |
-| `--skip-lfs` | - | Skip Git LFS downloads when fetching and creating worktrees | No | `false` |
-| `--no-update-existing` | - | Disable automatic updates of existing worktrees | No | `false` |
-| `--help` | `-h` | Show help | No | - |
+| Option | Alias | Description | Default |
+|--------|-------|-------------|---------|
+| `--config` | `-c` | Path to JavaScript config file (auto-detected in CWD when omitted) | - |
+| `--filter` | `-f` | Filter repositories by name (wildcards supported) | - |
+| `--list` | `-l` | List configured repositories and exit | `false` |
+| `--runOnce` | - | Override config to run once and exit | `false` |
+| `--no-update-existing` | - | Disable automatic updates of existing worktrees | `false` |
+| `--debug` | `-d` | Show detailed reasons for skipped cleanups | `false` |
+| `--help` | `-h` | Show help | - |
 
-\* Required when not using a config file
-
-## Examples
-
-### Single repository
-```bash
-# One-time sync
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --runOnce
-
-# Scheduled sync (every 30 minutes)
-sync-worktrees -u git@github.com:user/repo.git -w ./worktrees -s "*/30 * * * *"
-
-# Only sync branches active in the last 30 days
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchMaxAge 30d
-
-# Sync branches active in the last 6 months, check every hour
-sync-worktrees -u git@github.com:user/repo.git -w ./worktrees --branchMaxAge 6m
-
-# Only sync feature and release branches
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchInclude "feature/*,release-*"
-
-# Sync all branches except WIP and temporary ones
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchExclude "wip-*,tmp-*"
-
-# Combine include, exclude, and age filtering
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
-  --branchInclude "feature/*,release-*" --branchExclude "feature/wip-*" --branchMaxAge 30d
-
-# Disable automatic updates of existing worktrees
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --no-update-existing
-```
-
-### Using a config file
-```bash
-# Sync all repositories
-sync-worktrees --config ./sync-worktrees.config.js
-
-# Filter specific repositories
-sync-worktrees --config ./sync-worktrees.config.js --filter "frontend-*"
-
-# List configured repositories
-sync-worktrees --config ./sync-worktrees.config.js --list
-```
+Most sync behavior (repo URL, worktree directory, cron schedule, branch filtering, LFS, retry) is configured in the config file. The CLI flags that only make sense for one-off runs (`--repoUrl`, `--worktreeDir`, `--cronSchedule`, `--branchMaxAge`, `--branchInclude`, `--branchExclude`, `--skip-lfs`, `--bareRepoDir`) are still supported — run `sync-worktrees --help` for the full list.
 
 ## Configuration File
 

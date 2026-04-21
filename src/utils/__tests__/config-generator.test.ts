@@ -3,7 +3,7 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { generateConfigFile, getDefaultConfigPath } from "../config-generator";
+import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "../config-generator";
 
 import type { Config } from "../../types";
 
@@ -161,6 +161,43 @@ describe("Config Generator", () => {
       const configPath = getDefaultConfigPath();
       expect(path.basename(configPath)).toBe("sync-worktrees.config.js");
       expect(path.dirname(configPath)).toBe(process.cwd());
+    });
+  });
+
+  describe("findConfigInCwd", () => {
+    it("should return null when no config file exists", async () => {
+      const result = await findConfigInCwd(tempDir);
+      expect(result).toBeNull();
+    });
+
+    it("should find sync-worktrees.config.js", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.js");
+      await fs.writeFile(configPath, "export default {};");
+      const result = await findConfigInCwd(tempDir);
+      expect(result).toBe(configPath);
+    });
+
+    it("should find sync-worktrees.config.mjs", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+      await fs.writeFile(configPath, "export default {};");
+      const result = await findConfigInCwd(tempDir);
+      expect(result).toBe(configPath);
+    });
+
+    it("should find sync-worktrees.config.cjs", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.cjs");
+      await fs.writeFile(configPath, "module.exports = {};");
+      const result = await findConfigInCwd(tempDir);
+      expect(result).toBe(configPath);
+    });
+
+    it("should prefer .js over .mjs and .cjs when all exist", async () => {
+      const jsPath = path.join(tempDir, "sync-worktrees.config.js");
+      await fs.writeFile(jsPath, "export default {};");
+      await fs.writeFile(path.join(tempDir, "sync-worktrees.config.mjs"), "export default {};");
+      await fs.writeFile(path.join(tempDir, "sync-worktrees.config.cjs"), "module.exports = {};");
+      const result = await findConfigInCwd(tempDir);
+      expect(result).toBe(jsPath);
     });
   });
 });

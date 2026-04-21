@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import * as path from "path";
+
 import { confirm } from "@inquirer/prompts";
 import * as cron from "node-cron";
 import pLimit from "p-limit";
@@ -10,10 +12,12 @@ import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { isInteractiveMode, parseArguments, reconstructCliCommand } from "./utils/cli";
+import { findConfigInCwd } from "./utils/config-generator";
 import { promptForConfig } from "./utils/interactive";
 
 import type { ReloadOptions } from "./services/InteractiveUIService";
 import type { Config, RepositoryConfig } from "./types";
+import type { CliOptions } from "./utils/cli";
 
 const cleanupFns: Array<() => void | Promise<void>> = [];
 
@@ -217,51 +221,106 @@ async function listRepositories(configPath: string, filter?: string): Promise<vo
   }
 }
 
+async function runFromConfigFile(
+  configPath: string,
+  options: {
+    filter?: string;
+    noUpdateExisting?: boolean;
+    debug?: boolean;
+    runOnce?: boolean;
+    syncOnStart?: boolean;
+  },
+): Promise<void> {
+  const configLoader = new ConfigLoaderService();
+  const { repositories, configFile } = await configLoader.buildRepositories(configPath, {
+    filter: options.filter,
+    noUpdateExisting: options.noUpdateExisting,
+    debug: options.debug,
+  });
+
+  if (options.filter && repositories.length === 0) {
+    console.error(`❌ No repositories match filter: ${options.filter}`);
+    process.exit(1);
+  }
+
+  const globalRunOnce = options.runOnce ?? configFile.defaults?.runOnce ?? false;
+
+  const maxParallel =
+    configFile.parallelism?.maxRepositories ??
+    configFile.defaults?.parallelism?.maxRepositories ??
+    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+
+  const reloadOptions: ReloadOptions = {
+    filter: options.filter,
+    noUpdateExisting: options.noUpdateExisting,
+    debug: options.debug,
+  };
+
+  await runMultipleRepositories(
+    repositories,
+    globalRunOnce,
+    configPath,
+    maxParallel,
+    options.syncOnStart,
+    reloadOptions,
+  );
+}
+
+async function runInteractive(partial: Partial<Config>, options: CliOptions): Promise<void> {
+  const result = await promptForConfig(partial);
+
+  if (result.savedConfigPath) {
+    await runFromConfigFile(result.savedConfigPath, {
+      filter: options.filter,
+      noUpdateExisting: options.noUpdateExisting,
+      debug: options.debug,
+      runOnce: options.runOnce,
+      syncOnStart: options.syncOnStart,
+    });
+    return;
+  }
+
+  const config = result.config;
+
+  if (options.noUpdateExisting) {
+    config.updateExistingWorktrees = false;
+  } else if (config.updateExistingWorktrees === undefined) {
+    config.updateExistingWorktrees = true;
+  }
+
+  if (options.debug !== undefined) {
+    config.debug = options.debug;
+  }
+
+  await runSingleRepository(config);
+}
+
 async function main(): Promise<void> {
   setupSignalHandlers();
   const options = parseArguments();
 
-  if (options.config) {
-    const configLoader = new ConfigLoaderService();
+  if (!options.config && !options.repoUrl && !options.worktreeDir) {
+    const discovered = await findConfigInCwd();
+    if (discovered) {
+      options.config = discovered;
+      console.log(`📄 Using config: ${path.relative(process.cwd(), discovered)}`);
+    }
+  }
 
+  if (options.config) {
     if (options.list) {
       await listRepositories(options.config, options.filter);
       return;
     }
 
     try {
-      const { repositories, configFile } = await configLoader.buildRepositories(options.config, {
+      await runFromConfigFile(options.config, {
         filter: options.filter,
         noUpdateExisting: options.noUpdateExisting,
         debug: options.debug,
+        runOnce: options.runOnce,
+        syncOnStart: options.syncOnStart,
       });
-
-      if (options.filter && repositories.length === 0) {
-        console.error(`❌ No repositories match filter: ${options.filter}`);
-        process.exit(1);
-      }
-
-      const globalRunOnce = options.runOnce ?? configFile.defaults?.runOnce ?? false;
-
-      const maxParallel =
-        configFile.parallelism?.maxRepositories ??
-        configFile.defaults?.parallelism?.maxRepositories ??
-        DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
-
-      const reloadOptions: ReloadOptions = {
-        filter: options.filter,
-        noUpdateExisting: options.noUpdateExisting,
-        debug: options.debug,
-      };
-
-      await runMultipleRepositories(
-        repositories,
-        globalRunOnce,
-        options.config,
-        maxParallel,
-        options.syncOnStart,
-        reloadOptions,
-      );
     } catch (error) {
       if (error instanceof Error && error.message.includes("Config file not found")) {
         console.error(`\n❌ Config file not found: ${options.config}`);
@@ -272,9 +331,7 @@ async function main(): Promise<void> {
         });
 
         if (createConfig) {
-          // Run interactive mode which will offer to save config
-          const config = await promptForConfig({});
-          await runSingleRepository(config);
+          await runInteractive({}, options);
         } else {
           console.log("\n💡 You can create a config file manually or run without --config for interactive setup.");
           process.exit(1);
@@ -284,19 +341,15 @@ async function main(): Promise<void> {
         process.exit(1);
       }
     }
+  } else if (isInteractiveMode(options)) {
+    await runInteractive(options, options);
   } else {
-    let config: Config;
-    if (isInteractiveMode(options)) {
-      config = await promptForConfig(options);
-    } else {
-      config = options as Config;
-    }
+    const config = options as Config;
 
-    // Apply CLI overrides
     if (options.noUpdateExisting) {
       config.updateExistingWorktrees = false;
     } else if (config.updateExistingWorktrees === undefined) {
-      config.updateExistingWorktrees = true; // Default to true
+      config.updateExistingWorktrees = true;
     }
 
     if (options.debug !== undefined) {

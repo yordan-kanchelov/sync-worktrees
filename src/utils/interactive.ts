@@ -7,7 +7,12 @@ import { extractRepoNameFromUrl } from "./git-url";
 
 import type { Config } from "../types";
 
-export async function promptForConfig(partialConfig: Partial<Config>): Promise<Config> {
+export interface PromptResult {
+  config: Config;
+  savedConfigPath?: string;
+}
+
+export async function promptForConfig(partialConfig: Partial<Config>): Promise<PromptResult> {
   console.log("🔧 Welcome to sync-worktrees interactive setup!\n");
 
   let repoUrl = partialConfig.repoUrl;
@@ -141,6 +146,7 @@ export async function promptForConfig(partialConfig: Partial<Config>): Promise<C
     default: true,
   });
 
+  let savedConfigPath: string | undefined;
   if (saveConfig) {
     const defaultConfigPath = getDefaultConfigPath();
     let configPath = await input({
@@ -163,14 +169,14 @@ export async function promptForConfig(partialConfig: Partial<Config>): Promise<C
 
     try {
       await generateConfigFile(finalConfig, configPath);
+      savedConfigPath = configPath;
       console.log(`\n✅ Configuration saved to: ${configPath}`);
-      console.log(`\n💡 You can now use this config file with:`);
-      console.log(`   sync-worktrees --config ${path.relative(process.cwd(), configPath)}`);
+      console.log(`\n💡 Next time run \`sync-worktrees\` from this directory — the config will be auto-loaded.`);
       console.log("");
     } catch (error) {
       console.error(`\n❌ Failed to save config file: ${(error as Error).message}`);
     }
   }
 
-  return finalConfig;
+  return { config: finalConfig, savedConfigPath };
 }
