@@ -16,6 +16,7 @@ export interface HookExecutionCallbacks {
 export class HookExecutionService {
   private activeProcesses = new Set<ChildProcess>();
   private killTimers = new Set<ReturnType<typeof setTimeout>>();
+  private timeoutTimers = new Set<ReturnType<typeof setTimeout>>();
   private timeoutMs: number = DEFAULT_CONFIG.HOOK_TIMEOUT_MS;
 
   setTimeoutMs(ms: number): void {
@@ -40,6 +41,11 @@ export class HookExecutionService {
   }
 
   public cleanup(): void {
+    for (const timer of this.timeoutTimers) {
+      clearTimeout(timer);
+    }
+    this.timeoutTimers.clear();
+
     for (const timer of this.killTimers) {
       clearTimeout(timer);
     }
@@ -103,6 +109,7 @@ export class HookExecutionService {
 
     const timer = setTimeout(() => {
       timedOut = true;
+      this.timeoutTimers.delete(timer);
       this.activeProcesses.delete(child);
       try {
         child.kill("SIGTERM");
@@ -120,6 +127,7 @@ export class HookExecutionService {
       this.killTimers.add(killTimer);
       callbacks.onError?.(command, new Error(`Hook timed out after ${this.timeoutMs}ms`));
     }, this.timeoutMs);
+    this.timeoutTimers.add(timer);
 
     if (child.stdout) {
       child.stdout.on("data", (data: Buffer) => {
@@ -141,12 +149,14 @@ export class HookExecutionService {
 
     child.on("error", (error) => {
       clearTimeout(timer);
+      this.timeoutTimers.delete(timer);
       this.activeProcesses.delete(child);
       callbacks.onError?.(command, error);
     });
 
     child.on("close", (code) => {
       clearTimeout(timer);
+      this.timeoutTimers.delete(timer);
       if (timedOut) return;
       this.activeProcesses.delete(child);
       callbacks.onComplete?.(command, code);

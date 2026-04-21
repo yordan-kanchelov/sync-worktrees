@@ -44,6 +44,8 @@ export class InteractiveUIService {
   private isDestroyed = false;
   private reloadOptions: ReloadOptions;
   private events: AppEventEmitter;
+  private ownsEvents: boolean;
+  private unsubscribeCallbacks: Array<() => void> = [];
 
   constructor(
     syncServices: WorktreeSyncService[],
@@ -53,6 +55,7 @@ export class InteractiveUIService {
     reloadOptions?: ReloadOptions,
     events?: AppEventEmitter,
   ) {
+    this.ownsEvents = events === undefined;
     this.events = events ?? new AppEventEmitter();
     if (syncServices.length === 0) {
       throw new Error("InteractiveUIService requires at least one WorktreeSyncService");
@@ -84,7 +87,10 @@ export class InteractiveUIService {
       this.uiReady = true;
       this.flushLogBuffer();
       unsubscribe();
+      const index = this.unsubscribeCallbacks.indexOf(unsubscribe);
+      if (index !== -1) this.unsubscribeCallbacks.splice(index, 1);
     });
+    this.unsubscribeCallbacks.push(unsubscribe);
   }
 
   private createOutputFn(): LogOutputFn {
@@ -261,7 +267,7 @@ export class InteractiveUIService {
       this.repositoryCount = this.syncServices.length;
       this.injectLoggersIntoServices();
 
-      const uniqueSchedules = [...new Set(repositories.map((r) => r.cronSchedule))];
+      const uniqueSchedules = [...new Set(this.syncServices.map((s) => s.config.cronSchedule))];
       this.cronSchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
 
       this.setupCronJobs();
@@ -504,8 +510,8 @@ export class InteractiveUIService {
         try {
           const infoContent = await fs.readFile(infoFilePath, "utf-8");
           const info = JSON.parse(infoContent);
-          if (info.originalBranch) originalBranch = info.originalBranch;
-          if (info.divergedAt) divergedAt = info.divergedAt;
+          if (typeof info.originalBranch === "string") originalBranch = info.originalBranch;
+          if (typeof info.divergedAt === "string") divergedAt = info.divergedAt;
         } catch {
           // Extract date and branch from directory name pattern: YYYY-MM-DD-branch-suffix
           const match = entry.name.match(/^(\d{4}-\d{2}-\d{2})-(.+?)(?:-[a-f0-9]+)?$/);
@@ -661,7 +667,8 @@ export class InteractiveUIService {
             args: ["-na", "Ghostty.app", "--args", "-e", "sh", "-c", tmuxCommand],
           };
         }
-        const script = `tell application "Terminal" to do script "${tmuxCommand.replace(/"/g, '\\"')}"`;
+        const escapedTmuxCommand = tmuxCommand.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        const script = `tell application "Terminal" to do script "${escapedTmuxCommand}"`;
         return { command: "osascript", args: ["-e", script] };
       }
       case "linux": {
@@ -872,7 +879,13 @@ export class InteractiveUIService {
       this.app.unmount();
       this.app = null;
     }
-    this.events.removeAllListeners();
+    for (const unsubscribe of this.unsubscribeCallbacks) {
+      unsubscribe();
+    }
+    this.unsubscribeCallbacks = [];
+    if (this.ownsEvents) {
+      this.events.removeAllListeners();
+    }
     this.uiReady = false;
     this.logBuffer = [];
   }
