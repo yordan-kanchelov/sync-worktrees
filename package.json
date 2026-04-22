@@ -5,8 +5,8 @@
   "description": "Automatically synchronize Git worktrees with remote branches - perfect for multi-branch development workflows",
   "main": "dist/index.js",
   "bin": {
-    "sync-worktrees": "./dist/index.js",
-    "sync-worktrees-mcp": "./dist/mcp-server.js"
+    "sync-worktrees": "dist/index.js",
+    "sync-worktrees-mcp": "dist/mcp-server.js"
   },
   "scripts": {
     "build": "node esbuild.config.js",
