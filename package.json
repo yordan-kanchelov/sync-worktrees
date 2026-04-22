@@ -47,6 +47,11 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yordan-kanchelov/sync-worktrees.git"
