@@ -12,9 +12,33 @@ import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { isInteractiveMode, parseArguments, reconstructCliCommand } from "./utils/cli";
+import { findConfigInCwd } from "./utils/config-generator";
 import { promptForConfig } from "./utils/interactive";
 
+import type { ReloadOptions } from "./services/InteractiveUIService";
 import type { Config, RepositoryConfig } from "./types";
+import type { CliOptions } from "./utils/cli";
+
+const cleanupFns: Array<() => void | Promise<void>> = [];
+
+function setupSignalHandlers(): void {
+  let shuttingDown = false;
+  const handler = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\nReceived ${signal}, shutting down gracefully...`);
+    for (const fn of cleanupFns) {
+      try {
+        await fn();
+      } catch {
+        // best effort
+      }
+    }
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void handler("SIGINT"));
+  process.on("SIGTERM", () => void handler("SIGTERM"));
+}
 
 async function runSingleRepository(config: Config): Promise<void> {
   const logger = Logger.createDefault(undefined, config.debug);
@@ -37,6 +61,7 @@ async function runSingleRepository(config: Config): Promise<void> {
       await syncService.sync();
     } else {
       const uiService = new InteractiveUIService([syncService], undefined, config.cronSchedule);
+      cleanupFns.push(() => uiService.destroy());
 
       await syncService.sync();
       uiService.updateLastSyncTime();
@@ -66,6 +91,7 @@ async function runMultipleRepositories(
   configPath?: string,
   maxParallel?: number,
   syncOnStart?: boolean,
+  reloadOptions?: ReloadOptions,
 ): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
   const globalLogger = Logger.createDefault();
@@ -139,54 +165,21 @@ async function runMultipleRepositories(
     const uniqueSchedules = [...new Set(repositories.map((r) => r.cronSchedule))];
     const displaySchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
     const allServices = Array.from(services.values());
-    const uiService = new InteractiveUIService(allServices, configPath, displaySchedule);
+    const uiService = new InteractiveUIService(allServices, configPath, displaySchedule, maxParallel, reloadOptions);
+    cleanupFns.push(() => uiService.destroy());
 
     void uiService.calculateAndUpdateDiskSpace();
 
-    const cronJobs = new Map<string, string>();
-
-    for (const repoConfig of repositories) {
-      const syncService = services.get(repoConfig.name);
-      if (!syncService) continue;
-
-      if (!cronJobs.has(repoConfig.cronSchedule)) {
-        cronJobs.set(repoConfig.cronSchedule, repoConfig.cronSchedule);
-
-        cron.schedule(repoConfig.cronSchedule, async () => {
-          const reposToSync = repositories.filter((r) => r.cronSchedule === repoConfig.cronSchedule);
-
-          uiService.setStatus("syncing");
-
-          await Promise.allSettled(
-            reposToSync.map((repo) =>
-              limit(async () => {
-                const service = services.get(repo.name);
-                if (!service) return;
-
-                uiService.addLog(`Running scheduled sync for: ${repo.name}`);
-                try {
-                  if (!service.isInitialized()) {
-                    await service.initialize();
-                  }
-                  await service.sync();
-                } catch (error) {
-                  uiService.addLog(`Error syncing '${repo.name}': ${error}`, "error");
-                }
-              }),
-            ),
-          );
-
-          uiService.updateLastSyncTime();
-          void uiService.calculateAndUpdateDiskSpace();
-        });
-      }
-    }
+    uiService.setupCronJobs();
 
     uiService.addLog(`📋 ${repositories.length} repositories configured`);
 
-    for (const [schedule] of cronJobs) {
-      const repoCount = repositories.filter((r) => r.cronSchedule === schedule).length;
-      uiService.addLog(`⏰ ${schedule}: ${repoCount} repository(ies)`);
+    const cronSchedules = new Map<string, number>();
+    for (const repo of repositories) {
+      cronSchedules.set(repo.cronSchedule, (cronSchedules.get(repo.cronSchedule) || 0) + 1);
+    }
+    for (const [schedule, count] of cronSchedules) {
+      uiService.addLog(`⏰ ${schedule}: ${count} repository(ies)`);
     }
 
     if (syncOnStart) {
@@ -199,19 +192,11 @@ async function listRepositories(configPath: string, filter?: string): Promise<vo
   const configLoader = new ConfigLoaderService();
 
   try {
-    const configFile = await configLoader.loadConfigFile(configPath);
-    const configDir = path.dirname(path.resolve(configPath));
+    const { repositories } = await configLoader.buildRepositories(configPath, { filter });
 
-    let repositories = configFile.repositories.map((repo) =>
-      configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
-    );
-
-    if (filter) {
-      repositories = configLoader.filterRepositories(repositories, filter);
-      if (repositories.length === 0) {
-        console.error(`❌ No repositories match filter: ${filter}`);
-        process.exit(1);
-      }
+    if (filter && repositories.length === 0) {
+      console.error(`❌ No repositories match filter: ${filter}`);
+      process.exit(1);
     }
 
     console.log("\n📋 Configured repositories:\n");
@@ -236,56 +221,106 @@ async function listRepositories(configPath: string, filter?: string): Promise<vo
   }
 }
 
+async function runFromConfigFile(
+  configPath: string,
+  options: {
+    filter?: string;
+    noUpdateExisting?: boolean;
+    debug?: boolean;
+    runOnce?: boolean;
+    syncOnStart?: boolean;
+  },
+): Promise<void> {
+  const configLoader = new ConfigLoaderService();
+  const { repositories, configFile } = await configLoader.buildRepositories(configPath, {
+    filter: options.filter,
+    noUpdateExisting: options.noUpdateExisting,
+    debug: options.debug,
+  });
+
+  if (options.filter && repositories.length === 0) {
+    console.error(`❌ No repositories match filter: ${options.filter}`);
+    process.exit(1);
+  }
+
+  const globalRunOnce = options.runOnce ?? configFile.defaults?.runOnce ?? false;
+
+  const maxParallel =
+    configFile.parallelism?.maxRepositories ??
+    configFile.defaults?.parallelism?.maxRepositories ??
+    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+
+  const reloadOptions: ReloadOptions = {
+    filter: options.filter,
+    noUpdateExisting: options.noUpdateExisting,
+    debug: options.debug,
+  };
+
+  await runMultipleRepositories(
+    repositories,
+    globalRunOnce,
+    configPath,
+    maxParallel,
+    options.syncOnStart,
+    reloadOptions,
+  );
+}
+
+async function runInteractive(partial: Partial<Config>, options: CliOptions): Promise<void> {
+  const result = await promptForConfig(partial);
+
+  if (result.savedConfigPath) {
+    await runFromConfigFile(result.savedConfigPath, {
+      filter: options.filter,
+      noUpdateExisting: options.noUpdateExisting,
+      debug: options.debug,
+      runOnce: options.runOnce,
+      syncOnStart: options.syncOnStart,
+    });
+    return;
+  }
+
+  const config = result.config;
+
+  if (options.noUpdateExisting) {
+    config.updateExistingWorktrees = false;
+  } else if (config.updateExistingWorktrees === undefined) {
+    config.updateExistingWorktrees = true;
+  }
+
+  if (options.debug !== undefined) {
+    config.debug = options.debug;
+  }
+
+  await runSingleRepository(config);
+}
+
 async function main(): Promise<void> {
+  setupSignalHandlers();
   const options = parseArguments();
 
-  if (options.config) {
-    const configLoader = new ConfigLoaderService();
+  if (!options.config && !options.repoUrl && !options.worktreeDir) {
+    const discovered = await findConfigInCwd();
+    if (discovered) {
+      options.config = discovered;
+      console.log(`📄 Using config: ${path.relative(process.cwd(), discovered)}`);
+    }
+  }
 
+  if (options.config) {
     if (options.list) {
       await listRepositories(options.config, options.filter);
       return;
     }
 
     try {
-      const configFile = await configLoader.loadConfigFile(options.config);
-      const configDir = path.dirname(path.resolve(options.config));
-
-      let repositories = configFile.repositories.map((repo) =>
-        configLoader.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
-      );
-
-      if (options.filter) {
-        repositories = configLoader.filterRepositories(repositories, options.filter);
-        if (repositories.length === 0) {
-          console.error(`❌ No repositories match filter: ${options.filter}`);
-          process.exit(1);
-        }
-      }
-
-      const globalRunOnce = options.runOnce ?? configFile.defaults?.runOnce ?? false;
-
-      // Apply CLI overrides
-      if (options.noUpdateExisting) {
-        repositories = repositories.map((repo) => ({
-          ...repo,
-          updateExistingWorktrees: false,
-        }));
-      }
-
-      if (options.debug) {
-        repositories = repositories.map((repo) => ({
-          ...repo,
-          debug: true,
-        }));
-      }
-
-      const maxParallel =
-        configFile.parallelism?.maxRepositories ??
-        configFile.defaults?.parallelism?.maxRepositories ??
-        DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
-
-      await runMultipleRepositories(repositories, globalRunOnce, options.config, maxParallel, options.syncOnStart);
+      await runFromConfigFile(options.config, {
+        filter: options.filter,
+        noUpdateExisting: options.noUpdateExisting,
+        debug: options.debug,
+        runOnce: options.runOnce,
+        syncOnStart: options.syncOnStart,
+      });
     } catch (error) {
       if (error instanceof Error && error.message.includes("Config file not found")) {
         console.error(`\n❌ Config file not found: ${options.config}`);
@@ -296,9 +331,7 @@ async function main(): Promise<void> {
         });
 
         if (createConfig) {
-          // Run interactive mode which will offer to save config
-          const config = await promptForConfig({});
-          await runSingleRepository(config);
+          await runInteractive({}, options);
         } else {
           console.log("\n💡 You can create a config file manually or run without --config for interactive setup.");
           process.exit(1);
@@ -308,19 +341,15 @@ async function main(): Promise<void> {
         process.exit(1);
       }
     }
+  } else if (isInteractiveMode(options)) {
+    await runInteractive(options, options);
   } else {
-    let config: Config;
-    if (isInteractiveMode(options)) {
-      config = await promptForConfig(options);
-    } else {
-      config = options as Config;
-    }
+    const config = options as Config;
 
-    // Apply CLI overrides
     if (options.noUpdateExisting) {
       config.updateExistingWorktrees = false;
     } else if (config.updateExistingWorktrees === undefined) {
-      config.updateExistingWorktrees = true; // Default to true
+      config.updateExistingWorktrees = true;
     }
 
     if (options.debug !== undefined) {

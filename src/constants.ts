@@ -44,9 +44,11 @@ export const DEFAULT_CONFIG = {
     MAX_WORKTREE_UPDATES: 3,
     MAX_WORKTREE_REMOVAL: 3,
     MAX_STATUS_CHECKS: 20,
+    MAX_BRANCH_FETCHES: 3,
     MAX_SAFE_TOTAL_CONCURRENT_OPS: 100,
   },
   UPDATE_EXISTING_WORKTREES: true,
+  HOOK_TIMEOUT_MS: 60_000,
 } as const;
 
 export const ERROR_MESSAGES = {
@@ -83,10 +85,6 @@ export const PATH_CONSTANTS = {
   README: "README",
 } as const;
 
-export const CONFIG_CONSTANTS = {
-  WILDCARD_PATTERN: ".*",
-} as const;
-
 export const METADATA_CONSTANTS = {
   MAX_HISTORY_ENTRIES: 10,
   METADATA_FILENAME: "sync-metadata.json",
@@ -96,4 +94,28 @@ export const METADATA_CONSTANTS = {
   ACTION_CREATED: "created",
   ACTION_UPDATED: "updated",
   ACTION_FETCHED: "fetched",
+} as const;
+
+export const TERMINAL_CONSTANTS = {
+  ENV_OVERRIDE: "SYNC_WORKTREES_TERMINAL",
+  ENV_FALLBACK: "TERMINAL",
+  LINUX_CANDIDATES: ["gnome-terminal", "konsole", "alacritty", "kitty", "xterm"],
+} as const;
+
+export const HOOK_CONSTANTS = {
+  ENV_PREFIX: "SYNC_WORKTREES_",
+  ENV_VARS: {
+    BRANCH_NAME: "SYNC_WORKTREES_BRANCH_NAME",
+    WORKTREE_PATH: "SYNC_WORKTREES_WORKTREE_PATH",
+    REPO_NAME: "SYNC_WORKTREES_REPO_NAME",
+    BASE_BRANCH: "SYNC_WORKTREES_BASE_BRANCH",
+    REPO_URL: "SYNC_WORKTREES_REPO_URL",
+  },
+  PLACEHOLDERS: {
+    BRANCH_NAME: "{BRANCH_NAME}",
+    WORKTREE_PATH: "{WORKTREE_PATH}",
+    REPO_NAME: "{REPO_NAME}",
+    BASE_BRANCH: "{BASE_BRANCH}",
+    REPO_URL: "{REPO_URL}",
+  },
 } as const;

@@ -1,6 +1,6 @@
 import React from "react";
 import { render } from "ink-testing-library";
-import { describe, it, expect, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import StatusBar, { StatusBarProps } from "../StatusBar";
 
@@ -121,6 +121,28 @@ describe("StatusBar", () => {
       expect(frame).toContain("Next Sync:");
       // Check that Next Sync line contains a time (not N/A)
       expect(frame).toMatch(/Next Sync:.*\d{1,2}:\d{2}:\d{2}/);
+    });
+
+    it("should re-parse cron expression on each interval tick to avoid drift", async () => {
+      vi.useFakeTimers();
+
+      const { CronExpressionParser } = await import("cron-parser");
+      const parseSpy = vi.spyOn(CronExpressionParser, "parse");
+
+      render(<StatusBar {...defaultProps} cronSchedule="0 * * * *" />);
+
+      // Initial render calls parse once
+      const initialCallCount = parseSpy.mock.calls.length;
+      expect(initialCallCount).toBeGreaterThanOrEqual(1);
+
+      // Advance by 60s to trigger interval
+      vi.advanceTimersByTime(60000);
+
+      // Should have called parse again (fresh instance, not reusing iterator)
+      expect(parseSpy.mock.calls.length).toBeGreaterThan(initialCallCount);
+
+      parseSpy.mockRestore();
+      vi.useRealTimers();
     });
 
     it("should update next sync time when cronSchedule changes", () => {

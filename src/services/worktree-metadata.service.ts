@@ -3,11 +3,19 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import { ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+
+import { Logger } from "./logger.service";
 
 import type { SyncMetadata } from "../types/sync-metadata";
 
 export class WorktreeMetadataService {
+  private logger: Logger;
+
+  constructor(logger?: Logger) {
+    this.logger = logger ?? Logger.createDefault();
+  }
+
   /**
    * Gets the internal worktree directory name from a worktree path.
    * Git uses the basename of the worktree path as the internal directory name.
@@ -18,8 +26,11 @@ export class WorktreeMetadataService {
   }
 
   async getMetadataPath(bareRepoPath: string, worktreeName: string): Promise<string> {
-    // Git stores worktree metadata in .git/worktrees/[worktree-name]/
-    // We'll store our metadata alongside Git's metadata
+    if (worktreeName.includes("/") || worktreeName.includes("\\")) {
+      throw new Error(
+        `getMetadataPath requires a filesystem-safe worktree directory name, got '${worktreeName}'. Use getMetadataPathFromWorktreePath when starting from a raw branch name.`,
+      );
+    }
     return path.join(
       bareRepoPath,
       METADATA_CONSTANTS.WORKTREE_METADATA_PATH,
@@ -36,12 +47,29 @@ export class WorktreeMetadataService {
 
   async saveMetadata(bareRepoPath: string, worktreeName: string, metadata: SyncMetadata): Promise<void> {
     const metadataPath = await this.getMetadataPath(bareRepoPath, worktreeName);
-
-    // Ensure directory exists
     await fs.mkdir(path.dirname(metadataPath), { recursive: true });
 
-    // Write metadata as JSON
-    await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), "utf-8");
+    // Write to temp file then rename for atomicity — prevents corruption on crash.
+    // Unique suffix avoids collisions between concurrent writers for the same worktree.
+    const tmpPath = `${metadataPath}.${process.pid}.${Date.now()}.tmp`;
+    let renamed = false;
+    try {
+      await fs.writeFile(tmpPath, JSON.stringify(metadata, null, 2), "utf-8");
+      try {
+        await fs.rename(tmpPath, metadataPath);
+        renamed = true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === ERROR_MESSAGES.EXDEV) {
+          await fs.copyFile(tmpPath, metadataPath);
+        } else {
+          throw err;
+        }
+      }
+    } finally {
+      if (!renamed) {
+        await fs.unlink(tmpPath).catch(() => undefined);
+      }
+    }
   }
 
   async loadMetadata(bareRepoPath: string, worktreeName: string): Promise<SyncMetadata | null> {
@@ -64,52 +92,13 @@ export class WorktreeMetadataService {
       const metadata = JSON.parse(content) as SyncMetadata;
 
       if (!(await this.validateMetadata(metadata))) {
-        console.warn(`Corrupted metadata for ${worktreePath}, treating as missing`);
+        this.logger.warn(`Corrupted metadata for ${worktreePath}, treating as missing`);
         return null;
       }
 
       return metadata;
     } catch {
-      // Fallback: try loading from old path (using branch name with slashes)
-      // This handles migration from the old broken path structure
-      try {
-        const branchName = path.basename(worktreePath);
-        // Check if branch name might have had slashes (parent dir would exist)
-        const parentDir = path.dirname(worktreePath);
-        const possibleBranchWithSlash = path.join(path.basename(parentDir), branchName);
-
-        // Try the old path with potential slash in branch name
-        const oldPath = path.join(
-          bareRepoPath,
-          METADATA_CONSTANTS.WORKTREE_METADATA_PATH,
-          possibleBranchWithSlash,
-          METADATA_CONSTANTS.METADATA_FILENAME,
-        );
-        const content = await fs.readFile(oldPath, "utf-8");
-        const metadata = JSON.parse(content) as SyncMetadata;
-
-        if (!(await this.validateMetadata(metadata))) {
-          console.warn(`Corrupted metadata at old path ${oldPath}, treating as missing`);
-          return null;
-        }
-
-        // Migrate to new path
-        await this.saveMetadata(bareRepoPath, this.getWorktreeDirectoryName(worktreePath), metadata);
-
-        // Clean up old path
-        try {
-          await fs.unlink(oldPath);
-          // Try to remove empty parent directory
-          await fs.rm(path.dirname(oldPath), { recursive: false, force: true });
-        } catch {
-          // Ignore cleanup errors
-        }
-
-        return metadata;
-      } catch {
-        // Return null if file doesn't exist or can't be parsed
-        return null;
-      }
+      return null;
     }
   }
 
@@ -148,12 +137,12 @@ export class WorktreeMetadataService {
     const existing = await this.loadMetadata(bareRepoPath, worktreeName);
 
     if (!existing) {
-      // If no metadata exists, we can't update it
-      console.warn(`No metadata found for worktree ${worktreeName}, skipping update`);
+      this.logger.warn(
+        `No metadata found for worktree ${worktreeName}; skipping update because upstream/parent context is unavailable`,
+      );
       return;
     }
 
-    // Update metadata
     existing.lastSyncCommit = commit;
     existing.lastSyncDate = new Date().toISOString();
 
@@ -181,8 +170,8 @@ export class WorktreeMetadataService {
     const existing = await this.loadMetadataFromPath(bareRepoPath, worktreePath);
 
     if (!existing) {
-      console.warn(`No metadata found for worktree ${worktreeDirName}`);
-      console.log(`  Attempting to create initial metadata...`);
+      this.logger.warn(`No metadata found for worktree ${worktreeDirName}`);
+      this.logger.info(`  Attempting to create initial metadata...`);
 
       try {
         const worktreeGit = simpleGit(worktreePath);
@@ -219,10 +208,10 @@ export class WorktreeMetadataService {
           parentBranch,
           currentCommit.trim(),
         );
-        console.log(`  ✅ Created metadata for ${worktreeDirName}`);
+        this.logger.info(`  ✅ Created metadata for ${worktreeDirName}`);
         return;
       } catch (error) {
-        console.error(`  ❌ Failed to create metadata: ${error}`);
+        this.logger.error(`  ❌ Failed to create metadata`, error);
         throw error;
       }
     }

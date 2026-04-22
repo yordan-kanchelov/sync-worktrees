@@ -94,3 +94,18 @@ export default ${serializeToESM(configObject)};
 export function getDefaultConfigPath(): string {
   return path.join(process.cwd(), "sync-worktrees.config.js");
 }
+
+const CONFIG_CANDIDATES = ["sync-worktrees.config.js", "sync-worktrees.config.mjs", "sync-worktrees.config.cjs"];
+
+export async function findConfigInCwd(cwd: string = process.cwd()): Promise<string | null> {
+  for (const name of CONFIG_CANDIDATES) {
+    const full = path.join(cwd, name);
+    try {
+      await fs.access(full);
+      return full;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}

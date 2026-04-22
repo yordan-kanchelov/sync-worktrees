@@ -220,30 +220,37 @@ branch refs/heads/dirty-branch
       });
 
       // Mock fs.stat and fs.rm for orphaned directory cleanup
-      (fs.stat as Mock<any>).mockResolvedValue({ isDirectory: vi.fn().mockReturnValue(true) });
+      (fs.stat as Mock<any>).mockResolvedValue({
+        isDirectory: vi.fn().mockReturnValue(true),
+        isFile: vi.fn().mockReturnValue(false),
+      });
       (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
-      // Mock fs.access for hasOperationInProgress checks
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
-
-      // Mock status checks and other safety checks
-      const statusChecks = new Map([
-        ["/test/worktrees/old-feature", true], // Clean, can remove
-        ["/test/worktrees/dirty-branch", false], // Has changes, skip
-      ]);
-
-      (mockGit.status as Mock<any>).mockImplementation(async () => {
-        const currentPath = (simpleGit as unknown as Mock<any>).mock.calls.slice(-1)[0][0] as string;
-        const isClean = statusChecks.get(currentPath) ?? true;
-        return {
-          modified: isClean ? [] : ["file.txt"],
-          deleted: [],
-          renamed: [],
-          created: [],
-          conflicted: [],
-          not_added: [],
-        } as any;
+      // Mock fs.access: resolve for directory existence checks, reject for operation file checks
+      (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+        const pathStr = p as string;
+        if (
+          pathStr.includes("MERGE_HEAD") ||
+          pathStr.includes("CHERRY_PICK_HEAD") ||
+          pathStr.includes("REVERT_HEAD") ||
+          pathStr.includes("BISECT_LOG") ||
+          pathStr.includes("rebase-merge") ||
+          pathStr.includes("rebase-apply")
+        ) {
+          throw new Error("Not found");
+        }
+        return undefined;
       });
+
+      const cleanStatus = {
+        modified: [],
+        deleted: [],
+        renamed: [],
+        created: [],
+        conflicted: [],
+        not_added: [],
+      };
+      const dirtyStatus = { ...cleanStatus, modified: ["file.txt"] };
 
       // Reset the mock implementation before defining the new one
       (mockGit.raw as Mock<any>).mockReset();
@@ -298,12 +305,14 @@ branch refs/heads/dirty-branch
             ...mockGit,
             stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
             branch: vi.fn<any>().mockResolvedValue({ current: "old-feature" }),
+            status: vi.fn<any>().mockResolvedValue(cleanStatus),
           };
         } else if (pathStr && pathStr.includes("dirty-branch")) {
           return {
             ...mockGit,
             stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
             branch: vi.fn<any>().mockResolvedValue({ current: "dirty-branch" }),
+            status: vi.fn<any>().mockResolvedValue(dirtyStatus),
           };
         } else if (pathStr && pathStr.includes(".bare")) {
           // For bare repo (used by addWorktree)
@@ -322,16 +331,18 @@ branch refs/heads/dirty-branch
       // Filter out the worktree list calls
       const operationCalls = mockRawCalls.filter((args) => !(args[1] === "list" && args[2] === "--porcelain"));
 
-      // Should add feature-2 with tracking
-      expect(operationCalls).toContainEqual([
-        "worktree",
-        "add",
-        "--track",
-        "-b",
-        "feature-2",
-        "/test/worktrees/feature-2",
-        "origin/feature-2",
-      ]);
+      // Should add feature-2 with tracking (path is hashed for collision resistance)
+      expect(operationCalls).toContainEqual(
+        expect.arrayContaining([
+          "worktree",
+          "add",
+          "--track",
+          "-b",
+          "feature-2",
+          expect.stringMatching(/^\/test\/worktrees\/feature-2-[a-f0-9]{8}$/),
+          "origin/feature-2",
+        ]),
+      );
 
       // Should remove old-feature with full path
       expect(operationCalls).toContainEqual(["worktree", "remove", "/test/worktrees/old-feature", "--force"]);

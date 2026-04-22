@@ -63,7 +63,7 @@ describe("Interactive", () => {
 
       expect(mockInput).toHaveBeenCalledTimes(3);
       expect(mockSelect).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({
+      expect(result.config).toEqual({
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "*/10 * * * *",
@@ -85,7 +85,7 @@ describe("Interactive", () => {
 
       expect(mockInput).not.toHaveBeenCalled();
       expect(mockSelect).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({
+      expect(result.config).toEqual({
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/existing/worktrees",
         cronSchedule: "0 * * * *",
@@ -107,7 +107,7 @@ describe("Interactive", () => {
 
       const result = await promptForConfig({});
 
-      expect(result).toEqual({
+      expect(result.config).toEqual({
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "0 * * * *",
@@ -126,7 +126,7 @@ describe("Interactive", () => {
 
       const result = await promptForConfig({});
 
-      expect(result.worktreeDir).toBe(path.resolve(cwd, "./my-worktrees"));
+      expect(result.config.worktreeDir).toBe(path.resolve(cwd, "./my-worktrees"));
     });
 
     it("should use repository name as default worktree directory", async () => {
@@ -147,7 +147,7 @@ describe("Interactive", () => {
         }),
       );
 
-      expect(result.worktreeDir).toBe(path.resolve(cwd, "./my-awesome-repo"));
+      expect(result.config.worktreeDir).toBe(path.resolve(cwd, "./my-awesome-repo"));
     });
 
     it("should handle SSH URLs for default worktree directory", async () => {
@@ -168,7 +168,7 @@ describe("Interactive", () => {
         }),
       );
 
-      expect(result.worktreeDir).toBe(path.resolve(cwd, "./live-casino-monorepo"));
+      expect(result.config.worktreeDir).toBe(path.resolve(cwd, "./live-casino-monorepo"));
     });
 
     it("should save config file when requested", async () => {
@@ -199,7 +199,8 @@ describe("Interactive", () => {
         }),
       );
 
-      expect(mockGenerateConfigFile).toHaveBeenCalledWith(result, "/custom/config.js");
+      expect(mockGenerateConfigFile).toHaveBeenCalledWith(result.config, "/custom/config.js");
+      expect(result.savedConfigPath).toBe("/custom/config.js");
     });
 
     it("should validate URL format", async () => {
@@ -240,13 +241,14 @@ describe("Interactive", () => {
 
       const result = await promptForConfig(partialConfig);
 
-      expect(result).toEqual({
+      expect(result.config).toEqual({
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "0 * * * *",
         runOnce: true,
         bareRepoDir: undefined,
       });
+      expect(result.savedConfigPath).toBeUndefined();
 
       expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Failed to save config file"));
     });

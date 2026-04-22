@@ -6,6 +6,10 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { PathResolutionService } from "../../services/path-resolution.service";
+
+const pathRes = new PathResolutionService();
+
 describe("HEAD branch filtering (E2E)", () => {
   let tempDir: string;
   let bareRepo: string;
@@ -91,9 +95,11 @@ describe("HEAD branch filtering (E2E)", () => {
 
     // Verify worktrees were created
     const worktrees = await fs.readdir(worktreeDir);
-    expect(worktrees).toContain("feature-1");
-    expect(worktrees).toContain("feature-2");
-    expect(worktrees).not.toContain("HEAD");
+    const feature1Dir = pathRes.sanitizeBranchName("feature-1");
+    const feature2Dir = pathRes.sanitizeBranchName("feature-2");
+    expect(worktrees).toContain(feature1Dir);
+    expect(worktrees).toContain(feature2Dir);
+    expect(worktrees).not.toContain(pathRes.sanitizeBranchName("HEAD"));
 
     // Note: The main branch worktree should be created during initialization,
     // but there's a platform-specific issue that causes different behavior
@@ -101,14 +107,14 @@ describe("HEAD branch filtering (E2E)", () => {
     // worktree is correctly created. This should be investigated further.
     // For now, we accept both behaviors to keep tests passing.
     // See: path comparison issue in GitService.initialize() line 71
-    const hasMainWorktree = worktrees.includes("main");
-    if (!hasMainWorktree) {
+    const mainDir = pathRes.sanitizeBranchName("main");
+    if (!worktrees.includes(mainDir)) {
       console.warn("Main worktree not found - this may indicate a platform-specific path comparison issue");
     }
 
     // Verify git worktree list doesn't include HEAD
     // Check from any worktree (they all share the same worktree list)
-    const feature1Path = path.join(worktreeDir, "feature-1");
+    const feature1Path = path.join(worktreeDir, feature1Dir);
     const git = simpleGit(feature1Path);
     const worktreeList = await git.raw(["worktree", "list"]);
     expect(worktreeList).not.toContain("/HEAD");

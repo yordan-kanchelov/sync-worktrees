@@ -1,28 +1,87 @@
+import * as fs from "fs/promises";
+import * as path from "path";
+
 import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { appEvents } from "../../utils/app-events";
 import { InteractiveUIService } from "../InteractiveUIService";
 
 import type { Config } from "../../types";
 import type { WorktreeSyncService } from "../worktree-sync.service";
+import type * as ChildProcessModule from "child_process";
+import type * as FsModule from "fs";
 import type { Mock, Mocked } from "vitest";
 
-const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance } = vi.hoisted(() => {
+const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance, mockSpawn, mockSpawnSync, mockExistsSync } =
+  vi.hoisted(() => {
+    return {
+      mockConfigLoaderInstance: (() => {
+        const inst: any = {
+          loadConfigFile: vi.fn<any>(),
+          resolveRepositoryConfig: vi.fn<any>().mockImplementation((repo: any) => repo),
+          filterRepositories: vi.fn<any>().mockImplementation((repos: any, filter: any) => {
+            if (!filter) return repos;
+            return repos.filter((r: any) => r.name?.startsWith(String(filter).replace("*", "")));
+          }),
+        };
+        inst.buildRepositories = vi.fn<any>().mockImplementation(async (configPath: any, overrides: any) => {
+          const configFile = await inst.loadConfigFile(configPath);
+          let repositories = configFile.repositories.map((r: any) =>
+            inst.resolveRepositoryConfig(r, configFile.defaults, "/test", configFile.retry),
+          );
+          if (overrides?.filter) {
+            repositories = inst.filterRepositories(repositories, overrides.filter);
+          }
+          if (overrides?.noUpdateExisting) {
+            repositories = repositories.map((r: any) => ({ ...r, updateExistingWorktrees: false }));
+          }
+          if (overrides?.debug) {
+            repositories = repositories.map((r: any) => ({ ...r, debug: true }));
+          }
+          return { repositories, configFile, configDir: "" };
+        });
+        return inst;
+      })(),
+      mockWorktreeSyncServiceInstance: {
+        sync: vi.fn<any>(),
+        initialize: vi.fn<any>(),
+        isInitialized: vi.fn<any>().mockReturnValue(false),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        config: {} as any,
+      } as any,
+      mockSpawn: vi.fn<any>().mockImplementation(() => ({
+        on: vi.fn(),
+        unref: vi.fn(),
+      })),
+      mockSpawnSync: vi.fn<any>().mockImplementation(() => ({ status: 1, stdout: "", stderr: "" })),
+      mockExistsSync: vi.fn<any>().mockReturnValue(false),
+    };
+  });
+
+vi.mock("child_process", async () => {
+  const actual = await vi.importActual<typeof ChildProcessModule>("child_process");
   return {
-    mockConfigLoaderInstance: {
-      loadConfigFile: vi.fn<any>(),
-    } as any,
-    mockWorktreeSyncServiceInstance: {
-      sync: vi.fn<any>(),
-      initialize: vi.fn<any>(),
-      isInitialized: vi.fn<any>().mockReturnValue(false),
-      isSyncInProgress: vi.fn<any>().mockReturnValue(false),
-      updateLogger: vi.fn<any>(),
-      config: {} as any,
-    } as any,
+    ...actual,
+    spawn: mockSpawn,
+    spawnSync: mockSpawnSync,
   };
 });
+
+vi.mock("fs", async () => {
+  const actual = await vi.importActual<typeof FsModule>("fs");
+  return {
+    ...actual,
+    existsSync: mockExistsSync,
+  };
+});
+
+vi.mock("fs/promises");
+vi.mock("../../utils/disk-space", () => ({
+  calculateSyncDiskSpace: vi.fn().mockResolvedValue({ totalSize: 0, formattedSize: "0 B" }),
+  calculateDirectorySize: vi.fn().mockResolvedValue(1024),
+  formatBytes: vi.fn().mockReturnValue("1.0 KB"),
+}));
 
 vi.mock("../worktree-sync.service", () => ({
   WorktreeSyncService: vi.fn(function (this: any, config: any) {
@@ -83,11 +142,6 @@ describe("InteractiveUIService", () => {
     mockWorktreeSyncServiceInstance.config = mockConfig;
 
     delete (globalThis as any).__inkAppMethods;
-    appEvents.removeAllListeners();
-  });
-
-  afterEach(() => {
-    appEvents.removeAllListeners();
   });
 
   describe("constructor", () => {
@@ -114,8 +168,8 @@ describe("InteractiveUIService", () => {
       const statusSpy = vi.fn();
       const updateSpy = vi.fn();
 
-      appEvents.on("setStatus", statusSpy);
-      appEvents.on("updateLastSyncTime", updateSpy);
+      service.getEvents().on("setStatus", statusSpy);
+      service.getEvents().on("updateLastSyncTime", updateSpy);
 
       service.setStatus("syncing");
       service.updateLastSyncTime();
@@ -158,7 +212,7 @@ describe("InteractiveUIService", () => {
     it("should emit updateLastSyncTime event", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const updateSpy = vi.fn();
-      appEvents.on("updateLastSyncTime", updateSpy);
+      service.getEvents().on("updateLastSyncTime", updateSpy);
 
       service.updateLastSyncTime();
 
@@ -169,7 +223,6 @@ describe("InteractiveUIService", () => {
 
     it("should not throw when no listeners", () => {
       const service = new InteractiveUIService([mockSyncService]);
-      appEvents.removeAllListeners();
 
       expect(() => service.updateLastSyncTime()).not.toThrow();
 
@@ -181,7 +234,7 @@ describe("InteractiveUIService", () => {
     it("should emit setStatus event", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const setStatusSpy = vi.fn();
-      appEvents.on("setStatus", setStatusSpy);
+      service.getEvents().on("setStatus", setStatusSpy);
 
       service.setStatus("syncing");
 
@@ -193,7 +246,7 @@ describe("InteractiveUIService", () => {
     it("should handle both idle and syncing statuses", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const setStatusSpy = vi.fn();
-      appEvents.on("setStatus", setStatusSpy);
+      service.getEvents().on("setStatus", setStatusSpy);
 
       service.setStatus("idle");
       service.setStatus("syncing");
@@ -206,10 +259,10 @@ describe("InteractiveUIService", () => {
   });
 
   describe("destroy method", () => {
-    it("should restore console and unmount app", () => {
+    it("should restore console and unmount app", async () => {
       const service = new InteractiveUIService([mockSyncService]);
 
-      service.destroy();
+      await service.destroy();
 
       expect(typeof console.log).toBe("function");
       expect(typeof console.warn).toBe("function");
@@ -217,25 +270,40 @@ describe("InteractiveUIService", () => {
       expect(mockUnmount).toHaveBeenCalled();
     });
 
-    it("should clean up event listeners", () => {
+    it("should clean up event listeners", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const statusSpy = vi.fn();
-      appEvents.on("setStatus", statusSpy);
+      service.getEvents().on("setStatus", statusSpy);
 
-      service.destroy();
+      await service.destroy();
 
       // After destroy, emitting events should not call listeners (they were removed)
-      appEvents.emit("setStatus", "syncing");
+      service.getEvents().emit("setStatus", "syncing");
       expect(statusSpy).not.toHaveBeenCalled();
     });
 
-    it("should be safe to call multiple times", () => {
+    it("should be safe to call multiple times", async () => {
       const service = new InteractiveUIService([mockSyncService]);
 
-      expect(() => {
-        service.destroy();
-        service.destroy();
-      }).not.toThrow();
+      await service.destroy();
+      await service.destroy();
+    });
+
+    it("should prevent updates after destroy (isDestroyed guard)", async () => {
+      const service = new InteractiveUIService([mockSyncService]);
+      const statusSpy = vi.fn();
+      const updateSpy = vi.fn();
+      service.getEvents().on("setStatus", statusSpy);
+      service.getEvents().on("updateLastSyncTime", updateSpy);
+
+      await service.destroy();
+
+      // After destroy, these should be no-ops
+      service.setStatus("syncing");
+      service.updateLastSyncTime();
+
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(updateSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -295,7 +363,7 @@ describe("InteractiveUIService", () => {
     it("should set status to syncing then idle", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const statusChanges: string[] = [];
-      appEvents.on("setStatus", (status: string) => statusChanges.push(status));
+      service.getEvents().on("setStatus", (status: string) => statusChanges.push(status));
 
       await service.triggerInitialSync();
 
@@ -308,11 +376,141 @@ describe("InteractiveUIService", () => {
     it("should update last sync time after sync", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const updateSpy = vi.fn();
-      appEvents.on("updateLastSyncTime", updateSpy);
+      service.getEvents().on("updateLastSyncTime", updateSpy);
 
       await service.triggerInitialSync();
 
       expect(updateSpy).toHaveBeenCalled();
+
+      service.destroy();
+    });
+
+    it("should run services in parallel respecting maxParallel limit", async () => {
+      const syncOrder: number[] = [];
+      let concurrentCount = 0;
+      let maxConcurrent = 0;
+
+      const createMockService = (id: number) => ({
+        ...mockSyncService,
+        sync: vi.fn<any>().mockImplementation(async () => {
+          concurrentCount++;
+          maxConcurrent = Math.max(maxConcurrent, concurrentCount);
+          syncOrder.push(id);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          concurrentCount--;
+        }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        config: { ...mockSyncService.config, name: `repo-${id}` },
+        updateLogger: vi.fn(),
+      });
+
+      const services = [createMockService(1), createMockService(2), createMockService(3), createMockService(4)];
+
+      // maxParallel = 2 means at most 2 services should run concurrently
+      const service = new InteractiveUIService(services as any, undefined, undefined, 2);
+
+      await service.triggerInitialSync();
+
+      // All services should have synced
+      expect(services[0].sync).toHaveBeenCalled();
+      expect(services[1].sync).toHaveBeenCalled();
+      expect(services[2].sync).toHaveBeenCalled();
+      expect(services[3].sync).toHaveBeenCalled();
+
+      // Max concurrent should respect the limit
+      expect(maxConcurrent).toBeLessThanOrEqual(2);
+
+      service.destroy();
+    });
+
+    it("should use default parallelism when maxParallel not specified", async () => {
+      let concurrentCount = 0;
+      let maxConcurrent = 0;
+
+      const createMockService = (id: number) => ({
+        ...mockSyncService,
+        sync: vi.fn<any>().mockImplementation(async () => {
+          concurrentCount++;
+          maxConcurrent = Math.max(maxConcurrent, concurrentCount);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          concurrentCount--;
+        }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        config: { ...mockSyncService.config, name: `repo-${id}` },
+        updateLogger: vi.fn(),
+      });
+
+      const services = [createMockService(1), createMockService(2), createMockService(3)];
+
+      // No maxParallel specified - should use default (2)
+      const service = new InteractiveUIService(services as any);
+
+      await service.triggerInitialSync();
+
+      // All services should have synced
+      services.forEach((s) => expect(s.sync).toHaveBeenCalled());
+
+      // Default is 2, so max concurrent should be at most 2
+      expect(maxConcurrent).toBeLessThanOrEqual(2);
+
+      service.destroy();
+    });
+
+    it("should handle errors in parallel sync without affecting other services", async () => {
+      const successService = {
+        ...mockSyncService,
+        sync: vi.fn<any>().mockResolvedValue(undefined),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        config: { ...mockSyncService.config, name: "success-repo" },
+        updateLogger: vi.fn(),
+      };
+
+      const failingService = {
+        ...mockSyncService,
+        sync: vi.fn<any>().mockRejectedValue(new Error("Sync failed")),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        config: { ...mockSyncService.config, name: "failing-repo" },
+        updateLogger: vi.fn(),
+      };
+
+      const service = new InteractiveUIService([successService, failingService] as any, undefined, undefined, 2);
+
+      // Should not throw - errors are handled gracefully
+      await service.triggerInitialSync();
+
+      // Both services should have been called
+      expect(successService.sync).toHaveBeenCalled();
+      expect(failingService.sync).toHaveBeenCalled();
+
+      service.destroy();
+    });
+
+    it("should log per-repository sync failures", async () => {
+      const service = new InteractiveUIService([mockSyncService]);
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("addLog", (entry: { message: string; level: string }) => logs.push(entry));
+
+      service.getEvents().emit("uiReady");
+      mockSyncService.sync.mockRejectedValue(new Error("Sync failed"));
+      vi.spyOn(mockSyncService, "config", "get").mockReturnValue({
+        ...(mockSyncService.config as object),
+        name: "failing-repo",
+      } as typeof mockSyncService.config & { name: string });
+
+      await service.triggerInitialSync();
+
+      expect(logs).toContainEqual({
+        message: "Failed to sync repository 'failing-repo': Sync failed",
+        level: "error",
+      });
 
       service.destroy();
     });
@@ -322,7 +520,7 @@ describe("InteractiveUIService", () => {
     it("should skip reload when no config file in single-repo mode", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const setStatusSpy = vi.fn();
-      appEvents.on("setStatus", setStatusSpy);
+      service.getEvents().on("setStatus", setStatusSpy);
 
       const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
 
@@ -369,6 +567,47 @@ describe("InteractiveUIService", () => {
       service.destroy();
     });
 
+    it("should prevent concurrent reloads (re-entry guard)", async () => {
+      let resolveLoadConfig: () => void;
+      const loadConfigPromise = new Promise<void>((resolve) => {
+        resolveLoadConfig = resolve;
+      });
+
+      mockConfigLoaderInstance.loadConfigFile.mockImplementation(async () => {
+        await loadConfigPromise;
+        return {
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        };
+      });
+
+      const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+      const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+
+      // Start first reload
+      const firstReload = onReload();
+
+      // Second reload should be a no-op since first is still in progress
+      const secondReload = onReload();
+
+      // Release the config loading
+      resolveLoadConfig!();
+      await firstReload;
+      await secondReload;
+
+      // loadConfigFile should only be called once (second reload was skipped)
+      expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalledTimes(1);
+
+      service.destroy();
+    });
+
     describe("cron job management on reload", () => {
       it("should cancel existing cron jobs before reload", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
@@ -395,7 +634,24 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
-      it("should create new cron jobs after reload", async () => {
+      it("should not duplicate cron jobs when config load fails before cancel", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockRejectedValue(new Error("Failed to load config"));
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
+        const preExistingJob = { stop: vi.fn() };
+        (service as any).cronJobs = [preExistingJob];
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        const cronJobs = (service as any).cronJobs;
+        expect(cronJobs).toHaveLength(1);
+        expect(preExistingJob.stop).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it("should create new cron jobs after reload (grouped by schedule)", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
           repositories: [
             {
@@ -422,7 +678,7 @@ describe("InteractiveUIService", () => {
 
         const cronJobs = (service as any).cronJobs;
         expect(cronJobs).toBeDefined();
-        expect(cronJobs.length).toBe(2);
+        expect(cronJobs.length).toBe(1);
 
         service.destroy();
       });
@@ -446,12 +702,14 @@ describe("InteractiveUIService", () => {
           "0 * * * *",
         );
 
+        // Constructor no longer creates cron jobs (index.ts handles cron setup)
         let cronJobs = (service as any).cronJobs;
-        expect(cronJobs.length).toBe(3);
+        expect(cronJobs.length).toBe(0);
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
+        // After reload, cron jobs are created via setupCronJobs
         cronJobs = (service as any).cronJobs;
         expect(cronJobs.length).toBe(1);
 
@@ -515,7 +773,8 @@ describe("InteractiveUIService", () => {
         await onReload();
 
         const cronJobs = (service as any).cronJobs;
-        expect(cronJobs.length).toBe(2);
+        // 2 non-runOnce repos with same schedule = 1 grouped cron job
+        expect(cronJobs.length).toBe(1);
 
         service.destroy();
       });
@@ -596,7 +855,7 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
-      it("should re-render App component with updated repository count", async () => {
+      it("should emit updateRepositoryCount event after reload", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
           repositories: [
             {
@@ -611,14 +870,14 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockSyncService, mockSyncService], "/test/config.js");
 
-        const initialRenderCall = mockRender.mock.calls[0][0];
-        expect(initialRenderCall.props.repositoryCount).toBe(2);
+        const repoCountSpy = vi.fn();
+        service.getEvents().on("updateRepositoryCount", repoCountSpy);
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        const reloadRenderCall = mockRender.mock.calls[mockRender.mock.calls.length - 1][0];
-        expect(reloadRenderCall.props.repositoryCount).toBe(1);
+        expect(repoCountSpy).toHaveBeenCalledWith(1);
+        expect(mockRender).toHaveBeenCalledTimes(1);
 
         service.destroy();
       });
@@ -743,7 +1002,7 @@ describe("InteractiveUIService", () => {
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(2);
+        expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(4);
         expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalledTimes(2);
 
         service.destroy();
@@ -775,7 +1034,7 @@ describe("InteractiveUIService", () => {
                 name: "test-repo-2",
                 repoUrl: "https://github.com/test/repo2.git",
                 worktreeDir: "/test/worktrees2",
-                cronSchedule: "0 * * * *",
+                cronSchedule: "*/30 * * * *",
                 runOnce: false,
               },
             ],
@@ -801,11 +1060,144 @@ describe("InteractiveUIService", () => {
 
         await onReload();
         expect((service as any).repositoryCount).toBe(2);
+        // 2 repos with different schedules = 2 cron jobs
         expect((service as any).cronJobs.length).toBe(2);
 
         await onReload();
         expect((service as any).repositoryCount).toBe(1);
         expect((service as any).cronJobs.length).toBe(1);
+
+        service.destroy();
+      });
+    });
+
+    describe("config resolution on reload", () => {
+      it("should call resolveRepositoryConfig for each repository", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          defaults: { cronSchedule: "*/15 * * * *" },
+          retry: { maxAttempts: 5 },
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+
+        await onReload();
+
+        expect(mockConfigLoaderInstance.resolveRepositoryConfig).toHaveBeenCalledTimes(1);
+        expect(mockConfigLoaderInstance.resolveRepositoryConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ name: "test-repo" }),
+          expect.objectContaining({ cronSchedule: "*/15 * * * *" }),
+          expect.any(String),
+          expect.objectContaining({ maxAttempts: 5 }),
+        );
+
+        service.destroy();
+      });
+
+      it("should re-inject loggers after reload", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+
+        mockWorktreeSyncServiceInstance.updateLogger.mockClear();
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        expect(mockWorktreeSyncServiceInstance.updateLogger).toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it("should emit updateCronSchedule event after reload", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "*/30 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
+
+        const cronScheduleSpy = vi.fn();
+        service.getEvents().on("updateCronSchedule", cronScheduleSpy);
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        expect(cronScheduleSpy).toHaveBeenCalledWith("*/30 * * * *");
+
+        service.destroy();
+      });
+
+      it("should apply CLI filter override during reload", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *", undefined, {
+          filter: "test-*",
+        });
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        expect(mockConfigLoaderInstance.filterRepositories).toHaveBeenCalledWith(expect.any(Array), "test-*");
+
+        service.destroy();
+      });
+
+      it("should not re-render UI on reload (uses events instead)", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "https://github.com/test/repo.git",
+              worktreeDir: "/test/worktrees",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+
+        // render should only be called once (in constructor), not again on reload
+        expect(mockRender).toHaveBeenCalledTimes(1);
 
         service.destroy();
       });
@@ -905,11 +1297,23 @@ describe("InteractiveUIService", () => {
 
     describe("getBranchesForRepo", () => {
       it("should return branches for valid repo index", async () => {
+        mockSyncService.isInitialized.mockReturnValue(true);
         const service = new InteractiveUIService([mockSyncService]);
         const branches = await service.getBranchesForRepo(0);
 
         expect(branches).toEqual(["main", "develop", "feature/test"]);
         expect(mockGitService.getRemoteBranches).toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it("should return empty array if service not initialized", async () => {
+        mockSyncService.isInitialized.mockReturnValue(false);
+        const service = new InteractiveUIService([mockSyncService]);
+        const branches = await service.getBranchesForRepo(0);
+
+        expect(branches).toEqual([]);
+        expect(mockGitService.getRemoteBranches).not.toHaveBeenCalled();
 
         service.destroy();
       });
@@ -959,16 +1363,17 @@ describe("InteractiveUIService", () => {
       });
 
       it("should append suffix if branch already exists", async () => {
-        mockGitService.branchExists
-          .mockResolvedValueOnce({ local: true, remote: false })
-          .mockResolvedValueOnce({ local: false, remote: true })
-          .mockResolvedValueOnce({ local: false, remote: false });
+        mockGitService.createBranch
+          .mockRejectedValueOnce(new Error("already exists"))
+          .mockRejectedValueOnce(new Error("already exists"))
+          .mockResolvedValueOnce(undefined);
 
         const service = new InteractiveUIService([mockSyncService]);
         const result = await service.createAndPushBranch(0, "main", "feature/test");
 
         expect(result.success).toBe(true);
         expect(result.finalName).toBe("feature/test-2");
+        expect(mockGitService.createBranch).toHaveBeenCalledTimes(3);
 
         service.destroy();
       });
@@ -1021,7 +1426,10 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
         await service.createWorktreeForBranch(0, "feature/new");
 
-        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/new", "/test/worktrees/feature/new");
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith(
+          "feature/new",
+          expect.stringMatching(/^\/test\/worktrees\/feature-new-[a-f0-9]{8}$/),
+        );
 
         service.destroy();
       });
@@ -1043,6 +1451,132 @@ describe("InteractiveUIService", () => {
         const result = service.openEditorInWorktree("/test/worktrees/main");
 
         expect(result.success).toBe(true);
+
+        service.destroy();
+      });
+    });
+
+    describe("openTerminalInWorktree", () => {
+      const originalPlatform = process.platform;
+      const originalEnvOverride = process.env.SYNC_WORKTREES_TERMINAL;
+      const originalEnvTerminal = process.env.TERMINAL;
+
+      afterEach(() => {
+        Object.defineProperty(process, "platform", { value: originalPlatform });
+        if (originalEnvOverride === undefined) {
+          delete process.env.SYNC_WORKTREES_TERMINAL;
+        } else {
+          process.env.SYNC_WORKTREES_TERMINAL = originalEnvOverride;
+        }
+        if (originalEnvTerminal === undefined) {
+          delete process.env.TERMINAL;
+        } else {
+          process.env.TERMINAL = originalEnvTerminal;
+        }
+      });
+
+      beforeEach(() => {
+        mockSpawn.mockClear();
+        mockSpawn.mockImplementation(() => ({ on: vi.fn(), unref: vi.fn() }));
+        mockSpawnSync.mockClear();
+        mockSpawnSync.mockImplementation(() => ({ status: 1, stdout: "", stderr: "" }));
+        mockExistsSync.mockClear();
+        mockExistsSync.mockReturnValue(false);
+      });
+
+      it("should prefer Ghostty on darwin when Ghostty.app is installed", () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        mockExistsSync.mockImplementation((...args: unknown[]) => String(args[0]).includes("Ghostty.app"));
+
+        const namedSyncService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: "my-repo" },
+        } as any;
+        const service = new InteractiveUIService([namedSyncService]);
+        const result = service.openTerminalInWorktree(0, "/worktrees/feat-x", "feat/x");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "open");
+        expect(call).toBeDefined();
+        const args = call[1] as string[];
+        expect(args.slice(0, 5)).toEqual(["-na", "Ghostty.app", "--args", "-e", "sh"]);
+        expect(args[5]).toBe("-c");
+        expect(args[6]).toContain("my-repo-feat-x");
+        expect(args[6]).toContain("/worktrees/feat-x");
+
+        service.destroy();
+      });
+
+      it("should use osascript on darwin and include tmux session name of <repo>-<branch>", () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+
+        const namedSyncService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: "my-repo" },
+        } as any;
+        const service = new InteractiveUIService([namedSyncService]);
+        const result = service.openTerminalInWorktree(0, "/test/worktrees/feat-x", "feat/x");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "osascript");
+        expect(call).toBeDefined();
+        expect(call[1][0]).toBe("-e");
+        expect(call[1][1]).toContain("Terminal");
+        expect(call[1][1]).toContain("my-repo-feat-x");
+        expect(call[1][1]).toContain("/test/worktrees/feat-x");
+
+        service.destroy();
+      });
+
+      it("should honour SYNC_WORKTREES_TERMINAL env override", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        process.env.SYNC_WORKTREES_TERMINAL = "alacritty -e";
+
+        const namedSyncService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: "repo" },
+        } as any;
+        const service = new InteractiveUIService([namedSyncService]);
+        const result = service.openTerminalInWorktree(0, "/path", "branch");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "alacritty");
+        expect(call).toBeDefined();
+        const args = call[1] as string[];
+        expect(args.slice(0, 3)).toEqual(["-e", "sh", "-c"]);
+        const tmuxCmd = args[args.length - 1];
+        expect(tmuxCmd).toContain("tmux new-session -A -s");
+        expect(tmuxCmd).toContain("repo-branch");
+        expect(tmuxCmd).toContain("/path");
+
+        service.destroy();
+      });
+
+      it("should return error for invalid repository index", () => {
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openTerminalInWorktree(5, "/path", "branch");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("Invalid repository index");
+
+        service.destroy();
+      });
+
+      it("should return error when spawn throws synchronously", () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+
+        mockSpawn.mockImplementation(() => {
+          throw new Error("ENOENT");
+        });
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openTerminalInWorktree(0, "/path", "branch");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("ENOENT");
 
         service.destroy();
       });
@@ -1077,6 +1611,163 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockServiceWithFiles as any]);
         await expect(service.copyBranchFiles(0, "main", "feature/new")).resolves.not.toThrow();
+
+        service.destroy();
+      });
+    });
+
+    describe("deleteDivergedDirectory", () => {
+      it("should delete diverged directory for valid inputs", async () => {
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await service.deleteDivergedDirectory(0, "2024-01-15-feature-x-abc123");
+
+        expect(fs.rm).toHaveBeenCalledWith(path.join("/test/worktrees", ".diverged", "2024-01-15-feature-x-abc123"), {
+          recursive: true,
+          force: true,
+        });
+
+        service.destroy();
+      });
+
+      it("should throw for invalid repo index", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.deleteDivergedDirectory(-1, "test")).rejects.toThrow("Invalid repository index: -1");
+        await expect(service.deleteDivergedDirectory(5, "test")).rejects.toThrow("Invalid repository index: 5");
+
+        service.destroy();
+      });
+
+      it("should reject path traversal attempts", async () => {
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.deleteDivergedDirectory(0, "../../evil-target")).rejects.toThrow(
+          /Invalid diverged directory name|Path traversal rejected/,
+        );
+        expect(fs.rm).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it("should reject deeply nested traversal attempts", async () => {
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.deleteDivergedDirectory(0, "../../../etc/passwd")).rejects.toThrow(
+          /Invalid diverged directory name|Path traversal rejected/,
+        );
+        expect(fs.rm).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it.each([
+        ["empty string", ""],
+        ["single dot", "."],
+        ["double dot", ".."],
+        ["forward slash", "nested/evil"],
+        ["backslash", "nested\\evil"],
+      ])("should reject %s name without calling fs.rm", async (_label, badName) => {
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.deleteDivergedDirectory(0, badName)).rejects.toThrow();
+        expect(fs.rm).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+    });
+
+    describe("getDivergedDirectoriesForRepo", () => {
+      it("should return empty array for invalid repo index", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const result = await service.getDivergedDirectoriesForRepo(-1);
+        expect(result).toEqual([]);
+
+        const result2 = await service.getDivergedDirectoriesForRepo(5);
+        expect(result2).toEqual([]);
+
+        service.destroy();
+      });
+
+      it("should return empty array when .diverged directory does not exist", async () => {
+        (fs.readdir as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const result = await service.getDivergedDirectoriesForRepo(0);
+        expect(result).toEqual([]);
+
+        service.destroy();
+      });
+
+      it("should parse entries from .diverged directory with metadata files", async () => {
+        const mockDirents = [{ name: "2024-01-15-feature-x-abc123", isDirectory: () => true, isFile: () => false }];
+        (fs.readdir as Mock<any>).mockResolvedValue(mockDirents);
+        (fs.readFile as Mock<any>).mockResolvedValue(
+          JSON.stringify({ originalBranch: "feature/x", divergedAt: "2024-01-15T10:00:00Z" }),
+        );
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.getDivergedDirectoriesForRepo(0);
+
+        expect(result).toHaveLength(1);
+        expect(result[0].originalBranch).toBe("feature/x");
+        expect(result[0].divergedAt).toBe("2024-01-15T10:00:00Z");
+        expect(result[0].sizeFormatted).toBe("1.0 KB");
+
+        service.destroy();
+      });
+
+      it("should fallback to parsing directory name when metadata file is missing", async () => {
+        const mockDirents = [{ name: "2024-03-20-my-branch-abc123", isDirectory: () => true, isFile: () => false }];
+        (fs.readdir as Mock<any>).mockResolvedValue(mockDirents);
+        (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.getDivergedDirectoriesForRepo(0);
+
+        expect(result).toHaveLength(1);
+        expect(result[0].originalBranch).toBe("my-branch");
+        expect(result[0].divergedAt).toBe("2024-03-20");
+
+        service.destroy();
+      });
+
+      it("should filter out non-directory entries", async () => {
+        const mockDirents = [
+          { name: "a-dir", isDirectory: () => true, isFile: () => false },
+          { name: "a-file.txt", isDirectory: () => false, isFile: () => true },
+        ];
+        (fs.readdir as Mock<any>).mockResolvedValue(mockDirents);
+        (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.getDivergedDirectoriesForRepo(0);
+
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("a-dir");
+
+        service.destroy();
+      });
+
+      it("should sort entries by divergedAt descending", async () => {
+        const mockDirents = [
+          { name: "2024-01-01-old-abc", isDirectory: () => true, isFile: () => false },
+          { name: "2024-06-15-new-def", isDirectory: () => true, isFile: () => false },
+        ];
+        (fs.readdir as Mock<any>).mockResolvedValue(mockDirents);
+        (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.getDivergedDirectoriesForRepo(0);
+
+        expect(result).toHaveLength(2);
+        expect(result[0].divergedAt).toBe("2024-06-15");
+        expect(result[1].divergedAt).toBe("2024-01-01");
 
         service.destroy();
       });

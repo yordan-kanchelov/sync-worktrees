@@ -166,7 +166,9 @@ describe("Local Branch Ahead of Remote", () => {
       expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees/.diverged", { recursive: true });
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature-diverged",
-        expect.stringMatching(/\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-[a-z0-9]+$/),
+        expect.stringMatching(
+          /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-[a-z0-9]{8}-[a-z0-9]+$/,
+        ),
       );
     });
 

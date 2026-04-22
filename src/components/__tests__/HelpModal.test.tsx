@@ -30,7 +30,7 @@ describe("HelpModal", () => {
     it("should render close instruction", () => {
       const { lastFrame } = render(<HelpModal {...defaultProps} />);
 
-      expect(lastFrame()).toContain("Press any key to close");
+      expect(lastFrame()).toContain("Press ? / h / ESC to close");
     });
   });
 
@@ -77,38 +77,39 @@ describe("HelpModal", () => {
   });
 
   describe("keyboard input", () => {
-    it("should call onClose when any key is pressed", () => {
+    it("should call onClose when ? is pressed", () => {
+      const onClose = vi.fn();
+      const { stdin } = render(<HelpModal onClose={onClose} />);
+
+      stdin.write("?");
+
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it("should call onClose when h is pressed", () => {
+      const onClose = vi.fn();
+      const { stdin } = render(<HelpModal onClose={onClose} />);
+
+      stdin.write("h");
+
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it("should not call onClose when arbitrary keys are pressed", () => {
       const onClose = vi.fn();
       const { stdin } = render(<HelpModal onClose={onClose} />);
 
       stdin.write("x");
 
-      expect(onClose).toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
     });
 
-    it("should call onClose when space is pressed", () => {
-      const onClose = vi.fn();
-      const { stdin } = render(<HelpModal onClose={onClose} />);
-
-      stdin.write(" ");
-
-      expect(onClose).toHaveBeenCalled();
-    });
-
-    it("should call onClose when enter is pressed", () => {
-      const onClose = vi.fn();
-      const { stdin } = render(<HelpModal onClose={onClose} />);
-
-      stdin.write("\r");
-
-      expect(onClose).toHaveBeenCalled();
-    });
-
-    it("should call onClose when escape is pressed", () => {
+    it("should call onClose when escape is pressed", async () => {
       const onClose = vi.fn();
       const { stdin } = render(<HelpModal onClose={onClose} />);
 
       stdin.write("\x1b");
+      await new Promise((resolve) => setImmediate(resolve));
 
       expect(onClose).toHaveBeenCalled();
     });
@@ -117,7 +118,7 @@ describe("HelpModal", () => {
       const onClose = vi.fn();
       const { stdin } = render(<HelpModal onClose={onClose} />);
 
-      stdin.write("a");
+      stdin.write("?");
 
       expect(onClose).toHaveBeenCalledTimes(1);
     });

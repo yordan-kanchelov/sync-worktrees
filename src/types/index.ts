@@ -1,4 +1,5 @@
 import type { Logger } from "../services/logger.service";
+import type { WorktreeStatusResult } from "../services/worktree-status.service";
 
 export interface RetryConfig {
   maxAttempts?: number | "unlimited";
@@ -6,6 +7,18 @@ export interface RetryConfig {
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;
+}
+
+export interface HookContext {
+  branchName: string;
+  worktreePath: string;
+  repoName: string;
+  baseBranch: string;
+  repoUrl: string;
+}
+
+export interface HooksConfig {
+  onBranchCreated?: string[];
 }
 
 /**
@@ -31,6 +44,8 @@ export interface ParallelismConfig {
   maxWorktreeRemoval?: number;
   /** Max concurrent status checks (default: 20) */
   maxStatusChecks?: number;
+  /** Max concurrent per-branch fetches when falling back from bulk fetch (default: 3) */
+  maxBranchFetches?: number;
 }
 
 export interface Config {
@@ -42,11 +57,14 @@ export interface Config {
   retry?: RetryConfig;
   parallelism?: ParallelismConfig;
   branchMaxAge?: string;
+  branchInclude?: string[];
+  branchExclude?: string[];
   skipLfs?: boolean;
   updateExistingWorktrees?: boolean;
   debug?: boolean;
   logger?: Logger;
   filesToCopyOnBranchCreate?: string[];
+  hooks?: HooksConfig;
 }
 
 export interface RepositoryConfig extends Config {
@@ -64,4 +82,19 @@ export interface WorktreeStatus {
   branchName: string;
   worktreePath: string;
   hasLocalChanges: boolean;
+}
+
+export interface WorktreeStatusEntry {
+  branch: string;
+  path: string;
+  status: WorktreeStatusResult;
+}
+
+export interface DivergedDirectoryInfo {
+  name: string;
+  path: string;
+  originalBranch: string;
+  divergedAt: string;
+  sizeBytes: number;
+  sizeFormatted: string;
 }

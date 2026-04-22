@@ -361,6 +361,17 @@ describe("Corrupted State Recovery", () => {
           upstreamGone: false,
           canRemove: true,
           reasons: [],
+        })
+        // TOCTOU re-validation before actual removal
+        .mockResolvedValueOnce({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
         });
 
       await service.sync();

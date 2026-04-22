@@ -84,11 +84,12 @@ describe("BranchCreationWizard", () => {
       expect(lastFrame()).toContain("Select base branch");
     });
 
-    it("should close wizard on ESC", () => {
+    it("should close wizard on ESC", async () => {
       const onClose = vi.fn();
       const { stdin } = render(<BranchCreationWizard {...defaultProps} onClose={onClose} />);
 
       stdin.write("\x1b"); // ESC
+      await waitForStateUpdate();
       expect(onClose).toHaveBeenCalled();
     });
   });
@@ -163,12 +164,160 @@ describe("BranchCreationWizard", () => {
     });
   });
 
+  describe("index clamping on filter", () => {
+    it("should clamp selected index when filter reduces project list", async () => {
+      const manyRepos = {
+        ...defaultProps,
+        repositories: [
+          { index: 0, name: "alpha-repo", repoUrl: "https://example.com/alpha.git" },
+          { index: 1, name: "beta-repo", repoUrl: "https://example.com/beta.git" },
+          { index: 2, name: "gamma-repo", repoUrl: "https://example.com/gamma.git" },
+        ],
+      };
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...manyRepos} />);
+
+      // Navigate to last item
+      stdin.write("\u001B[B"); // Down
+      stdin.write("\u001B[B"); // Down
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("> gamma-repo");
+
+      // Type filter that only matches one repo - index should be clamped
+      stdin.write("alpha");
+      await waitForStateUpdate();
+
+      // Should still show a valid selection (not crash)
+      expect(lastFrame()).toContain("alpha-repo");
+    });
+  });
+
+  describe("empty-filter navigation", () => {
+    it("should keep a valid project selection after filtering to empty then clearing", async () => {
+      const getBranchesForRepo = vi.fn().mockResolvedValue(["main"]);
+      const props: BranchCreationWizardProps = {
+        ...defaultProps,
+        repositories: [
+          { index: 0, name: "alpha-repo", repoUrl: "https://example.com/alpha.git" },
+          { index: 1, name: "beta-repo", repoUrl: "https://example.com/beta.git" },
+        ],
+        getBranchesForRepo,
+      };
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      stdin.write("zz");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B"); // down arrow while filter empty
+      await waitForStateUpdate();
+      stdin.write("\u007F"); // backspace
+      stdin.write("\u007F"); // backspace
+      await waitForStateUpdate();
+
+      stdin.write("\r"); // Enter
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(getBranchesForRepo).toHaveBeenCalled();
+      expect(getBranchesForRepo.mock.calls[0][0]).toBeGreaterThanOrEqual(0);
+      expect(lastFrame()).toContain("Select base branch");
+    });
+
+    it("should keep a valid branch selection after filtering to empty then clearing", async () => {
+      const getBranchesForRepo = vi.fn().mockResolvedValue(["main", "develop", "feature/test"]);
+      const props: BranchCreationWizardProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "single-repo", repoUrl: "https://example.com/repo.git" }],
+        getBranchesForRepo,
+      };
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Select base branch");
+
+      stdin.write("zzz");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\u007F");
+      stdin.write("\u007F");
+      stdin.write("\u007F");
+      await waitForStateUpdate();
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Enter new branch name");
+    });
+  });
+
+  describe("repo index correctness", () => {
+    it("should use correct repo index when filter is active", async () => {
+      const createAndPushBranch = vi.fn().mockResolvedValue({ success: true, finalName: "new-branch" });
+      const onBranchCreated = vi.fn();
+      const getBranchesForRepo = vi.fn().mockResolvedValue(["main", "develop"]);
+      const getDefaultBranchForRepo = vi.fn().mockReturnValue("main");
+      const props: BranchCreationWizardProps = {
+        ...defaultProps,
+        repositories: [
+          { index: 0, name: "alpha-repo", repoUrl: "https://example.com/alpha.git" },
+          { index: 1, name: "beta-repo", repoUrl: "https://example.com/beta.git" },
+          { index: 2, name: "gamma-repo", repoUrl: "https://example.com/gamma.git" },
+        ],
+        getBranchesForRepo,
+        getDefaultBranchForRepo,
+        createAndPushBranch,
+        onBranchCreated,
+      };
+
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      // Type "g" to filter to gamma-repo (index 2)
+      stdin.write("g");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("gamma-repo");
+
+      // Press Enter to select gamma-repo
+      stdin.write("\r");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      // Verify branches loaded for correct repo
+      expect(getBranchesForRepo).toHaveBeenCalledWith(2);
+      expect(lastFrame()).toContain("Select base branch");
+
+      // Select base branch
+      stdin.write("\r");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Enter new branch name");
+
+      // Type branch name character by character to ensure proper state updates
+      for (const char of "my-feature") {
+        stdin.write(char);
+      }
+      await waitForStateUpdate();
+
+      // Press Enter to create
+      stdin.write("\r");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(createAndPushBranch).toHaveBeenCalledWith(2, "main", "my-feature");
+      expect(onBranchCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ repoIndex: 2 }),
+      );
+    });
+  });
+
   describe("footer navigation hints", () => {
     it("should show navigation hints in selection steps", () => {
       const { lastFrame } = render(<BranchCreationWizard {...defaultProps} />);
-      expect(lastFrame()).toContain("↑/↓ to navigate");
+      expect(lastFrame()).toContain("↑/↓ navigate");
+      expect(lastFrame()).toContain("Type to filter");
       expect(lastFrame()).toContain("Enter to select");
-      expect(lastFrame()).toContain("ESC to cancel");
+      expect(lastFrame()).toContain("ESC");
+      expect(lastFrame()).toContain("cancel");
     });
   });
 });

@@ -28,6 +28,7 @@ sync-worktrees maintains a **separate working directory for each remote branch**
 - 🔁 Automatic retry with exponential backoff for network and filesystem errors
 - 🕐 Branch age filtering - only sync branches active within a specified time period
 - 🔀 Smart handling of rebased/force-pushed branches with automatic divergence detection
+- 🤖 MCP server for AI assistants - inspect and manage worktrees from Claude Desktop, Claude Code, Cursor, etc.
 
 ## Installation
 
@@ -43,81 +44,119 @@ pnpm add -g sync-worktrees
 
 ## Usage
 
-### Interactive Mode
+Run `sync-worktrees` in any directory:
 
-When running without all required arguments, sync-worktrees will prompt you interactively:
-
-```bash
-# Interactive setup - prompts for missing values
-sync-worktrees
-
-# Or provide partial arguments and be prompted for the rest
-sync-worktrees --repoUrl https://github.com/user/repo.git
-```
-
-### Command Line
+- **First run** — no config found → interactive wizard asks for repo URL, worktree directory, and schedule, then saves `sync-worktrees.config.js` in the current directory and starts syncing.
+- **Subsequent runs** — `sync-worktrees` auto-loads `sync-worktrees.config.js` (or `.mjs` / `.cjs`) from the current directory. No flags needed.
 
 ```bash
-# Single repository (one-time sync)
-sync-worktrees --repoUrl https://github.com/user/repo.git --worktreeDir ./worktrees --runOnce
-
-# Single repository (scheduled hourly)
-sync-worktrees --repoUrl https://github.com/user/repo.git --worktreeDir ./worktrees
-
-# Multiple repositories (using config file)
-sync-worktrees --config ./sync-worktrees.config.js
+cd ~/projects/my-sync-dir
+sync-worktrees           # wizard → saves config → runs
+sync-worktrees           # re-uses the saved config
 ```
+
+To manage multiple repositories, edit the generated config file and add entries under `repositories`. See [Configuration File](#configuration-file).
+
+### Explicit config path
+
+Useful when the config lives outside the current directory:
+
+```bash
+sync-worktrees --config /path/to/sync-worktrees.config.js
+sync-worktrees --config ./config.js --filter "frontend-*"
+sync-worktrees --config ./config.js --list
+```
+
+### Opening a worktree from the TUI
+
+Press `o` in the interactive TUI to open the selected worktree. The wizard supports two modes, toggled with `Tab`:
+
+- **Terminal** (default) — launches a new terminal window with a `tmux` session attached to the worktree directory. Session name is `<repo>-<sanitized-branch>`; re-opening the same worktree attaches to the existing session instead of creating a duplicate.
+- **Editor** — launches `$EDITOR` / `$VISUAL` (falls back to `code`) in the worktree.
+
+Terminal mode requires [`tmux`](https://github.com/tmux/tmux) to be installed.
+
+#### Environment variables
+
+| Variable | Purpose | Default behavior |
+|----------|---------|------------------|
+| `SYNC_WORKTREES_TERMINAL` | Override the terminal launcher on any platform. Value is a command string; the tmux invocation is appended via `sh -c`. Example: `SYNC_WORKTREES_TERMINAL="alacritty -e"`. | See per-platform defaults below. |
+| `TERMINAL` | Linux-only fallback when `SYNC_WORKTREES_TERMINAL` is unset. Same format. | Probes `gnome-terminal`, `konsole`, `alacritty`, `kitty`, `xterm` in order. |
+| `EDITOR` / `VISUAL` | Editor mode launcher. | Falls back to `code`. |
+
+Per-platform terminal defaults (when no env override is set):
+
+- **macOS** — Ghostty if `Ghostty.app` is installed, otherwise Terminal.app via AppleScript.
+- **Linux** — `$TERMINAL` if set; otherwise the first found among the candidates above.
+
+## MCP Server
+
+sync-worktrees ships a [Model Context Protocol](https://modelcontextprotocol.io) server so AI assistants (Claude Desktop, Claude Code, Cursor, Windsurf, etc.) can inspect and manage your worktrees directly. Installing the package exposes a second binary, `sync-worktrees-mcp`, that speaks MCP over stdio.
+
+### Setup
+
+Add the server to your MCP client config. Use `npx` if the package is not installed globally:
+
+```json
+{
+  "mcpServers": {
+    "sync-worktrees": {
+      "command": "npx",
+      "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
+      "env": {
+        "SYNC_WORKTREES_CONFIG": "/absolute/path/to/sync-worktrees.config.js"
+      }
+    }
+  }
+}
+```
+
+If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. Sync and initialize require a loaded config (or call `load_config` at runtime).
+
+Client-specific locations:
+
+| Client | Config file |
+|--------|-------------|
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) |
+| Claude Code | `claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp` |
+| Cursor | `~/.cursor/mcp.json` (or project-level `.cursor/mcp.json`) |
+
+### Available tools
+
+| Tool | Purpose |
+|------|---------|
+| `detect_context` | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report capabilities. |
+| `list_worktrees` | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. |
+| `get_worktree_status` | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress). |
+| `create_worktree` | Create a worktree for a branch; optionally create the branch from `baseBranch` and push. |
+| `remove_worktree` | Remove a worktree after safety checks; `force=true` skips validation. |
+| `update_worktree` | Fast-forward one worktree to match upstream. |
+| `sync` | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. |
+| `initialize` | Clone the bare repo and create the main worktree. Requires config. Streams progress. |
+| `load_config` | Load or reload a config file at runtime. |
+| `set_current_repository` | Select the active repo when multiple are configured. |
+
+All tools that target a single repo accept an optional `repoName`. When omitted, they use the current repository — set by auto-detect, the first entry in the config, or `set_current_repository`.
+
+### Safety
+
+- `remove_worktree` refuses to delete worktrees with uncommitted changes, unpushed commits, stashes, or operations in progress (merge/rebase/cherry-pick/revert/bisect). Pass `force=true` to override.
+- `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk.
+- Path-targeted tools verify the supplied path is a registered worktree of the selected repository.
 
 ## Options
 
-| Option | Alias | Description | Required | Default |
-|--------|-------|-------------|----------|---------|
-| `--config` | `-c` | Path to JavaScript config file | No | - |
-| `--filter` | `-f` | Filter repositories by name (wildcards supported) | No | - |
-| `--list` | `-l` | List configured repositories and exit | No | `false` |
-| `--repoUrl` | `-u` | Git repository URL (HTTPS or SSH) | Yes* | - |
-| `--bareRepoDir` | `-b` | Directory for bare repository | No | `.bare/<repo-name>` |
-| `--worktreeDir` | `-w` | Directory for storing worktrees | Yes* | - |
-| `--cronSchedule` | `-s` | Cron pattern for scheduling | No | `0 * * * *` (hourly) |
-| `--runOnce` | - | Execute once and exit | No | `false` |
-| `--branchMaxAge` | `-a` | Maximum age of branches to sync (e.g., '30d', '6m', '1y') | No | - |
-| `--skip-lfs` | - | Skip Git LFS downloads when fetching and creating worktrees | No | `false` |
-| `--no-update-existing` | - | Disable automatic updates of existing worktrees | No | `false` |
-| `--help` | `-h` | Show help | No | - |
+| Option | Alias | Description | Default |
+|--------|-------|-------------|---------|
+| `--config` | `-c` | Path to JavaScript config file (auto-detected in CWD when omitted) | - |
+| `--filter` | `-f` | Filter repositories by name (wildcards supported) | - |
+| `--list` | `-l` | List configured repositories and exit | `false` |
+| `--runOnce` | - | Override config to run once and exit | `false` |
+| `--no-update-existing` | - | Disable automatic updates of existing worktrees | `false` |
+| `--debug` | `-d` | Show detailed reasons for skipped cleanups | `false` |
+| `--help` | `-h` | Show help | - |
 
-\* Required when not using a config file
-
-## Examples
-
-### Single repository
-```bash
-# One-time sync
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --runOnce
-
-# Scheduled sync (every 30 minutes)
-sync-worktrees -u git@github.com:user/repo.git -w ./worktrees -s "*/30 * * * *"
-
-# Only sync branches active in the last 30 days
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchMaxAge 30d
-
-# Sync branches active in the last 6 months, check every hour
-sync-worktrees -u git@github.com:user/repo.git -w ./worktrees --branchMaxAge 6m
-
-# Disable automatic updates of existing worktrees
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --no-update-existing
-```
-
-### Using a config file
-```bash
-# Sync all repositories
-sync-worktrees --config ./sync-worktrees.config.js
-
-# Filter specific repositories
-sync-worktrees --config ./sync-worktrees.config.js --filter "frontend-*"
-
-# List configured repositories
-sync-worktrees --config ./sync-worktrees.config.js --list
-```
+Most sync behavior (repo URL, worktree directory, cron schedule, branch filtering, LFS, retry) is configured in the config file. The CLI flags that only make sense for one-off runs (`--repoUrl`, `--worktreeDir`, `--cronSchedule`, `--branchMaxAge`, `--branchInclude`, `--branchExclude`, `--skip-lfs`, `--bareRepoDir`) are still supported — run `sync-worktrees --help` for the full list.
 
 ## Configuration File
 
@@ -130,6 +169,7 @@ export default {
     cronSchedule: "0 * * * *",  // Hourly
     runOnce: false,
     branchMaxAge: "30d",  // Only sync branches active in last 30 days
+    branchExclude: ["wip-*", "tmp-*"],  // Exclude WIP and temporary branches
     updateExistingWorktrees: true  // Auto-update worktrees that are behind (default: true)
   },
 
@@ -153,6 +193,7 @@ export default {
       repoUrl: process.env.BACKEND_REPO_URL,  // Environment variables supported
       worktreeDir: "/absolute/path/backend-worktrees",
       branchMaxAge: "6m",  // Override: only sync branches active in last 6 months
+      branchInclude: ["feature/*", "release-*", "main"],  // Only sync specific branches
       // Uses default schedule
       retry: { maxAttempts: 10 }  // Override retry for this repo
     }
@@ -204,6 +245,51 @@ defaults: {
 ```
 
 The tool automatically handles LFS errors by retrying with LFS disabled (max 2 retries by default, configurable via `retry.maxLfsRetries`).
+
+### Branch Name Filtering
+
+You can control which branches get synced using include and exclude patterns. This is useful for repositories where you only care about specific branch types (e.g., feature branches) or want to skip certain patterns (e.g., WIP branches).
+
+**Pattern syntax**: Patterns support `*` wildcards that match any characters (including `/` in branch names).
+- `feature/*` - matches `feature/login`, `feature/auth/oauth`, etc.
+- `release-*` - matches `release-1.0`, `release-2.0-beta`, etc.
+- `*-hotfix` - matches `urgent-hotfix`, `prod-hotfix`, etc.
+
+**Filtering semantics**:
+- `branchInclude` - only branches matching at least one pattern are synced
+- `branchExclude` - branches matching any pattern are skipped
+- When both are set, include runs first, then exclude removes from the result
+- The default branch (e.g., `main`) is always retained regardless of filters
+
+**Examples**:
+```bash
+# Command line
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
+  --branchInclude "feature/*,release-*"
+
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
+  --branchExclude "wip-*,tmp-*"
+
+# Config file - global default
+defaults: {
+  branchExclude: ["wip-*", "tmp-*"]
+}
+
+# Config file - per repository
+repositories: [{
+  name: "frontend",
+  branchInclude: ["feature/*", "release-*"],
+  branchExclude: ["feature/wip-*"],
+}]
+```
+
+**Combining with age filtering**: Branch name filtering runs first, then age filtering (`branchMaxAge`) is applied to the remaining branches. This lets you narrow down to specific branch types and further filter by activity.
+
+```bash
+# Only feature branches active in the last 30 days
+sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
+  --branchInclude "feature/*" --branchMaxAge 30d
+```
 
 ### Branch Age Filtering
 
@@ -298,6 +384,8 @@ This ensures you never lose work due to force pushes while keeping your worktree
 
 - Node.js >= 22.0.0
 - Git
+- [`tmux`](https://github.com/tmux/tmux) (optional, required only for Terminal mode in the TUI)
+- An MCP-capable client (optional, only for the `sync-worktrees-mcp` server)
 
 ## Contributing
 
