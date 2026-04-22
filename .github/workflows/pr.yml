@@ -14,6 +14,7 @@ jobs:
   check-changeset:
     name: Verify Changeset
     runs-on: ubuntu-latest
+    if: github.head_ref != 'changeset-release/main'
     outputs:
       has-changeset: ${{ steps.check.outputs.has-changeset }}
     steps:
@@ -51,7 +52,7 @@ jobs:
     name: Lint, Type Check & Test
     runs-on: ubuntu-latest
     needs: check-changeset
-    if: ${{ needs.check-changeset.outputs.has-changeset != 'false' }}
+    if: ${{ !cancelled() && needs.check-changeset.result != 'failure' && needs.check-changeset.outputs.has-changeset != 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
