@@ -4,11 +4,11 @@ inputs:
   node-version:
     description: 'Node.js version to use'
     required: false
-    default: '22'
+    default: '24'
   pnpm-version:
     description: 'pnpm version to use'
     required: false
-    default: '9'
+    default: '10'
   registry-url:
     description: 'npm registry URL to configure in .npmrc for auth (e.g. https://registry.npmjs.org)'
     required: false

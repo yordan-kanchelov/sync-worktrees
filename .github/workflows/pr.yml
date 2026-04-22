@@ -26,7 +26,7 @@ jobs:
       - name: Setup Environment
         uses: ./.github/actions/setup-node-pnpm
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Check for changeset
         id: check
@@ -60,7 +60,7 @@ jobs:
       - name: Setup Environment
         uses: ./.github/actions/setup-node-pnpm
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Run Linter
         run: pnpm lint
