@@ -1,5 +1,41 @@
 # sync-worktrees
 
+## 3.0.0
+
+### Major Changes
+
+- aa7d22b: Breaking changes in this release:
+
+  **MCP server** — sync-worktrees now ships a Model Context Protocol server as a separate binary `sync-worktrees-mcp`. MCP-compatible clients (Claude Code, Claude Desktop, Cursor, Windsurf, etc.) can initialize repositories, list/create/remove/update worktrees, run syncs, load configuration files, detect repository context, and inspect worktree status directly. See the README for setup.
+
+  **Drop Windows support** — the platform was never exercised in CI and hooks already refused to run there because cmd.exe shell quoting is unsafe. `package.json` now declares `os: ["darwin", "linux"]` so `npm install` warns Windows users. Removes `win32` branches from the terminal launcher, hook execution guard, case-insensitive FS check, and worktree list CRLF stripping.
+
+### Minor Changes
+
+- aa7d22b: New features:
+  - **Auto-discover config in CWD** — running `sync-worktrees` in a directory now probes for `sync-worktrees.config.{js,mjs,cjs}` and auto-loads it when no `--config` flag or single-repo CLI args are passed. Interactive wizard now routes the saved config through the same multi-repo pipeline, so first-run and subsequent runs share one execution path.
+  - **Worktree status view** — press `w` in the interactive UI to see health/status of all worktrees at a glance, with indicators for uncommitted changes, unpushed commits, stashes, operations in progress, and deleted upstream branches. Press Enter on any worktree to expand detailed file counts and reasons.
+  - **Diverged directory management** — inspect and delete `.diverged` directories (worktrees preserved when their remote branch was deleted but local changes existed) directly from the status view. Shows original branch name, size, and divergence date; press `d` to delete with `y/n` confirmation.
+  - **Lifecycle hooks** — `onBranchCreated` hook support lets users run commands (open editor, start tmux session, etc.) when a new branch worktree is created via the interactive UI.
+  - **Branch creation wizard** — filtering/search for projects and branches, fetch before listing.
+  - **InteractiveUIService improvements** — config reload support, parallel execution with p-limit, grouped cron jobs, graceful shutdown via signal handlers.
+
+### Patch Changes
+
+- aa7d22b: Fixes and hardening:
+  - Fix branch creation failing on a fresh start: `GitService.initialize()` now always fetches remote refs instead of only fetching during initial clone.
+  - Fix path traversal vulnerability in diverged directory deletion: validate that the resolved path stays inside `.diverged` before calling `fs.rm`.
+  - Fix destructive initialization behavior: revert `GitService.initialize()` to graceful "already exists" error handling instead of preemptively deleting directories with `fs.rm`.
+  - Skip worktree removal on status check failure instead of risking dirty worktree removal.
+  - Rollback worktree on metadata creation failure.
+  - LFS skip via service method instead of mutating `process.env`.
+  - Remove `hasStashedChanges` from worktree removal safety gate: stashes live in the repository, not the worktree directory.
+  - Add early return in `getFullWorktreeStatus()` for non-existent worktree paths, preventing cascading status check failures.
+  - Metadata service hardening: atomic writes, branch name sanitization in paths, auto-create metadata on update when missing.
+  - Path resolution security: use `path.resolve()` to prevent path traversal edge cases.
+  - Config loader: resolve `filesToCopyOnBranchCreate` paths relative to config dir, escape special characters in wildcard filters.
+  - Keyboard navigation correctly skips the visual separator between worktrees and diverged entries in status view.
+
 ## 2.2.0
 
 ### Minor Changes
