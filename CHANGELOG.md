@@ -1,5 +1,11 @@
 # sync-worktrees
 
+## 3.0.1
+
+### Patch Changes
+
+- 80cfe1e: Fix bin paths in package.json by removing leading `./` prefix for broader package manager compatibility.
+
 ## 3.0.0
 
 ### Major Changes
