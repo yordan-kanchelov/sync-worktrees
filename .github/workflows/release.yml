@@ -26,7 +26,13 @@ jobs:
       - name: Setup Environment
         uses: ./.github/actions/setup-node-pnpm
         with:
-          node-version: 22
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      # npm OIDC trusted publishing requires npm CLI >= 11.5.1; Node 22 ships
+      # with npm 10.x. Upgrade before `changeset publish` shells out to npm.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install --global npm@latest
 
       - name: Create Release Pull Request or Publish to npm
         id: changesets
@@ -40,7 +46,6 @@ jobs:
           createGithubReleases: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish Release Summary
         if: steps.changesets.outputs.published == 'true'
