@@ -23,6 +23,7 @@ export type SyncResult = { started: true } | { started: false; reason: "in_progr
 export interface ProgressEvent {
   phase: string;
   message: string;
+  correlationId?: string;
 }
 
 export type ProgressListener = (event: ProgressEvent) => void;

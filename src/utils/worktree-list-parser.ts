@@ -5,6 +5,7 @@ export interface ParsedWorktree {
   detached: boolean;
   prunable: boolean;
   locked: boolean;
+  lockedReason: string | null;
 }
 
 export function parseWorktreeListPorcelain(output: string): ParsedWorktree[] {
@@ -23,6 +24,7 @@ export function parseWorktreeListPorcelain(output: string): ParsedWorktree[] {
       detached: current.detached ?? false,
       prunable: current.prunable ?? false,
       locked: current.locked ?? false,
+      lockedReason: current.lockedReason ?? null,
     });
     current = {};
   };
@@ -39,8 +41,12 @@ export function parseWorktreeListPorcelain(output: string): ParsedWorktree[] {
       current.detached = true;
     } else if (line === "prunable" || line.startsWith("prunable ")) {
       current.prunable = true;
-    } else if (line === "locked" || line.startsWith("locked ")) {
+    } else if (line === "locked") {
       current.locked = true;
+    } else if (line.startsWith("locked ")) {
+      current.locked = true;
+      const reason = line.substring("locked ".length).trim();
+      current.lockedReason = reason.length > 0 ? reason : null;
     } else if (line.trim() === "") {
       flush();
     }

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  handleCompareBranch,
   handleCreateWorktree,
   handleGetWorktreeStatus,
   handleInitialize,
+  handleListBranches,
   handleListWorktrees,
   handleLoadConfig,
   handleRemoveWorktree,
@@ -76,6 +78,18 @@ type MockGit = {
   updateWorktree: ReturnType<typeof vi.fn>;
   getDefaultBranch: ReturnType<typeof vi.fn>;
   getWorktreeMetadata: ReturnType<typeof vi.fn>;
+  isWorktreeLocked: ReturnType<typeof vi.fn>;
+  getRemoteBranchesWithActivity: ReturnType<typeof vi.fn>;
+  getLocalBranches: ReturnType<typeof vi.fn>;
+  getCurrentCommit: ReturnType<typeof vi.fn>;
+  getRemoteCommit: ReturnType<typeof vi.fn>;
+  hasDivergedHistory: ReturnType<typeof vi.fn>;
+  canFastForward: ReturnType<typeof vi.fn>;
+  isLocalAheadOfRemote: ReturnType<typeof vi.fn>;
+  compareTreeContent: ReturnType<typeof vi.fn>;
+  getBranchDivergence: ReturnType<typeof vi.fn>;
+  getDivergenceFromWorktree: ReturnType<typeof vi.fn>;
+  getLocalCommit: ReturnType<typeof vi.fn>;
 };
 
 function makeCtx(opts: {
@@ -84,6 +98,7 @@ function makeCtx(opts: {
   syncInProgress?: boolean;
   loadConfigImpl?: (configPath: string) => Promise<unknown>;
   currentRepo?: string;
+  config?: Record<string, unknown>;
 }): { ctx: RepositoryContext; git: MockGit; service: any } {
   const git: MockGit = {
     getWorktrees: vi.fn<any>().mockResolvedValue([]),
@@ -96,16 +111,29 @@ function makeCtx(opts: {
     updateWorktree: vi.fn<any>(),
     getDefaultBranch: vi.fn<any>().mockReturnValue("main"),
     getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
+    isWorktreeLocked: vi.fn<any>().mockResolvedValue({ locked: false, reason: null }),
+    getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([]),
+    getLocalBranches: vi.fn<any>().mockResolvedValue([]),
+    getCurrentCommit: vi.fn<any>().mockResolvedValue("local-sha"),
+    getRemoteCommit: vi.fn<any>().mockResolvedValue("remote-sha"),
+    hasDivergedHistory: vi.fn<any>().mockResolvedValue(false),
+    canFastForward: vi.fn<any>().mockResolvedValue(true),
+    isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
+    compareTreeContent: vi.fn<any>().mockResolvedValue(true),
+    getBranchDivergence: vi.fn<any>().mockResolvedValue({ ahead: 0, behind: 0 }),
+    getDivergenceFromWorktree: vi.fn<any>().mockResolvedValue({ ahead: 0, behind: 0 }),
+    getLocalCommit: vi.fn<any>().mockResolvedValue("local-sha"),
     ...opts.git,
   };
 
   const service = {
-    config: { worktreeDir: "/repo/worktrees" },
+    config: { worktreeDir: "/repo/worktrees", ...(opts.config ?? {}) },
     isInitialized: vi.fn<any>().mockReturnValue(true),
     isSyncInProgress: vi.fn<any>().mockReturnValue(opts.syncInProgress ?? false),
     initialize: vi.fn<any>().mockResolvedValue(undefined),
     sync: vi.fn<any>().mockResolvedValue({ started: true }),
     getGitService: () => git,
+    emit: vi.fn<any>(),
   };
 
   const ctx = {
@@ -159,6 +187,100 @@ describe("handleListWorktrees", () => {
     expect(git.getWorktrees).toHaveBeenCalled();
   });
 
+  it("includes pendingWork when includePendingDetails=true", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: false,
+          hasUnpushedCommits: true,
+          hasStashedChanges: true,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["uncommitted changes"],
+          details: {
+            modifiedFiles: 3,
+            deletedFiles: 1,
+            renamedFiles: 0,
+            createdFiles: 2,
+            conflictedFiles: 0,
+            untrackedFiles: 4,
+            unpushedCommitCount: 7,
+            stashCount: 2,
+          },
+        }),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, { includePendingDetails: true });
+    const body = parseResponse(result);
+    expect(body.worktrees[0].pendingWork).toEqual({
+      dirtyFiles: 6,
+      untrackedCount: 4,
+      unpushedCommits: 7,
+      stashes: 2,
+    });
+  });
+
+  it("returns null pendingWork counts when underlying git query failed but flag is set", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/y", branch: "y" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: true,
+          hasStashedChanges: true,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: [],
+          details: {
+            modifiedFiles: 0,
+            deletedFiles: 0,
+            renamedFiles: 0,
+            createdFiles: 0,
+            conflictedFiles: 0,
+            untrackedFiles: 0,
+          },
+        }),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, { includePendingDetails: true });
+    const body = parseResponse(result);
+    expect(body.worktrees[0].pendingWork).toEqual({
+      dirtyFiles: 0,
+      untrackedCount: 0,
+      unpushedCommits: null,
+      stashes: null,
+    });
+  });
+
+  it("omits pendingWork when includePendingDetails=false (default)", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/x", branch: "x" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, {});
+    const body = parseResponse(result);
+    expect(body.worktrees[0].pendingWork).toBeUndefined();
+  });
+
   it("fails with CAPABILITY_UNAVAILABLE when canListWorktrees is false", async () => {
     const { ctx } = makeCtx({
       discovered: makeDiscovered({
@@ -171,6 +293,311 @@ describe("handleListWorktrees", () => {
     const body = parseResponse(result);
     expect(body.error).toBe(true);
     expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+  });
+});
+
+describe("handleCompareBranch", () => {
+  it("rejects when neither path nor branchName provided", async () => {
+    const { ctx } = makeCtx({});
+    const result = await invoke(handleCompareBranch, ctx, {});
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("Provide one of");
+  });
+
+  it("rejects when both path and branchName provided", async () => {
+    const { ctx } = makeCtx({});
+    const result = await invoke(handleCompareBranch, ctx, { path: "/w/x", branchName: "x" });
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
+  });
+
+  it("path mode: returns up-to-date verdict for clean tree-equal worktree", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/main", branch: "main" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }),
+        compareTreeContent: vi.fn<any>().mockResolvedValue(true),
+        canFastForward: vi.fn<any>().mockResolvedValue(true),
+      },
+    });
+
+    const result = await invoke(handleCompareBranch, ctx, { path: "/w/main" });
+    const body = parseResponse(result);
+    expect(body.verdict).toBe("up-to-date");
+    expect(body.mode).toBe("path");
+    expect(body.branch).toBe("main");
+  });
+
+  it("path mode: would-lose-work when dirty", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/x", branch: "x" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: false,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["uncommitted changes"],
+        }),
+      },
+    });
+
+    const result = await invoke(handleCompareBranch, ctx, { path: "/w/x" });
+    const body = parseResponse(result);
+    expect(body.verdict).toBe("would-lose-work");
+    expect(body.reasons).toContain("uncommitted changes");
+  });
+
+  it("path mode: safe-to-remove when upstream gone and clean", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/old", branch: "old" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: true,
+          canRemove: true,
+          reasons: [],
+        }),
+      },
+    });
+
+    const result = await invoke(handleCompareBranch, ctx, { path: "/w/old" });
+    const body = parseResponse(result);
+    expect(body.verdict).toBe("safe-to-remove");
+    expect(body.upstreamGone).toBe(true);
+  });
+
+  it("branchName mode: up-to-date when SHAs match", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([]),
+        getLocalCommit: vi.fn<any>().mockResolvedValue("same-sha"),
+        getRemoteCommit: vi.fn<any>().mockResolvedValue("same-sha"),
+        getBranchDivergence: vi.fn<any>().mockResolvedValue({ ahead: 0, behind: 0 }),
+      },
+    });
+    const result = await invoke(handleCompareBranch, ctx, { branchName: "main" });
+    const body = parseResponse(result);
+    expect(body.verdict).toBe("up-to-date");
+    expect(body.mode).toBe("branch");
+    expect(body.hasWorktree).toBe(false);
+  });
+
+  it("branchName mode: can-fast-forward when behind", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([]),
+        getLocalCommit: vi.fn<any>().mockResolvedValue("local-sha"),
+        getRemoteCommit: vi.fn<any>().mockResolvedValue("remote-sha"),
+        getBranchDivergence: vi.fn<any>().mockResolvedValue({ ahead: 0, behind: 3 }),
+      },
+    });
+    const result = await invoke(handleCompareBranch, ctx, { branchName: "main" });
+    const body = parseResponse(result);
+    expect(body.verdict).toBe("can-fast-forward");
+    expect(body.behind).toBe(3);
+  });
+
+  it("branchName mode: diverged when ahead and behind", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([]),
+        getLocalCommit: vi.fn<any>().mockResolvedValue("local-sha"),
+        getRemoteCommit: vi.fn<any>().mockResolvedValue("remote-sha"),
+        getBranchDivergence: vi.fn<any>().mockResolvedValue({ ahead: 2, behind: 5 }),
+      },
+    });
+    const result = await invoke(handleCompareBranch, ctx, { branchName: "feature" });
+    const body = parseResponse(result);
+    expect(body.verdict).toBe("diverged-needs-review");
+  });
+
+  it("branchName mode: no-local-branch when only remote exists", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([]),
+      },
+    });
+    const result = await invoke(handleCompareBranch, ctx, { branchName: "remote-only" });
+    const body = parseResponse(result);
+    expect(body.verdict).toBe("no-local-branch");
+  });
+
+  it("branchName mode: errors when branch not found anywhere", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([]),
+      },
+    });
+    const result = await invoke(handleCompareBranch, ctx, { branchName: "ghost" });
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
+  });
+
+  it("path mode: local-ahead verdict when clean and ahead-only with known divergence", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feat", branch: "feat" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: true,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["has unpushed commits"],
+        }),
+        compareTreeContent: vi.fn<any>().mockResolvedValue(false),
+        getDivergenceFromWorktree: vi.fn<any>().mockResolvedValue({ ahead: 3, behind: 0 }),
+      },
+    });
+
+    const result = await invoke(handleCompareBranch, ctx, { path: "/w/feat" });
+    const body = parseResponse(result);
+    expect(body.verdict).toBe("local-ahead");
+    expect(body.ahead).toBe(3);
+  });
+
+  it("path mode: diverged-needs-review when divergence cannot be computed and trees differ", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/local-only", branch: "local-only" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }),
+        compareTreeContent: vi.fn<any>().mockResolvedValue(false),
+        getDivergenceFromWorktree: vi.fn<any>().mockResolvedValue(null),
+      },
+    });
+
+    const result = await invoke(handleCompareBranch, ctx, { path: "/w/local-only" });
+    const body = parseResponse(result);
+    expect(body.verdict).toBe("diverged-needs-review");
+    expect(body.reasons).toContain("could not compute divergence");
+  });
+});
+
+describe("handleListBranches", () => {
+  it("returns enriched remote + local with hasWorktree + config filter info", async () => {
+    const now = new Date("2025-01-15T12:00:00Z");
+    const { ctx } = makeCtx({
+      config: { branchInclude: ["feature/*"], branchExclude: ["feature/legacy"] },
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature-a", branch: "feature/a" }]),
+        getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([
+          { branch: "feature/a", lastActivity: now },
+          { branch: "feature/legacy", lastActivity: now },
+          { branch: "hotfix/x", lastActivity: now },
+        ]),
+        getLocalBranches: vi.fn<any>().mockResolvedValue(["feature/a", "main"]),
+      },
+    });
+
+    const result = await invoke(handleListBranches, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.configFiltersApplied).toBe(true);
+    expect(body.remote).toHaveLength(3);
+    const featureA = body.remote.find((r: any) => r.name === "feature/a");
+    expect(featureA).toMatchObject({ hasWorktree: true, matchesConfigFilter: true });
+    const legacy = body.remote.find((r: any) => r.name === "feature/legacy");
+    expect(legacy.matchesConfigFilter).toBe(false);
+    const hotfix = body.remote.find((r: any) => r.name === "hotfix/x");
+    expect(hotfix.matchesConfigFilter).toBe(false);
+
+    expect(body.branchesFilteredByConfig.sort()).toEqual(["feature/legacy", "hotfix/x"].sort());
+    expect(body.branchesWithoutWorktrees).toEqual([]);
+
+    expect(body.local).toEqual([
+      { name: "feature/a", hasWorktree: true },
+      { name: "main", hasWorktree: false },
+    ]);
+  });
+
+  it("identifies branches without worktrees", async () => {
+    const now = new Date();
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/main", branch: "main" }]),
+        getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([
+          { branch: "main", lastActivity: now },
+          { branch: "needs-wt", lastActivity: now },
+        ]),
+      },
+    });
+
+    const result = await invoke(handleListBranches, ctx, { scope: "remote" });
+    const body = parseResponse(result);
+    expect(body.branchesWithoutWorktrees).toEqual(["needs-wt"]);
+    expect(body.local).toEqual([]);
+  });
+
+  it("skips config filter when applyConfigFilters=false", async () => {
+    const now = new Date();
+    const { ctx } = makeCtx({
+      config: { branchInclude: ["feature/*"] },
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([]),
+        getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([{ branch: "hotfix/x", lastActivity: now }]),
+      },
+    });
+
+    const result = await invoke(handleListBranches, ctx, { applyConfigFilters: false });
+    const body = parseResponse(result);
+    expect(body.configFiltersApplied).toBe(false);
+    expect(body.branchesWithoutWorktrees).toEqual(["hotfix/x"]);
+    expect(body.branchesFilteredByConfig).toEqual([]);
+  });
+
+  it("matchesConfigFilter reflects config truth even when applyConfigFilters=false", async () => {
+    const now = new Date();
+    const { ctx } = makeCtx({
+      config: { branchInclude: ["feature/*"] },
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([]),
+        getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([
+          { branch: "feature/a", lastActivity: now },
+          { branch: "hotfix/x", lastActivity: now },
+        ]),
+      },
+    });
+
+    const result = await invoke(handleListBranches, ctx, { applyConfigFilters: false });
+    const body = parseResponse(result);
+    const feature = body.remote.find((r: any) => r.name === "feature/a");
+    const hotfix = body.remote.find((r: any) => r.name === "hotfix/x");
+    expect(feature.matchesConfigFilter).toBe(true);
+    expect(hotfix.matchesConfigFilter).toBe(false);
   });
 });
 
@@ -301,6 +728,65 @@ describe("handleCreateWorktree", () => {
   });
 });
 
+describe("create/update/remove progress notifications", () => {
+  function makeProgressHarness() {
+    const { ctx, service, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/worktrees/feature", branch: "feature" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }),
+      },
+    });
+
+    const progressListeners: Array<(e: any) => void> = [];
+    (service as any).onProgress = vi.fn<any>().mockImplementation((listener: any) => {
+      progressListeners.push(listener);
+      return () => {
+        const idx = progressListeners.indexOf(listener);
+        if (idx >= 0) progressListeners.splice(idx, 1);
+      };
+    });
+    (service as any).emit = vi.fn<any>().mockImplementation((e: any) => {
+      for (const l of progressListeners) l(e);
+    });
+
+    const sendNotification = vi.fn<any>().mockResolvedValue(undefined);
+    const extra = { _meta: { progressToken: "p-1" }, sendNotification };
+    return { ctx, service, git, sendNotification, extra };
+  }
+
+  it("create_worktree emits progress events", async () => {
+    const { ctx, sendNotification, extra } = makeProgressHarness();
+    await handleCreateWorktree(ctx, { branchName: "feature" }, extra as any);
+    expect(sendNotification).toHaveBeenCalled();
+    const messages = sendNotification.mock.calls.map((c: any) => c[0].params.message as string);
+    expect(messages.some((m) => m.includes("[create]"))).toBe(true);
+  });
+
+  it("update_worktree emits progress events", async () => {
+    const { ctx, sendNotification, extra } = makeProgressHarness();
+    await handleUpdateWorktree(ctx, { path: "/repo/worktrees/feature" }, extra as any);
+    const messages = sendNotification.mock.calls.map((c: any) => c[0].params.message as string);
+    expect(messages.some((m) => m.includes("[update]"))).toBe(true);
+  });
+
+  it("remove_worktree emits progress events", async () => {
+    const { ctx, sendNotification, extra } = makeProgressHarness();
+    await handleRemoveWorktree(ctx, { path: "/repo/worktrees/feature" }, extra as any);
+    const messages = sendNotification.mock.calls.map((c: any) => c[0].params.message as string);
+    expect(messages.some((m) => m.includes("[remove]"))).toBe(true);
+  });
+});
+
 describe("handleRemoveWorktree", () => {
   it("refuses removal when worktree not clean and force=false", async () => {
     const { ctx, git } = makeCtx({
@@ -327,7 +813,7 @@ describe("handleRemoveWorktree", () => {
     const result = await invoke(handleRemoveWorktree, ctx, { path: "/foo", force: true });
     const body = parseResponse(result);
     expect(body.success).toBe(true);
-    expect(git.removeWorktree).toHaveBeenCalledWith("/foo");
+    expect(git.removeWorktree).toHaveBeenCalledWith("/foo", true);
   });
 
   it("rejects path not belonging to the repository", async () => {
@@ -339,6 +825,46 @@ describe("handleRemoveWorktree", () => {
     expect(body.error).toBe(true);
     expect(body.message).toContain("not a registered worktree");
     expect(git.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("refuses removal when worktree is locked and force=false", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/foo", branch: "x" }]),
+        isWorktreeLocked: vi.fn<any>().mockResolvedValue({ locked: true, reason: "on portable drive" }),
+      },
+    });
+    const result = await invoke(handleRemoveWorktree, ctx, { path: "/foo" });
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("locked");
+    expect(body.message).toContain("on portable drive");
+    expect(git.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("bypasses lock check when force=true", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/foo", branch: "x" }]),
+        isWorktreeLocked: vi.fn<any>().mockResolvedValue({ locked: true, reason: "intentional" }),
+      },
+    });
+    const result = await invoke(handleRemoveWorktree, ctx, { path: "/foo", force: true });
+    const body = parseResponse(result);
+    expect(body.success).toBe(true);
+    expect(git.isWorktreeLocked).not.toHaveBeenCalled();
+    expect(git.removeWorktree).toHaveBeenCalledWith("/foo", true);
+  });
+
+  it("forwards force=false to removeWorktree when not forcing", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/foo", branch: "x" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ canRemove: true, reasons: [] }),
+      },
+    });
+    await invoke(handleRemoveWorktree, ctx, { path: "/foo" });
+    expect(git.removeWorktree).toHaveBeenCalledWith("/foo", false);
   });
 });
 
@@ -506,6 +1032,21 @@ describe("handleUpdateWorktree", () => {
     const body = parseResponse(result);
     expect(body.error).toBe(true);
     expect(body.message).toContain("not a registered worktree");
+  });
+
+  it("refuses update when worktree is locked", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature" }]),
+        isWorktreeLocked: vi.fn<any>().mockResolvedValue({ locked: true, reason: "manual hold" }),
+      },
+    });
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" });
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("locked");
+    expect(body.message).toContain("manual hold");
+    expect(git.updateWorktree).not.toHaveBeenCalled();
   });
 });
 

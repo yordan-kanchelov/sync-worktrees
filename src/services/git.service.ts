@@ -6,6 +6,7 @@ import simpleGit from "simple-git";
 import { ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
+import { pathsEqual } from "../utils/path-compare";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import { Logger } from "./logger.service";
@@ -18,6 +19,14 @@ import type { SyncMetadata } from "../types/sync-metadata";
 import type { SimpleGit } from "simple-git";
 
 export type GitServiceOptions = Pick<Config, "repoUrl" | "worktreeDir" | "bareRepoDir" | "skipLfs" | "debug">;
+
+function parseDivergenceOutput(output: string): { ahead: number; behind: number } | null {
+  const [aheadStr, behindStr] = output.trim().split(/\s+/);
+  const ahead = Number.parseInt(aheadStr, 10);
+  const behind = Number.parseInt(behindStr, 10);
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return null;
+  return { ahead, behind };
+}
 
 export class GitService {
   private git: SimpleGit | null = null;
@@ -543,11 +552,14 @@ export class GitService {
     }
   }
 
-  async removeWorktree(worktreePath: string): Promise<void> {
+  async removeWorktree(worktreePath: string, force = false): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
 
-    await bareGit.raw(["worktree", "remove", worktreePath, "--force"]);
-    this.logger.info(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
+    const args = ["worktree", "remove", worktreePath, "--force"];
+    if (force) args.push("--force");
+    await bareGit.raw(args);
+    const action = force ? "Force-removed worktree" : "Safely removed stale worktree";
+    this.logger.info(`  - ✅ ${action} at '${worktreePath}'.`);
 
     // Clean up metadata using the worktree path
     try {
@@ -647,6 +659,15 @@ export class GitService {
   async getWorktrees(): Promise<{ path: string; branch: string }[]> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     return this.getWorktreesFromBare(bareGit);
+  }
+
+  async isWorktreeLocked(worktreePath: string): Promise<{ locked: boolean; reason: string | null }> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const result = await bareGit.raw(["worktree", "list", "--porcelain"]);
+    const entries = parseWorktreeListPorcelain(result);
+    const match = entries.find((e) => pathsEqual(e.path, worktreePath));
+    if (!match) return { locked: false, reason: null };
+    return { locked: match.locked, reason: match.lockedReason };
   }
 
   async isWorktreeBehind(worktreePath: string): Promise<boolean> {
@@ -796,6 +817,37 @@ export class GitService {
     // Use the bare repository to read remote commit to avoid dependency on main worktree path
     const git = this.getCachedGit(this.bareRepoPath);
     const commit = await git.revparse([ref]);
+    return commit.trim();
+  }
+
+  async getBranchDivergence(branchName: string): Promise<{ ahead: number; behind: number } | null> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    try {
+      const output = await bareGit.raw([
+        "rev-list",
+        "--left-right",
+        "--count",
+        `${GIT_CONSTANTS.REFS.HEADS}${branchName}...${GIT_CONSTANTS.REFS.REMOTES_ORIGIN_PREFIX}${branchName}`,
+      ]);
+      return parseDivergenceOutput(output);
+    } catch {
+      return null;
+    }
+  }
+
+  async getDivergenceFromWorktree(worktreePath: string): Promise<{ ahead: number; behind: number } | null> {
+    const worktreeGit = this.getCachedGit(worktreePath);
+    try {
+      const output = await worktreeGit.raw(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]);
+      return parseDivergenceOutput(output);
+    } catch {
+      return null;
+    }
+  }
+
+  async getLocalCommit(branchName: string): Promise<string> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const commit = await bareGit.revparse([`${GIT_CONSTANTS.REFS.HEADS}${branchName}`]);
     return commit.trim();
   }
 

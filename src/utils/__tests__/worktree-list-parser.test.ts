@@ -17,6 +17,7 @@ describe("parseWorktreeListPorcelain", () => {
         detached: false,
         prunable: false,
         locked: false,
+        lockedReason: null,
       },
     ]);
   });
@@ -78,5 +79,13 @@ describe("parseWorktreeListPorcelain", () => {
     const output = ["worktree /repo/locked", "branch refs/heads/feat", "locked portable drive", ""].join("\n");
     const result = parseWorktreeListPorcelain(output);
     expect(result[0].locked).toBe(true);
+    expect(result[0].lockedReason).toBe("portable drive");
+  });
+
+  it("detects locked without reason", () => {
+    const output = ["worktree /repo/locked", "branch refs/heads/feat", "locked", ""].join("\n");
+    const result = parseWorktreeListPorcelain(output);
+    expect(result[0].locked).toBe(true);
+    expect(result[0].lockedReason).toBeNull();
   });
 });

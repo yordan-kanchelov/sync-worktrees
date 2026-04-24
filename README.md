@@ -19,16 +19,13 @@ sync-worktrees maintains a **separate working directory for each remote branch**
 
 ## Features
 
-- 🔄 Automatically creates worktrees for all remote branches
-- 🗑️ Removes worktrees for deleted remote branches (preserves local changes)
-- ⏰ Run as a scheduled cron job or one-time execution
-- 🛡️ Safe operations - won't delete worktrees with uncommitted changes or unpushed commits
-- 📝 Clear logging with timestamps and progress indicators
-- 📋 Config file support for managing multiple repositories
-- 🔁 Automatic retry with exponential backoff for network and filesystem errors
-- 🕐 Branch age filtering - only sync branches active within a specified time period
-- 🔀 Smart handling of rebased/force-pushed branches with automatic divergence detection
-- 🤖 MCP server for AI assistants - inspect and manage worktrees from Claude Desktop, Claude Code, Cursor, etc.
+- 🔀 **Stop stashing** — every remote branch lives in its own directory. Switch branches with `cd`, not `git checkout`.
+- 🤖 **Zero manual upkeep** — new remote branches spawn worktrees automatically; deleted ones get pruned (only when safe).
+- 🛡️ **Won't lose your work** — refuses to remove worktrees with uncommitted changes, unpushed commits, stashes, or in-progress merges/rebases.
+- 🪂 **Survives force-pushes** — detects diverged branches and quarantines local commits in `.diverged/` before resetting to upstream.
+- ⌨️ **Open in one keystroke** — TUI with `o` to launch `tmux` or `$EDITOR` directly in the selected worktree.
+- 🧠 **MCP-ready** — bundled `sync-worktrees-mcp` server lets Claude Code, Cursor, Windsurf inspect and manage worktrees.
+- ⏰ **Set and forget** — cron or one-shot, auto-retry on network/LFS hiccups, filter branches by age or name pattern to cut noise.
 
 ## Installation
 

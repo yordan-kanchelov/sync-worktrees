@@ -3,10 +3,12 @@ import { z } from "zod";
 
 import { buildUnsupportedContext } from "./context";
 import {
+  handleCompareBranch,
   handleCreateWorktree,
   handleDetectContext,
   handleGetWorktreeStatus,
   handleInitialize,
+  handleListBranches,
   handleListWorktrees,
   handleLoadConfig,
   handleRemoveWorktree,
@@ -91,9 +93,17 @@ export function createServer(context: RepositoryContext): McpServer {
     {
       description:
         "List all worktrees of a repository with enriched status. " +
-        "Returns: array of { path, branch, isCurrent, label (clean|dirty|stale|current|unknown), status, divergence (ahead/behind), safeToRemove, lastSyncAt }.",
+        "Returns: array of { path, branch, isCurrent, label (clean|dirty|stale|current|unknown), status, divergence (ahead/behind), safeToRemove, lastSyncAt }. " +
+        "When includePendingDetails=true, each entry also includes pendingWork: { dirtyFiles, untrackedCount, unpushedCommits, stashes } — useful for cross-worktree 'what's unfinished' queries without N round-trips to get_worktree_status.",
       inputSchema: {
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
+        includePendingDetails: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, enrich each entry with pendingWork (dirtyFiles, untrackedCount, unpushedCommits, stashes). " +
+              "unpushedCommits and stashes are numbers when known; null means the underlying git query failed transiently though the boolean flag in status is still set. Default: false.",
+          ),
       },
       annotations: {
         title: "List worktrees with status",
@@ -103,6 +113,36 @@ export function createServer(context: RepositoryContext): McpServer {
       },
     },
     wrapHandler((params, extra) => handleListWorktrees(context, params, extra)),
+  );
+
+  server.registerTool(
+    "list_branches",
+    {
+      description:
+        "List remote and local branches enriched with sync-worktrees context. For each remote branch includes lastActivity (ISO8601), hasWorktree, and matchesConfigFilter (branchInclude/branchExclude from loaded config). " +
+        "Returns: { remote: [...], local: [...], branchesWithoutWorktrees: string[] (remote branches passing config filters but without a worktree), branchesFilteredByConfig: string[] (remote branches excluded by config), configFiltersApplied: boolean }. " +
+        "Use to answer 'which branches need a worktree' or 'which branches would sync act on'.",
+      inputSchema: {
+        scope: z
+          .enum(["remote", "local", "both"])
+          .optional()
+          .describe("Which branch sets to include. Default: 'both'."),
+        applyConfigFilters: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true (default), compute branchesWithoutWorktrees from branches passing branchInclude/branchExclude. If false, consider all remote branches.",
+          ),
+        repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
+      },
+      annotations: {
+        title: "List branches with worktree/config status",
+        readOnlyHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    wrapHandler((params, extra) => handleListBranches(context, params, extra)),
   );
 
   server.registerTool(
@@ -127,6 +167,32 @@ export function createServer(context: RepositoryContext): McpServer {
       },
     },
     wrapHandler((params, extra) => handleGetWorktreeStatus(context, params, extra)),
+  );
+
+  server.registerTool(
+    "compare_branch",
+    {
+      description:
+        "Inspect a branch or worktree and return a structured action verdict (not raw stats). Use BEFORE remove/update to avoid destructive surprises. " +
+        "Two modes (provide exactly one): {path} inspects a worktree (full safety check incl. dirty/unpushed/stash/upstream-gone). {branchName} inspects a branch in the bare repo without requiring a worktree. " +
+        "Verdicts: safe-to-remove | would-lose-work | can-fast-forward | up-to-date | local-ahead | diverged-needs-review | no-upstream | no-local-branch. " +
+        "Returns: { verdict, reasons[], mode, branch, hasWorktree, hasLocalBranch, ahead, behind, localCommit, remoteCommit, ... }.",
+      inputSchema: {
+        path: z.string().optional().describe(`Worktree path (path mode). ${PATH_DESCRIBE_SUFFIX}`),
+        branchName: z
+          .string()
+          .optional()
+          .describe("Branch name (branchName mode). Compared against origin/<branchName> in the bare repo."),
+        repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
+      },
+      annotations: {
+        title: "Compare branch state and produce action verdict",
+        readOnlyHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    wrapHandler((params, extra) => handleCompareBranch(context, params, extra)),
   );
 
   server.registerTool(
@@ -168,8 +234,8 @@ export function createServer(context: RepositoryContext): McpServer {
     "remove_worktree",
     {
       description:
-        "Remove a worktree. Runs safety checks first: rejects if worktree is dirty, has unpushed commits, has stashes, or has an in-progress git operation (merge/rebase/cherry-pick/revert/bisect). " +
-        "force=true: runs `git worktree remove --force`, which DELETES uncommitted and untracked files in the worktree directory. Branch ref, stashes, and remote state are preserved. " +
+        "Remove a worktree. Runs safety checks first: rejects if worktree is dirty, has unpushed commits, has stashes, has an in-progress git operation (merge/rebase/cherry-pick/revert/bisect), or is locked via `git worktree lock`. " +
+        "force=true: runs `git worktree remove --force --force`, which DELETES uncommitted and untracked files in the worktree directory AND removes it even if locked via `git worktree lock`. Branch ref, stashes, and remote state are preserved. " +
         "Returns: { success, removedPath }.",
       inputSchema: {
         path: z.string().describe(`Worktree path to remove. ${PATH_DESCRIBE_SUFFIX}`),
@@ -218,7 +284,7 @@ export function createServer(context: RepositoryContext): McpServer {
     "update_worktree",
     {
       description:
-        "Fast-forward one worktree to match its upstream. No merge commits, no rebasing, aborts if not fast-forwardable. " +
+        "Fast-forward one worktree to match its upstream. No merge commits, no rebasing, aborts if not fast-forwardable. Rejects if the worktree is locked via `git worktree lock`. " +
         "Do not use when: you want to update every worktree in the repo — use sync.",
       inputSchema: {
         path: z.string().describe(`Worktree path to fast-forward. ${PATH_DESCRIBE_SUFFIX}`),

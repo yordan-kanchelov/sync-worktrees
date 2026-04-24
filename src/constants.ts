@@ -15,6 +15,7 @@ export const GIT_CONSTANTS = {
     HEADS: "refs/heads/",
     REMOTES: "refs/remotes/origin",
     REMOTES_ORIGIN: "refs/remotes/origin/*",
+    REMOTES_ORIGIN_PREFIX: "refs/remotes/origin/",
   },
   FETCH_CONFIG: "+refs/heads/*:refs/remotes/origin/*",
 } as const;
