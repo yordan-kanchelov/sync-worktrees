@@ -89,7 +89,6 @@ export const CONFIG_FILE_NAMES = [
   "sync-worktrees.config.js",
   "sync-worktrees.config.mjs",
   "sync-worktrees.config.cjs",
-  "sync-worktrees.config.ts",
 ] as const;
 
 export const METADATA_CONSTANTS = {

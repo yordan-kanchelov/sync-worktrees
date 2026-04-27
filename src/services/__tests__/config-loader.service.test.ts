@@ -1472,8 +1472,8 @@ describe("ConfigLoaderService", () => {
       expect(result).toBe(configPath);
     });
 
-    it("matches all four extensions (.js, .mjs, .cjs, .ts)", async () => {
-      for (const ext of ["js", "mjs", "cjs", "ts"]) {
+    it("matches all supported extensions (.js, .mjs, .cjs)", async () => {
+      for (const ext of ["js", "mjs", "cjs"]) {
         const dir = await createTempDirectory(`config-ext-${ext}-`);
         const configPath = path.join(dir, `sync-worktrees.config.${ext}`);
         await fs.writeFile(configPath, "// fake", "utf-8");

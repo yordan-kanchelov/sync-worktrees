@@ -124,9 +124,9 @@ export class RepositoryContext {
   private configPath: string | null = null;
   private configLoader = new ConfigLoaderService();
   private discoveryCache = new Map<string, CachedDiscovery>();
-  private configAutoDetectAttempted = false;
 
-  async loadConfig(configPath: string): Promise<RepositoryConfig[]> {
+  async loadConfig(configPath: string, options: { setDefaultCurrent?: boolean } = {}): Promise<RepositoryConfig[]> {
+    const setDefaultCurrent = options.setDefaultCurrent ?? true;
     const absolutePath = path.resolve(configPath);
     const configFile = await this.configLoader.loadConfigFile(absolutePath);
 
@@ -137,7 +137,6 @@ export class RepositoryContext {
     }
 
     this.configPath = absolutePath;
-    this.configAutoDetectAttempted = true;
     const configDir = path.dirname(absolutePath);
     const globalDefaults = configFile.defaults;
 
@@ -154,9 +153,11 @@ export class RepositoryContext {
       this.currentRepo = null;
     }
 
-    if (!this.currentRepo && configFile.repositories.length > 0) {
+    if (setDefaultCurrent && !this.currentRepo && configFile.repositories.length > 0) {
       this.currentRepo = configFile.repositories[0].name;
     }
+
+    this.discoveryCache.clear();
 
     return configFile.repositories;
   }
@@ -169,12 +170,11 @@ export class RepositoryContext {
       return cached.result;
     }
 
-    if (this.configPath === null && !this.configAutoDetectAttempted) {
-      this.configAutoDetectAttempted = true;
+    if (this.configPath === null) {
       const found = await this.configLoader.findConfigUpward(absolutePath);
       if (found) {
         try {
-          await this.loadConfig(found);
+          await this.loadConfig(found, { setDefaultCurrent: false });
         } catch (err) {
           process.stderr.write(`[sync-worktrees] auto-loaded config failed: ${(err as Error).message}\n`);
         }
@@ -270,10 +270,10 @@ export class RepositoryContext {
     return results;
   }
 
-  private bootstrapCurrentRepo(candidate: string): void {
+  private bootstrapCurrentRepo(candidate: string, force = false): void {
     if (this.currentRepo !== null) return;
     if (!this.repos.has(candidate)) return;
-    if (this.repos.size !== 1) return;
+    if (!force && this.repos.size !== 1) return;
     this.currentRepo = candidate;
   }
 
@@ -297,19 +297,15 @@ export class RepositoryContext {
     const located = await findWorktreeRoot(absolutePath);
     const worktreeRoot = located?.worktreeRoot ?? absolutePath;
 
-    const unsupported = (
-      reason: string,
-      isWorktree = false,
-      bareRepoPath: string | null = null,
-    ): { result: DiscoveredRepoContext; adminDir: string | null } => {
+    const unsupported = (reason: string): { result: DiscoveredRepoContext; adminDir: string | null } => {
       notes.push(reason);
       return {
         result: {
-          isWorktree,
+          isWorktree: false,
           kind: "unsupported",
           currentBranch: null,
           currentWorktreePath: worktreeRoot,
-          bareRepoPath,
+          bareRepoPath: null,
           repoUrl: null,
           worktreeDir: null,
           allWorktrees: [],
@@ -446,7 +442,7 @@ export class RepositoryContext {
     }
 
     if (repoName) {
-      this.bootstrapCurrentRepo(repoName);
+      this.bootstrapCurrentRepo(repoName, matchedConfig !== null);
     }
 
     const siblingRepositories = await this.discoverSiblingRepositories(bareRepoPath);

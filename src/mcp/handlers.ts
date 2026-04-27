@@ -127,7 +127,11 @@ export async function handleDetectContext(
         ]);
         return {
           ...wt,
-          label: status ? deriveLabel(status, wt.isCurrent) : ("unknown" as const),
+          label: status
+            ? deriveLabel(status, wt.isCurrent)
+            : wt.isCurrent
+              ? ("current" as const)
+              : ("unknown" as const),
           divergence,
           staleHint: status?.upstreamGone ?? false,
         };
@@ -179,7 +183,7 @@ export async function handleListWorktrees(
           path: resolvedPath,
           branch: wt.branch,
           isCurrent,
-          label: status ? deriveLabel(status, isCurrent) : "unknown",
+          label: status ? deriveLabel(status, isCurrent) : isCurrent ? "current" : "unknown",
           status,
           divergence,
           safeToRemove: status ? deriveSafeToRemove(status) : { safe: false, reason: "status unavailable" },

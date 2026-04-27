@@ -521,7 +521,7 @@ export class InteractiveUIService {
           }
         }
 
-        const sizeBytes = await calculateDirectorySize(fullPath);
+        const sizeBytes = await calculateDirectorySize(fullPath).catch(() => 0);
         const sizeFormatted = formatBytes(sizeBytes);
 
         return {

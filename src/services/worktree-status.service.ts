@@ -138,6 +138,7 @@ export class WorktreeStatusService {
     if (hasUnpushedCommits) reasons.push("unpushed commits");
     if (hasOperationInProgress) reasons.push("operation in progress");
     if (hasModifiedSubmodules) reasons.push("modified submodules");
+    if (upstreamGone) reasons.push("upstream gone");
 
     const canRemove = isClean && !hasUnpushedCommits && !hasOperationInProgress && !hasModifiedSubmodules;
 
