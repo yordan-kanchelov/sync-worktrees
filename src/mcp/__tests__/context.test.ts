@@ -282,7 +282,6 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
       const ctx = new RepositoryContext();
       const result = await ctx.detectFromPath(currentWt);
 
-      expect(result.configLoaded).toBe(true);
       expect(result.configPath).toBe(configPath);
       expect(result.kind).toBe("managed");
       expect(result.repoName).toBe("auto-loaded");

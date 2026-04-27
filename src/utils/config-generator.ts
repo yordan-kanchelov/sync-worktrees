@@ -1,6 +1,8 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import { CONFIG_FILE_NAMES } from "../constants";
+
 import { extractRepoNameFromUrl } from "./git-url";
 
 import type { Config } from "../types";
@@ -95,16 +97,14 @@ export function getDefaultConfigPath(): string {
   return path.join(process.cwd(), "sync-worktrees.config.js");
 }
 
-const CONFIG_CANDIDATES = ["sync-worktrees.config.js", "sync-worktrees.config.mjs", "sync-worktrees.config.cjs"];
-
 export async function findConfigInCwd(cwd: string = process.cwd()): Promise<string | null> {
-  for (const name of CONFIG_CANDIDATES) {
+  for (const name of CONFIG_FILE_NAMES) {
     const full = path.join(cwd, name);
     try {
       await fs.access(full);
       return full;
     } catch {
-      // try next
+      /* try next */
     }
   }
   return null;

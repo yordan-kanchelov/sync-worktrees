@@ -22,22 +22,12 @@ export function deriveLabel(status: WorktreeStatusResult, isCurrent: boolean): W
 }
 
 export function deriveSafeToRemove(status: WorktreeStatusResult): SafeToRemove {
-  const safe = status.canRemove && !status.upstreamGone;
-
-  if (safe) {
-    return {
-      safe: true,
-      reason: status.upstreamGone
-        ? "branch deleted upstream, clean tree, no unpushed commits"
-        : "clean tree, no unpushed commits",
-    };
+  if (status.canRemove && !status.upstreamGone) {
+    return { safe: true, reason: "clean tree, no unpushed commits" };
   }
 
-  if (status.upstreamGone && status.canRemove) {
-    return {
-      safe: false,
-      reason: "branch deleted upstream — verify no work is lost before removal",
-    };
+  if (status.canRemove && status.upstreamGone) {
+    return { safe: false, reason: "branch deleted upstream — verify no work is lost before removal" };
   }
 
   if (status.reasons.length > 0) {

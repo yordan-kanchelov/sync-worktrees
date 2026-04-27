@@ -92,7 +92,6 @@ function makeDiscovered(overrides: Partial<DiscoveredRepoContext> = {}): Discove
     worktreeDir: "/repo/worktrees",
     allWorktrees: [],
     siblingRepositories: [],
-    configLoaded: true,
     configPath: null,
     repoName: "test",
     capabilities: makeCapabilities(),

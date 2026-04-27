@@ -3,11 +3,11 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { DEFAULT_CONFIG } from "../constants";
+import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
-import { isCaseInsensitiveFs } from "../utils/path-compare";
+import { normalizePathForCompare } from "../utils/path-compare";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import type { Config, RepositoryConfig } from "../types";
@@ -53,7 +53,6 @@ export interface DiscoveredRepoContext {
   worktreeDir: string | null;
   allWorktrees: DiscoveredWorktree[];
   siblingRepositories: SiblingRepository[];
-  configLoaded: boolean;
   configPath: string | null;
   repoName: string | null;
   capabilities: Capabilities;
@@ -103,7 +102,6 @@ export function buildUnsupportedContext(currentPath: string, reason: string): Di
     worktreeDir: null,
     allWorktrees: [],
     siblingRepositories: [],
-    configLoaded: false,
     configPath: null,
     repoName: null,
     capabilities: emptyCapabilities(reason),
@@ -126,6 +124,7 @@ export class RepositoryContext {
   private configPath: string | null = null;
   private configLoader = new ConfigLoaderService();
   private discoveryCache = new Map<string, CachedDiscovery>();
+  private configAutoDetectAttempted = false;
 
   async loadConfig(configPath: string): Promise<RepositoryConfig[]> {
     const absolutePath = path.resolve(configPath);
@@ -138,6 +137,7 @@ export class RepositoryContext {
     }
 
     this.configPath = absolutePath;
+    this.configAutoDetectAttempted = true;
     const configDir = path.dirname(absolutePath);
     const globalDefaults = configFile.defaults;
 
@@ -169,7 +169,8 @@ export class RepositoryContext {
       return cached.result;
     }
 
-    if (this.configPath === null) {
+    if (this.configPath === null && !this.configAutoDetectAttempted) {
+      this.configAutoDetectAttempted = true;
       const found = await this.configLoader.findConfigUpward(absolutePath);
       if (found) {
         try {
@@ -236,11 +237,10 @@ export class RepositoryContext {
       return [];
     }
 
-    const fold = (p: string): string => (isCaseInsensitiveFs() ? p.toLowerCase() : p);
     const configBares = new Map<string, string>();
     for (const entry of this.repos.values()) {
       if (entry.source === "config" && entry.config.bareRepoDir) {
-        configBares.set(fold(path.resolve(entry.config.bareRepoDir)), entry.name);
+        configBares.set(normalizePathForCompare(entry.config.bareRepoDir), entry.name);
       }
     }
 
@@ -248,7 +248,7 @@ export class RepositoryContext {
     await Promise.all(
       entries.map(async (entry) => {
         const candidate = path.join(workspaceRoot, entry);
-        const bareCandidate = path.join(candidate, ".bare");
+        const bareCandidate = path.join(candidate, GIT_CONSTANTS.BARE_DIR_NAME);
         try {
           const stat = await fs.stat(bareCandidate);
           if (!stat.isDirectory()) return;
@@ -257,7 +257,7 @@ export class RepositoryContext {
         }
 
         const resolvedBare = path.resolve(bareCandidate);
-        const matchedName = configBares.get(fold(resolvedBare));
+        const matchedName = configBares.get(normalizePathForCompare(resolvedBare));
         results.push({
           name: matchedName ?? entry,
           bareRepoPath: resolvedBare,
@@ -314,7 +314,6 @@ export class RepositoryContext {
           worktreeDir: null,
           allWorktrees: [],
           siblingRepositories: [],
-          configLoaded: this.configPath !== null,
           configPath: this.configPath,
           repoName: null,
           capabilities: emptyCapabilities(reason),
@@ -383,7 +382,6 @@ export class RepositoryContext {
           worktreeDir: null,
           allWorktrees: [],
           siblingRepositories: [],
-          configLoaded: this.configPath !== null,
           configPath: this.configPath,
           repoName: null,
           capabilities: emptyCapabilities(reason),
@@ -406,13 +404,11 @@ export class RepositoryContext {
       initialize: { available: false, reason: "no config and no remote URL" },
     };
 
-    const foldPath = (p: string): string => (isCaseInsensitiveFs() ? p.toLowerCase() : p);
-    const foldedBare = foldPath(bareRepoPath);
+    const foldedBare = normalizePathForCompare(bareRepoPath);
     let matchedConfig: RepoEntry | null = null;
     for (const entry of this.repos.values()) {
-      if (entry.source === "config") {
-        const entryBare = entry.config.bareRepoDir ? path.resolve(entry.config.bareRepoDir) : null;
-        if (entryBare && foldPath(entryBare) === foldedBare) {
+      if (entry.source === "config" && entry.config.bareRepoDir) {
+        if (normalizePathForCompare(entry.config.bareRepoDir) === foldedBare) {
           matchedConfig = entry;
           break;
         }
@@ -465,7 +461,6 @@ export class RepositoryContext {
       worktreeDir,
       allWorktrees: worktrees,
       siblingRepositories,
-      configLoaded: this.configPath !== null,
       configPath: this.configPath,
       repoName,
       capabilities,
@@ -538,9 +533,7 @@ export class RepositoryContext {
 }
 
 function parseWorktreeList(output: string, currentPath: string): DiscoveredWorktree[] {
-  const resolvedCurrent = path.resolve(currentPath);
-  const fold = (p: string): string => (isCaseInsensitiveFs() ? p.toLowerCase() : p);
-  const foldedCurrent = fold(resolvedCurrent);
+  const foldedCurrent = normalizePathForCompare(currentPath);
   const results: DiscoveredWorktree[] = [];
   for (const wt of parseWorktreeListPorcelain(output)) {
     const resolved = path.resolve(wt.path);
@@ -549,7 +542,7 @@ function parseWorktreeList(output: string, currentPath: string): DiscoveredWorkt
     results.push({
       path: resolved,
       branch,
-      isCurrent: fold(resolved) === foldedCurrent,
+      isCurrent: normalizePathForCompare(resolved) === foldedCurrent,
     });
   }
   return results;

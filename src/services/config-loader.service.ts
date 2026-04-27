@@ -4,17 +4,10 @@ import { pathToFileURL } from "url";
 
 import * as cron from "node-cron";
 
-import { DEFAULT_CONFIG } from "../constants";
+import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
 import { matchesPattern } from "../utils/branch-filter";
 
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
-
-const CONFIG_FILE_NAMES = [
-  "sync-worktrees.config.js",
-  "sync-worktrees.config.mjs",
-  "sync-worktrees.config.cjs",
-  "sync-worktrees.config.ts",
-] as const;
 
 export class ConfigLoaderService {
   async findConfigUpward(startDir: string): Promise<string | null> {
@@ -28,7 +21,7 @@ export class ConfigLoaderService {
           await fs.access(candidate);
           return candidate;
         } catch {
-          // continue
+          /* try next */
         }
       }
       if (current === root) return null;
