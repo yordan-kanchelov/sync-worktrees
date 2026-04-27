@@ -24,8 +24,8 @@ const REPO_NAME_DESCRIBE =
 const PATH_DESCRIBE_SUFFIX = "Absolute path preferred; relative paths resolve from the server's CWD.";
 
 const SERVER_INSTRUCTIONS =
-  "Before running git worktree operations, call `detect_context` to learn the current repo, current branch, and which capabilities are available. " +
-  "It reports whether the working directory is inside a sync-worktrees-managed workspace, lists sibling worktrees, and explains why any capability is disabled.";
+  "Before running git worktree operations, call `detect_context` to learn the current repo, current branch, sibling repositories under the workspace root, and which capabilities are available. " +
+  "It walks up to auto-discover sync-worktrees.config.{js,mjs,cjs,ts}, lists sibling worktrees, and reports per-capability {available, reason} so you can tell which tool is gated and why.";
 
 export function createServer(context: RepositoryContext): McpServer {
   const server = new McpServer(
@@ -44,7 +44,7 @@ export function createServer(context: RepositoryContext): McpServer {
     {
       title: "Workspace context",
       description:
-        "Current sync-worktrees workspace context: whether CWD is inside a managed worktree, the current branch, sibling worktrees, and available capabilities. Returns { isWorktree: false } when CWD is outside any workspace.",
+        "Current sync-worktrees workspace context: whether CWD is inside a managed worktree, the current branch, sibling worktrees, sibling repositories, auto-discovered configPath, and per-capability {available, reason}. Returns { isWorktree: false } when CWD is outside any workspace.",
       mimeType: "application/json",
     },
     async (uri) => {
@@ -70,11 +70,17 @@ export function createServer(context: RepositoryContext): McpServer {
     "detect_context",
     {
       description:
-        "Detect sync-worktrees structure from a filesystem path. Reads .git file, resolves bare repo, discovers sibling worktrees. Defaults to CWD. " +
-        "Use when: bootstrapping from an unknown checkout with no config loaded. " +
-        "Returns: discovered repo root, bare repo path, all sibling worktrees, current worktree path, capabilities.",
+        "Detect sync-worktrees structure from a filesystem path. Reads .git file, resolves bare repo, discovers sibling worktrees, walks up for a sync-worktrees.config.{js,mjs,cjs,ts}, and lists sibling bare repos under the workspace root. Defaults to CWD. " +
+        "Use when: bootstrapping from an unknown checkout. " +
+        "Returns: discovered repo root, bare repo path, all sibling worktrees, sibling repositories, current worktree path, configPath (auto-found), per-capability {available, reason}, notes[].",
       inputSchema: {
         path: z.string().optional().describe("Directory path to inspect. Defaults to the server's CWD."),
+        includeStatus: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, enriches each entry in allWorktrees with label, divergence, and staleHint. Adds one git status + rev-list per worktree. Default: false (cheap path).",
+          ),
       },
       annotations: {
         title: "Detect sync-worktrees context",
@@ -91,9 +97,15 @@ export function createServer(context: RepositoryContext): McpServer {
     {
       description:
         "List all worktrees of a repository with enriched status. " +
-        "Returns: array of { path, branch, isCurrent, label (clean|dirty|stale|current|unknown), status, divergence (ahead/behind), safeToRemove, lastSyncAt }.",
+        "Returns: array of { path, branch, isCurrent, label (clean|dirty|stale|current|unknown), status, divergence (ahead/behind), safeToRemove: { safe, reason }, lastSyncAt, sizeBytes }.",
       inputSchema: {
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
+        includeSize: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, computes the on-disk size of each worktree (in bytes). Slow on large worktrees. Default: false (sizeBytes returned as null).",
+          ),
       },
       annotations: {
         title: "List worktrees with status",

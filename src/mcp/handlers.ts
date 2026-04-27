@@ -1,18 +1,19 @@
 import * as path from "path";
 
 import pLimit from "p-limit";
-import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { PathResolutionService } from "../services/path-resolution.service";
+import { WorktreeStatusService } from "../services/worktree-status.service";
+import { calculateDirectorySize } from "../utils/disk-space";
 import { isValidGitBranchName } from "../utils/git-validation";
 import { pathsEqual } from "../utils/path-compare";
 
 import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } from "./utils";
+import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summary";
 
-import type { Capabilities, DiscoveredRepoContext, RepositoryContext } from "./context";
+import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
 import type { HandlerExtra } from "./utils";
-import type { WorktreeStatusResult } from "../services/worktree-status.service";
 import type { ProgressEvent } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -26,8 +27,10 @@ const pathResolution = new PathResolutionService();
 
 function ensureCapability(discovered: DiscoveredRepoContext | null, key: CapabilityKey, toolName: string): void {
   if (!discovered) return;
-  if (!discovered.capabilities[key]) {
-    throw new CapabilityUnavailableError(toolName, discovered.reasons);
+  const cap = discovered.capabilities[key];
+  if (!cap.available) {
+    const reasons = cap.reason ? [cap.reason] : discovered.notes;
+    throw new CapabilityUnavailableError(toolName, reasons);
   }
 }
 
@@ -100,41 +103,48 @@ async function ensurePathBelongsToRepo(
   throw new Error(`Path '${targetPath}' is not a registered worktree of the current repository`);
 }
 
-function deriveLabel(status: WorktreeStatusResult, isCurrent: boolean): string {
-  if (isCurrent) return "current";
-  if (!status.isClean || status.hasUnpushedCommits || status.hasStashedChanges) return "dirty";
-  if (status.upstreamGone) return "stale";
-  return "clean";
-}
-
-async function getDivergence(worktreePath: string): Promise<{ ahead: number; behind: number } | null> {
-  try {
-    const git = simpleGit(worktreePath);
-    const output = await git.raw(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]);
-    const [aheadStr, behindStr] = output.trim().split(/\s+/);
-    return { ahead: parseInt(aheadStr, 10), behind: parseInt(behindStr, 10) };
-  } catch {
-    return null;
-  }
-}
-
 export async function handleDetectContext(
   ctx: RepositoryContext,
-  params: { path?: string },
+  params: { path?: string; includeStatus?: boolean },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const target = params.path ?? process.cwd();
   const discovered = await ctx.detectFromPath(target);
-  return formatToolResponse(discovered);
+
+  if (!params.includeStatus || discovered.allWorktrees.length === 0) {
+    return formatToolResponse(discovered);
+  }
+
+  const statusService = new WorktreeStatusService();
+  const limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+
+  const enriched: DiscoveredWorktree[] = await Promise.all(
+    discovered.allWorktrees.map((wt) =>
+      limit(async () => {
+        const [status, divergence] = await Promise.all([
+          statusService.getFullWorktreeStatus(wt.path, false).catch(() => null),
+          getDivergence(wt.path),
+        ]);
+        return {
+          ...wt,
+          label: status ? deriveLabel(status, wt.isCurrent) : ("unknown" as const),
+          divergence,
+          staleHint: status?.upstreamGone ?? false,
+        };
+      }),
+    ),
+  );
+
+  return formatToolResponse({ ...discovered, allWorktrees: enriched });
 }
 
 export async function handleListWorktrees(
   ctx: RepositoryContext,
-  params: { repoName?: string },
+  params: { repoName?: string; includeSize?: boolean },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const { discovered, git } = await getReadyService(ctx, params.repoName, {
-    capability: "canListWorktrees",
+    capability: "listWorktrees",
     toolName: "list_worktrees",
   });
 
@@ -158,10 +168,11 @@ export async function handleListWorktrees(
         const resolvedPath = path.resolve(wt.path);
         const isCurrent = currentPath !== null && pathsEqual(wt.path, currentPath);
 
-        const [status, divergence, metadata] = await Promise.all([
+        const [status, divergence, metadata, sizeBytes] = await Promise.all([
           git.getFullWorktreeStatus(wt.path, false).catch(() => null),
           getDivergence(wt.path),
           git.getWorktreeMetadata(wt.path).catch(() => null),
+          params.includeSize ? calculateDirectorySize(wt.path).catch(() => null) : Promise.resolve(null),
         ]);
 
         return {
@@ -171,8 +182,9 @@ export async function handleListWorktrees(
           label: status ? deriveLabel(status, isCurrent) : "unknown",
           status,
           divergence,
-          safeToRemove: status ? status.canRemove && !status.upstreamGone : false,
+          safeToRemove: status ? deriveSafeToRemove(status) : { safe: false, reason: "status unavailable" },
           lastSyncAt: metadata?.lastSyncDate ?? null,
+          sizeBytes,
         };
       }),
     ),
@@ -187,7 +199,7 @@ export async function handleGetWorktreeStatus(
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const { git } = await getReadyService(ctx, params.repoName, {
-    capability: "canGetStatus",
+    capability: "getStatus",
     toolName: "get_worktree_status",
   });
   const resolvedPath = await ensureRepoWorktreePath(ctx, params, git);
@@ -216,7 +228,7 @@ export async function handleCreateWorktree(
   }
 
   const { service, git } = await getReadyService(ctx, params.repoName, {
-    capability: "canCreateWorktree",
+    capability: "createWorktree",
     toolName: "create_worktree",
     ensureInitialized: true,
     ensureNotSyncing: true,
@@ -267,7 +279,7 @@ export async function handleRemoveWorktree(
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const { git } = await getReadyService(ctx, params.repoName, {
-    capability: "canRemoveWorktree",
+    capability: "removeWorktree",
     toolName: "remove_worktree",
     ensureInitialized: true,
     ensureNotSyncing: true,
@@ -296,7 +308,7 @@ export async function handleSync(
   extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const { service } = await getReadyService(ctx, params.repoName, {
-    capability: "canSync",
+    capability: "sync",
     toolName: "sync",
     ensureInitialized: true,
   });
@@ -322,7 +334,7 @@ export async function handleUpdateWorktree(
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const { git } = await getReadyService(ctx, params.repoName, {
-    capability: "canUpdateWorktree",
+    capability: "updateWorktree",
     toolName: "update_worktree",
     ensureInitialized: true,
     ensureNotSyncing: true,
@@ -344,7 +356,7 @@ export async function handleInitialize(
   extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const { service } = await getReadyService(ctx, params.repoName, {
-    capability: "canInitialize",
+    capability: "initialize",
     toolName: "initialize",
     ensureNotSyncing: true,
   });

@@ -94,10 +94,10 @@ describe("RepositoryContext.detectFromPath", () => {
     expect(result.repoUrl).toBe("https://github.com/test/repo.git");
     expect(result.currentBranch).toBe("feature-x");
     expect(result.allWorktrees).toHaveLength(2);
-    expect(result.capabilities.canListWorktrees).toBe(true);
-    expect(result.capabilities.canCreateWorktree).toBe(true);
-    expect(result.capabilities.canSync).toBe(false);
-    expect(result.capabilities.canInitialize).toBe(false);
+    expect(result.capabilities.listWorktrees.available).toBe(true);
+    expect(result.capabilities.createWorktree.available).toBe(true);
+    expect(result.capabilities.sync.available).toBe(false);
+    expect(result.capabilities.initialize.available).toBe(false);
   });
 
   it("returns unsupported for regular git repo (directory .git)", async () => {
@@ -109,8 +109,8 @@ describe("RepositoryContext.detectFromPath", () => {
 
     expect(result.isWorktree).toBe(false);
     expect(result.kind).toBe("unsupported");
-    expect(result.capabilities.canListWorktrees).toBe(false);
-    expect(result.reasons.some((r) => r.includes("regular repo"))).toBe(true);
+    expect(result.capabilities.listWorktrees.available).toBe(false);
+    expect(result.notes.some((r: string) => r.includes("regular repo"))).toBe(true);
 
     await fs.rm(regularRepo, { recursive: true, force: true });
   });
@@ -148,8 +148,8 @@ describe("RepositoryContext.detectFromPath", () => {
     const result = await ctx.detectFromPath(fixture.currentWorktree);
     expect(result.kind).toBe("managed");
     expect(result.repoName).toBe("configured");
-    expect(result.capabilities.canSync).toBe(true);
-    expect(result.capabilities.canInitialize).toBe(true);
+    expect(result.capabilities.sync.available).toBe(true);
+    expect(result.capabilities.initialize.available).toBe(true);
   });
 
   it("resolves relative gitdir path against the worktree root", async () => {
@@ -182,8 +182,113 @@ describe("RepositoryContext.detectFromPath", () => {
     const result = await ctx.detectFromPath(fixture.currentWorktree);
 
     expect(result.repoUrl).toBeNull();
-    expect(result.capabilities.canCreateWorktree).toBe(false);
-    expect(result.reasons.some((r) => r.includes("create_worktree"))).toBe(true);
+    expect(result.capabilities.createWorktree.available).toBe(false);
+    expect(result.capabilities.createWorktree.reason).toContain("remote origin URL");
+  });
+});
+
+describe("RepositoryContext.detectFromPath sibling discovery", () => {
+  it("discovers sibling repos with .bare directories under workspace root", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-siblings-"));
+    try {
+      const currentRepo = path.join(workspace, "repo-current");
+      const currentBare = path.join(currentRepo, ".bare");
+      const adminDir = path.join(currentBare, "worktrees", "main");
+      await fs.mkdir(adminDir, { recursive: true });
+      const currentWt = path.join(currentRepo, "worktrees", "main");
+      await fs.mkdir(currentWt, { recursive: true });
+      await fs.writeFile(path.join(currentWt, ".git"), `gitdir: ${adminDir}\n`, "utf-8");
+
+      await fs.mkdir(path.join(workspace, "repo-sibling-a", ".bare"), { recursive: true });
+      await fs.mkdir(path.join(workspace, "repo-sibling-b", ".bare"), { recursive: true });
+      await fs.mkdir(path.join(workspace, "not-a-repo"), { recursive: true });
+
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+      mockWorktreeList.mockResolvedValue([`worktree ${currentWt}`, "branch refs/heads/main", ""].join("\n"));
+
+      const ctx = new RepositoryContext();
+      const result = await ctx.detectFromPath(currentWt);
+
+      expect(result.siblingRepositories.length).toBe(3);
+      const names = result.siblingRepositories.map((s) => s.name).sort();
+      expect(names).toEqual(["repo-current", "repo-sibling-a", "repo-sibling-b"]);
+      for (const sib of result.siblingRepositories) {
+        expect(sib.bareRepoPath).toMatch(/\.bare$/);
+        expect(sib.configMatched).toBe(false);
+      }
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("marks sibling as configMatched when bareRepoDir matches a loaded config repo", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-siblings-cfg-"));
+    try {
+      const currentRepo = path.join(workspace, "repo-current");
+      const currentBare = path.join(currentRepo, ".bare");
+      const adminDir = path.join(currentBare, "worktrees", "main");
+      await fs.mkdir(adminDir, { recursive: true });
+      const currentWt = path.join(currentRepo, "worktrees", "main");
+      await fs.mkdir(currentWt, { recursive: true });
+      await fs.writeFile(path.join(currentWt, ".git"), `gitdir: ${adminDir}\n`, "utf-8");
+
+      const siblingA = path.join(workspace, "repo-sibling-a");
+      await fs.mkdir(path.join(siblingA, ".bare"), { recursive: true });
+
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+      mockWorktreeList.mockResolvedValue([`worktree ${currentWt}`, "branch refs/heads/main", ""].join("\n"));
+
+      const ctx = new RepositoryContext();
+      ctx.__registerForTest("named-sibling", {
+        config: {
+          repoUrl: "https://github.com/test/sibling.git",
+          bareRepoDir: path.join(siblingA, ".bare"),
+          worktreeDir: path.join(siblingA, "worktrees"),
+          cronSchedule: "0 * * * *",
+          runOnce: true,
+        },
+        source: "config" as const,
+      });
+
+      const result = await ctx.detectFromPath(currentWt);
+      const matched = result.siblingRepositories.find((s) => s.configMatched);
+      expect(matched).toBeDefined();
+      expect(matched?.name).toBe("named-sibling");
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("RepositoryContext.detectFromPath config auto-discovery", () => {
+  it("auto-loads sync-worktrees.config.js found by walking up", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-auto-cfg-"));
+    try {
+      const currentRepo = path.join(workspace, "repo-current");
+      const currentBare = path.join(currentRepo, ".bare");
+      const adminDir = path.join(currentBare, "worktrees", "main");
+      await fs.mkdir(adminDir, { recursive: true });
+      const currentWt = path.join(currentRepo, "worktrees", "main");
+      await fs.mkdir(currentWt, { recursive: true });
+      await fs.writeFile(path.join(currentWt, ".git"), `gitdir: ${adminDir}\n`, "utf-8");
+
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { repositories: [{ name: "auto-loaded", repoUrl: "https://github.com/test/repo.git", bareRepoDir: ${JSON.stringify(currentBare)}, worktreeDir: ${JSON.stringify(path.join(currentRepo, "worktrees"))}, cronSchedule: "0 * * * *", runOnce: true }] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+      mockWorktreeList.mockResolvedValue([`worktree ${currentWt}`, "branch refs/heads/main", ""].join("\n"));
+
+      const ctx = new RepositoryContext();
+      const result = await ctx.detectFromPath(currentWt);
+
+      expect(result.configLoaded).toBe(true);
+      expect(result.configPath).toBe(configPath);
+      expect(result.kind).toBe("managed");
+      expect(result.repoName).toBe("auto-loaded");
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
   });
 });
 
