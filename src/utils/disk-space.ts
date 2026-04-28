@@ -7,13 +7,17 @@ import fastFolderSize from "fast-folder-size";
  * @returns The total size in bytes
  */
 export async function calculateDirectorySize(dirPath: string): Promise<number> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     fastFolderSize(dirPath, (err, bytes) => {
-      if (err || bytes === undefined) {
-        resolve(0);
-      } else {
-        resolve(bytes);
+      if (err) {
+        reject(err);
+        return;
       }
+      if (bytes === undefined) {
+        reject(new Error(`fast-folder-size returned no bytes for ${dirPath}`));
+        return;
+      }
+      resolve(bytes);
     });
   });
 }
@@ -48,16 +52,20 @@ export async function calculateSyncDiskSpace(repoPaths: string[], worktreeDirs: 
   try {
     let totalBytes = 0;
 
-    // Calculate size of all bare repository directories
     for (const repoPath of repoPaths) {
-      const bareSize = await calculateDirectorySize(repoPath);
-      totalBytes += bareSize;
+      try {
+        totalBytes += await calculateDirectorySize(repoPath);
+      } catch {
+        /* skip unreadable bare repo */
+      }
     }
 
-    // Calculate size of all worktree directories
     for (const worktreeDir of worktreeDirs) {
-      const worktreeSize = await calculateDirectorySize(worktreeDir);
-      totalBytes += worktreeSize;
+      try {
+        totalBytes += await calculateDirectorySize(worktreeDir);
+      } catch {
+        /* skip unreadable worktree dir */
+      }
     }
 
     return formatBytes(totalBytes);

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   handleCreateWorktree,
+  handleDetectContext,
   handleGetWorktreeStatus,
   handleInitialize,
   handleListWorktrees,
@@ -34,15 +35,48 @@ vi.mock("simple-git", () => ({
   })),
 }));
 
+vi.mock("../../utils/disk-space", () => ({
+  calculateDirectorySize: vi.fn().mockResolvedValue(123456),
+  formatBytes: vi.fn().mockReturnValue("123 KB"),
+  calculateSyncDiskSpace: vi.fn().mockResolvedValue("N/A"),
+}));
+
+vi.mock("../../services/worktree-status.service", () => {
+  class FakeStatusService {
+    async getFullWorktreeStatus(): Promise<{
+      isClean: boolean;
+      hasUnpushedCommits: boolean;
+      hasStashedChanges: boolean;
+      hasOperationInProgress: boolean;
+      hasModifiedSubmodules: boolean;
+      upstreamGone: boolean;
+      canRemove: boolean;
+      reasons: string[];
+    }> {
+      return {
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      };
+    }
+  }
+  return { WorktreeStatusService: FakeStatusService };
+});
+
 function makeCapabilities(overrides: Partial<Capabilities> = {}): Capabilities {
   return {
-    canListWorktrees: true,
-    canGetStatus: true,
-    canCreateWorktree: true,
-    canRemoveWorktree: true,
-    canUpdateWorktree: true,
-    canSync: true,
-    canInitialize: true,
+    listWorktrees: { available: true },
+    getStatus: { available: true },
+    createWorktree: { available: true },
+    removeWorktree: { available: true },
+    updateWorktree: { available: true },
+    sync: { available: true },
+    initialize: { available: true },
     ...overrides,
   };
 }
@@ -57,10 +91,11 @@ function makeDiscovered(overrides: Partial<DiscoveredRepoContext> = {}): Discove
     repoUrl: "https://example.com/repo.git",
     worktreeDir: "/repo/worktrees",
     allWorktrees: [],
-    configLoaded: true,
+    siblingRepositories: [],
+    configPath: null,
     repoName: "test",
     capabilities: makeCapabilities(),
-    reasons: [],
+    notes: [],
     ...overrides,
   };
 }
@@ -155,15 +190,16 @@ describe("handleListWorktrees", () => {
     expect(body.worktrees).toHaveLength(2);
     expect(body.worktrees[0].label).toBe("current");
     expect(body.worktrees[1].label).toBe("clean");
-    expect(body.worktrees[1].safeToRemove).toBe(true);
+    expect(body.worktrees[1].safeToRemove).toEqual({ safe: true, reason: expect.any(String) });
+    expect(body.worktrees[1].sizeBytes).toBeNull();
     expect(git.getWorktrees).toHaveBeenCalled();
   });
 
   it("fails with CAPABILITY_UNAVAILABLE when canListWorktrees is false", async () => {
     const { ctx } = makeCtx({
       discovered: makeDiscovered({
-        capabilities: makeCapabilities({ canListWorktrees: false }),
-        reasons: ["test reason"],
+        capabilities: makeCapabilities({ listWorktrees: { available: false, reason: "test reason" } }),
+        notes: ["test reason"],
       }),
     });
 
@@ -346,8 +382,8 @@ describe("handleSync", () => {
   it("fails when canSync=false", async () => {
     const { ctx } = makeCtx({
       discovered: makeDiscovered({
-        capabilities: makeCapabilities({ canSync: false }),
-        reasons: ["no config"],
+        capabilities: makeCapabilities({ sync: { available: false, reason: "no config" } }),
+        notes: ["no config"],
       }),
     });
     const result = await invoke(handleSync, ctx, {});
@@ -699,5 +735,116 @@ describe("handleCreateWorktree collisions", () => {
     const secondPath = (git.addWorktree as any).mock.calls[0][1];
 
     expect(firstPath).not.toBe(secondPath);
+  });
+});
+
+describe("handleListWorktrees includeSize", () => {
+  it("returns sizeBytes when includeSize=true", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/main", branch: "main", isCurrent: true }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, { includeSize: true });
+    const body = parseResponse(result);
+    expect(body.worktrees[0].sizeBytes).toBe(123456);
+  });
+});
+
+describe("handleListWorktrees structured safeToRemove", () => {
+  it("returns unsafe with joined reasons when canRemove=false", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/feat", branch: "feat" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: false,
+          hasUnpushedCommits: true,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: false,
+          reasons: ["uncommitted changes", "unpushed commits"],
+        }),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, {});
+    const body = parseResponse(result);
+    expect(body.worktrees[0].safeToRemove.safe).toBe(false);
+    expect(body.worktrees[0].safeToRemove.reason).toContain("uncommitted changes");
+  });
+
+  it("returns unsafe + 'deleted upstream' reason when upstream gone", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/feat", branch: "feat" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: true,
+          canRemove: true,
+          reasons: [],
+        }),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, {});
+    const body = parseResponse(result);
+    expect(body.worktrees[0].safeToRemove.safe).toBe(false);
+    expect(body.worktrees[0].safeToRemove.reason).toContain("deleted upstream");
+  });
+});
+
+describe("handleDetectContext includeStatus", () => {
+  it("returns allWorktrees as-is when includeStatus is false/omitted", async () => {
+    const ctx = {
+      detectFromPath: vi.fn<any>().mockResolvedValue(
+        makeDiscovered({
+          allWorktrees: [
+            { path: "/repo/main", branch: "main", isCurrent: true },
+            { path: "/repo/feat", branch: "feat", isCurrent: false },
+          ],
+        }),
+      ),
+    } as unknown as RepositoryContext;
+
+    const result = await invoke(handleDetectContext, ctx, {});
+    const body = parseResponse(result);
+    expect(body.allWorktrees[0].label).toBeUndefined();
+    expect(body.allWorktrees[1].divergence).toBeUndefined();
+  });
+
+  it("enriches allWorktrees with label/divergence/staleHint when includeStatus=true", async () => {
+    const ctx = {
+      detectFromPath: vi.fn<any>().mockResolvedValue(
+        makeDiscovered({
+          allWorktrees: [
+            { path: "/repo/main", branch: "main", isCurrent: true },
+            { path: "/repo/feat", branch: "feat", isCurrent: false },
+          ],
+        }),
+      ),
+    } as unknown as RepositoryContext;
+
+    const result = await invoke(handleDetectContext, ctx, { includeStatus: true });
+    const body = parseResponse(result);
+    expect(body.allWorktrees[0].label).toBe("current");
+    expect(body.allWorktrees[1].label).toBe("clean");
+    expect(body.allWorktrees[0].staleHint).toBe(false);
   });
 });

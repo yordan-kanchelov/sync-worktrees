@@ -87,8 +87,8 @@ describe("createServer", () => {
 
     expect(payload.isWorktree).toBe(false);
     expect(payload.kind).toBe("unsupported");
-    expect(Array.isArray(payload.reasons)).toBe(true);
-    expect(payload.reasons.join(" ")).toContain("boom");
+    expect(Array.isArray(payload.notes)).toBe(true);
+    expect(payload.notes.join(" ")).toContain("boom");
   });
 
   it("workspace resource returns discovered context when cwd is inside a worktree", async () => {

@@ -52,15 +52,14 @@ describe("disk-space", () => {
   });
 
   describe("calculateDirectorySize", () => {
-    it("should return 0 for non-existent directory", async () => {
+    it("should reject for non-existent directory", async () => {
       const fastFolderSize = (await import("fast-folder-size")).default;
       vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
         callback(new Error("ENOENT"));
         return {} as any;
       });
 
-      const size = await calculateDirectorySize(path.join(tempDir, "nonexistent"));
-      expect(size).toBe(0);
+      await expect(calculateDirectorySize(path.join(tempDir, "nonexistent"))).rejects.toThrow("ENOENT");
     });
 
     it("should return size for a directory", async () => {
@@ -88,26 +87,24 @@ describe("disk-space", () => {
       expect(size).toBe(0);
     });
 
-    it("should handle undefined bytes from fastFolderSize", async () => {
+    it("should reject when fastFolderSize returns undefined bytes", async () => {
       const fastFolderSize = (await import("fast-folder-size")).default;
       vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
         callback(null, undefined);
         return {} as any;
       });
 
-      const size = await calculateDirectorySize(tempDir);
-      expect(size).toBe(0);
+      await expect(calculateDirectorySize(tempDir)).rejects.toThrow("returned no bytes");
     });
 
-    it("should handle errors gracefully", async () => {
+    it("should reject on errors", async () => {
       const fastFolderSize = (await import("fast-folder-size")).default;
       vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
         callback(new Error("Permission denied"));
         return {} as any;
       });
 
-      const size = await calculateDirectorySize(tempDir);
-      expect(size).toBe(0);
+      await expect(calculateDirectorySize(tempDir)).rejects.toThrow("Permission denied");
     });
   });
 

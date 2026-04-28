@@ -4,12 +4,33 @@ import { pathToFileURL } from "url";
 
 import * as cron from "node-cron";
 
-import { DEFAULT_CONFIG } from "../constants";
+import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
 import { matchesPattern } from "../utils/branch-filter";
 
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
 
 export class ConfigLoaderService {
+  async findConfigUpward(startDir: string): Promise<string | null> {
+    let current = path.resolve(startDir);
+    const root = path.parse(current).root;
+
+    while (true) {
+      for (const name of CONFIG_FILE_NAMES) {
+        const candidate = path.join(current, name);
+        try {
+          await fs.access(candidate);
+          return candidate;
+        } catch {
+          /* try next */
+        }
+      }
+      if (current === root) return null;
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      current = parent;
+    }
+  }
+
   async loadConfigFile(configPath: string): Promise<ConfigFile> {
     const absolutePath = path.resolve(configPath);
 

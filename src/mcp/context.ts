@@ -3,29 +3,44 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { DEFAULT_CONFIG } from "../constants";
+import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
-import { isCaseInsensitiveFs } from "../utils/path-compare";
+import { normalizePathForCompare } from "../utils/path-compare";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import type { Config, RepositoryConfig } from "../types";
+import type { Divergence, WorktreeLabel } from "./worktree-summary";
+
+export interface CapabilityState {
+  available: boolean;
+  reason?: string;
+}
 
 export interface Capabilities {
-  canListWorktrees: boolean;
-  canGetStatus: boolean;
-  canCreateWorktree: boolean;
-  canRemoveWorktree: boolean;
-  canUpdateWorktree: boolean;
-  canSync: boolean;
-  canInitialize: boolean;
+  listWorktrees: CapabilityState;
+  getStatus: CapabilityState;
+  createWorktree: CapabilityState;
+  removeWorktree: CapabilityState;
+  updateWorktree: CapabilityState;
+  sync: CapabilityState;
+  initialize: CapabilityState;
 }
 
 export interface DiscoveredWorktree {
   path: string;
   branch: string;
   isCurrent: boolean;
+  label?: WorktreeLabel;
+  divergence?: Divergence | null;
+  staleHint?: boolean;
+}
+
+export interface SiblingRepository {
+  name: string;
+  bareRepoPath: string;
+  configMatched: boolean;
 }
 
 export interface DiscoveredRepoContext {
@@ -37,10 +52,11 @@ export interface DiscoveredRepoContext {
   repoUrl: string | null;
   worktreeDir: string | null;
   allWorktrees: DiscoveredWorktree[];
-  configLoaded: boolean;
+  siblingRepositories: SiblingRepository[];
+  configPath: string | null;
   repoName: string | null;
   capabilities: Capabilities;
-  reasons: string[];
+  notes: string[];
 }
 
 interface RepoEntry {
@@ -62,15 +78,18 @@ interface CachedDiscovery {
 const AUTO_DETECT_PREFIX = "__auto_detected__:";
 const DISCOVERY_CACHE_TTL_MS = 5000;
 
-const EMPTY_CAPABILITIES: Capabilities = {
-  canListWorktrees: false,
-  canGetStatus: false,
-  canCreateWorktree: false,
-  canRemoveWorktree: false,
-  canUpdateWorktree: false,
-  canSync: false,
-  canInitialize: false,
-};
+function emptyCapabilities(reason?: string): Capabilities {
+  const state: CapabilityState = reason ? { available: false, reason } : { available: false };
+  return {
+    listWorktrees: { ...state },
+    getStatus: { ...state },
+    createWorktree: { ...state },
+    removeWorktree: { ...state },
+    updateWorktree: { ...state },
+    sync: { ...state },
+    initialize: { ...state },
+  };
+}
 
 export function buildUnsupportedContext(currentPath: string, reason: string): DiscoveredRepoContext {
   return {
@@ -82,10 +101,11 @@ export function buildUnsupportedContext(currentPath: string, reason: string): Di
     repoUrl: null,
     worktreeDir: null,
     allWorktrees: [],
-    configLoaded: false,
+    siblingRepositories: [],
+    configPath: null,
     repoName: null,
-    capabilities: EMPTY_CAPABILITIES,
-    reasons: [reason],
+    capabilities: emptyCapabilities(reason),
+    notes: [reason],
   };
 }
 
@@ -105,7 +125,8 @@ export class RepositoryContext {
   private configLoader = new ConfigLoaderService();
   private discoveryCache = new Map<string, CachedDiscovery>();
 
-  async loadConfig(configPath: string): Promise<RepositoryConfig[]> {
+  async loadConfig(configPath: string, options: { setDefaultCurrent?: boolean } = {}): Promise<RepositoryConfig[]> {
+    const setDefaultCurrent = options.setDefaultCurrent ?? true;
     const absolutePath = path.resolve(configPath);
     const configFile = await this.configLoader.loadConfigFile(absolutePath);
 
@@ -132,9 +153,11 @@ export class RepositoryContext {
       this.currentRepo = null;
     }
 
-    if (!this.currentRepo && configFile.repositories.length > 0) {
+    if (setDefaultCurrent && !this.currentRepo && configFile.repositories.length > 0) {
       this.currentRepo = configFile.repositories[0].name;
     }
+
+    this.discoveryCache.clear();
 
     return configFile.repositories;
   }
@@ -145,6 +168,17 @@ export class RepositoryContext {
     const cached = this.discoveryCache.get(absolutePath);
     if (cached && (await this.isCacheFresh(cached))) {
       return cached.result;
+    }
+
+    if (this.configPath === null) {
+      const found = await this.configLoader.findConfigUpward(absolutePath);
+      if (found) {
+        try {
+          await this.loadConfig(found, { setDefaultCurrent: false });
+        } catch (err) {
+          process.stderr.write(`[sync-worktrees] auto-loaded config failed: ${(err as Error).message}\n`);
+        }
+      }
     }
 
     const { result, adminDir } = await this.detectFromPathUncached(absolutePath);
@@ -190,10 +224,56 @@ export class RepositoryContext {
     return this.discoveryCache.size;
   }
 
-  private bootstrapCurrentRepo(candidate: string): void {
+  private async discoverSiblingRepositories(currentBareRepoPath: string): Promise<SiblingRepository[]> {
+    const repoDir = path.dirname(currentBareRepoPath);
+    const workspaceRoot = path.dirname(repoDir);
+
+    if (workspaceRoot === repoDir) return [];
+
+    let entries: string[];
+    try {
+      entries = await fs.readdir(workspaceRoot);
+    } catch {
+      return [];
+    }
+
+    const configBares = new Map<string, string>();
+    for (const entry of this.repos.values()) {
+      if (entry.source === "config" && entry.config.bareRepoDir) {
+        configBares.set(normalizePathForCompare(entry.config.bareRepoDir), entry.name);
+      }
+    }
+
+    const results: SiblingRepository[] = [];
+    await Promise.all(
+      entries.map(async (entry) => {
+        const candidate = path.join(workspaceRoot, entry);
+        const bareCandidate = path.join(candidate, GIT_CONSTANTS.BARE_DIR_NAME);
+        try {
+          const stat = await fs.stat(bareCandidate);
+          if (!stat.isDirectory()) return;
+        } catch {
+          return;
+        }
+
+        const resolvedBare = path.resolve(bareCandidate);
+        const matchedName = configBares.get(normalizePathForCompare(resolvedBare));
+        results.push({
+          name: matchedName ?? entry,
+          bareRepoPath: resolvedBare,
+          configMatched: matchedName !== undefined,
+        });
+      }),
+    );
+
+    results.sort((a, b) => a.name.localeCompare(b.name));
+    return results;
+  }
+
+  private bootstrapCurrentRepo(candidate: string, force = false): void {
     if (this.currentRepo !== null) return;
     if (!this.repos.has(candidate)) return;
-    if (this.repos.size !== 1) return;
+    if (!force && this.repos.size !== 1) return;
     this.currentRepo = candidate;
   }
 
@@ -212,19 +292,16 @@ export class RepositoryContext {
   private async detectFromPathUncached(
     absolutePath: string,
   ): Promise<{ result: DiscoveredRepoContext; adminDir: string | null }> {
-    const reasons: string[] = [];
+    const notes: string[] = [];
 
     const located = await findWorktreeRoot(absolutePath);
     const worktreeRoot = located?.worktreeRoot ?? absolutePath;
 
-    const unsupported = (
-      reason: string,
-      isWorktree = false,
-    ): { result: DiscoveredRepoContext; adminDir: string | null } => {
-      reasons.push(reason);
+    const unsupported = (reason: string): { result: DiscoveredRepoContext; adminDir: string | null } => {
+      notes.push(reason);
       return {
         result: {
-          isWorktree,
+          isWorktree: false,
           kind: "unsupported",
           currentBranch: null,
           currentWorktreePath: worktreeRoot,
@@ -232,10 +309,11 @@ export class RepositoryContext {
           repoUrl: null,
           worktreeDir: null,
           allWorktrees: [],
-          configLoaded: this.configPath !== null,
+          siblingRepositories: [],
+          configPath: this.configPath,
           repoName: null,
-          capabilities: EMPTY_CAPABILITIES,
-          reasons,
+          capabilities: emptyCapabilities(reason),
+          notes,
         },
         adminDir: null,
       };
@@ -277,7 +355,7 @@ export class RepositoryContext {
         const urlStr = typeof remoteResult === "string" ? remoteResult.trim() : "";
         repoUrl = urlStr || null;
       } catch {
-        reasons.push("Could not read remote origin URL");
+        notes.push("Could not read remote origin URL");
       }
 
       const listOutput = await bareGit.raw(["worktree", "list", "--porcelain"]);
@@ -287,7 +365,8 @@ export class RepositoryContext {
         currentBranch = current.branch;
       }
     } catch (err) {
-      reasons.push(`Failed to read bare repo at ${bareRepoPath}: ${(err as Error).message}`);
+      const reason = `Failed to read bare repo at ${bareRepoPath}: ${(err as Error).message}`;
+      notes.push(reason);
       return {
         result: {
           isWorktree: true,
@@ -298,10 +377,11 @@ export class RepositoryContext {
           repoUrl: null,
           worktreeDir: null,
           allWorktrees: [],
-          configLoaded: this.configPath !== null,
+          siblingRepositories: [],
+          configPath: this.configPath,
           repoName: null,
-          capabilities: EMPTY_CAPABILITIES,
-          reasons,
+          capabilities: emptyCapabilities(reason),
+          notes,
         },
         adminDir,
       };
@@ -309,27 +389,22 @@ export class RepositoryContext {
 
     const worktreeDir = path.dirname(worktreeRoot);
 
+    const noUrlReason = "no remote origin URL detected";
     const capabilities: Capabilities = {
-      canListWorktrees: true,
-      canGetStatus: true,
-      canCreateWorktree: repoUrl !== null,
-      canRemoveWorktree: true,
-      canUpdateWorktree: true,
-      canSync: false,
-      canInitialize: false,
+      listWorktrees: { available: true },
+      getStatus: { available: true },
+      createWorktree: repoUrl !== null ? { available: true } : { available: false, reason: noUrlReason },
+      removeWorktree: { available: true },
+      updateWorktree: { available: true },
+      sync: { available: false, reason: "no config and no remote URL" },
+      initialize: { available: false, reason: "no config and no remote URL" },
     };
 
-    if (!repoUrl) {
-      reasons.push("create_worktree unavailable: no remote origin URL detected");
-    }
-
-    const foldPath = (p: string): string => (isCaseInsensitiveFs() ? p.toLowerCase() : p);
-    const foldedBare = foldPath(bareRepoPath);
+    const foldedBare = normalizePathForCompare(bareRepoPath);
     let matchedConfig: RepoEntry | null = null;
     for (const entry of this.repos.values()) {
-      if (entry.source === "config") {
-        const entryBare = entry.config.bareRepoDir ? path.resolve(entry.config.bareRepoDir) : null;
-        if (entryBare && foldPath(entryBare) === foldedBare) {
+      if (entry.source === "config" && entry.config.bareRepoDir) {
+        if (normalizePathForCompare(entry.config.bareRepoDir) === foldedBare) {
           matchedConfig = entry;
           break;
         }
@@ -342,8 +417,8 @@ export class RepositoryContext {
     if (matchedConfig) {
       repoName = matchedConfig.name;
       kind = "managed";
-      capabilities.canSync = true;
-      capabilities.canInitialize = true;
+      capabilities.sync = { available: true };
+      capabilities.initialize = { available: true };
     } else if (repoUrl) {
       const syntheticConfig: Config = {
         repoUrl,
@@ -361,14 +436,16 @@ export class RepositoryContext {
         });
       }
       repoName = detectedKey;
-      reasons.push("sync/initialize unavailable: no config file loaded (running in auto-detect mode)");
-    } else {
-      reasons.push("sync/initialize unavailable: no config file and no remote URL");
+      const autoReason = "no config file loaded (running in auto-detect mode)";
+      capabilities.sync = { available: false, reason: autoReason };
+      capabilities.initialize = { available: false, reason: autoReason };
     }
 
     if (repoName) {
-      this.bootstrapCurrentRepo(repoName);
+      this.bootstrapCurrentRepo(repoName, matchedConfig !== null);
     }
+
+    const siblingRepositories = await this.discoverSiblingRepositories(bareRepoPath);
 
     const discovered: DiscoveredRepoContext = {
       isWorktree: true,
@@ -379,10 +456,11 @@ export class RepositoryContext {
       repoUrl,
       worktreeDir,
       allWorktrees: worktrees,
-      configLoaded: this.configPath !== null,
+      siblingRepositories,
+      configPath: this.configPath,
       repoName,
       capabilities,
-      reasons,
+      notes,
     };
 
     if (repoName) {
@@ -451,9 +529,7 @@ export class RepositoryContext {
 }
 
 function parseWorktreeList(output: string, currentPath: string): DiscoveredWorktree[] {
-  const resolvedCurrent = path.resolve(currentPath);
-  const fold = (p: string): string => (isCaseInsensitiveFs() ? p.toLowerCase() : p);
-  const foldedCurrent = fold(resolvedCurrent);
+  const foldedCurrent = normalizePathForCompare(currentPath);
   const results: DiscoveredWorktree[] = [];
   for (const wt of parseWorktreeListPorcelain(output)) {
     const resolved = path.resolve(wt.path);
@@ -462,7 +538,7 @@ function parseWorktreeList(output: string, currentPath: string): DiscoveredWorkt
     results.push({
       path: resolved,
       branch,
-      isCurrent: fold(resolved) === foldedCurrent,
+      isCurrent: normalizePathForCompare(resolved) === foldedCurrent,
     });
   }
   return results;

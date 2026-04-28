@@ -1444,4 +1444,43 @@ describe("ConfigLoaderService", () => {
       expect(resolved.branchExclude).toBeUndefined();
     });
   });
+
+  describe("findConfigUpward", () => {
+    it("returns null when no config exists in path or any parent", async () => {
+      const startDir = path.join(tempDir, "deep", "nested");
+      await fs.mkdir(startDir, { recursive: true });
+
+      const result = await configLoader.findConfigUpward(startDir);
+      expect(result).toBeNull();
+    });
+
+    it("finds config file in same directory", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.js");
+      await fs.writeFile(configPath, "export default { repositories: [] };", "utf-8");
+
+      const result = await configLoader.findConfigUpward(tempDir);
+      expect(result).toBe(configPath);
+    });
+
+    it("finds config file in parent directory", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.js");
+      await fs.writeFile(configPath, "export default { repositories: [] };", "utf-8");
+      const childDir = path.join(tempDir, "child", "grandchild");
+      await fs.mkdir(childDir, { recursive: true });
+
+      const result = await configLoader.findConfigUpward(childDir);
+      expect(result).toBe(configPath);
+    });
+
+    it("matches all supported extensions (.js, .mjs, .cjs)", async () => {
+      for (const ext of ["js", "mjs", "cjs"]) {
+        const dir = await createTempDirectory(`config-ext-${ext}-`);
+        const configPath = path.join(dir, `sync-worktrees.config.${ext}`);
+        await fs.writeFile(configPath, "// fake", "utf-8");
+
+        const result = await configLoader.findConfigUpward(dir);
+        expect(result).toBe(configPath);
+      }
+    });
+  });
 });

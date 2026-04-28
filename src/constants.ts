@@ -85,6 +85,12 @@ export const PATH_CONSTANTS = {
   README: "README",
 } as const;
 
+export const CONFIG_FILE_NAMES = [
+  "sync-worktrees.config.js",
+  "sync-worktrees.config.mjs",
+  "sync-worktrees.config.cjs",
+] as const;
+
 export const METADATA_CONSTANTS = {
   MAX_HISTORY_ENTRIES: 10,
   METADATA_FILENAME: "sync-metadata.json",
