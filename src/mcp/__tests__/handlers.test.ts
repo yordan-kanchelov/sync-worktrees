@@ -265,6 +265,31 @@ describe("handleCreateWorktree", () => {
     expect(body.code).toBe("SYNC_IN_PROGRESS");
   });
 
+  it("creates branch and worktree without pushing when push:false (push:false flow)", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, {
+      branchName: "feat/ws-communication",
+      baseBranch: "main",
+      push: false,
+    });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.created).toBe(true);
+    expect(body.pushed).toBe(false);
+    expect(git.createBranch).toHaveBeenCalledWith("feat/ws-communication", "main");
+    expect(git.addWorktree).toHaveBeenCalledWith(
+      "feat/ws-communication",
+      expect.stringContaining("feat-ws-communication"),
+    );
+    expect(git.pushBranch).not.toHaveBeenCalled();
+  });
+
   it("does not push when addWorktree fails", async () => {
     const addWorktreeError = new Error("addWorktree failed");
     const { ctx, git } = makeCtx({

@@ -5,7 +5,9 @@ import * as path from "path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RepositoryContext } from "../context";
-import { createServer } from "../server";
+import { buildInstructions, createServer } from "../server";
+
+import type { DiscoveredRepoContext } from "../context";
 
 const mockRemoteUrl = vi.fn<any>();
 const mockWorktreeList = vi.fn<any>();
@@ -125,5 +127,96 @@ describe("createServer", () => {
       process.chdir(originalCwd);
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("buildInstructions", () => {
+  const baseInstructions =
+    "Before running git worktree operations, call `detect_context` to learn the current repo, current branch, sibling repositories under the workspace root, and which capabilities are available. " +
+    "It walks up to auto-discover sync-worktrees.config.{js,mjs,cjs,ts}, lists sibling worktrees, and reports per-capability {available, reason} so you can tell which tool is gated and why.";
+
+  function makeDiscovered(overrides: Partial<DiscoveredRepoContext> = {}): DiscoveredRepoContext {
+    return {
+      isWorktree: true,
+      kind: "managed",
+      currentBranch: "feature-x",
+      currentWorktreePath: "/repos/my-repo/worktrees/feature-x",
+      bareRepoPath: null,
+      repoUrl: null,
+      worktreeDir: null,
+      allWorktrees: [],
+      siblingRepositories: [],
+      configPath: "/repos/sync-worktrees.config.js",
+      repoName: "my-repo",
+      capabilities: {
+        listWorktrees: { available: true },
+        getStatus: { available: true },
+        createWorktree: { available: true },
+        removeWorktree: { available: true },
+        updateWorktree: { available: true },
+        sync: { available: true },
+        initialize: { available: true },
+      },
+      notes: [],
+      ...overrides,
+    };
+  }
+
+  it("returns base instructions when snapshot is undefined", () => {
+    expect(buildInstructions()).toBe(baseInstructions);
+  });
+
+  it("returns base instructions when discovered is null", () => {
+    expect(buildInstructions({ discovered: null })).toBe(baseInstructions);
+  });
+
+  it("returns base instructions when isWorktree is false", () => {
+    const discovered = makeDiscovered({ isWorktree: false, kind: "unsupported" });
+    expect(buildInstructions({ discovered })).toBe(baseInstructions);
+  });
+
+  it("appends connect-time context when inside a managed worktree", () => {
+    const discovered = makeDiscovered();
+    const result = buildInstructions({ discovered });
+
+    expect(result.startsWith(baseInstructions)).toBe(true);
+    expect(result).toContain("Connect-time context");
+    expect(result).toContain("kind: managed");
+    expect(result).toContain("currentWorktreePath: /repos/my-repo/worktrees/feature-x");
+    expect(result).toContain("currentBranch: feature-x");
+    expect(result).toContain("configPath: /repos/sync-worktrees.config.js");
+  });
+
+  it("omits null fields from connect-time block", () => {
+    const discovered = makeDiscovered({ currentBranch: null, configPath: null });
+    const result = buildInstructions({ discovered });
+
+    expect(result).toContain("Connect-time context");
+    expect(result).toContain("kind: managed");
+    expect(result).toContain("currentWorktreePath:");
+    expect(result).not.toContain("currentBranch:");
+    expect(result).not.toContain("configPath:");
+  });
+
+  it("does not include sibling worktree, sibling repo, or capability lists", () => {
+    const discovered = makeDiscovered({
+      allWorktrees: [
+        { path: "/repos/my-repo/worktrees/main", branch: "main", isCurrent: false },
+        { path: "/repos/my-repo/worktrees/feature-x", branch: "feature-x", isCurrent: true },
+      ],
+      siblingRepositories: [{ name: "other-repo", bareRepoPath: "/repos/other-repo/.bare", configMatched: true }],
+    });
+    const result = buildInstructions({ discovered });
+
+    expect(result).not.toContain("main");
+    expect(result).not.toContain("other-repo");
+    expect(result).not.toContain("Sibling");
+    expect(result).not.toContain("Disabled");
+  });
+
+  it("stays within size budget even with all fields populated", () => {
+    const discovered = makeDiscovered();
+    const result = buildInstructions({ discovered });
+    expect(result.length).toBeLessThanOrEqual(baseInstructions.length + 500);
   });
 });
