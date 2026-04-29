@@ -401,6 +401,12 @@ export class GitService {
     } catch (error) {
       const errorMessage = getErrorMessage(error);
 
+      // Upstream setup failures are already rolled back inside runWorktreeAddByMatrix.
+      // Don't enter the tracking-error fallback (which would silently accept a partial worktree).
+      if ((error as { isUpstreamSetupFailure?: boolean })?.isUpstreamSetupFailure) {
+        throw error;
+      }
+
       // Re-throw metadata creation errors - these are fatal and should not fall back
       if (errorMessage.includes("Metadata creation failed")) {
         throw error;
@@ -543,8 +549,28 @@ export class GitService {
   ): Promise<void> {
     if (localExists && remoteExists) {
       await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
-      const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
-      await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
+      try {
+        const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
+        await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
+      } catch (error) {
+        let rollbackFailed = false;
+        try {
+          await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
+        } catch (rollbackError) {
+          rollbackFailed = true;
+          this.logger.warn(
+            `  - Rollback failed for '${branchName}' at '${absoluteWorktreePath}' after upstream setup error: ${getErrorMessage(rollbackError)}`,
+          );
+        }
+        // Mark the error so the outer addWorktree catch won't reclassify it as a tracking
+        // error and fall back to a non-tracking add (which would silently accept the partial
+        // worktree without upstream).
+        const detail = getErrorMessage(error);
+        const suffix = rollbackFailed ? " (rollback failed; partial worktree may remain)" : "";
+        const wrapped = new Error(`Failed to set upstream for '${branchName}': ${detail}${suffix}`);
+        (wrapped as Error & { isUpstreamSetupFailure?: boolean }).isUpstreamSetupFailure = true;
+        throw wrapped;
+      }
       return;
     }
 

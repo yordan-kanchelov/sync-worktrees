@@ -33,7 +33,7 @@ export interface ServerSnapshot {
 
 export function buildInstructions(snapshot?: ServerSnapshot): string {
   const d = snapshot?.discovered;
-  if (!d || !d.isWorktree) return SERVER_INSTRUCTIONS;
+  if (!d || !d.isWorktree || d.kind !== "managed") return SERVER_INSTRUCTIONS;
 
   const lines: string[] = ["Connect-time context (call `detect_context` for live state):"];
   if (d.kind) lines.push(`- kind: ${d.kind}`);

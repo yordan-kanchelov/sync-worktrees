@@ -783,6 +783,100 @@ describe("GitService", () => {
         expect(worktreeAddCalls).toHaveLength(0);
       });
 
+      it("should rollback worktree add when --set-upstream-to fails", async () => {
+        const worktreeGitMock = {
+          branch: vi.fn<any>().mockRejectedValue(new Error("fatal: branch 'feature-1' does not point to a commit")),
+          raw: vi.fn<any>().mockResolvedValue(""),
+          revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        };
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: true });
+        mockGit.raw.mockClear();
+
+        await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
+          /Failed to set upstream for 'feature-1'.*does not point to a commit/,
+        );
+
+        expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
+        expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feature-1"]);
+      });
+
+      it("should still throw wrapped upstream error if rollback also fails", async () => {
+        const worktreeGitMock = {
+          branch: vi.fn<any>().mockRejectedValue(new Error("upstream-set-failure")),
+          raw: vi.fn<any>().mockResolvedValue(""),
+          revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        };
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: true });
+        mockGit.raw.mockClear();
+        (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+          if (Array.isArray(args)) {
+            if (args[0] === "show-ref" && args[1] === "--verify") {
+              return Promise.resolve("");
+            }
+            if (args[0] === "worktree" && args[1] === "remove") {
+              return Promise.reject(new Error("rollback-failure"));
+            }
+          }
+          return Promise.resolve("");
+        });
+
+        await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
+          /Failed to set upstream.*upstream-set-failure.*rollback failed/,
+        );
+        expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Rollback failed"));
+      });
+
+      it("should not enter tracking-error fallback when upstream-set fails with tracking-classified message", async () => {
+        // Fresh add: no existing dir.
+        (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+
+        const worktreeGitMock = {
+          branch: vi.fn<any>().mockRejectedValue(new Error("fatal: no such remote ref refs/remotes/origin/feature-1")),
+          raw: vi.fn<any>().mockResolvedValue(""),
+          revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        };
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: true });
+        mockGit.raw.mockClear();
+        (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+          if (Array.isArray(args)) {
+            if (args[0] === "show-ref" && args[1] === "--verify") {
+              return Promise.resolve("");
+            }
+            if (args[0] === "worktree" && args[1] === "remove") {
+              return Promise.reject(new Error("rollback-failure"));
+            }
+            if (args[0] === "worktree" && args[1] === "list") {
+              return Promise.resolve("");
+            }
+          }
+          return Promise.resolve("");
+        });
+
+        await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
+          /Failed to set upstream/,
+        );
+
+        // Only the initial `worktree add <path> <branch>` should fire.
+        // The fallback non-tracking add at addWorktree's L498 must NOT fire.
+        const plainWorktreeAdds = (mockGit.raw as Mock).mock.calls.filter(
+          (call) =>
+            Array.isArray(call[0]) && call[0][0] === "worktree" && call[0][1] === "add" && !call[0].includes("--track"),
+        );
+        expect(plainWorktreeAdds).toHaveLength(1);
+      });
+
       it("should not special-case slash branch names (feat/foo with both refs behaves like normal)", async () => {
         const worktreeGitMock = makeWorktreeGitMock();
         (simpleGit as unknown as Mock).mockImplementation((p?: any) =>

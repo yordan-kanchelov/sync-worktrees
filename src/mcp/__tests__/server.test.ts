@@ -175,6 +175,11 @@ describe("buildInstructions", () => {
     expect(buildInstructions({ discovered })).toBe(baseInstructions);
   });
 
+  it("returns base instructions for unmanaged worktrees", () => {
+    const discovered = makeDiscovered({ kind: "unmanaged" });
+    expect(buildInstructions({ discovered })).toBe(baseInstructions);
+  });
+
   it("appends connect-time context when inside a managed worktree", () => {
     const discovered = makeDiscovered();
     const result = buildInstructions({ discovered });
