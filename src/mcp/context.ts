@@ -140,14 +140,23 @@ export class RepositoryContext {
     const configDir = path.dirname(absolutePath);
     const globalDefaults = configFile.defaults;
 
+    const resolvedAll: RepositoryConfig[] = [];
     for (const repo of configFile.repositories) {
-      const resolved = this.configLoader.resolveRepositoryConfig(repo, globalDefaults, configDir, configFile.retry);
+      const resolved = this.configLoader.resolveRepositoryConfig(
+        repo,
+        globalDefaults,
+        configDir,
+        configFile.retry,
+        configFile.repositories,
+      );
+      resolvedAll.push(resolved);
       this.repos.set(resolved.name, {
         name: resolved.name,
         config: resolved,
         source: "config",
       });
     }
+    this.configLoader.detectBareRepoDirCollisions(resolvedAll);
 
     if (this.currentRepo && !this.repos.has(this.currentRepo)) {
       this.currentRepo = null;

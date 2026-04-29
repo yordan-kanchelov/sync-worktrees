@@ -1483,4 +1483,207 @@ describe("ConfigLoaderService", () => {
       }
     });
   });
+
+  describe("sparseCheckout validation", () => {
+    async function loadInline(content: string): Promise<unknown> {
+      const configPath = path.join(tempDir, "test.config.js");
+      await fs.writeFile(configPath, content, "utf-8");
+      return configLoader.loadConfigFile(configPath);
+    }
+
+    it("rejects sparseCheckout missing include", async () => {
+      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { exclude: ["docs"] } }] };`;
+      await expect(loadInline(c)).rejects.toThrow(/'sparseCheckout.include'.*must be an array/);
+    });
+
+    it("rejects empty include array", async () => {
+      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: [] } }] };`;
+      await expect(loadInline(c)).rejects.toThrow(/at least one pattern/);
+    });
+
+    it("rejects bad mode", async () => {
+      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["a"], mode: "weird" } }] };`;
+      await expect(loadInline(c)).rejects.toThrow(/must be 'cone' or 'no-cone'/);
+    });
+
+    it("rejects empty include strings", async () => {
+      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["a", ""] } }] };`;
+      await expect(loadInline(c)).rejects.toThrow(/non-empty strings/);
+    });
+
+    it("accepts valid cone config", async () => {
+      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["apps", "packages"] } }] };`;
+      await expect(loadInline(c)).resolves.toBeDefined();
+    });
+
+    it("accepts valid no-cone config with excludes", async () => {
+      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["/*"], exclude: ["docs"], mode: "no-cone" } }] };`;
+      await expect(loadInline(c)).resolves.toBeDefined();
+    });
+
+    it("validates sparseCheckout in defaults", async () => {
+      const c = `export default { defaults: { sparseCheckout: { include: [] } }, repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w" }] };`;
+      await expect(loadInline(c)).rejects.toThrow(/at least one pattern/);
+    });
+  });
+
+  describe("resolveRepositoryConfig - sparseCheckout merge", () => {
+    it("uses repo sparseCheckout over defaults", () => {
+      const repo = {
+        name: "r",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/w",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        sparseCheckout: { include: ["apps"] },
+      };
+      const defaults = { sparseCheckout: { include: ["packages"] } };
+      const resolved = configLoader.resolveRepositoryConfig(repo, defaults);
+      expect(resolved.sparseCheckout).toEqual({ include: ["apps"] });
+    });
+
+    it("falls back to defaults sparseCheckout", () => {
+      const repo = {
+        name: "r",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/w",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const defaults = { sparseCheckout: { include: ["packages"] } };
+      const resolved = configLoader.resolveRepositoryConfig(repo, defaults);
+      expect(resolved.sparseCheckout).toEqual({ include: ["packages"] });
+    });
+
+    it("leaves sparseCheckout undefined when neither set", () => {
+      const repo = {
+        name: "r",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/w",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+      const resolved = configLoader.resolveRepositoryConfig(repo);
+      expect(resolved.sparseCheckout).toBeUndefined();
+    });
+  });
+
+  describe("resolveRepositoryConfig - asymmetric bareRepoDir for duplicate repoUrl", () => {
+    const monorepoUrl = "https://github.com/acme/monorepo.git";
+
+    function makeRepo(name: string, overrides: Record<string, unknown> = {}) {
+      return {
+        name,
+        repoUrl: monorepoUrl,
+        worktreeDir: `/wt/${name}`,
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        ...overrides,
+      };
+    }
+
+    it("first entry uses URL-derived bareRepoDir", () => {
+      const all = [makeRepo("first"), makeRepo("second")];
+      const resolved = configLoader.resolveRepositoryConfig(all[0], undefined, "/cfg", undefined, all);
+      expect(resolved.bareRepoDir).toBe("/cfg/.bare/monorepo");
+    });
+
+    it("second duplicate entry uses name-derived bareRepoDir", () => {
+      const all = [makeRepo("first"), makeRepo("second-name")];
+      const resolved = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
+      expect(resolved.bareRepoDir).toBe("/cfg/.bare/second-name");
+    });
+
+    it("explicit bareRepoDir always wins", () => {
+      const all = [
+        makeRepo("first", { bareRepoDir: "/explicit/first" }),
+        makeRepo("second", { bareRepoDir: "/explicit/second" }),
+      ];
+      const r1 = configLoader.resolveRepositoryConfig(all[0], undefined, "/cfg", undefined, all);
+      const r2 = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
+      expect(r1.bareRepoDir).toBe("/explicit/first");
+      expect(r2.bareRepoDir).toBe("/explicit/second");
+    });
+
+    it("non-duplicate entry keeps URL-derived default", () => {
+      const repos = [
+        makeRepo("a"),
+        {
+          name: "b",
+          repoUrl: "https://github.com/other/repo.git",
+          worktreeDir: "/wt/b",
+          cronSchedule: "0 * * * *",
+          runOnce: false,
+        },
+      ];
+      const r2 = configLoader.resolveRepositoryConfig(repos[1], undefined, "/cfg", undefined, repos);
+      expect(r2.bareRepoDir).toBe("/cfg/.bare/repo");
+    });
+
+    it("sanitizes name with slashes for path", () => {
+      const all = [makeRepo("first"), makeRepo("group/sub-name")];
+      const resolved = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
+      expect(resolved.bareRepoDir).toBe("/cfg/.bare/group-sub-name");
+    });
+
+    it("rejects name that sanitizes to empty", () => {
+      const all = [makeRepo("first"), makeRepo("...")];
+      expect(() => configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all)).toThrow(
+        /empty path segment/,
+      );
+    });
+
+    it("rejects Windows-reserved name", () => {
+      const all = [makeRepo("first"), makeRepo("CON")];
+      expect(() => configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all)).toThrow(
+        /reserved name/,
+      );
+    });
+  });
+
+  describe("detectBareRepoDirCollisions", () => {
+    it("throws when two repos resolve to same bareRepoDir", () => {
+      const repos = [
+        {
+          name: "a",
+          repoUrl: "https://github.com/x/y.git",
+          worktreeDir: "/w/a",
+          cronSchedule: "0 * * * *",
+          runOnce: false,
+          bareRepoDir: "/shared/.bare/x",
+        },
+        {
+          name: "b",
+          repoUrl: "https://github.com/x/y.git",
+          worktreeDir: "/w/b",
+          cronSchedule: "0 * * * *",
+          runOnce: false,
+          bareRepoDir: "/shared/.bare/x",
+        },
+      ];
+      expect(() => configLoader.detectBareRepoDirCollisions(repos)).toThrow(/same bareRepoDir/);
+    });
+
+    it("does not throw when bareRepoDirs differ", () => {
+      const repos = [
+        {
+          name: "a",
+          repoUrl: "https://github.com/x/y.git",
+          worktreeDir: "/w/a",
+          cronSchedule: "0 * * * *",
+          runOnce: false,
+          bareRepoDir: "/a/.bare",
+        },
+        {
+          name: "b",
+          repoUrl: "https://github.com/x/y.git",
+          worktreeDir: "/w/b",
+          cronSchedule: "0 * * * *",
+          runOnce: false,
+          bareRepoDir: "/b/.bare",
+        },
+      ];
+      expect(() => configLoader.detectBareRepoDirCollisions(repos)).not.toThrow();
+    });
+  });
 });

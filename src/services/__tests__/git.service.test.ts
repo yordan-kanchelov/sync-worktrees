@@ -1573,4 +1573,134 @@ prunable
       expect(git).toBe(mockGit);
     });
   });
+
+  describe("addWorktree with sparseCheckout", () => {
+    it("adds --no-checkout, runs sparse init/set, then checkout HEAD", async () => {
+      const sparseConfig: Config = {
+        ...createMockConfig(),
+        sparseCheckout: { include: ["apps", "packages"] },
+      };
+
+      const worktreeRawCalls: string[][] = [];
+      const worktreeGitMock: any = {
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi.fn<any>().mockImplementation((...args: unknown[]) => {
+          worktreeRawCalls.push(args[0] as string[]);
+          return Promise.resolve("");
+        }),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+      };
+      worktreeGitMock.env = vi.fn(() => worktreeGitMock);
+
+      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+      );
+
+      mockShowRef({ local: false, remote: true });
+
+      const sparseGitService = new GitService(sparseConfig, mockLogger);
+      mockGit.raw.mockClear();
+
+      await sparseGitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "worktree",
+        "add",
+        "--no-checkout",
+        "--track",
+        "-b",
+        "feature-1",
+        "/test/worktrees/feature-1",
+        "origin/feature-1",
+      ]);
+      expect(worktreeRawCalls).toEqual(
+        expect.arrayContaining([
+          ["sparse-checkout", "init", "--cone"],
+          ["sparse-checkout", "set", "--cone", "apps", "packages"],
+          ["checkout", "HEAD"],
+        ]),
+      );
+    });
+
+    it("uses --no-cone for excludes config", async () => {
+      const sparseConfig: Config = {
+        ...createMockConfig(),
+        sparseCheckout: { include: ["/*"], exclude: ["docs"] },
+      };
+
+      const worktreeRawCalls: string[][] = [];
+      const worktreeGitMock: any = {
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi.fn<any>().mockImplementation((...args: unknown[]) => {
+          worktreeRawCalls.push(args[0] as string[]);
+          return Promise.resolve("");
+        }),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+      };
+      worktreeGitMock.env = vi.fn(() => worktreeGitMock);
+
+      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+      );
+
+      mockShowRef({ local: true, remote: false });
+
+      const sparseGitService = new GitService(sparseConfig, mockLogger);
+
+      await sparseGitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(worktreeRawCalls).toEqual(
+        expect.arrayContaining([
+          ["sparse-checkout", "init", "--no-cone"],
+          ["sparse-checkout", "set", "--no-cone", "/*", "!docs"],
+          ["checkout", "HEAD"],
+        ]),
+      );
+    });
+
+    it("does not pass --no-checkout when sparseCheckout is unset", async () => {
+      mockShowRef({ local: true, remote: false });
+      mockGit.raw.mockClear();
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      const calls = (mockGit.raw as Mock).mock.calls.map((c) => (Array.isArray(c[0]) ? c[0] : []));
+      const hasNoCheckout = calls.some(
+        (args: any[]) => args[0] === "worktree" && args[1] === "add" && args.includes("--no-checkout"),
+      );
+      expect(hasNoCheckout).toBe(false);
+    });
+
+    it("rolls back worktree and deletes new branch when sparse apply fails (track-new variant)", async () => {
+      const sparseConfig: Config = {
+        ...createMockConfig(),
+        sparseCheckout: { include: ["apps"] },
+      };
+
+      const worktreeGitMock = {
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi
+          .fn<any>()
+          .mockImplementationOnce(() => Promise.reject(new Error("sparse-checkout init blew up")))
+          .mockResolvedValue(""),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+      };
+
+      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+        p && p.includes("feat-new") ? worktreeGitMock : mockGit,
+      );
+
+      mockShowRef({ local: false, remote: true });
+
+      const sparseGitService = new GitService(sparseConfig, mockLogger);
+      mockGit.raw.mockClear();
+
+      await expect(sparseGitService.addWorktree("feat-new", "/test/worktrees/feat-new")).rejects.toThrow(
+        /Sparse-checkout setup failed/,
+      );
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feat-new"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "feat-new"]);
+    });
+  });
 });

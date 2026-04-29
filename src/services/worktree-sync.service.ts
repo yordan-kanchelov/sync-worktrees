@@ -159,7 +159,57 @@ export class WorktreeSyncService {
       await this.updateExistingWorktreesWithTiming(worktrees, remoteBranches, phaseTimer);
     }
 
+    if (this.config.sparseCheckout) {
+      await this.reapplySparseCheckout(worktrees);
+    }
+
     await this.finalizeSyncAttempt(phaseTimer);
+  }
+
+  private async reapplySparseCheckout(worktrees: { path: string; branch: string }[]): Promise<void> {
+    const sparseConfig = this.config.sparseCheckout;
+    if (!sparseConfig) return;
+
+    this.logger.info("Step 5: Reconciling sparse-checkout patterns on existing worktrees...");
+    const sparseService = this.gitService.getSparseCheckoutService();
+    const desired = sparseService.buildPatterns(sparseConfig);
+
+    const limit = pLimit(this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+
+    await Promise.all(
+      worktrees.map((worktree) =>
+        limit(async () => {
+          try {
+            await fs.access(worktree.path);
+          } catch {
+            return;
+          }
+
+          const current = await sparseService.readCurrent(worktree.path);
+          if (current !== null && sparseService.patternsEqual(current, desired)) return;
+
+          if (sparseService.isNarrowing(current, desired)) {
+            const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
+            if (!isClean) {
+              this.logger.warn(
+                `  - Skipping sparse-checkout narrowing for '${worktree.branch}': clean or stash local changes first.`,
+              );
+              return;
+            }
+          }
+
+          try {
+            await sparseService.applyToWorktree(worktree.path, sparseConfig);
+            await this.gitService.checkoutHead(worktree.path);
+            this.logger.info(`  - ✅ Sparse-checkout updated for '${worktree.branch}'`);
+          } catch (error) {
+            this.logger.warn(
+              `  - ⚠️ Failed to update sparse-checkout for '${worktree.branch}': ${getErrorMessage(error)}`,
+            );
+          }
+        }),
+      ),
+    );
   }
 
   private async fetchLatestRemoteData(phaseTimer: PhaseTimer, syncContext: { lfsSkipEnabled: boolean }): Promise<void> {
