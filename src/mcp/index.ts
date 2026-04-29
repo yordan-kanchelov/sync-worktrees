@@ -3,6 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { RepositoryContext } from "./context";
 import { createServer } from "./server";
 
+import type { DiscoveredRepoContext } from "./context";
+
 async function main(): Promise<void> {
   const context = new RepositoryContext();
 
@@ -16,8 +18,9 @@ async function main(): Promise<void> {
     }
   }
 
+  let discovered: DiscoveredRepoContext | null = null;
   try {
-    const discovered = await context.detectFromPath(process.cwd());
+    discovered = await context.detectFromPath(process.cwd());
     if (discovered.isWorktree) {
       process.stderr.write(
         `[sync-worktrees-mcp] Auto-detected ${discovered.kind} worktree at ${discovered.currentWorktreePath} (branch: ${discovered.currentBranch})\n`,
@@ -27,7 +30,7 @@ async function main(): Promise<void> {
     process.stderr.write(`[sync-worktrees-mcp] Auto-detect failed: ${(err as Error).message}\n`);
   }
 
-  const server = createServer(context);
+  const server = createServer(context, { discovered });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

@@ -4,6 +4,7 @@ import * as path from "path";
 import simpleGit from "simple-git";
 
 import { ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
+import { WorktreeError } from "../errors";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
@@ -365,29 +366,21 @@ export class GitService {
     }
 
     try {
-      // Check if local branch already exists
-      const branches = await bareGit.branch();
-      const localBranchExists = branches.all.includes(branchName);
+      const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
 
-      if (localBranchExists || branchName.includes("/")) {
-        await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
+      await this.runWorktreeAddByMatrix(
+        bareGit,
+        branchName,
+        absoluteWorktreePath,
+        localBranchExists,
+        remoteBranchExists,
+      );
 
-        const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
-        await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
+      if (localBranchExists && !remoteBranchExists) {
+        this.logger.info(`  - Created worktree for '${branchName}' (no remote yet — push to set upstream)`);
       } else {
-        // Create new branch tracking the remote branch
-        await bareGit.raw([
-          "worktree",
-          "add",
-          "--track",
-          "-b",
-          branchName,
-          absoluteWorktreePath,
-          `origin/${branchName}`,
-        ]);
+        this.logger.info(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
       }
-
-      this.logger.info(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
 
       // Verify LFS files are properly downloaded (if not skipping LFS)
       if (!this.isLfsSkipEnabled()) {
@@ -407,6 +400,12 @@ export class GitService {
       }
     } catch (error) {
       const errorMessage = getErrorMessage(error);
+
+      // Upstream setup failures are already rolled back inside runWorktreeAddByMatrix.
+      // Don't enter the tracking-error fallback (which would silently accept a partial worktree).
+      if ((error as { isUpstreamSetupFailure?: boolean })?.isUpstreamSetupFailure) {
+        throw error;
+      }
 
       // Re-throw metadata creation errors - these are fatal and should not fall back
       if (errorMessage.includes("Metadata creation failed")) {
@@ -432,17 +431,15 @@ export class GitService {
         } catch {
           // Directory might not exist, ignore
         }
-        // Retry once after pruning
         try {
-          await bareGit.raw([
-            "worktree",
-            "add",
-            "--track",
-            "-b",
+          const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
+          await this.runWorktreeAddByMatrix(
+            bareGit,
             branchName,
             absoluteWorktreePath,
-            `origin/${branchName}`,
-          ]);
+            localBranchExists,
+            remoteBranchExists,
+          );
           this.logger.info(`  - Created worktree for '${branchName}' after pruning`);
 
           // Verify LFS files are properly downloaded (if not skipping LFS)
@@ -541,6 +538,56 @@ export class GitService {
         throw fallbackError;
       }
     }
+  }
+
+  private async runWorktreeAddByMatrix(
+    bareGit: SimpleGit,
+    branchName: string,
+    absoluteWorktreePath: string,
+    localExists: boolean,
+    remoteExists: boolean,
+  ): Promise<void> {
+    if (localExists && remoteExists) {
+      await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
+      try {
+        const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
+        await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
+      } catch (error) {
+        let rollbackFailed = false;
+        try {
+          await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
+        } catch (rollbackError) {
+          rollbackFailed = true;
+          this.logger.warn(
+            `  - Rollback failed for '${branchName}' at '${absoluteWorktreePath}' after upstream setup error: ${getErrorMessage(rollbackError)}`,
+          );
+        }
+        // Mark the error so the outer addWorktree catch won't reclassify it as a tracking
+        // error and fall back to a non-tracking add (which would silently accept the partial
+        // worktree without upstream).
+        const detail = getErrorMessage(error);
+        const suffix = rollbackFailed ? " (rollback failed; partial worktree may remain)" : "";
+        const wrapped = new Error(`Failed to set upstream for '${branchName}': ${detail}${suffix}`);
+        (wrapped as Error & { isUpstreamSetupFailure?: boolean }).isUpstreamSetupFailure = true;
+        throw wrapped;
+      }
+      return;
+    }
+
+    if (localExists) {
+      await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
+      return;
+    }
+
+    if (remoteExists) {
+      await bareGit.raw(["worktree", "add", "--track", "-b", branchName, absoluteWorktreePath, `origin/${branchName}`]);
+      return;
+    }
+
+    throw new WorktreeError(
+      `Branch '${branchName}' does not exist locally or on origin; create it first`,
+      "BRANCH_NOT_FOUND",
+    );
   }
 
   async removeWorktree(worktreePath: string): Promise<void> {
@@ -801,12 +848,19 @@ export class GitService {
 
   async branchExists(branchName: string): Promise<{ local: boolean; remote: boolean }> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
+    const checkRef = async (ref: string): Promise<boolean> => {
+      try {
+        await bareGit.raw(["show-ref", "--verify", "--quiet", ref]);
+        return true;
+      } catch {
+        return false;
+      }
+    };
 
-    const localBranches = await bareGit.branch();
-    const local = localBranches.all.includes(branchName);
-
-    const remoteBranches = await bareGit.branch(["-r"]);
-    const remote = remoteBranches.all.includes(`origin/${branchName}`);
+    const [local, remote] = await Promise.all([
+      checkRef(`${GIT_CONSTANTS.REFS.HEADS}${branchName}`),
+      checkRef(`${GIT_CONSTANTS.REFS.REMOTES}/${branchName}`),
+    ]);
 
     return { local, remote };
   }

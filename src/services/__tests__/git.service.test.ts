@@ -57,6 +57,21 @@ describe("GitService", () => {
   let mockMetadataService: any;
   let mockLogger: Logger;
 
+  const mockShowRef = (opts: { local: boolean; remote: boolean }): void => {
+    (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+      if (Array.isArray(args) && args[0] === "show-ref" && args[1] === "--verify") {
+        const ref = args[3];
+        if (typeof ref === "string" && ref.startsWith("refs/heads/")) {
+          return opts.local ? Promise.resolve("") : Promise.reject(new Error("show-ref: not found"));
+        }
+        if (typeof ref === "string" && ref.startsWith("refs/remotes/origin/")) {
+          return opts.remote ? Promise.resolve("") : Promise.reject(new Error("show-ref: not found"));
+        }
+      }
+      return Promise.resolve("");
+    });
+  };
+
   beforeEach(() => {
     // Reset all mocks
     vi.clearAllMocks();
@@ -446,14 +461,10 @@ describe("GitService", () => {
     });
 
     it("should add worktree with tracking when branch doesn't exist locally", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      mockShowRef({ local: false, remote: true });
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
-      expect(mockGit.branch).toHaveBeenCalled();
       expect(mockGit.raw).toHaveBeenCalledWith([
         "worktree",
         "add",
@@ -466,10 +477,7 @@ describe("GitService", () => {
     });
 
     it("should add worktree and set upstream when branch exists locally", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: ["feature-1", "main"],
-        current: "main",
-      } as any);
+      mockShowRef({ local: true, remote: true });
 
       const worktreeGitMock = {
         branch: vi.fn<any>().mockResolvedValue(undefined),
@@ -489,7 +497,6 @@ describe("GitService", () => {
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
-      expect(mockGit.branch).toHaveBeenCalled();
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
       expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
 
@@ -500,10 +507,7 @@ describe("GitService", () => {
     });
 
     it("should resolve relative paths to absolute paths when adding worktrees", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      mockShowRef({ local: false, remote: true });
 
       await gitService.addWorktree("feature-1", "./test/worktrees/feature-1");
 
@@ -520,17 +524,50 @@ describe("GitService", () => {
     });
 
     it("should fallback to simple add when tracking setup fails with tracking error", async () => {
-      mockGit.branch.mockRejectedValueOnce(new Error("cannot set up tracking"));
+      let trackingAddCalled = false;
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (Array.isArray(args)) {
+          if (args[0] === "show-ref" && args[1] === "--verify") {
+            const ref = args[3];
+            if (typeof ref === "string" && ref.startsWith("refs/heads/")) {
+              return Promise.reject(new Error("show-ref: not found"));
+            }
+            if (typeof ref === "string" && ref.startsWith("refs/remotes/origin/")) {
+              return Promise.resolve("");
+            }
+          }
+          if (args[0] === "worktree" && args[1] === "add" && args.includes("--track") && !trackingAddCalled) {
+            trackingAddCalled = true;
+            return Promise.reject(new Error("cannot set up tracking"));
+          }
+        }
+        return Promise.resolve("");
+      });
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
-      // Should have two calls to raw - first failed attempt, then fallback
-      const rawCalls = mockGit.raw.mock.calls.filter((call) => call[0][1] === "add");
+      const rawCalls = mockGit.raw.mock.calls.filter((call) => Array.isArray(call[0]) && call[0][1] === "add");
       expect(rawCalls[rawCalls.length - 1]).toEqual([["worktree", "add", "/test/worktrees/feature-1", "feature-1"]]);
     });
 
     it("should NOT fallback to simple add when a non-tracking error occurs", async () => {
-      mockGit.branch.mockRejectedValueOnce(new Error("Permission denied"));
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (Array.isArray(args)) {
+          if (args[0] === "show-ref" && args[1] === "--verify") {
+            const ref = args[3];
+            if (typeof ref === "string" && ref.startsWith("refs/heads/")) {
+              return Promise.reject(new Error("show-ref: not found"));
+            }
+            if (typeof ref === "string" && ref.startsWith("refs/remotes/origin/")) {
+              return Promise.resolve("");
+            }
+          }
+          if (args[0] === "worktree" && args[1] === "add") {
+            return Promise.reject(new Error("Permission denied"));
+          }
+        }
+        return Promise.resolve("");
+      });
 
       await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
         "Permission denied",
@@ -538,19 +575,14 @@ describe("GitService", () => {
     });
 
     it("should clean up orphaned directory before creating worktree", async () => {
-      // Mock - directory exists when checking in addWorktree
       (fs.access as Mock<any>).mockResolvedValueOnce(undefined);
 
-      // Reset mockGit.raw and set up responses
       mockGit.raw.mockReset();
       mockGit.raw
         .mockResolvedValueOnce("") // worktree list - empty (directory is not a valid worktree)
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads/feature-1 missing
+        .mockResolvedValueOnce("") // refs/remotes/origin/feature-1 exists
         .mockResolvedValueOnce(""); // worktree add command
-
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
@@ -587,34 +619,27 @@ describe("GitService", () => {
     });
 
     it("should clean up orphaned directory in fallback path when tracking fails", async () => {
-      // Mock - directory exists when checking in addWorktree fallback
       (fs.access as Mock<any>)
         .mockRejectedValueOnce(new Error("Not found")) // First check - directory doesn't exist
         .mockResolvedValueOnce(undefined); // Second check in fallback - directory exists
 
-      // Reset mockGit.raw and set up responses
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("no such remote ref")) // Initial add with tracking fails (tracking-specific error)
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
+        .mockResolvedValueOnce("") // refs/remotes/origin exists
+        .mockRejectedValueOnce(new Error("no such remote ref")) // tracking add fails
         .mockResolvedValueOnce("") // worktree list - empty (directory is not a valid worktree)
         .mockResolvedValueOnce(""); // fallback worktree add succeeds
-
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
       expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
-      expect(mockGit.raw).toHaveBeenCalledTimes(4); // Failed tracking add, worktree list, successful fallback add, LFS ls-files
+      // Calls: show-ref heads, show-ref remotes, tracking add (fail), worktree list, fallback add, LFS ls-files
+      expect(mockGit.raw).toHaveBeenCalledTimes(6);
     });
 
     it("should throw error when metadata creation fails", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      mockShowRef({ local: false, remote: true });
 
       const metadataError = new Error("Failed to write metadata file");
       mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(metadataError);
@@ -642,16 +667,15 @@ describe("GitService", () => {
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree")) // Initial add fails - already registered
-        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\nprunable\n\n`) // Worktree list shows it's registered but prunable
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
+        .mockResolvedValueOnce("") // refs/remotes/origin exists
+        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree")) // Initial add fails
+        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\nprunable\n\n`) // Worktree list shows registered but prunable
         .mockResolvedValueOnce("") // Prune succeeds
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing on retry
+        .mockResolvedValueOnce("") // refs/remotes/origin exists on retry
         .mockResolvedValueOnce("") // Retry add succeeds
         .mockResolvedValueOnce(""); // LFS ls-files
-
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
 
       await gitService.addWorktree("feature-1", worktreePath);
 
@@ -676,19 +700,239 @@ describe("GitService", () => {
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree")) // Initial add fails - already registered
-        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\n\n`); // Worktree list shows it's registered and NOT prunable
-
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
+        .mockResolvedValueOnce("") // refs/remotes/origin exists
+        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree")) // Initial add fails
+        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\n\n`); // Registered, NOT prunable
 
       await gitService.addWorktree("feature-1", worktreePath);
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
       expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "prune"]);
       expect(fs.rm).not.toHaveBeenCalled();
+    });
+
+    describe("addWorktree - ref existence matrix", () => {
+      const makeWorktreeGitMock = () => ({
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi.fn<any>().mockResolvedValue(""),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+      });
+
+      it("should add worktree without upstream when local exists but remote does not (push:false flow)", async () => {
+        const worktreeGitMock = makeWorktreeGitMock();
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feat-new") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: false });
+        mockGit.raw.mockClear();
+
+        await gitService.addWorktree("feat-new", "/test/worktrees/feat-new");
+
+        expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feat-new", "feat-new"]);
+        expect(worktreeGitMock.branch).not.toHaveBeenCalled();
+        expect(mockGit.raw).not.toHaveBeenCalledWith(
+          expect.arrayContaining(["worktree", "add", "--track", "-b", "feat-new"]),
+        );
+        expect(mockLogger.warn).not.toHaveBeenCalledWith(
+          expect.stringContaining("Failed to create worktree with tracking"),
+        );
+      });
+
+      it("should add worktree with upstream when both local and remote exist", async () => {
+        const worktreeGitMock = makeWorktreeGitMock();
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: true });
+
+        await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+        expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
+        expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
+      });
+
+      it("should use --track when local missing but remote exists", async () => {
+        mockShowRef({ local: false, remote: true });
+
+        await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+        expect(mockGit.raw).toHaveBeenCalledWith([
+          "worktree",
+          "add",
+          "--track",
+          "-b",
+          "feature-1",
+          "/test/worktrees/feature-1",
+          "origin/feature-1",
+        ]);
+      });
+
+      it("should throw clear WorktreeError when neither local nor remote ref exists", async () => {
+        mockShowRef({ local: false, remote: false });
+        mockGit.raw.mockClear();
+
+        await expect(gitService.addWorktree("nope", "/test/worktrees/nope")).rejects.toThrow(
+          /does not exist locally or on origin/,
+        );
+        const worktreeAddCalls = mockGit.raw.mock.calls.filter(
+          (call) => Array.isArray(call[0]) && call[0][0] === "worktree" && call[0][1] === "add",
+        );
+        expect(worktreeAddCalls).toHaveLength(0);
+      });
+
+      it("should rollback worktree add when --set-upstream-to fails", async () => {
+        const worktreeGitMock = {
+          branch: vi.fn<any>().mockRejectedValue(new Error("fatal: branch 'feature-1' does not point to a commit")),
+          raw: vi.fn<any>().mockResolvedValue(""),
+          revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        };
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: true });
+        mockGit.raw.mockClear();
+
+        await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
+          /Failed to set upstream for 'feature-1'.*does not point to a commit/,
+        );
+
+        expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
+        expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feature-1"]);
+      });
+
+      it("should still throw wrapped upstream error if rollback also fails", async () => {
+        const worktreeGitMock = {
+          branch: vi.fn<any>().mockRejectedValue(new Error("upstream-set-failure")),
+          raw: vi.fn<any>().mockResolvedValue(""),
+          revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        };
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: true });
+        mockGit.raw.mockClear();
+        (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+          if (Array.isArray(args)) {
+            if (args[0] === "show-ref" && args[1] === "--verify") {
+              return Promise.resolve("");
+            }
+            if (args[0] === "worktree" && args[1] === "remove") {
+              return Promise.reject(new Error("rollback-failure"));
+            }
+          }
+          return Promise.resolve("");
+        });
+
+        await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
+          /Failed to set upstream.*upstream-set-failure.*rollback failed/,
+        );
+        expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Rollback failed"));
+      });
+
+      it("should not enter tracking-error fallback when upstream-set fails with tracking-classified message", async () => {
+        // Fresh add: no existing dir.
+        (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+
+        const worktreeGitMock = {
+          branch: vi.fn<any>().mockRejectedValue(new Error("fatal: no such remote ref refs/remotes/origin/feature-1")),
+          raw: vi.fn<any>().mockResolvedValue(""),
+          revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        };
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: true });
+        mockGit.raw.mockClear();
+        (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+          if (Array.isArray(args)) {
+            if (args[0] === "show-ref" && args[1] === "--verify") {
+              return Promise.resolve("");
+            }
+            if (args[0] === "worktree" && args[1] === "remove") {
+              return Promise.reject(new Error("rollback-failure"));
+            }
+            if (args[0] === "worktree" && args[1] === "list") {
+              return Promise.resolve("");
+            }
+          }
+          return Promise.resolve("");
+        });
+
+        await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
+          /Failed to set upstream/,
+        );
+
+        // Only the initial `worktree add <path> <branch>` should fire.
+        // The fallback non-tracking add at addWorktree's L498 must NOT fire.
+        const plainWorktreeAdds = (mockGit.raw as Mock).mock.calls.filter(
+          (call) =>
+            Array.isArray(call[0]) && call[0][0] === "worktree" && call[0][1] === "add" && !call[0].includes("--track"),
+        );
+        expect(plainWorktreeAdds).toHaveLength(1);
+      });
+
+      it("should not special-case slash branch names (feat/foo with both refs behaves like normal)", async () => {
+        const worktreeGitMock = makeWorktreeGitMock();
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feat-foo") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: true });
+
+        await gitService.addWorktree("feat/foo", "/test/worktrees/feat-foo");
+
+        expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feat-foo", "feat/foo"]);
+        expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feat/foo", "feat/foo"]);
+      });
+
+      it("should reuse ref matrix in retry path after pruning (no remote → non-tracking add)", async () => {
+        const worktreePath = "/test/worktrees/feat-new";
+        (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found"));
+
+        const worktreeGitMock = makeWorktreeGitMock();
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feat-new") ? worktreeGitMock : mockGit,
+        );
+
+        mockGit.raw.mockClear();
+
+        let initialAddAttempted = false;
+        (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+          if (Array.isArray(args)) {
+            if (args[0] === "show-ref" && args[1] === "--verify") {
+              const ref = args[3];
+              if (typeof ref === "string" && ref.startsWith("refs/heads/")) return Promise.resolve("");
+              if (typeof ref === "string" && ref.startsWith("refs/remotes/origin/")) {
+                return Promise.reject(new Error("show-ref: not found"));
+              }
+            }
+            if (args[0] === "worktree" && args[1] === "add" && !initialAddAttempted) {
+              initialAddAttempted = true;
+              return Promise.reject(new Error("fatal: 'feat-new' is already registered worktree"));
+            }
+            if (args[0] === "worktree" && args[1] === "list") {
+              return Promise.resolve(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feat-new\nprunable\n\n`);
+            }
+          }
+          return Promise.resolve("");
+        });
+
+        await gitService.addWorktree("feat-new", worktreePath);
+
+        const trackingAdds = mockGit.raw.mock.calls.filter(
+          (call) => Array.isArray(call[0]) && call[0].includes("--track"),
+        );
+        expect(trackingAdds).toHaveLength(0);
+        expect(mockLogger.warn).not.toHaveBeenCalledWith(
+          expect.stringContaining("Failed to create worktree with tracking"),
+        );
+      });
     });
   });
 
@@ -699,10 +943,7 @@ describe("GitService", () => {
     });
 
     it("should verify LFS files are downloaded when LFS is not skipped", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      mockShowRef({ local: false, remote: true });
 
       const lfsFiles = "file1.png\nfile2.png\nfile3.png\n";
       const worktreeGitMock = {
@@ -747,10 +988,7 @@ describe("GitService", () => {
 
       await gitServiceWithSkipLfs.initialize();
 
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      mockShowRef({ local: false, remote: true });
 
       const worktreeGitMock = {
         raw: vi.fn<any>().mockResolvedValue("file1.png\n"),
@@ -771,10 +1009,7 @@ describe("GitService", () => {
     });
 
     it("should wait for LFS files to be downloaded if they are pointers", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      mockShowRef({ local: false, remote: true });
 
       const lfsFiles = "file1.png\n";
       const worktreeGitMock = {
@@ -812,10 +1047,7 @@ describe("GitService", () => {
     });
 
     it("should warn if LFS files are not downloaded after timeout", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      mockShowRef({ local: false, remote: true });
 
       const lfsFiles = "file1.png\n";
       const worktreeGitMock = {
@@ -848,10 +1080,7 @@ describe("GitService", () => {
     }, 40000);
 
     it("should skip verification if no LFS files exist", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      mockShowRef({ local: false, remote: true });
 
       const worktreeGitMock = {
         raw: vi.fn<any>().mockResolvedValue(""),
@@ -915,10 +1144,7 @@ describe("GitService", () => {
     });
 
     it("should remove worktree when metadata creation fails", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      mockShowRef({ local: false, remote: true });
 
       mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(
         new Error("Failed to write metadata file"),
@@ -928,7 +1154,6 @@ describe("GitService", () => {
         "Metadata creation failed for feature-1",
       );
 
-      // Should have attempted to clean up the worktree
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feature-1"]);
     });
   });
@@ -1270,20 +1495,15 @@ prunable
     });
 
     it("should throw when both tracking and fallback add fail", async () => {
-      // Initial directory check: doesn't exist
       (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found"));
-      // Fallback directory check: doesn't exist
       (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found"));
-
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("no such remote ref")) // Initial tracking add fails (tracking-specific)
-        .mockRejectedValueOnce(new Error("simple add also failed")); // Fallback add also fails
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
+        .mockResolvedValueOnce("") // refs/remotes/origin exists
+        .mockRejectedValueOnce(new Error("no such remote ref")) // tracking add fails
+        .mockRejectedValueOnce(new Error("simple add also failed")); // fallback add fails
 
       await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
         "simple add also failed",
@@ -1293,29 +1513,22 @@ prunable
     it("should throw non-tracking errors immediately without fallback", async () => {
       (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found"));
 
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
-
       mockGit.raw.mockReset();
-      mockGit.raw.mockRejectedValueOnce(new Error("disk full"));
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
+        .mockResolvedValueOnce("") // refs/remotes/origin exists
+        .mockRejectedValueOnce(new Error("disk full")); // tracking add fails non-recoverably
 
       await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow("disk full");
     });
 
     it("should throw metadata error even when worktree cleanup also fails", async () => {
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
-
-      // Worktree add succeeds, but metadata creation fails
       mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(new Error("Failed to write metadata"));
 
-      // Worktree removal during cleanup also fails
       mockGit.raw.mockReset();
       mockGit.raw
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
+        .mockResolvedValueOnce("") // refs/remotes/origin exists
         .mockResolvedValueOnce("") // tracking add succeeds
         .mockResolvedValueOnce("") // LFS ls-files verification (no LFS files)
         .mockRejectedValueOnce(new Error("remove also failed")); // cleanup removal fails

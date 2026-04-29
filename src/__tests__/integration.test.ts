@@ -260,7 +260,16 @@ branch refs/heads/dirty-branch
         const argsArray = args as string[];
         mockRawCalls.push(argsArray);
 
-        // Handle different git commands
+        if (argsArray[0] === "show-ref" && argsArray[1] === "--verify") {
+          const ref = argsArray[3];
+          if (typeof ref === "string" && ref.startsWith("refs/heads/")) {
+            throw new Error("show-ref: not found");
+          }
+          if (typeof ref === "string" && ref.startsWith("refs/remotes/origin/")) {
+            return "";
+          }
+        }
+
         if (argsArray[0] === "worktree" && argsArray[1] === "list" && argsArray[2] === "--porcelain") {
           return `worktree /test/repo
 branch refs/heads/main

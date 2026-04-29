@@ -16,7 +16,7 @@ import {
 } from "./handlers";
 import { wrapHandler } from "./utils";
 
-import type { RepositoryContext } from "./context";
+import type { DiscoveredRepoContext, RepositoryContext } from "./context";
 
 const REPO_NAME_DESCRIBE =
   "Repository name from loaded config. If omitted, uses the current repository set via set_current_repository or the only loaded repo.";
@@ -27,14 +27,31 @@ const SERVER_INSTRUCTIONS =
   "Before running git worktree operations, call `detect_context` to learn the current repo, current branch, sibling repositories under the workspace root, and which capabilities are available. " +
   "It walks up to auto-discover sync-worktrees.config.{js,mjs,cjs,ts}, lists sibling worktrees, and reports per-capability {available, reason} so you can tell which tool is gated and why.";
 
-export function createServer(context: RepositoryContext): McpServer {
+export interface ServerSnapshot {
+  discovered: DiscoveredRepoContext | null;
+}
+
+export function buildInstructions(snapshot?: ServerSnapshot): string {
+  const d = snapshot?.discovered;
+  if (!d || !d.isWorktree || d.kind !== "managed") return SERVER_INSTRUCTIONS;
+
+  const lines: string[] = ["Connect-time context (call `detect_context` for live state):"];
+  if (d.kind) lines.push(`- kind: ${d.kind}`);
+  if (d.currentWorktreePath) lines.push(`- currentWorktreePath: ${d.currentWorktreePath}`);
+  if (d.currentBranch) lines.push(`- currentBranch: ${d.currentBranch}`);
+  if (d.configPath) lines.push(`- configPath: ${d.configPath}`);
+
+  return `${SERVER_INSTRUCTIONS}\n\n${lines.join("\n")}`;
+}
+
+export function createServer(context: RepositoryContext, snapshot?: ServerSnapshot): McpServer {
   const server = new McpServer(
     {
       name: "sync-worktrees",
       version: "1.0.0",
     },
     {
-      instructions: SERVER_INSTRUCTIONS,
+      instructions: buildInstructions(snapshot),
     },
   );
 
