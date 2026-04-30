@@ -130,13 +130,6 @@ export class RepositoryContext {
     const absolutePath = path.resolve(configPath);
     const configFile = await this.configLoader.loadConfigFile(absolutePath);
 
-    for (const [name, entry] of this.repos) {
-      if (entry.source === "config") {
-        this.repos.delete(name);
-      }
-    }
-
-    this.configPath = absolutePath;
     const configDir = path.dirname(absolutePath);
     const globalDefaults = configFile.defaults;
 
@@ -150,13 +143,23 @@ export class RepositoryContext {
         configFile.repositories,
       );
       resolvedAll.push(resolved);
+    }
+    this.configLoader.detectBareRepoDirCollisions(resolvedAll);
+
+    for (const [name, entry] of this.repos) {
+      if (entry.source === "config") {
+        this.repos.delete(name);
+      }
+    }
+
+    this.configPath = absolutePath;
+    for (const resolved of resolvedAll) {
       this.repos.set(resolved.name, {
         name: resolved.name,
         config: resolved,
         source: "config",
       });
     }
-    this.configLoader.detectBareRepoDirCollisions(resolvedAll);
 
     if (this.currentRepo && !this.repos.has(this.currentRepo)) {
       this.currentRepo = null;

@@ -189,10 +189,10 @@ export class WorktreeSyncService {
           if (current !== null && sparseService.patternsEqual(current, desired)) return;
 
           if (sparseService.isNarrowing(current, desired)) {
-            const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
-            if (!isClean) {
+            const status = await this.gitService.getFullWorktreeStatus(worktree.path, false);
+            if (!status.canRemove) {
               this.logger.warn(
-                `  - Skipping sparse-checkout narrowing for '${worktree.branch}': clean or stash local changes first.`,
+                `  - Skipping sparse-checkout narrowing for '${worktree.branch}': ${status.reasons.join(", ")}.`,
               );
               return;
             }

@@ -56,6 +56,26 @@ describe("SparseCheckoutService", () => {
       service.resolveMode({ include: ["/*"], exclude: ["docs"] });
       expect(warnSpy).not.toHaveBeenCalled();
     });
+
+    it("warns only once per config instance even across many calls", () => {
+      const cfg = { include: ["/*"], exclude: ["docs"], mode: "cone" } as const;
+      service.resolveMode(cfg);
+      service.resolveMode(cfg);
+      service.buildPatterns(cfg);
+      service.buildPatterns(cfg);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("updateLogger", () => {
+    it("redirects subsequent warnings to the new logger", () => {
+      const newWarn = vi.fn();
+      const newLogger = { info: vi.fn(), warn: newWarn, error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+      service.updateLogger(newLogger);
+      service.resolveMode({ include: ["/*"], exclude: ["docs"], mode: "cone" });
+      expect(newWarn).toHaveBeenCalledWith(expect.stringContaining("auto-promoting"));
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe("buildPatterns", () => {
@@ -158,6 +178,32 @@ describe("SparseCheckoutService", () => {
 
     it("returns false when sets are identical", () => {
       expect(service.isNarrowing(["apps"], ["apps"])).toBe(false);
+    });
+
+    it("returns true when an exclude is added (no-cone narrowing)", () => {
+      expect(service.isNarrowing(["/*", "!docs"], ["/*", "!docs", "!vendor"])).toBe(true);
+    });
+
+    it("returns false when an exclude is removed (no-cone widening)", () => {
+      expect(service.isNarrowing(["/*", "!docs", "!vendor"], ["/*", "!docs"])).toBe(false);
+    });
+
+    it("returns true when a positive include is removed but negatives are unchanged", () => {
+      expect(service.isNarrowing(["/*", "apps", "!docs"], ["/*", "!docs"])).toBe(true);
+    });
+  });
+
+  describe("patternsEqual", () => {
+    it("returns true for identical lists in same order", () => {
+      expect(service.patternsEqual(["/*", "!docs"], ["/*", "!docs"])).toBe(true);
+    });
+
+    it("returns false when order differs (no-cone semantics depend on order)", () => {
+      expect(service.patternsEqual(["/*", "!docs"], ["!docs", "/*"])).toBe(false);
+    });
+
+    it("returns false when lengths differ", () => {
+      expect(service.patternsEqual(["a"], ["a", "b"])).toBe(false);
     });
   });
 });

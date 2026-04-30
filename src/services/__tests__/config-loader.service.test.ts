@@ -1685,5 +1685,28 @@ describe("ConfigLoaderService", () => {
       ];
       expect(() => configLoader.detectBareRepoDirCollisions(repos)).not.toThrow();
     });
+
+    it("detects collision across case-only differences on case-insensitive filesystems", () => {
+      if (process.platform !== "darwin") return;
+      const repos = [
+        {
+          name: "a",
+          repoUrl: "https://github.com/x/y.git",
+          worktreeDir: "/w/a",
+          cronSchedule: "0 * * * *",
+          runOnce: false,
+          bareRepoDir: "/Users/Me/.bare/x",
+        },
+        {
+          name: "b",
+          repoUrl: "https://github.com/x/y.git",
+          worktreeDir: "/w/b",
+          cronSchedule: "0 * * * *",
+          runOnce: false,
+          bareRepoDir: "/users/me/.bare/x",
+        },
+      ];
+      expect(() => configLoader.detectBareRepoDirCollisions(repos)).toThrow(/same bareRepoDir/);
+    });
   });
 });

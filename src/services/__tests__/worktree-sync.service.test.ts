@@ -1191,7 +1191,16 @@ describe("WorktreeSyncService", () => {
     it("skips narrowing when worktree is dirty", async () => {
       readCurrent.mockResolvedValue(["apps", "packages"]);
       isNarrowing.mockReturnValue(true);
-      mockGitService.checkWorktreeStatus.mockResolvedValue(false);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: false,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["uncommitted changes"],
+      });
 
       const svc = makeSparseService();
       await svc.sync();
@@ -1200,10 +1209,61 @@ describe("WorktreeSyncService", () => {
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping sparse-checkout narrowing"));
     });
 
+    it("skips narrowing when worktree has unpushed commits", async () => {
+      readCurrent.mockResolvedValue(["apps", "packages"]);
+      isNarrowing.mockReturnValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: true,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["unpushed commits"],
+      });
+
+      const svc = makeSparseService();
+      await svc.sync();
+
+      expect(applyToWorktree).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("unpushed commits"));
+    });
+
+    it("skips narrowing when worktree has operation in progress", async () => {
+      readCurrent.mockResolvedValue(["apps", "packages"]);
+      isNarrowing.mockReturnValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: true,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["rebase in progress"],
+      });
+
+      const svc = makeSparseService();
+      await svc.sync();
+
+      expect(applyToWorktree).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("rebase in progress"));
+    });
+
     it("applies narrowing when worktree is clean", async () => {
       readCurrent.mockResolvedValue(["apps", "packages"]);
       isNarrowing.mockReturnValue(true);
-      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      });
 
       const svc = makeSparseService();
       await svc.sync();

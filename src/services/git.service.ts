@@ -64,6 +64,7 @@ export class GitService {
 
   updateLogger(logger: Logger): void {
     this.logger = logger;
+    this.sparseCheckoutService.updateLogger(logger);
   }
 
   async initialize(): Promise<SimpleGit> {
@@ -136,7 +137,7 @@ export class GitService {
           await bareGit.raw(["worktree", "add", ...noCheckoutFlagMain, absoluteWorktreePath, this.defaultBranch]);
           const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
           await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
-          await this.applySparseAndCheckout(absoluteWorktreePath);
+          await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, this.defaultBranch, false);
         } else {
           await bareGit.raw([
             "worktree",
@@ -148,7 +149,7 @@ export class GitService {
             absoluteWorktreePath,
             `origin/${this.defaultBranch}`,
           ]);
-          await this.applySparseAndCheckout(absoluteWorktreePath);
+          await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, this.defaultBranch, true);
         }
       } catch (error) {
         const errorMessage = getErrorMessage(error);
@@ -264,13 +265,33 @@ export class GitService {
 
     try {
       const lfsFiles = await worktreeGit.raw(["lfs", "ls-files", "--name-only"]);
-      const lfsFileList = lfsFiles
+      let lfsFileList = lfsFiles
         .trim()
         .split("\n")
         .filter((f) => f.length > 0);
 
       if (lfsFileList.length === 0) {
         return;
+      }
+
+      // GIT_ATTR_SOURCE=HEAD lists every LFS file declared in HEAD's .gitattributes,
+      // including ones outside the sparse-checkout cone that aren't on disk. Sampling
+      // those would burn the 30s retry loop on guaranteed-missing files.
+      if (this.config.sparseCheckout) {
+        const existence = await Promise.all(
+          lfsFileList.map(async (f) => {
+            try {
+              await fs.access(path.join(worktreePath, f));
+              return f;
+            } catch {
+              return null;
+            }
+          }),
+        );
+        lfsFileList = existence.filter((f): f is string => f !== null);
+        if (lfsFileList.length === 0) {
+          return;
+        }
       }
 
       if (this.config.debug) {

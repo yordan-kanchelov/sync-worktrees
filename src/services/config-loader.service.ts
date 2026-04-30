@@ -7,6 +7,7 @@ import * as cron from "node-cron";
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
 import { matchesPattern } from "../utils/branch-filter";
 import { getDefaultBareRepoDir } from "../utils/git-url";
+import { normalizePathForCompare } from "../utils/path-compare";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
@@ -457,18 +458,19 @@ export class ConfigLoaderService {
   }
 
   detectBareRepoDirCollisions(repositories: RepositoryConfig[]): void {
-    const seen = new Map<string, string>();
+    const seen = new Map<string, { name: string; displayPath: string }>();
     for (const repo of repositories) {
       if (!repo.bareRepoDir) continue;
-      const key = path.resolve(repo.bareRepoDir);
+      const key = normalizePathForCompare(repo.bareRepoDir);
+      const displayPath = path.resolve(repo.bareRepoDir);
       const existing = seen.get(key);
-      if (existing && existing !== repo.name) {
+      if (existing && existing.name !== repo.name) {
         throw new Error(
-          `Repositories '${existing}' and '${repo.name}' resolve to the same bareRepoDir '${key}'. ` +
+          `Repositories '${existing.name}' and '${repo.name}' resolve to the same bareRepoDir '${displayPath}'. ` +
             `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`,
         );
       }
-      seen.set(key, repo.name);
+      seen.set(key, { name: repo.name, displayPath });
     }
   }
 
