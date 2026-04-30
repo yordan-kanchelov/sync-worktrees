@@ -1280,5 +1280,17 @@ describe("WorktreeSyncService", () => {
       expect(applyToWorktree).not.toHaveBeenCalled();
       expect(mockGitService.getSparseCheckoutService).not.toHaveBeenCalled();
     });
+
+    it("continues sync and warns when readCurrent throws", async () => {
+      readCurrent.mockRejectedValue(new Error("boom"));
+      isNarrowing.mockReturnValue(false);
+
+      const svc = makeSparseService();
+      await expect(svc.sync()).resolves.not.toThrow();
+
+      expect(applyToWorktree).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Failed to update sparse-checkout"));
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("boom"));
+    });
   });
 });

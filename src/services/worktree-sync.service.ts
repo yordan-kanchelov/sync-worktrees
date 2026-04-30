@@ -180,25 +180,25 @@ export class WorktreeSyncService {
       worktrees.map((worktree) =>
         limit(async () => {
           try {
-            await fs.access(worktree.path);
-          } catch {
-            return;
-          }
-
-          const current = await sparseService.readCurrent(worktree.path);
-          if (current !== null && sparseService.patternsEqual(current, desired)) return;
-
-          if (sparseService.isNarrowing(current, desired)) {
-            const status = await this.gitService.getFullWorktreeStatus(worktree.path, false);
-            if (!status.canRemove) {
-              this.logger.warn(
-                `  - Skipping sparse-checkout narrowing for '${worktree.branch}': ${status.reasons.join(", ")}.`,
-              );
+            try {
+              await fs.access(worktree.path);
+            } catch {
               return;
             }
-          }
 
-          try {
+            const current = await sparseService.readCurrent(worktree.path);
+            if (current !== null && sparseService.patternsEqual(current, desired)) return;
+
+            if (sparseService.isNarrowing(current, desired)) {
+              const status = await this.gitService.getFullWorktreeStatus(worktree.path, false);
+              if (!status.canRemove) {
+                this.logger.warn(
+                  `  - Skipping sparse-checkout narrowing for '${worktree.branch}': ${status.reasons.join(", ")}.`,
+                );
+                return;
+              }
+            }
+
             await sparseService.applyToWorktree(worktree.path, sparseConfig);
             await this.gitService.checkoutHead(worktree.path);
             this.logger.info(`  - ✅ Sparse-checkout updated for '${worktree.branch}'`);
