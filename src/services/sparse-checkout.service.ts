@@ -23,7 +23,7 @@ export class SparseCheckoutService {
 
   resolveMode(cfg: SparseCheckoutConfig): SparseCheckoutMode {
     const hasExclude = !!cfg.exclude && cfg.exclude.length > 0;
-    const hasNegation = cfg.include.some((p) => p.startsWith("!"));
+    const hasNegation = cfg.include.some((p) => p.trim().startsWith("!"));
 
     if (cfg.mode === "no-cone") return "no-cone";
     if (hasExclude || hasNegation) {

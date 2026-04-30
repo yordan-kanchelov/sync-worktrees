@@ -47,6 +47,10 @@ describe("SparseCheckoutService", () => {
       expect(service.resolveMode({ include: ["/*", "!docs"] })).toBe("no-cone");
     });
 
+    it("auto-promotes cone to no-cone when negation pattern has surrounding whitespace", () => {
+      expect(service.resolveMode({ include: ["/*", "  !docs"] })).toBe("no-cone");
+    });
+
     it("warns when explicit cone is auto-promoted", () => {
       service.resolveMode({ include: ["/*"], exclude: ["docs"], mode: "cone" });
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("auto-promoting"));
