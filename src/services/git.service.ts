@@ -102,7 +102,12 @@ export class GitService {
       if (event.method !== "fetch" && event.method !== "clone" && event.method !== "pull") return;
       const key = `${event.method}:${event.stage}`;
       const bucket = Math.floor(event.progress / GIT_CONSTANTS.PROGRESS_BUCKET_PERCENT);
-      const last = lastBucket.get(key) ?? -1;
+      let last = lastBucket.get(key) ?? -1;
+      // Stage restart on a new operation (e.g. second fetch on the same cached SimpleGit
+      // instance): bucket regresses below `last`. Reset so the new run logs from scratch.
+      if (bucket < last) {
+        last = -1;
+      }
       if (bucket <= last && event.progress < 100) return;
       lastBucket.set(key, bucket);
       const total = event.total > 0 ? `${event.processed}/${event.total}` : `${event.processed}`;
