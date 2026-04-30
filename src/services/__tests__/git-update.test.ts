@@ -178,12 +178,12 @@ describe("GitService - Update Methods", () => {
       expect(result).toBeNull();
     });
 
-    it("trims and drops blank lines", async () => {
-      mockGit.raw.mockResolvedValue("\n  src/foo.ts  \n\n  lib/bar.ts\n");
+    it("preserves leading/trailing whitespace, strips CRLF, drops blanks", async () => {
+      mockGit.raw.mockResolvedValue("\n  src/foo.ts  \r\n\nlib/bar.ts\r\n");
 
       const result = await service.getChangedPathsInRange("/wt", "HEAD", "origin/main");
 
-      expect(result).toEqual(["src/foo.ts", "lib/bar.ts"]);
+      expect(result).toEqual(["  src/foo.ts  ", "lib/bar.ts"]);
     });
   });
 });

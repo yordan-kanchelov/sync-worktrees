@@ -951,9 +951,12 @@ export class GitService {
         "--no-renames",
         `${fromRef}..${toRef}`,
       ]);
+      // Don't .trim() entries — leading/trailing whitespace is valid in POSIX
+      // paths and `core.quotePath=false` only affects high-byte quoting, not
+      // whitespace. Strip a trailing CR for Windows line endings only.
       return out
         .split("\n")
-        .map((l) => l.trim())
+        .map((l) => l.replace(/\r$/, ""))
         .filter((l) => l.length > 0);
     } catch (error) {
       this.logger.warn(`Failed to compute diff ${fromRef}..${toRef} in ${worktreePath}: ${getErrorMessage(error)}`);
