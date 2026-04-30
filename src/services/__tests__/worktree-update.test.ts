@@ -322,7 +322,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
       service = new WorktreeSyncService(mockConfig);
 
-      getChangedPathsInRange = vi.fn().mockResolvedValue({ paths: [], rootFilesTouched: false });
+      getChangedPathsInRange = vi.fn().mockResolvedValue([]);
       sparseService = {
         resolveMode: vi.fn().mockReturnValue("cone"),
         pathsTouchSparse: vi.fn().mockReturnValue(true),
@@ -345,7 +345,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     it("skips update when diff has no paths inside sparse include", async () => {
       setup(true);
       mockGitService.isWorktreeBehind.mockResolvedValue(true);
-      getChangedPathsInRange.mockResolvedValue({ paths: ["lib/x.ts"], rootFilesTouched: false });
+      getChangedPathsInRange.mockResolvedValue(["lib/x.ts"]);
       sparseService.pathsTouchSparse.mockReturnValue(false);
 
       await service.sync();
@@ -358,7 +358,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     it("proceeds with update when diff includes a path inside sparse", async () => {
       setup(true);
       mockGitService.isWorktreeBehind.mockResolvedValue(true);
-      getChangedPathsInRange.mockResolvedValue({ paths: ["src/foo.ts"], rootFilesTouched: false });
+      getChangedPathsInRange.mockResolvedValue(["src/foo.ts"]);
       sparseService.pathsTouchSparse.mockReturnValue(true);
 
       await service.sync();
@@ -379,7 +379,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     it("defaults to enabled when sparseCheckout is set without an explicit flag", async () => {
       setup(undefined);
       mockGitService.isWorktreeBehind.mockResolvedValue(true);
-      getChangedPathsInRange.mockResolvedValue({ paths: ["lib/x.ts"], rootFilesTouched: false });
+      getChangedPathsInRange.mockResolvedValue(["lib/x.ts"]);
       sparseService.pathsTouchSparse.mockReturnValue(false);
 
       await service.sync();

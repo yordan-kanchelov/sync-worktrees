@@ -940,11 +940,7 @@ export class GitService {
     }
   }
 
-  async getChangedPathsInRange(
-    worktreePath: string,
-    fromRef: string,
-    toRef: string,
-  ): Promise<{ paths: string[]; rootFilesTouched: boolean } | null> {
+  async getChangedPathsInRange(worktreePath: string, fromRef: string, toRef: string): Promise<string[] | null> {
     const worktreeGit = this.getCachedGit(worktreePath);
     try {
       const out = await worktreeGit.raw([
@@ -955,12 +951,10 @@ export class GitService {
         "--no-renames",
         `${fromRef}..${toRef}`,
       ]);
-      const paths = out
+      return out
         .split("\n")
         .map((l) => l.trim())
         .filter((l) => l.length > 0);
-      const rootFilesTouched = paths.some((p) => !p.includes("/"));
-      return { paths, rootFilesTouched };
     } catch (error) {
       this.logger.warn(`Failed to compute diff ${fromRef}..${toRef} in ${worktreePath}: ${getErrorMessage(error)}`);
       return null;

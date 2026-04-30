@@ -167,19 +167,7 @@ describe("GitService - Update Methods", () => {
         "--no-renames",
         "HEAD..origin/feature",
       ]);
-      expect(result).not.toBeNull();
-      expect(result!.paths).toEqual(["src/foo.ts", "lib/bar.ts"]);
-      expect(result!.rootFilesTouched).toBe(false);
-    });
-
-    it("flags rootFilesTouched when a path has no slash", async () => {
-      mockGit.raw.mockResolvedValue("README.md\nsrc/foo.ts\n");
-
-      const result = await service.getChangedPathsInRange("/wt", "HEAD", "origin/main");
-
-      expect(result).not.toBeNull();
-      expect(result!.paths).toEqual(["README.md", "src/foo.ts"]);
-      expect(result!.rootFilesTouched).toBe(true);
+      expect(result).toEqual(["src/foo.ts", "lib/bar.ts"]);
     });
 
     it("returns null on git error so caller can force a safe update", async () => {
@@ -195,8 +183,7 @@ describe("GitService - Update Methods", () => {
 
       const result = await service.getChangedPathsInRange("/wt", "HEAD", "origin/main");
 
-      expect(result).not.toBeNull();
-      expect(result!.paths).toEqual(["src/foo.ts", "lib/bar.ts"]);
+      expect(result).toEqual(["src/foo.ts", "lib/bar.ts"]);
     });
   });
 });

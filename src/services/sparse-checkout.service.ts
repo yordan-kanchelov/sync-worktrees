@@ -1,3 +1,5 @@
+import * as path from "path";
+
 import simpleGit from "simple-git";
 
 import { Logger } from "./logger.service";
@@ -7,10 +9,17 @@ import type { SimpleGit } from "simple-git";
 
 export type GitFactory = (worktreePath: string) => SimpleGit;
 
+interface SparseMatcher {
+  mode: SparseCheckoutMode;
+  patterns: string[];
+  ancestorDirs: Set<string>;
+}
+
 export class SparseCheckoutService {
   private logger: Logger;
   private gitFactory: GitFactory;
   private warnedConfigs = new WeakSet<SparseCheckoutConfig>();
+  private matcherCache = new WeakMap<SparseCheckoutConfig, SparseMatcher>();
 
   constructor(logger?: Logger, gitFactory?: GitFactory) {
     this.logger = logger ?? Logger.createDefault();
@@ -137,25 +146,44 @@ export class SparseCheckoutService {
    * No-cone mode: gitignore-style matching with negation is non-trivial and
    * not implemented here yet. We return `true` so the caller falls back to
    * the safe behavior of always running the update.
+   *
+   * The matcher derived from `cfg` is cached on the cfg object identity
+   * (WeakMap), so callers should reuse the same `cfg` reference across
+   * invocations to benefit from the cache.
    */
-  pathsTouchSparse(changedPaths: string[], rootFilesTouched: boolean, cfg: SparseCheckoutConfig): boolean {
+  pathsTouchSparse(changedPaths: string[], cfg: SparseCheckoutConfig): boolean {
     if (changedPaths.length === 0) return false;
+
+    const matcher = this.getMatcher(cfg);
+    if (matcher.mode === "no-cone") return true;
+    if (matcher.patterns.length === 0) return true;
+
+    return changedPaths.some((p) => {
+      if (!p.includes("/")) return true;
+      for (const pat of matcher.patterns) {
+        if (p === pat || p.startsWith(pat + "/")) return true;
+      }
+      return matcher.ancestorDirs.has(path.posix.dirname(p));
+    });
+  }
+
+  private getMatcher(cfg: SparseCheckoutConfig): SparseMatcher {
+    const cached = this.matcherCache.get(cfg);
+    if (cached) return cached;
 
     const mode = this.resolveMode(cfg);
     if (mode === "no-cone") {
-      return true;
+      const matcher: SparseMatcher = { mode, patterns: [], ancestorDirs: new Set() };
+      this.matcherCache.set(cfg, matcher);
+      return matcher;
     }
-
-    if (rootFilesTouched) return true;
 
     const patterns = cfg.include
       .map((p) => p.trim())
       .filter((p) => p.length > 0)
       .map((p) => (p.endsWith("/") ? p.slice(0, -1) : p));
 
-    if (patterns.length === 0) return true;
-
-    const ancestorDirs = new Set<string>([""]);
+    const ancestorDirs = new Set<string>();
     for (const pat of patterns) {
       const parts = pat.split("/");
       for (let i = 1; i < parts.length; i++) {
@@ -163,13 +191,8 @@ export class SparseCheckoutService {
       }
     }
 
-    return changedPaths.some((p) => {
-      for (const pat of patterns) {
-        if (p === pat || p.startsWith(pat + "/")) return true;
-      }
-      const lastSlash = p.lastIndexOf("/");
-      const parentDir = lastSlash === -1 ? "" : p.substring(0, lastSlash);
-      return ancestorDirs.has(parentDir);
-    });
+    const matcher: SparseMatcher = { mode, patterns, ancestorDirs };
+    this.matcherCache.set(cfg, matcher);
+    return matcher;
   }
 }

@@ -717,9 +717,8 @@ export class WorktreeSyncService {
                 "HEAD",
                 `origin/${worktree.branch}`,
               );
-              // null result means git diff failed — proceed with update for safety
-              // rather than treating the failure as "no sparse paths affected".
-              if (diff !== null && !sparseService.pathsTouchSparse(diff.paths, diff.rootFilesTouched, sparseCfg)) {
+              // null = git diff failed; force update rather than treat the failure as "no sparse paths affected".
+              if (diff !== null && !sparseService.pathsTouchSparse(diff, sparseCfg)) {
                 this.logger.info(`⏭️  Skipping '${worktree.branch}' - upstream changes outside sparse paths`);
                 return null;
               }
