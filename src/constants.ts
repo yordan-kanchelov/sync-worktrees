@@ -17,6 +17,7 @@ export const GIT_CONSTANTS = {
     REMOTES_ORIGIN: "refs/remotes/origin/*",
   },
   FETCH_CONFIG: "+refs/heads/*:refs/remotes/origin/*",
+  PROGRESS_BUCKET_PERCENT: 25,
 } as const;
 
 export const GIT_OPERATIONS = {
