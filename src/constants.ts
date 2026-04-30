@@ -77,6 +77,7 @@ export const TEST_TIMEOUT = {
 
 export const ENV_CONSTANTS = {
   GIT_LFS_SKIP_SMUDGE: "GIT_LFS_SKIP_SMUDGE",
+  GIT_ATTR_SOURCE: "GIT_ATTR_SOURCE",
   NODE_ENV_TEST: "test",
 } as const;
 

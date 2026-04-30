@@ -380,6 +380,45 @@ rm -rf .diverged/2024-01-15-feature-x
 
 This ensures you never lose work due to force pushes while keeping your worktrees in sync with upstream.
 
+### Sparse Checkout
+
+For monorepos where you only need a subset of folders, set `sparseCheckout` per repository entry. The tool runs `git worktree add --no-checkout`, configures sparse-checkout, then materializes only the included paths. The same repository can be listed multiple times under different `name`s with different sparse patterns to build domain-grouped layouts.
+
+```js
+export default {
+  repositories: [
+    {
+      name: "roulette-game-client",
+      repoUrl: "https://github.com/acme/casino-monorepo.git",
+      worktreeDir: "/Users/me/game-clients/roulette",
+      sparseCheckout: { include: ["game-client"] },
+    },
+    {
+      name: "roulette-autocue",
+      repoUrl: "https://github.com/acme/casino-monorepo.git",
+      worktreeDir: "/Users/me/autocues/roulette",
+      sparseCheckout: { include: ["autocue"] },
+      // bareRepoDir: ".bare/roulette-autocue", // pin to make config reorder-proof
+    },
+  ],
+};
+```
+
+**Modes:**
+
+- `cone` (default): pass folder names in `include`. Fast and recommended.
+- `no-cone`: pass gitignore-style patterns including `!negation`. Required for `exclude` and any `!`-prefixed include.
+
+If you set `exclude` or use `!`-prefixed patterns while `mode: "cone"` is explicit, the tool auto-promotes to `no-cone` and logs a warning.
+
+**Duplicate `repoUrl` handling:**
+
+The first entry per `repoUrl` keeps the URL-derived bare path (`.bare/<repo-slug>`). Subsequent duplicate entries auto-derive `bareRepoDir` from `name` (`.bare/<name>`) so they do not collide. Pin `bareRepoDir` explicitly on duplicate entries if you want config order to be irrelevant.
+
+**Narrowing safety:**
+
+When a sync would narrow an existing worktree's sparse patterns (remove a previously included path), it first checks the worktree is clean. If there are uncommitted changes, unpushed commits, or in-progress operations, the sparse update is skipped with a warning. Clean or stash local changes to apply the narrower patterns.
+
 ## Requirements
 
 - Node.js >= 22.0.0

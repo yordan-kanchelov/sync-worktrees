@@ -6,6 +6,9 @@ import * as cron from "node-cron";
 
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
 import { matchesPattern } from "../utils/branch-filter";
+import { getDefaultBareRepoDir } from "../utils/git-url";
+import { normalizePathForCompare } from "../utils/path-compare";
+import { sanitizeNameForPath } from "../utils/sanitize-name";
 
 import type { Config, ConfigFile, RepositoryConfig } from "../types";
 
@@ -132,7 +135,13 @@ export class ConfigLoaderService {
       if (repoObj.hooks !== undefined) {
         this.validateHooksConfig(repoObj.hooks, `Repository '${repoObj.name}'`);
       }
+
+      if (repoObj.sparseCheckout !== undefined) {
+        this.validateSparseCheckoutConfig(repoObj.sparseCheckout, `Repository '${repoObj.name}'`);
+      }
     });
+
+    this.warnOnDuplicateRepoUrls(configObj.repositories as Array<Record<string, unknown>>);
 
     if (configObj.defaults) {
       if (typeof configObj.defaults !== "object") {
@@ -159,6 +168,10 @@ export class ConfigLoaderService {
 
       if (defaults.hooks !== undefined) {
         this.validateHooksConfig(defaults.hooks, "defaults");
+      }
+
+      if (defaults.sparseCheckout !== undefined) {
+        this.validateSparseCheckoutConfig(defaults.sparseCheckout, "defaults");
       }
     }
 
@@ -275,6 +288,67 @@ export class ConfigLoaderService {
     }
   }
 
+  private validateSparseCheckoutConfig(value: unknown, context: string): void {
+    if (typeof value !== "object" || value === null) {
+      throw new Error(`'sparseCheckout' in ${context} must be an object`);
+    }
+
+    const cfg = value as Record<string, unknown>;
+
+    if (!Array.isArray(cfg.include)) {
+      throw new Error(`'sparseCheckout.include' in ${context} must be an array`);
+    }
+    if (cfg.include.length === 0) {
+      throw new Error(`'sparseCheckout.include' in ${context} must contain at least one pattern`);
+    }
+    for (let i = 0; i < cfg.include.length; i++) {
+      const p = cfg.include[i];
+      if (typeof p !== "string" || p.trim() === "") {
+        throw new Error(
+          `'sparseCheckout.include' in ${context} must contain only non-empty strings (invalid at index ${i})`,
+        );
+      }
+    }
+
+    if (cfg.exclude !== undefined) {
+      if (!Array.isArray(cfg.exclude)) {
+        throw new Error(`'sparseCheckout.exclude' in ${context} must be an array`);
+      }
+      for (let i = 0; i < cfg.exclude.length; i++) {
+        const p = cfg.exclude[i];
+        if (typeof p !== "string" || p.trim() === "") {
+          throw new Error(
+            `'sparseCheckout.exclude' in ${context} must contain only non-empty strings (invalid at index ${i})`,
+          );
+        }
+      }
+    }
+
+    if (cfg.mode !== undefined && cfg.mode !== "cone" && cfg.mode !== "no-cone") {
+      throw new Error(`'sparseCheckout.mode' in ${context} must be 'cone' or 'no-cone'`);
+    }
+  }
+
+  private warnOnDuplicateRepoUrls(repositories: Array<Record<string, unknown>>): void {
+    const seen = new Map<string, string[]>();
+    for (const repo of repositories) {
+      const url = typeof repo.repoUrl === "string" ? repo.repoUrl : null;
+      const name = typeof repo.name === "string" ? repo.name : null;
+      if (!url || !name) continue;
+      const list = seen.get(url) ?? [];
+      list.push(name);
+      seen.set(url, list);
+    }
+    for (const [url, names] of seen) {
+      if (names.length > 1) {
+        console.warn(
+          `[sync-worktrees] repoUrl '${url}' appears in multiple entries (${names.join(", ")}). ` +
+            `Pin 'bareRepoDir' on duplicate entries to make config reorder-proof.`,
+        );
+      }
+    }
+  }
+
   private validateHooksConfig(hooks: unknown, context: string): void {
     if (typeof hooks !== "object" || hooks === null) {
       throw new Error(`'hooks' in ${context} must be an object`);
@@ -303,6 +377,7 @@ export class ConfigLoaderService {
     defaults?: Partial<Config>,
     configDir?: string,
     globalRetry?: Config["retry"],
+    allRepositories?: RepositoryConfig[],
   ): RepositoryConfig {
     const resolved: RepositoryConfig = {
       name: repo.name,
@@ -314,6 +389,11 @@ export class ConfigLoaderService {
 
     if (repo.bareRepoDir) {
       resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
+    } else if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories)) {
+      const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
+      resolved.bareRepoDir = this.resolvePath(`.bare/${sanitized}`, configDir);
+    } else {
+      resolved.bareRepoDir = this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir);
     }
 
     if (repo.branchMaxAge || defaults?.branchMaxAge) {
@@ -363,7 +443,35 @@ export class ConfigLoaderService {
       };
     }
 
+    const sparse = repo.sparseCheckout ?? defaults?.sparseCheckout;
+    if (sparse) {
+      resolved.sparseCheckout = sparse;
+    }
+
     return resolved;
+  }
+
+  private isDuplicateRepoUrl(repo: RepositoryConfig, all: RepositoryConfig[]): boolean {
+    const firstIndex = all.findIndex((r) => r.repoUrl === repo.repoUrl);
+    const myIndex = all.indexOf(repo);
+    return firstIndex !== -1 && myIndex !== -1 && myIndex !== firstIndex;
+  }
+
+  detectBareRepoDirCollisions(repositories: RepositoryConfig[]): void {
+    const seen = new Map<string, { name: string; displayPath: string }>();
+    for (const repo of repositories) {
+      if (!repo.bareRepoDir) continue;
+      const key = normalizePathForCompare(repo.bareRepoDir);
+      const displayPath = path.resolve(repo.bareRepoDir);
+      const existing = seen.get(key);
+      if (existing && existing.name !== repo.name) {
+        throw new Error(
+          `Repositories '${existing.name}' and '${repo.name}' resolve to the same bareRepoDir '${displayPath}'. ` +
+            `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`,
+        );
+      }
+      seen.set(key, { name: repo.name, displayPath });
+    }
   }
 
   private isValidGitUrl(url: string): boolean {
@@ -406,8 +514,10 @@ export class ConfigLoaderService {
     const configDir = path.dirname(path.resolve(configPath));
 
     let repositories = configFile.repositories.map((repo) =>
-      this.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry),
+      this.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry, configFile.repositories),
     );
+
+    this.detectBareRepoDirCollisions(repositories);
 
     if (overrides?.filter) {
       repositories = this.filterRepositories(repositories, overrides.filter);

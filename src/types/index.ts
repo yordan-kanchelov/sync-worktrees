@@ -21,6 +21,14 @@ export interface HooksConfig {
   onBranchCreated?: string[];
 }
 
+export type SparseCheckoutMode = "cone" | "no-cone";
+
+export interface SparseCheckoutConfig {
+  include: string[];
+  exclude?: string[];
+  mode?: SparseCheckoutMode;
+}
+
 /**
  * Controls concurrency limits for parallel operations.
  * Lower values reduce resource usage but increase total sync time.
@@ -65,6 +73,7 @@ export interface Config {
   logger?: Logger;
   filesToCopyOnBranchCreate?: string[];
   hooks?: HooksConfig;
+  sparseCheckout?: SparseCheckoutConfig;
 }
 
 export interface RepositoryConfig extends Config {

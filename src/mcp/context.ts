@@ -130,6 +130,22 @@ export class RepositoryContext {
     const absolutePath = path.resolve(configPath);
     const configFile = await this.configLoader.loadConfigFile(absolutePath);
 
+    const configDir = path.dirname(absolutePath);
+    const globalDefaults = configFile.defaults;
+
+    const resolvedAll: RepositoryConfig[] = [];
+    for (const repo of configFile.repositories) {
+      const resolved = this.configLoader.resolveRepositoryConfig(
+        repo,
+        globalDefaults,
+        configDir,
+        configFile.retry,
+        configFile.repositories,
+      );
+      resolvedAll.push(resolved);
+    }
+    this.configLoader.detectBareRepoDirCollisions(resolvedAll);
+
     for (const [name, entry] of this.repos) {
       if (entry.source === "config") {
         this.repos.delete(name);
@@ -137,11 +153,7 @@ export class RepositoryContext {
     }
 
     this.configPath = absolutePath;
-    const configDir = path.dirname(absolutePath);
-    const globalDefaults = configFile.defaults;
-
-    for (const repo of configFile.repositories) {
-      const resolved = this.configLoader.resolveRepositoryConfig(repo, globalDefaults, configDir, configFile.retry);
+    for (const resolved of resolvedAll) {
       this.repos.set(resolved.name, {
         name: resolved.name,
         config: resolved,

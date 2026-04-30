@@ -167,15 +167,49 @@ export default {
 
     {
       name: "large-media-project",
-      
+
       repoUrl: "https://github.com/user/large-media.git",
       worktreeDir: "./worktrees/large-media",
-      
+
       // Skip downloading LFS files to save bandwidth and disk space
       skipLfs: true,
-      
+
       // Still check regularly for code changes
       cronSchedule: "0 * * * *"
+    },
+
+    // Sparse-checkout: clone only a subset of folders from a monorepo.
+    // The same repoUrl can be listed multiple times under different `name`s
+    // with different sparse patterns and worktreeDirs to build domain-grouped layouts.
+    {
+      name: "monorepo-game-client",
+      repoUrl: "https://github.com/acme/casino-monorepo.git",
+      worktreeDir: "/Users/me/game-clients/roulette",
+      sparseCheckout: {
+        // Cone mode (default): pass folder names; fast and recommended
+        include: ["game-client"]
+      }
+    },
+    {
+      name: "monorepo-autocue",
+      repoUrl: "https://github.com/acme/casino-monorepo.git",
+      worktreeDir: "/Users/me/autocues/roulette",
+      sparseCheckout: { include: ["autocue"] },
+      // Optional: pin bareRepoDir to make config order irrelevant.
+      // Without this pin, the FIRST entry per repoUrl gets .bare/<repo-slug>
+      // and subsequent duplicates auto-derive .bare/<sanitized-name>.
+      // bareRepoDir: ".bare/monorepo-autocue"
+    },
+    {
+      name: "monorepo-with-excludes",
+      repoUrl: "https://github.com/acme/casino-monorepo.git",
+      worktreeDir: "/Users/me/casino/all-but-docs",
+      sparseCheckout: {
+        // No-cone mode: gitignore-style patterns, supports !-negation.
+        // Setting `exclude` auto-promotes mode to "no-cone".
+        include: ["/*"],
+        exclude: ["docs", "vendor"]
+      }
     },
     
     {

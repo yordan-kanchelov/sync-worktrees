@@ -10,6 +10,7 @@ import { getErrorMessage } from "../utils/lfs-error";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import { Logger } from "./logger.service";
+import { SparseCheckoutService } from "./sparse-checkout.service";
 import { WorktreeMetadataService } from "./worktree-metadata.service";
 import { WorktreeStatusService } from "./worktree-status.service";
 
@@ -18,7 +19,10 @@ import type { Config } from "../types";
 import type { SyncMetadata } from "../types/sync-metadata";
 import type { SimpleGit } from "simple-git";
 
-export type GitServiceOptions = Pick<Config, "repoUrl" | "worktreeDir" | "bareRepoDir" | "skipLfs" | "debug">;
+export type GitServiceOptions = Pick<
+  Config,
+  "repoUrl" | "worktreeDir" | "bareRepoDir" | "skipLfs" | "debug" | "sparseCheckout"
+>;
 
 export class GitService {
   private git: SimpleGit | null = null;
@@ -27,6 +31,7 @@ export class GitService {
   private defaultBranch: string = GIT_CONSTANTS.DEFAULT_BRANCH; // Will be updated after detection
   private metadataService: WorktreeMetadataService;
   private statusService: WorktreeStatusService;
+  private sparseCheckoutService: SparseCheckoutService;
   private logger: Logger;
   private lfsSkipOverride = false;
   private gitInstances = new Map<string, SimpleGit>();
@@ -40,6 +45,11 @@ export class GitService {
     this.mainWorktreePath = path.join(this.config.worktreeDir, GIT_CONSTANTS.DEFAULT_BRANCH); // Temporary, will be updated
     this.metadataService = new WorktreeMetadataService(this.logger);
     this.statusService = new WorktreeStatusService({ skipLfs: this.config.skipLfs }, this.logger);
+    this.sparseCheckoutService = new SparseCheckoutService(this.logger);
+  }
+
+  getSparseCheckoutService(): SparseCheckoutService {
+    return this.sparseCheckoutService;
   }
 
   private getCachedGit(dirPath: string, useLfsSkip = false): SimpleGit {
@@ -54,6 +64,7 @@ export class GitService {
 
   updateLogger(logger: Logger): void {
     this.logger = logger;
+    this.sparseCheckoutService.updateLogger(logger);
   }
 
   async initialize(): Promise<SimpleGit> {
@@ -118,23 +129,27 @@ export class GitService {
       const branches = await bareGit.branch();
       const defaultBranchExists = branches.all.includes(this.defaultBranch);
 
+      const useNoCheckoutMain = !!this.config.sparseCheckout;
+      const noCheckoutFlagMain = useNoCheckoutMain ? ["--no-checkout"] : [];
+
       try {
         if (defaultBranchExists) {
-          await bareGit.raw(["worktree", "add", absoluteWorktreePath, this.defaultBranch]);
-          // Set upstream tracking after creating worktree
+          await bareGit.raw(["worktree", "add", ...noCheckoutFlagMain, absoluteWorktreePath, this.defaultBranch]);
           const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
           await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
+          await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, this.defaultBranch, false);
         } else {
-          // Create new branch tracking the remote branch
           await bareGit.raw([
             "worktree",
             "add",
+            ...noCheckoutFlagMain,
             "--track",
             "-b",
             this.defaultBranch,
             absoluteWorktreePath,
             `origin/${this.defaultBranch}`,
           ]);
+          await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, this.defaultBranch, true);
         }
       } catch (error) {
         const errorMessage = getErrorMessage(error);
@@ -244,17 +259,39 @@ export class GitService {
   }
 
   private async verifyLfsFilesDownloaded(worktreePath: string, branchName: string): Promise<void> {
-    const worktreeGit = this.getCachedGit(worktreePath);
+    const worktreeGit = this.config.sparseCheckout
+      ? simpleGit(worktreePath).env({ ...process.env, [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" })
+      : this.getCachedGit(worktreePath);
 
     try {
       const lfsFiles = await worktreeGit.raw(["lfs", "ls-files", "--name-only"]);
-      const lfsFileList = lfsFiles
+      let lfsFileList = lfsFiles
         .trim()
         .split("\n")
         .filter((f) => f.length > 0);
 
       if (lfsFileList.length === 0) {
         return;
+      }
+
+      // GIT_ATTR_SOURCE=HEAD lists every LFS file declared in HEAD's .gitattributes,
+      // including ones outside the sparse-checkout cone that aren't on disk. Sampling
+      // those would burn the 30s retry loop on guaranteed-missing files.
+      if (this.config.sparseCheckout) {
+        const existence = await Promise.all(
+          lfsFileList.map(async (f) => {
+            try {
+              await fs.access(path.join(worktreePath, f));
+              return f;
+            } catch {
+              return null;
+            }
+          }),
+        );
+        lfsFileList = existence.filter((f): f is string => f !== null);
+        if (lfsFileList.length === 0) {
+          return;
+        }
       }
 
       if (this.config.debug) {
@@ -319,6 +356,47 @@ export class GitService {
     }
   }
 
+  async checkoutHead(worktreePath: string): Promise<void> {
+    const git = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
+    await git.raw(["checkout", "HEAD"]);
+  }
+
+  private async applySparseAndCheckout(absoluteWorktreePath: string): Promise<void> {
+    if (!this.config.sparseCheckout) return;
+    await this.sparseCheckoutService.applyToWorktree(absoluteWorktreePath, this.config.sparseCheckout);
+    const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
+    await worktreeGit.raw(["checkout", "HEAD"]);
+  }
+
+  private async rollbackPartialWorktree(
+    bareGit: SimpleGit,
+    absoluteWorktreePath: string,
+    branchName: string,
+    createdNewBranch: boolean,
+    failureContext?: string,
+  ): Promise<{ worktreeRemoved: boolean }> {
+    let worktreeRemoved = true;
+    try {
+      await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
+    } catch (rollbackError) {
+      worktreeRemoved = false;
+      const ctx = failureContext ? ` after ${failureContext}` : "";
+      this.logger.warn(
+        `  - Rollback failed for '${branchName}' at '${absoluteWorktreePath}'${ctx}: ${getErrorMessage(rollbackError)}`,
+      );
+    }
+    if (createdNewBranch) {
+      try {
+        await bareGit.raw(["branch", "-D", branchName]);
+      } catch (branchRollbackError) {
+        this.logger.warn(
+          `  - Rollback (branch delete) failed for '${branchName}': ${getErrorMessage(branchRollbackError)}`,
+        );
+      }
+    }
+    return { worktreeRemoved };
+  }
+
   private async createWorktreeMetadata(bareGit: SimpleGit, worktreePath: string, branchName: string): Promise<void> {
     try {
       const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
@@ -365,10 +443,11 @@ export class GitService {
       // Directory doesn't exist, which is expected - continue with creation
     }
 
+    let createdNewBranch = false;
     try {
       const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
 
-      await this.runWorktreeAddByMatrix(
+      createdNewBranch = await this.runWorktreeAddByMatrix(
         bareGit,
         branchName,
         absoluteWorktreePath,
@@ -382,7 +461,6 @@ export class GitService {
         this.logger.info(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
       }
 
-      // Verify LFS files are properly downloaded (if not skipping LFS)
       if (!this.isLfsSkipEnabled()) {
         await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
       }
@@ -391,11 +469,7 @@ export class GitService {
         await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
       } catch (metadataError) {
         this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
-        try {
-          await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
-        } catch {
-          // Best effort cleanup
-        }
+        await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
         throw new Error(`Metadata creation failed for '${branchName}': ${getErrorMessage(metadataError)}`);
       }
     } catch (error) {
@@ -431,9 +505,10 @@ export class GitService {
         } catch {
           // Directory might not exist, ignore
         }
+        let retryCreatedNewBranch = false;
         try {
           const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
-          await this.runWorktreeAddByMatrix(
+          retryCreatedNewBranch = await this.runWorktreeAddByMatrix(
             bareGit,
             branchName,
             absoluteWorktreePath,
@@ -442,7 +517,6 @@ export class GitService {
           );
           this.logger.info(`  - Created worktree for '${branchName}' after pruning`);
 
-          // Verify LFS files are properly downloaded (if not skipping LFS)
           if (!this.isLfsSkipEnabled()) {
             await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
           }
@@ -451,11 +525,7 @@ export class GitService {
             await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
           } catch (metadataError) {
             this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
-            try {
-              await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
-            } catch {
-              // Best effort cleanup
-            }
+            await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, retryCreatedNewBranch);
             throw new Error(`Metadata creation failed for '${branchName}': ${getErrorMessage(metadataError)}`);
           }
           return;
@@ -501,10 +571,14 @@ export class GitService {
       }
 
       try {
-        await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
+        const useNoCheckout = !!this.config.sparseCheckout;
+        const fallbackArgs = useNoCheckout
+          ? ["worktree", "add", "--no-checkout", absoluteWorktreePath, branchName]
+          : ["worktree", "add", absoluteWorktreePath, branchName];
+        await bareGit.raw(fallbackArgs);
+        await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, false);
         this.logger.info(`  - Created worktree for '${branchName}' (without tracking)`);
 
-        // Verify LFS files are properly downloaded (if not skipping LFS)
         if (!this.isLfsSkipEnabled()) {
           await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
         }
@@ -513,11 +587,7 @@ export class GitService {
           await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
         } catch (metadataError) {
           this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
-          try {
-            await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
-          } catch {
-            // Best effort cleanup
-          }
+          await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, false);
           throw new Error(`Metadata creation failed for '${branchName}': ${getErrorMessage(metadataError)}`);
         }
       } catch (fallbackError) {
@@ -546,48 +616,85 @@ export class GitService {
     absoluteWorktreePath: string,
     localExists: boolean,
     remoteExists: boolean,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    const useNoCheckout = !!this.config.sparseCheckout;
+    const noCheckoutFlag = useNoCheckout ? ["--no-checkout"] : [];
+
     if (localExists && remoteExists) {
-      await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
+      await bareGit.raw(["worktree", "add", ...noCheckoutFlag, absoluteWorktreePath, branchName]);
+
+      // branch --set-upstream-to is a config-only operation and works on a --no-checkout
+      // worktree, so we run it before sparse setup and materialization.
       try {
         const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
         await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
       } catch (error) {
-        let rollbackFailed = false;
-        try {
-          await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
-        } catch (rollbackError) {
-          rollbackFailed = true;
-          this.logger.warn(
-            `  - Rollback failed for '${branchName}' at '${absoluteWorktreePath}' after upstream setup error: ${getErrorMessage(rollbackError)}`,
-          );
-        }
-        // Mark the error so the outer addWorktree catch won't reclassify it as a tracking
-        // error and fall back to a non-tracking add (which would silently accept the partial
-        // worktree without upstream).
-        const detail = getErrorMessage(error);
-        const suffix = rollbackFailed ? " (rollback failed; partial worktree may remain)" : "";
-        const wrapped = new Error(`Failed to set upstream for '${branchName}': ${detail}${suffix}`);
-        (wrapped as Error & { isUpstreamSetupFailure?: boolean }).isUpstreamSetupFailure = true;
-        throw wrapped;
+        throw await this.wrapUpstreamFailure(bareGit, absoluteWorktreePath, branchName, false, error);
       }
-      return;
+
+      await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, false);
+      return false;
     }
 
     if (localExists) {
-      await bareGit.raw(["worktree", "add", absoluteWorktreePath, branchName]);
-      return;
+      await bareGit.raw(["worktree", "add", ...noCheckoutFlag, absoluteWorktreePath, branchName]);
+      await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, false);
+      return false;
     }
 
     if (remoteExists) {
-      await bareGit.raw(["worktree", "add", "--track", "-b", branchName, absoluteWorktreePath, `origin/${branchName}`]);
-      return;
+      await bareGit.raw([
+        "worktree",
+        "add",
+        ...noCheckoutFlag,
+        "--track",
+        "-b",
+        branchName,
+        absoluteWorktreePath,
+        `origin/${branchName}`,
+      ]);
+      await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, true);
+      return true;
     }
 
     throw new WorktreeError(
       `Branch '${branchName}' does not exist locally or on origin; create it first`,
       "BRANCH_NOT_FOUND",
     );
+  }
+
+  private async runSparseStepWithRollback(
+    bareGit: SimpleGit,
+    absoluteWorktreePath: string,
+    branchName: string,
+    createdNewBranch: boolean,
+  ): Promise<void> {
+    try {
+      await this.applySparseAndCheckout(absoluteWorktreePath);
+    } catch (sparseError) {
+      await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
+      throw new Error(`Sparse-checkout setup failed for '${branchName}': ${getErrorMessage(sparseError)}`);
+    }
+  }
+
+  private async wrapUpstreamFailure(
+    bareGit: SimpleGit,
+    absoluteWorktreePath: string,
+    branchName: string,
+    createdNewBranch: boolean,
+    error: unknown,
+  ): Promise<Error> {
+    const { worktreeRemoved } = await this.rollbackPartialWorktree(
+      bareGit,
+      absoluteWorktreePath,
+      branchName,
+      createdNewBranch,
+      "upstream setup error",
+    );
+    const suffix = worktreeRemoved ? "" : " (rollback failed; partial worktree may remain)";
+    const wrapped = new Error(`Failed to set upstream for '${branchName}': ${getErrorMessage(error)}${suffix}`);
+    (wrapped as Error & { isUpstreamSetupFailure?: boolean }).isUpstreamSetupFailure = true;
+    return wrapped;
   }
 
   async removeWorktree(worktreePath: string): Promise<void> {

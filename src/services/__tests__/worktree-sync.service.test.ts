@@ -58,6 +58,8 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([]),
+      checkoutHead: vi.fn<any>().mockResolvedValue(undefined),
+      getSparseCheckoutService: vi.fn(),
     } as any,
   };
 });
@@ -1128,6 +1130,167 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.fetchAll).toHaveBeenCalled();
       expect(mockGitService.getRemoteBranches).toHaveBeenCalled();
       expect(mockGitService.pruneWorktrees).toHaveBeenCalledTimes(4);
+    });
+  });
+
+  describe("sparseCheckout reapply on existing worktrees", () => {
+    function makeSparseService(): WorktreeSyncService {
+      const cfg: Config = {
+        ...mockConfig,
+        runOnce: true,
+        sparseCheckout: { include: ["apps"] },
+      };
+      const sparseSvc = new WorktreeSyncService(cfg);
+      return sparseSvc;
+    }
+
+    let applyToWorktree: Mock<any>;
+    let readCurrent: Mock<any>;
+    let isNarrowing: Mock<any>;
+
+    beforeEach(() => {
+      applyToWorktree = vi.fn().mockResolvedValue(undefined);
+      readCurrent = vi.fn();
+      isNarrowing = vi.fn();
+      mockGitService.getSparseCheckoutService.mockReturnValue({
+        applyToWorktree,
+        readCurrent,
+        isNarrowing,
+        buildPatterns: vi.fn().mockReturnValue(["apps"]),
+        needsUpdate: vi.fn().mockResolvedValue(true),
+        resolveMode: vi.fn(),
+        patternsEqual: vi.fn((a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i])),
+      } as any);
+      (fs.access as Mock).mockResolvedValue(undefined);
+      (fs.mkdir as Mock).mockResolvedValue(undefined);
+      mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
+      mockGitService.getWorktrees.mockResolvedValue([{ path: wtPath("/test/worktrees", "main"), branch: "main" }]);
+    });
+
+    it("skips when current matches desired", async () => {
+      readCurrent.mockResolvedValue(["apps"]);
+      isNarrowing.mockReturnValue(false);
+
+      const svc = makeSparseService();
+      await svc.sync();
+
+      expect(applyToWorktree).not.toHaveBeenCalled();
+    });
+
+    it("applies and checks out when widening (current is subset of desired)", async () => {
+      readCurrent.mockResolvedValue(null);
+      isNarrowing.mockReturnValue(false);
+
+      const svc = makeSparseService();
+      await svc.sync();
+
+      expect(applyToWorktree).toHaveBeenCalled();
+      expect(mockGitService.checkoutHead).toHaveBeenCalled();
+    });
+
+    it("skips narrowing when worktree is dirty", async () => {
+      readCurrent.mockResolvedValue(["apps", "packages"]);
+      isNarrowing.mockReturnValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: false,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["uncommitted changes"],
+      });
+
+      const svc = makeSparseService();
+      await svc.sync();
+
+      expect(applyToWorktree).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping sparse-checkout narrowing"));
+    });
+
+    it("skips narrowing when worktree has unpushed commits", async () => {
+      readCurrent.mockResolvedValue(["apps", "packages"]);
+      isNarrowing.mockReturnValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: true,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["unpushed commits"],
+      });
+
+      const svc = makeSparseService();
+      await svc.sync();
+
+      expect(applyToWorktree).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("unpushed commits"));
+    });
+
+    it("skips narrowing when worktree has operation in progress", async () => {
+      readCurrent.mockResolvedValue(["apps", "packages"]);
+      isNarrowing.mockReturnValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: true,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: false,
+        reasons: ["rebase in progress"],
+      });
+
+      const svc = makeSparseService();
+      await svc.sync();
+
+      expect(applyToWorktree).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("rebase in progress"));
+    });
+
+    it("applies narrowing when worktree is clean", async () => {
+      readCurrent.mockResolvedValue(["apps", "packages"]);
+      isNarrowing.mockReturnValue(true);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        canRemove: true,
+        reasons: [],
+      });
+
+      const svc = makeSparseService();
+      await svc.sync();
+
+      expect(applyToWorktree).toHaveBeenCalled();
+      expect(mockGitService.checkoutHead).toHaveBeenCalled();
+    });
+
+    it("does nothing when sparseCheckout is unset", async () => {
+      readCurrent.mockResolvedValue(["apps"]);
+      isNarrowing.mockReturnValue(false);
+      // service WITHOUT sparseCheckout
+      await service.sync();
+      expect(applyToWorktree).not.toHaveBeenCalled();
+      expect(mockGitService.getSparseCheckoutService).not.toHaveBeenCalled();
+    });
+
+    it("continues sync and warns when readCurrent throws", async () => {
+      readCurrent.mockRejectedValue(new Error("boom"));
+      isNarrowing.mockReturnValue(false);
+
+      const svc = makeSparseService();
+      await expect(svc.sync()).resolves.not.toThrow();
+
+      expect(applyToWorktree).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Failed to update sparse-checkout"));
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("boom"));
     });
   });
 });
