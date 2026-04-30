@@ -74,6 +74,18 @@ export interface Config {
   filesToCopyOnBranchCreate?: string[];
   hooks?: HooksConfig;
   sparseCheckout?: SparseCheckoutConfig;
+  /**
+   * Inactivity timeout (ms) for fetch/standard git operations.
+   * Triggers when no stdout/stderr data arrives within window.
+   * Default: 300_000 (5 min). Set 0 to disable.
+   */
+  fetchTimeoutMs?: number;
+  /**
+   * Inactivity timeout (ms) for `git clone`. Larger than fetch because
+   * server-side pack resolution can be silent for several minutes on big repos.
+   * Default: 900_000 (15 min). Set 0 to disable.
+   */
+  cloneTimeoutMs?: number;
 }
 
 export interface RepositoryConfig extends Config {

@@ -3,7 +3,7 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
 import { WorktreeError } from "../errors";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
@@ -21,7 +21,14 @@ import type { SimpleGit } from "simple-git";
 
 export type GitServiceOptions = Pick<
   Config,
-  "repoUrl" | "worktreeDir" | "bareRepoDir" | "skipLfs" | "debug" | "sparseCheckout"
+  | "repoUrl"
+  | "worktreeDir"
+  | "bareRepoDir"
+  | "skipLfs"
+  | "debug"
+  | "sparseCheckout"
+  | "fetchTimeoutMs"
+  | "cloneTimeoutMs"
 >;
 
 // simple-git blocks EDITOR / GIT_EDITOR / GIT_SEQUENCE_EDITOR unless allowUnsafeEditor is set;
@@ -62,11 +69,23 @@ export class GitService {
     return this.sparseCheckoutService;
   }
 
+  private getFetchTimeoutMs(): number {
+    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    return this.config.fetchTimeoutMs ?? DEFAULT_CONFIG.FETCH_TIMEOUT_MS;
+  }
+
+  private getCloneTimeoutMs(): number {
+    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    return this.config.cloneTimeoutMs ?? DEFAULT_CONFIG.CLONE_TIMEOUT_MS;
+  }
+
   private getCachedGit(dirPath: string, useLfsSkip = false): SimpleGit {
     const key = `${path.resolve(dirPath)}::${useLfsSkip ? "1" : "0"}`;
     let git = this.gitInstances.get(key);
     if (!git) {
-      git = useLfsSkip ? simpleGit(dirPath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : simpleGit(dirPath);
+      const block = this.getFetchTimeoutMs();
+      const base = block > 0 ? simpleGit(dirPath, { timeout: { block } }) : simpleGit(dirPath);
+      git = useLfsSkip ? base.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : base;
       this.gitInstances.set(key, git);
     }
     return git;
@@ -87,9 +106,11 @@ export class GitService {
       // Clone as bare repository
       this.logger.info(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
+      const cloneBlock = this.getCloneTimeoutMs();
+      const cloneBase = cloneBlock > 0 ? simpleGit({ timeout: { block: cloneBlock } }) : simpleGit();
       const cloneGit = this.isLfsSkipEnabled()
-        ? simpleGit().env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
-        : simpleGit();
+        ? cloneBase.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
+        : cloneBase;
       await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare"]);
       this.logger.info("✅ Clone successful.");
     }
@@ -204,6 +225,10 @@ export class GitService {
 
   getDefaultBranch(): string {
     return this.defaultBranch;
+  }
+
+  getBareRepoPath(): string {
+    return this.bareRepoPath;
   }
 
   async fetchAll(): Promise<void> {
