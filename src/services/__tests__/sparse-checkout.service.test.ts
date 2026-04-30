@@ -58,7 +58,7 @@ describe("SparseCheckoutService", () => {
     });
 
     it("warns only once per config instance even across many calls", () => {
-      const cfg = { include: ["/*"], exclude: ["docs"], mode: "cone" } as const;
+      const cfg: SparseCheckoutConfig = { include: ["/*"], exclude: ["docs"], mode: "cone" };
       service.resolveMode(cfg);
       service.resolveMode(cfg);
       service.buildPatterns(cfg);
