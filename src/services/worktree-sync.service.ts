@@ -706,7 +706,27 @@ export class WorktreeSyncService {
           }
 
           const isBehind = await this.gitService.isWorktreeBehind(worktree.path);
-          return isBehind ? { action: "update", worktree } : null;
+          if (!isBehind) return null;
+
+          const sparseCfg = this.config.sparseCheckout;
+          if (sparseCfg && sparseCfg.skipUpdateWhenOutsideSparse !== false) {
+            const sparseService = this.gitService.getSparseCheckoutService();
+            if (sparseService.resolveMode(sparseCfg) === "cone") {
+              const diff = await this.gitService.getChangedPathsInRange(
+                worktree.path,
+                "HEAD",
+                `origin/${worktree.branch}`,
+              );
+              // null result means git diff failed — proceed with update for safety
+              // rather than treating the failure as "no sparse paths affected".
+              if (diff !== null && !sparseService.pathsTouchSparse(diff.paths, diff.rootFilesTouched, sparseCfg)) {
+                this.logger.info(`⏭️  Skipping '${worktree.branch}' - upstream changes outside sparse paths`);
+                return null;
+              }
+            }
+          }
+
+          return { action: "update", worktree };
         }),
       ),
     );

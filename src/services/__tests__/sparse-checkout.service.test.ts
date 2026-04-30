@@ -210,4 +210,80 @@ describe("SparseCheckoutService", () => {
       expect(service.patternsEqual(["a"], ["a", "b"])).toBe(false);
     });
   });
+
+  describe("pathsTouchSparse (cone mode)", () => {
+    it("returns false when changed paths list is empty", () => {
+      expect(service.pathsTouchSparse([], false, { include: ["src"] })).toBe(false);
+    });
+
+    it("returns true when a changed path lies inside an include directory", () => {
+      expect(service.pathsTouchSparse(["src/foo.ts"], false, { include: ["src"] })).toBe(true);
+    });
+
+    it("returns false when changed paths are all outside the include directories", () => {
+      expect(service.pathsTouchSparse(["lib/foo.ts", "tools/x.ts"], false, { include: ["src"] })).toBe(false);
+    });
+
+    it("treats trailing slash on patterns as equivalent", () => {
+      expect(service.pathsTouchSparse(["src/foo.ts"], false, { include: ["src/"] })).toBe(true);
+    });
+
+    it("matches nested include paths exactly", () => {
+      expect(service.pathsTouchSparse(["tools/build/x.ts"], false, { include: ["tools/build"] })).toBe(true);
+      expect(service.pathsTouchSparse(["tools/other/x.ts"], false, { include: ["tools/build"] })).toBe(false);
+    });
+
+    it("matches files directly inside ancestors of a nested include (cone keeps parent files)", () => {
+      // For include "tools/build", git's cone mode also checks out files directly in "tools/"
+      expect(service.pathsTouchSparse(["tools/file.txt"], false, { include: ["tools/build"] })).toBe(true);
+    });
+
+    it("does not match files in sibling directories of an ancestor", () => {
+      expect(service.pathsTouchSparse(["other/file.txt"], false, { include: ["tools/build"] })).toBe(false);
+    });
+
+    it("matches direct files of every ancestor for deeply nested includes", () => {
+      const cfg = { include: ["a/b/c/d"] };
+      expect(service.pathsTouchSparse(["a/x"], false, cfg)).toBe(true);
+      expect(service.pathsTouchSparse(["a/b/x"], false, cfg)).toBe(true);
+      expect(service.pathsTouchSparse(["a/b/c/x"], false, cfg)).toBe(true);
+      expect(service.pathsTouchSparse(["a/b/c/d/x"], false, cfg)).toBe(true);
+      expect(service.pathsTouchSparse(["a/b/d/x"], false, cfg)).toBe(false);
+      expect(service.pathsTouchSparse(["a/b/c/sibling/x"], false, cfg)).toBe(false);
+    });
+
+    it("returns true when a root file is touched (cone always materializes root files)", () => {
+      expect(service.pathsTouchSparse(["README.md"], true, { include: ["src"] })).toBe(true);
+    });
+
+    it("does not match a sibling directory whose name shares a prefix", () => {
+      expect(service.pathsTouchSparse(["sources/foo.ts"], false, { include: ["src"] })).toBe(false);
+    });
+
+    it("matches when include itself is the exact path", () => {
+      expect(service.pathsTouchSparse(["src"], false, { include: ["src"] })).toBe(true);
+    });
+
+    it("returns true (force update) when include list is effectively empty", () => {
+      expect(service.pathsTouchSparse(["lib/foo.ts"], false, { include: ["", "  "] })).toBe(true);
+    });
+
+    it("supports multiple include patterns", () => {
+      const cfg = { include: ["react-game-client", "jenkins"] };
+      expect(service.pathsTouchSparse(["jenkins/Jenkinsfile"], false, cfg)).toBe(true);
+      expect(service.pathsTouchSparse(["autocue/main.ts"], false, cfg)).toBe(false);
+    });
+  });
+
+  describe("pathsTouchSparse (no-cone mode)", () => {
+    it("returns true conservatively for any non-empty diff (no-cone matching not implemented)", () => {
+      const cfg: SparseCheckoutConfig = { include: ["/*"], exclude: ["docs"] };
+      expect(service.pathsTouchSparse(["lib/foo.ts"], false, cfg)).toBe(true);
+      expect(service.pathsTouchSparse(["docs/x.md"], false, cfg)).toBe(true);
+    });
+
+    it("still returns false for empty diff in no-cone", () => {
+      expect(service.pathsTouchSparse([], false, { include: ["/*"], exclude: ["docs"] })).toBe(false);
+    });
+  });
 });

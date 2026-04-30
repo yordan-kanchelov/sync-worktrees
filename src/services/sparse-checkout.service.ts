@@ -120,4 +120,56 @@ export class SparseCheckoutService {
     const bt = b.map((x) => x.trim());
     return at.every((v, i) => v === bt[i]);
   }
+
+  /**
+   * Decide whether a list of changed file paths intersects the sparse-checkout
+   * set defined by `cfg`. Used to skip fast-forward updates when upstream
+   * commits only touch files outside the materialized worktree.
+   *
+   * Cone mode materializes:
+   *   - all files at the repository root,
+   *   - all files directly inside every ancestor of an included directory
+   *     (e.g. include `tools/build` keeps `tools/foo.txt` checked out too),
+   *   - everything inside an included directory.
+   * We mirror those rules here. Missing the ancestor-files case would let
+   * stale files linger when only those parent files change upstream.
+   *
+   * No-cone mode: gitignore-style matching with negation is non-trivial and
+   * not implemented here yet. We return `true` so the caller falls back to
+   * the safe behavior of always running the update.
+   */
+  pathsTouchSparse(changedPaths: string[], rootFilesTouched: boolean, cfg: SparseCheckoutConfig): boolean {
+    if (changedPaths.length === 0) return false;
+
+    const mode = this.resolveMode(cfg);
+    if (mode === "no-cone") {
+      return true;
+    }
+
+    if (rootFilesTouched) return true;
+
+    const patterns = cfg.include
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0)
+      .map((p) => (p.endsWith("/") ? p.slice(0, -1) : p));
+
+    if (patterns.length === 0) return true;
+
+    const ancestorDirs = new Set<string>([""]);
+    for (const pat of patterns) {
+      const parts = pat.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        ancestorDirs.add(parts.slice(0, i).join("/"));
+      }
+    }
+
+    return changedPaths.some((p) => {
+      for (const pat of patterns) {
+        if (p === pat || p.startsWith(pat + "/")) return true;
+      }
+      const lastSlash = p.lastIndexOf("/");
+      const parentDir = lastSlash === -1 ? "" : p.substring(0, lastSlash);
+      return ancestorDirs.has(parentDir);
+    });
+  }
 }
