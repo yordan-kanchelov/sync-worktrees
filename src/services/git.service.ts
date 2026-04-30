@@ -24,6 +24,16 @@ export type GitServiceOptions = Pick<
   "repoUrl" | "worktreeDir" | "bareRepoDir" | "skipLfs" | "debug" | "sparseCheckout"
 >;
 
+// simple-git blocks EDITOR / GIT_EDITOR / GIT_SEQUENCE_EDITOR unless allowUnsafeEditor is set;
+// strip them when forwarding process.env so a user's shell EDITOR doesn't break read-only commands.
+function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const sanitized = { ...env };
+  delete sanitized.EDITOR;
+  delete sanitized.GIT_EDITOR;
+  delete sanitized.GIT_SEQUENCE_EDITOR;
+  return sanitized;
+}
+
 export class GitService {
   private git: SimpleGit | null = null;
   private bareRepoPath: string;
@@ -260,7 +270,7 @@ export class GitService {
 
   private async verifyLfsFilesDownloaded(worktreePath: string, branchName: string): Promise<void> {
     const worktreeGit = this.config.sparseCheckout
-      ? simpleGit(worktreePath).env({ ...process.env, [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" })
+      ? simpleGit(worktreePath).env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" })
       : this.getCachedGit(worktreePath);
 
     try {
