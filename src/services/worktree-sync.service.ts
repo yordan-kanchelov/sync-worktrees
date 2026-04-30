@@ -2,8 +2,9 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import pLimit from "p-limit";
+import * as lockfile from "proper-lockfile";
 
-import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
@@ -18,7 +19,10 @@ import type { Config } from "../types";
 import type { WorktreeStatusDetails } from "./worktree-status.service";
 import type { RetryOptions } from "../utils/retry";
 
-export type SyncResult = { started: true } | { started: false; reason: "in_progress" };
+export type SyncResult =
+  | { started: true }
+  | { started: false; reason: "in_progress" }
+  | { started: false; reason: "locked" };
 
 export interface ProgressEvent {
   phase: string;
@@ -82,6 +86,13 @@ export class WorktreeSyncService {
       this.logger.warn("⚠️  Sync already in progress, skipping...");
       return { started: false, reason: "in_progress" };
     }
+
+    const release = await this.acquireBareLock();
+    if (release === null) {
+      this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
+      return { started: false, reason: "locked" };
+    }
+
     this.syncInProgress = true;
     this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
 
@@ -100,6 +111,11 @@ export class WorktreeSyncService {
         this.gitService.setLfsSkipEnabled(false);
       }
       this.syncInProgress = false;
+      try {
+        await release();
+      } catch (releaseError) {
+        this.logger.warn(`Failed to release sync lock: ${getErrorMessage(releaseError)}`);
+      }
       this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
 
       if (this.config.debug) {
@@ -111,6 +127,41 @@ export class WorktreeSyncService {
     }
 
     return { started: true };
+  }
+
+  private async acquireBareLock(): Promise<(() => Promise<void>) | null> {
+    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
+      return async () => {};
+    }
+
+    if (typeof this.gitService.getBareRepoPath !== "function") {
+      return async () => {};
+    }
+
+    const barePath = this.gitService.getBareRepoPath();
+    const lockTarget = path.join(barePath, "HEAD");
+
+    try {
+      await fs.access(lockTarget);
+    } catch {
+      return async () => {};
+    }
+
+    try {
+      const release = await lockfile.lock(lockTarget, {
+        stale: DEFAULT_CONFIG.LOCK_STALE_MS,
+        update: DEFAULT_CONFIG.LOCK_UPDATE_MS,
+        retries: 0,
+        realpath: false,
+      });
+      return release;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ELOCKED") {
+        return null;
+      }
+      throw error;
+    }
   }
 
   private createRetryOptions(syncContext: { lfsSkipEnabled: boolean }): RetryOptions {
