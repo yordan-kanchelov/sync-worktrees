@@ -1,3 +1,5 @@
+import * as path from "path";
+
 import simpleGit from "simple-git";
 
 import { Logger } from "./logger.service";
@@ -7,10 +9,17 @@ import type { SimpleGit } from "simple-git";
 
 export type GitFactory = (worktreePath: string) => SimpleGit;
 
+interface SparseMatcher {
+  mode: SparseCheckoutMode;
+  patterns: string[];
+  ancestorDirs: Set<string>;
+}
+
 export class SparseCheckoutService {
   private logger: Logger;
   private gitFactory: GitFactory;
   private warnedConfigs = new WeakSet<SparseCheckoutConfig>();
+  private matcherCache = new WeakMap<SparseCheckoutConfig, SparseMatcher>();
 
   constructor(logger?: Logger, gitFactory?: GitFactory) {
     this.logger = logger ?? Logger.createDefault();
@@ -119,5 +128,71 @@ export class SparseCheckoutService {
     const at = a.map((x) => x.trim());
     const bt = b.map((x) => x.trim());
     return at.every((v, i) => v === bt[i]);
+  }
+
+  /**
+   * Decide whether a list of changed file paths intersects the sparse-checkout
+   * set defined by `cfg`. Used to skip fast-forward updates when upstream
+   * commits only touch files outside the materialized worktree.
+   *
+   * Cone mode materializes:
+   *   - all files at the repository root,
+   *   - all files directly inside every ancestor of an included directory
+   *     (e.g. include `tools/build` keeps `tools/foo.txt` checked out too),
+   *   - everything inside an included directory.
+   * We mirror those rules here. Missing the ancestor-files case would let
+   * stale files linger when only those parent files change upstream.
+   *
+   * No-cone mode: gitignore-style matching with negation is non-trivial and
+   * not implemented here yet. We return `true` so the caller falls back to
+   * the safe behavior of always running the update.
+   *
+   * The matcher derived from `cfg` is cached on the cfg object identity
+   * (WeakMap), so callers should reuse the same `cfg` reference across
+   * invocations to benefit from the cache.
+   */
+  pathsTouchSparse(changedPaths: string[], cfg: SparseCheckoutConfig): boolean {
+    if (changedPaths.length === 0) return false;
+
+    const matcher = this.getMatcher(cfg);
+    if (matcher.mode === "no-cone") return true;
+    if (matcher.patterns.length === 0) return true;
+
+    return changedPaths.some((p) => {
+      if (!p.includes("/")) return true;
+      for (const pat of matcher.patterns) {
+        if (p === pat || p.startsWith(pat + "/")) return true;
+      }
+      return matcher.ancestorDirs.has(path.posix.dirname(p));
+    });
+  }
+
+  private getMatcher(cfg: SparseCheckoutConfig): SparseMatcher {
+    const cached = this.matcherCache.get(cfg);
+    if (cached) return cached;
+
+    const mode = this.resolveMode(cfg);
+    if (mode === "no-cone") {
+      const matcher: SparseMatcher = { mode, patterns: [], ancestorDirs: new Set() };
+      this.matcherCache.set(cfg, matcher);
+      return matcher;
+    }
+
+    const patterns = cfg.include
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0)
+      .map((p) => (p.endsWith("/") ? p.slice(0, -1) : p));
+
+    const ancestorDirs = new Set<string>();
+    for (const pat of patterns) {
+      const parts = pat.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        ancestorDirs.add(parts.slice(0, i).join("/"));
+      }
+    }
+
+    const matcher: SparseMatcher = { mode, patterns, ancestorDirs };
+    this.matcherCache.set(cfg, matcher);
+    return matcher;
   }
 }
