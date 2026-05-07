@@ -14,31 +14,13 @@ import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { isInteractiveMode, parseArguments, reconstructCliCommand } from "./utils/cli";
 import { findConfigInCwd } from "./utils/config-generator";
 import { promptForConfig } from "./utils/interactive";
+import { setupSignalHandlers } from "./utils/signal-handlers";
 
 import type { ReloadOptions } from "./services/InteractiveUIService";
 import type { Config, RepositoryConfig } from "./types";
 import type { CliOptions } from "./utils/cli";
 
-const cleanupFns: Array<() => void | Promise<void>> = [];
-
-function setupSignalHandlers(): void {
-  let shuttingDown = false;
-  const handler = async (signal: string): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`\nReceived ${signal}, shutting down gracefully...`);
-    for (const fn of cleanupFns) {
-      try {
-        await fn();
-      } catch {
-        // best effort
-      }
-    }
-    process.exit(0);
-  };
-  process.on("SIGINT", () => void handler("SIGINT"));
-  process.on("SIGTERM", () => void handler("SIGTERM"));
-}
+const signalHandle = setupSignalHandlers();
 
 async function runSingleRepository(config: Config): Promise<void> {
   const logger = Logger.createDefault(undefined, config.debug);
@@ -61,13 +43,13 @@ async function runSingleRepository(config: Config): Promise<void> {
       await syncService.sync();
     } else {
       const uiService = new InteractiveUIService([syncService], undefined, config.cronSchedule);
-      cleanupFns.push(() => uiService.destroy());
+      signalHandle.register((fast) => uiService.destroy(fast));
 
       await syncService.sync();
       uiService.updateLastSyncTime();
       void uiService.calculateAndUpdateDiskSpace();
 
-      cron.schedule(config.cronSchedule, async () => {
+      const job = cron.schedule(config.cronSchedule, async () => {
         try {
           uiService.setStatus("syncing");
           await syncService.sync();
@@ -78,6 +60,7 @@ async function runSingleRepository(config: Config): Promise<void> {
           uiService.setStatus("idle");
         }
       });
+      uiService.registerCronJob(job);
     }
   } catch (error) {
     logger.error("❌ Fatal Error during initialization:", error as Error);
@@ -166,7 +149,7 @@ async function runMultipleRepositories(
     const displaySchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
     const allServices = Array.from(services.values());
     const uiService = new InteractiveUIService(allServices, configPath, displaySchedule, maxParallel, reloadOptions);
-    cleanupFns.push(() => uiService.destroy());
+    signalHandle.register((fast) => uiService.destroy(fast));
 
     void uiService.calculateAndUpdateDiskSpace();
 
@@ -296,7 +279,6 @@ async function runInteractive(partial: Partial<Config>, options: CliOptions): Pr
 }
 
 async function main(): Promise<void> {
-  setupSignalHandlers();
   const options = parseArguments();
 
   if (!options.config && !options.repoUrl && !options.worktreeDir) {

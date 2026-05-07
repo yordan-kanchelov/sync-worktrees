@@ -19,8 +19,12 @@ import { AppEventEmitter } from "../utils/app-events";
 import { shellEscape } from "../utils/shell-escape";
 import * as fs from "fs/promises";
 import { calculateDirectorySize, formatBytes } from "../utils/disk-space";
+import { formatDuration } from "../utils/timing";
 import { GIT_CONSTANTS, METADATA_CONSTANTS, TERMINAL_CONSTANTS } from "../constants";
 import type { RepositoryConfig, HookContext, WorktreeStatusEntry, DivergedDirectoryInfo } from "../types";
+
+const WAIT_SYNC_FAST_TIMEOUT_MS = 2000;
+const WAIT_SYNC_DEFAULT_TIMEOUT_MS = 30000;
 
 export interface ReloadOptions {
   filter?: string;
@@ -157,6 +161,10 @@ export class InteractiveUIService {
       job.stop();
     }
     this.cronJobs = [];
+  }
+
+  public registerCronJob(job: cron.ScheduledTask): void {
+    this.cronJobs.push(job);
   }
 
   private renderUI(): void {
@@ -304,7 +312,7 @@ export class InteractiveUIService {
     process.exit(0);
   }
 
-  private async waitForInProgressSyncs(): Promise<void> {
+  private async waitForInProgressSyncs(timeoutMs: number = WAIT_SYNC_DEFAULT_TIMEOUT_MS): Promise<void> {
     const inProgressServices = this.syncServices.filter((s) => s.isSyncInProgress());
 
     if (inProgressServices.length === 0) {
@@ -314,12 +322,11 @@ export class InteractiveUIService {
     this.addLog(`Waiting for ${inProgressServices.length} in-progress sync(s) to finish...`, "info");
 
     const syncChecks = inProgressServices.map(async (service) => {
-      const timeout = 30000;
       const checkInterval = 500;
       const startTime = Date.now();
 
       while (service.isSyncInProgress()) {
-        if (Date.now() - startTime > timeout) {
+        if (Date.now() - startTime > timeoutMs) {
           throw new Error("Timeout waiting for sync operations to complete");
         }
         await new Promise((resolve) => setTimeout(resolve, checkInterval));
@@ -330,7 +337,7 @@ export class InteractiveUIService {
       await Promise.all(syncChecks);
     } catch {
       this.addLog(
-        "Warning: Timeout waiting for sync operations to complete after 30s. Proceeding with potential data loss risk.",
+        `Warning: Timeout waiting for sync operations to complete after ${formatDuration(timeoutMs)}. Proceeding with potential data loss risk.`,
         "warn",
       );
     }
@@ -863,13 +870,12 @@ export class InteractiveUIService {
     }
   }
 
-  public async destroy(): Promise<void> {
+  public async destroy(fast = false): Promise<void> {
     this.isDestroyed = true;
     this.cancelCronJobs();
 
-    // Wait for in-flight sync operations before tearing down
     try {
-      await this.waitForInProgressSyncs();
+      await this.waitForInProgressSyncs(fast ? WAIT_SYNC_FAST_TIMEOUT_MS : WAIT_SYNC_DEFAULT_TIMEOUT_MS);
     } catch {
       // Best effort - proceed with teardown even if syncs don't finish
     }

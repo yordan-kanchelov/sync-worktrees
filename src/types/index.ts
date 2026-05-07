@@ -27,6 +27,17 @@ export interface SparseCheckoutConfig {
   include: string[];
   exclude?: string[];
   mode?: SparseCheckoutMode;
+  /**
+   * Skip fast-forward updates of existing worktrees when the upstream diff
+   * does not touch any path inside the sparse-checkout set. Local HEAD lags
+   * remote in those cases, but the working tree would have been a no-op
+   * anyway — set to false to always update HEAD even when no sparse files
+   * change.
+   * Only honored in cone mode; no-cone mode always proceeds with the update
+   * (gitignore-style pattern matching not implemented here).
+   * Default: true.
+   */
+  skipUpdateWhenOutsideSparse?: boolean;
 }
 
 /**

@@ -10,6 +10,7 @@ import type { Config } from "../../types";
 import type { WorktreeSyncService } from "../worktree-sync.service";
 import type * as ChildProcessModule from "child_process";
 import type * as FsModule from "fs";
+import type * as cron from "node-cron";
 import type { Mock, Mocked } from "vitest";
 
 const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance, mockSpawn, mockSpawnSync, mockExistsSync } =
@@ -304,6 +305,42 @@ describe("InteractiveUIService", () => {
 
       expect(statusSpy).not.toHaveBeenCalled();
       expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it("should resolve quickly when called with fast option even if sync stays in progress", async () => {
+      mockSyncService.isSyncInProgress.mockReturnValue(true);
+      const service = new InteractiveUIService([mockSyncService]);
+
+      vi.useFakeTimers();
+      try {
+        const destroyPromise = service.destroy(true);
+        await vi.advanceTimersByTimeAsync(2500);
+        await expect(destroyPromise).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(mockUnmount).toHaveBeenCalled();
+    });
+
+    it("should use slow timeout by default when sync is not in progress", async () => {
+      mockSyncService.isSyncInProgress.mockReturnValue(false);
+      const service = new InteractiveUIService([mockSyncService]);
+
+      await expect(service.destroy()).resolves.toBeUndefined();
+      expect(mockUnmount).toHaveBeenCalled();
+    });
+  });
+
+  describe("registerCronJob", () => {
+    it("should stop registered cron jobs on destroy", async () => {
+      const service = new InteractiveUIService([mockSyncService]);
+      const stopSpy = vi.fn();
+      service.registerCronJob({ stop: stopSpy } as unknown as cron.ScheduledTask);
+
+      await service.destroy();
+
+      expect(stopSpy).toHaveBeenCalled();
     });
   });
 

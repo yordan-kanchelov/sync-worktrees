@@ -303,4 +303,112 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       expect(mockLogger.info).toHaveBeenCalledWith("  - All worktrees are up to date.");
     });
   });
+
+  describe("skipUpdateWhenOutsideSparse (cone mode)", () => {
+    let getChangedPathsInRange: Mock;
+    let sparseService: { resolveMode: Mock; pathsTouchSparse: Mock };
+
+    function setup(skipFlag: boolean | undefined) {
+      mockConfig = {
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/test/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+        updateExistingWorktrees: true,
+        sparseCheckout:
+          skipFlag === undefined ? { include: ["src"] } : { include: ["src"], skipUpdateWhenOutsideSparse: skipFlag },
+        logger: mockLogger,
+      };
+
+      service = new WorktreeSyncService(mockConfig);
+
+      getChangedPathsInRange = vi.fn().mockResolvedValue([]);
+      sparseService = {
+        resolveMode: vi.fn().mockReturnValue("cone"),
+        pathsTouchSparse: vi.fn().mockReturnValue(true),
+        buildPatterns: vi.fn().mockReturnValue(["src"]),
+        readCurrent: vi.fn().mockResolvedValue(["src"]),
+        patternsEqual: vi.fn().mockReturnValue(true),
+        isNarrowing: vi.fn().mockReturnValue(false),
+        applyToWorktree: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      mockGitService = {
+        ...mockGitService,
+        getSparseCheckoutService: vi.fn().mockReturnValue(sparseService),
+        getChangedPathsInRange,
+      } as any;
+
+      (service as any).gitService = mockGitService;
+    }
+
+    it("skips update when diff has no paths inside sparse include", async () => {
+      setup(true);
+      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+      getChangedPathsInRange.mockResolvedValue(["lib/x.ts"]);
+      sparseService.pathsTouchSparse.mockReturnValue(false);
+
+      await service.sync();
+
+      expect(getChangedPathsInRange).toHaveBeenCalled();
+      expect(mockGitService.updateWorktree).not.toHaveBeenCalled();
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("upstream changes outside sparse paths"));
+    });
+
+    it("proceeds with update when diff includes a path inside sparse", async () => {
+      setup(true);
+      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+      getChangedPathsInRange.mockResolvedValue(["src/foo.ts"]);
+      sparseService.pathsTouchSparse.mockReturnValue(true);
+
+      await service.sync();
+
+      expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not consult diff when flag is explicitly disabled", async () => {
+      setup(false);
+      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+
+      await service.sync();
+
+      expect(getChangedPathsInRange).not.toHaveBeenCalled();
+      expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(3);
+    });
+
+    it("defaults to enabled when sparseCheckout is set without an explicit flag", async () => {
+      setup(undefined);
+      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+      getChangedPathsInRange.mockResolvedValue(["lib/x.ts"]);
+      sparseService.pathsTouchSparse.mockReturnValue(false);
+
+      await service.sync();
+
+      expect(getChangedPathsInRange).toHaveBeenCalled();
+      expect(mockGitService.updateWorktree).not.toHaveBeenCalled();
+    });
+
+    it("skips diff and updates normally in no-cone mode", async () => {
+      setup(true);
+      sparseService.resolveMode.mockReturnValue("no-cone");
+      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+
+      await service.sync();
+
+      expect(getChangedPathsInRange).not.toHaveBeenCalled();
+      expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(3);
+    });
+
+    it("forces update when diff fails (returns null) so a behind worktree is never silently left stale", async () => {
+      setup(true);
+      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+      getChangedPathsInRange.mockResolvedValue(null);
+
+      await service.sync();
+
+      expect(getChangedPathsInRange).toHaveBeenCalled();
+      expect(sparseService.pathsTouchSparse).not.toHaveBeenCalled();
+      expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(3);
+    });
+  });
 });

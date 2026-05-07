@@ -152,4 +152,38 @@ describe("GitService - Update Methods", () => {
       await expect(service.updateWorktree("/test/worktrees/diverged")).rejects.toThrow("Not possible to fast-forward");
     });
   });
+
+  describe("getChangedPathsInRange", () => {
+    it("invokes git diff with core.quotePath=false and the requested range", async () => {
+      mockGit.raw.mockResolvedValue("src/foo.ts\nlib/bar.ts\n");
+
+      const result = await service.getChangedPathsInRange("/test/worktrees/feature", "HEAD", "origin/feature");
+
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "HEAD..origin/feature",
+      ]);
+      expect(result).toEqual(["src/foo.ts", "lib/bar.ts"]);
+    });
+
+    it("returns null on git error so caller can force a safe update", async () => {
+      mockGit.raw.mockRejectedValue(new Error("bad ref"));
+
+      const result = await service.getChangedPathsInRange("/wt", "HEAD", "origin/missing");
+
+      expect(result).toBeNull();
+    });
+
+    it("preserves leading/trailing whitespace, strips CRLF, drops blanks", async () => {
+      mockGit.raw.mockResolvedValue("\n  src/foo.ts  \r\n\nlib/bar.ts\r\n");
+
+      const result = await service.getChangedPathsInRange("/wt", "HEAD", "origin/main");
+
+      expect(result).toEqual(["  src/foo.ts  ", "lib/bar.ts"]);
+    });
+  });
 });
