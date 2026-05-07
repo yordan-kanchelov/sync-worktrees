@@ -121,11 +121,11 @@ describe("GitService", () => {
       const git = await gitService.initialize();
 
       expect(fs.access).toHaveBeenCalledWith(".bare/repo/HEAD");
-      expect(simpleGit).toHaveBeenCalledWith(".bare/repo");
+      expect(simpleGit).toHaveBeenCalledWith(".bare/repo", expect.objectContaining({ progress: expect.any(Function) }));
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
       // Fetch is always called to ensure remote refs are up-to-date
-      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(git).toBe(mockGit);
     });
 
@@ -144,11 +144,11 @@ describe("GitService", () => {
 
       expect(fs.access).toHaveBeenCalledWith(".bare/repo/HEAD");
       expect(fs.mkdir).toHaveBeenCalled();
-      expect(simpleGit).toHaveBeenCalledWith(); // Called without args for cloning
-      expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare"]);
+      expect(simpleGit).toHaveBeenCalledWith(expect.objectContaining({ progress: expect.any(Function) }));
+      expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare", "--progress"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
-      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
     });
 
     it("should create main worktree if it doesn't exist", async () => {
@@ -169,7 +169,7 @@ describe("GitService", () => {
       await gitService.initialize();
 
       // Fetch is always called to ensure remote refs are up-to-date
-      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(fs.mkdir).toHaveBeenCalledWith(TEST_PATHS.worktree, { recursive: true });
       expect(mockGit.raw).toHaveBeenCalledWith([
         "worktree",
@@ -209,7 +209,7 @@ describe("GitService", () => {
       await relativeGitService.initialize();
 
       // Fetch is always called to ensure remote refs are up-to-date
-      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       // Verify that the worktree add command received an absolute path
       const expectedAbsolutePath = path.resolve("./test/worktrees/main");
       expect(mockGit.raw).toHaveBeenCalledWith([
@@ -256,11 +256,11 @@ describe("GitService", () => {
       const git = await gitService.initialize();
 
       expect(fs.access).toHaveBeenCalledWith(".bare/repo/HEAD");
-      expect(simpleGit).toHaveBeenCalledWith(".bare/repo");
+      expect(simpleGit).toHaveBeenCalledWith(".bare/repo", expect.objectContaining({ progress: expect.any(Function) }));
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).not.toHaveBeenCalled(); // Should not add config if it already exists
       // Fetch is always called to ensure remote refs are up-to-date
-      expect(mockGit.fetch).toHaveBeenCalledWith(["--all"]);
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(git).toBe(mockGit);
     });
   });
@@ -297,7 +297,7 @@ describe("GitService", () => {
       await gitService.initialize();
 
       await gitService.fetchBranch("feature-1");
-      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "feature-1", "--prune"]);
+      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "feature-1", "--prune", "--progress"]);
     });
 
     it("should respect LFS skip when fetching branch", async () => {
@@ -313,7 +313,7 @@ describe("GitService", () => {
       await svc.initialize();
       await svc.fetchBranch("feature-2");
       expect(mockGit.env).toHaveBeenCalledWith({ GIT_LFS_SKIP_SMUDGE: "1" });
-      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "feature-2", "--prune"]);
+      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "feature-2", "--prune", "--progress"]);
     });
   });
 

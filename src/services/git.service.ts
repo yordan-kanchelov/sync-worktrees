@@ -17,7 +17,7 @@ import { WorktreeStatusService } from "./worktree-status.service";
 import type { WorktreeStatusResult } from "./worktree-status.service";
 import type { Config } from "../types";
 import type { SyncMetadata } from "../types/sync-metadata";
-import type { SimpleGit } from "simple-git";
+import type { SimpleGit, SimpleGitOptions, SimpleGitProgressEvent } from "simple-git";
 
 export type GitServiceOptions = Pick<
   Config,
@@ -83,12 +83,36 @@ export class GitService {
     const key = `${path.resolve(dirPath)}::${useLfsSkip ? "1" : "0"}`;
     let git = this.gitInstances.get(key);
     if (!git) {
-      const block = this.getFetchTimeoutMs();
-      const base = block > 0 ? simpleGit(dirPath, { timeout: { block } }) : simpleGit(dirPath);
+      const base = simpleGit(dirPath, this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
       git = useLfsSkip ? base.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : base;
       this.gitInstances.set(key, git);
     }
     return git;
+  }
+
+  private buildSimpleGitOptions(blockMs: number): Partial<SimpleGitOptions> {
+    const options: Partial<SimpleGitOptions> = { progress: this.makeProgressHandler() };
+    if (blockMs > 0) options.timeout = { block: blockMs };
+    return options;
+  }
+
+  private makeProgressHandler(): (event: SimpleGitProgressEvent) => void {
+    const lastBucket = new Map<string, number>();
+    return (event: SimpleGitProgressEvent): void => {
+      if (event.method !== "fetch" && event.method !== "clone" && event.method !== "pull") return;
+      const key = `${event.method}:${event.stage}`;
+      const bucket = Math.floor(event.progress / GIT_CONSTANTS.PROGRESS_BUCKET_PERCENT);
+      let last = lastBucket.get(key) ?? -1;
+      // Stage restart on a new operation (e.g. second fetch on the same cached SimpleGit
+      // instance): bucket regresses below `last`. Reset so the new run logs from scratch.
+      if (bucket < last) {
+        last = -1;
+      }
+      if (bucket <= last && event.progress < 100) return;
+      lastBucket.set(key, bucket);
+      const total = event.total > 0 ? `${event.processed}/${event.total}` : `${event.processed}`;
+      this.logger.info(`  ↳ ${event.method} ${event.stage}: ${event.progress}% (${total})`);
+    };
   }
 
   updateLogger(logger: Logger): void {
@@ -106,12 +130,11 @@ export class GitService {
       // Clone as bare repository
       this.logger.info(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
-      const cloneBlock = this.getCloneTimeoutMs();
-      const cloneBase = cloneBlock > 0 ? simpleGit({ timeout: { block: cloneBlock } }) : simpleGit();
+      const cloneBase = simpleGit(this.buildSimpleGitOptions(this.getCloneTimeoutMs()));
       const cloneGit = this.isLfsSkipEnabled()
         ? cloneBase.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
         : cloneBase;
-      await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare"]);
+      await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare", "--progress"]);
       this.logger.info("✅ Clone successful.");
     }
 
@@ -134,7 +157,7 @@ export class GitService {
     // Always fetch to ensure remote refs are up-to-date
     // This is needed for branch creation UI even when repo already exists
     this.logger.info("Fetching remote branches...");
-    await bareGit.fetch(["--all"]);
+    await bareGit.fetch(["--all", "--progress"]);
 
     // Detect the default branch (works from local refs even without fetch)
     this.defaultBranch = await this.detectDefaultBranch(bareGit);
@@ -235,13 +258,13 @@ export class GitService {
     this.assertInitialized();
     this.logger.info("Fetching latest data from remote...");
     const git = this.getCachedGit(this.mainWorktreePath, this.isLfsSkipEnabled());
-    await git.fetch(["--all", "--prune"]);
+    await git.fetch(["--all", "--prune", "--progress"]);
   }
 
   async fetchBranch(branchName: string): Promise<void> {
     this.assertInitialized();
     const git = this.getCachedGit(this.mainWorktreePath, this.isLfsSkipEnabled());
-    await git.fetch(["origin", branchName, "--prune"]);
+    await git.fetch(["origin", branchName, "--prune", "--progress"]);
   }
 
   private assertInitialized(): void {
