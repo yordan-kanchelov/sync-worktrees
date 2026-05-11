@@ -136,11 +136,13 @@ export class WorktreeStatusService {
     const reasons: string[] = [];
     if (!isClean) reasons.push("uncommitted changes");
     if (hasUnpushedCommits) reasons.push("unpushed commits");
+    if (hasStashedChanges) reasons.push("stashed changes");
     if (hasOperationInProgress) reasons.push("operation in progress");
     if (hasModifiedSubmodules) reasons.push("modified submodules");
     if (upstreamGone) reasons.push("upstream gone");
 
-    const canRemove = isClean && !hasUnpushedCommits && !hasOperationInProgress && !hasModifiedSubmodules;
+    const canRemove =
+      isClean && !hasUnpushedCommits && !hasStashedChanges && !hasOperationInProgress && !hasModifiedSubmodules;
 
     const details: WorktreeStatusDetails | undefined = includeDetails ? this.buildStatusDetails(snap) : undefined;
 

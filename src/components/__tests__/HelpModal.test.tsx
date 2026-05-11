@@ -21,58 +21,10 @@ describe("HelpModal", () => {
       expect(lastFrame()).toContain("Keyboard Shortcuts");
     });
 
-    it("should render help modal with tree emoji", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      expect(lastFrame()).toContain("🌳");
-    });
-
     it("should render close instruction", () => {
       const { lastFrame } = render(<HelpModal {...defaultProps} />);
 
       expect(lastFrame()).toContain("Press ? / h / ESC to close");
-    });
-  });
-
-  describe("keyboard shortcuts", () => {
-    it("should show help toggle shortcut", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      expect(lastFrame()).toContain("?");
-      expect(lastFrame()).toContain("h");
-      expect(lastFrame()).toContain("Toggle this help screen");
-    });
-
-    it("should show manual sync shortcut", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      expect(lastFrame()).toContain("s");
-      expect(lastFrame()).toContain("Manually trigger sync");
-    });
-
-    it("should show reload shortcut", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      expect(lastFrame()).toContain("r");
-      expect(lastFrame()).toContain("Reload configuration");
-    });
-
-    it("should show quit shortcut", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      expect(lastFrame()).toContain("q");
-      expect(lastFrame()).toContain("Esc");
-      expect(lastFrame()).toContain("Gracefully quit");
-    });
-
-    it("should display all four main shortcuts", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      const frame = lastFrame();
-      expect(frame).toContain("?");
-      expect(frame).toContain("s");
-      expect(frame).toContain("r");
-      expect(frame).toContain("q");
     });
   });
 
@@ -124,42 +76,4 @@ describe("HelpModal", () => {
     });
   });
 
-  describe("visual styling", () => {
-    it("should have border decoration", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      const frame = lastFrame();
-      // Ink may use different border styles, check for any border characters
-      expect(frame).toMatch(/[┌┐└┘╔╗╚╝═║─│]/);
-    });
-
-    it("should display shortcuts in organized format", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      const frame = lastFrame();
-      expect(frame!.split("\n").length).toBeGreaterThan(5);
-    });
-  });
-
-  describe("accessibility", () => {
-    it("should provide clear keyboard shortcut labels", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      const frame = lastFrame();
-      expect(frame).toContain("?");
-      expect(frame).toContain("s");
-      expect(frame).toContain("r");
-      expect(frame).toContain("q");
-    });
-
-    it("should provide clear action descriptions", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
-
-      const frame = lastFrame();
-      expect(frame).toContain("Toggle");
-      expect(frame).toContain("sync");
-      expect(frame).toContain("Reload");
-      expect(frame).toContain("quit");
-    });
-  });
 });

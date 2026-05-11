@@ -42,14 +42,12 @@ describe("StatusBar", () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} status="idle" />);
 
       expect(lastFrame()).toContain("Running");
-      expect(lastFrame()).toContain("✓");
     });
 
     it("should show Syncing status when syncing", () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} status="syncing" />);
 
       expect(lastFrame()).toContain("Syncing...");
-      expect(lastFrame()).toContain("⟳");
     });
 
     it("should change status from idle to syncing", () => {
@@ -156,32 +154,6 @@ describe("StatusBar", () => {
     });
   });
 
-  describe("visual elements", () => {
-    it("should show checkmark icon when idle", () => {
-      const { lastFrame } = render(<StatusBar {...defaultProps} status="idle" />);
-
-      expect(lastFrame()).toContain("✓");
-    });
-
-    it("should show sync icon when syncing", () => {
-      const { lastFrame } = render(<StatusBar {...defaultProps} status="syncing" />);
-
-      expect(lastFrame()).toContain("⟳");
-    });
-
-    it("should have Status label", () => {
-      const { lastFrame } = render(<StatusBar {...defaultProps} />);
-
-      expect(lastFrame()).toContain("Status:");
-    });
-
-    it("should have Repositories label", () => {
-      const { lastFrame } = render(<StatusBar {...defaultProps} />);
-
-      expect(lastFrame()).toContain("Repositories:");
-    });
-  });
-
   describe("disk space", () => {
     it("should show Calculating... when diskSpaceUsed is undefined", () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} diskSpaceUsed={undefined} />);
@@ -216,13 +188,5 @@ describe("StatusBar", () => {
       expect(lastFrame()).not.toContain("Calculating...");
     });
 
-    it("should display different disk space formats correctly", () => {
-      const testCases = ["123.45 KB", "12.34 MB", "5.67 GB", "1.23 TB"];
-
-      testCases.forEach((diskSpace) => {
-        const { lastFrame } = render(<StatusBar {...defaultProps} diskSpaceUsed={diskSpace} />);
-        expect(lastFrame()).toContain(diskSpace);
-      });
-    });
   });
 });

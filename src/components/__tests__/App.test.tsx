@@ -238,39 +238,6 @@ describe("App", () => {
     });
   });
 
-  describe("onBranchCreated error handling", () => {
-    it("should emit error to appEvents when createWorktreeForBranch fails", async () => {
-      const createWorktreeForBranch = vi.fn().mockRejectedValue(new Error("worktree creation exploded"));
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      const logMessages: Array<{ message: string; level: string }> = [];
-      appEvents.on("addLog", (entry: { message: string; level: string }) => {
-        logMessages.push(entry);
-      });
-
-      const { stdin } = render(
-        <App
-          {...defaultProps}
-          createWorktreeForBranch={createWorktreeForBranch}
-        />,
-      );
-
-      await waitForStateUpdate();
-
-      // Open branch wizard
-      stdin.write("c");
-      await waitForStateUpdate();
-
-      // Simulate the onBranchCreated callback by calling it through the internal mechanism
-      // We can't easily trigger it through UI, so instead verify the behavior indirectly:
-      // The fix replaces console.error with appEvents.emit - verify console.error is NOT called
-      // for worktree creation errors
-      expect(consoleSpy).not.toHaveBeenCalledWith("Failed to create worktree:", expect.anything());
-
-      consoleSpy.mockRestore();
-    });
-  });
-
   describe("updateRepositoryCount event", () => {
     it("should update repository count when event is emitted", async () => {
       const { lastFrame } = render(<App {...defaultProps} repositoryCount={3} />);

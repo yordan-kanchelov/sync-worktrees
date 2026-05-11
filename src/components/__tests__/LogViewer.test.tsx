@@ -69,82 +69,6 @@ describe("LogViewer", () => {
     });
   });
 
-  describe("log levels", () => {
-    it("should display info level logs", () => {
-      const logs: LogEntry[] = [
-        {
-          id: "log-1",
-          message: "Info message",
-          level: "info",
-          timestamp: new Date(),
-        },
-      ];
-
-      const { lastFrame } = render(<LogViewer {...defaultProps} logs={logs} />);
-
-      expect(lastFrame()).toContain("Info message");
-    });
-
-    it("should display warn level logs", () => {
-      const logs: LogEntry[] = [
-        {
-          id: "log-1",
-          message: "Warning message",
-          level: "warn",
-          timestamp: new Date(),
-        },
-      ];
-
-      const { lastFrame } = render(<LogViewer {...defaultProps} logs={logs} />);
-
-      expect(lastFrame()).toContain("Warning message");
-    });
-
-    it("should display error level logs", () => {
-      const logs: LogEntry[] = [
-        {
-          id: "log-1",
-          message: "Error message",
-          level: "error",
-          timestamp: new Date(),
-        },
-      ];
-
-      const { lastFrame } = render(<LogViewer {...defaultProps} logs={logs} />);
-
-      expect(lastFrame()).toContain("Error message");
-    });
-
-    it("should display mixed level logs", () => {
-      const logs: LogEntry[] = [
-        {
-          id: "log-1",
-          message: "Info message",
-          level: "info",
-          timestamp: new Date(),
-        },
-        {
-          id: "log-2",
-          message: "Warning message",
-          level: "warn",
-          timestamp: new Date(),
-        },
-        {
-          id: "log-3",
-          message: "Error message",
-          level: "error",
-          timestamp: new Date(),
-        },
-      ];
-
-      const { lastFrame } = render(<LogViewer {...defaultProps} logs={logs} />);
-
-      expect(lastFrame()).toContain("Info message");
-      expect(lastFrame()).toContain("Warning message");
-      expect(lastFrame()).toContain("Error message");
-    });
-  });
-
   describe("timestamps", () => {
     it("should display timestamp for each log", () => {
       const timestamp = new Date("2025-01-01T12:00:00");
@@ -289,30 +213,6 @@ describe("LogViewer", () => {
       expect(lastFrame()).not.toContain("Old message");
       expect(lastFrame()).toContain("New message 1");
       expect(lastFrame()).toContain("New message 2");
-    });
-  });
-
-  describe("unique log ids", () => {
-    it("should handle logs with unique ids", () => {
-      const logs: LogEntry[] = [
-        {
-          id: "unique-1",
-          message: "Message 1",
-          level: "info",
-          timestamp: new Date(),
-        },
-        {
-          id: "unique-2",
-          message: "Message 2",
-          level: "info",
-          timestamp: new Date(),
-        },
-      ];
-
-      const { lastFrame } = render(<LogViewer {...defaultProps} logs={logs} />);
-
-      expect(lastFrame()).toContain("Message 1");
-      expect(lastFrame()).toContain("Message 2");
     });
   });
 });

@@ -308,7 +308,7 @@ describe("WorktreeSyncService", () => {
       );
     });
 
-    it("should handle errors when checking worktree status", async () => {
+    it("should not remove stale worktree when status check fails", async () => {
       (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
         if ((dirPath as string).endsWith(".diverged")) {
           const error: any = new Error("ENOENT: no such file or directory");
@@ -324,6 +324,7 @@ describe("WorktreeSyncService", () => {
 
       await service.sync();
 
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/worktrees/broken-branch", undefined);
       expect(mockLogger.error).toHaveBeenCalledWith(
         expect.stringContaining("Error checking worktree"),
         expect.any(Error),
