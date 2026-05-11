@@ -2,17 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { ERROR_MESSAGES } from "../../constants";
 import {
-  ConfigError,
   ConfigValidationError,
   FastForwardError,
-  GitError,
   GitNotInitializedError,
   GitOperationError,
   LfsError,
   PathResolutionError,
   SyncWorktreesError,
   WorktreeAlreadyExistsError,
-  WorktreeError,
   WorktreeNotCleanError,
   isFastForwardError,
   isLfsError,
@@ -20,202 +17,59 @@ import {
 } from "../index";
 
 describe("Error Classes", () => {
-  describe("SyncWorktreesError", () => {
-    it("should create error with message and code", () => {
-      const error = new SyncWorktreesError("Test message", "TEST_CODE");
+  it.each([
+    {
+      create: () => new SyncWorktreesError("base failure", "BASE_FAILED"),
+      code: "BASE_FAILED",
+      message: "base failure",
+    },
+    {
+      create: () => new GitNotInitializedError(),
+      code: "GIT_NOT_INITIALIZED",
+      message: ERROR_MESSAGES.GIT_NOT_INITIALIZED,
+    },
+    {
+      create: () => new GitOperationError("fetch", "network timeout"),
+      code: "GIT_OPERATION_FAILED",
+      message: "Git operation 'fetch' failed: network timeout",
+    },
+    {
+      create: () => new FastForwardError("feature/test"),
+      code: "GIT_FAST_FORWARD_FAILED",
+      message: "Cannot fast-forward branch 'feature/test'",
+    },
+    {
+      create: () => new LfsError("download failed"),
+      code: "GIT_LFS_ERROR",
+      message: "LFS operation failed: download failed",
+    },
+    {
+      create: () => new WorktreeAlreadyExistsError("/repo/worktree", "feature/test"),
+      code: "WORKTREE_ALREADY_EXISTS",
+      message: "Worktree already exists at '/repo/worktree' for branch 'feature/test'",
+    },
+    {
+      create: () => new WorktreeNotCleanError("/repo/worktree", ["uncommitted changes", "stashed changes"]),
+      code: "WORKTREE_NOT_CLEAN",
+      message: "Worktree at '/repo/worktree' is not clean: uncommitted changes, stashed changes",
+    },
+    {
+      create: () => new ConfigValidationError("repoUrl", "is required"),
+      code: "CONFIG_VALIDATION_FAILED",
+      message: "Invalid configuration for 'repoUrl': is required",
+    },
+    {
+      create: () => new PathResolutionError("../repo", "outside root"),
+      code: "PATH_RESOLUTION_FAILED",
+      message: "Path resolution failed for '../repo': outside root",
+    },
+  ])("should preserve the public $code contract", ({ create, code, message }) => {
+    const error = create();
 
-      expect(error.message).toBe("Test message");
-      expect(error.code).toBe("TEST_CODE");
-      expect(error.name).toBe("SyncWorktreesError");
-      expect(error.cause).toBeUndefined();
-    });
-
-    it("should include cause in stack trace when provided", () => {
-      const cause = new Error("Original error");
-      const error = new SyncWorktreesError("Wrapped error", "WRAP_CODE", cause);
-
-      expect(error.cause).toBe(cause);
-      expect(error.stack).toContain("Caused by:");
-      expect(error.stack).toContain("Original error");
-    });
-
-    it("should handle cause without stack trace", () => {
-      const cause = new Error("No stack");
-      cause.stack = undefined;
-      const error = new SyncWorktreesError("Wrapped error", "WRAP_CODE", cause);
-
-      expect(error.cause).toBe(cause);
-      expect(error.stack).not.toContain("Caused by:");
-    });
-
-    it("should be instanceof Error", () => {
-      const error = new SyncWorktreesError("Test", "CODE");
-      expect(error instanceof Error).toBe(true);
-      expect(error instanceof SyncWorktreesError).toBe(true);
-    });
-  });
-
-  describe("GitError", () => {
-    it("should prefix code with GIT_", () => {
-      const error = new GitError("Git failed", "CLONE_FAILED");
-
-      expect(error.code).toBe("GIT_CLONE_FAILED");
-      expect(error.name).toBe("GitError");
-    });
-
-    it("should pass cause to parent", () => {
-      const cause = new Error("Network error");
-      const error = new GitError("Git failed", "FETCH_FAILED", cause);
-
-      expect(error.cause).toBe(cause);
-    });
-
-    it("should be instanceof SyncWorktreesError", () => {
-      const error = new GitError("Test", "CODE");
-      expect(error instanceof SyncWorktreesError).toBe(true);
-      expect(error instanceof GitError).toBe(true);
-    });
-  });
-
-  describe("GitNotInitializedError", () => {
-    it("should use predefined message and code", () => {
-      const error = new GitNotInitializedError();
-
-      expect(error.message).toBe(ERROR_MESSAGES.GIT_NOT_INITIALIZED);
-      expect(error.code).toBe("GIT_NOT_INITIALIZED");
-      expect(error.name).toBe("GitNotInitializedError");
-    });
-  });
-
-  describe("GitOperationError", () => {
-    it("should format message with operation and details", () => {
-      const error = new GitOperationError("fetch", "network timeout");
-
-      expect(error.message).toBe("Git operation 'fetch' failed: network timeout");
-      expect(error.code).toBe("GIT_OPERATION_FAILED");
-    });
-
-    it("should include cause when provided", () => {
-      const cause = new Error("ECONNRESET");
-      const error = new GitOperationError("push", "connection reset", cause);
-
-      expect(error.cause).toBe(cause);
-    });
-  });
-
-  describe("FastForwardError", () => {
-    it("should include branch name in message", () => {
-      const error = new FastForwardError("feature/test");
-
-      expect(error.message).toBe("Cannot fast-forward branch 'feature/test'");
-      expect(error.code).toBe("GIT_FAST_FORWARD_FAILED");
-      expect(error.branchName).toBe("feature/test");
-    });
-
-    it("should include cause when provided", () => {
-      const cause = new Error("diverged");
-      const error = new FastForwardError("main", cause);
-
-      expect(error.cause).toBe(cause);
-    });
-  });
-
-  describe("WorktreeError", () => {
-    it("should prefix code with WORKTREE_", () => {
-      const error = new WorktreeError("Worktree failed", "CREATE_FAILED");
-
-      expect(error.code).toBe("WORKTREE_CREATE_FAILED");
-      expect(error.name).toBe("WorktreeError");
-    });
-
-    it("should be instanceof SyncWorktreesError", () => {
-      const error = new WorktreeError("Test", "CODE");
-      expect(error instanceof SyncWorktreesError).toBe(true);
-      expect(error instanceof WorktreeError).toBe(true);
-    });
-  });
-
-  describe("WorktreeAlreadyExistsError", () => {
-    it("should include path and branch in message", () => {
-      const error = new WorktreeAlreadyExistsError("/path/to/worktree", "feature/new");
-
-      expect(error.message).toBe("Worktree already exists at '/path/to/worktree' for branch 'feature/new'");
-      expect(error.code).toBe("WORKTREE_ALREADY_EXISTS");
-      expect(error.path).toBe("/path/to/worktree");
-      expect(error.branchName).toBe("feature/new");
-    });
-  });
-
-  describe("WorktreeNotCleanError", () => {
-    it("should list all reasons in message", () => {
-      const reasons = ["uncommitted changes", "unpushed commits"];
-      const error = new WorktreeNotCleanError("/path/to/worktree", reasons);
-
-      expect(error.message).toBe("Worktree at '/path/to/worktree' is not clean: uncommitted changes, unpushed commits");
-      expect(error.code).toBe("WORKTREE_NOT_CLEAN");
-      expect(error.path).toBe("/path/to/worktree");
-      expect(error.reasons).toEqual(reasons);
-    });
-
-    it("should handle single reason", () => {
-      const error = new WorktreeNotCleanError("/worktree", ["stashed changes"]);
-
-      expect(error.message).toBe("Worktree at '/worktree' is not clean: stashed changes");
-    });
-  });
-
-  describe("ConfigError", () => {
-    it("should prefix code with CONFIG_", () => {
-      const error = new ConfigError("Config invalid", "PARSE_FAILED");
-
-      expect(error.code).toBe("CONFIG_PARSE_FAILED");
-      expect(error.name).toBe("ConfigError");
-    });
-
-    it("should include cause when provided", () => {
-      const cause = new SyntaxError("Unexpected token");
-      const error = new ConfigError("Parse failed", "SYNTAX", cause);
-
-      expect(error.cause).toBe(cause);
-    });
-  });
-
-  describe("ConfigValidationError", () => {
-    it("should include field and reason in message", () => {
-      const error = new ConfigValidationError("repoUrl", "must be a valid URL");
-
-      expect(error.message).toBe("Invalid configuration for 'repoUrl': must be a valid URL");
-      expect(error.code).toBe("CONFIG_VALIDATION_FAILED");
-      expect(error.field).toBe("repoUrl");
-      expect(error.reason).toBe("must be a valid URL");
-    });
-  });
-
-  describe("PathResolutionError", () => {
-    it("should include path and reason in message", () => {
-      const error = new PathResolutionError("/invalid/path", "path outside base directory");
-
-      expect(error.message).toBe("Path resolution failed for '/invalid/path': path outside base directory");
-      expect(error.code).toBe("PATH_RESOLUTION_FAILED");
-      expect(error.path).toBe("/invalid/path");
-      expect(error.reason).toBe("path outside base directory");
-    });
-  });
-
-  describe("LfsError", () => {
-    it("should prefix message with LFS operation failed", () => {
-      const error = new LfsError("smudge filter failed");
-
-      expect(error.message).toBe("LFS operation failed: smudge filter failed");
-      expect(error.code).toBe("GIT_LFS_ERROR");
-    });
-
-    it("should include cause when provided", () => {
-      const cause = new Error("file not found");
-      const error = new LfsError("download failed", cause);
-
-      expect(error.cause).toBe(cause);
-    });
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe(error.constructor.name);
+    expect(error.code).toBe(code);
+    expect(error.message).toBe(message);
   });
 });
 

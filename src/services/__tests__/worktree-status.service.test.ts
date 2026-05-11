@@ -231,6 +231,47 @@ describe("WorktreeStatusService", () => {
       expect(result.reasons).toContain("operation in progress");
     });
 
+    it("should treat stashed changes as unsafe to remove", async () => {
+      mockGit.status.mockResolvedValue({
+        modified: [],
+        deleted: [],
+        renamed: [],
+        created: [],
+        conflicted: [],
+        not_added: [],
+      } as any);
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
+          return "origin/main\n";
+        }
+        if (firstArg[0] === "submodule") {
+          return "";
+        }
+        return "0\n";
+      }) as any);
+      mockGit.branch.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg && firstArg[0] === "-r") {
+          return { all: ["origin/main"] } as any;
+        }
+        return { current: "main", detached: false } as any;
+      }) as any);
+      mockGit.stashList.mockResolvedValue({ total: 1 } as any);
+      (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+      (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+        if (target === "/test/worktree") return undefined;
+        throw new Error("Not found");
+      });
+
+      const result = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(result.isClean).toBe(true);
+      expect(result.hasStashedChanges).toBe(true);
+      expect(result.canRemove).toBe(false);
+      expect(result.reasons).toEqual(["stashed changes"]);
+    });
+
     it("should treat worktree as clean when only gitignored files exist", async () => {
       mockGit.status.mockResolvedValue({
         modified: [],
