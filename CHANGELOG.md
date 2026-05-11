@@ -1,5 +1,11 @@
 # sync-worktrees
 
+## 3.6.1
+
+### Patch Changes
+
+- 3cf502b: Treat worktrees with stashed changes as unsafe to remove.
+
 ## 3.6.0
 
 ### Minor Changes
