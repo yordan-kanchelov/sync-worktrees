@@ -261,7 +261,7 @@ branch refs/heads/dirty-branch
         mockRawCalls.push(argsArray);
 
         if (argsArray[0] === "show-ref" && argsArray[1] === "--verify") {
-          const ref = argsArray[3];
+          const ref = argsArray[argsArray.length - 1];
           if (typeof ref === "string" && ref.startsWith("refs/heads/")) {
             throw new Error("show-ref: not found");
           }

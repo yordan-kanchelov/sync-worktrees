@@ -1039,7 +1039,8 @@ export class GitService {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     const checkRef = async (ref: string): Promise<boolean> => {
       try {
-        await bareGit.raw(["show-ref", "--verify", "--quiet", ref]);
+        // simple-git resolves `show-ref --quiet` when Git exits 1, so keep stdout enabled.
+        await bareGit.raw(["show-ref", "--verify", ref]);
         return true;
       } catch {
         return false;
@@ -1060,11 +1061,30 @@ export class GitService {
     return branches.all;
   }
 
+  private async resolveCreateBranchBaseRef(bareGit: SimpleGit, baseBranch: string): Promise<string> {
+    const candidates =
+      baseBranch.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) || baseBranch.startsWith("refs/")
+        ? [baseBranch]
+        : [`${GIT_CONSTANTS.REMOTE_PREFIX}${baseBranch}`, baseBranch];
+
+    for (const candidate of candidates) {
+      try {
+        await bareGit.revparse(["--verify", candidate]);
+        return candidate;
+      } catch {
+        // Try the next candidate before letting git branch report the original failure.
+      }
+    }
+
+    return candidates[0];
+  }
+
   async createBranch(branchName: string, baseBranch: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
+    const baseRef = await this.resolveCreateBranchBaseRef(bareGit, baseBranch);
 
-    await bareGit.raw(["branch", branchName, `origin/${baseBranch}`]);
-    this.logger.info(`Created branch '${branchName}' from '${baseBranch}'`);
+    await bareGit.raw(["branch", branchName, baseRef]);
+    this.logger.info(`Created branch '${branchName}' from '${baseRef}'`);
   }
 
   async pushBranch(branchName: string): Promise<void> {
