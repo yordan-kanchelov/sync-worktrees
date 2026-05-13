@@ -1,5 +1,13 @@
 # sync-worktrees
 
+## 3.6.2
+
+### Patch Changes
+
+- a68bebc: Stabilize the hook-execution test suite by awaiting actual child-process completion via the `onComplete` callback instead of a fixed 500 ms sleep, removing a flake that surfaced under the full parallel test run.
+- a68bebc: Serialize MCP repository mutations through the same repo operation lock used by sync and correct the `load_config` tool response description.
+- a68bebc: Fix MCP worktree creation for brand-new branches by making missing ref checks observable through simple-git and by accepting remote-qualified base branches.
+
 ## 3.6.1
 
 ### Patch Changes
