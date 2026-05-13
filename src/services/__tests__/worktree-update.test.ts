@@ -38,6 +38,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     // Mock GitService methods
     mockGitService = {
       initialize: vi.fn().mockResolvedValue(undefined),
+      isInitialized: vi.fn().mockReturnValue(true),
       fetchAll: vi.fn().mockResolvedValue(undefined),
       getRemoteBranches: vi.fn().mockResolvedValue(["main", "feature", "develop"]),
       getRemoteBranchesWithActivity: vi.fn().mockResolvedValue([

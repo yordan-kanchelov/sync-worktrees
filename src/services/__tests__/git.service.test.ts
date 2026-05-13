@@ -60,7 +60,7 @@ describe("GitService", () => {
   const mockShowRef = (opts: { local: boolean; remote: boolean }): void => {
     (mockGit.raw as Mock).mockImplementation((args: unknown) => {
       if (Array.isArray(args) && args[0] === "show-ref" && args[1] === "--verify") {
-        const ref = args[3];
+        const ref = args[args.length - 1];
         if (typeof ref === "string" && ref.startsWith("refs/heads/")) {
           return opts.local ? Promise.resolve("") : Promise.reject(new Error("show-ref: not found"));
         }
@@ -339,6 +339,50 @@ describe("GitService", () => {
     });
   });
 
+  describe("branchExists", () => {
+    it("checks refs with non-quiet show-ref so missing refs are observable", async () => {
+      const calls: string[][] = [];
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (Array.isArray(args)) {
+          calls.push(args as string[]);
+          return Promise.reject(new Error("show-ref: not found"));
+        }
+        return Promise.resolve("");
+      });
+
+      await expect(gitService.branchExists("feat/new")).resolves.toEqual({ local: false, remote: false });
+
+      expect(calls).toEqual([
+        ["show-ref", "--verify", "refs/heads/feat/new"],
+        ["show-ref", "--verify", "refs/remotes/origin/feat/new"],
+      ]);
+      expect(calls.flat()).not.toContain("--quiet");
+    });
+  });
+
+  describe("createBranch", () => {
+    it("does not duplicate origin when baseBranch is already remote-qualified", async () => {
+      mockGit.revparse.mockResolvedValue("abc123\n" as any);
+
+      await gitService.createBranch("feat/new", "origin/main");
+
+      expect(mockGit.revparse).toHaveBeenCalledWith(["--verify", "origin/main"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "feat/new", "origin/main"]);
+    });
+
+    it("falls back to a local base branch when origin branch is missing", async () => {
+      mockGit.revparse
+        .mockRejectedValueOnce(new Error("fatal: Needed a single revision") as any)
+        .mockResolvedValueOnce("abc123\n" as any);
+
+      await gitService.createBranch("feat/new", "main");
+
+      expect(mockGit.revparse).toHaveBeenNthCalledWith(1, ["--verify", "origin/main"]);
+      expect(mockGit.revparse).toHaveBeenNthCalledWith(2, ["--verify", "main"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "feat/new", "main"]);
+    });
+  });
+
   describe("getRemoteBranches", () => {
     beforeEach(async () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
@@ -528,7 +572,7 @@ describe("GitService", () => {
       (mockGit.raw as Mock).mockImplementation((args: unknown) => {
         if (Array.isArray(args)) {
           if (args[0] === "show-ref" && args[1] === "--verify") {
-            const ref = args[3];
+            const ref = args[args.length - 1];
             if (typeof ref === "string" && ref.startsWith("refs/heads/")) {
               return Promise.reject(new Error("show-ref: not found"));
             }
@@ -554,7 +598,7 @@ describe("GitService", () => {
       (mockGit.raw as Mock).mockImplementation((args: unknown) => {
         if (Array.isArray(args)) {
           if (args[0] === "show-ref" && args[1] === "--verify") {
-            const ref = args[3];
+            const ref = args[args.length - 1];
             if (typeof ref === "string" && ref.startsWith("refs/heads/")) {
               return Promise.reject(new Error("show-ref: not found"));
             }
@@ -906,7 +950,7 @@ describe("GitService", () => {
         (mockGit.raw as Mock).mockImplementation((args: unknown) => {
           if (Array.isArray(args)) {
             if (args[0] === "show-ref" && args[1] === "--verify") {
-              const ref = args[3];
+              const ref = args[args.length - 1];
               if (typeof ref === "string" && ref.startsWith("refs/heads/")) return Promise.resolve("");
               if (typeof ref === "string" && ref.startsWith("refs/remotes/origin/")) {
                 return Promise.reject(new Error("show-ref: not found"));

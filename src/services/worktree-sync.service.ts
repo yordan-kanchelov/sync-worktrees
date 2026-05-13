@@ -24,6 +24,10 @@ export type SyncResult =
   | { started: false; reason: "in_progress" }
   | { started: false; reason: "locked" };
 
+export type ExclusiveRepoOperationResult<T> =
+  | { started: true; value: T }
+  | { started: false; reason: "in_progress" | "locked" };
+
 export interface ProgressEvent {
   phase: string;
   message: string;
@@ -71,6 +75,31 @@ export class WorktreeSyncService {
     return () => this.progressListeners.delete(listener);
   }
 
+  async runExclusiveRepoOperation<T>(operation: () => Promise<T>): Promise<ExclusiveRepoOperationResult<T>> {
+    if (this.syncInProgress) {
+      this.logger.warn("⚠️  Another repository operation is already in progress, skipping...");
+      return { started: false, reason: "in_progress" };
+    }
+
+    const release = await this.acquireBareLock();
+    if (release === null) {
+      this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
+      return { started: false, reason: "locked" };
+    }
+
+    this.syncInProgress = true;
+    try {
+      return { started: true, value: await operation() };
+    } finally {
+      this.syncInProgress = false;
+      try {
+        await release();
+      } catch (releaseError) {
+        this.logger.warn(`Failed to release sync lock: ${getErrorMessage(releaseError)}`);
+      }
+    }
+  }
+
   private emitProgress(event: ProgressEvent): void {
     for (const listener of this.progressListeners) {
       try {
@@ -82,51 +111,39 @@ export class WorktreeSyncService {
   }
 
   async sync(): Promise<SyncResult> {
-    if (this.syncInProgress) {
-      this.logger.warn("⚠️  Sync already in progress, skipping...");
-      return { started: false, reason: "in_progress" };
-    }
-
-    const release = await this.acquireBareLock();
-    if (release === null) {
-      this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
-      return { started: false, reason: "locked" };
-    }
-
-    this.syncInProgress = true;
-    this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
-
-    const totalTimer = new Timer();
-    const phaseTimer = new PhaseTimer();
-    const syncContext = { lfsSkipEnabled: false };
-    const retryOptions = this.createRetryOptions(syncContext);
-
-    try {
-      await retry(() => this.runSyncAttempt(phaseTimer, syncContext), retryOptions);
-    } catch (error) {
-      this.logger.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
-      throw error;
-    } finally {
-      if (syncContext.lfsSkipEnabled && !this.config.skipLfs) {
-        this.gitService.setLfsSkipEnabled(false);
+    const result = await this.runExclusiveRepoOperation(async () => {
+      if (!this.isInitialized()) {
+        await this.initialize();
       }
-      this.syncInProgress = false;
+
+      this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
+
+      const totalTimer = new Timer();
+      const phaseTimer = new PhaseTimer();
+      const syncContext = { lfsSkipEnabled: false };
+      const retryOptions = this.createRetryOptions(syncContext);
+
       try {
-        await release();
-      } catch (releaseError) {
-        this.logger.warn(`Failed to release sync lock: ${getErrorMessage(releaseError)}`);
-      }
-      this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
+        await retry(() => this.runSyncAttempt(phaseTimer, syncContext), retryOptions);
+      } catch (error) {
+        this.logger.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
+        throw error;
+      } finally {
+        if (syncContext.lfsSkipEnabled && !this.config.skipLfs) {
+          this.gitService.setLfsSkipEnabled(false);
+        }
+        this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
 
-      if (this.config.debug) {
-        const totalDuration = totalTimer.stop();
-        const phaseResults = phaseTimer.getResults();
-        const repoName = (this.config as { name?: string }).name;
-        this.logger.table(formatTimingTable(totalDuration, phaseResults, repoName));
+        if (this.config.debug) {
+          const totalDuration = totalTimer.stop();
+          const phaseResults = phaseTimer.getResults();
+          const repoName = (this.config as { name?: string }).name;
+          this.logger.table(formatTimingTable(totalDuration, phaseResults, repoName));
+        }
       }
-    }
+    });
 
-    return { started: true };
+    return result.started ? { started: true } : result;
   }
 
   private async acquireBareLock(): Promise<(() => Promise<void>) | null> {
@@ -139,16 +156,10 @@ export class WorktreeSyncService {
     }
 
     const barePath = this.gitService.getBareRepoPath();
-    const lockTarget = path.join(barePath, "HEAD");
+    await fs.mkdir(barePath, { recursive: true });
 
     try {
-      await fs.access(lockTarget);
-    } catch {
-      return async () => {};
-    }
-
-    try {
-      const release = await lockfile.lock(lockTarget, {
+      const release = await lockfile.lock(barePath, {
         stale: DEFAULT_CONFIG.LOCK_STALE_MS,
         update: DEFAULT_CONFIG.LOCK_UPDATE_MS,
         retries: 0,
