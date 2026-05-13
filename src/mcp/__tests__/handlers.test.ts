@@ -139,6 +139,10 @@ function makeCtx(opts: {
     isInitialized: vi.fn<any>().mockReturnValue(true),
     isSyncInProgress: vi.fn<any>().mockReturnValue(opts.syncInProgress ?? false),
     initialize: vi.fn<any>().mockResolvedValue(undefined),
+    runExclusiveRepoOperation: vi.fn<any>().mockImplementation(async (operation: unknown) => ({
+      started: true,
+      value: await (operation as () => Promise<unknown>)(),
+    })),
     sync: vi.fn<any>().mockResolvedValue({ started: true }),
     getGitService: () => git,
   };
@@ -259,10 +263,30 @@ describe("handleCreateWorktree", () => {
   });
 
   it("fails with SYNC_IN_PROGRESS when sync running", async () => {
-    const { ctx } = makeCtx({ syncInProgress: true });
+    const { ctx, service } = makeCtx({ syncInProgress: true });
+    service.runExclusiveRepoOperation.mockResolvedValueOnce({ started: false, reason: "in_progress" });
     const result = await invoke(handleCreateWorktree, ctx, { branchName: "x", baseBranch: "main" });
     const body = parseResponse(result);
     expect(body.code).toBe("SYNC_IN_PROGRESS");
+  });
+
+  it("does not touch git when the repo operation lock is unavailable", async () => {
+    const { ctx, git, service } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>(),
+        createBranch: vi.fn<any>(),
+        addWorktree: vi.fn<any>(),
+      },
+    });
+    service.runExclusiveRepoOperation.mockResolvedValueOnce({ started: false, reason: "locked" });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "new-branch", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("SYNC_IN_PROGRESS");
+    expect(git.branchExists).not.toHaveBeenCalled();
+    expect(git.createBranch).not.toHaveBeenCalled();
+    expect(git.addWorktree).not.toHaveBeenCalled();
   });
 
   it("creates branch and worktree without pushing when push:false (push:false flow)", async () => {
@@ -382,12 +406,13 @@ describe("handleRemoveWorktree", () => {
   });
 
   it("skips safety check when force=true", async () => {
-    const { ctx, git } = makeCtx({
+    const { ctx, git, service } = makeCtx({
       git: { getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/foo", branch: "x" }]) },
     });
     const result = await invoke(handleRemoveWorktree, ctx, { path: "/foo", force: true });
     const body = parseResponse(result);
     expect(body.success).toBe(true);
+    expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
     expect(git.removeWorktree).toHaveBeenCalledWith("/foo");
   });
 
@@ -433,7 +458,7 @@ describe("handleSync", () => {
     expect(body.code).toBe("SYNC_IN_PROGRESS");
   });
 
-  it("initializes service before syncing when needed", async () => {
+  it("delegates initialization to service.sync when needed", async () => {
     const { ctx, service } = makeCtx({});
     service.isInitialized.mockReturnValue(false);
 
@@ -441,7 +466,7 @@ describe("handleSync", () => {
     const body = parseResponse(result);
 
     expect(body.success).toBe(true);
-    expect(service.initialize).toHaveBeenCalled();
+    expect(service.initialize).not.toHaveBeenCalled();
     expect(service.sync).toHaveBeenCalled();
   });
 
@@ -550,12 +575,13 @@ describe("case-insensitive path handling in handlers", () => {
 
 describe("handleUpdateWorktree", () => {
   it("calls updateWorktree on given path", async () => {
-    const { ctx, git } = makeCtx({
+    const { ctx, git, service } = makeCtx({
       git: { getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature" }]) },
     });
     const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" });
     const body = parseResponse(result);
     expect(body.success).toBe(true);
+    expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
     expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature");
   });
 
@@ -643,6 +669,7 @@ describe("handleInitialize", () => {
     expect(body.success).toBe(true);
     expect(body.defaultBranch).toBe("main");
     expect(body.worktreeDir).toBe("/repo/worktrees");
+    expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
     expect(service.initialize).toHaveBeenCalled();
   });
 });

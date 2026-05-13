@@ -291,7 +291,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
       description:
         "Load or reload a sync-worktrees JavaScript config file into the server's session. Replaces any previously loaded repositories. " +
         "Call this before sync/initialize/create_worktree when using a config-driven workflow. " +
-        "Returns: { configPath, currentRepository, repositories: [{ name, repoPath, worktreeDir, ... }] }.",
+        "Returns: { configPath, currentRepository, repositories: [{ name, repoUrl, worktreeDir, source }] }.",
       inputSchema: {
         configPath: z
           .string()

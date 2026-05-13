@@ -34,14 +34,6 @@ function ensureCapability(discovered: DiscoveredRepoContext | null, key: Capabil
   }
 }
 
-async function ensureNotSyncing(ctx: RepositoryContext, repoName?: string): Promise<void> {
-  const entry = ctx.getEntry(repoName);
-  if (!entry?.service) return;
-  if (entry.service.isSyncInProgress()) {
-    throw new SyncInProgressError(entry.name);
-  }
-}
-
 async function getReadyService(
   ctx: RepositoryContext,
   repoName: string | undefined,
@@ -49,15 +41,11 @@ async function getReadyService(
     capability?: CapabilityKey;
     toolName?: string;
     ensureInitialized?: boolean;
-    ensureNotSyncing?: boolean;
   } = {},
 ): Promise<{ discovered: DiscoveredRepoContext | null; service: RepoService; git: RepoGitService }> {
   const discovered = ctx.getDiscoveredContext(repoName);
   if (options.capability && options.toolName) {
     ensureCapability(discovered, options.capability, options.toolName);
-  }
-  if (options.ensureNotSyncing) {
-    await ensureNotSyncing(ctx, repoName);
   }
 
   const service = await ctx.getService(repoName);
@@ -70,6 +58,20 @@ async function getReadyService(
     service,
     git: service.getGitService(),
   };
+}
+
+async function runExclusiveRepoOperation<T>(
+  ctx: RepositoryContext,
+  repoName: string | undefined,
+  service: RepoService,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const result = await service.runExclusiveRepoOperation(operation);
+  if (!result.started) {
+    const name = ctx.getEntry(repoName)?.name ?? repoName ?? "unknown";
+    throw new SyncInProgressError(name);
+  }
+  return result.value;
 }
 
 async function ensureRepoWorktreePath(
@@ -234,46 +236,50 @@ export async function handleCreateWorktree(
   const { service, git } = await getReadyService(ctx, params.repoName, {
     capability: "createWorktree",
     toolName: "create_worktree",
-    ensureInitialized: true,
-    ensureNotSyncing: true,
   });
 
-  const existence = await git.branchExists(branchName);
-
-  let created = false;
-  let pushed = false;
-
-  if (!existence.local && !existence.remote) {
-    if (!baseBranch) {
-      throw new Error(`Branch '${branchName}' does not exist. Provide 'baseBranch' to create it.`);
+  return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
+    if (!service.isInitialized()) {
+      await service.initialize();
     }
-    await git.createBranch(branchName, baseBranch);
-    created = true;
-  }
 
-  const worktreeDir = service.config.worktreeDir;
-  const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
-  const existing = await git.getWorktrees();
-  const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
-  if (collision) {
-    throw new Error(
-      `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
-    );
-  }
-  await git.addWorktree(branchName, worktreePath);
-  ctx.invalidateDiscovered();
+    const existence = await git.branchExists(branchName);
 
-  if (created && push) {
-    await git.pushBranch(branchName);
-    pushed = true;
-  }
+    let created = false;
+    let pushed = false;
 
-  return formatToolResponse({
-    success: true,
-    branchName,
-    worktreePath: path.resolve(worktreePath),
-    created,
-    pushed,
+    if (!existence.local && !existence.remote) {
+      if (!baseBranch) {
+        throw new Error(`Branch '${branchName}' does not exist. Provide 'baseBranch' to create it.`);
+      }
+      await git.createBranch(branchName, baseBranch);
+      created = true;
+    }
+
+    const worktreeDir = service.config.worktreeDir;
+    const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
+    const existing = await git.getWorktrees();
+    const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
+    if (collision) {
+      throw new Error(
+        `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
+      );
+    }
+    await git.addWorktree(branchName, worktreePath);
+    ctx.invalidateDiscovered();
+
+    if (created && push) {
+      await git.pushBranch(branchName);
+      pushed = true;
+    }
+
+    return formatToolResponse({
+      success: true,
+      branchName,
+      worktreePath: path.resolve(worktreePath),
+      created,
+      pushed,
+    });
   });
 }
 
@@ -282,27 +288,31 @@ export async function handleRemoveWorktree(
   params: { path: string; force?: boolean; repoName?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const { git } = await getReadyService(ctx, params.repoName, {
+  const { service, git } = await getReadyService(ctx, params.repoName, {
     capability: "removeWorktree",
     toolName: "remove_worktree",
-    ensureInitialized: true,
-    ensureNotSyncing: true,
   });
-  const removedPath = await ensureRepoWorktreePath(ctx, params, git);
 
-  if (!params.force) {
-    const status = await git.getFullWorktreeStatus(params.path, false);
-    if (!status.canRemove) {
-      throw new Error(`Cannot remove worktree: ${status.reasons.join(", ")}. Use force=true to override.`);
+  return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
+    if (!service.isInitialized()) {
+      await service.initialize();
     }
-  }
+    const removedPath = await ensureRepoWorktreePath(ctx, params, git);
 
-  await git.removeWorktree(params.path);
-  ctx.invalidateDiscovered();
+    if (!params.force) {
+      const status = await git.getFullWorktreeStatus(params.path, false);
+      if (!status.canRemove) {
+        throw new Error(`Cannot remove worktree: ${status.reasons.join(", ")}. Use force=true to override.`);
+      }
+    }
 
-  return formatToolResponse({
-    success: true,
-    removedPath,
+    await git.removeWorktree(params.path);
+    ctx.invalidateDiscovered();
+
+    return formatToolResponse({
+      success: true,
+      removedPath,
+    });
   });
 }
 
@@ -314,7 +324,6 @@ export async function handleSync(
   const { service } = await getReadyService(ctx, params.repoName, {
     capability: "sync",
     toolName: "sync",
-    ensureInitialized: true,
   });
 
   const dispose = attachProgressReporter(service, extra);
@@ -337,20 +346,24 @@ export async function handleUpdateWorktree(
   params: { path: string; repoName?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const { git } = await getReadyService(ctx, params.repoName, {
+  const { service, git } = await getReadyService(ctx, params.repoName, {
     capability: "updateWorktree",
     toolName: "update_worktree",
-    ensureInitialized: true,
-    ensureNotSyncing: true,
   });
-  const worktreePath = await ensureRepoWorktreePath(ctx, params, git);
 
-  await git.updateWorktree(params.path);
-  ctx.invalidateDiscovered();
+  return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
+    if (!service.isInitialized()) {
+      await service.initialize();
+    }
+    const worktreePath = await ensureRepoWorktreePath(ctx, params, git);
 
-  return formatToolResponse({
-    success: true,
-    worktreePath,
+    await git.updateWorktree(params.path);
+    ctx.invalidateDiscovered();
+
+    return formatToolResponse({
+      success: true,
+      worktreePath,
+    });
   });
 }
 
@@ -362,17 +375,18 @@ export async function handleInitialize(
   const { service } = await getReadyService(ctx, params.repoName, {
     capability: "initialize",
     toolName: "initialize",
-    ensureNotSyncing: true,
   });
   const dispose = attachProgressReporter(service, extra);
   try {
-    await service.initialize();
-    const git = service.getGitService();
-    ctx.invalidateDiscovered();
-    return formatToolResponse({
-      success: true,
-      defaultBranch: git.getDefaultBranch(),
-      worktreeDir: service.config.worktreeDir,
+    return await runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
+      await service.initialize();
+      const git = service.getGitService();
+      ctx.invalidateDiscovered();
+      return formatToolResponse({
+        success: true,
+        defaultBranch: git.getDefaultBranch(),
+        worktreeDir: service.config.worktreeDir,
+      });
     });
   } finally {
     dispose();
