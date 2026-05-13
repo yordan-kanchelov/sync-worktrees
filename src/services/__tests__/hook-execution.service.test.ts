@@ -3,9 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HOOK_CONSTANTS } from "../../constants";
 import { HookExecutionService } from "../hook-execution.service";
 
-import type { HookContext } from "../../types";
-
-const WAIT_TIME = 500;
+import type { HookContext, HooksConfig } from "../../types";
+import type { HookExecutionCallbacks } from "../hook-execution.service";
 
 const NODE = process.execPath;
 
@@ -14,6 +13,29 @@ const nodeScript = (body: string): string => `"${NODE}" -e "${body.replace(/"/g,
 describe("HookExecutionService", () => {
   let service: HookExecutionService;
   let mockContext: HookContext;
+
+  const runAndWait = (
+    hooks: HooksConfig,
+    context: HookContext,
+    callbacks: HookExecutionCallbacks = {},
+  ): Promise<void> => {
+    const total = hooks.onBranchCreated?.length ?? 0;
+    if (total === 0) {
+      service.executeOnBranchCreated(hooks, context, callbacks);
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      let done = 0;
+      const userComplete = callbacks.onComplete;
+      service.executeOnBranchCreated(hooks, context, {
+        ...callbacks,
+        onComplete: (command, exitCode) => {
+          userComplete?.(command, exitCode);
+          if (++done === total) resolve();
+        },
+      });
+    });
+  };
 
   beforeEach(() => {
     service = new HookExecutionService();
@@ -42,7 +64,7 @@ describe("HookExecutionService", () => {
     it("should execute commands with correct environment variables", async () => {
       const stdoutCallback = vi.fn();
 
-      service.executeOnBranchCreated(
+      await runAndWait(
         {
           onBranchCreated: [nodeScript(`process.stdout.write(process.env['${HOOK_CONSTANTS.ENV_VARS.BRANCH_NAME}'])`)],
         },
@@ -50,15 +72,13 @@ describe("HookExecutionService", () => {
         { onStdout: stdoutCallback },
       );
 
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
-
       expect(stdoutCallback).toHaveBeenCalledWith(expect.stringContaining("feature/test-branch"));
     });
 
     it("should execute commands with correct environment variables for all context fields", async () => {
       const stdoutCallback = vi.fn();
 
-      service.executeOnBranchCreated(
+      await runAndWait(
         {
           onBranchCreated: [
             nodeScript(
@@ -69,8 +89,6 @@ describe("HookExecutionService", () => {
         mockContext,
         { onStdout: stdoutCallback },
       );
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
       expect(stdoutCallback).toHaveBeenCalledWith("feature/test-branch,test-repo,main");
     });
@@ -100,11 +118,7 @@ describe("HookExecutionService", () => {
     ])("should replace placeholders correctly ($desc)", async ({ template, expected }) => {
       const stdoutCallback = vi.fn();
 
-      service.executeOnBranchCreated({ onBranchCreated: [template] }, mockContext, {
-        onStdout: stdoutCallback,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
+      await runAndWait({ onBranchCreated: [template] }, mockContext, { onStdout: stdoutCallback });
 
       expect(stdoutCallback).toHaveBeenCalledWith(expected);
     });
@@ -113,11 +127,7 @@ describe("HookExecutionService", () => {
       const completeCallback = vi.fn();
       const command = nodeScript("process.stdout.write('success')");
 
-      service.executeOnBranchCreated({ onBranchCreated: [command] }, mockContext, {
-        onComplete: completeCallback,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
+      await runAndWait({ onBranchCreated: [command] }, mockContext, { onComplete: completeCallback });
 
       expect(completeCallback).toHaveBeenCalledWith(command, 0);
     });
@@ -126,11 +136,7 @@ describe("HookExecutionService", () => {
       const completeCallback = vi.fn();
       const command = nodeScript("process.exit(1)");
 
-      service.executeOnBranchCreated({ onBranchCreated: [command] }, mockContext, {
-        onComplete: completeCallback,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
+      await runAndWait({ onBranchCreated: [command] }, mockContext, { onComplete: completeCallback });
 
       expect(completeCallback).toHaveBeenCalledWith(command, 1);
     });
@@ -138,11 +144,9 @@ describe("HookExecutionService", () => {
     it("should call onStderr for commands that write to stderr", async () => {
       const stderrCallback = vi.fn();
 
-      service.executeOnBranchCreated({ onBranchCreated: [nodeScript("process.stderr.write('error')")] }, mockContext, {
+      await runAndWait({ onBranchCreated: [nodeScript("process.stderr.write('error')")] }, mockContext, {
         onStderr: stderrCallback,
       });
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
       expect(stderrCallback).toHaveBeenCalledWith("error");
     });
@@ -150,7 +154,7 @@ describe("HookExecutionService", () => {
     it("should execute multiple commands independently", async () => {
       const stdoutCallback = vi.fn();
 
-      service.executeOnBranchCreated(
+      await runAndWait(
         {
           onBranchCreated: [
             nodeScript("process.stdout.write('first')"),
@@ -161,8 +165,6 @@ describe("HookExecutionService", () => {
         mockContext,
         { onStdout: stdoutCallback },
       );
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
       expect(stdoutCallback).toHaveBeenCalledTimes(3);
       expect(stdoutCallback).toHaveBeenCalledWith("first");
@@ -191,7 +193,7 @@ describe("HookExecutionService", () => {
         worktreePath: "/tmp",
       };
 
-      service.executeOnBranchCreated(
+      await runAndWait(
         {
           onBranchCreated: [nodeScript("process.stdout.write(process.argv[1])") + " {BRANCH_NAME}"],
         },
@@ -199,19 +201,13 @@ describe("HookExecutionService", () => {
         { onStdout: stdoutCallback },
       );
 
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
-
       expect(stdoutCallback).toHaveBeenCalledWith("feature/test-with-special-chars");
     });
 
     it("should not call callbacks for empty output", async () => {
       const stdoutCallback = vi.fn();
 
-      service.executeOnBranchCreated({ onBranchCreated: [nodeScript("process.exit(0)")] }, mockContext, {
-        onStdout: stdoutCallback,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
+      await runAndWait({ onBranchCreated: [nodeScript("process.exit(0)")] }, mockContext, { onStdout: stdoutCallback });
 
       expect(stdoutCallback).not.toHaveBeenCalled();
     });
@@ -219,7 +215,7 @@ describe("HookExecutionService", () => {
     it("should pass both env vars and placeholders work in same command", async () => {
       const stdoutCallback = vi.fn();
 
-      service.executeOnBranchCreated(
+      await runAndWait(
         {
           onBranchCreated: [
             nodeScript(
@@ -230,8 +226,6 @@ describe("HookExecutionService", () => {
         mockContext,
         { onStdout: stdoutCallback },
       );
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
       expect(stdoutCallback).toHaveBeenCalledWith("feature/test-branch test-repo");
     });
@@ -244,15 +238,13 @@ describe("HookExecutionService", () => {
         branchName: "'; echo INJECTED; '",
       };
 
-      service.executeOnBranchCreated(
+      await runAndWait(
         {
           onBranchCreated: [nodeScript("process.stdout.write(process.argv[1])") + " {BRANCH_NAME}"],
         },
         maliciousContext,
         { onStdout: stdoutCallback },
       );
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
 
       expect(stdoutCallback).not.toHaveBeenCalledWith("INJECTED");
       expect(stdoutCallback).toHaveBeenCalledWith("'; echo INJECTED; '");
@@ -276,23 +268,15 @@ describe("HookExecutionService", () => {
         worktreePath: "/tmp",
       };
 
-      service.executeOnBranchCreated(
-        { onBranchCreated: [nodeScript("process.stdout.write(process.cwd())")] },
-        contextWithTmpPath,
-        { onStdout: stdoutCallback },
-      );
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
+      await runAndWait({ onBranchCreated: [nodeScript("process.stdout.write(process.cwd())")] }, contextWithTmpPath, {
+        onStdout: stdoutCallback,
+      });
 
       expect(stdoutCallback).toHaveBeenCalledWith(expect.stringContaining("tmp"));
     });
 
     it("should track active processes and remove on completion", async () => {
-      service.executeOnBranchCreated({ onBranchCreated: [nodeScript("process.stdout.write('done')")] }, mockContext);
-
-      expect((service as any).activeProcesses.size).toBeGreaterThanOrEqual(0);
-
-      await new Promise((resolve) => setTimeout(resolve, WAIT_TIME));
+      await runAndWait({ onBranchCreated: [nodeScript("process.stdout.write('done')")] }, mockContext);
 
       expect((service as any).activeProcesses.size).toBe(0);
     });
@@ -308,14 +292,14 @@ describe("HookExecutionService", () => {
           onError: errorCallback,
         });
 
-        await new Promise((resolve) => setTimeout(resolve, 300));
-
-        expect(errorCallback).toHaveBeenCalledWith(
-          command,
-          expect.objectContaining({
-            message: expect.stringContaining("timed out"),
-          }),
-        );
+        await vi.waitFor(() => {
+          expect(errorCallback).toHaveBeenCalledWith(
+            command,
+            expect.objectContaining({
+              message: expect.stringContaining("timed out"),
+            }),
+          );
+        });
       } finally {
         service.cleanup();
       }
