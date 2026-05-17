@@ -40,6 +40,10 @@ export interface DiscoveredWorktree {
 export interface SiblingRepository {
   name: string;
   bareRepoPath: string;
+  worktreeDir: string | null;
+  repoUrl: string | null;
+  sparseCheckout?: RepositoryConfig["sparseCheckout"];
+  present: boolean;
   configMatched: boolean;
 }
 
@@ -52,6 +56,8 @@ export interface DiscoveredRepoContext {
   repoUrl: string | null;
   worktreeDir: string | null;
   allWorktrees: DiscoveredWorktree[];
+  allWorktreesByRepo?: Record<string, DiscoveredWorktree[]>;
+  allWorktreeErrorsByRepo?: Record<string, string>;
   siblingRepositories: SiblingRepository[];
   configPath: string | null;
   repoName: string | null;
@@ -237,16 +243,42 @@ export class RepositoryContext {
   }
 
   private async discoverSiblingRepositories(currentBareRepoPath: string): Promise<SiblingRepository[]> {
+    const currentBare = normalizePathForCompare(currentBareRepoPath);
+    const results = new Map<string, SiblingRepository>();
+
+    for (const entry of this.repos.values()) {
+      if (entry.source !== "config" || !entry.config.bareRepoDir) continue;
+
+      const bareRepoPath = path.resolve(entry.config.bareRepoDir);
+      const foldedBare = normalizePathForCompare(bareRepoPath);
+      if (foldedBare === currentBare) continue;
+
+      const sibling: SiblingRepository = {
+        name: entry.name,
+        bareRepoPath,
+        worktreeDir: path.resolve(entry.config.worktreeDir),
+        repoUrl: entry.config.repoUrl,
+        present: await isDirectory(bareRepoPath),
+        configMatched: true,
+      };
+      if (entry.config.sparseCheckout) {
+        sibling.sparseCheckout = entry.config.sparseCheckout;
+      }
+      results.set(foldedBare, sibling);
+    }
+
     const repoDir = path.dirname(currentBareRepoPath);
     const workspaceRoot = path.dirname(repoDir);
 
-    if (workspaceRoot === repoDir) return [];
+    if (workspaceRoot === repoDir) {
+      return Array.from(results.values()).sort((a, b) => a.name.localeCompare(b.name));
+    }
 
     let entries: string[];
     try {
       entries = await fs.readdir(workspaceRoot);
     } catch {
-      return [];
+      return Array.from(results.values()).sort((a, b) => a.name.localeCompare(b.name));
     }
 
     const configBares = new Map<string, string>();
@@ -256,7 +288,6 @@ export class RepositoryContext {
       }
     }
 
-    const results: SiblingRepository[] = [];
     await Promise.all(
       entries.map(async (entry) => {
         const candidate = path.join(workspaceRoot, entry);
@@ -269,17 +300,22 @@ export class RepositoryContext {
         }
 
         const resolvedBare = path.resolve(bareCandidate);
+        const foldedBare = normalizePathForCompare(resolvedBare);
+        if (foldedBare === currentBare || results.has(foldedBare)) return;
+
         const matchedName = configBares.get(normalizePathForCompare(resolvedBare));
-        results.push({
+        results.set(foldedBare, {
           name: matchedName ?? entry,
           bareRepoPath: resolvedBare,
+          worktreeDir: null,
+          repoUrl: null,
+          present: true,
           configMatched: matchedName !== undefined,
         });
       }),
     );
 
-    results.sort((a, b) => a.name.localeCompare(b.name));
-    return results;
+    return Array.from(results.values()).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   private bootstrapCurrentRepo(candidate: string, force = false): void {
@@ -535,13 +571,67 @@ export class RepositoryContext {
     }));
   }
 
+  getConfiguredRepositoryNames(): string[] {
+    return Array.from(this.repos.values())
+      .filter((entry) => entry.source === "config")
+      .map((entry) => entry.name);
+  }
+
+  async getAllConfiguredWorktrees(
+    currentWorktreePath: string | null = null,
+  ): Promise<Record<string, DiscoveredWorktree[]>> {
+    const details = await this.getAllConfiguredWorktreeDetails(currentWorktreePath);
+    return details.worktreesByRepo;
+  }
+
+  async getAllConfiguredWorktreeDetails(
+    currentWorktreePath: string | null = null,
+  ): Promise<{ worktreesByRepo: Record<string, DiscoveredWorktree[]>; errorsByRepo: Record<string, string> }> {
+    const entries = Array.from(this.repos.values()).filter((entry) => entry.source === "config");
+    const results = await Promise.all(
+      entries.map(async (entry) => ({
+        name: entry.name,
+        result: await this.readConfiguredWorktrees(entry, currentWorktreePath),
+      })),
+    );
+
+    const worktreesByRepo: Record<string, DiscoveredWorktree[]> = {};
+    const errorsByRepo: Record<string, string> = {};
+
+    for (const entry of results) {
+      worktreesByRepo[entry.name] = entry.result.worktrees;
+      if (entry.result.error) {
+        errorsByRepo[entry.name] = entry.result.error;
+      }
+    }
+
+    return { worktreesByRepo, errorsByRepo };
+  }
+
   getConfigPath(): string | null {
     return this.configPath;
   }
+
+  private async readConfiguredWorktrees(
+    entry: RepoEntry,
+    currentWorktreePath: string | null,
+  ): Promise<{ worktrees: DiscoveredWorktree[]; error?: string }> {
+    if (entry.source !== "config" || !entry.config.bareRepoDir) return { worktrees: [] };
+
+    const bareRepoPath = path.resolve(entry.config.bareRepoDir);
+    if (!(await isDirectory(bareRepoPath))) return { worktrees: [] };
+
+    try {
+      const output = await simpleGit(bareRepoPath).raw(["worktree", "list", "--porcelain"]);
+      return { worktrees: parseWorktreeList(output, currentWorktreePath) };
+    } catch (err) {
+      return { worktrees: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  }
 }
 
-function parseWorktreeList(output: string, currentPath: string): DiscoveredWorktree[] {
-  const foldedCurrent = normalizePathForCompare(currentPath);
+function parseWorktreeList(output: string, currentPath: string | null): DiscoveredWorktree[] {
+  const foldedCurrent = currentPath ? normalizePathForCompare(currentPath) : null;
   const results: DiscoveredWorktree[] = [];
   for (const wt of parseWorktreeListPorcelain(output)) {
     const resolved = path.resolve(wt.path);
@@ -550,7 +640,7 @@ function parseWorktreeList(output: string, currentPath: string): DiscoveredWorkt
     results.push({
       path: resolved,
       branch,
-      isCurrent: normalizePathForCompare(resolved) === foldedCurrent,
+      isCurrent: foldedCurrent !== null && normalizePathForCompare(resolved) === foldedCurrent,
     });
   }
   return results;
@@ -566,6 +656,15 @@ async function safeMtimeMs(filePath: string): Promise<number | null> {
     return stat.mtimeMs;
   } catch {
     return null;
+  }
+}
+
+async function isDirectory(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isDirectory();
+  } catch {
+    return false;
   }
 }
 

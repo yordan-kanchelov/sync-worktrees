@@ -24,8 +24,8 @@ const REPO_NAME_DESCRIBE =
 const PATH_DESCRIBE_SUFFIX = "Absolute path preferred; relative paths resolve from the server's CWD.";
 
 const SERVER_INSTRUCTIONS =
-  "Before running git worktree operations, call `detect_context` to learn the current repo, current branch, sibling repositories under the workspace root, and which capabilities are available. " +
-  "It walks up to auto-discover sync-worktrees.config.{js,mjs,cjs,ts}, lists sibling worktrees, and reports per-capability {available, reason} so you can tell which tool is gated and why.";
+  "Before running git worktree operations, call `detect_context` with `includeAllWorktrees: true` at session start to learn every configured repository and worktree, plus the current repo, current branch, sibling repositories, and available capabilities. " +
+  "It walks up to auto-discover sync-worktrees.config.{js,mjs,cjs,ts}, reports config-driven sibling repositories, and reports per-capability {available, reason} so you can tell which tool is gated and why.";
 
 export interface ServerSnapshot {
   discovered: DiscoveredRepoContext | null;
@@ -87,16 +87,22 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "detect_context",
     {
       description:
-        "Detect sync-worktrees structure from a filesystem path. Reads .git file, resolves bare repo, discovers sibling worktrees, walks up for a sync-worktrees.config.{js,mjs,cjs,ts}, and lists sibling bare repos under the workspace root. Defaults to CWD. " +
+        "Detect sync-worktrees structure from a filesystem path. Reads .git file, resolves bare repo, discovers sibling worktrees, walks up for a sync-worktrees.config.{js,mjs,cjs,ts}, and lists configured sibling repositories. Defaults to CWD. " +
         "Use when: bootstrapping from an unknown checkout. " +
         "Returns: discovered repo root, bare repo path, all sibling worktrees, sibling repositories, current worktree path, configPath (auto-found), per-capability {available, reason}, notes[].",
       inputSchema: {
         path: z.string().optional().describe("Directory path to inspect. Defaults to the server's CWD."),
+        includeAllWorktrees: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, includes allWorktreesByRepo with worktrees for every configured repository, keyed by repoName, and allWorktreeErrorsByRepo for repos that could not be enumerated. Default: false.",
+          ),
         includeStatus: z
           .boolean()
           .optional()
           .describe(
-            "If true, enriches each entry in allWorktrees with label, divergence, and staleHint. Adds one git status + rev-list per worktree. Default: false (cheap path).",
+            "If true, enriches worktree entries with label, divergence, and staleHint. Adds one git status + rev-list per worktree. Default: false (cheap path).",
           ),
       },
       annotations: {
@@ -113,10 +119,15 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "list_worktrees",
     {
       description:
-        "List all worktrees of a repository with enriched status. " +
-        "Returns: array of { path, branch, isCurrent, label (clean|dirty|stale|current|unknown), status, divergence (ahead/behind), safeToRemove: { safe, reason }, lastSyncAt, sizeBytes }.",
+        "List worktrees with enriched status. Without repoName and with a loaded config, returns all configured repositories grouped by repoName. With repoName, returns that single repository. " +
+        "Returns worktree entries as { path, branch, isCurrent, label (clean|dirty|stale|current|unknown), status, divergence (ahead/behind), safeToRemove: { safe, reason }, lastSyncAt, sizeBytes }.",
       inputSchema: {
-        repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
+        repoName: z
+          .string()
+          .optional()
+          .describe(
+            "Repository name from loaded config. If omitted and a config is loaded, lists all configured repos.",
+          ),
         includeSize: z
           .boolean()
           .optional()

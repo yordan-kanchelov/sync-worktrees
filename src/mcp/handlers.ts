@@ -22,6 +22,18 @@ type RepoScopedParams = { repoName?: string };
 type WorktreePathParams = RepoScopedParams & { path: string };
 type RepoService = Awaited<ReturnType<RepositoryContext["getService"]>>;
 type RepoGitService = ReturnType<RepoService["getGitService"]>;
+type Limit = ReturnType<typeof pLimit>;
+type ListedWorktree = {
+  path: string;
+  branch: string;
+  isCurrent: boolean;
+  label: string;
+  status: Awaited<ReturnType<RepoGitService["getFullWorktreeStatus"]>> | null;
+  divergence: Awaited<ReturnType<typeof getDivergence>>;
+  safeToRemove: ReturnType<typeof deriveSafeToRemove>;
+  lastSyncAt: string | null;
+  sizeBytes: number | null;
+};
 
 const pathResolution = new PathResolutionService();
 
@@ -107,21 +119,55 @@ async function ensurePathBelongsToRepo(
 
 export async function handleDetectContext(
   ctx: RepositoryContext,
-  params: { path?: string; includeStatus?: boolean },
+  params: { path?: string; includeStatus?: boolean; includeAllWorktrees?: boolean },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const target = params.path ?? process.cwd();
   const discovered = await ctx.detectFromPath(target);
+  let response: DiscoveredRepoContext = discovered;
 
-  if (!params.includeStatus || discovered.allWorktrees.length === 0) {
-    return formatToolResponse(discovered);
+  if (params.includeAllWorktrees) {
+    const details = await ctx.getAllConfiguredWorktreeDetails(discovered.currentWorktreePath);
+    const errorsByRepo = Object.keys(details.errorsByRepo).length > 0 ? details.errorsByRepo : undefined;
+    response = {
+      ...response,
+      allWorktreesByRepo: details.worktreesByRepo,
+      allWorktreeErrorsByRepo: errorsByRepo,
+    };
+  }
+
+  if (!params.includeStatus) {
+    return formatToolResponse(response);
   }
 
   const statusService = new WorktreeStatusService();
-  const limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+  const statusLimit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
 
-  const enriched: DiscoveredWorktree[] = await Promise.all(
-    discovered.allWorktrees.map((wt) =>
+  const enriched = await enrichDetectedWorktrees(response.allWorktrees, statusService, statusLimit);
+  let allWorktreesByRepo = response.allWorktreesByRepo;
+
+  if (allWorktreesByRepo) {
+    const entries = await Promise.all(
+      Object.entries(allWorktreesByRepo).map(async ([repoName, worktrees]) => [
+        repoName,
+        await enrichDetectedWorktrees(worktrees, statusService, statusLimit),
+      ]),
+    );
+    allWorktreesByRepo = Object.fromEntries(entries);
+  }
+
+  return formatToolResponse({ ...response, allWorktrees: enriched, allWorktreesByRepo });
+}
+
+async function enrichDetectedWorktrees(
+  worktrees: DiscoveredWorktree[],
+  statusService: WorktreeStatusService,
+  limit: Limit,
+): Promise<DiscoveredWorktree[]> {
+  if (worktrees.length === 0) return worktrees;
+
+  return Promise.all(
+    worktrees.map((wt) =>
       limit(async () => {
         const [status, divergence] = await Promise.all([
           statusService.getFullWorktreeStatus(wt.path, false).catch(() => null),
@@ -140,8 +186,6 @@ export async function handleDetectContext(
       }),
     ),
   );
-
-  return formatToolResponse({ ...discovered, allWorktrees: enriched });
 }
 
 export async function handleListWorktrees(
@@ -149,7 +193,47 @@ export async function handleListWorktrees(
   params: { repoName?: string; includeSize?: boolean },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const { discovered, git } = await getReadyService(ctx, params.repoName, {
+  const configuredRepoNames = params.repoName ? [] : ctx.getConfiguredRepositoryNames();
+  if (configuredRepoNames.length > 0) {
+    const limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
+    const statusLimit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+    const repositories = await Promise.all(
+      configuredRepoNames.map((repoName) =>
+        limit(async () => {
+          try {
+            return [
+              repoName,
+              {
+                worktrees: await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit),
+              },
+            ] as const;
+          } catch (err) {
+            return [
+              repoName,
+              {
+                worktrees: [],
+                error: err instanceof Error ? err.message : String(err),
+              },
+            ] as const;
+          }
+        }),
+      ),
+    );
+
+    return formatToolResponse({ repositories: Object.fromEntries(repositories) });
+  }
+
+  const results = await listWorktreesForRepo(ctx, params.repoName, params.includeSize);
+  return formatToolResponse({ worktrees: results });
+}
+
+async function listWorktreesForRepo(
+  ctx: RepositoryContext,
+  repoName: string | undefined,
+  includeSize: boolean | undefined,
+  limit: Limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
+): Promise<ListedWorktree[]> {
+  const { discovered, git } = await getReadyService(ctx, repoName, {
     capability: "listWorktrees",
     toolName: "list_worktrees",
   });
@@ -167,7 +251,6 @@ export async function handleListWorktrees(
 
   const currentPath = discovered?.currentWorktreePath ?? null;
 
-  const limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
   const results = await Promise.all(
     worktrees.map((wt) =>
       limit(async () => {
@@ -178,7 +261,7 @@ export async function handleListWorktrees(
           git.getFullWorktreeStatus(wt.path, false).catch(() => null),
           getDivergence(wt.path),
           git.getWorktreeMetadata(wt.path).catch(() => null),
-          params.includeSize ? calculateDirectorySize(wt.path).catch(() => null) : Promise.resolve(null),
+          includeSize ? calculateDirectorySize(wt.path).catch(() => null) : Promise.resolve(null),
         ]);
 
         return {
@@ -196,7 +279,7 @@ export async function handleListWorktrees(
     ),
   );
 
-  return formatToolResponse({ worktrees: results });
+  return results;
 }
 
 export async function handleGetWorktreeStatus(
