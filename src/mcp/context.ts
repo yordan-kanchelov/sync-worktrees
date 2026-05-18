@@ -245,65 +245,59 @@ export class RepositoryContext {
   private async discoverSiblingRepositories(currentBareRepoPath: string): Promise<SiblingRepository[]> {
     const currentBare = normalizePathForCompare(currentBareRepoPath);
     const results = new Map<string, SiblingRepository>();
+    const byName = (a: SiblingRepository, b: SiblingRepository): number => a.name.localeCompare(b.name);
 
-    for (const entry of this.repos.values()) {
-      if (entry.source !== "config" || !entry.config.bareRepoDir) continue;
+    const configCandidates = Array.from(this.repos.values())
+      .filter((entry) => entry.source === "config" && !!entry.config.bareRepoDir)
+      .map((entry) => {
+        const bareRepoPath = path.resolve(entry.config.bareRepoDir as string);
+        return { entry, bareRepoPath, foldedBare: normalizePathForCompare(bareRepoPath) };
+      })
+      .filter((c) => c.foldedBare !== currentBare);
 
-      const bareRepoPath = path.resolve(entry.config.bareRepoDir);
-      const foldedBare = normalizePathForCompare(bareRepoPath);
-      if (foldedBare === currentBare) continue;
-
+    const configPresence = await Promise.all(configCandidates.map((c) => isDirectory(c.bareRepoPath)));
+    configCandidates.forEach(({ entry, bareRepoPath, foldedBare }, i) => {
       const sibling: SiblingRepository = {
         name: entry.name,
         bareRepoPath,
         worktreeDir: path.resolve(entry.config.worktreeDir),
         repoUrl: entry.config.repoUrl,
-        present: await isDirectory(bareRepoPath),
+        present: configPresence[i],
         configMatched: true,
       };
       if (entry.config.sparseCheckout) {
         sibling.sparseCheckout = entry.config.sparseCheckout;
       }
       results.set(foldedBare, sibling);
-    }
+    });
 
     const repoDir = path.dirname(currentBareRepoPath);
     const workspaceRoot = path.dirname(repoDir);
 
     if (workspaceRoot === repoDir) {
-      return Array.from(results.values()).sort((a, b) => a.name.localeCompare(b.name));
+      return Array.from(results.values()).sort(byName);
     }
 
     let entries: string[];
     try {
       entries = await fs.readdir(workspaceRoot);
     } catch {
-      return Array.from(results.values()).sort((a, b) => a.name.localeCompare(b.name));
+      return Array.from(results.values()).sort(byName);
     }
 
-    const configBares = new Map<string, string>();
-    for (const entry of this.repos.values()) {
-      if (entry.source === "config" && entry.config.bareRepoDir) {
-        configBares.set(normalizePathForCompare(entry.config.bareRepoDir), entry.name);
-      }
-    }
+    const configBares = new Map(configCandidates.map((c) => [c.foldedBare, c.entry.name]));
 
     await Promise.all(
       entries.map(async (entry) => {
         const candidate = path.join(workspaceRoot, entry);
         const bareCandidate = path.join(candidate, GIT_CONSTANTS.BARE_DIR_NAME);
-        try {
-          const stat = await fs.stat(bareCandidate);
-          if (!stat.isDirectory()) return;
-        } catch {
-          return;
-        }
+        if (!(await isDirectory(bareCandidate))) return;
 
         const resolvedBare = path.resolve(bareCandidate);
         const foldedBare = normalizePathForCompare(resolvedBare);
         if (foldedBare === currentBare || results.has(foldedBare)) return;
 
-        const matchedName = configBares.get(normalizePathForCompare(resolvedBare));
+        const matchedName = configBares.get(foldedBare);
         results.set(foldedBare, {
           name: matchedName ?? entry,
           bareRepoPath: resolvedBare,
@@ -315,7 +309,7 @@ export class RepositoryContext {
       }),
     );
 
-    return Array.from(results.values()).sort((a, b) => a.name.localeCompare(b.name));
+    return Array.from(results.values()).sort(byName);
   }
 
   private bootstrapCurrentRepo(candidate: string, force = false): void {
@@ -575,13 +569,6 @@ export class RepositoryContext {
     return Array.from(this.repos.values())
       .filter((entry) => entry.source === "config")
       .map((entry) => entry.name);
-  }
-
-  async getAllConfiguredWorktrees(
-    currentWorktreePath: string | null = null,
-  ): Promise<Record<string, DiscoveredWorktree[]>> {
-    const details = await this.getAllConfiguredWorktreeDetails(currentWorktreePath);
-    return details.worktreesByRepo;
   }
 
   async getAllConfiguredWorktreeDetails(

@@ -339,7 +339,7 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
   });
 });
 
-describe("RepositoryContext.getAllConfiguredWorktrees", () => {
+describe("RepositoryContext.getAllConfiguredWorktreeDetails", () => {
   beforeEach(() => {
     mockRemoteUrl.mockReset();
     mockWorktreeList.mockReset();
@@ -376,11 +376,12 @@ describe("RepositoryContext.getAllConfiguredWorktrees", () => {
 
       const ctx = new RepositoryContext();
       const discovered = await ctx.detectFromPath(currentWt);
-      const allWorktrees = await ctx.getAllConfiguredWorktrees(discovered.currentWorktreePath);
+      const details = await ctx.getAllConfiguredWorktreeDetails(discovered.currentWorktreePath);
 
-      expect(Object.keys(allWorktrees)).toEqual(["repo-a", "repo-b"]);
-      expect(allWorktrees["repo-a"]).toEqual([{ path: currentWt, branch: "main", isCurrent: true }]);
-      expect(allWorktrees["repo-b"]).toEqual([{ path: siblingWt, branch: "feature-b", isCurrent: false }]);
+      expect(Object.keys(details.worktreesByRepo)).toEqual(["repo-a", "repo-b"]);
+      expect(details.worktreesByRepo["repo-a"]).toEqual([{ path: currentWt, branch: "main", isCurrent: true }]);
+      expect(details.worktreesByRepo["repo-b"]).toEqual([{ path: siblingWt, branch: "feature-b", isCurrent: false }]);
+      expect(details.errorsByRepo).toEqual({});
     } finally {
       await fs.rm(workspace, { recursive: true, force: true });
     }

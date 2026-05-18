@@ -14,6 +14,7 @@ import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summa
 
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
 import type { HandlerExtra } from "./utils";
+import type { WorktreeLabel } from "./worktree-summary";
 import type { ProgressEvent } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -27,7 +28,7 @@ type ListedWorktree = {
   path: string;
   branch: string;
   isCurrent: boolean;
-  label: string;
+  label: WorktreeLabel;
   status: Awaited<ReturnType<RepoGitService["getFullWorktreeStatus"]>> | null;
   divergence: Awaited<ReturnType<typeof getDivergence>>;
   safeToRemove: ReturnType<typeof deriveSafeToRemove>;

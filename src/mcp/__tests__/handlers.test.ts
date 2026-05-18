@@ -162,7 +162,6 @@ function makeCtx(opts: {
     getCurrentRepo: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
     getRepositoryList: vi.fn<any>().mockReturnValue([]),
     getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(opts.configuredRepoNames ?? []),
-    getAllConfiguredWorktrees: vi.fn<any>().mockResolvedValue(opts.allConfiguredWorktrees ?? {}),
     getAllConfiguredWorktreeDetails: vi.fn<any>().mockResolvedValue({
       worktreesByRepo: opts.allConfiguredWorktrees ?? {},
       errorsByRepo: opts.allConfiguredWorktreeErrors ?? {},
