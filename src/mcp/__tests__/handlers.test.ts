@@ -119,6 +119,9 @@ function makeCtx(opts: {
   syncInProgress?: boolean;
   loadConfigImpl?: (configPath: string) => Promise<unknown>;
   currentRepo?: string;
+  configuredRepoNames?: string[];
+  allConfiguredWorktrees?: Record<string, Array<{ path: string; branch: string; isCurrent: boolean }>>;
+  allConfiguredWorktreeErrors?: Record<string, string>;
 }): { ctx: RepositoryContext; git: MockGit; service: any } {
   const git: MockGit = {
     getWorktrees: vi.fn<any>().mockResolvedValue([]),
@@ -148,6 +151,7 @@ function makeCtx(opts: {
   };
 
   const ctx = {
+    detectFromPath: vi.fn<any>().mockResolvedValue(opts.discovered ?? makeDiscovered()),
     getDiscoveredContext: vi.fn<any>().mockReturnValue(opts.discovered ?? makeDiscovered()),
     getEntry: vi.fn<any>().mockReturnValue({
       name: opts.currentRepo ?? "test",
@@ -157,6 +161,11 @@ function makeCtx(opts: {
     loadConfig: vi.fn<any>().mockImplementation((opts.loadConfigImpl ?? (async () => [])) as any),
     getCurrentRepo: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
     getRepositoryList: vi.fn<any>().mockReturnValue([]),
+    getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(opts.configuredRepoNames ?? []),
+    getAllConfiguredWorktreeDetails: vi.fn<any>().mockResolvedValue({
+      worktreesByRepo: opts.allConfiguredWorktrees ?? {},
+      errorsByRepo: opts.allConfiguredWorktreeErrors ?? {},
+    }),
     setCurrentRepo: vi.fn<any>(),
     invalidateDiscovered: vi.fn<any>(),
   } as unknown as RepositoryContext;
@@ -211,6 +220,113 @@ describe("handleListWorktrees", () => {
     const body = parseResponse(result);
     expect(body.error).toBe(true);
     expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+  });
+
+  it("groups all configured repos when repoName is omitted", async () => {
+    const cleanStatus = {
+      isClean: true,
+      hasUnpushedCommits: false,
+      hasStashedChanges: false,
+      hasOperationInProgress: false,
+      hasModifiedSubmodules: false,
+      upstreamGone: false,
+      canRemove: true,
+      reasons: [],
+    };
+    const gitByRepo = {
+      "repo-a": {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repos/a/main", branch: "main" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue(cleanStatus),
+        getWorktreeMetadata: vi.fn<any>().mockResolvedValue({ lastSyncDate: "2026-05-17T00:00:00.000Z" }),
+      },
+      "repo-b": {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repos/b/feature", branch: "feature" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue(cleanStatus),
+        getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
+      },
+    };
+
+    const ctx = {
+      getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
+        makeDiscovered({
+          repoName: String(repoName),
+          currentWorktreePath: repoName === "repo-a" ? "/repos/a/main" : null,
+        }),
+      ),
+      getService: vi.fn<any>().mockImplementation(async (repoName: unknown) => {
+        const name = repoName as "repo-a" | "repo-b";
+        return {
+          isInitialized: vi.fn<any>().mockReturnValue(true),
+          getGitService: () => gitByRepo[name],
+        };
+      }),
+    } as unknown as RepositoryContext;
+
+    const result = await invoke(handleListWorktrees, ctx, {});
+    const body = parseResponse(result);
+
+    expect(Object.keys(body.repositories)).toEqual(["repo-a", "repo-b"]);
+    expect(body.repositories["repo-a"].worktrees[0]).toMatchObject({
+      path: "/repos/a/main",
+      branch: "main",
+      isCurrent: true,
+      label: "current",
+    });
+    expect(body.repositories["repo-b"].worktrees[0]).toMatchObject({
+      path: "/repos/b/feature",
+      branch: "feature",
+      isCurrent: false,
+      label: "clean",
+    });
+  });
+
+  it("captures per-repo errors when grouped list_worktrees cannot read one repo", async () => {
+    const cleanStatus = {
+      isClean: true,
+      hasUnpushedCommits: false,
+      hasStashedChanges: false,
+      hasOperationInProgress: false,
+      hasModifiedSubmodules: false,
+      upstreamGone: false,
+      canRemove: true,
+      reasons: [],
+    };
+    const gitByRepo = {
+      "repo-a": {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repos/a/main", branch: "main" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue(cleanStatus),
+        getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
+      },
+    };
+
+    const ctx = {
+      getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
+        makeDiscovered({
+          repoName: String(repoName),
+          currentWorktreePath: null,
+        }),
+      ),
+      getService: vi.fn<any>().mockImplementation(async (repoName: unknown) => {
+        if (repoName === "repo-b") {
+          throw new Error("repo-b unavailable");
+        }
+        return {
+          isInitialized: vi.fn<any>().mockReturnValue(true),
+          getGitService: () => gitByRepo["repo-a"],
+        };
+      }),
+    } as unknown as RepositoryContext;
+
+    const result = await invoke(handleListWorktrees, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.repositories["repo-a"].worktrees).toHaveLength(1);
+    expect(body.repositories["repo-b"]).toEqual({
+      worktrees: [],
+      error: "repo-b unavailable",
+    });
   });
 });
 
@@ -898,5 +1014,55 @@ describe("handleDetectContext includeStatus", () => {
     expect(body.allWorktrees[0].label).toBe("current");
     expect(body.allWorktrees[1].label).toBe("clean");
     expect(body.allWorktrees[0].staleHint).toBe(false);
+  });
+
+  it("adds allWorktreesByRepo when includeAllWorktrees=true", async () => {
+    const { ctx } = makeCtx({
+      discovered: makeDiscovered({
+        currentWorktreePath: "/repo/main",
+        allWorktrees: [{ path: "/repo/main", branch: "main", isCurrent: true }],
+      }),
+      allConfiguredWorktrees: {
+        test: [{ path: "/repo/main", branch: "main", isCurrent: true }],
+        other: [{ path: "/other/feature", branch: "feature", isCurrent: false }],
+      },
+    });
+
+    const result = await invoke(handleDetectContext, ctx, { includeAllWorktrees: true });
+    const body = parseResponse(result);
+
+    expect(body.allWorktreesByRepo).toEqual({
+      test: [{ path: "/repo/main", branch: "main", isCurrent: true }],
+      other: [{ path: "/other/feature", branch: "feature", isCurrent: false }],
+    });
+    expect(ctx.getAllConfiguredWorktreeDetails).toHaveBeenCalledWith("/repo/main");
+  });
+
+  it("enriches allWorktreesByRepo and returns per-repo errors when both include flags are true", async () => {
+    const { ctx } = makeCtx({
+      discovered: makeDiscovered({
+        currentWorktreePath: "/repo/main",
+        allWorktrees: [{ path: "/repo/main", branch: "main", isCurrent: true }],
+      }),
+      allConfiguredWorktrees: {
+        test: [{ path: "/repo/main", branch: "main", isCurrent: true }],
+        other: [{ path: "/other/feature", branch: "feature", isCurrent: false }],
+      },
+      allConfiguredWorktreeErrors: {
+        broken: "git worktree list failed",
+      },
+    });
+
+    const result = await invoke(handleDetectContext, ctx, { includeAllWorktrees: true, includeStatus: true });
+    const body = parseResponse(result);
+
+    expect(body.allWorktrees[0]).toMatchObject({ path: "/repo/main", label: "current", staleHint: false });
+    expect(body.allWorktreesByRepo.test[0]).toMatchObject({ path: "/repo/main", label: "current", staleHint: false });
+    expect(body.allWorktreesByRepo.other[0]).toMatchObject({
+      path: "/other/feature",
+      label: "clean",
+      staleHint: false,
+    });
+    expect(body.allWorktreeErrorsByRepo).toEqual({ broken: "git worktree list failed" });
   });
 });

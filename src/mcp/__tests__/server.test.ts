@@ -132,8 +132,8 @@ describe("createServer", () => {
 
 describe("buildInstructions", () => {
   const baseInstructions =
-    "Before running git worktree operations, call `detect_context` to learn the current repo, current branch, sibling repositories under the workspace root, and which capabilities are available. " +
-    "It walks up to auto-discover sync-worktrees.config.{js,mjs,cjs,ts}, lists sibling worktrees, and reports per-capability {available, reason} so you can tell which tool is gated and why.";
+    "Before running git worktree operations, call `detect_context` with `includeAllWorktrees: true` at session start to learn every configured repository and worktree, plus the current repo, current branch, sibling repositories, and available capabilities. " +
+    "It walks up to auto-discover sync-worktrees.config.{js,mjs,cjs,ts}, reports config-driven sibling repositories, and reports per-capability {available, reason} so you can tell which tool is gated and why.";
 
   function makeDiscovered(overrides: Partial<DiscoveredRepoContext> = {}): DiscoveredRepoContext {
     return {
@@ -209,7 +209,16 @@ describe("buildInstructions", () => {
         { path: "/repos/my-repo/worktrees/main", branch: "main", isCurrent: false },
         { path: "/repos/my-repo/worktrees/feature-x", branch: "feature-x", isCurrent: true },
       ],
-      siblingRepositories: [{ name: "other-repo", bareRepoPath: "/repos/other-repo/.bare", configMatched: true }],
+      siblingRepositories: [
+        {
+          name: "other-repo",
+          bareRepoPath: "/repos/other-repo/.bare",
+          worktreeDir: "/repos/other-repo/worktrees",
+          repoUrl: "https://example.com/other-repo.git",
+          present: true,
+          configMatched: true,
+        },
+      ],
     });
     const result = buildInstructions({ discovered });
 

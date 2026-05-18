@@ -11,9 +11,9 @@ const mockWorktreeList = vi.fn<any>();
 
 vi.mock("simple-git", () => {
   return {
-    default: vi.fn(() => ({
-      remote: mockRemoteUrl,
-      raw: mockWorktreeList,
+    default: vi.fn((basePath?: string) => ({
+      remote: (...args: unknown[]) => (mockRemoteUrl as any)(...args),
+      raw: (...args: unknown[]) => (mockWorktreeList as any)(basePath, ...args),
     })),
   };
 });
@@ -209,11 +209,14 @@ describe("RepositoryContext.detectFromPath sibling discovery", () => {
       const ctx = new RepositoryContext();
       const result = await ctx.detectFromPath(currentWt);
 
-      expect(result.siblingRepositories.length).toBe(3);
+      expect(result.siblingRepositories.length).toBe(2);
       const names = result.siblingRepositories.map((s) => s.name).sort();
-      expect(names).toEqual(["repo-current", "repo-sibling-a", "repo-sibling-b"]);
+      expect(names).toEqual(["repo-sibling-a", "repo-sibling-b"]);
       for (const sib of result.siblingRepositories) {
         expect(sib.bareRepoPath).toMatch(/\.bare$/);
+        expect(sib.worktreeDir).toBeNull();
+        expect(sib.repoUrl).toBeNull();
+        expect(sib.present).toBe(true);
         expect(sib.configMatched).toBe(false);
       }
     } finally {
@@ -254,6 +257,51 @@ describe("RepositoryContext.detectFromPath sibling discovery", () => {
       const matched = result.siblingRepositories.find((s) => s.configMatched);
       expect(matched).toBeDefined();
       expect(matched?.name).toBe("named-sibling");
+      expect(matched?.repoUrl).toBe("https://github.com/test/sibling.git");
+      expect(matched?.worktreeDir).toBe(path.join(siblingA, "worktrees"));
+      expect(matched?.present).toBe(true);
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("populates config-driven sibling repos with nested worktreeDir even when bare repo is missing", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-siblings-nested-cfg-"));
+    try {
+      const currentBare = path.join(workspace, ".bare", "amusnet-react-ui");
+      const adminDir = path.join(currentBare, "worktrees", "stream-test");
+      await fs.mkdir(adminDir, { recursive: true });
+      const currentWt = path.join(workspace, "amusnet-react-ui", "stream-test");
+      await fs.mkdir(currentWt, { recursive: true });
+      await fs.writeFile(path.join(currentWt, ".git"), `gitdir: ${adminDir}\n`, "utf-8");
+
+      const rouletteBare = path.join(workspace, ".bare", "roulette-frontend");
+      const rouletteWorktreeDir = path.join(workspace, "frontend", "roulette-frontend");
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { repositories: [
+        { name: "amusnet-react-ui", repoUrl: "https://github.com/test/amusnet-react-ui.git", bareRepoDir: "./.bare/amusnet-react-ui", worktreeDir: "./amusnet-react-ui", cronSchedule: "0 * * * *", runOnce: true },
+        { name: "roulette-frontend", repoUrl: "https://github.com/test/roulette-frontend.git", bareRepoDir: "./.bare/roulette-frontend", worktreeDir: "./frontend/roulette-frontend", cronSchedule: "0 * * * *", runOnce: true }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/amusnet-react-ui.git\n");
+      mockWorktreeList.mockResolvedValue([`worktree ${currentWt}`, "branch refs/heads/stream-test", ""].join("\n"));
+
+      const ctx = new RepositoryContext();
+      const result = await ctx.detectFromPath(currentWt);
+
+      expect(result.configPath).toBe(configPath);
+      expect(result.repoName).toBe("amusnet-react-ui");
+      expect(result.siblingRepositories).toEqual([
+        {
+          name: "roulette-frontend",
+          bareRepoPath: rouletteBare,
+          worktreeDir: rouletteWorktreeDir,
+          repoUrl: "https://github.com/test/roulette-frontend.git",
+          present: false,
+          configMatched: true,
+        },
+      ]);
     } finally {
       await fs.rm(workspace, { recursive: true, force: true });
     }
@@ -285,6 +333,95 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
       expect(result.configPath).toBe(configPath);
       expect(result.kind).toBe("managed");
       expect(result.repoName).toBe("auto-loaded");
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("RepositoryContext.getAllConfiguredWorktreeDetails", () => {
+  beforeEach(() => {
+    mockRemoteUrl.mockReset();
+    mockWorktreeList.mockReset();
+  });
+
+  it("returns configured repo worktrees keyed by repo name", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-all-worktrees-"));
+    try {
+      const currentBare = path.join(workspace, ".bare", "repo-a");
+      const currentAdmin = path.join(currentBare, "worktrees", "main");
+      await fs.mkdir(currentAdmin, { recursive: true });
+      const currentWt = path.join(workspace, "repo-a", "main");
+      await fs.mkdir(currentWt, { recursive: true });
+      await fs.writeFile(path.join(currentWt, ".git"), `gitdir: ${currentAdmin}\n`, "utf-8");
+
+      const siblingBare = path.join(workspace, ".bare", "repo-b");
+      await fs.mkdir(path.join(siblingBare, "worktrees", "feature-b"), { recursive: true });
+      const siblingWt = path.join(workspace, "frontend", "repo-b", "feature-b");
+
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { repositories: [
+        { name: "repo-a", repoUrl: "https://github.com/test/repo-a.git", bareRepoDir: "./.bare/repo-a", worktreeDir: "./repo-a", cronSchedule: "0 * * * *", runOnce: true },
+        { name: "repo-b", repoUrl: "https://github.com/test/repo-b.git", bareRepoDir: "./.bare/repo-b", worktreeDir: "./frontend/repo-b", cronSchedule: "0 * * * *", runOnce: true }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo-a.git\n");
+      mockWorktreeList.mockImplementation((basePath: unknown) => {
+        if (basePath === siblingBare) {
+          return Promise.resolve([`worktree ${siblingWt}`, "branch refs/heads/feature-b", ""].join("\n"));
+        }
+        return Promise.resolve([`worktree ${currentWt}`, "branch refs/heads/main", ""].join("\n"));
+      });
+
+      const ctx = new RepositoryContext();
+      const discovered = await ctx.detectFromPath(currentWt);
+      const details = await ctx.getAllConfiguredWorktreeDetails(discovered.currentWorktreePath);
+
+      expect(Object.keys(details.worktreesByRepo)).toEqual(["repo-a", "repo-b"]);
+      expect(details.worktreesByRepo["repo-a"]).toEqual([{ path: currentWt, branch: "main", isCurrent: true }]);
+      expect(details.worktreesByRepo["repo-b"]).toEqual([{ path: siblingWt, branch: "feature-b", isCurrent: false }]);
+      expect(details.errorsByRepo).toEqual({});
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces per-repo worktree enumeration errors", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-all-worktrees-error-"));
+    try {
+      const currentBare = path.join(workspace, ".bare", "repo-a");
+      const currentAdmin = path.join(currentBare, "worktrees", "main");
+      await fs.mkdir(currentAdmin, { recursive: true });
+      const currentWt = path.join(workspace, "repo-a", "main");
+      await fs.mkdir(currentWt, { recursive: true });
+      await fs.writeFile(path.join(currentWt, ".git"), `gitdir: ${currentAdmin}\n`, "utf-8");
+
+      const siblingBare = path.join(workspace, ".bare", "repo-b");
+      await fs.mkdir(siblingBare, { recursive: true });
+
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { repositories: [
+        { name: "repo-a", repoUrl: "https://github.com/test/repo-a.git", bareRepoDir: "./.bare/repo-a", worktreeDir: "./repo-a", cronSchedule: "0 * * * *", runOnce: true },
+        { name: "repo-b", repoUrl: "https://github.com/test/repo-b.git", bareRepoDir: "./.bare/repo-b", worktreeDir: "./repo-b", cronSchedule: "0 * * * *", runOnce: true }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo-a.git\n");
+      mockWorktreeList.mockImplementation((basePath: unknown) => {
+        if (basePath === siblingBare) {
+          return Promise.reject(new Error("repo-b corrupt"));
+        }
+        return Promise.resolve([`worktree ${currentWt}`, "branch refs/heads/main", ""].join("\n"));
+      });
+
+      const ctx = new RepositoryContext();
+      const discovered = await ctx.detectFromPath(currentWt);
+      const details = await ctx.getAllConfiguredWorktreeDetails(discovered.currentWorktreePath);
+
+      expect(details.worktreesByRepo["repo-a"]).toEqual([{ path: currentWt, branch: "main", isCurrent: true }]);
+      expect(details.worktreesByRepo["repo-b"]).toEqual([]);
+      expect(details.errorsByRepo["repo-b"]).toContain("repo-b corrupt");
     } finally {
       await fs.rm(workspace, { recursive: true, force: true });
     }

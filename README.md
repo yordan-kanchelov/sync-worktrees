@@ -113,6 +113,8 @@ Add the server to your MCP client config. Use `npx` if the package is not instal
 
 If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. Sync and initialize require a loaded config (or call `load_config` at runtime).
 
+At session start, agents should call `detect_context` with `includeAllWorktrees: true`. With a loaded config, that returns config-driven `siblingRepositories` for every other configured repo, including nested `worktreeDir` paths, plus `allWorktreesByRepo` keyed by repository name. If a configured repo cannot be enumerated, `allWorktreeErrorsByRepo` carries the per-repo error.
+
 Client-specific locations:
 
 | Client | Config file |
@@ -125,8 +127,8 @@ Client-specific locations:
 
 | Tool | Purpose |
 |------|---------|
-| `detect_context` | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report capabilities. |
-| `list_worktrees` | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. |
+| `detect_context` | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report config-driven sibling repositories and capabilities. Pass `includeAllWorktrees: true` to include every configured repo's worktrees keyed by repo name. |
+| `list_worktrees` | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos. |
 | `get_worktree_status` | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress). |
 | `create_worktree` | Create a worktree for a branch; optionally create the branch from `baseBranch` and push. |
 | `remove_worktree` | Remove a worktree after safety checks; `force=true` skips validation. |
