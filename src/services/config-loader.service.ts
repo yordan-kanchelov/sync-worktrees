@@ -5,12 +5,21 @@ import { pathToFileURL } from "url";
 import * as cron from "node-cron";
 
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
+import { ConfigValidationError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { normalizePathForCompare } from "../utils/path-compare";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 
-import type { Config, ConfigFile, RepositoryConfig } from "../types";
+import type { Config, ConfigFile, RepositoryConfig, RepositoryMode } from "../types";
+
+const CLONE_MODE_CONFLICTING_FIELDS = [
+  "branchInclude",
+  "branchExclude",
+  "branchMaxAge",
+  "updateExistingWorktrees",
+  "bareRepoDir",
+] as const;
 
 export class ConfigLoaderService {
   async findConfigUpward(startDir: string): Promise<string | null> {
@@ -139,6 +148,8 @@ export class ConfigLoaderService {
       if (repoObj.sparseCheckout !== undefined) {
         this.validateSparseCheckoutConfig(repoObj.sparseCheckout, `Repository '${repoObj.name}'`);
       }
+
+      this.validateRepositoryMode(repoObj, configObj.defaults as Record<string, unknown> | undefined);
     });
 
     this.warnOnDuplicateRepoUrls(configObj.repositories as Array<Record<string, unknown>>);
@@ -172,6 +183,14 @@ export class ConfigLoaderService {
 
       if (defaults.sparseCheckout !== undefined) {
         this.validateSparseCheckoutConfig(defaults.sparseCheckout, "defaults");
+      }
+
+      if (defaults.mode !== undefined && defaults.mode !== "clone" && defaults.mode !== "worktree") {
+        throw new ConfigValidationError("defaults.mode", "must be 'clone' or 'worktree'");
+      }
+
+      if (defaults.branch !== undefined && (typeof defaults.branch !== "string" || defaults.branch.trim() === "")) {
+        throw new ConfigValidationError("defaults.branch", "must be a non-empty string");
       }
     }
 
@@ -349,6 +368,41 @@ export class ConfigLoaderService {
     }
   }
 
+  private validateRepositoryMode(
+    repoObj: Record<string, unknown>,
+    defaults: Record<string, unknown> | undefined,
+  ): void {
+    const repoName = repoObj.name as string;
+    const repoMode = repoObj.mode;
+
+    if (repoMode !== undefined && repoMode !== "clone" && repoMode !== "worktree") {
+      throw new ConfigValidationError(`Repository '${repoName}' mode`, "must be 'clone' or 'worktree'");
+    }
+
+    if (
+      repoObj.branch !== undefined &&
+      (typeof repoObj.branch !== "string" || (repoObj.branch as string).trim() === "")
+    ) {
+      throw new ConfigValidationError(`Repository '${repoName}' branch`, "must be a non-empty string");
+    }
+
+    const effectiveMode = (repoMode as RepositoryMode | undefined) ?? (defaults?.mode as RepositoryMode | undefined);
+    if (effectiveMode !== "clone") return;
+
+    for (const field of CLONE_MODE_CONFLICTING_FIELDS) {
+      const fromRepo = repoObj[field];
+      const fromDefaults = defaults?.[field];
+      const present = fromRepo !== undefined || fromDefaults !== undefined;
+      if (present) {
+        const source = fromRepo !== undefined ? "repository" : "defaults";
+        throw new ConfigValidationError(
+          `Repository '${repoName}' ${field}`,
+          `not supported when mode is 'clone' (set on ${source})`,
+        );
+      }
+    }
+  }
+
   private validateHooksConfig(hooks: unknown, context: string): void {
     if (typeof hooks !== "object" || hooks === null) {
       throw new Error(`'hooks' in ${context} must be an object`);
@@ -379,33 +433,50 @@ export class ConfigLoaderService {
     globalRetry?: Config["retry"],
     allRepositories?: RepositoryConfig[],
   ): RepositoryConfig {
+    const mode: RepositoryMode = repo.mode ?? defaults?.mode ?? "worktree";
+
     const resolved: RepositoryConfig = {
       name: repo.name,
       repoUrl: repo.repoUrl,
       worktreeDir: this.resolvePath(repo.worktreeDir, configDir),
       cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? DEFAULT_CONFIG.CRON_SCHEDULE,
       runOnce: repo.runOnce ?? defaults?.runOnce ?? false,
+      mode,
     };
 
-    if (repo.bareRepoDir) {
-      resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
-    } else if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories)) {
-      const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
-      resolved.bareRepoDir = this.resolvePath(`.bare/${sanitized}`, configDir);
+    if (configDir) {
+      resolved.__configFileDir = configDir;
+    }
+
+    if (mode === "clone") {
+      if (repo.branch ?? defaults?.branch) {
+        resolved.branch = repo.branch ?? defaults?.branch;
+      }
     } else {
-      resolved.bareRepoDir = this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir);
-    }
+      if (repo.bareRepoDir) {
+        resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
+      } else if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories)) {
+        const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
+        resolved.bareRepoDir = this.resolvePath(`.bare/${sanitized}`, configDir);
+      } else {
+        resolved.bareRepoDir = this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir);
+      }
 
-    if (repo.branchMaxAge || defaults?.branchMaxAge) {
-      resolved.branchMaxAge = repo.branchMaxAge ?? defaults?.branchMaxAge;
-    }
+      if (repo.branchMaxAge || defaults?.branchMaxAge) {
+        resolved.branchMaxAge = repo.branchMaxAge ?? defaults?.branchMaxAge;
+      }
 
-    if (repo.branchInclude || defaults?.branchInclude) {
-      resolved.branchInclude = repo.branchInclude ?? defaults?.branchInclude;
-    }
+      if (repo.branchInclude || defaults?.branchInclude) {
+        resolved.branchInclude = repo.branchInclude ?? defaults?.branchInclude;
+      }
 
-    if (repo.branchExclude || defaults?.branchExclude) {
-      resolved.branchExclude = repo.branchExclude ?? defaults?.branchExclude;
+      if (repo.branchExclude || defaults?.branchExclude) {
+        resolved.branchExclude = repo.branchExclude ?? defaults?.branchExclude;
+      }
+
+      if (repo.updateExistingWorktrees !== undefined || defaults?.updateExistingWorktrees !== undefined) {
+        resolved.updateExistingWorktrees = repo.updateExistingWorktrees ?? defaults?.updateExistingWorktrees ?? true;
+      }
     }
 
     if (repo.skipLfs !== undefined || defaults?.skipLfs !== undefined) {
@@ -425,10 +496,6 @@ export class ConfigLoaderService {
         ...(defaults?.parallelism || {}),
         ...(repo.parallelism || {}),
       };
-    }
-
-    if (repo.updateExistingWorktrees !== undefined || defaults?.updateExistingWorktrees !== undefined) {
-      resolved.updateExistingWorktrees = repo.updateExistingWorktrees ?? defaults?.updateExistingWorktrees ?? true;
     }
 
     if (repo.filesToCopyOnBranchCreate || defaults?.filesToCopyOnBranchCreate) {

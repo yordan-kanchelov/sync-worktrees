@@ -259,6 +259,44 @@ export default {
           // "cd $SYNC_WORKTREES_WORKTREE_PATH && ./setup-dev.sh"
         ]
       }
+    },
+
+    // Clone mode: single-branch clone directly into worktreeDir (no worktreeDir/<branch> subfolder).
+    // Use when sibling monorepo dependencies must live at fixed relative paths.
+    //
+    // - mode: "clone" disables the bare-repo + per-branch-worktree layout for this repo.
+    // - branch is optional; when omitted, remote HEAD is resolved via `git ls-remote --symref`.
+    // - Conflicts with branchInclude / branchExclude / branchMaxAge / updateExistingWorktrees /
+    //   bareRepoDir — setting any of these on a clone-mode repo (or via defaults inherited into it)
+    //   is a validation error.
+    // - sparseCheckout, filesToCopyOnBranchCreate, hooks.onBranchCreated, and skipLfs still apply.
+    //   filesToCopyOnBranchCreate + hooks.onBranchCreated fire exactly once on the initial clone.
+    //   sparseCheckout is re-applied every sync (config drift converges).
+    // - Lock file lives at `<configDir>/.sync-worktrees-state/<sanitized-name>.lock` (config mode)
+    //   or `$XDG_STATE_HOME` / `~/.cache/sync-worktrees/locks/<sha>.lock` (CLI mode) — never
+    //   inside the cloned repo, so no .gitignore noise.
+    //
+    // Example: three monorepo-sibling components that import each other via fixed `../` paths.
+    {
+      name: "game-platform",
+      repoUrl: "ssh://git@bitbucket.example.com/cf/game-platform.git",
+      worktreeDir: "./slots/game-platform",
+      mode: "clone",
+      branch: "main",
+    },
+    {
+      name: "base-slot",
+      repoUrl: "ssh://git@bitbucket.example.com/cf-basic-slot/base-slot.git",
+      worktreeDir: "./slots/engines/base-slot",
+      mode: "clone",
+      branch: "main",
+    },
+    {
+      name: "communicator-base",
+      repoUrl: "ssh://git@bitbucket.example.com/cf-components/communicator-base.git",
+      worktreeDir: "./slots/communicator-base",
+      mode: "clone",
+      // No branch → resolves to remote HEAD at clone time.
     }
   ]
 };

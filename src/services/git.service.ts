@@ -254,6 +254,41 @@ export class GitService {
     return this.bareRepoPath;
   }
 
+  async getRemoteDefaultBranch(repoUrl: string): Promise<string> {
+    const git = simpleGit(this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
+
+    try {
+      const out = await git.raw(["ls-remote", "--symref", repoUrl, "HEAD"]);
+      const match = out.match(/^ref: refs\/heads\/(\S+)\s+HEAD/m);
+      if (match && match[1]) {
+        return match[1];
+      }
+    } catch {
+      // Fall through to probe-based detection
+    }
+
+    for (const candidate of GIT_CONSTANTS.COMMON_DEFAULT_BRANCHES) {
+      try {
+        const out = await git.raw(["ls-remote", "--exit-code", repoUrl, `refs/heads/${candidate}`]);
+        if (out.trim().length > 0) {
+          return candidate;
+        }
+      } catch {
+        // Try next candidate
+      }
+    }
+
+    throw new Error(
+      `Unable to detect default branch for '${repoUrl}'. ` +
+        `Set 'branch' explicitly in the repository config or ensure the remote is reachable.`,
+    );
+  }
+
+  async verifyLfs(worktreePath: string, label: string): Promise<void> {
+    if (this.isLfsSkipEnabled()) return;
+    await this.verifyLfsFilesDownloaded(worktreePath, label);
+  }
+
   async fetchAll(): Promise<void> {
     this.assertInitialized();
     this.logger.info("Fetching latest data from remote...");

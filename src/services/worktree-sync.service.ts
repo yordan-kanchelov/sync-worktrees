@@ -8,9 +8,12 @@ import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
+import { getCloneModeLockTarget } from "../utils/lock-path";
+import { resolveMode } from "../utils/repo-mode";
 import { retry } from "../utils/retry";
 import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
 
+import { CloneSyncService } from "./clone-sync.service";
 import { GitService } from "./git.service";
 import { Logger } from "./logger.service";
 import { PathResolutionService } from "./path-resolution.service";
@@ -37,6 +40,7 @@ export type ProgressListener = (event: ProgressEvent) => void;
 
 export class WorktreeSyncService {
   private gitService: GitService;
+  private cloneSyncService: CloneSyncService | null = null;
   private logger: Logger;
   private syncInProgress: boolean = false;
   private pathResolution = new PathResolutionService();
@@ -45,15 +49,29 @@ export class WorktreeSyncService {
   constructor(public readonly config: Config) {
     this.logger = config.logger ?? Logger.createDefault(undefined, config.debug);
     this.gitService = new GitService(config, this.logger);
+    if (resolveMode(config) === "clone") {
+      this.cloneSyncService = new CloneSyncService(config, this.gitService, this.logger);
+    }
+  }
+
+  private isCloneMode(): boolean {
+    return this.cloneSyncService !== null;
   }
 
   async initialize(): Promise<void> {
     this.emitProgress({ phase: "initialize", message: "Initializing repository" });
-    await this.gitService.initialize();
+    if (this.cloneSyncService) {
+      await this.cloneSyncService.initialize();
+    } else {
+      await this.gitService.initialize();
+    }
     this.emitProgress({ phase: "initialize", message: "Repository initialized" });
   }
 
   isInitialized(): boolean {
+    if (this.cloneSyncService) {
+      return this.cloneSyncService.isInitialized();
+    }
     return this.gitService.isInitialized();
   }
 
@@ -68,6 +86,7 @@ export class WorktreeSyncService {
   updateLogger(logger: Logger): void {
     this.logger = logger;
     this.gitService.updateLogger(logger);
+    this.cloneSyncService?.updateLogger(logger);
   }
 
   onProgress(listener: ProgressListener): () => void {
@@ -81,7 +100,7 @@ export class WorktreeSyncService {
       return { started: false, reason: "in_progress" };
     }
 
-    const release = await this.acquireBareLock();
+    const release = await this.acquireRepoLock();
     if (release === null) {
       this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
       return { started: false, reason: "locked" };
@@ -124,7 +143,11 @@ export class WorktreeSyncService {
       const retryOptions = this.createRetryOptions(syncContext);
 
       try {
-        await retry(() => this.runSyncAttempt(phaseTimer, syncContext), retryOptions);
+        if (this.cloneSyncService) {
+          await retry(() => this.cloneSyncService!.runSyncAttempt(), retryOptions);
+        } else {
+          await retry(() => this.runSyncAttempt(phaseTimer, syncContext), retryOptions);
+        }
       } catch (error) {
         this.logger.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
         throw error;
@@ -146,9 +169,34 @@ export class WorktreeSyncService {
     return result.started ? { started: true } : result;
   }
 
-  private async acquireBareLock(): Promise<(() => Promise<void>) | null> {
+  private async acquireRepoLock(): Promise<(() => Promise<void>) | null> {
     if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
       return async () => {};
+    }
+
+    if (this.isCloneMode()) {
+      const target = getCloneModeLockTarget(this.config);
+      await fs.mkdir(target.dir, { recursive: true });
+      const lockTarget = path.join(target.dir, target.file);
+      try {
+        await fs.writeFile(lockTarget, "", { flag: "a" });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST") throw error;
+      }
+      try {
+        const release = await lockfile.lock(lockTarget, {
+          stale: DEFAULT_CONFIG.LOCK_STALE_MS,
+          update: DEFAULT_CONFIG.LOCK_UPDATE_MS,
+          retries: 0,
+          realpath: false,
+        });
+        return release;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ELOCKED") return null;
+        throw error;
+      }
     }
 
     if (typeof this.gitService.getBareRepoPath !== "function") {

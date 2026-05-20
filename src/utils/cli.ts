@@ -1,7 +1,7 @@
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 
-import type { Config } from "../types";
+import type { Config, RepositoryMode } from "../types";
 
 export interface CliOptions extends Partial<Config> {
   config?: string;
@@ -15,6 +15,8 @@ export interface CliOptions extends Partial<Config> {
   noUpdateExisting?: boolean;
   debug?: boolean;
   syncOnStart?: boolean;
+  mode?: RepositoryMode;
+  branch?: string;
 }
 
 export function parseArguments(): CliOptions {
@@ -95,6 +97,16 @@ export function parseArguments(): CliOptions {
       description: "Run sync immediately when starting the interactive UI (config mode only).",
       default: false,
     })
+    .option("mode", {
+      type: "string",
+      choices: ["clone", "worktree"] as const,
+      description:
+        "Repository strategy. 'worktree' (default) maintains worktrees per remote branch; 'clone' clones a single branch directly into worktreeDir.",
+    })
+    .option("branch", {
+      type: "string",
+      description: "Branch to clone in clone mode. Defaults to the remote's HEAD when omitted.",
+    })
     .help()
     .alias("help", "h")
     .parseSync();
@@ -115,6 +127,8 @@ export function parseArguments(): CliOptions {
     noUpdateExisting: argv["no-update-existing"] as boolean,
     debug: argv.debug,
     syncOnStart: argv["sync-on-start"] as boolean,
+    mode: argv.mode as RepositoryMode | undefined,
+    branch: argv.branch,
   };
 }
 
@@ -167,6 +181,13 @@ export function reconstructCliCommand(config: Config): string {
 
   if (config.debug) {
     args.push("--debug");
+  }
+
+  if (config.mode === "clone") {
+    args.push(`--mode clone`);
+    if (config.branch) {
+      args.push(`--branch "${config.branch}"`);
+    }
   }
 
   return `${executable} ${args.join(" ")}`;

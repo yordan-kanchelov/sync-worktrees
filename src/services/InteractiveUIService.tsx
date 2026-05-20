@@ -9,7 +9,7 @@ import App from "../components/App";
 import { DEFAULT_CONFIG } from "../constants";
 import { WorktreeSyncService } from "./worktree-sync.service";
 import { ConfigLoaderService } from "./config-loader.service";
-import { FileCopyService } from "./file-copy.service";
+import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { HookExecutionService } from "./hook-execution.service";
 import { PathResolutionService } from "./path-resolution.service";
 import { Logger, LogOutputFn, LogLevel } from "./logger.service";
@@ -42,6 +42,7 @@ export class InteractiveUIService {
   private logBuffer: Array<{ message: string; level: "info" | "warn" | "error" }> = [];
   private uiReady = false;
   private hookExecutionService = new HookExecutionService();
+  private branchCreatedActions = new BranchCreatedActionsService();
   private pathResolution = new PathResolutionService();
   private limit: ReturnType<typeof pLimit>;
   private reloadInProgress = false;
@@ -790,6 +791,16 @@ export class InteractiveUIService {
     return { failures, skipped, attempted: services.length };
   }
 
+  private buildUiLogger(): Logger {
+    return new Logger({
+      outputFn: (msg: string, level: LogLevel): void => {
+        const uiLevel: "info" | "warn" | "error" =
+          level === "warn" ? "warn" : level === "error" ? "error" : "info";
+        this.addLog(msg, uiLevel);
+      },
+    });
+  }
+
   public executeOnBranchCreatedHooks(repoIndex: number, context: HookContext): void {
     if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
       return;
@@ -797,30 +808,17 @@ export class InteractiveUIService {
 
     const service = this.syncServices[repoIndex];
     const config = service.config;
+    const repoName = (config as RepositoryConfig).name || config.repoUrl;
 
-    if (!config.hooks?.onBranchCreated?.length) {
-      return;
-    }
-
-    this.addLog(`Running ${config.hooks.onBranchCreated.length} hook(s) for branch '${context.branchName}'...`, "info");
-
-    this.hookExecutionService.executeOnBranchCreated(config.hooks, context, {
-      onStdout: (data) => {
-        this.addLog(`[hook] ${data}`, "info");
-      },
-      onStderr: (data) => {
-        this.addLog(`[hook] ${data}`, "warn");
-      },
-      onError: (command, error) => {
-        this.addLog(`[hook] Failed to execute '${command}': ${error.message}`, "error");
-      },
-      onComplete: (command, exitCode) => {
-        if (exitCode === 0) {
-          this.addLog(`[hook] Command completed successfully`, "info");
-        } else if (exitCode !== null) {
-          this.addLog(`[hook] Command exited with code ${exitCode}`, "warn");
-        }
-      },
+    this.branchCreatedActions.runHooks({
+      config,
+      repoName,
+      branchName: context.branchName,
+      worktreePath: context.worktreePath,
+      baseBranch: context.baseBranch,
+      sourceDir: context.worktreePath,
+      logger: this.buildUiLogger(),
+      hookExecutionService: this.hookExecutionService,
     });
   }
 
@@ -847,27 +845,16 @@ export class InteractiveUIService {
       return;
     }
 
-    const fileCopyService = new FileCopyService();
-
-    try {
-      const result = await fileCopyService.copyFiles(
-        sourceWorktree.path,
-        targetWorktree.path,
-        config.filesToCopyOnBranchCreate,
-      );
-
-      if (result.copied.length > 0) {
-        this.addLog(`📋 Copied ${result.copied.length} file(s) to new branch: ${result.copied.join(", ")}`, "info");
-      }
-      if (result.errors.length > 0) {
-        this.addLog(`⚠️ Failed to copy ${result.errors.length} file(s):`, "warn");
-        for (const err of result.errors) {
-          this.addLog(`  - ${err.file}: ${err.error}`, "warn");
-        }
-      }
-    } catch (error) {
-      this.addLog(`Failed to copy files to new branch: ${error}`, "error");
-    }
+    const repoName = (config as RepositoryConfig).name || config.repoUrl;
+    await this.branchCreatedActions.copyFiles({
+      config,
+      repoName,
+      branchName: targetBranch,
+      worktreePath: targetWorktree.path,
+      baseBranch,
+      sourceDir: sourceWorktree.path,
+      logger: this.buildUiLogger(),
+    });
   }
 
   public async destroy(fast = false): Promise<void> {

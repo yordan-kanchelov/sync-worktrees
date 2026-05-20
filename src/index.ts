@@ -328,10 +328,12 @@ async function main(): Promise<void> {
   } else {
     const config = options as Config;
 
-    if (options.noUpdateExisting) {
-      config.updateExistingWorktrees = false;
-    } else if (config.updateExistingWorktrees === undefined) {
-      config.updateExistingWorktrees = true;
+    if (config.mode !== "clone") {
+      if (options.noUpdateExisting) {
+        config.updateExistingWorktrees = false;
+      } else if (config.updateExistingWorktrees === undefined) {
+        config.updateExistingWorktrees = true;
+      }
     }
 
     if (options.debug !== undefined) {

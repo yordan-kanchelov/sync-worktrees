@@ -67,6 +67,8 @@ export interface ParallelismConfig {
   maxBranchFetches?: number;
 }
 
+export type RepositoryMode = "clone" | "worktree";
+
 export interface Config {
   repoUrl: string;
   worktreeDir: string;
@@ -85,6 +87,26 @@ export interface Config {
   filesToCopyOnBranchCreate?: string[];
   hooks?: HooksConfig;
   sparseCheckout?: SparseCheckoutConfig;
+  /**
+   * Repository strategy. `worktree` (default) clones once as a bare repo and
+   * maintains one worktree per remote branch under `worktreeDir/<branch>`.
+   * `clone` performs a normal `git clone --branch <branch> --single-branch`
+   * directly into `worktreeDir` — no bare repo, no branch subfolder, single
+   * checked-out branch. Designed for monorepo sibling dependencies that
+   * need fixed relative paths.
+   */
+  mode?: RepositoryMode;
+  /**
+   * Branch to clone when `mode === "clone"`. If omitted, resolves to the
+   * remote default branch via `git ls-remote --symref <url> HEAD`.
+   */
+  branch?: string;
+  /**
+   * Internal: directory of the loaded config file. Used to anchor the lock
+   * location for clone-mode repos. Populated by ConfigLoaderService — not
+   * a user-facing field.
+   */
+  __configFileDir?: string;
   /**
    * Inactivity timeout (ms) for fetch/standard git operations.
    * Triggers when no stdout/stderr data arrives within window.
