@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import simpleGit from "simple-git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_BRANCHES, createMockLogger } from "../../__tests__/test-utils";
@@ -67,6 +68,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
 
 // Mock modules
 vi.mock("fs/promises");
+vi.mock("simple-git");
 vi.mock("../git.service", () => ({
   GitService: vi.fn(function (this: any) {
     return mockGitServiceInstance;
@@ -95,6 +97,21 @@ describe("WorktreeSyncService", () => {
     // Reference the hoisted mock instance
     mockGitService = mockGitServiceInstance;
 
+    const cloneGitClient = {
+      raw: vi.fn(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/test/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        return "";
+      }),
+      clone: vi.fn().mockResolvedValue(undefined),
+      fetch: vi.fn().mockResolvedValue(undefined),
+      merge: vi.fn().mockResolvedValue(undefined),
+      env: vi.fn(),
+    };
+    cloneGitClient.env.mockReturnValue(cloneGitClient);
+    (simpleGit as unknown as Mock).mockReturnValue(cloneGitClient);
+
     service = new WorktreeSyncService(mockConfig);
   });
 
@@ -103,6 +120,29 @@ describe("WorktreeSyncService", () => {
       await service.initialize();
 
       expect(mockGitService.initialize).toHaveBeenCalled();
+    });
+
+    it("forwards clone-mode progress from CloneSyncService to registered listeners", async () => {
+      const cloneConfig: Config = { ...mockConfig, mode: "clone", branch: "main" };
+      const progressEvents: Array<{ phase: string; message: string }> = [];
+      (fs.readdir as Mock<any>).mockResolvedValueOnce([".git"]);
+
+      service = new WorktreeSyncService(cloneConfig);
+      service.onProgress((event) => progressEvents.push(event));
+
+      await service.initialize();
+
+      expect(progressEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ phase: "initialize", message: "Initializing repository" }),
+          expect.objectContaining({ phase: "branch", message: "Using configured branch 'main'" }),
+          expect.objectContaining({
+            phase: "clone",
+            message: "Validating existing clone for 'https://github.com/test/repo.git'",
+          }),
+          expect.objectContaining({ phase: "initialize", message: "Repository initialized" }),
+        ]),
+      );
     });
   });
 

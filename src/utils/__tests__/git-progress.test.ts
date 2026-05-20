@@ -91,4 +91,19 @@ describe("makeGitProgressHandler", () => {
     handler(makeEvent("fetch", "Resolving deltas", 50, 7, 0));
     expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("(7)"));
   });
+
+  it("forwards throttled progress events to the optional emitter", () => {
+    const emitProgress = vi.fn();
+    const handler = makeGitProgressHandler(logger, emitProgress);
+
+    handler(makeEvent("clone", "Receiving objects", 25, 5, 20));
+
+    expect(emitProgress).toHaveBeenCalledWith({
+      phase: "clone",
+      message: "clone Receiving objects: 25% (5/20)",
+      progress: 25,
+      processed: 5,
+      total: 20,
+    });
+  });
 });

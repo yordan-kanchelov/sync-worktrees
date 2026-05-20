@@ -14,6 +14,7 @@ import { HookExecutionService } from "./hook-execution.service";
 import type { GitService } from "./git.service";
 import type { Logger } from "./logger.service";
 import type { Config, RepositoryConfig } from "../types";
+import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export class CloneSyncService {
@@ -21,6 +22,7 @@ export class CloneSyncService {
   private resolvedBranch: string | null = null;
   private branchCreatedActions: BranchCreatedActionsService;
   private hookExecutionService: HookExecutionService;
+  private progressEmitter?: GitProgressEmitter;
 
   constructor(
     private config: Config,
@@ -29,10 +31,12 @@ export class CloneSyncService {
     options: {
       branchCreatedActions?: BranchCreatedActionsService;
       hookExecutionService?: HookExecutionService;
+      progressEmitter?: GitProgressEmitter;
     } = {},
   ) {
     this.branchCreatedActions = options.branchCreatedActions ?? new BranchCreatedActionsService();
     this.hookExecutionService = options.hookExecutionService ?? new HookExecutionService();
+    this.progressEmitter = options.progressEmitter;
   }
 
   updateLogger(logger: Logger): void {
@@ -66,9 +70,19 @@ export class CloneSyncService {
   }
 
   private buildGitOptions(blockMs: number): Partial<SimpleGitOptions> {
-    const options: Partial<SimpleGitOptions> = { progress: makeGitProgressHandler(this.logger) };
+    const options: Partial<SimpleGitOptions> = {
+      progress: makeGitProgressHandler(this.logger, (event) => this.emitProgress(event)),
+    };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
+  }
+
+  private emitProgress(event: GitProgressEvent): void {
+    try {
+      this.progressEmitter?.(event);
+    } catch {
+      // progress listeners must not break sync flow
+    }
   }
 
   private clientFor(dir: string, blockMs: number): SimpleGit {
@@ -80,11 +94,14 @@ export class CloneSyncService {
     if (this.resolvedBranch) return this.resolvedBranch;
     if (this.config.branch) {
       this.resolvedBranch = this.config.branch;
+      this.emitProgress({ phase: "branch", message: `Using configured branch '${this.resolvedBranch}'` });
       return this.resolvedBranch;
     }
     this.logger.info(`No branch configured for '${this.repoName}', detecting remote default branch...`);
+    this.emitProgress({ phase: "branch", message: `Resolving remote default branch for '${this.repoName}'` });
     this.resolvedBranch = await this.gitService.getRemoteDefaultBranch(this.config.repoUrl);
     this.logger.info(`  ↳ resolved default branch: ${this.resolvedBranch}`);
+    this.emitProgress({ phase: "branch", message: `Resolved default branch '${this.resolvedBranch}'` });
     return this.resolvedBranch;
   }
 
@@ -100,8 +117,10 @@ export class CloneSyncService {
     }
 
     if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) {
+      this.emitProgress({ phase: "clone", message: `Validating existing clone for '${this.repoName}'` });
       await this.validateExistingClone(branch);
       this.initialized = true;
+      this.emitProgress({ phase: "clone", message: `Existing clone validated for '${this.repoName}'` });
       return;
     }
 
@@ -117,6 +136,7 @@ export class CloneSyncService {
     await fs.mkdir(worktreeDir, { recursive: true });
 
     this.logger.info(`Cloning '${this.config.repoUrl}' (${branch}) into '${worktreeDir}'...`);
+    this.emitProgress({ phase: "clone", message: `Cloning '${this.repoName}' (${branch})` });
 
     const cloneGit = simpleGit(this.buildGitOptions(this.getCloneTimeoutMs()));
     const cloneClient = this.isLfsSkipEnabled() ? cloneGit.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : cloneGit;
@@ -129,16 +149,21 @@ export class CloneSyncService {
     }
 
     this.logger.info(`✅ Clone successful.`);
+    this.emitProgress({ phase: "clone", message: `Clone successful for '${this.repoName}'` });
 
     if (this.config.sparseCheckout) {
       this.logger.info(`Applying sparse-checkout patterns to '${worktreeDir}'...`);
+      this.emitProgress({ phase: "sparse_checkout", message: `Applying sparse-checkout for '${this.repoName}'` });
       const sparseService = this.gitService.getSparseCheckoutService();
       await sparseService.applyToWorktree(worktreeDir, this.config.sparseCheckout);
       const worktreeGit = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
       await worktreeGit.raw(["checkout", "HEAD"]);
+      this.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout applied for '${this.repoName}'` });
     }
 
+    this.emitProgress({ phase: "lfs", message: `Verifying LFS for '${this.repoName}'` });
     await this.gitService.verifyLfs(worktreeDir, branch);
+    this.emitProgress({ phase: "lfs", message: `LFS verified for '${this.repoName}'` });
 
     await this.runInitialBranchActions(worktreeDir, branch);
 
@@ -267,6 +292,10 @@ export class CloneSyncService {
       currentBranch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
     } catch (error) {
       this.logger.warn(`Could not read current branch from '${worktreeDir}': ${getErrorMessage(error)}`);
+      this.emitProgress({
+        phase: "skip",
+        message: `Skipping '${this.repoName}': could not read current branch`,
+      });
       return;
     }
 
@@ -274,15 +303,24 @@ export class CloneSyncService {
       this.logger.warn(
         `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge.`,
       );
+      this.emitProgress({
+        phase: "skip",
+        message: `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
+      });
       return;
     }
 
+    this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
     try {
       await git.fetch(["origin", branch, "--prune", "--progress"]);
     } catch (fetchError) {
       const message = getErrorMessage(fetchError);
       if (isLfsError(message)) {
         this.logger.info(`⚠️  LFS error during fetch for '${this.repoName}'; retrying with LFS disabled.`);
+        this.emitProgress({
+          phase: "fetch",
+          message: `Retrying fetch for '${this.repoName}' with LFS disabled`,
+        });
         const lfsSkipGit = simpleGit(worktreeDir, this.buildGitOptions(this.getFetchTimeoutMs())).env({
           [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1",
         });
@@ -293,17 +331,24 @@ export class CloneSyncService {
         message.includes("not our ref")
       ) {
         this.logger.warn(`Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`);
+        this.emitProgress({
+          phase: "skip",
+          message: `Skipping '${this.repoName}': origin/${branch} is missing`,
+        });
         return;
       } else {
         throw fetchError;
       }
     }
+    this.emitProgress({ phase: "fetch", message: `Fetched origin/${branch} for '${this.repoName}'` });
 
     if (this.config.sparseCheckout) {
       const sparseService = this.gitService.getSparseCheckoutService();
       try {
         if (await sparseService.needsUpdate(worktreeDir, this.config.sparseCheckout)) {
+          this.emitProgress({ phase: "sparse_checkout", message: `Updating sparse-checkout for '${this.repoName}'` });
           await sparseService.applyToWorktree(worktreeDir, this.config.sparseCheckout);
+          this.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout updated for '${this.repoName}'` });
         }
       } catch (error) {
         this.logger.warn(`Failed to reapply sparse-checkout for '${this.repoName}': ${getErrorMessage(error)}`);
@@ -313,6 +358,10 @@ export class CloneSyncService {
     const isClean = await this.gitService.checkWorktreeStatus(worktreeDir);
     if (!isClean) {
       this.logger.info(`⏭️  Skipping ff-merge for '${this.repoName}' — working tree has local changes.`);
+      this.emitProgress({
+        phase: "skip",
+        message: `Skipping merge for '${this.repoName}': working tree has local changes`,
+      });
       return;
     }
 
@@ -321,8 +370,16 @@ export class CloneSyncService {
       const isAhead = await this.gitService.isLocalAheadOfRemote(worktreeDir, branch);
       if (isAhead) {
         this.logger.info(`⏭️  '${this.repoName}' has unpushed commits ahead of origin/${branch}. Skipping merge.`);
+        this.emitProgress({
+          phase: "skip",
+          message: `Skipping merge for '${this.repoName}': unpushed commits ahead of origin/${branch}`,
+        });
       } else {
         this.logger.info(`⏭️  '${this.repoName}' has diverged from origin/${branch}. Skipping merge (no auto-reset).`);
+        this.emitProgress({
+          phase: "skip",
+          message: `Skipping merge for '${this.repoName}': diverged from origin/${branch}`,
+        });
       }
       return;
     }
@@ -330,11 +387,17 @@ export class CloneSyncService {
     const isBehind = await this.gitService.isWorktreeBehind(worktreeDir);
     if (!isBehind) {
       this.logger.info(`'${this.repoName}' already up to date with origin/${branch}.`);
+      this.emitProgress({
+        phase: "skip",
+        message: `'${this.repoName}' already up to date with origin/${branch}`,
+      });
       return;
     }
 
     this.logger.info(`Fast-forwarding '${this.repoName}' to origin/${branch}...`);
+    this.emitProgress({ phase: "merge", message: `Fast-forwarding '${this.repoName}' to origin/${branch}` });
     await git.merge([`origin/${branch}`, "--ff-only"]);
     this.logger.info(`✅ Updated '${this.repoName}' to origin/${branch}.`);
+    this.emitProgress({ phase: "merge", message: `Updated '${this.repoName}' to origin/${branch}` });
   }
 }

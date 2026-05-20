@@ -3,6 +3,16 @@ import { GIT_CONSTANTS } from "../constants";
 import type { Logger } from "../services/logger.service";
 import type { SimpleGitProgressEvent } from "simple-git";
 
+export interface GitProgressEvent {
+  phase: string;
+  message: string;
+  progress?: number;
+  processed?: number;
+  total?: number;
+}
+
+export type GitProgressEmitter = (event: GitProgressEvent) => void;
+
 /**
  * Build a progress callback for simple-git's `progress` option that:
  *   - filters to clone/fetch/pull events only,
@@ -16,7 +26,10 @@ import type { SimpleGitProgressEvent } from "simple-git";
  * client. The contract is user-visible log output, so prefer this shared
  * factory over copies in each caller.
  */
-export function makeGitProgressHandler(logger: Logger): (event: SimpleGitProgressEvent) => void {
+export function makeGitProgressHandler(
+  logger: Logger,
+  emitProgress?: GitProgressEmitter,
+): (event: SimpleGitProgressEvent) => void {
   const lastBucket = new Map<string, number>();
   return (event: SimpleGitProgressEvent): void => {
     if (event.method !== "fetch" && event.method !== "clone" && event.method !== "pull") return;
@@ -27,6 +40,14 @@ export function makeGitProgressHandler(logger: Logger): (event: SimpleGitProgres
     if (bucket <= last && event.progress < 100) return;
     lastBucket.set(key, bucket);
     const total = event.total > 0 ? `${event.processed}/${event.total}` : `${event.processed}`;
-    logger.info(`  ↳ ${event.method} ${event.stage}: ${event.progress}% (${total})`);
+    const message = `${event.method} ${event.stage}: ${event.progress}% (${total})`;
+    logger.info(`  ↳ ${message}`);
+    emitProgress?.({
+      phase: event.method,
+      message,
+      progress: event.progress,
+      processed: event.processed,
+      total: event.total,
+    });
   };
 }

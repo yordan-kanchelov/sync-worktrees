@@ -1,6 +1,8 @@
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 
+import { REPOSITORY_MODES } from "./repo-mode";
+
 import type { Config, RepositoryMode } from "../types";
 
 export interface CliOptions extends Partial<Config> {
@@ -99,7 +101,7 @@ export function parseArguments(): CliOptions {
     })
     .option("mode", {
       type: "string",
-      choices: ["clone", "worktree"] as const,
+      choices: [REPOSITORY_MODES.CLONE, REPOSITORY_MODES.WORKTREE] as const,
       description:
         "Repository strategy. 'worktree' (default) maintains worktrees per remote branch; 'clone' clones a single branch directly into worktreeDir.",
     })
@@ -183,8 +185,8 @@ export function reconstructCliCommand(config: Config): string {
     args.push("--debug");
   }
 
-  if (config.mode === "clone") {
-    args.push(`--mode clone`);
+  if (config.mode === REPOSITORY_MODES.CLONE) {
+    args.push(`--mode ${REPOSITORY_MODES.CLONE}`);
     if (config.branch) {
       args.push(`--branch "${config.branch}"`);
     }

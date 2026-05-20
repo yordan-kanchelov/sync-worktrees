@@ -1,14 +1,14 @@
 import * as fs from "fs/promises";
 
 import simpleGit from "simple-git";
-import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-
-import { Logger } from "../logger.service";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CloneSyncService } from "../clone-sync.service";
+import { Logger } from "../logger.service";
 
-import type { GitService } from "../git.service";
 import type { Config } from "../../types";
+import type { GitService } from "../git.service";
+import type { Mock } from "vitest";
 
 vi.mock("fs/promises");
 vi.mock("simple-git");
@@ -111,6 +111,33 @@ describe("CloneSyncService", () => {
       expect(service.isInitialized()).toBe(true);
     });
 
+    it("emits progress while initializing a fresh clone", async () => {
+      const progressEvents: Array<{ phase: string; message: string }> = [];
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger, {
+        progressEmitter: (event) => progressEvents.push(event),
+      });
+
+      await service.initialize();
+
+      expect(progressEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ phase: "branch", message: "Using configured branch 'main'" }),
+          expect.objectContaining({ phase: "clone", message: "Cloning 'https://github.com/example/repo.git' (main)" }),
+          expect.objectContaining({
+            phase: "clone",
+            message: "Clone successful for 'https://github.com/example/repo.git'",
+          }),
+          expect.objectContaining({ phase: "lfs", message: "Verifying LFS for 'https://github.com/example/repo.git'" }),
+          expect.objectContaining({ phase: "lfs", message: "LFS verified for 'https://github.com/example/repo.git'" }),
+        ]),
+      );
+    });
+
     it("treats existing matching clone as initialized (no re-clone)", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
       (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
@@ -190,16 +217,31 @@ describe("CloneSyncService", () => {
     });
 
     it("skips ff-merge when working tree is dirty", async () => {
+      const progressEvents: Array<{ phase: string; message: string }> = [];
       const gitService = buildGitService({
         checkWorktreeStatus: vi.fn().mockResolvedValue(false),
       });
-      const service = new CloneSyncService(makeConfig(), gitService, logger);
+      const service = new CloneSyncService(makeConfig(), gitService, logger, {
+        progressEmitter: (event) => progressEvents.push(event),
+      });
       setInitialized(service);
 
       await service.runSyncAttempt();
 
       expect(gitMock.fetch).toHaveBeenCalled();
       expect(gitMock.merge).not.toHaveBeenCalled();
+      expect(progressEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            phase: "fetch",
+            message: "Fetching origin/main for 'https://github.com/example/repo.git'",
+          }),
+          expect.objectContaining({
+            phase: "skip",
+            message: "Skipping merge for 'https://github.com/example/repo.git': working tree has local changes",
+          }),
+        ]),
+      );
     });
 
     it("does not reset on diverged history", async () => {
@@ -216,12 +258,27 @@ describe("CloneSyncService", () => {
     });
 
     it("fast-forwards when clean, behind, and ff-able", async () => {
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      const progressEvents: Array<{ phase: string; message: string }> = [];
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger, {
+        progressEmitter: (event) => progressEvents.push(event),
+      });
       setInitialized(service);
 
       await service.runSyncAttempt();
 
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      expect(progressEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            phase: "merge",
+            message: "Fast-forwarding 'https://github.com/example/repo.git' to origin/main",
+          }),
+          expect.objectContaining({
+            phase: "merge",
+            message: "Updated 'https://github.com/example/repo.git' to origin/main",
+          }),
+        ]),
+      );
     });
 
     it("no-ops when already up to date", async () => {

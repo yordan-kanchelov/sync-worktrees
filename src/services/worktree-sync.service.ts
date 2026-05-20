@@ -9,7 +9,7 @@ import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { getCloneModeLockTarget } from "../utils/lock-path";
-import { resolveMode } from "../utils/repo-mode";
+import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { retry } from "../utils/retry";
 import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
 
@@ -34,6 +34,9 @@ export type ExclusiveRepoOperationResult<T> =
 export interface ProgressEvent {
   phase: string;
   message: string;
+  progress?: number;
+  processed?: number;
+  total?: number;
 }
 
 export type ProgressListener = (event: ProgressEvent) => void;
@@ -49,8 +52,10 @@ export class WorktreeSyncService {
   constructor(public readonly config: Config) {
     this.logger = config.logger ?? Logger.createDefault(undefined, config.debug);
     this.gitService = new GitService(config, this.logger);
-    if (resolveMode(config) === "clone") {
-      this.cloneSyncService = new CloneSyncService(config, this.gitService, this.logger);
+    if (resolveMode(config) === REPOSITORY_MODES.CLONE) {
+      this.cloneSyncService = new CloneSyncService(config, this.gitService, this.logger, {
+        progressEmitter: (event): void => this.emitProgress(event),
+      });
     }
   }
 

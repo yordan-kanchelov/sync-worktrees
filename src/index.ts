@@ -14,6 +14,7 @@ import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { isInteractiveMode, parseArguments, reconstructCliCommand } from "./utils/cli";
 import { findConfigInCwd } from "./utils/config-generator";
 import { promptForConfig } from "./utils/interactive";
+import { REPOSITORY_MODES } from "./utils/repo-mode";
 import { setupSignalHandlers } from "./utils/signal-handlers";
 
 import type { ReloadOptions } from "./services/InteractiveUIService";
@@ -328,7 +329,7 @@ async function main(): Promise<void> {
   } else {
     const config = options as Config;
 
-    if (config.mode !== "clone") {
+    if (config.mode !== REPOSITORY_MODES.CLONE) {
       if (options.noUpdateExisting) config.updateExistingWorktrees = false;
       else if (config.updateExistingWorktrees === undefined) config.updateExistingWorktrees = true;
     }

@@ -9,6 +9,7 @@ import { ConfigValidationError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { normalizePathForCompare } from "../utils/path-compare";
+import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 
 import type { Config, ConfigFile, RepositoryConfig, RepositoryMode } from "../types";
@@ -185,7 +186,7 @@ export class ConfigLoaderService {
         this.validateSparseCheckoutConfig(defaults.sparseCheckout, "defaults");
       }
 
-      if (defaults.mode !== undefined && defaults.mode !== "clone" && defaults.mode !== "worktree") {
+      if (defaults.mode !== undefined && !isRepositoryMode(defaults.mode)) {
         throw new ConfigValidationError("defaults.mode", "must be 'clone' or 'worktree'");
       }
 
@@ -375,7 +376,7 @@ export class ConfigLoaderService {
     const repoName = repoObj.name as string;
     const repoMode = repoObj.mode;
 
-    if (repoMode !== undefined && repoMode !== "clone" && repoMode !== "worktree") {
+    if (repoMode !== undefined && !isRepositoryMode(repoMode)) {
       throw new ConfigValidationError(`Repository '${repoName}' mode`, "must be 'clone' or 'worktree'");
     }
 
@@ -387,7 +388,7 @@ export class ConfigLoaderService {
     }
 
     const effectiveMode = (repoMode as RepositoryMode | undefined) ?? (defaults?.mode as RepositoryMode | undefined);
-    if (effectiveMode !== "clone") return;
+    if (effectiveMode !== REPOSITORY_MODES.CLONE) return;
 
     for (const field of CLONE_MODE_CONFLICTING_FIELDS) {
       const fromRepo = repoObj[field];
@@ -433,7 +434,7 @@ export class ConfigLoaderService {
     globalRetry?: Config["retry"],
     allRepositories?: RepositoryConfig[],
   ): RepositoryConfig {
-    const mode: RepositoryMode = repo.mode ?? defaults?.mode ?? "worktree";
+    const mode: RepositoryMode = repo.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
 
     const resolved: RepositoryConfig = {
       name: repo.name,
@@ -448,7 +449,7 @@ export class ConfigLoaderService {
       resolved.__configFileDir = configDir;
     }
 
-    if (mode === "clone") {
+    if (mode === REPOSITORY_MODES.CLONE) {
       if (repo.branch ?? defaults?.branch) {
         resolved.branch = repo.branch ?? defaults?.branch;
       }
