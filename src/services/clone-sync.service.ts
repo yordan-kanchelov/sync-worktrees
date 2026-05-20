@@ -90,6 +90,26 @@ export class CloneSyncService {
     return this.isLfsSkipEnabled() ? base.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : base;
   }
 
+  private buildCloneArgs(branch: string): string[] {
+    const args = ["--branch", branch, "--single-branch", "--progress"];
+    if (this.config.depth !== undefined) {
+      args.push("--depth", String(this.config.depth));
+    }
+    return args;
+  }
+
+  private async unshallowIfDepthRemoved(git: SimpleGit): Promise<void> {
+    if (this.config.depth !== undefined) return;
+
+    const output = await git.raw(["rev-parse", "--is-shallow-repository"]);
+    if (output.trim() !== "true") return;
+
+    this.logger.info(
+      `[deepen] Existing shallow clone for '${this.repoName}' has no configured depth; fetching full history...`,
+    );
+    await git.fetch(["--unshallow"]);
+  }
+
   async resolveBranch(): Promise<string> {
     if (this.resolvedBranch) return this.resolvedBranch;
     if (this.config.branch) {
@@ -142,7 +162,7 @@ export class CloneSyncService {
     const cloneClient = this.isLfsSkipEnabled() ? cloneGit.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : cloneGit;
 
     try {
-      await cloneClient.clone(this.config.repoUrl, worktreeDir, ["--branch", branch, "--single-branch", "--progress"]);
+      await cloneClient.clone(this.config.repoUrl, worktreeDir, this.buildCloneArgs(branch));
     } catch (error) {
       await this.maybeCleanupPartialClone(worktreeDir, cloneCreatedDir);
       throw error;
@@ -309,6 +329,8 @@ export class CloneSyncService {
       });
       return;
     }
+
+    await this.unshallowIfDepthRemoved(git);
 
     this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
     try {

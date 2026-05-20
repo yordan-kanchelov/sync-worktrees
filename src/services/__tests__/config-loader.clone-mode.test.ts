@@ -47,6 +47,70 @@ describe("ConfigLoaderService - clone mode", () => {
     expect(file.repositories[0].branch).toBe("main");
   });
 
+  it.each([1, 2, Number.MAX_SAFE_INTEGER])("accepts clone-mode depth %s", async (depth) => {
+    const configPath = await writeConfig(`
+      export default {
+        repositories: [
+          {
+            name: "demo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "/tmp/demo",
+            mode: "clone",
+            branch: "main",
+            depth: ${depth},
+          },
+        ],
+      };
+    `);
+
+    const file = await configLoader.loadConfigFile(configPath);
+    expect(file.repositories[0].depth).toBe(depth);
+  });
+
+  it.each([
+    ["zero", "0"],
+    ["negative", "-1"],
+    ["fractional", "1.5"],
+    ["string", `"1"`],
+    ["null", "null"],
+    ["NaN", "NaN"],
+    ["Infinity", "Infinity"],
+    ["unsafe integer", `${Number.MAX_SAFE_INTEGER + 1}`],
+  ])("rejects invalid clone-mode depth: %s", async (_case, value) => {
+    const configPath = await writeConfig(`
+      export default {
+        repositories: [
+          {
+            name: "demo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "/tmp/demo",
+            mode: "clone",
+            depth: ${value},
+          },
+        ],
+      };
+    `);
+
+    await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/depth.*positive safe integer/);
+  });
+
+  it("rejects invalid defaults.depth", async () => {
+    const configPath = await writeConfig(`
+      export default {
+        defaults: { mode: "clone", depth: 1.5 },
+        repositories: [
+          {
+            name: "demo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "/tmp/demo",
+          },
+        ],
+      };
+    `);
+
+    await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/defaults\.depth.*positive safe integer/);
+  });
+
   it("accepts mode: 'clone' without branch (resolved later)", async () => {
     const configPath = await writeConfig(`
       export default {
@@ -63,6 +127,42 @@ describe("ConfigLoaderService - clone mode", () => {
 
     const file = await configLoader.loadConfigFile(configPath);
     expect(file.repositories[0].mode).toBe("clone");
+  });
+
+  it("rejects direct depth on a worktree-mode repo", async () => {
+    const configPath = await writeConfig(`
+      export default {
+        repositories: [
+          {
+            name: "demo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "/tmp/demo",
+            mode: "worktree",
+            depth: 1,
+          },
+        ],
+      };
+    `);
+
+    await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/depth.*clone/);
+  });
+
+  it("rejects defaults.depth inherited by a worktree-mode repo", async () => {
+    const configPath = await writeConfig(`
+      export default {
+        defaults: { depth: 1 },
+        repositories: [
+          {
+            name: "demo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "/tmp/demo",
+            mode: "worktree",
+          },
+        ],
+      };
+    `);
+
+    await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/depth.*clone/);
   });
 
   it("rejects invalid mode value", async () => {
@@ -162,6 +262,35 @@ describe("ConfigLoaderService - clone mode", () => {
     expect(resolved.mode).toBe("clone");
     expect(resolved.branch).toBe("main");
     expect(resolved.__configFileDir).toBe("/some/config-dir");
+  });
+
+  it("resolves depth for clone mode with repo overriding defaults", () => {
+    const repo: RepositoryConfig = {
+      name: "demo",
+      repoUrl: TEST_URLS.github,
+      worktreeDir: "/tmp/demo",
+      cronSchedule: "0 * * * *",
+      runOnce: false,
+      mode: "clone",
+      depth: 2,
+    };
+
+    const resolved = configLoader.resolveRepositoryConfig(repo, { mode: "clone", depth: 1 });
+    expect(resolved.depth).toBe(2);
+  });
+
+  it("resolves defaults.depth for clone mode", () => {
+    const repo: RepositoryConfig = {
+      name: "demo",
+      repoUrl: TEST_URLS.github,
+      worktreeDir: "/tmp/demo",
+      cronSchedule: "0 * * * *",
+      runOnce: false,
+      mode: "clone",
+    };
+
+    const resolved = configLoader.resolveRepositoryConfig(repo, { mode: "clone", depth: 1 });
+    expect(resolved.depth).toBe(1);
   });
 
   it("defaults mode to 'worktree' when not specified", () => {

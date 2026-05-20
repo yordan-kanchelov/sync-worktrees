@@ -150,6 +150,7 @@ export class ConfigLoaderService {
         this.validateSparseCheckoutConfig(repoObj.sparseCheckout, `Repository '${repoObj.name}'`);
       }
 
+      this.validateDepth(repoObj.depth, `Repository '${repoObj.name}' depth`);
       this.validateRepositoryMode(repoObj, configObj.defaults as Record<string, unknown> | undefined);
     });
 
@@ -185,6 +186,8 @@ export class ConfigLoaderService {
       if (defaults.sparseCheckout !== undefined) {
         this.validateSparseCheckoutConfig(defaults.sparseCheckout, "defaults");
       }
+
+      this.validateDepth(defaults.depth, "defaults.depth");
 
       if (defaults.mode !== undefined && !isRepositoryMode(defaults.mode)) {
         throw new ConfigValidationError("defaults.mode", "must be 'clone' or 'worktree'");
@@ -247,6 +250,13 @@ export class ConfigLoaderService {
       if (defaults.parallelism !== undefined) {
         this.validateParallelismConfig(defaults.parallelism, "defaults");
       }
+    }
+  }
+
+  private validateDepth(value: unknown, field: string): void {
+    if (value === undefined) return;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+      throw new ConfigValidationError(field, "must be a positive safe integer");
     }
   }
 
@@ -388,7 +398,18 @@ export class ConfigLoaderService {
     }
 
     const effectiveMode = (repoMode as RepositoryMode | undefined) ?? (defaults?.mode as RepositoryMode | undefined);
-    if (effectiveMode !== REPOSITORY_MODES.CLONE) return;
+    if (effectiveMode !== REPOSITORY_MODES.CLONE) {
+      const depthFromRepo = repoObj.depth;
+      const depthFromDefaults = defaults?.depth;
+      if (depthFromRepo !== undefined || depthFromDefaults !== undefined) {
+        const source = depthFromRepo !== undefined ? "repository" : "defaults";
+        throw new ConfigValidationError(
+          `Repository '${repoName}' depth`,
+          `only supported when mode is 'clone' (set on ${source})`,
+        );
+      }
+      return;
+    }
 
     for (const field of CLONE_MODE_CONFLICTING_FIELDS) {
       const fromRepo = repoObj[field];
@@ -452,6 +473,9 @@ export class ConfigLoaderService {
     if (mode === REPOSITORY_MODES.CLONE) {
       if (repo.branch ?? defaults?.branch) {
         resolved.branch = repo.branch ?? defaults?.branch;
+      }
+      if (repo.depth !== undefined || defaults?.depth !== undefined) {
+        resolved.depth = repo.depth ?? defaults?.depth;
       }
     } else {
       if (repo.bareRepoDir) {

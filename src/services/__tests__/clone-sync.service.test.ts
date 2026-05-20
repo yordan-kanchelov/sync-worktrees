@@ -108,7 +108,29 @@ describe("CloneSyncService", () => {
         config.worktreeDir,
         expect.arrayContaining(["--branch", "main", "--single-branch", "--progress"]),
       );
+      expect(gitMock.clone.mock.calls[0][2]).not.toContain("--depth");
       expect(service.isInitialized()).toBe(true);
+    });
+
+    it("passes --depth for configured shallow clone depth", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+
+      const config = makeConfig({ depth: 1 });
+      const service = new CloneSyncService(config, buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(gitMock.clone).toHaveBeenCalledWith(config.repoUrl, config.worktreeDir, [
+        "--branch",
+        "main",
+        "--single-branch",
+        "--progress",
+        "--depth",
+        "1",
+      ]);
     });
 
     it("emits progress while initializing a fresh clone", async () => {
@@ -242,6 +264,54 @@ describe("CloneSyncService", () => {
           }),
         ]),
       );
+    });
+
+    it("unshallows before normal fetch when depth was removed from config", async () => {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "true\n";
+        return "";
+      });
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow"]);
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(2, ["origin", "main", "--prune", "--progress"]);
+    });
+
+    it("does not unshallow when depth is configured", async () => {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "true";
+        return "";
+      });
+      const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+      expect(gitMock.fetch).toHaveBeenCalledWith(["origin", "main", "--prune", "--progress"]);
+    });
+
+    it("does not unshallow full repositories without configured depth", async () => {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false\n";
+        return "";
+      });
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+      expect(gitMock.fetch).toHaveBeenCalledWith(["origin", "main", "--prune", "--progress"]);
     });
 
     it("does not reset on diverged history", async () => {

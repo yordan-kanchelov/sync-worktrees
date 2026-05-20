@@ -102,6 +102,11 @@ export interface Config {
    */
   branch?: string;
   /**
+   * Shallow clone depth for config-file clone-mode repositories. Maps to
+   * `git clone --depth <N>` on the initial clone only.
+   */
+  depth?: number;
+  /**
    * Internal: directory of the loaded config file. Used to anchor the lock
    * location for clone-mode repos. Populated by ConfigLoaderService — not
    * a user-facing field.

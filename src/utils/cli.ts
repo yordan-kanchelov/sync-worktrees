@@ -5,7 +5,7 @@ import { REPOSITORY_MODES } from "./repo-mode";
 
 import type { Config, RepositoryMode } from "../types";
 
-export interface CliOptions extends Partial<Config> {
+export interface CliOptions extends Omit<Partial<Config>, "depth"> {
   config?: string;
   filter?: string;
   list?: boolean;

@@ -159,7 +159,7 @@ All tools that target a single repo accept an optional `repoName`. When omitted,
 | `--debug` | `-d` | Show detailed reasons for skipped cleanups | `false` |
 | `--help` | `-h` | Show help | - |
 
-Most sync behavior (repo URL, worktree directory, cron schedule, branch filtering, LFS, retry) is configured in the config file. The CLI flags that only make sense for one-off runs (`--repoUrl`, `--worktreeDir`, `--cronSchedule`, `--branchMaxAge`, `--branchInclude`, `--branchExclude`, `--skip-lfs`, `--bareRepoDir`) are still supported — run `sync-worktrees --help` for the full list.
+Most sync behavior (repo URL, worktree directory, cron schedule, branch filtering, LFS, retry) is configured in the config file. The CLI flags that only make sense for one-off runs (`--repoUrl`, `--worktreeDir`, `--cronSchedule`, `--branchMaxAge`, `--branchInclude`, `--branchExclude`, `--skip-lfs`, `--bareRepoDir`) are still supported — run `sync-worktrees --help` for the full list. Clone depth is config-file only.
 
 ## Configuration File
 
@@ -208,6 +208,23 @@ export default {
 - Relative paths are resolved from the config file location
 - `bareRepoDir` defaults to `.bare/<repo-name>` if not specified
 - Repository-specific settings override defaults
+
+### Clone Mode And Depth
+
+Config-file repositories can set `mode: "clone"` to clone one branch directly into `worktreeDir` instead of maintaining one worktree per remote branch:
+
+```javascript
+{
+  name: "game-platform",
+  repoUrl: "ssh://git@example.com/game-platform.git",
+  worktreeDir: "./slots/game-platform",
+  mode: "clone",
+  branch: "main",
+  depth: 1  // Optional: initial `git clone --depth 1`
+}
+```
+
+`depth` is valid only for clone-mode repositories and must be a positive safe integer. It applies to the initial clone only. If an existing clone is shallow and the resolved config no longer includes `depth`, the next sync fetches full history with `git fetch --unshallow` before the normal fetch and fast-forward check. Changing or shrinking an existing shallow depth requires a manual reclone.
 
 ### Retry Configuration
 

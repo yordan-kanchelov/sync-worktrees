@@ -23,6 +23,58 @@ describeOrSkip("Clone-mode E2E tests", () => {
     await fs.rm(tmpBase, { recursive: true, force: true });
   });
 
+  async function createLocalRemote(name: string): Promise<string> {
+    const remoteBare = path.join(tmpBase, `${name}.git`);
+    const seedDir = path.join(tmpBase, `${name}-seed`);
+
+    await fs.mkdir(seedDir, { recursive: true });
+    execSync(`git init --bare "${remoteBare}"`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" init`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" config user.name "Test User"`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" config user.email "test@example.com"`, { encoding: "utf-8" });
+
+    await fs.writeFile(path.join(seedDir, "README.md"), "# Test Repository\n");
+    execSync(`git -C "${seedDir}" add README.md`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" commit -m "Initial commit"`, { encoding: "utf-8" });
+
+    await fs.writeFile(path.join(seedDir, "one.txt"), "one\n");
+    execSync(`git -C "${seedDir}" add one.txt`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" commit -m "Add one"`, { encoding: "utf-8" });
+
+    await fs.writeFile(path.join(seedDir, "two.txt"), "two\n");
+    execSync(`git -C "${seedDir}" add two.txt`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" commit -m "Add two"`, { encoding: "utf-8" });
+
+    execSync(`git -C "${seedDir}" branch -M main`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" remote add origin "${remoteBare}"`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" push origin main`, { encoding: "utf-8" });
+    execSync(`git -C "${remoteBare}" symbolic-ref HEAD refs/heads/main`, { encoding: "utf-8" });
+
+    return remoteBare;
+  }
+
+  function writeCloneDepthConfig(
+    configPath: string,
+    repoUrl: string,
+    worktreeDir: string,
+    depthLine = "",
+  ): Promise<void> {
+    const configContent = `
+export default {
+  repositories: [
+    {
+      name: "depth-local",
+      repoUrl: "${repoUrl}",
+      worktreeDir: "${worktreeDir.replace(/\\/g, "/")}",
+      mode: "clone",
+      branch: "main"${depthLine}
+    }
+  ]
+};
+`;
+    return fs.writeFile(configPath, configContent);
+  }
+
   it("clones directly into worktreeDir (no /branch subfolder, no .bare)", async () => {
     const worktreeDir = path.join(tmpBase, "single-clone");
 
@@ -157,6 +209,43 @@ export default {
       .catch(() => false);
     expect(lockExists).toBe(true);
   }, 240000);
+
+  it("creates a shallow clone from config depth and unshallows when depth is removed", async () => {
+    const remoteBare = await createLocalRemote("depth-remote");
+    const configDir = path.join(tmpBase, "depth-config");
+    const worktreeDir = path.join(configDir, "clone");
+    const configPath = path.join(configDir, "depth.config.js");
+    const repoUrl = `file://${remoteBare}`;
+    await fs.mkdir(configDir, { recursive: true });
+
+    await writeCloneDepthConfig(configPath, repoUrl, worktreeDir, ",\n      depth: 1");
+
+    execSync(`node "${cliPath}" --config "${configPath}" --runOnce`, {
+      encoding: "utf-8",
+      timeout: 60000,
+    });
+
+    const shallowAfterClone = execSync(`git -C "${worktreeDir}" rev-parse --is-shallow-repository`, {
+      encoding: "utf-8",
+    }).trim();
+    expect(shallowAfterClone).toBe("true");
+    expect(execSync(`git -C "${worktreeDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim()).toBe("1");
+
+    await writeCloneDepthConfig(configPath, repoUrl, worktreeDir);
+
+    const secondRun = execSync(`node "${cliPath}" --config "${configPath}" --runOnce`, {
+      encoding: "utf-8",
+      timeout: 60000,
+    });
+
+    const shallowAfterDepthRemoval = execSync(`git -C "${worktreeDir}" rev-parse --is-shallow-repository`, {
+      encoding: "utf-8",
+    }).trim();
+    const commitCount = Number(execSync(`git -C "${worktreeDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim());
+    expect(secondRun).toContain("[deepen]");
+    expect(shallowAfterDepthRemoval).toBe("false");
+    expect(commitCount).toBeGreaterThan(1);
+  }, 120000);
 
   it("rejects clone mode combined with branchInclude (validation error)", async () => {
     const configPath = path.join(tmpBase, "bad-config.config.js");
