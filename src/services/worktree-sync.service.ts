@@ -143,8 +143,9 @@ export class WorktreeSyncService {
       const retryOptions = this.createRetryOptions(syncContext);
 
       try {
-        if (this.cloneSyncService) {
-          await retry(() => this.cloneSyncService!.runSyncAttempt(), retryOptions);
+        const cloneSync = this.cloneSyncService;
+        if (cloneSync) {
+          await retry(() => cloneSync.runSyncAttempt(), retryOptions);
         } else {
           await retry(() => this.runSyncAttempt(phaseTimer, syncContext), retryOptions);
         }
@@ -178,12 +179,7 @@ export class WorktreeSyncService {
       const target = getCloneModeLockTarget(this.config);
       await fs.mkdir(target.dir, { recursive: true });
       const lockTarget = path.join(target.dir, target.file);
-      try {
-        await fs.writeFile(lockTarget, "", { flag: "a" });
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EEXIST") throw error;
-      }
+      await fs.writeFile(lockTarget, "", { flag: "a" });
       try {
         const release = await lockfile.lock(lockTarget, {
           stale: DEFAULT_CONFIG.LOCK_STALE_MS,

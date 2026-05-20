@@ -61,6 +61,7 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     buildPatterns: vi.fn().mockReturnValue(["src"]),
     readCurrent: vi.fn().mockResolvedValue(null),
     patternsEqual: vi.fn().mockReturnValue(false),
+    needsUpdate: vi.fn().mockResolvedValue(true),
     isNarrowing: vi.fn().mockReturnValue(false),
     resolveMode: vi.fn().mockReturnValue("cone"),
   };
@@ -235,7 +236,7 @@ describe("CloneSyncService", () => {
       expect(gitMock.merge).not.toHaveBeenCalled();
     });
 
-    it("reapplies sparse-checkout every sync when configured", async () => {
+    it("reapplies sparse-checkout when needsUpdate returns true", async () => {
       const gitService = buildGitService();
       const config = makeConfig({ sparseCheckout: { include: ["src"] } });
       const service = new CloneSyncService(config, gitService, logger);
@@ -244,7 +245,24 @@ describe("CloneSyncService", () => {
       await service.runSyncAttempt();
 
       const sparseService = (gitService.getSparseCheckoutService as unknown as Mock).mock.results[0]?.value;
+      expect(sparseService.needsUpdate).toHaveBeenCalledWith(config.worktreeDir, config.sparseCheckout);
       expect(sparseService.applyToWorktree).toHaveBeenCalledWith(config.worktreeDir, config.sparseCheckout);
+    });
+
+    it("skips sparse-checkout reapply when needsUpdate returns false", async () => {
+      const gitService = buildGitService();
+      const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+      (sparseService.needsUpdate as Mock).mockResolvedValue(false);
+      (gitService.getSparseCheckoutService as unknown as Mock).mockReturnValue(sparseService);
+
+      const config = makeConfig({ sparseCheckout: { include: ["src"] } });
+      const service = new CloneSyncService(config, gitService, logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      expect(sparseService.needsUpdate).toHaveBeenCalledWith(config.worktreeDir, config.sparseCheckout);
+      expect(sparseService.applyToWorktree).not.toHaveBeenCalled();
     });
   });
 

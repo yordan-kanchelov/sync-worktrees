@@ -3,8 +3,9 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError } from "../errors";
+import { makeGitProgressHandler } from "../utils/git-progress";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
@@ -13,7 +14,7 @@ import { HookExecutionService } from "./hook-execution.service";
 import type { GitService } from "./git.service";
 import type { Logger } from "./logger.service";
 import type { Config, RepositoryConfig } from "../types";
-import type { SimpleGit, SimpleGitOptions, SimpleGitProgressEvent } from "simple-git";
+import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export class CloneSyncService {
   private initialized = false;
@@ -64,17 +65,8 @@ export class CloneSyncService {
     return this.config.skipLfs === true;
   }
 
-  private makeProgressHandler(): (event: SimpleGitProgressEvent) => void {
-    return (event: SimpleGitProgressEvent): void => {
-      if (event.method !== "clone" && event.method !== "fetch" && event.method !== "pull") return;
-      if (event.progress % GIT_CONSTANTS.PROGRESS_BUCKET_PERCENT !== 0 && event.progress !== 100) return;
-      const total = event.total > 0 ? `${event.processed}/${event.total}` : `${event.processed}`;
-      this.logger.info(`  ↳ ${event.method} ${event.stage}: ${event.progress}% (${total})`);
-    };
-  }
-
   private buildGitOptions(blockMs: number): Partial<SimpleGitOptions> {
-    const options: Partial<SimpleGitOptions> = { progress: this.makeProgressHandler() };
+    const options: Partial<SimpleGitOptions> = { progress: makeGitProgressHandler(this.logger) };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
   }
@@ -99,36 +91,21 @@ export class CloneSyncService {
   async initialize(): Promise<void> {
     const branch = await this.resolveBranch();
     const worktreeDir = this.config.worktreeDir;
-    const gitDir = path.join(worktreeDir, ".git");
 
-    let preExisted = true;
-    let preExistedEmpty = false;
+    let entries: string[] | null = null;
     try {
-      const entries = await fs.readdir(worktreeDir);
-      preExistedEmpty = entries.length === 0;
+      entries = await fs.readdir(worktreeDir);
     } catch {
-      preExisted = false;
+      entries = null;
     }
 
-    await fs.mkdir(path.dirname(worktreeDir), { recursive: true });
-
-    let needsClone = true;
-    try {
-      const stat = await fs.stat(gitDir);
-      if (stat.isDirectory() || stat.isFile()) {
-        needsClone = false;
-      }
-    } catch {
-      // .git missing → needs clone
-    }
-
-    if (!needsClone) {
+    if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) {
       await this.validateExistingClone(branch);
       this.initialized = true;
       return;
     }
 
-    if (preExisted && !preExistedEmpty) {
+    if (entries && entries.length > 0) {
       throw new ConfigError(
         `Cannot clone into '${worktreeDir}': directory exists and is not empty. ` +
           `Remove existing contents or point worktreeDir at an empty path.`,
@@ -136,13 +113,11 @@ export class CloneSyncService {
       );
     }
 
-    if (!preExisted) {
-      await fs.mkdir(worktreeDir, { recursive: true });
-    }
+    const cloneCreatedDir = entries === null;
+    await fs.mkdir(worktreeDir, { recursive: true });
 
     this.logger.info(`Cloning '${this.config.repoUrl}' (${branch}) into '${worktreeDir}'...`);
 
-    const cloneCreatedDir = !preExisted;
     const cloneGit = simpleGit(this.buildGitOptions(this.getCloneTimeoutMs()));
     const cloneClient = this.isLfsSkipEnabled() ? cloneGit.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : cloneGit;
 
@@ -219,19 +194,18 @@ export class CloneSyncService {
       return;
     }
 
-    const looksIncomplete = entries.every((e) => e === ".git" || e === ".gitignore" || e.startsWith("."));
-    const hasGitDir = entries.includes(".git");
-    let headExists = false;
-    if (hasGitDir) {
+    const looksIncomplete = entries.every((e) => e.startsWith("."));
+    let hasUsableGit = false;
+    if (entries.includes(PATH_CONSTANTS.GIT_DIR)) {
       try {
-        await fs.access(path.join(worktreeDir, ".git", "HEAD"));
-        headExists = true;
+        await fs.access(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, "HEAD"));
+        hasUsableGit = true;
       } catch {
-        headExists = false;
+        hasUsableGit = false;
       }
     }
 
-    if (looksIncomplete && (!hasGitDir || !headExists)) {
+    if (looksIncomplete && !hasUsableGit) {
       try {
         await fs.rm(worktreeDir, { recursive: true, force: true });
         this.logger.info(`Cleaned up incomplete clone at '${worktreeDir}'.`);
@@ -246,7 +220,7 @@ export class CloneSyncService {
   }
 
   private getInitMarkerPath(worktreeDir: string): string {
-    return path.join(worktreeDir, ".git", ".sync-worktrees-clone-init");
+    return path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, PATH_CONSTANTS.CLONE_INIT_MARKER);
   }
 
   private async runInitialBranchActions(worktreeDir: string, branch: string): Promise<void> {
@@ -255,7 +229,7 @@ export class CloneSyncService {
       await fs.access(marker);
       return;
     } catch {
-      // marker absent → run actions
+      // marker missing — fall through to run actions
     }
 
     const sourceDir = this.config.__configFileDir ?? worktreeDir;
@@ -328,7 +302,9 @@ export class CloneSyncService {
     if (this.config.sparseCheckout) {
       const sparseService = this.gitService.getSparseCheckoutService();
       try {
-        await sparseService.applyToWorktree(worktreeDir, this.config.sparseCheckout);
+        if (await sparseService.needsUpdate(worktreeDir, this.config.sparseCheckout)) {
+          await sparseService.applyToWorktree(worktreeDir, this.config.sparseCheckout);
+        }
       } catch (error) {
         this.logger.warn(`Failed to reapply sparse-checkout for '${this.repoName}': ${getErrorMessage(error)}`);
       }

@@ -5,6 +5,7 @@ import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
 import { WorktreeError } from "../errors";
+import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
@@ -17,7 +18,7 @@ import { WorktreeStatusService } from "./worktree-status.service";
 import type { WorktreeStatusResult } from "./worktree-status.service";
 import type { Config } from "../types";
 import type { SyncMetadata } from "../types/sync-metadata";
-import type { SimpleGit, SimpleGitOptions, SimpleGitProgressEvent } from "simple-git";
+import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export type GitServiceOptions = Pick<
   Config,
@@ -91,28 +92,9 @@ export class GitService {
   }
 
   private buildSimpleGitOptions(blockMs: number): Partial<SimpleGitOptions> {
-    const options: Partial<SimpleGitOptions> = { progress: this.makeProgressHandler() };
+    const options: Partial<SimpleGitOptions> = { progress: makeGitProgressHandler(this.logger) };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
-  }
-
-  private makeProgressHandler(): (event: SimpleGitProgressEvent) => void {
-    const lastBucket = new Map<string, number>();
-    return (event: SimpleGitProgressEvent): void => {
-      if (event.method !== "fetch" && event.method !== "clone" && event.method !== "pull") return;
-      const key = `${event.method}:${event.stage}`;
-      const bucket = Math.floor(event.progress / GIT_CONSTANTS.PROGRESS_BUCKET_PERCENT);
-      let last = lastBucket.get(key) ?? -1;
-      // Stage restart on a new operation (e.g. second fetch on the same cached SimpleGit
-      // instance): bucket regresses below `last`. Reset so the new run logs from scratch.
-      if (bucket < last) {
-        last = -1;
-      }
-      if (bucket <= last && event.progress < 100) return;
-      lastBucket.set(key, bucket);
-      const total = event.total > 0 ? `${event.processed}/${event.total}` : `${event.processed}`;
-      this.logger.info(`  ↳ ${event.method} ${event.stage}: ${event.progress}% (${total})`);
-    };
   }
 
   updateLogger(logger: Logger): void {
@@ -264,7 +246,7 @@ export class GitService {
         return match[1];
       }
     } catch {
-      // Fall through to probe-based detection
+      /* fall through to probe candidates */
     }
 
     for (const candidate of GIT_CONSTANTS.COMMON_DEFAULT_BRANCHES) {
@@ -274,7 +256,7 @@ export class GitService {
           return candidate;
         }
       } catch {
-        // Try next candidate
+        /* candidate missing — try next */
       }
     }
 

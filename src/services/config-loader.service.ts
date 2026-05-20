@@ -19,7 +19,7 @@ const CLONE_MODE_CONFLICTING_FIELDS = [
   "branchMaxAge",
   "updateExistingWorktrees",
   "bareRepoDir",
-] as const;
+] as const satisfies readonly (keyof RepositoryConfig)[];
 
 export class ConfigLoaderService {
   async findConfigUpward(startDir: string): Promise<string | null> {
