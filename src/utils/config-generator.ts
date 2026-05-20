@@ -4,6 +4,7 @@ import * as path from "path";
 import { CONFIG_FILE_NAMES } from "../constants";
 import { ConfigFileExistsError } from "../errors";
 
+import { fileExists } from "./file-exists";
 import { extractRepoNameFromUrl } from "./git-url";
 
 import type { InitConfigInput } from "../types";
@@ -106,15 +107,6 @@ export default ${serializeToESM(configObject)};
   }
 }
 
-export async function configFileExists(configPath: string): Promise<boolean> {
-  try {
-    await fs.access(configPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function getDefaultConfigPath(): string {
   return path.join(process.cwd(), "sync-worktrees.config.js");
 }
@@ -122,11 +114,8 @@ export function getDefaultConfigPath(): string {
 export async function findConfigInCwd(cwd: string = process.cwd()): Promise<string | null> {
   for (const name of CONFIG_FILE_NAMES) {
     const full = path.join(cwd, name);
-    try {
-      await fs.access(full);
+    if (await fileExists(full)) {
       return full;
-    } catch {
-      /* try next */
     }
   }
   return null;

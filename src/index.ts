@@ -11,7 +11,8 @@ import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { parseArguments } from "./utils/cli";
-import { configFileExists, findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
+import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
+import { fileExists } from "./utils/file-exists";
 import { promptForInitConfig } from "./utils/interactive";
 import { setupSignalHandlers } from "./utils/signal-handlers";
 
@@ -187,7 +188,7 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
   // Preflight before prompts so user isn't asked 5 questions just to fail at write.
   // The atomic `wx` write below is still the source of truth — it closes the TOCTOU
   // window between this check and the write.
-  if (!force && (await configFileExists(targetPath))) {
+  if (!force && (await fileExists(targetPath))) {
     exitConfigExists(targetPath);
   }
 

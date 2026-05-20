@@ -1,4 +1,3 @@
-import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
 
@@ -7,6 +6,7 @@ import * as cron from "node-cron";
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
 import { ConfigFileNotFoundError, ConfigValidationError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
+import { fileExists } from "../utils/file-exists";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { normalizePathForCompare } from "../utils/path-compare";
 import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
@@ -30,11 +30,8 @@ export class ConfigLoaderService {
     while (true) {
       for (const name of CONFIG_FILE_NAMES) {
         const candidate = path.join(current, name);
-        try {
-          await fs.access(candidate);
+        if (await fileExists(candidate)) {
           return candidate;
-        } catch {
-          /* try next */
         }
       }
       if (current === root) return null;
@@ -47,9 +44,7 @@ export class ConfigLoaderService {
   async loadConfigFile(configPath: string): Promise<ConfigFile> {
     const absolutePath = path.resolve(configPath);
 
-    try {
-      await fs.access(absolutePath);
-    } catch {
+    if (!(await fileExists(absolutePath))) {
       throw new ConfigFileNotFoundError(absolutePath);
     }
 
