@@ -275,9 +275,8 @@ export default {
     // - sparseCheckout, filesToCopyOnBranchCreate, hooks.onBranchCreated, and skipLfs still apply.
     //   filesToCopyOnBranchCreate + hooks.onBranchCreated fire exactly once on the initial clone.
     //   sparseCheckout is re-applied every sync (config drift converges).
-    // - Lock file lives at `<configDir>/.sync-worktrees-state/<sanitized-name>.lock` (config mode)
-    //   or `$XDG_STATE_HOME` / `~/.cache/sync-worktrees/locks/<sha>.lock` (CLI mode) — never
-    //   inside the cloned repo, so no .gitignore noise.
+    // - Lock file lives at `<configDir>/.sync-worktrees-state/<sanitized-name>-<hash>.lock` —
+    //   never inside the cloned repo, so no .gitignore noise.
     //
     // Example: three monorepo-sibling components that import each other via fixed `../` paths.
     {

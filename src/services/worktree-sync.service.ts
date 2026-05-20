@@ -64,6 +64,15 @@ export class WorktreeSyncService {
   }
 
   async initialize(): Promise<void> {
+    if (this.isInitialized()) return;
+    const result = await this.runExclusiveRepoOperation(() => this.initializeUnlocked());
+    if (!result.started) {
+      const reason = result.reason === "in_progress" ? "operation in progress" : "another process holds the lock";
+      this.logger.warn(`⚠️  Initialize skipped: ${reason}`);
+    }
+  }
+
+  async initializeUnlocked(): Promise<void> {
     this.emitProgress({ phase: "initialize", message: "Initializing repository" });
     if (this.cloneSyncService) {
       await this.cloneSyncService.initialize();
@@ -137,7 +146,7 @@ export class WorktreeSyncService {
   async sync(): Promise<SyncResult> {
     const result = await this.runExclusiveRepoOperation(async () => {
       if (!this.isInitialized()) {
-        await this.initialize();
+        await this.initializeUnlocked();
       }
 
       this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);

@@ -142,6 +142,7 @@ function makeCtx(opts: {
     isInitialized: vi.fn<any>().mockReturnValue(true),
     isSyncInProgress: vi.fn<any>().mockReturnValue(opts.syncInProgress ?? false),
     initialize: vi.fn<any>().mockResolvedValue(undefined),
+    initializeUnlocked: vi.fn<any>().mockResolvedValue(undefined),
     runExclusiveRepoOperation: vi.fn<any>().mockImplementation(async (operation: unknown) => ({
       started: true,
       value: await (operation as () => Promise<unknown>)(),
@@ -635,7 +636,7 @@ describe("handleInitialize", () => {
         if (idx >= 0) progressListeners.splice(idx, 1);
       };
     });
-    service.initialize.mockImplementation(async () => {
+    service.initializeUnlocked.mockImplementation(async () => {
       for (const l of progressListeners) l({ phase: "initialize", message: "Initializing repository" });
     });
 
@@ -783,7 +784,7 @@ describe("handleInitialize", () => {
     expect(body.defaultBranch).toBe("main");
     expect(body.worktreeDir).toBe("/repo/worktrees");
     expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
-    expect(service.initialize).toHaveBeenCalled();
+    expect(service.initializeUnlocked).toHaveBeenCalled();
   });
 });
 

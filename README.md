@@ -6,7 +6,7 @@ Automatically synchronize Git worktrees with remote branches. Keep your local wo
 
 ## How it works
 
-sync-worktrees maintains a **separate working directory for each remote branch**, all sharing the same Git repository:
+sync-worktrees supports two repository strategies. The default — **worktree mode** — maintains a separate working directory for each remote branch, all sharing the same Git repository:
 
 1. **First run**: Clones your repository as a bare repository (no working files, just Git data)
 2. **Automatic sync**: 
@@ -14,6 +14,8 @@ sync-worktrees maintains a **separate working directory for each remote branch**
    - Each branch gets its own isolated directory with a full working copy
    - Fetches latest changes (doesn't merge - preserves your local work)
    - Removes worktrees when remote branches are deleted (preserves local changes)
+
+**Clone mode** is an alternative first-class strategy (`mode: "clone"`) that performs a single-branch `git clone` directly into `worktreeDir` — no bare repo, no per-branch subfolders, just one checked-out branch. Designed for monorepo sibling dependencies that need fixed relative paths. See [Clone Mode And Depth](#clone-mode-and-depth).
 
 **Why this matters**: Switch between branches instantly without stashing, run tests on multiple branches simultaneously, or keep your CI and production branches always ready.
 

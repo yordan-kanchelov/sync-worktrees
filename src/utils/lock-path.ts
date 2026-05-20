@@ -17,10 +17,12 @@ export function getCloneModeLockTarget(config: Config): RepoLockTarget {
   const name = (config as RepositoryConfig).name;
   const configDir = config.__configFileDir;
 
+  const hash = createHash("sha256").update(path.resolve(config.worktreeDir)).digest("hex").slice(0, 16);
+
   if (configDir) {
     return {
       dir: path.join(configDir, ".sync-worktrees-state"),
-      file: `${sanitizeNameForPath(name ?? "repo", "clone-mode lock name")}.lock`,
+      file: `${sanitizeNameForPath(name ?? "repo", "clone-mode lock name")}-${hash}.lock`,
     };
   }
 
@@ -29,6 +31,5 @@ export function getCloneModeLockTarget(config: Config): RepoLockTarget {
       ? process.env.XDG_STATE_HOME
       : path.join(os.homedir(), ".cache");
   const dir = path.join(stateBase, "sync-worktrees", "locks");
-  const hash = createHash("sha256").update(path.resolve(config.worktreeDir)).digest("hex").slice(0, 16);
   return { dir, file: `${hash}.lock` };
 }

@@ -21,7 +21,7 @@ function serializeToESM(obj: SerializableValue, indent: number = 0): string {
   const innerSpaces = " ".repeat(indent + 2);
 
   if (typeof obj === "string") {
-    return `"${obj}"`;
+    return JSON.stringify(obj);
   }
 
   if (typeof obj === "number" || typeof obj === "boolean") {

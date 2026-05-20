@@ -14,7 +14,7 @@ The single-repo flag invocation, the missing-config-file rescue prompt, and the 
 
 ### New surface
 
-```
+```text
 sync-worktrees [--config <path>]
 sync-worktrees init [--config <path>] [--force]
 sync-worktrees list [--config <path>] [--filter <pat>]
@@ -39,4 +39,4 @@ sync-worktrees list [--config <path>] [--filter <pat>]
 - New `ConfigFileNotFoundError` typed error in `src/errors`; `loadConfigFile` throws it instead of a stringly-typed `Error`.
 - `runSingleRepository`, `reconstructCliCommand`, `isInteractiveMode`, `CliOptions` extras removed.
 - `InteractiveUIService.ReloadOptions` removed (the TUI no longer carries CLI overrides).
-- `Config` / `RepositoryConfig` types unchanged.
+- `Config` and `RepositoryConfig` gain three optional fields for the new clone-mode surface: `mode?: "clone" | "worktree"`, `branch?: string`, and `depth?: number`. Existing worktree-mode configs do not need to set them (defaults preserve current behavior); integrators with custom `Config` consumers may need to widen their types.

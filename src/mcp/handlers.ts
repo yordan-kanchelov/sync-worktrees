@@ -325,7 +325,7 @@ export async function handleCreateWorktree(
 
   return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
     if (!service.isInitialized()) {
-      await service.initialize();
+      await service.initializeUnlocked();
     }
 
     const existence = await git.branchExists(branchName);
@@ -380,7 +380,7 @@ export async function handleRemoveWorktree(
 
   return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
     if (!service.isInitialized()) {
-      await service.initialize();
+      await service.initializeUnlocked();
     }
     const removedPath = await ensureRepoWorktreePath(ctx, params, git);
 
@@ -438,7 +438,7 @@ export async function handleUpdateWorktree(
 
   return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
     if (!service.isInitialized()) {
-      await service.initialize();
+      await service.initializeUnlocked();
     }
     const worktreePath = await ensureRepoWorktreePath(ctx, params, git);
 
@@ -464,7 +464,7 @@ export async function handleInitialize(
   const dispose = attachProgressReporter(service, extra);
   try {
     return await runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
-      await service.initialize();
+      await service.initializeUnlocked();
       const git = service.getGitService();
       ctx.invalidateDiscovered();
       return formatToolResponse({

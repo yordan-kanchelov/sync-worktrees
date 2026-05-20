@@ -4,7 +4,7 @@ import { pathToFileURL } from "url";
 import * as cron from "node-cron";
 
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
-import { ConfigFileNotFoundError, ConfigValidationError } from "../errors";
+import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
 import { fileExists } from "../utils/file-exists";
 import { getDefaultBareRepoDir } from "../utils/git-url";
@@ -62,7 +62,7 @@ export class ConfigLoaderService {
 
       return config;
     } catch (error) {
-      if (error instanceof ConfigFileNotFoundError) {
+      if (error instanceof SyncWorktreesError) {
         throw error;
       }
       throw new Error(`Failed to load config file: ${(error as Error).message}`);

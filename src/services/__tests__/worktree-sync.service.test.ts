@@ -117,6 +117,7 @@ describe("WorktreeSyncService", () => {
 
   describe("initialize", () => {
     it("should initialize git service", async () => {
+      mockGitService.isInitialized.mockReturnValueOnce(false);
       await service.initialize();
 
       expect(mockGitService.initialize).toHaveBeenCalled();

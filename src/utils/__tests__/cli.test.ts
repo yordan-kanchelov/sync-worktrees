@@ -47,4 +47,16 @@ describe("parseArguments", () => {
     expect(opts.config).toBe("/etc/sync.config.js");
     expect(opts.filter).toBe("backend-*");
   });
+
+  it("rejects removed flag --repoUrl under strict()", () => {
+    expect(() => parseArguments(["--repoUrl", "https://example.com/repo.git"])).toThrow(/process\.exit/);
+  });
+
+  it("rejects unknown flag under strict()", () => {
+    expect(() => parseArguments(["--unknownFlag"])).toThrow(/process\.exit/);
+  });
+
+  it("rejects unknown flag combined with init subcommand", () => {
+    expect(() => parseArguments(["init", "--repoUrl", "https://example.com/repo.git"])).toThrow(/process\.exit/);
+  });
 });
