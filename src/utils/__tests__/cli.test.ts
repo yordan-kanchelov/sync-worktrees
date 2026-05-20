@@ -29,21 +29,21 @@ describe("parseArguments", () => {
 
   it("parses init subcommand", () => {
     const opts = parseArguments(["init"]);
-    expect(opts.command).toBe("init");
+    if (opts.command !== "init") throw new Error("expected init command");
     expect(opts.config).toBeUndefined();
     expect(opts.force).toBe(false);
   });
 
   it("parses init --config <path> --force", () => {
     const opts = parseArguments(["init", "--config", "/tmp/new.config.js", "--force"]);
-    expect(opts.command).toBe("init");
+    if (opts.command !== "init") throw new Error("expected init command");
     expect(opts.config).toBe("/tmp/new.config.js");
     expect(opts.force).toBe(true);
   });
 
   it("parses list subcommand with --config + --filter", () => {
     const opts = parseArguments(["list", "--config", "/etc/sync.config.js", "--filter", "backend-*"]);
-    expect(opts.command).toBe("list");
+    if (opts.command !== "list") throw new Error("expected list command");
     expect(opts.config).toBe("/etc/sync.config.js");
     expect(opts.filter).toBe("backend-*");
   });

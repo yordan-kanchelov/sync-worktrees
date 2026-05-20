@@ -1,14 +1,18 @@
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 
-export type CliCommand = "run" | "init" | "list";
+export const CLI_COMMANDS = {
+  RUN: "run",
+  INIT: "init",
+  LIST: "list",
+} as const;
 
-export interface CliOptions {
-  command: CliCommand;
-  config?: string;
-  filter?: string;
-  force?: boolean;
-}
+export type CliCommand = (typeof CLI_COMMANDS)[keyof typeof CLI_COMMANDS];
+
+export type CliOptions =
+  | { command: typeof CLI_COMMANDS.RUN; config?: string }
+  | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
+  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string };
 
 export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptions {
   let parsed: CliOptions | undefined;
@@ -28,13 +32,13 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
         }),
       (args) => {
         parsed = {
-          command: "run",
+          command: CLI_COMMANDS.RUN,
           config: args.config,
         };
       },
     )
     .command(
-      "init",
+      CLI_COMMANDS.INIT,
       "Create a new config file interactively",
       (y) =>
         y
@@ -50,14 +54,14 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           }),
       (args) => {
         parsed = {
-          command: "init",
+          command: CLI_COMMANDS.INIT,
           config: args.config,
           force: args.force,
         };
       },
     )
     .command(
-      "list",
+      CLI_COMMANDS.LIST,
       "List repositories configured in a config file and exit",
       (y) =>
         y
@@ -73,7 +77,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           }),
       (args) => {
         parsed = {
-          command: "list",
+          command: CLI_COMMANDS.LIST,
           config: args.config,
           filter: args.filter,
         };

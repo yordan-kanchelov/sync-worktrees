@@ -10,7 +10,7 @@ import { ConfigLoaderService } from "./services/config-loader.service";
 import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
-import { parseArguments } from "./utils/cli";
+import { CLI_COMMANDS, parseArguments } from "./utils/cli";
 import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
 import { fileExists } from "./utils/file-exists";
 import { promptForInitConfig } from "./utils/interactive";
@@ -229,18 +229,20 @@ async function runSync(options: CliOptions): Promise<void> {
 async function main(): Promise<void> {
   const options = parseArguments();
 
-  if (options.command === "init") {
-    await runInit(options.config, options.force ?? false);
-    return;
+  switch (options.command) {
+    case CLI_COMMANDS.INIT:
+      return runInit(options.config, options.force);
+    case CLI_COMMANDS.LIST: {
+      const configPath = await resolveConfigOrExit(options.config);
+      return runList(configPath, options.filter);
+    }
+    case CLI_COMMANDS.RUN:
+      return runSync(options);
+    default: {
+      const _exhaustive: never = options;
+      throw new Error(`Unhandled command: ${JSON.stringify(_exhaustive)}`);
+    }
   }
-
-  if (options.command === "list") {
-    const configPath = await resolveConfigOrExit(options.config);
-    await runList(configPath, options.filter);
-    return;
-  }
-
-  await runSync(options);
 }
 
 main().catch((error) => {
