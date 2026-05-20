@@ -173,8 +173,8 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "create_worktree",
     {
       description:
-        "Create a worktree for a branch. If the branch exists (local or remote), checks it out; otherwise creates it from baseBranch. Optionally pushes the new branch to origin. " +
-        "Key params: baseBranch is required only when the branch does not yet exist — pass it defensively if unsure. push=true only affects newly created branches. " +
+        "Create a worktree for a branch. If the branch exists (local or remote), checks it out; otherwise creates it from baseBranch and pushes the new branch to origin by default. " +
+        "Key params: baseBranch is required only when the branch does not yet exist — pass it defensively if unsure. push=false opts out for newly created branches. " +
         "Preconditions: repository must be initialized (auto-runs on first call). " +
         "Returns: { success, branchName, worktreePath, created, pushed }.",
       inputSchema: {
@@ -190,7 +190,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
         push: z
           .boolean()
           .optional()
-          .describe("Push the newly created branch to origin. Ignored if the branch already existed."),
+          .describe("Push the newly created branch to origin. Default: true. Ignored if the branch already existed."),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       },
       annotations: {

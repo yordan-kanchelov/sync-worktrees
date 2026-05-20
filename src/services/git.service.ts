@@ -1083,7 +1083,7 @@ export class GitService {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     const baseRef = await this.resolveCreateBranchBaseRef(bareGit, baseBranch);
 
-    await bareGit.raw(["branch", branchName, baseRef]);
+    await bareGit.raw(["branch", "--no-track", branchName, baseRef]);
     this.logger.info(`Created branch '${branchName}' from '${baseRef}'`);
   }
 

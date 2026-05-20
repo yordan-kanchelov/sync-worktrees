@@ -347,7 +347,7 @@ describe("handleCreateWorktree", () => {
     expect(git.addWorktree).toHaveBeenCalledWith("feature/x", expect.stringContaining("feature-x"));
   });
 
-  it("creates branch when it does not exist and baseBranch provided", async () => {
+  it("creates and pushes a missing branch by default when baseBranch is provided", async () => {
     const { ctx, git } = makeCtx({
       git: {
         branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
@@ -357,7 +357,6 @@ describe("handleCreateWorktree", () => {
     const result = await invoke(handleCreateWorktree, ctx, {
       branchName: "new-branch",
       baseBranch: "main",
-      push: true,
     });
     const body = parseResponse(result);
     expect(body.created).toBe(true);
@@ -442,7 +441,6 @@ describe("handleCreateWorktree", () => {
     const result = await invoke(handleCreateWorktree, ctx, {
       branchName: "new-branch",
       baseBranch: "main",
-      push: true,
     });
     const body = parseResponse(result);
     expect(body.error).toBe(true);
@@ -493,7 +491,6 @@ describe("handleCreateWorktree", () => {
     await invoke(handleCreateWorktree, ctx, {
       branchName: "new-branch",
       baseBranch: "main",
-      push: true,
     });
 
     expect(callOrder).toEqual(["createBranch", "addWorktree", "pushBranch"]);
