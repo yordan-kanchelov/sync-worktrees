@@ -130,13 +130,10 @@ export interface RepositoryConfig extends Config {
   name: string;
 }
 
-export interface InitConfigInput {
-  repoUrl: string;
-  worktreeDir: string;
-  bareRepoDir?: string;
-  cronSchedule: string;
-  runOnce: boolean;
-}
+export type InitConfigInput = Pick<
+  RepositoryConfig,
+  "repoUrl" | "worktreeDir" | "bareRepoDir" | "cronSchedule" | "runOnce"
+>;
 
 export interface ConfigFile {
   defaults?: Partial<Config>;
