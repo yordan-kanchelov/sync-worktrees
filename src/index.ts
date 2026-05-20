@@ -16,21 +16,26 @@ import { fileExists } from "./utils/file-exists";
 import { promptForInitConfig } from "./utils/interactive";
 import { setupSignalHandlers } from "./utils/signal-handlers";
 
-import type { RepositoryConfig } from "./types";
+import type { ConfigFile, RepositoryConfig } from "./types";
 import type { CliOptions } from "./utils/cli";
 
 const signalHandle = setupSignalHandlers();
 
 async function runMultipleRepositories(
+  configFile: ConfigFile,
   repositories: RepositoryConfig[],
-  runOnce: boolean,
   configPath?: string,
-  maxParallel?: number,
 ): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
   const globalLogger = Logger.createDefault();
 
-  const limit = pLimit(maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
+  const runOnce = configFile.defaults?.runOnce ?? false;
+  const maxParallel =
+    configFile.parallelism?.maxRepositories ??
+    configFile.defaults?.parallelism?.maxRepositories ??
+    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+
+  const limit = pLimit(maxParallel);
 
   if (runOnce) {
     globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
@@ -154,15 +159,7 @@ async function runList(configPath: string, filter?: string): Promise<void> {
 async function runFromConfigFile(configPath: string): Promise<void> {
   const configLoader = new ConfigLoaderService();
   const { repositories, configFile } = await configLoader.buildRepositories(configPath);
-
-  const globalRunOnce = configFile.defaults?.runOnce ?? false;
-
-  const maxParallel =
-    configFile.parallelism?.maxRepositories ??
-    configFile.defaults?.parallelism?.maxRepositories ??
-    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
-
-  await runMultipleRepositories(repositories, globalRunOnce, configPath, maxParallel);
+  await runMultipleRepositories(configFile, repositories, configPath);
 }
 
 async function resolveConfigOrExit(cliPath: string | undefined): Promise<string> {
