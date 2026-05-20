@@ -3,9 +3,9 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "../config-generator";
+import { ConfigFileExistsError, findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "../config-generator";
 
-import type { Config } from "../../types";
+import type { InitConfigInput } from "../../types";
 
 describe("Config Generator", () => {
   let tempDir: string;
@@ -19,8 +19,8 @@ describe("Config Generator", () => {
   });
 
   describe("generateConfigFile", () => {
-    it("should generate a basic config file", async () => {
-      const config: Config = {
+    it("generates a basic config file", async () => {
+      const input: InitConfigInput = {
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/absolute/path/to/worktrees",
         cronSchedule: "0 * * * *",
@@ -28,7 +28,7 @@ describe("Config Generator", () => {
       };
 
       const configPath = path.join(tempDir, "test.config.js");
-      await generateConfigFile(config, configPath);
+      await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('name: "repo"');
@@ -38,8 +38,8 @@ describe("Config Generator", () => {
       expect(content).toContain("runOnce: false");
     });
 
-    it("should include repoUrl when provided", async () => {
-      const config: Config = {
+    it("emits runOnce: true and custom cronSchedule", async () => {
+      const input: InitConfigInput = {
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "*/30 * * * *",
@@ -47,16 +47,15 @@ describe("Config Generator", () => {
       };
 
       const configPath = path.join(tempDir, "test.config.js");
-      await generateConfigFile(config, configPath);
+      await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
-      expect(content).toContain('repoUrl: "https://github.com/user/repo.git"');
       expect(content).toContain('cronSchedule: "*/30 * * * *"');
       expect(content).toContain("runOnce: true");
     });
 
-    it("should use relative paths when appropriate", async () => {
-      const config: Config = {
+    it("uses relative worktreeDir when target sits in config dir", async () => {
+      const input: InitConfigInput = {
         repoUrl: "https://github.com/user/myproject.git",
         worktreeDir: path.join(tempDir, "worktrees"),
         cronSchedule: "0 * * * *",
@@ -64,7 +63,7 @@ describe("Config Generator", () => {
       };
 
       const configPath = path.join(tempDir, "config.js");
-      await generateConfigFile(config, configPath);
+      await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('name: "myproject"');
@@ -72,8 +71,8 @@ describe("Config Generator", () => {
       expect(content).toContain('worktreeDir: "./worktrees"');
     });
 
-    it("should use absolute paths for deeply nested relative paths", async () => {
-      const config: Config = {
+    it("uses absolute paths for deeply nested relative paths", async () => {
+      const input: InitConfigInput = {
         repoUrl: "https://github.com/user/deeprepo.git",
         worktreeDir: path.join(tempDir, "worktrees"),
         cronSchedule: "0 * * * *",
@@ -82,15 +81,15 @@ describe("Config Generator", () => {
 
       const configPath = path.join(tempDir, "sub/dir/config.js");
       await fs.mkdir(path.dirname(configPath), { recursive: true });
-      await generateConfigFile(config, configPath);
+      await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('name: "deeprepo"');
       expect(content).toContain('repoUrl: "https://github.com/user/deeprepo.git"');
     });
 
-    it("should create parent directories if they don't exist", async () => {
-      const config: Config = {
+    it("creates parent directories if missing", async () => {
+      const input: InitConfigInput = {
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "0 * * * *",
@@ -98,7 +97,7 @@ describe("Config Generator", () => {
       };
 
       const configPath = path.join(tempDir, "nested/dir/config.js");
-      await generateConfigFile(config, configPath);
+      await generateConfigFile(input, configPath);
 
       const exists = await fs
         .access(configPath)
@@ -107,8 +106,8 @@ describe("Config Generator", () => {
       expect(exists).toBe(true);
     });
 
-    it("should include a timestamp in the generated file", async () => {
-      const config: Config = {
+    it("includes a timestamp in the generated file", async () => {
+      const input: InitConfigInput = {
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/path/to/worktrees",
         cronSchedule: "0 * * * *",
@@ -116,14 +115,14 @@ describe("Config Generator", () => {
       };
 
       const configPath = path.join(tempDir, "test.config.js");
-      await generateConfigFile(config, configPath);
+      await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toMatch(/Generated on \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
 
-    it("should include bareRepoDir when provided with relative path", async () => {
-      const config: Config = {
+    it("includes bareRepoDir as relative path when nested under config dir", async () => {
+      const input: InitConfigInput = {
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: path.join(tempDir, "worktrees"),
         bareRepoDir: path.join(tempDir, ".bare/repo"),
@@ -132,14 +131,14 @@ describe("Config Generator", () => {
       };
 
       const configPath = path.join(tempDir, "config.js");
-      await generateConfigFile(config, configPath);
+      await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('bareRepoDir: "./.bare/repo"');
     });
 
-    it("should include bareRepoDir with absolute path for deeply nested paths", async () => {
-      const config: Config = {
+    it("includes bareRepoDir as absolute path for deeply nested config", async () => {
+      const input: InitConfigInput = {
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/absolute/path/to/worktrees",
         bareRepoDir: "/absolute/path/to/bare",
@@ -149,15 +148,47 @@ describe("Config Generator", () => {
 
       const configPath = path.join(tempDir, "deep/nested/dir/config.js");
       await fs.mkdir(path.dirname(configPath), { recursive: true });
-      await generateConfigFile(config, configPath);
+      await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('bareRepoDir: "/absolute/path/to/bare"');
     });
+
+    it("throws ConfigFileExistsError when target exists and overwrite is false", async () => {
+      const input: InitConfigInput = {
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: "/path/to/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const configPath = path.join(tempDir, "existing.config.js");
+      await fs.writeFile(configPath, "// pre-existing");
+
+      await expect(generateConfigFile(input, configPath)).rejects.toBeInstanceOf(ConfigFileExistsError);
+    });
+
+    it("overwrites existing target when overwrite: true", async () => {
+      const input: InitConfigInput = {
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: "/path/to/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const configPath = path.join(tempDir, "existing.config.js");
+      await fs.writeFile(configPath, "// pre-existing");
+
+      await generateConfigFile(input, configPath, { overwrite: true });
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain('repoUrl: "https://github.com/user/repo.git"');
+      expect(content).not.toContain("pre-existing");
+    });
   });
 
   describe("getDefaultConfigPath", () => {
-    it("should return sync-worktrees.config.js in current directory", () => {
+    it("returns sync-worktrees.config.js in current directory", () => {
       const configPath = getDefaultConfigPath();
       expect(path.basename(configPath)).toBe("sync-worktrees.config.js");
       expect(path.dirname(configPath)).toBe(process.cwd());
@@ -165,33 +196,33 @@ describe("Config Generator", () => {
   });
 
   describe("findConfigInCwd", () => {
-    it("should return null when no config file exists", async () => {
+    it("returns null when no config file exists", async () => {
       const result = await findConfigInCwd(tempDir);
       expect(result).toBeNull();
     });
 
-    it("should find sync-worktrees.config.js", async () => {
+    it("finds sync-worktrees.config.js", async () => {
       const configPath = path.join(tempDir, "sync-worktrees.config.js");
       await fs.writeFile(configPath, "export default {};");
       const result = await findConfigInCwd(tempDir);
       expect(result).toBe(configPath);
     });
 
-    it("should find sync-worktrees.config.mjs", async () => {
+    it("finds sync-worktrees.config.mjs", async () => {
       const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
       await fs.writeFile(configPath, "export default {};");
       const result = await findConfigInCwd(tempDir);
       expect(result).toBe(configPath);
     });
 
-    it("should find sync-worktrees.config.cjs", async () => {
+    it("finds sync-worktrees.config.cjs", async () => {
       const configPath = path.join(tempDir, "sync-worktrees.config.cjs");
       await fs.writeFile(configPath, "module.exports = {};");
       const result = await findConfigInCwd(tempDir);
       expect(result).toBe(configPath);
     });
 
-    it("should prefer .js over .mjs and .cjs when all exist", async () => {
+    it("prefers .js over .mjs and .cjs when all exist", async () => {
       const jsPath = path.join(tempDir, "sync-worktrees.config.js");
       await fs.writeFile(jsPath, "export default {};");
       await fs.writeFile(path.join(tempDir, "sync-worktrees.config.mjs"), "export default {};");

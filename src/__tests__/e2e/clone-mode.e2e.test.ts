@@ -53,6 +53,33 @@ describeOrSkip("Clone-mode E2E tests", () => {
     return remoteBare;
   }
 
+  async function writeSingleCloneConfig(
+    name: string,
+    repoUrl: string,
+    worktreeDir: string,
+    branch: string,
+  ): Promise<string> {
+    const configDir = path.dirname(worktreeDir);
+    await fs.mkdir(configDir, { recursive: true });
+    const configPath = path.join(configDir, `${name}.config.js`);
+    const configContent = `
+export default {
+  defaults: { runOnce: true },
+  repositories: [
+    {
+      name: "${name}",
+      repoUrl: "${repoUrl}",
+      worktreeDir: "${worktreeDir.replace(/\\/g, "/")}",
+      mode: "clone",
+      branch: "${branch}"
+    }
+  ]
+};
+`;
+    await fs.writeFile(configPath, configContent);
+    return configPath;
+  }
+
   function writeCloneDepthConfig(
     configPath: string,
     repoUrl: string,
@@ -61,6 +88,7 @@ describeOrSkip("Clone-mode E2E tests", () => {
   ): Promise<void> {
     const configContent = `
 export default {
+  defaults: { runOnce: true },
   repositories: [
     {
       name: "depth-local",
@@ -76,12 +104,10 @@ export default {
   }
 
   it("clones directly into worktreeDir (no /branch subfolder, no .bare)", async () => {
-    const worktreeDir = path.join(tmpBase, "single-clone");
+    const worktreeDir = path.join(tmpBase, "single-clone", "wt");
+    const configPath = await writeSingleCloneConfig("single", HELLO_WORLD, worktreeDir, "master");
 
-    execSync(
-      `node "${cliPath}" --repoUrl ${HELLO_WORLD} --worktreeDir "${worktreeDir}" --mode clone --branch master --runOnce`,
-      { encoding: "utf-8", timeout: 60000 },
-    );
+    execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
 
     const entries = await fs.readdir(worktreeDir);
     expect(entries).toContain(".git");
@@ -101,38 +127,30 @@ export default {
   }, 90000);
 
   it("is idempotent on subsequent runs (no re-clone, fetch-only sync)", async () => {
-    const worktreeDir = path.join(tmpBase, "idempotent-clone");
+    const worktreeDir = path.join(tmpBase, "idempotent-clone", "wt");
+    const configPath = await writeSingleCloneConfig("idempotent", HELLO_WORLD, worktreeDir, "master");
+    const command = `node "${cliPath}" --config "${configPath}"`;
 
-    execSync(
-      `node "${cliPath}" --repoUrl ${HELLO_WORLD} --worktreeDir "${worktreeDir}" --mode clone --branch master --runOnce`,
-      { encoding: "utf-8", timeout: 60000 },
-    );
+    execSync(command, { encoding: "utf-8", timeout: 60000 });
 
-    const secondRun = execSync(
-      `node "${cliPath}" --repoUrl ${HELLO_WORLD} --worktreeDir "${worktreeDir}" --mode clone --branch master --runOnce`,
-      { encoding: "utf-8", timeout: 60000 },
-    );
+    const secondRun = execSync(command, { encoding: "utf-8", timeout: 60000 });
 
     expect(secondRun).not.toContain("Cloning ");
     expect(secondRun).toContain("up to date with origin/master");
   }, 120000);
 
   it("errors with branch mismatch during initialize when checkout is on a different branch", async () => {
-    const worktreeDir = path.join(tmpBase, "mismatch-clone");
+    const worktreeDir = path.join(tmpBase, "mismatch-clone", "wt");
+    const configPath = await writeSingleCloneConfig("mismatch", HELLO_WORLD, worktreeDir, "master");
+    const command = `node "${cliPath}" --config "${configPath}"`;
 
-    execSync(
-      `node "${cliPath}" --repoUrl ${HELLO_WORLD} --worktreeDir "${worktreeDir}" --mode clone --branch master --runOnce`,
-      { encoding: "utf-8", timeout: 60000 },
-    );
+    execSync(command, { encoding: "utf-8", timeout: 60000 });
 
     execSync(`git -C "${worktreeDir}" checkout -b sidebranch`, { encoding: "utf-8" });
 
     let stderr = "";
     try {
-      execSync(
-        `node "${cliPath}" --repoUrl ${HELLO_WORLD} --worktreeDir "${worktreeDir}" --mode clone --branch master --runOnce`,
-        { encoding: "utf-8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] },
-      );
+      execSync(command, { encoding: "utf-8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) {
       const err = error as { stderr?: Buffer | string; stdout?: Buffer | string; status?: number };
       stderr = String(err.stderr ?? "") + String(err.stdout ?? "");
@@ -175,7 +193,7 @@ export default {
 `;
     await fs.writeFile(configPath, configContent);
 
-    execSync(`node "${cliPath}" --config "${configPath}" --runOnce`, {
+    execSync(`node "${cliPath}" --config "${configPath}"`, {
       encoding: "utf-8",
       timeout: 180000,
       env: { ...process.env, NODE_ENV: "production" },
@@ -220,7 +238,7 @@ export default {
 
     await writeCloneDepthConfig(configPath, repoUrl, worktreeDir, ",\n      depth: 1");
 
-    execSync(`node "${cliPath}" --config "${configPath}" --runOnce`, {
+    execSync(`node "${cliPath}" --config "${configPath}"`, {
       encoding: "utf-8",
       timeout: 60000,
     });
@@ -233,7 +251,7 @@ export default {
 
     await writeCloneDepthConfig(configPath, repoUrl, worktreeDir);
 
-    const secondRun = execSync(`node "${cliPath}" --config "${configPath}" --runOnce`, {
+    const secondRun = execSync(`node "${cliPath}" --config "${configPath}"`, {
       encoding: "utf-8",
       timeout: 60000,
     });
@@ -266,7 +284,7 @@ export default {
 
     let stderr = "";
     try {
-      execSync(`node "${cliPath}" --config "${configPath}" --list`, {
+      execSync(`node "${cliPath}" list --config "${configPath}"`, {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "pipe"],
       });

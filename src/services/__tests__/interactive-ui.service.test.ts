@@ -1191,30 +1191,6 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
-      it("should apply CLI filter override during reload", async () => {
-        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
-          repositories: [
-            {
-              name: "test-repo",
-              repoUrl: "https://github.com/test/repo.git",
-              worktreeDir: "/test/worktrees",
-              cronSchedule: "0 * * * *",
-              runOnce: false,
-            },
-          ],
-        });
-
-        const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *", undefined, {
-          filter: "test-*",
-        });
-        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
-        await onReload();
-
-        expect(mockConfigLoaderInstance.filterRepositories).toHaveBeenCalledWith(expect.any(Array), "test-*");
-
-        service.destroy();
-      });
-
       it("should not re-render UI on reload (uses events instead)", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
           repositories: [

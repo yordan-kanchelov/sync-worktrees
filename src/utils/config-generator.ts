@@ -2,19 +2,19 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { CONFIG_FILE_NAMES } from "../constants";
+import { ConfigFileExistsError } from "../errors";
 
 import { extractRepoNameFromUrl } from "./git-url";
 
-import type { Config } from "../types";
+import type { InitConfigInput } from "../types";
+
+export { ConfigFileExistsError };
 
 type SerializableValue = string | number | boolean | null | undefined | SerializableObject | SerializableValue[];
 interface SerializableObject {
   [key: string]: SerializableValue;
 }
 
-/**
- * Serializes a JavaScript object to a clean ESM export default format
- */
 function serializeToESM(obj: SerializableValue, indent: number = 0): string {
   const spaces = " ".repeat(indent);
   const innerSpaces = " ".repeat(indent + 2);
@@ -48,40 +48,43 @@ function serializeToESM(obj: SerializableValue, indent: number = 0): string {
   return String(obj);
 }
 
-export async function generateConfigFile(config: Config, configPath: string): Promise<void> {
+export interface GenerateConfigFileOptions {
+  overwrite?: boolean;
+}
+
+export async function generateConfigFile(
+  input: InitConfigInput,
+  configPath: string,
+  options: GenerateConfigFileOptions = {},
+): Promise<void> {
   const configDir = path.dirname(configPath);
   await fs.mkdir(configDir, { recursive: true });
 
-  // Calculate relative paths from config file location
-  const worktreeDirRelative = path.relative(configDir, config.worktreeDir);
+  const worktreeDirRelative = path.relative(configDir, input.worktreeDir);
   const useRelativeWorktree = !worktreeDirRelative.startsWith("../../../");
 
-  const repoName = extractRepoNameFromUrl(config.repoUrl);
+  const repoName = extractRepoNameFromUrl(input.repoUrl);
 
-  // Build the repository object
   const repository: SerializableObject = {
     name: repoName,
-    repoUrl: config.repoUrl,
-    worktreeDir: useRelativeWorktree ? `./${worktreeDirRelative}` : config.worktreeDir,
+    repoUrl: input.repoUrl,
+    worktreeDir: useRelativeWorktree ? `./${worktreeDirRelative}` : input.worktreeDir,
   };
 
-  // Add bareRepoDir if provided
-  if (config.bareRepoDir) {
-    const bareRepoDirRelative = path.relative(configDir, config.bareRepoDir);
+  if (input.bareRepoDir) {
+    const bareRepoDirRelative = path.relative(configDir, input.bareRepoDir);
     const useRelativeBare = !bareRepoDirRelative.startsWith("../../../");
-    repository.bareRepoDir = useRelativeBare ? `./${bareRepoDirRelative}` : config.bareRepoDir;
+    repository.bareRepoDir = useRelativeBare ? `./${bareRepoDirRelative}` : input.bareRepoDir;
   }
 
-  // Build the complete config object
   const configObject = {
     defaults: {
-      cronSchedule: config.cronSchedule,
-      runOnce: config.runOnce,
+      cronSchedule: input.cronSchedule,
+      runOnce: input.runOnce,
     },
     repositories: [repository],
   };
 
-  // Generate the config file content
   const configContent = `/**
  * Sync-worktrees configuration file
  * Generated on ${new Date().toISOString()}
@@ -90,7 +93,26 @@ export async function generateConfigFile(config: Config, configPath: string): Pr
 export default ${serializeToESM(configObject)};
 `;
 
-  await fs.writeFile(configPath, configContent, "utf-8");
+  try {
+    await fs.writeFile(configPath, configContent, {
+      encoding: "utf-8",
+      flag: options.overwrite ? "w" : "wx",
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new ConfigFileExistsError(configPath);
+    }
+    throw error;
+  }
+}
+
+export async function configFileExists(configPath: string): Promise<boolean> {
+  try {
+    await fs.access(configPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function getDefaultConfigPath(): string {

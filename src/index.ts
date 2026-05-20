@@ -2,91 +2,36 @@
 
 import * as path from "path";
 
-import { confirm } from "@inquirer/prompts";
-import * as cron from "node-cron";
 import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG } from "./constants";
+import { ConfigFileExistsError, ConfigFileNotFoundError } from "./errors";
 import { ConfigLoaderService } from "./services/config-loader.service";
 import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
-import { isInteractiveMode, parseArguments, reconstructCliCommand } from "./utils/cli";
-import { findConfigInCwd } from "./utils/config-generator";
-import { promptForConfig } from "./utils/interactive";
-import { REPOSITORY_MODES } from "./utils/repo-mode";
+import { parseArguments } from "./utils/cli";
+import { configFileExists, findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
+import { promptForInitConfig } from "./utils/interactive";
 import { setupSignalHandlers } from "./utils/signal-handlers";
 
-import type { ReloadOptions } from "./services/InteractiveUIService";
-import type { Config, RepositoryConfig } from "./types";
+import type { RepositoryConfig } from "./types";
 import type { CliOptions } from "./utils/cli";
 
 const signalHandle = setupSignalHandlers();
-
-async function runSingleRepository(config: Config): Promise<void> {
-  const logger = Logger.createDefault(undefined, config.debug);
-
-  logger.info("\n📋 CLI Command (for future reference):");
-  logger.info(`   ${reconstructCliCommand(config)}`);
-  logger.info("");
-
-  if (!config.logger) {
-    config.logger = logger;
-  }
-
-  const syncService = new WorktreeSyncService(config);
-
-  try {
-    await syncService.initialize();
-
-    if (config.runOnce) {
-      logger.info("Running the sync process once as requested by --runOnce flag.");
-      await syncService.sync();
-    } else {
-      const uiService = new InteractiveUIService([syncService], undefined, config.cronSchedule);
-      signalHandle.register((fast) => uiService.destroy(fast));
-
-      await syncService.sync();
-      uiService.updateLastSyncTime();
-      void uiService.calculateAndUpdateDiskSpace();
-
-      const job = cron.schedule(config.cronSchedule, async () => {
-        try {
-          uiService.setStatus("syncing");
-          await syncService.sync();
-          uiService.updateLastSyncTime();
-          void uiService.calculateAndUpdateDiskSpace();
-        } catch (error) {
-          logger.error(`Error during scheduled sync: ${(error as Error).message}`, error);
-          uiService.setStatus("idle");
-        }
-      });
-      uiService.registerCronJob(job);
-    }
-  } catch (error) {
-    logger.error("❌ Fatal Error during initialization:", error as Error);
-    process.exit(1);
-  }
-}
 
 async function runMultipleRepositories(
   repositories: RepositoryConfig[],
   runOnce: boolean,
   configPath?: string,
   maxParallel?: number,
-  syncOnStart?: boolean,
-  reloadOptions?: ReloadOptions,
 ): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
   const globalLogger = Logger.createDefault();
 
-  // Apply default limit to prevent resource exhaustion with many repositories
-  // Each repository internally parallelizes worktree operations, so total concurrent
-  // operations = maxRepositories × (maxWorktreeCreation + maxWorktreeUpdates + maxStatusChecks)
   const limit = pLimit(maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
 
   if (runOnce) {
-    // For runOnce mode, initialize services immediately with console logging
     globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
 
     const initResults = await Promise.allSettled(
@@ -136,11 +81,15 @@ async function runMultipleRepositories(
       ),
     );
 
+    const initFailures = initResults.filter((r) => r.status === "rejected").length;
+    const syncFailures = syncResults.filter((r) => r.status === "rejected").length;
     const successCount = syncResults.filter((r) => r.status === "fulfilled").length;
-    globalLogger.info(`\n✅ Successfully synced ${successCount}/${servicesToSync.length} repositories`);
+    globalLogger.info(`\n✅ Successfully synced ${successCount}/${repositories.length} repositories`);
+
+    if (initFailures > 0 || syncFailures > 0) {
+      process.exitCode = 1;
+    }
   } else {
-    // For interactive mode, create services without initialization
-    // They will be initialized lazily when first sync is triggered
     for (const repoConfig of repositories) {
       const syncService = new WorktreeSyncService(repoConfig);
       services.set(repoConfig.name, syncService);
@@ -149,7 +98,7 @@ async function runMultipleRepositories(
     const uniqueSchedules = [...new Set(repositories.map((r) => r.cronSchedule))];
     const displaySchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
     const allServices = Array.from(services.values());
-    const uiService = new InteractiveUIService(allServices, configPath, displaySchedule, maxParallel, reloadOptions);
+    const uiService = new InteractiveUIService(allServices, configPath, displaySchedule, maxParallel);
     signalHandle.register((fast) => uiService.destroy(fast));
 
     void uiService.calculateAndUpdateDiskSpace();
@@ -165,14 +114,10 @@ async function runMultipleRepositories(
     for (const [schedule, count] of cronSchedules) {
       uiService.addLog(`⏰ ${schedule}: ${count} repository(ies)`);
     }
-
-    if (syncOnStart) {
-      await uiService.triggerInitialSync();
-    }
   }
 }
 
-async function listRepositories(configPath: string, filter?: string): Promise<void> {
+async function runList(configPath: string, filter?: string): Promise<void> {
   const configLoader = new ConfigLoaderService();
 
   try {
@@ -205,141 +150,96 @@ async function listRepositories(configPath: string, filter?: string): Promise<vo
   }
 }
 
-async function runFromConfigFile(
-  configPath: string,
-  options: {
-    filter?: string;
-    noUpdateExisting?: boolean;
-    debug?: boolean;
-    runOnce?: boolean;
-    syncOnStart?: boolean;
-  },
-): Promise<void> {
+async function runFromConfigFile(configPath: string): Promise<void> {
   const configLoader = new ConfigLoaderService();
-  const { repositories, configFile } = await configLoader.buildRepositories(configPath, {
-    filter: options.filter,
-    noUpdateExisting: options.noUpdateExisting,
-    debug: options.debug,
-  });
+  const { repositories, configFile } = await configLoader.buildRepositories(configPath);
 
-  if (options.filter && repositories.length === 0) {
-    console.error(`❌ No repositories match filter: ${options.filter}`);
-    process.exit(1);
-  }
-
-  const globalRunOnce = options.runOnce ?? configFile.defaults?.runOnce ?? false;
+  const globalRunOnce = configFile.defaults?.runOnce ?? false;
 
   const maxParallel =
     configFile.parallelism?.maxRepositories ??
     configFile.defaults?.parallelism?.maxRepositories ??
     DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
 
-  const reloadOptions: ReloadOptions = {
-    filter: options.filter,
-    noUpdateExisting: options.noUpdateExisting,
-    debug: options.debug,
-  };
-
-  await runMultipleRepositories(
-    repositories,
-    globalRunOnce,
-    configPath,
-    maxParallel,
-    options.syncOnStart,
-    reloadOptions,
-  );
+  await runMultipleRepositories(repositories, globalRunOnce, configPath, maxParallel);
 }
 
-async function runInteractive(partial: Partial<Config>, options: CliOptions): Promise<void> {
-  const result = await promptForConfig(partial);
+async function resolveConfigOrExit(cliPath: string | undefined): Promise<string> {
+  const resolved = cliPath ? path.resolve(cliPath) : await findConfigInCwd();
+  if (!resolved) {
+    console.error(
+      "❌ No config file found. Pass --config <path>, run `sync-worktrees init` to create one, or place a sync-worktrees.config.{js,mjs,cjs} in this directory.",
+    );
+    process.exit(1);
+  }
+  return resolved;
+}
 
-  if (result.savedConfigPath) {
-    await runFromConfigFile(result.savedConfigPath, {
-      filter: options.filter,
-      noUpdateExisting: options.noUpdateExisting,
-      debug: options.debug,
-      runOnce: options.runOnce,
-      syncOnStart: options.syncOnStart,
-    });
-    return;
+function exitConfigExists(targetPath: string): never {
+  console.error(`\n❌ Config file already exists: ${targetPath}`);
+  console.error(`💡 Re-run with --force to overwrite.`);
+  process.exit(1);
+}
+
+async function runInit(configPath: string | undefined, force: boolean): Promise<void> {
+  const targetPath = configPath ? path.resolve(configPath) : getDefaultConfigPath();
+
+  // Preflight before prompts so user isn't asked 5 questions just to fail at write.
+  // The atomic `wx` write below is still the source of truth — it closes the TOCTOU
+  // window between this check and the write.
+  if (!force && (await configFileExists(targetPath))) {
+    exitConfigExists(targetPath);
   }
 
-  const config = result.config;
+  const input = await promptForInitConfig();
 
-  if (options.noUpdateExisting) {
-    config.updateExistingWorktrees = false;
-  } else if (config.updateExistingWorktrees === undefined) {
-    config.updateExistingWorktrees = true;
+  try {
+    await generateConfigFile(input, targetPath, { overwrite: force });
+  } catch (error) {
+    if (error instanceof ConfigFileExistsError) {
+      exitConfigExists(error.configPath);
+    }
+    throw error;
   }
 
-  if (options.debug !== undefined) {
-    config.debug = options.debug;
-  }
+  const displayPath = path.relative(process.cwd(), targetPath) || targetPath;
+  console.log(`\n✅ Configuration saved to: ${targetPath}`);
+  console.log(`\n💡 Next: sync-worktrees --config ${displayPath}`);
+}
 
-  await runSingleRepository(config);
+async function runSync(options: CliOptions): Promise<void> {
+  const configPath = await resolveConfigOrExit(options.config);
+  const displayPath = path.relative(process.cwd(), configPath) || configPath;
+  console.log(`📄 Using config: ${displayPath}`);
+
+  try {
+    await runFromConfigFile(configPath);
+  } catch (error) {
+    if (error instanceof ConfigFileNotFoundError) {
+      console.error(`\n❌ Config file not found: ${error.configPath}`);
+      console.error(`💡 Run 'sync-worktrees init --config ${displayPath}' to create one.`);
+      process.exit(1);
+    }
+    console.error("❌ Error loading config file:", (error as Error).message);
+    process.exit(1);
+  }
 }
 
 async function main(): Promise<void> {
   const options = parseArguments();
 
-  if (!options.config && !options.repoUrl && !options.worktreeDir) {
-    const discovered = await findConfigInCwd();
-    if (discovered) {
-      options.config = discovered;
-      console.log(`📄 Using config: ${path.relative(process.cwd(), discovered)}`);
-    }
+  if (options.command === "init") {
+    await runInit(options.config, options.force ?? false);
+    return;
   }
 
-  if (options.config) {
-    if (options.list) {
-      await listRepositories(options.config, options.filter);
-      return;
-    }
-
-    try {
-      await runFromConfigFile(options.config, {
-        filter: options.filter,
-        noUpdateExisting: options.noUpdateExisting,
-        debug: options.debug,
-        runOnce: options.runOnce,
-        syncOnStart: options.syncOnStart,
-      });
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("Config file not found")) {
-        console.error(`\n❌ Config file not found: ${options.config}`);
-
-        const createConfig = await confirm({
-          message: "Would you like to run interactive setup to create a config file?",
-          default: true,
-        });
-
-        if (createConfig) {
-          await runInteractive({}, options);
-        } else {
-          console.log("\n💡 You can create a config file manually or run without --config for interactive setup.");
-          process.exit(1);
-        }
-      } else {
-        console.error("❌ Error loading config file:", (error as Error).message);
-        process.exit(1);
-      }
-    }
-  } else if (isInteractiveMode(options)) {
-    await runInteractive(options, options);
-  } else {
-    const config = options as Config;
-
-    if (config.mode !== REPOSITORY_MODES.CLONE) {
-      if (options.noUpdateExisting) config.updateExistingWorktrees = false;
-      else if (config.updateExistingWorktrees === undefined) config.updateExistingWorktrees = true;
-    }
-
-    if (options.debug !== undefined) {
-      config.debug = options.debug;
-    }
-
-    await runSingleRepository(config);
+  if (options.command === "list") {
+    const configPath = await resolveConfigOrExit(options.config);
+    await runList(configPath, options.filter);
+    return;
   }
+
+  await runSync(options);
 }
 
 main().catch((error) => {

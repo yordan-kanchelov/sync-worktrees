@@ -26,12 +26,6 @@ import type { RepositoryConfig, HookContext, WorktreeStatusEntry, DivergedDirect
 const WAIT_SYNC_FAST_TIMEOUT_MS = 2000;
 const WAIT_SYNC_DEFAULT_TIMEOUT_MS = 30000;
 
-export interface ReloadOptions {
-  filter?: string;
-  noUpdateExisting?: boolean;
-  debug?: boolean;
-}
-
 export class InteractiveUIService {
   private app: Instance | null = null;
   private syncServices: WorktreeSyncService[];
@@ -47,7 +41,6 @@ export class InteractiveUIService {
   private limit: ReturnType<typeof pLimit>;
   private reloadInProgress = false;
   private isDestroyed = false;
-  private reloadOptions: ReloadOptions;
   private events: AppEventEmitter;
   private ownsEvents: boolean;
   private unsubscribeCallbacks: Array<() => void> = [];
@@ -57,7 +50,6 @@ export class InteractiveUIService {
     configPath?: string,
     cronSchedule?: string,
     maxParallel?: number,
-    reloadOptions?: ReloadOptions,
     events?: AppEventEmitter,
   ) {
     this.ownsEvents = events === undefined;
@@ -71,7 +63,6 @@ export class InteractiveUIService {
     this.cronSchedule = cronSchedule;
     this.repositoryCount = syncServices.length;
     this.limit = pLimit(maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
-    this.reloadOptions = reloadOptions ?? {};
 
     this.startBufferFlushCheck();
     this.renderUI();
@@ -239,11 +230,7 @@ export class InteractiveUIService {
       // Validate and load new config BEFORE canceling old cron jobs
       // to prevent a window with no cron running on validation failure
       const configLoader = new ConfigLoaderService();
-      const { repositories } = await configLoader.buildRepositories(this.configPath, {
-        filter: this.reloadOptions.filter,
-        noUpdateExisting: this.reloadOptions.noUpdateExisting,
-        debug: this.reloadOptions.debug,
-      });
+      const { repositories } = await configLoader.buildRepositories(this.configPath);
 
       const initResults = await Promise.allSettled(
         repositories.map((repoConfig) =>

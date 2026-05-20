@@ -44,15 +44,12 @@ pnpm add -g sync-worktrees
 
 ## Usage
 
-Run `sync-worktrees` in any directory:
-
-- **First run** — no config found → interactive wizard asks for repo URL, worktree directory, and schedule, then saves `sync-worktrees.config.js` in the current directory and starts syncing.
-- **Subsequent runs** — `sync-worktrees` auto-loads `sync-worktrees.config.js` (or `.mjs` / `.cjs`) from the current directory. No flags needed.
+`sync-worktrees` always runs against a config file. Create one once, then run the tool.
 
 ```bash
 cd ~/projects/my-sync-dir
-sync-worktrees           # wizard → saves config → runs
-sync-worktrees           # re-uses the saved config
+sync-worktrees init      # interactive wizard → writes sync-worktrees.config.js
+sync-worktrees           # auto-loads the config in the current directory and starts syncing
 ```
 
 To manage multiple repositories, edit the generated config file and add entries under `repositories`. See [Configuration File](#configuration-file).
@@ -63,9 +60,14 @@ Useful when the config lives outside the current directory:
 
 ```bash
 sync-worktrees --config /path/to/sync-worktrees.config.js
-sync-worktrees --config ./config.js --filter "frontend-*"
-sync-worktrees --config ./config.js --list
+sync-worktrees list --config ./config.js
+sync-worktrees list --config ./config.js --filter "frontend-*"
 ```
+
+### Subcommands
+
+- `sync-worktrees init [--config <path>] [--force]` — interactive wizard that writes a minimal config file (`./sync-worktrees.config.js` by default) and exits. Refuses to overwrite an existing target unless `--force` is passed.
+- `sync-worktrees list [--config <path>] [--filter <pattern>]` — print the resolved repositories and exit.
 
 ### Opening a worktree from the TUI
 
@@ -149,17 +151,18 @@ All tools that target a single repo accept an optional `repoName`. When omitted,
 
 ## Options
 
+The CLI loads a config file and runs it. All run-mode settings (`runOnce`, debug, branch filters, retry, parallelism, LFS, clone mode, depth, etc.) live in the config file — see [Configuration File](#configuration-file).
+
 | Option | Alias | Description | Default |
 |--------|-------|-------------|---------|
 | `--config` | `-c` | Path to JavaScript config file (auto-detected in CWD when omitted) | - |
-| `--filter` | `-f` | Filter repositories by name (wildcards supported) | - |
-| `--list` | `-l` | List configured repositories and exit | `false` |
-| `--runOnce` | - | Override config to run once and exit | `false` |
-| `--no-update-existing` | - | Disable automatic updates of existing worktrees | `false` |
-| `--debug` | `-d` | Show detailed reasons for skipped cleanups | `false` |
 | `--help` | `-h` | Show help | - |
+| `--version` | - | Print version | - |
 
-Most sync behavior (repo URL, worktree directory, cron schedule, branch filtering, LFS, retry) is configured in the config file. The CLI flags that only make sense for one-off runs (`--repoUrl`, `--worktreeDir`, `--cronSchedule`, `--branchMaxAge`, `--branchInclude`, `--branchExclude`, `--skip-lfs`, `--bareRepoDir`) are still supported — run `sync-worktrees --help` for the full list. Clone depth is config-file only.
+Subcommands:
+
+- `sync-worktrees init [--config <path>] [--force]` — create a new config file interactively.
+- `sync-worktrees list [--config <path>] [--filter <pattern>]` — list configured repositories and exit.
 
 ## Configuration File
 
@@ -252,16 +255,15 @@ repositories: [{
 
 ### Git LFS Support
 
-For repositories with Git LFS issues or when large files aren't needed:
+For repositories with Git LFS issues or when large files aren't needed, set `skipLfs` in the config file:
 
-```bash
-# Skip LFS downloads
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --skip-lfs
-
-# Or in config file
+```javascript
 defaults: {
   skipLfs: true
 }
+
+// or per repository
+repositories: [{ name: "big-binary-repo", skipLfs: true }]
 ```
 
 The tool automatically handles LFS errors by retrying with LFS disabled (max 2 retries by default, configurable via `retry.maxLfsRetries`).
@@ -281,21 +283,15 @@ You can control which branches get synced using include and exclude patterns. Th
 - When both are set, include runs first, then exclude removes from the result
 - The default branch (e.g., `main`) is always retained regardless of filters
 
-**Examples**:
-```bash
-# Command line
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
-  --branchInclude "feature/*,release-*"
+**Examples** — set in the config file:
 
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
-  --branchExclude "wip-*,tmp-*"
-
-# Config file - global default
+```javascript
+// Global default
 defaults: {
   branchExclude: ["wip-*", "tmp-*"]
 }
 
-# Config file - per repository
+// Per repository
 repositories: [{
   name: "frontend",
   branchInclude: ["feature/*", "release-*"],
@@ -303,12 +299,15 @@ repositories: [{
 }]
 ```
 
-**Combining with age filtering**: Branch name filtering runs first, then age filtering (`branchMaxAge`) is applied to the remaining branches. This lets you narrow down to specific branch types and further filter by activity.
+**Combining with age filtering**: Branch name filtering runs first, then age filtering (`branchMaxAge`) is applied to the remaining branches.
 
-```bash
-# Only feature branches active in the last 30 days
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees \
-  --branchInclude "feature/*" --branchMaxAge 30d
+```javascript
+// Only feature branches active in the last 30 days
+repositories: [{
+  name: "frontend",
+  branchInclude: ["feature/*"],
+  branchMaxAge: "30d",
+}]
 ```
 
 ### Branch Age Filtering
@@ -322,17 +321,15 @@ To reduce clutter and save disk space, you can configure sync-worktrees to only 
 - `m` - months (e.g., `6m`)
 - `y` - years (e.g., `1y`)
 
-**Examples**:
-```bash
-# Command line
-sync-worktrees -u https://github.com/user/repo.git -w ./worktrees --branchMaxAge 30d
+**Examples** — set in the config file:
 
-# Config file - global default
+```javascript
+// Global default
 defaults: {
   branchMaxAge: "90d"  // Only sync branches active in last 90 days
 }
 
-# Config file - per repository
+// Per repository
 repositories: [{
   name: "active-project",
   branchMaxAge: "14d",  // Very active project - only last 2 weeks

@@ -5,7 +5,7 @@ import { pathToFileURL } from "url";
 import * as cron from "node-cron";
 
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
-import { ConfigValidationError } from "../errors";
+import { ConfigFileNotFoundError, ConfigValidationError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { normalizePathForCompare } from "../utils/path-compare";
@@ -50,7 +50,7 @@ export class ConfigLoaderService {
     try {
       await fs.access(absolutePath);
     } catch {
-      throw new Error(`Config file not found: ${absolutePath}`);
+      throw new ConfigFileNotFoundError(absolutePath);
     }
 
     try {
@@ -67,7 +67,7 @@ export class ConfigLoaderService {
 
       return config;
     } catch (error) {
-      if (error instanceof Error && error.message.includes("Config file not found")) {
+      if (error instanceof ConfigFileNotFoundError) {
         throw error;
       }
       throw new Error(`Failed to load config file: ${(error as Error).message}`);
@@ -600,7 +600,7 @@ export class ConfigLoaderService {
 
   async buildRepositories(
     configPath: string,
-    overrides?: { filter?: string; noUpdateExisting?: boolean; debug?: boolean },
+    overrides?: { filter?: string },
   ): Promise<{ repositories: RepositoryConfig[]; configFile: ConfigFile; configDir: string }> {
     const configFile = await this.loadConfigFile(configPath);
     const configDir = path.dirname(path.resolve(configPath));
@@ -613,14 +613,6 @@ export class ConfigLoaderService {
 
     if (overrides?.filter) {
       repositories = this.filterRepositories(repositories, overrides.filter);
-    }
-
-    if (overrides?.noUpdateExisting) {
-      repositories = repositories.map((repo) => ({ ...repo, updateExistingWorktrees: false }));
-    }
-
-    if (overrides?.debug) {
-      repositories = repositories.map((repo) => ({ ...repo, debug: true }));
     }
 
     return { repositories, configFile, configDir };

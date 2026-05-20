@@ -81,6 +81,18 @@ export class ConfigValidationError extends ConfigError {
   }
 }
 
+export class ConfigFileNotFoundError extends ConfigError {
+  constructor(public readonly configPath: string) {
+    super(`Config file not found: ${configPath}`, "FILE_NOT_FOUND");
+  }
+}
+
+export class ConfigFileExistsError extends ConfigError {
+  constructor(public readonly configPath: string) {
+    super(`Config file already exists: ${configPath}`, "FILE_EXISTS");
+  }
+}
+
 export class PathResolutionError extends SyncWorktreesError {
   constructor(
     public readonly path: string,

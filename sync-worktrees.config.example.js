@@ -266,6 +266,9 @@ export default {
     //
     // - mode: "clone" disables the bare-repo + per-branch-worktree layout for this repo.
     // - branch is optional; when omitted, remote HEAD is resolved via `git ls-remote --symref`.
+    // - depth is optional and config-file only; it maps to `git clone --depth <N>` on the
+    //   initial clone. If depth is later removed, an existing shallow clone is automatically
+    //   unshallowed before normal sync. Changing/shrinking depth requires a manual reclone.
     // - Conflicts with branchInclude / branchExclude / branchMaxAge / updateExistingWorktrees /
     //   bareRepoDir — setting any of these on a clone-mode repo (or via defaults inherited into it)
     //   is a validation error.
@@ -283,6 +286,7 @@ export default {
       worktreeDir: "./slots/game-platform",
       mode: "clone",
       branch: "main",
+      depth: 1,
     },
     {
       name: "base-slot",

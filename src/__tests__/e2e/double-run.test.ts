@@ -10,7 +10,27 @@ describe("Double run E2E test", () => {
   let tempDir: string;
   let bareRepo: string;
   let worktreeDir: string;
+  let configPath: string;
   const binaryPath = path.join(__dirname, "../../../dist/index.js");
+
+  async function writeConfig(): Promise<string> {
+    const bareRepoDir = path.join(tempDir, ".bare");
+    const configContent = `export default {
+  defaults: { runOnce: true },
+  repositories: [
+    {
+      name: "test-repo",
+      repoUrl: "file://${bareRepo}",
+      worktreeDir: "${worktreeDir}",
+      bareRepoDir: "${bareRepoDir}",
+    }
+  ]
+};
+`;
+    const cfg = path.join(tempDir, "sync-worktrees.config.js");
+    await fs.writeFile(cfg, configContent);
+    return cfg;
+  }
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-double-run-"));
@@ -61,6 +81,8 @@ describe("Double run E2E test", () => {
 
     // Clean up init directory
     await fs.rm(initDir, { recursive: true });
+
+    configPath = await writeConfig();
   });
 
   afterEach(async () => {
@@ -68,8 +90,7 @@ describe("Double run E2E test", () => {
   });
 
   it("should run successfully twice without any errors about HEAD", async () => {
-    const bareRepoDir = path.join(tempDir, ".bare");
-    const command = `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`;
+    const command = `node "${binaryPath}" --config "${configPath}"`;
 
     // First run
     console.log("First run...");
@@ -102,8 +123,7 @@ describe("Double run E2E test", () => {
   }, 30000);
 
   it("should handle multiple rapid successive runs without errors", async () => {
-    const bareRepoDir = path.join(tempDir, ".bare");
-    const command = `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`;
+    const command = `node "${binaryPath}" --config "${configPath}"`;
 
     // Run the command 5 times in succession
     for (let i = 1; i <= 5; i++) {
@@ -125,8 +145,7 @@ describe("Double run E2E test", () => {
   }, 60000);
 
   it("should recover gracefully if a HEAD worktree was manually created", async () => {
-    const bareRepoDir = path.join(tempDir, ".bare");
-    const command = `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`;
+    const command = `node "${binaryPath}" --config "${configPath}"`;
 
     // First run to set up worktrees
     execSync(command, { encoding: "utf8" });

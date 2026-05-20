@@ -74,6 +74,7 @@ describe("HEAD branch filtering (E2E)", () => {
       configPath,
       `export default {
         defaults: {
+          runOnce: true,
           parallelism: { maxWorktreeCreation: 1, maxRepositories: 1 }
         },
         repositories: [{
@@ -81,13 +82,12 @@ describe("HEAD branch filtering (E2E)", () => {
           repoUrl: "file://${bareRepo}",
           repoPath: "${tempDir}/repo",
           worktreeDir: "${worktreeDir}",
-          bareRepoDir: "${bareRepoDir}",
-          runOnce: true
+          bareRepoDir: "${bareRepoDir}"
         }]
       };`,
     );
 
-    const output = execSync(`node "${binaryPath}" --config "${configPath}" --runOnce`, { encoding: "utf8" });
+    const output = execSync(`node "${binaryPath}" --config "${configPath}"`, { encoding: "utf8" });
 
     expect(output).toContain("Starting worktree synchronization");
     expect(output).toContain("Synchronization finished");
@@ -122,18 +122,25 @@ describe("HEAD branch filtering (E2E)", () => {
 
   it("should handle subsequent runs without errors", async () => {
     const bareRepoDir = path.join(tempDir, ".bare");
-
-    // First run
-    execSync(
-      `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`,
-      { encoding: "utf8" },
+    const configPath = path.join(tempDir, "subsequent.config.js");
+    await fs.writeFile(
+      configPath,
+      `export default {
+        defaults: { runOnce: true },
+        repositories: [{
+          name: "test-repo",
+          repoUrl: "file://${bareRepo}",
+          worktreeDir: "${worktreeDir}",
+          bareRepoDir: "${bareRepoDir}"
+        }]
+      };`,
     );
 
-    // Second run - should not have any errors
-    const output = execSync(
-      `node "${binaryPath}" --repoUrl "file://${bareRepo}" --worktreeDir "${worktreeDir}" --bareRepoDir "${bareRepoDir}" --runOnce`,
-      { encoding: "utf8" },
-    );
+    const command = `node "${binaryPath}" --config "${configPath}"`;
+
+    execSync(command, { encoding: "utf8" });
+
+    const output = execSync(command, { encoding: "utf8" });
 
     expect(output).not.toContain("Creating new worktrees for: HEAD");
     expect(output).not.toContain("Failed to create worktree");
