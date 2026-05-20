@@ -10,26 +10,32 @@ import { ConfigLoaderService } from "./services/config-loader.service";
 import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
-import { parseArguments } from "./utils/cli";
-import { configFileExists, findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
+import { CLI_COMMANDS, parseArguments } from "./utils/cli";
+import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
+import { fileExists } from "./utils/file-exists";
 import { promptForInitConfig } from "./utils/interactive";
 import { setupSignalHandlers } from "./utils/signal-handlers";
 
-import type { RepositoryConfig } from "./types";
+import type { ConfigFile, RepositoryConfig } from "./types";
 import type { CliOptions } from "./utils/cli";
 
 const signalHandle = setupSignalHandlers();
 
 async function runMultipleRepositories(
+  configFile: ConfigFile,
   repositories: RepositoryConfig[],
-  runOnce: boolean,
   configPath?: string,
-  maxParallel?: number,
 ): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
   const globalLogger = Logger.createDefault();
 
-  const limit = pLimit(maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
+  const runOnce = configFile.defaults?.runOnce ?? false;
+  const maxParallel =
+    configFile.parallelism?.maxRepositories ??
+    configFile.defaults?.parallelism?.maxRepositories ??
+    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+
+  const limit = pLimit(maxParallel);
 
   if (runOnce) {
     globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
@@ -153,15 +159,7 @@ async function runList(configPath: string, filter?: string): Promise<void> {
 async function runFromConfigFile(configPath: string): Promise<void> {
   const configLoader = new ConfigLoaderService();
   const { repositories, configFile } = await configLoader.buildRepositories(configPath);
-
-  const globalRunOnce = configFile.defaults?.runOnce ?? false;
-
-  const maxParallel =
-    configFile.parallelism?.maxRepositories ??
-    configFile.defaults?.parallelism?.maxRepositories ??
-    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
-
-  await runMultipleRepositories(repositories, globalRunOnce, configPath, maxParallel);
+  await runMultipleRepositories(configFile, repositories, configPath);
 }
 
 async function resolveConfigOrExit(cliPath: string | undefined): Promise<string> {
@@ -187,7 +185,7 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
   // Preflight before prompts so user isn't asked 5 questions just to fail at write.
   // The atomic `wx` write below is still the source of truth — it closes the TOCTOU
   // window between this check and the write.
-  if (!force && (await configFileExists(targetPath))) {
+  if (!force && (await fileExists(targetPath))) {
     exitConfigExists(targetPath);
   }
 
@@ -228,18 +226,20 @@ async function runSync(options: CliOptions): Promise<void> {
 async function main(): Promise<void> {
   const options = parseArguments();
 
-  if (options.command === "init") {
-    await runInit(options.config, options.force ?? false);
-    return;
+  switch (options.command) {
+    case CLI_COMMANDS.INIT:
+      return runInit(options.config, options.force);
+    case CLI_COMMANDS.LIST: {
+      const configPath = await resolveConfigOrExit(options.config);
+      return runList(configPath, options.filter);
+    }
+    case CLI_COMMANDS.RUN:
+      return runSync(options);
+    default: {
+      const _exhaustive: never = options;
+      throw new Error(`Unhandled command: ${JSON.stringify(_exhaustive)}`);
+    }
   }
-
-  if (options.command === "list") {
-    const configPath = await resolveConfigOrExit(options.config);
-    await runList(configPath, options.filter);
-    return;
-  }
-
-  await runSync(options);
 }
 
 main().catch((error) => {

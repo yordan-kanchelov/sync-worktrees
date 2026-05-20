@@ -5,6 +5,7 @@ import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError } from "../errors";
+import { fileExists } from "../utils/file-exists";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 
@@ -240,15 +241,9 @@ export class CloneSyncService {
     }
 
     const looksIncomplete = entries.every((e) => e.startsWith("."));
-    let hasUsableGit = false;
-    if (entries.includes(PATH_CONSTANTS.GIT_DIR)) {
-      try {
-        await fs.access(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, "HEAD"));
-        hasUsableGit = true;
-      } catch {
-        hasUsableGit = false;
-      }
-    }
+    const hasUsableGit =
+      entries.includes(PATH_CONSTANTS.GIT_DIR) &&
+      (await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, "HEAD")));
 
     if (looksIncomplete && !hasUsableGit) {
       try {
@@ -270,11 +265,8 @@ export class CloneSyncService {
 
   private async runInitialBranchActions(worktreeDir: string, branch: string): Promise<void> {
     const marker = this.getInitMarkerPath(worktreeDir);
-    try {
-      await fs.access(marker);
+    if (await fileExists(marker)) {
       return;
-    } catch {
-      // marker missing — fall through to run actions
     }
 
     const sourceDir = this.config.__configFileDir ?? worktreeDir;

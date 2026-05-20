@@ -5,6 +5,7 @@ import simpleGit from "simple-git";
 
 import { ENV_CONSTANTS, GIT_CONSTANTS, GIT_OPERATIONS, PATH_CONSTANTS } from "../constants";
 import { GitOperationError, WorktreeNotCleanError } from "../errors";
+import { fileExists } from "../utils/file-exists";
 import { getErrorMessage } from "../utils/lfs-error";
 
 import { Logger } from "./logger.service";
@@ -106,9 +107,7 @@ export class WorktreeStatusService {
     includeDetails = false,
     lastSyncCommit?: string,
   ): Promise<WorktreeStatusResult> {
-    try {
-      await fs.access(worktreePath);
-    } catch {
+    if (!(await fileExists(worktreePath))) {
       return {
         isClean: true,
         hasUnpushedCommits: false,

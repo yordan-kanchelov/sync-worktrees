@@ -3,6 +3,8 @@ import * as path from "path";
 
 import { glob } from "glob";
 
+import { fileExists } from "../utils/file-exists";
+
 const DEFAULT_IGNORE_PATTERNS = [
   "**/node_modules/**",
   "**/.git/**",
@@ -83,11 +85,8 @@ export class FileCopyService {
   }
 
   private async copyFile(sourcePath: string, destPath: string): Promise<boolean> {
-    try {
-      await fs.access(destPath);
+    if (await fileExists(destPath)) {
       return false;
-    } catch {
-      // File doesn't exist, proceed with copy
     }
 
     const destDir = path.dirname(destPath);
