@@ -310,7 +310,8 @@ export async function handleCreateWorktree(
   params: { branchName: string; baseBranch?: string; push?: boolean; repoName?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const { branchName, baseBranch, push } = params;
+  const { branchName, baseBranch } = params;
+  const push = params.push ?? true;
 
   const validation = isValidGitBranchName(branchName);
   if (!validation.valid) {

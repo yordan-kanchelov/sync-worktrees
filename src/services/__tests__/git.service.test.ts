@@ -96,6 +96,7 @@ describe("GitService", () => {
       status: vi.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })) as any,
       clone: vi.fn<any>().mockResolvedValue(undefined) as any,
       addConfig: vi.fn<any>().mockResolvedValue(undefined) as any,
+      push: vi.fn<any>().mockResolvedValue(undefined) as any,
       revparse: vi.fn<any>().mockResolvedValue("abc123") as any,
     }) as Mocked<SimpleGit>;
 
@@ -367,7 +368,7 @@ describe("GitService", () => {
       await gitService.createBranch("feat/new", "origin/main");
 
       expect(mockGit.revparse).toHaveBeenCalledWith(["--verify", "origin/main"]);
-      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "feat/new", "origin/main"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "--no-track", "feat/new", "origin/main"]);
     });
 
     it("falls back to a local base branch when origin branch is missing", async () => {
@@ -379,7 +380,15 @@ describe("GitService", () => {
 
       expect(mockGit.revparse).toHaveBeenNthCalledWith(1, ["--verify", "origin/main"]);
       expect(mockGit.revparse).toHaveBeenNthCalledWith(2, ["--verify", "main"]);
-      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "feat/new", "main"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "--no-track", "feat/new", "main"]);
+    });
+  });
+
+  describe("pushBranch", () => {
+    it("sets the new branch upstream to the same branch on origin", async () => {
+      await gitService.pushBranch("feat/new");
+
+      expect(mockGit.push).toHaveBeenCalledWith(["origin", "feat/new:feat/new", "-u"]);
     });
   });
 

@@ -130,7 +130,7 @@ Client-specific locations:
 | `detect_context` | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report config-driven sibling repositories and capabilities. Pass `includeAllWorktrees: true` to include every configured repo's worktrees keyed by repo name. |
 | `list_worktrees` | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos. |
 | `get_worktree_status` | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress). |
-| `create_worktree` | Create a worktree for a branch; optionally create the branch from `baseBranch` and push. |
+| `create_worktree` | Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`. |
 | `remove_worktree` | Remove a worktree after safety checks; `force=true` skips validation. |
 | `update_worktree` | Fast-forward one worktree to match upstream. |
 | `sync` | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. |
@@ -144,6 +144,7 @@ All tools that target a single repo accept an optional `repoName`. When omitted,
 
 - `remove_worktree` refuses to delete worktrees with uncommitted changes, unpushed commits, stashes, or operations in progress (merge/rebase/cherry-pick/revert/bisect). Pass `force=true` to override.
 - `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk.
+- Branches created by sync-worktrees use `--no-track` first, then publish with `git push -u origin <branch>`, so they do not inherit `origin/main` as their upstream.
 - Path-targeted tools verify the supplied path is a registered worktree of the selected repository.
 
 ## Options
