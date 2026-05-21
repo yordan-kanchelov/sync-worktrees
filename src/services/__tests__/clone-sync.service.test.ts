@@ -3,6 +3,7 @@ import * as fs from "fs/promises";
 import simpleGit from "simple-git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { BranchCreatedActionsService } from "../branch-created-actions.service";
 import { CloneSyncService } from "../clone-sync.service";
 import { Logger } from "../logger.service";
 
@@ -204,6 +205,54 @@ describe("CloneSyncService", () => {
       const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
 
       await expect(service.initialize()).rejects.toThrow(/exists and is not empty/);
+    });
+
+    it("does not fire onBranchCreated hooks on the initial clone", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+
+      const branchCreatedActions = new BranchCreatedActionsService();
+      const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+      const runHooksSpy = vi.spyOn(branchCreatedActions, "runHooks");
+
+      const config = makeConfig({
+        filesToCopyOnBranchCreate: ["CLAUDE.md"],
+        hooks: { onBranchCreated: ["echo never-run"] },
+      });
+      const service = new CloneSyncService(config, buildGitService(), logger, {
+        branchCreatedActions,
+      });
+
+      await service.initialize();
+
+      expect(copyFilesSpy).toHaveBeenCalledTimes(1);
+      expect(runHooksSpy).not.toHaveBeenCalled();
+    });
+
+    it("skips file copy when the clone-init marker already exists", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockResolvedValue(undefined);
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+
+      const branchCreatedActions = new BranchCreatedActionsService();
+      const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+
+      const service = new CloneSyncService(
+        makeConfig({
+          filesToCopyOnBranchCreate: ["CLAUDE.md"],
+          hooks: { onBranchCreated: ["echo never-run"] },
+        }),
+        buildGitService(),
+        logger,
+        { branchCreatedActions },
+      );
+
+      await service.initialize();
+
+      expect(copyFilesSpy).not.toHaveBeenCalled();
     });
   });
 

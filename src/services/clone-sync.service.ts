@@ -10,7 +10,6 @@ import { makeGitProgressHandler } from "../utils/git-progress";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
-import { HookExecutionService } from "./hook-execution.service";
 
 import type { GitService } from "./git.service";
 import type { Logger } from "./logger.service";
@@ -22,7 +21,6 @@ export class CloneSyncService {
   private initialized = false;
   private resolvedBranch: string | null = null;
   private branchCreatedActions: BranchCreatedActionsService;
-  private hookExecutionService: HookExecutionService;
   private progressEmitter?: GitProgressEmitter;
 
   constructor(
@@ -31,12 +29,10 @@ export class CloneSyncService {
     private logger: Logger,
     options: {
       branchCreatedActions?: BranchCreatedActionsService;
-      hookExecutionService?: HookExecutionService;
       progressEmitter?: GitProgressEmitter;
     } = {},
   ) {
     this.branchCreatedActions = options.branchCreatedActions ?? new BranchCreatedActionsService();
-    this.hookExecutionService = options.hookExecutionService ?? new HookExecutionService();
     this.progressEmitter = options.progressEmitter;
   }
 
@@ -46,10 +42,6 @@ export class CloneSyncService {
 
   isInitialized(): boolean {
     return this.initialized;
-  }
-
-  cleanup(): void {
-    this.hookExecutionService.cleanup();
   }
 
   private get repoName(): string {
@@ -186,7 +178,7 @@ export class CloneSyncService {
     await this.gitService.verifyLfs(worktreeDir, branch);
     this.emitProgress({ phase: "lfs", message: `LFS verified for '${this.repoName}'` });
 
-    await this.runInitialBranchActions(worktreeDir, branch);
+    await this.runInitialFileCopy(worktreeDir, branch);
 
     this.initialized = true;
   }
@@ -263,7 +255,7 @@ export class CloneSyncService {
     return path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, PATH_CONSTANTS.CLONE_INIT_MARKER);
   }
 
-  private async runInitialBranchActions(worktreeDir: string, branch: string): Promise<void> {
+  private async runInitialFileCopy(worktreeDir: string, branch: string): Promise<void> {
     const marker = this.getInitMarkerPath(worktreeDir);
     if (await fileExists(marker)) {
       return;
@@ -271,15 +263,12 @@ export class CloneSyncService {
 
     const sourceDir = this.config.__configFileDir ?? worktreeDir;
 
-    await this.branchCreatedActions.run({
+    await this.branchCreatedActions.copyFiles({
       config: this.config,
-      repoName: this.repoName,
       branchName: branch,
       worktreePath: worktreeDir,
-      baseBranch: branch,
       sourceDir,
       logger: this.logger,
-      hookExecutionService: this.hookExecutionService,
     });
 
     try {

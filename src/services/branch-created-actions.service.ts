@@ -4,16 +4,22 @@ import type { HookExecutionService } from "./hook-execution.service";
 import type { Logger } from "./logger.service";
 import type { Config, HookContext } from "../types";
 
-export interface BranchCreatedActionsParams {
-  config: Pick<Config, "filesToCopyOnBranchCreate" | "hooks" | "repoUrl">;
+export interface CopyFilesParams {
+  config: Pick<Config, "filesToCopyOnBranchCreate">;
+  branchName: string;
+  worktreePath: string;
+  sourceDir: string;
+  logger: Logger;
+}
+
+export interface RunHooksParams {
+  config: Pick<Config, "hooks" | "repoUrl">;
   repoName: string;
   branchName: string;
   worktreePath: string;
   baseBranch: string;
-  sourceDir: string;
   logger: Logger;
-  hookExecutionService?: HookExecutionService;
-  fileCopyService?: FileCopyService;
+  hookExecutionService: HookExecutionService;
 }
 
 export class BranchCreatedActionsService {
@@ -23,7 +29,7 @@ export class BranchCreatedActionsService {
     this.fileCopyService = fileCopyService ?? new FileCopyService();
   }
 
-  async copyFiles(params: BranchCreatedActionsParams): Promise<void> {
+  async copyFiles(params: CopyFilesParams): Promise<void> {
     const { config, sourceDir, worktreePath, branchName, logger } = params;
     const patterns = config.filesToCopyOnBranchCreate;
     if (!patterns?.length) return;
@@ -45,10 +51,9 @@ export class BranchCreatedActionsService {
     }
   }
 
-  runHooks(params: BranchCreatedActionsParams): void {
+  runHooks(params: RunHooksParams): void {
     const { config, branchName, worktreePath, repoName, baseBranch, logger, hookExecutionService } = params;
     if (!config.hooks?.onBranchCreated?.length) return;
-    if (!hookExecutionService) return;
 
     const context: HookContext = {
       branchName,
@@ -72,10 +77,5 @@ export class BranchCreatedActionsService {
         }
       },
     });
-  }
-
-  async run(params: BranchCreatedActionsParams): Promise<void> {
-    await this.copyFiles(params);
-    this.runHooks(params);
   }
 }

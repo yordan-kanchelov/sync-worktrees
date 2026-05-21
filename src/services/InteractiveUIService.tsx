@@ -803,7 +803,6 @@ export class InteractiveUIService {
       branchName: context.branchName,
       worktreePath: context.worktreePath,
       baseBranch: context.baseBranch,
-      sourceDir: context.worktreePath,
       logger: this.buildUiLogger(),
       hookExecutionService: this.hookExecutionService,
     });
@@ -832,13 +831,10 @@ export class InteractiveUIService {
       return;
     }
 
-    const repoName = (config as RepositoryConfig).name || config.repoUrl;
     await this.branchCreatedActions.copyFiles({
       config,
-      repoName,
       branchName: targetBranch,
       worktreePath: targetWorktree.path,
-      baseBranch,
       sourceDir: sourceWorktree.path,
       logger: this.buildUiLogger(),
     });

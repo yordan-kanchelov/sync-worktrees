@@ -272,8 +272,11 @@ export default {
     // - Conflicts with branchInclude / branchExclude / branchMaxAge / updateExistingWorktrees /
     //   bareRepoDir — setting any of these on a clone-mode repo (or via defaults inherited into it)
     //   is a validation error.
-    // - sparseCheckout, filesToCopyOnBranchCreate, hooks.onBranchCreated, and skipLfs still apply.
-    //   filesToCopyOnBranchCreate + hooks.onBranchCreated fire exactly once on the initial clone.
+    // - sparseCheckout, filesToCopyOnBranchCreate, and skipLfs still apply.
+    //   filesToCopyOnBranchCreate fires exactly once on the initial clone.
+    //   hooks.onBranchCreated does NOT fire on the initial clone in clone-mode (clone-mode
+    //   tracks a single fixed branch with no later branch-creation event); the hook is
+    //   reserved for TUI-initiated branch creation.
     //   sparseCheckout is re-applied every sync (config drift converges).
     // - Lock file lives at `<configDir>/.sync-worktrees-state/<sanitized-name>-<hash>.lock` —
     //   never inside the cloned repo, so no .gitignore noise.
