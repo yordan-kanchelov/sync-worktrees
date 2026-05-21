@@ -544,6 +544,26 @@ describe("CloneSyncService", () => {
       expect(skips).toEqual([{ kind: "indeterminate_shallow", branch: "main", deepenedTo: 1000 }]);
     });
 
+    it("records deepenedTo:null when configured depth already meets or exceeds every deepen target", async () => {
+      const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
+      const skips: CloneSkipReason[] = [];
+      const gitService = buildGitService({ classifyRemoteRelationship: classify });
+      const service = new CloneSyncService(makeConfig({ depth: 1000 }), gitService, logger, {
+        onSkip: (reason) => skips.push(reason),
+      });
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      const branchRefspecFetches = gitMock.fetch.mock.calls
+        .map((call) => call[0] as string[])
+        .filter((args) => args.includes("+refs/heads/main:refs/remotes/origin/main"));
+      expect(branchRefspecFetches).toHaveLength(0);
+      expect(classify).toHaveBeenCalledTimes(1);
+      expect(gitMock.merge).not.toHaveBeenCalled();
+      expect(skips).toEqual([{ kind: "indeterminate_shallow", branch: "main", deepenedTo: null }]);
+    });
+
     it("skips deepen targets at or below configured depth", async () => {
       const classify = vi.fn().mockResolvedValueOnce("indeterminate_shallow").mockResolvedValueOnce("fast_forward");
       const gitService = buildGitService({ classifyRemoteRelationship: classify });

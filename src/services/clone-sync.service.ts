@@ -27,7 +27,7 @@ export type CloneSkipReason =
   | { kind: "diverged"; branch: string }
   | { kind: "ahead_unpushed"; branch: string }
   | { kind: "missing_remote_ref"; branch: string; source: "fetch_error" | "post_fetch_verify" }
-  | { kind: "indeterminate_shallow"; branch: string; deepenedTo: number };
+  | { kind: "indeterminate_shallow"; branch: string; deepenedTo: number | null };
 
 export type CloneSkipListener = (reason: CloneSkipReason) => void;
 
@@ -524,7 +524,7 @@ export class CloneSyncService {
     }
 
     let relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch);
-    let lastDeepenedTo = 0;
+    let lastDeepenedTo: number | null = null;
     if (relationship === "indeterminate_shallow") {
       for (const target of this.getDeepenTargets()) {
         await this.deepenShallowHistoryToDepth(git, branch, target);
@@ -552,11 +552,19 @@ export class CloneSyncService {
           "info",
         );
       } else if (relationship === "indeterminate_shallow") {
+        const detail =
+          lastDeepenedTo === null
+            ? `no deepening attempted (configured depth already at or above all deepen targets)`
+            : `deepening to ${lastDeepenedTo} commits`;
+        const progressDetail =
+          lastDeepenedTo === null
+            ? `no deepening attempted (configured depth at/above limits)`
+            : `shallow depth budget exhausted at ${lastDeepenedTo}`;
         this.recordSkip(
           { kind: "indeterminate_shallow", branch, deepenedTo: lastDeepenedTo },
-          `⏭️  '${this.repoName}' could not classify origin/${branch} after deepening to ${lastDeepenedTo} commits. ` +
+          `⏭️  '${this.repoName}' could not classify origin/${branch} after ${detail}. ` +
             `Skipping merge — consider removing or raising 'depth' to unshallow.`,
-          `Skipping merge for '${this.repoName}': shallow depth budget exhausted at ${lastDeepenedTo}`,
+          `Skipping merge for '${this.repoName}': ${progressDetail}`,
           "info",
         );
       } else {

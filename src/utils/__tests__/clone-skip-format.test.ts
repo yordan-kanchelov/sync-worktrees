@@ -71,4 +71,16 @@ describe("formatCloneSkipReason", () => {
       "unable to classify origin/main after deepening shallow history to 1000 commits — remove or raise 'depth' to unshallow",
     );
   });
+
+  it("formats indeterminate_shallow when no deepening was attempted", () => {
+    expect(
+      formatCloneSkipReason({
+        kind: "indeterminate_shallow",
+        branch: "main",
+        deepenedTo: null,
+      }),
+    ).toBe(
+      "unable to classify origin/main (no deepening attempted — configured depth already at or above all deepen targets) — remove 'depth' to unshallow",
+    );
+  });
 });
