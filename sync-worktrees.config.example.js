@@ -261,14 +261,18 @@ export default {
       }
     },
 
-    // Clone mode: single-branch clone directly into worktreeDir (no worktreeDir/<branch> subfolder).
+    // Clone mode: one checked-out branch directly into worktreeDir (no worktreeDir/<branch> subfolder).
     // Use when sibling monorepo dependencies must live at fixed relative paths.
     //
     // - mode: "clone" disables the bare-repo + per-branch-worktree layout for this repo.
     // - branch is optional; when omitted, remote HEAD is resolved via `git ls-remote --symref`.
+    // - origin keeps the normal all-branches fetch refspec, so `git branch -r` and
+    //   `git fetch --all --prune` can see every remote branch.
     // - depth is optional and config-file only; it maps to `git clone --depth <N>` on the
-    //   initial clone. If depth is later removed, an existing shallow clone is automatically
-    //   unshallowed before normal sync. Changing/shrinking depth requires a manual reclone.
+    //   initial clone with `--no-single-branch`. Sync fetches keep using depth while the
+    //   repository is already shallow, but do not convert an existing full clone into a
+    //   shallow one. If depth is later removed, an existing shallow clone is automatically
+    //   unshallowed before normal sync.
     // - Conflicts with branchInclude / branchExclude / branchMaxAge / updateExistingWorktrees /
     //   bareRepoDir — setting any of these on a clone-mode repo (or via defaults inherited into it)
     //   is a validation error.

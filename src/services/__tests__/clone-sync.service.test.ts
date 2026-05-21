@@ -91,7 +91,7 @@ describe("CloneSyncService", () => {
   });
 
   describe("initialize", () => {
-    it("clones into an empty target with --single-branch", async () => {
+    it("clones into an empty target with normal remote branch refs", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([]); // worktreeDir exists empty
       (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
       (fs.stat as unknown as Mock).mockRejectedValue(new Error("ENOENT")); // .git missing
@@ -107,9 +107,11 @@ describe("CloneSyncService", () => {
       expect(gitMock.clone).toHaveBeenCalledWith(
         config.repoUrl,
         config.worktreeDir,
-        expect.arrayContaining(["--branch", "main", "--single-branch", "--progress"]),
+        expect.arrayContaining(["--branch", "main", "--progress"]),
       );
+      expect(gitMock.clone.mock.calls[0][2]).not.toContain("--single-branch");
       expect(gitMock.clone.mock.calls[0][2]).not.toContain("--depth");
+      expect(gitMock.raw).toHaveBeenCalledWith(["remote", "set-branches", "origin", "*"]);
       expect(service.isInitialized()).toBe(true);
     });
 
@@ -127,10 +129,10 @@ describe("CloneSyncService", () => {
       expect(gitMock.clone).toHaveBeenCalledWith(config.repoUrl, config.worktreeDir, [
         "--branch",
         "main",
-        "--single-branch",
         "--progress",
         "--depth",
         "1",
+        "--no-single-branch",
       ]);
     });
 
@@ -178,6 +180,28 @@ describe("CloneSyncService", () => {
       await service.initialize();
 
       expect(gitMock.clone).not.toHaveBeenCalled();
+      expect(gitMock.raw).toHaveBeenCalledWith(["remote", "set-branches", "origin", "*"]);
+      expect(service.isInitialized()).toBe(true);
+    });
+
+    it("leaves existing clone refspec alone when it already fetches all remote branches", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
+      (fs.access as unknown as Mock).mockResolvedValue(undefined);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "config --get-all remote.origin.fetch") return "+refs/heads/*:refs/remotes/origin/*\n";
+        return "";
+      });
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["remote", "set-branches", "origin", "*"]);
       expect(service.isInitialized()).toBe(true);
     });
 
@@ -305,7 +329,7 @@ describe("CloneSyncService", () => {
         expect.arrayContaining([
           expect.objectContaining({
             phase: "fetch",
-            message: "Fetching origin/main for 'https://github.com/example/repo.git'",
+            message: "Fetching origin branches for 'https://github.com/example/repo.git'",
           }),
           expect.objectContaining({
             phase: "skip",
@@ -328,7 +352,7 @@ describe("CloneSyncService", () => {
       await service.runSyncAttempt();
 
       expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow"]);
-      expect(gitMock.fetch).toHaveBeenNthCalledWith(2, ["origin", "main", "--prune", "--progress"]);
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(2, ["origin", "--prune", "--progress"]);
     });
 
     it("does not unshallow when depth is configured", async () => {
@@ -344,7 +368,23 @@ describe("CloneSyncService", () => {
       await service.runSyncAttempt();
 
       expect(gitMock.fetch).toHaveBeenCalledTimes(1);
-      expect(gitMock.fetch).toHaveBeenCalledWith(["origin", "main", "--prune", "--progress"]);
+      expect(gitMock.fetch).toHaveBeenCalledWith(["origin", "--prune", "--progress", "--depth", "1"]);
+    });
+
+    it("does not make a full existing clone shallow when depth is configured", async () => {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        return "";
+      });
+      const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+      expect(gitMock.fetch).toHaveBeenCalledWith(["origin", "--prune", "--progress"]);
     });
 
     it("does not unshallow full repositories without configured depth", async () => {
@@ -360,7 +400,7 @@ describe("CloneSyncService", () => {
       await service.runSyncAttempt();
 
       expect(gitMock.fetch).toHaveBeenCalledTimes(1);
-      expect(gitMock.fetch).toHaveBeenCalledWith(["origin", "main", "--prune", "--progress"]);
+      expect(gitMock.fetch).toHaveBeenCalledWith(["origin", "--prune", "--progress"]);
     });
 
     it("does not reset on diverged history", async () => {

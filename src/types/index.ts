@@ -90,10 +90,10 @@ export interface Config {
   /**
    * Repository strategy. `worktree` (default) clones once as a bare repo and
    * maintains one worktree per remote branch under `worktreeDir/<branch>`.
-   * `clone` performs a normal `git clone --branch <branch> --single-branch`
-   * directly into `worktreeDir` — no bare repo, no branch subfolder, single
-   * checked-out branch. Designed for monorepo sibling dependencies that
-   * need fixed relative paths.
+   * `clone` performs a normal `git clone --branch <branch>` directly into
+   * `worktreeDir` — no bare repo, no branch subfolder, one checked-out branch
+   * with normal origin/* remote-tracking refs. Designed for monorepo sibling
+   * dependencies that need fixed relative paths.
    */
   mode?: RepositoryMode;
   /**

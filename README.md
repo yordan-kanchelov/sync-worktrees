@@ -15,7 +15,7 @@ sync-worktrees supports two repository strategies. The default — **worktree mo
    - Fetches latest changes (doesn't merge - preserves your local work)
    - Removes worktrees when remote branches are deleted (preserves local changes)
 
-**Clone mode** is an alternative first-class strategy (`mode: "clone"`) that performs a single-branch `git clone` directly into `worktreeDir` — no bare repo, no per-branch subfolders, just one checked-out branch. Designed for monorepo sibling dependencies that need fixed relative paths. See [Clone Mode And Depth](#clone-mode-and-depth).
+**Clone mode** is an alternative first-class strategy (`mode: "clone"`) that performs a normal `git clone --branch <branch>` directly into `worktreeDir` — no bare repo, no per-branch subfolders, just one checked-out branch with normal `origin/*` remote-tracking refs. Designed for monorepo sibling dependencies that need fixed relative paths. See [Clone Mode And Depth](#clone-mode-and-depth).
 
 **Why this matters**: Switch between branches instantly without stashing, run tests on multiple branches simultaneously, or keep your CI and production branches always ready.
 
@@ -216,7 +216,7 @@ export default {
 
 ### Clone Mode And Depth
 
-Config-file repositories can set `mode: "clone"` to clone one branch directly into `worktreeDir` instead of maintaining one worktree per remote branch:
+Config-file repositories can set `mode: "clone"` to clone one checked-out branch directly into `worktreeDir` instead of maintaining one worktree per remote branch:
 
 ```javascript
 {
@@ -229,7 +229,9 @@ Config-file repositories can set `mode: "clone"` to clone one branch directly in
 }
 ```
 
-`depth` is valid only for clone-mode repositories and must be a positive safe integer. It applies to the initial clone only. If an existing clone is shallow and the resolved config no longer includes `depth`, the next sync fetches full history with `git fetch --unshallow` before the normal fetch and fast-forward check. Changing or shrinking an existing shallow depth requires a manual reclone.
+Clone mode keeps the normal `+refs/heads/*:refs/remotes/origin/*` fetch refspec, so `git branch -r` and `git fetch --all --prune` can see all remote branches. `branch` controls the checked-out branch that sync-worktrees fast-forwards.
+
+`depth` is valid only for clone-mode repositories and must be a positive safe integer. Shallow clone mode uses `--no-single-branch` so all remote branch refs remain visible at the configured depth. Sync fetches keep using the configured depth while the repository is already shallow, but will not convert an existing full clone into a shallow one. If an existing clone is shallow and the resolved config no longer includes `depth`, the next sync fetches full history with `git fetch --unshallow` before the normal fetch and fast-forward check.
 
 ### Retry Configuration
 

@@ -17,6 +17,8 @@ import type { Config, RepositoryConfig } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
+const ALL_REMOTE_BRANCHES_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";
+
 export class CloneSyncService {
   private initialized = false;
   private resolvedBranch: string | null = null;
@@ -84,18 +86,61 @@ export class CloneSyncService {
   }
 
   private buildCloneArgs(branch: string): string[] {
-    const args = ["--branch", branch, "--single-branch", "--progress"];
+    const args = ["--branch", branch, "--progress"];
     if (this.config.depth !== undefined) {
+      args.push("--depth", String(this.config.depth), "--no-single-branch");
+    }
+    return args;
+  }
+
+  private async buildFetchArgs(git: SimpleGit): Promise<string[]> {
+    const args = ["origin", "--prune", "--progress"];
+    if (this.config.depth !== undefined && (await this.isShallowRepository(git))) {
       args.push("--depth", String(this.config.depth));
     }
     return args;
   }
 
+  private async ensureAllRemoteBranchesRefspec(git: SimpleGit): Promise<void> {
+    let fetchRefspecs: string[] = [];
+    try {
+      const output = await git.raw(["config", "--get-all", "remote.origin.fetch"]);
+      fetchRefspecs = output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } catch {
+      fetchRefspecs = [];
+    }
+
+    if (fetchRefspecs.includes(ALL_REMOTE_BRANCHES_REFSPEC)) return;
+
+    this.logger.info(`Configuring '${this.repoName}' to fetch all remote branches from origin.`);
+    await git.raw(["remote", "set-branches", "origin", "*"]);
+  }
+
+  private async hasRemoteBranch(git: SimpleGit, branch: string): Promise<boolean> {
+    try {
+      await git.raw(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async isShallowRepository(git: SimpleGit): Promise<boolean> {
+    try {
+      const output = await git.raw(["rev-parse", "--is-shallow-repository"]);
+      return output.trim() === "true";
+    } catch {
+      return false;
+    }
+  }
+
   private async unshallowIfDepthRemoved(git: SimpleGit): Promise<void> {
     if (this.config.depth !== undefined) return;
 
-    const output = await git.raw(["rev-parse", "--is-shallow-repository"]);
-    if (output.trim() !== "true") return;
+    if (!(await this.isShallowRepository(git))) return;
 
     this.logger.info(
       `[deepen] Existing shallow clone for '${this.repoName}' has no configured depth; fetching full history...`,
@@ -132,6 +177,8 @@ export class CloneSyncService {
     if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) {
       this.emitProgress({ phase: "clone", message: `Validating existing clone for '${this.repoName}'` });
       await this.validateExistingClone(branch);
+      const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+      await this.ensureAllRemoteBranchesRefspec(git);
       this.initialized = true;
       this.emitProgress({ phase: "clone", message: `Existing clone validated for '${this.repoName}'` });
       return;
@@ -161,6 +208,9 @@ export class CloneSyncService {
       throw error;
     }
 
+    const worktreeGit = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+    await this.ensureAllRemoteBranchesRefspec(worktreeGit);
+
     this.logger.info(`✅ Clone successful.`);
     this.emitProgress({ phase: "clone", message: `Clone successful for '${this.repoName}'` });
 
@@ -169,7 +219,6 @@ export class CloneSyncService {
       this.emitProgress({ phase: "sparse_checkout", message: `Applying sparse-checkout for '${this.repoName}'` });
       const sparseService = this.gitService.getSparseCheckoutService();
       await sparseService.applyToWorktree(worktreeDir, this.config.sparseCheckout);
-      const worktreeGit = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
       await worktreeGit.raw(["checkout", "HEAD"]);
       this.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout applied for '${this.repoName}'` });
     }
@@ -313,9 +362,12 @@ export class CloneSyncService {
 
     await this.unshallowIfDepthRemoved(git);
 
-    this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
+    await this.ensureAllRemoteBranchesRefspec(git);
+
+    const fetchArgs = await this.buildFetchArgs(git);
+    this.emitProgress({ phase: "fetch", message: `Fetching origin branches for '${this.repoName}'` });
     try {
-      await git.fetch(["origin", branch, "--prune", "--progress"]);
+      await git.fetch(fetchArgs);
     } catch (fetchError) {
       const message = getErrorMessage(fetchError);
       if (isLfsError(message)) {
@@ -327,7 +379,7 @@ export class CloneSyncService {
         const lfsSkipGit = simpleGit(worktreeDir, this.buildGitOptions(this.getFetchTimeoutMs())).env({
           [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1",
         });
-        await lfsSkipGit.fetch(["origin", branch, "--prune", "--progress"]);
+        await lfsSkipGit.fetch(fetchArgs);
       } else if (
         message.includes("couldn't find remote ref") ||
         message.includes("Couldn't find remote ref") ||
@@ -343,7 +395,16 @@ export class CloneSyncService {
         throw fetchError;
       }
     }
-    this.emitProgress({ phase: "fetch", message: `Fetched origin/${branch} for '${this.repoName}'` });
+    this.emitProgress({ phase: "fetch", message: `Fetched origin branches for '${this.repoName}'` });
+
+    if (!(await this.hasRemoteBranch(git, branch))) {
+      this.logger.warn(`Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`);
+      this.emitProgress({
+        phase: "skip",
+        message: `Skipping '${this.repoName}': origin/${branch} is missing`,
+      });
+      return;
+    }
 
     if (this.config.sparseCheckout) {
       const sparseService = this.gitService.getSparseCheckoutService();

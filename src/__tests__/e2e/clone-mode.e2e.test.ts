@@ -126,6 +126,41 @@ export default {
     expect(remoteUrl).toBe(HELLO_WORLD);
   }, 90000);
 
+  it("keeps shallow clone-mode remote-tracking refs open to all remote branches", async () => {
+    const remoteBare = await createLocalRemote("remote-branches");
+    const seedDir = path.join(tmpBase, "remote-branches-seed");
+    execSync(`git -C "${seedDir}" switch -c "feat/cloudflare-deploys"`, { encoding: "utf-8" });
+    await fs.writeFile(path.join(seedDir, "cloudflare.txt"), "cloudflare\n");
+    execSync(`git -C "${seedDir}" add cloudflare.txt`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" commit -m "Add cloudflare deploys"`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" push origin "feat/cloudflare-deploys"`, { encoding: "utf-8" });
+
+    const worktreeDir = path.join(tmpBase, "remote-branches", "wt");
+    const configPath = path.join(tmpBase, "remote-branches", "remote-branches.config.js");
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir, ",\n      depth: 1");
+
+    execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+
+    const fetchRefspec = execSync(`git -C "${worktreeDir}" config --get-all remote.origin.fetch`, {
+      encoding: "utf-8",
+    }).trim();
+    const remoteBranches = execSync(`git -C "${worktreeDir}" branch -r --list`, { encoding: "utf-8" });
+    const cloneHead = execSync(`git -C "${worktreeDir}" rev-parse --abbrev-ref HEAD`, { encoding: "utf-8" }).trim();
+    const isShallow = execSync(`git -C "${worktreeDir}" rev-parse --is-shallow-repository`, {
+      encoding: "utf-8",
+    }).trim();
+    const featureCommitCount = execSync(`git -C "${worktreeDir}" rev-list --count origin/feat/cloudflare-deploys`, {
+      encoding: "utf-8",
+    }).trim();
+
+    expect(fetchRefspec).toBe("+refs/heads/*:refs/remotes/origin/*");
+    expect(remoteBranches).toContain("origin/feat/cloudflare-deploys");
+    expect(cloneHead).toBe("main");
+    expect(isShallow).toBe("true");
+    expect(featureCommitCount).toBe("1");
+  }, 60000);
+
   it("is idempotent on subsequent runs (no re-clone, fetch-only sync)", async () => {
     const worktreeDir = path.join(tmpBase, "idempotent-clone", "wt");
     const configPath = await writeSingleCloneConfig("idempotent", HELLO_WORLD, worktreeDir, "master");
