@@ -20,6 +20,8 @@ import type { Config } from "../types";
 import type { SyncMetadata } from "../types/sync-metadata";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
+export type RemoteRelationship = "up_to_date" | "fast_forward" | "local_ahead" | "diverged" | "indeterminate_shallow";
+
 export type GitServiceOptions = Pick<
   Config,
   | "repoUrl"
@@ -975,6 +977,46 @@ export class GitService {
 
       // If merge base equals remote, local is ahead (remote is ancestor of local)
       return mergeBaseSha === remoteShaTrimmed;
+    } catch {
+      return false;
+    }
+  }
+
+  async classifyRemoteRelationship(worktreePath: string, branch: string): Promise<RemoteRelationship> {
+    const worktreeGit = this.getCachedGit(worktreePath);
+
+    let headSha: string;
+    let remoteSha: string;
+    try {
+      headSha = (await worktreeGit.revparse(["HEAD"])).trim();
+      remoteSha = (await worktreeGit.revparse([`refs/remotes/origin/${branch}`])).trim();
+    } catch {
+      return "diverged";
+    }
+
+    if (headSha === remoteSha) return "up_to_date";
+
+    let mergeBase = "";
+    let mergeBaseFailed = false;
+    try {
+      mergeBase = (await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`])).trim();
+    } catch {
+      mergeBaseFailed = true;
+    }
+    // simple-git swallows merge-base exit 1 and returns "" — treat empty output as failure too.
+    if (mergeBaseFailed || !mergeBase) {
+      if (await this.isShallowRepository(worktreeGit)) return "indeterminate_shallow";
+      return "diverged";
+    }
+    if (mergeBase === headSha) return "fast_forward";
+    if (mergeBase === remoteSha) return "local_ahead";
+    return "diverged";
+  }
+
+  private async isShallowRepository(git: SimpleGit): Promise<boolean> {
+    try {
+      const output = await git.raw(["rev-parse", "--is-shallow-repository"]);
+      return output.trim() === "true";
     } catch {
       return false;
     }

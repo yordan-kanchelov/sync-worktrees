@@ -18,6 +18,7 @@ import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 const ALL_REMOTE_BRANCHES_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";
+const SHALLOW_RELATION_DEEPEN_TARGETS = [50, 200, 1000] as const;
 
 export type CloneSkipReason =
   | { kind: "branch_mismatch"; phase: "init" | "sync"; currentBranch: string; expectedBranch: string }
@@ -25,7 +26,8 @@ export type CloneSkipReason =
   | { kind: "dirty_tree" }
   | { kind: "diverged"; branch: string }
   | { kind: "ahead_unpushed"; branch: string }
-  | { kind: "missing_remote_ref"; branch: string; source: "fetch_error" | "post_fetch_verify" };
+  | { kind: "missing_remote_ref"; branch: string; source: "fetch_error" | "post_fetch_verify" }
+  | { kind: "indeterminate_shallow"; branch: string; deepenedTo: number };
 
 export type CloneSkipListener = (reason: CloneSkipReason) => void;
 
@@ -191,6 +193,33 @@ export class CloneSyncService {
       `[deepen] Existing shallow clone for '${this.repoName}' has no configured depth; fetching full history...`,
     );
     await git.fetch(["--unshallow"]);
+  }
+
+  private getDeepenTargets(): readonly number[] {
+    const configuredDepth = this.config.depth;
+    if (configuredDepth === undefined) return [];
+    // `git fetch --depth N` can shorten a shallow repo if N is below current depth.
+    // Skip targets at or below the configured depth — they would never widen history.
+    return SHALLOW_RELATION_DEEPEN_TARGETS.filter((target) => target > configuredDepth);
+  }
+
+  private async deepenShallowHistoryToDepth(git: SimpleGit, branch: string, targetDepth: number): Promise<void> {
+    this.logger.info(
+      `[deepen] Shallow clone for '${this.repoName}' lacks enough history to classify origin/${branch}; ` +
+        `refetching to depth ${targetDepth} before deciding.`,
+    );
+    this.emitProgress({
+      phase: "fetch",
+      message: `Deepening '${this.repoName}' to depth ${targetDepth} before classifying origin/${branch}`,
+    });
+    await git.fetch([
+      "origin",
+      "--depth",
+      String(targetDepth),
+      "--prune",
+      "--progress",
+      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ]);
   }
 
   async resolveBranch(): Promise<string> {
@@ -494,14 +523,40 @@ export class CloneSyncService {
       return;
     }
 
-    const canFastForward = await this.gitService.canFastForward(worktreeDir, branch);
-    if (!canFastForward) {
-      const isAhead = await this.gitService.isLocalAheadOfRemote(worktreeDir, branch);
-      if (isAhead) {
+    let relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch);
+    let lastDeepenedTo = 0;
+    if (relationship === "indeterminate_shallow") {
+      for (const target of this.getDeepenTargets()) {
+        await this.deepenShallowHistoryToDepth(git, branch, target);
+        lastDeepenedTo = target;
+        relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch);
+        if (relationship !== "indeterminate_shallow") break;
+      }
+    }
+
+    if (relationship === "up_to_date") {
+      this.logger.info(`'${this.repoName}' already up to date with origin/${branch}.`);
+      this.emitProgress({
+        phase: "skip",
+        message: `'${this.repoName}' already up to date with origin/${branch}`,
+      });
+      return;
+    }
+
+    if (relationship !== "fast_forward") {
+      if (relationship === "local_ahead") {
         this.recordSkip(
           { kind: "ahead_unpushed", branch },
           `⏭️  '${this.repoName}' has unpushed commits ahead of origin/${branch}. Skipping merge.`,
           `Skipping merge for '${this.repoName}': unpushed commits ahead of origin/${branch}`,
+          "info",
+        );
+      } else if (relationship === "indeterminate_shallow") {
+        this.recordSkip(
+          { kind: "indeterminate_shallow", branch, deepenedTo: lastDeepenedTo },
+          `⏭️  '${this.repoName}' could not classify origin/${branch} after deepening to ${lastDeepenedTo} commits. ` +
+            `Skipping merge — consider removing or raising 'depth' to unshallow.`,
+          `Skipping merge for '${this.repoName}': shallow depth budget exhausted at ${lastDeepenedTo}`,
           "info",
         );
       } else {
@@ -512,16 +567,6 @@ export class CloneSyncService {
           "info",
         );
       }
-      return;
-    }
-
-    const isBehind = await this.gitService.isWorktreeBehind(worktreeDir);
-    if (!isBehind) {
-      this.logger.info(`'${this.repoName}' already up to date with origin/${branch}.`);
-      this.emitProgress({
-        phase: "skip",
-        message: `'${this.repoName}' already up to date with origin/${branch}`,
-      });
       return;
     }
 

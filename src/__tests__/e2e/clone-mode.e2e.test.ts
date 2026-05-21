@@ -53,6 +53,22 @@ describeOrSkip("Clone-mode E2E tests", () => {
     return remoteBare;
   }
 
+  async function pushCommit(remoteBare: string, name: string, fileName: string, message: string): Promise<string> {
+    const pushDir = path.join(tmpBase, `${name}-push`);
+    await fs.rm(pushDir, { recursive: true, force: true });
+
+    execSync(`git clone "${remoteBare}" "${pushDir}"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.name "Test User"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.email "test@example.com"`, { encoding: "utf-8" });
+
+    await fs.writeFile(path.join(pushDir, fileName), `${message}\n`);
+    execSync(`git -C "${pushDir}" add "${fileName}"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" commit -m "${message}"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" push origin main`, { encoding: "utf-8" });
+
+    return execSync(`git -C "${pushDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+  }
+
   async function writeSingleCloneConfig(
     name: string,
     repoUrl: string,
@@ -330,6 +346,36 @@ export default {
     expect(secondRun).toContain("[deepen]");
     expect(shallowAfterDepthRemoval).toBe("false");
     expect(commitCount).toBeGreaterThan(1);
+  }, 120000);
+
+  it("deepens shallow clone history when remote is multiple commits ahead", async () => {
+    const remoteBare = await createLocalRemote("shallow-multi-commit-remote");
+    const configDir = path.join(tmpBase, "shallow-multi-commit-config");
+    const worktreeDir = path.join(configDir, "clone");
+    const configPath = path.join(configDir, "shallow-multi-commit.config.js");
+    const repoUrl = `file://${remoteBare}`;
+    await fs.mkdir(configDir, { recursive: true });
+
+    await writeCloneDepthConfig(configPath, repoUrl, worktreeDir, ",\n      depth: 1");
+
+    execSync(`node "${cliPath}" --config "${configPath}"`, {
+      encoding: "utf-8",
+      timeout: 60000,
+    });
+
+    await pushCommit(remoteBare, "shallow-multi-commit", "three.txt", "Add three");
+    await pushCommit(remoteBare, "shallow-multi-commit", "four.txt", "Add four");
+    const newRemoteHead = await pushCommit(remoteBare, "shallow-multi-commit", "five.txt", "Add five");
+
+    const secondRun = execSync(`node "${cliPath}" --config "${configPath}"`, {
+      encoding: "utf-8",
+      timeout: 60000,
+    });
+
+    const localHead = execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+    expect(secondRun).toContain("[deepen]");
+    expect(secondRun).not.toContain("Clone-mode skips");
+    expect(localHead).toBe(newRemoteHead);
   }, 120000);
 
   it("rejects clone mode combined with branchInclude (validation error)", async () => {

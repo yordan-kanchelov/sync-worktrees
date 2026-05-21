@@ -72,9 +72,7 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     verifyLfs: vi.fn().mockResolvedValue(undefined),
     getSparseCheckoutService: vi.fn().mockReturnValue(sparseService),
     checkWorktreeStatus: vi.fn().mockResolvedValue(true),
-    canFastForward: vi.fn().mockResolvedValue(true),
-    isLocalAheadOfRemote: vi.fn().mockResolvedValue(false),
-    isWorktreeBehind: vi.fn().mockResolvedValue(true),
+    classifyRemoteRelationship: vi.fn().mockResolvedValue("fast_forward"),
     ...overrides,
   };
   return stub as unknown as GitService;
@@ -488,8 +486,7 @@ describe("CloneSyncService", () => {
 
     it("does not reset on diverged history", async () => {
       const gitService = buildGitService({
-        canFastForward: vi.fn().mockResolvedValue(false),
-        isLocalAheadOfRemote: vi.fn().mockResolvedValue(false),
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("diverged"),
       });
       const service = new CloneSyncService(makeConfig(), gitService, logger);
       setInitialized(service);
@@ -497,6 +494,93 @@ describe("CloneSyncService", () => {
       await service.runSyncAttempt();
 
       expect(gitMock.merge).not.toHaveBeenCalled();
+    });
+
+    it("deepens a shallow configured clone before classifying as fast-forward", async () => {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "true";
+        return "";
+      });
+      const classify = vi.fn().mockResolvedValueOnce("indeterminate_shallow").mockResolvedValueOnce("fast_forward");
+      const gitService = buildGitService({ classifyRemoteRelationship: classify });
+      const service = new CloneSyncService(makeConfig({ depth: 1 }), gitService, logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["origin", "--prune", "--progress", "--depth", "1"]);
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(2, [
+        "origin",
+        "--depth",
+        "50",
+        "--prune",
+        "--progress",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ]);
+      expect(classify).toHaveBeenCalledTimes(2);
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+    });
+
+    it("walks 50 -> 200 -> 1000 depth targets before giving up on a shallow indeterminate clone", async () => {
+      const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
+      const skips: CloneSkipReason[] = [];
+      const gitService = buildGitService({ classifyRemoteRelationship: classify });
+      const service = new CloneSyncService(makeConfig({ depth: 1 }), gitService, logger, {
+        onSkip: (reason) => skips.push(reason),
+      });
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      const depthArgs = gitMock.fetch.mock.calls
+        .map((call) => call[0] as string[])
+        .filter((args) => args.includes("--depth") && args.includes("+refs/heads/main:refs/remotes/origin/main"))
+        .map((args) => Number(args[args.indexOf("--depth") + 1]));
+      expect(depthArgs).toEqual([50, 200, 1000]);
+      expect(classify).toHaveBeenCalledTimes(4);
+      expect(gitMock.merge).not.toHaveBeenCalled();
+      expect(skips).toEqual([{ kind: "indeterminate_shallow", branch: "main", deepenedTo: 1000 }]);
+    });
+
+    it("skips deepen targets at or below configured depth", async () => {
+      const classify = vi.fn().mockResolvedValueOnce("indeterminate_shallow").mockResolvedValueOnce("fast_forward");
+      const gitService = buildGitService({ classifyRemoteRelationship: classify });
+      const service = new CloneSyncService(makeConfig({ depth: 500 }), gitService, logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      const branchRefspecFetches = gitMock.fetch.mock.calls
+        .map((call) => call[0] as string[])
+        .filter((args) => args.includes("+refs/heads/main:refs/remotes/origin/main"));
+      expect(branchRefspecFetches).toHaveLength(1);
+      expect(branchRefspecFetches[0]).toEqual([
+        "origin",
+        "--depth",
+        "1000",
+        "--prune",
+        "--progress",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ]);
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+    });
+
+    it("records ahead_unpushed when classify returns local_ahead", async () => {
+      const skips: CloneSkipReason[] = [];
+      const gitService = buildGitService({
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("local_ahead"),
+      });
+      const service = new CloneSyncService(makeConfig(), gitService, logger, {
+        onSkip: (reason) => skips.push(reason),
+      });
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      expect(gitMock.merge).not.toHaveBeenCalled();
+      expect(skips).toEqual([{ kind: "ahead_unpushed", branch: "main" }]);
     });
 
     it("fast-forwards when clean, behind, and ff-able", async () => {
@@ -525,7 +609,7 @@ describe("CloneSyncService", () => {
 
     it("no-ops when already up to date", async () => {
       const gitService = buildGitService({
-        isWorktreeBehind: vi.fn().mockResolvedValue(false),
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("up_to_date"),
       });
       const service = new CloneSyncService(makeConfig(), gitService, logger);
       setInitialized(service);
@@ -652,8 +736,7 @@ describe("CloneSyncService", () => {
 
     it("records ahead_unpushed when local is ahead of origin", async () => {
       const gitService = buildGitService({
-        canFastForward: vi.fn().mockResolvedValue(false),
-        isLocalAheadOfRemote: vi.fn().mockResolvedValue(true),
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("local_ahead"),
       });
       const { service, skips } = buildServiceWithSkips(gitService);
 
@@ -664,8 +747,7 @@ describe("CloneSyncService", () => {
 
     it("records diverged when local has diverged from origin", async () => {
       const gitService = buildGitService({
-        canFastForward: vi.fn().mockResolvedValue(false),
-        isLocalAheadOfRemote: vi.fn().mockResolvedValue(false),
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("diverged"),
       });
       const { service, skips } = buildServiceWithSkips(gitService);
 
@@ -676,7 +758,7 @@ describe("CloneSyncService", () => {
 
     it("does not record a skip when already up to date", async () => {
       const gitService = buildGitService({
-        isWorktreeBehind: vi.fn().mockResolvedValue(false),
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("up_to_date"),
       });
       const { service, skips } = buildServiceWithSkips(gitService);
 

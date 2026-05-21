@@ -18,6 +18,8 @@ export function formatCloneSkipReason(reason: CloneSkipReason): string {
       return reason.source === "fetch_error"
         ? `origin/${reason.branch} missing on remote (fetch error)`
         : `origin/${reason.branch} pruned after fetch`;
+    case "indeterminate_shallow":
+      return `unable to classify origin/${reason.branch} after deepening shallow history to ${reason.deepenedTo} commits — remove or raise 'depth' to unshallow`;
     default: {
       const _exhaustive: never = reason;
       return _exhaustive;

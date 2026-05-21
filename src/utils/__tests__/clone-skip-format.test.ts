@@ -59,4 +59,16 @@ describe("formatCloneSkipReason", () => {
       }),
     ).toBe("origin/main pruned after fetch");
   });
+
+  it("formats indeterminate_shallow with branch and deepen target", () => {
+    expect(
+      formatCloneSkipReason({
+        kind: "indeterminate_shallow",
+        branch: "main",
+        deepenedTo: 1000,
+      }),
+    ).toBe(
+      "unable to classify origin/main after deepening shallow history to 1000 commits — remove or raise 'depth' to unshallow",
+    );
+  });
 });

@@ -1541,6 +1541,137 @@ prunable
     });
   });
 
+  describe("classifyRemoteRelationship", () => {
+    beforeEach(async () => {
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+    });
+
+    function buildClient(opts: { headSha: string; remoteSha: string; mergeBase?: string | Error; isShallow?: string }) {
+      const revparse = vi
+        .fn<any>()
+        .mockResolvedValueOnce(`${opts.headSha}\n`)
+        .mockResolvedValueOnce(`${opts.remoteSha}\n`);
+
+      const raw = vi.fn<any>().mockImplementation(async (...rawArgs: unknown[]) => {
+        const args = rawArgs[0] as string[];
+        if (args[0] === "merge-base") {
+          if (opts.mergeBase instanceof Error) throw opts.mergeBase;
+          return `${opts.mergeBase ?? ""}\n`;
+        }
+        if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
+          return `${opts.isShallow ?? "false"}\n`;
+        }
+        return "";
+      });
+
+      return { revparse, raw };
+    }
+
+    it("returns up_to_date when HEAD equals origin tip", async () => {
+      const client = buildClient({ headSha: "aaa", remoteSha: "aaa" });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe("up_to_date");
+      expect(client.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["merge-base"]));
+    });
+
+    it("returns fast_forward when merge-base equals HEAD", async () => {
+      const client = buildClient({
+        headSha: "head",
+        remoteSha: "tip",
+        mergeBase: "head",
+      });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe("fast_forward");
+    });
+
+    it("returns local_ahead when merge-base equals remote tip", async () => {
+      const client = buildClient({
+        headSha: "head",
+        remoteSha: "tip",
+        mergeBase: "tip",
+      });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe("local_ahead");
+    });
+
+    it("returns diverged when merge-base is neither HEAD nor remote", async () => {
+      const client = buildClient({
+        headSha: "head",
+        remoteSha: "tip",
+        mergeBase: "ancestor",
+      });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe("diverged");
+    });
+
+    it("returns indeterminate_shallow when merge-base throws on a shallow repo", async () => {
+      const client = buildClient({
+        headSha: "head",
+        remoteSha: "tip",
+        mergeBase: new Error("fatal: not a tree object"),
+        isShallow: "true",
+      });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe("indeterminate_shallow");
+    });
+
+    it("returns indeterminate_shallow when merge-base returns empty (simple-git swallowed exit 1) on a shallow repo", async () => {
+      const client = buildClient({
+        headSha: "head",
+        remoteSha: "tip",
+        mergeBase: "",
+        isShallow: "true",
+      });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe("indeterminate_shallow");
+    });
+
+    it("returns diverged when merge-base throws on a non-shallow repo", async () => {
+      const client = buildClient({
+        headSha: "head",
+        remoteSha: "tip",
+        mergeBase: new Error("fatal: not a tree object"),
+        isShallow: "false",
+      });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe("diverged");
+    });
+
+    it("returns diverged when revparse of HEAD or remote fails", async () => {
+      const client = {
+        revparse: vi.fn<any>().mockRejectedValue(new Error("bad ref")),
+        raw: vi.fn<any>(),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship("/test/worktrees/feature-1", "feature-1");
+
+      expect(result).toBe("diverged");
+    });
+  });
+
   describe("addWorktree - cascading fallback failures", () => {
     beforeEach(async () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
