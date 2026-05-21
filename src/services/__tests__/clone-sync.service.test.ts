@@ -205,6 +205,35 @@ describe("CloneSyncService", () => {
       expect(service.isInitialized()).toBe(true);
     });
 
+    it("preserves custom non-branch fetch refspecs when widening an existing clone", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
+      (fs.access as unknown as Mock).mockResolvedValue(undefined);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "config --get-all remote.origin.fetch") {
+          return ["+refs/heads/main:refs/remotes/origin/main", "+refs/pull/*/head:refs/remotes/origin/pr/*"].join("\n");
+        }
+        return "";
+      });
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(gitMock.raw).toHaveBeenCalledWith(["remote", "set-branches", "origin", "*"]);
+      expect(gitMock.raw).toHaveBeenCalledWith([
+        "config",
+        "--add",
+        "remote.origin.fetch",
+        "+refs/pull/*/head:refs/remotes/origin/pr/*",
+      ]);
+      expect(service.isInitialized()).toBe(true);
+    });
+
     it("errors out when existing clone is on a different branch", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
       (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);

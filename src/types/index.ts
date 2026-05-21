@@ -103,7 +103,8 @@ export interface Config {
   branch?: string;
   /**
    * Shallow clone depth for config-file clone-mode repositories. Maps to
-   * `git clone --depth <N>` on the initial clone only.
+   * `git clone --depth <N> --no-single-branch` on initial clone and keeps
+   * shallow sync fetches at the configured depth.
    */
   depth?: number;
   /**

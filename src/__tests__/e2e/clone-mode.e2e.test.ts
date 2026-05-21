@@ -161,6 +161,38 @@ export default {
     expect(featureCommitCount).toBe("1");
   }, 60000);
 
+  it("widens legacy single-branch clone refspecs and fetches missing remote branches", async () => {
+    const remoteBare = await createLocalRemote("legacy-remote-branches");
+    const seedDir = path.join(tmpBase, "legacy-remote-branches-seed");
+    execSync(`git -C "${seedDir}" switch -c "feat/cloudflare-deploys"`, { encoding: "utf-8" });
+    await fs.writeFile(path.join(seedDir, "cloudflare.txt"), "cloudflare\n");
+    execSync(`git -C "${seedDir}" add cloudflare.txt`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" commit -m "Add cloudflare deploys"`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" push origin "feat/cloudflare-deploys"`, { encoding: "utf-8" });
+
+    const worktreeDir = path.join(tmpBase, "legacy-remote-branches", "wt");
+    execSync(`git clone --branch main --single-branch "file://${remoteBare}" "${worktreeDir}"`, {
+      encoding: "utf-8",
+    });
+
+    const configPath = path.join(tmpBase, "legacy-remote-branches", "legacy.config.js");
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir);
+
+    const beforeBranch = execSync(`git -C "${worktreeDir}" branch -r --list "origin/feat/cloudflare-deploys"`, {
+      encoding: "utf-8",
+    });
+    execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+
+    const fetchRefspec = execSync(`git -C "${worktreeDir}" config --get-all remote.origin.fetch`, {
+      encoding: "utf-8",
+    }).trim();
+    const remoteBranches = execSync(`git -C "${worktreeDir}" branch -r --list`, { encoding: "utf-8" });
+
+    expect(beforeBranch).toBe("");
+    expect(fetchRefspec).toBe("+refs/heads/*:refs/remotes/origin/*");
+    expect(remoteBranches).toContain("origin/feat/cloudflare-deploys");
+  }, 60000);
+
   it("is idempotent on subsequent runs (no re-clone, fetch-only sync)", async () => {
     const worktreeDir = path.join(tmpBase, "idempotent-clone", "wt");
     const configPath = await writeSingleCloneConfig("idempotent", HELLO_WORLD, worktreeDir, "master");

@@ -115,8 +115,21 @@ export class CloneSyncService {
 
     if (fetchRefspecs.includes(ALL_REMOTE_BRANCHES_REFSPEC)) return;
 
+    const customRefspecs = fetchRefspecs.filter((refspec) => !this.isOriginRemoteBranchTrackingRefspec(refspec));
+
     this.logger.info(`Configuring '${this.repoName}' to fetch all remote branches from origin.`);
     await git.raw(["remote", "set-branches", "origin", "*"]);
+    for (const refspec of customRefspecs) {
+      await git.raw(["config", "--add", "remote.origin.fetch", refspec]);
+    }
+  }
+
+  private isOriginRemoteBranchTrackingRefspec(refspec: string): boolean {
+    const withoutForce = refspec.startsWith("+") ? refspec.slice(1) : refspec;
+    if (withoutForce.startsWith("^")) return false;
+
+    const [source, destination] = withoutForce.split(":");
+    return source.startsWith("refs/heads/") && destination?.startsWith("refs/remotes/origin/") === true;
   }
 
   private async hasRemoteBranch(git: SimpleGit, branch: string): Promise<boolean> {
