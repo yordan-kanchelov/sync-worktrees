@@ -111,8 +111,13 @@ async function runMultipleRepositories(
       }
     }
 
-    const initFailures = initResults.filter((r) => r.status === "rejected").length;
-    const syncFailures = syncResults.filter((r) => r.status === "rejected").length;
+    const skippedNames = new Set(skipsByRepo.map(({ repo }) => repo));
+    const initFailures = initResults.filter(
+      (result, index) => result.status === "rejected" && !skippedNames.has(repositories[index].name),
+    ).length;
+    const syncFailures = syncResults.filter(
+      (result, index) => result.status === "rejected" && !skippedNames.has(servicesToSync[index].name),
+    ).length;
     const failedCount = initFailures + syncFailures;
     const skippedCount = skipsByRepo.length;
     const processedRepoWord = repositories.length === 1 ? "repo" : "repos";
