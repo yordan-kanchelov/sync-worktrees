@@ -13,6 +13,7 @@ import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { HookExecutionService } from "./hook-execution.service";
 import { PathResolutionService } from "./path-resolution.service";
 import { Logger, LogOutputFn, LogLevel } from "./logger.service";
+import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
@@ -271,12 +272,18 @@ export class InteractiveUIService {
       this.events.emit("updateRepositoryCount", this.repositoryCount);
       this.events.emit("updateCronSchedule", this.cronSchedule);
 
-      const { failures, skipped, attempted } = await this.runSyncServices(this.syncServices);
+      const { failures, skipped, clonePhaseSkips, attempted } = await this.runSyncServices(this.syncServices);
       await this.recordSyncOutcome({ failures, skipped, attempted });
       this.setStatus("idle");
 
       for (const skip of skipped) {
         this.addLog(`Sync skipped for '${skip.repo}': ${skip.reason}`, "warn");
+      }
+      for (const skip of clonePhaseSkips) {
+        this.addLog(`Clone-mode skip for '${skip.repo}': ${skip.reason}`, "warn");
+      }
+      if (clonePhaseSkips.length > 0) {
+        this.addLog(`⚠️  ${clonePhaseSkips.length} clone-mode skip(s) during reload`, "warn");
       }
       if (failures.length > 0) {
         for (const failure of failures) {
@@ -708,7 +715,7 @@ export class InteractiveUIService {
     this.setStatus("syncing");
 
     try {
-      const { failures, skipped, attempted } = await this.runSyncServices(services);
+      const { failures, skipped, clonePhaseSkips, attempted } = await this.runSyncServices(services);
 
       if (options.logErrors) {
         for (const failure of failures) {
@@ -717,6 +724,12 @@ export class InteractiveUIService {
       }
       for (const skip of skipped) {
         this.addLog(`Sync skipped for '${skip.repo}': ${skip.reason}`, "warn");
+      }
+      for (const skip of clonePhaseSkips) {
+        this.addLog(`Clone-mode skip for '${skip.repo}': ${skip.reason}`, "warn");
+      }
+      if (clonePhaseSkips.length > 0) {
+        this.addLog(`⚠️  ${clonePhaseSkips.length} clone-mode skip(s) this cycle`, "warn");
       }
 
       await this.recordSyncOutcome({ failures, skipped, attempted });
@@ -743,11 +756,13 @@ export class InteractiveUIService {
   private async runSyncServices(services: WorktreeSyncService[]): Promise<{
     failures: Array<{ repo: string; error: string }>;
     skipped: Array<{ repo: string; reason: string }>;
+    clonePhaseSkips: Array<{ repo: string; reason: string }>;
     attempted: number;
   }> {
     const syncResults = await Promise.allSettled(
       services.map((service) =>
         this.limit(async () => {
+          service.clearRecordedSkips();
           if (!service.isInitialized()) {
             await service.initialize();
           }
@@ -762,20 +777,24 @@ export class InteractiveUIService {
 
     const failures: Array<{ repo: string; error: string }> = [];
     const skipped: Array<{ repo: string; reason: string }> = [];
+    const clonePhaseSkips: Array<{ repo: string; reason: string }> = [];
     for (let i = 0; i < syncResults.length; i++) {
       const result = syncResults[i];
+      const repoName =
+        (services[i].config as RepositoryConfig).name || services[i].config.repoUrl;
       if (result.status === "rejected") {
-        const repoName = (result.reason as { repoName?: string })?.repoName ?? "unknown";
+        const fallbackName = (result.reason as { repoName?: string })?.repoName ?? repoName;
         const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
-        failures.push({ repo: repoName, error: errorMessage });
+        failures.push({ repo: fallbackName, error: errorMessage });
       } else if (result.value.result && result.value.result.started === false) {
-        const repoName =
-          (services[i].config as RepositoryConfig).name || services[i].config.repoUrl;
         skipped.push({ repo: repoName, reason: `sync skipped: ${result.value.result.reason}` });
+      }
+      for (const reason of services[i].getRecordedSkips()) {
+        clonePhaseSkips.push({ repo: repoName, reason: formatCloneSkipReason(reason) });
       }
     }
 
-    return { failures, skipped, attempted: services.length };
+    return { failures, skipped, clonePhaseSkips, attempted: services.length };
   }
 
   private buildUiLogger(): Logger {

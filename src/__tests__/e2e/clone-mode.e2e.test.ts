@@ -206,7 +206,7 @@ export default {
     expect(secondRun).toContain("up to date with origin/master");
   }, 120000);
 
-  it("errors with branch mismatch during initialize when checkout is on a different branch", async () => {
+  it("soft-skips branch mismatch during initialize when checkout is on a different branch", async () => {
     const worktreeDir = path.join(tmpBase, "mismatch-clone", "wt");
     const configPath = await writeSingleCloneConfig("mismatch", HELLO_WORLD, worktreeDir, "master");
     const command = `node "${cliPath}" --config "${configPath}"`;
@@ -215,17 +215,17 @@ export default {
 
     execSync(`git -C "${worktreeDir}" checkout -b sidebranch`, { encoding: "utf-8" });
 
-    let stderr = "";
-    try {
-      execSync(command, { encoding: "utf-8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] });
-    } catch (error) {
-      const err = error as { stderr?: Buffer | string; stdout?: Buffer | string; status?: number };
-      stderr = String(err.stderr ?? "") + String(err.stdout ?? "");
-      expect(err.status).not.toBe(0);
-    }
+    const output = execSync(`${command} 2>&1`, {
+      encoding: "utf-8",
+      timeout: 60000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
-    expect(stderr).toMatch(/branch 'sidebranch', expected 'master'/);
-    expect(stderr).toContain("CONFIG_CLONE_BRANCH_MISMATCH");
+    expect(output).toMatch(/is on branch 'sidebranch', expected 'master'/);
+    expect(output).toContain("Clone-mode skips");
+    expect(output).toMatch(/clone is on 'sidebranch', expected 'master' \(since process start\)/);
+    expect(output).toMatch(/Processed 1 repo: 0 synced, 1 with clone-mode skips, 0 failed/);
+    expect(output).not.toContain("CONFIG_CLONE_BRANCH_MISMATCH");
   }, 120000);
 
   it("supports mixed config: one clone-mode repo + one worktree-mode repo", async () => {

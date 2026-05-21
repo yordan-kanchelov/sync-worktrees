@@ -5,6 +5,7 @@ import pLimit from "p-limit";
 import { DEFAULT_CONFIG } from "../constants";
 import { PathResolutionService } from "../services/path-resolution.service";
 import { WorktreeStatusService } from "../services/worktree-status.service";
+import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { isValidGitBranchName } from "../utils/git-validation";
 import { pathsEqual } from "../utils/path-compare";
@@ -414,13 +415,18 @@ export async function handleSync(
   const dispose = attachProgressReporter(service, extra);
   try {
     const start = Date.now();
+    service.clearRecordedSkips();
     const result = await service.sync();
     if (!result.started) {
       throw new SyncInProgressError(ctx.getEntry(params.repoName)?.name ?? params.repoName ?? "unknown");
     }
     const duration = Date.now() - start;
     ctx.invalidateDiscovered();
-    return formatToolResponse({ success: true, duration });
+    const skips = service.getRecordedSkips().map((reason) => ({
+      ...reason,
+      message: formatCloneSkipReason(reason),
+    }));
+    return formatToolResponse({ success: true, duration, skips });
   } finally {
     dispose();
   }

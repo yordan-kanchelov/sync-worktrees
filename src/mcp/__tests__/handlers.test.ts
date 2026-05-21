@@ -149,6 +149,8 @@ function makeCtx(opts: {
     })),
     sync: vi.fn<any>().mockResolvedValue({ started: true }),
     getGitService: () => git,
+    getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+    clearRecordedSkips: vi.fn<any>(),
   };
 
   const ctx = {
@@ -562,6 +564,29 @@ describe("handleSync", () => {
     expect(body.success).toBe(true);
     expect(typeof body.duration).toBe("number");
     expect(service.sync).toHaveBeenCalled();
+    expect(service.clearRecordedSkips).toHaveBeenCalledTimes(1);
+    expect(body.skips).toEqual([]);
+  });
+
+  it("surfaces recorded skips with formatted messages in the payload", async () => {
+    const { ctx, service } = makeCtx({});
+    service.getRecordedSkips.mockReturnValue([
+      { kind: "branch_mismatch", phase: "sync", currentBranch: "feature", expectedBranch: "main" },
+      { kind: "dirty_tree" },
+    ]);
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+    expect(body.success).toBe(true);
+    expect(body.skips).toEqual([
+      {
+        kind: "branch_mismatch",
+        phase: "sync",
+        currentBranch: "feature",
+        expectedBranch: "main",
+        message: "clone is on 'feature', expected 'main'",
+      },
+      { kind: "dirty_tree", message: "working tree has local changes" },
+    ]);
   });
 
   it("returns SYNC_IN_PROGRESS when sync returns started:false", async () => {

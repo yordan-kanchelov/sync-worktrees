@@ -145,6 +145,36 @@ describe("WorktreeSyncService", () => {
         ]),
       );
     });
+
+    it("accumulates clone-mode skip reasons across init for retrieval after sync", async () => {
+      const cloneConfig: Config = { ...mockConfig, mode: "clone", branch: "main" };
+      const cloneGitClient = {
+        raw: vi.fn(async (args: string[]) => {
+          const key = args.join(" ");
+          if (key === "remote get-url origin") return "https://github.com/test/repo.git";
+          if (key === "rev-parse --abbrev-ref HEAD") return "develop";
+          return "";
+        }),
+        clone: vi.fn().mockResolvedValue(undefined),
+        fetch: vi.fn().mockResolvedValue(undefined),
+        merge: vi.fn().mockResolvedValue(undefined),
+        env: vi.fn(),
+      };
+      cloneGitClient.env.mockReturnValue(cloneGitClient);
+      (simpleGit as unknown as Mock).mockReturnValue(cloneGitClient);
+      (fs.readdir as Mock<any>).mockResolvedValueOnce([".git"]);
+
+      service = new WorktreeSyncService(cloneConfig);
+      await service.initialize();
+
+      const skips = service.getRecordedSkips();
+      expect(skips).toEqual([
+        { kind: "branch_mismatch", phase: "init", currentBranch: "develop", expectedBranch: "main" },
+      ]);
+
+      service.clearRecordedSkips();
+      expect(service.getRecordedSkips()).toEqual([]);
+    });
   });
 
   describe("sync", () => {

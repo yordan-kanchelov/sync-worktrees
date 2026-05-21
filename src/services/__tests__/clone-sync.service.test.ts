@@ -8,6 +8,7 @@ import { CloneSyncService } from "../clone-sync.service";
 import { Logger } from "../logger.service";
 
 import type { Config } from "../../types";
+import type { CloneSkipReason } from "../clone-sync.service";
 import type { GitService } from "../git.service";
 import type { Mock } from "vitest";
 
@@ -234,7 +235,9 @@ describe("CloneSyncService", () => {
       expect(service.isInitialized()).toBe(true);
     });
 
-    it("errors out when existing clone is on a different branch", async () => {
+    it("soft-skips and records branch_mismatch when existing clone is on a different branch", async () => {
+      const progressEvents: Array<{ phase: string; message: string }> = [];
+      const skips: CloneSkipReason[] = [];
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
       (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
       (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
@@ -245,9 +248,60 @@ describe("CloneSyncService", () => {
         return "";
       });
 
-      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger);
+      const warnSpy = vi.spyOn(logger, "warn");
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
+        progressEmitter: (event) => progressEvents.push(event),
+        onSkip: (reason) => skips.push(reason),
+      });
 
-      await expect(service.initialize()).rejects.toThrow(/branch 'develop', expected 'main'/);
+      await expect(service.initialize()).resolves.toBeUndefined();
+
+      expect(service.isInitialized()).toBe(true);
+      expect(gitMock.clone).not.toHaveBeenCalled();
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["remote", "set-branches", "origin", "*"]);
+      expect(skips).toEqual([
+        { kind: "branch_mismatch", phase: "init", currentBranch: "develop", expectedBranch: "main" },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("is on branch 'develop', expected 'main'"));
+      expect(progressEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            phase: "skip",
+            message: expect.stringContaining("current branch 'develop' is not 'main'"),
+          }),
+        ]),
+      );
+      expect(progressEvents).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining("validated") })]),
+      );
+    });
+
+    it("soft-skips and records head_unreadable when HEAD read fails on existing clone", async () => {
+      const skips: CloneSkipReason[] = [];
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") throw new Error("fatal: not a git repository");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        return "";
+      });
+
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
+        onSkip: (reason) => skips.push(reason),
+      });
+
+      await expect(service.initialize()).resolves.toBeUndefined();
+
+      expect(service.isInitialized()).toBe(true);
+      expect(skips).toEqual([
+        expect.objectContaining({
+          kind: "head_unreadable",
+          phase: "init",
+          error: expect.stringContaining("not a git repository"),
+        }),
+      ]);
     });
 
     it("refuses to clone into a non-empty directory it didn't create", async () => {
@@ -508,6 +562,136 @@ describe("CloneSyncService", () => {
 
       expect(sparseService.needsUpdate).toHaveBeenCalledWith(config.worktreeDir, config.sparseCheckout);
       expect(sparseService.applyToWorktree).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("runSyncAttempt skip reasons", () => {
+    function setInitialized(service: CloneSyncService): void {
+      (service as unknown as { initialized: boolean }).initialized = true;
+      (service as unknown as { resolvedBranch: string }).resolvedBranch = "main";
+    }
+
+    function buildServiceWithSkips(gitService: GitService): { service: CloneSyncService; skips: CloneSkipReason[] } {
+      const skips: CloneSkipReason[] = [];
+      const service = new CloneSyncService(makeConfig(), gitService, logger, {
+        onSkip: (reason) => skips.push(reason),
+      });
+      setInitialized(service);
+      return { service, skips };
+    }
+
+    it("records branch_mismatch with phase 'sync' when current branch differs", async () => {
+      const { service, skips } = buildServiceWithSkips(buildGitService());
+      gitMock.raw.mockImplementation(async (args: string[]) =>
+        args.join(" ") === "rev-parse --abbrev-ref HEAD" ? "feature-x" : "",
+      );
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([
+        { kind: "branch_mismatch", phase: "sync", currentBranch: "feature-x", expectedBranch: "main" },
+      ]);
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it("records head_unreadable with phase 'sync' when HEAD read fails", async () => {
+      const { service, skips } = buildServiceWithSkips(buildGitService());
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        if (args.join(" ") === "rev-parse --abbrev-ref HEAD") throw new Error("ref read fail");
+        return "";
+      });
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([
+        expect.objectContaining({
+          kind: "head_unreadable",
+          phase: "sync",
+          error: expect.stringContaining("ref read fail"),
+        }),
+      ]);
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it("records missing_remote_ref source 'fetch_error' when fetch reports ref missing", async () => {
+      const { service, skips } = buildServiceWithSkips(buildGitService());
+      gitMock.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/main"));
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([{ kind: "missing_remote_ref", branch: "main", source: "fetch_error" }]);
+    });
+
+    it("records missing_remote_ref source 'post_fetch_verify' when fetch succeeds but ref is pruned", async () => {
+      const { service, skips } = buildServiceWithSkips(buildGitService());
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key.startsWith("show-ref --verify --quiet refs/remotes/origin/main")) {
+          throw new Error("show-ref: ref not found");
+        }
+        return "";
+      });
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([{ kind: "missing_remote_ref", branch: "main", source: "post_fetch_verify" }]);
+      expect(gitMock.merge).not.toHaveBeenCalled();
+    });
+
+    it("records dirty_tree when working tree is dirty", async () => {
+      const gitService = buildGitService({
+        checkWorktreeStatus: vi.fn().mockResolvedValue(false),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([{ kind: "dirty_tree" }]);
+    });
+
+    it("records ahead_unpushed when local is ahead of origin", async () => {
+      const gitService = buildGitService({
+        canFastForward: vi.fn().mockResolvedValue(false),
+        isLocalAheadOfRemote: vi.fn().mockResolvedValue(true),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([{ kind: "ahead_unpushed", branch: "main" }]);
+    });
+
+    it("records diverged when local has diverged from origin", async () => {
+      const gitService = buildGitService({
+        canFastForward: vi.fn().mockResolvedValue(false),
+        isLocalAheadOfRemote: vi.fn().mockResolvedValue(false),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([{ kind: "diverged", branch: "main" }]);
+    });
+
+    it("does not record a skip when already up to date", async () => {
+      const gitService = buildGitService({
+        isWorktreeBehind: vi.fn().mockResolvedValue(false),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([]);
+    });
+
+    it("does not record a skip when fast-forward succeeds", async () => {
+      const { service, skips } = buildServiceWithSkips(buildGitService());
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([]);
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
   });
 

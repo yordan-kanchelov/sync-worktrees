@@ -19,11 +19,22 @@ import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 const ALL_REMOTE_BRANCHES_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";
 
+export type CloneSkipReason =
+  | { kind: "branch_mismatch"; phase: "init" | "sync"; currentBranch: string; expectedBranch: string }
+  | { kind: "head_unreadable"; phase: "init" | "sync"; error: string }
+  | { kind: "dirty_tree" }
+  | { kind: "diverged"; branch: string }
+  | { kind: "ahead_unpushed"; branch: string }
+  | { kind: "missing_remote_ref"; branch: string; source: "fetch_error" | "post_fetch_verify" };
+
+export type CloneSkipListener = (reason: CloneSkipReason) => void;
+
 export class CloneSyncService {
   private initialized = false;
   private resolvedBranch: string | null = null;
   private branchCreatedActions: BranchCreatedActionsService;
   private progressEmitter?: GitProgressEmitter;
+  private onSkip?: CloneSkipListener;
 
   constructor(
     private config: Config,
@@ -32,10 +43,12 @@ export class CloneSyncService {
     options: {
       branchCreatedActions?: BranchCreatedActionsService;
       progressEmitter?: GitProgressEmitter;
+      onSkip?: CloneSkipListener;
     } = {},
   ) {
     this.branchCreatedActions = options.branchCreatedActions ?? new BranchCreatedActionsService();
     this.progressEmitter = options.progressEmitter;
+    this.onSkip = options.onSkip;
   }
 
   updateLogger(logger: Logger): void {
@@ -77,6 +90,25 @@ export class CloneSyncService {
       this.progressEmitter?.(event);
     } catch {
       // progress listeners must not break sync flow
+    }
+  }
+
+  private recordSkip(
+    reason: CloneSkipReason,
+    logMessage: string,
+    progressMessage?: string,
+    logLevel: "warn" | "info" = "warn",
+  ): void {
+    if (logLevel === "warn") {
+      this.logger.warn(logMessage);
+    } else {
+      this.logger.info(logMessage);
+    }
+    this.emitProgress({ phase: "skip", message: progressMessage ?? logMessage });
+    try {
+      this.onSkip?.(reason);
+    } catch {
+      // listeners must not break sync flow
     }
   }
 
@@ -189,7 +221,12 @@ export class CloneSyncService {
 
     if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) {
       this.emitProgress({ phase: "clone", message: `Validating existing clone for '${this.repoName}'` });
-      await this.validateExistingClone(branch);
+      const result = await this.validateExistingClone(branch);
+      if (!result.valid) {
+        this.recordSkip(result.skip, result.warnMessage, `Skipping '${this.repoName}': ${result.progressDetail}`);
+        this.initialized = true;
+        return;
+      }
       const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
       await this.ensureAllRemoteBranchesRefspec(git);
       this.initialized = true;
@@ -245,7 +282,9 @@ export class CloneSyncService {
     this.initialized = true;
   }
 
-  private async validateExistingClone(expectedBranch: string): Promise<void> {
+  private async validateExistingClone(
+    expectedBranch: string,
+  ): Promise<{ valid: true } | { valid: false; skip: CloneSkipReason; warnMessage: string; progressDetail: string }> {
     const worktreeDir = this.config.worktreeDir;
     const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
 
@@ -264,19 +303,32 @@ export class CloneSyncService {
     try {
       currentBranch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
     } catch (error) {
-      throw new ConfigError(
-        `Existing directory at '${worktreeDir}' has a .git folder but reading HEAD failed: ${getErrorMessage(error)}`,
-        "CLONE_VALIDATION_FAILED",
-      );
+      const errorMessage = getErrorMessage(error);
+      return {
+        valid: false,
+        skip: { kind: "head_unreadable", phase: "init", error: errorMessage },
+        warnMessage: `Existing clone at '${worktreeDir}' has a .git folder but reading HEAD failed: ${errorMessage}`,
+        progressDetail: `could not read HEAD (${errorMessage})`,
+      };
     }
 
     if (currentBranch !== expectedBranch) {
-      throw new ConfigError(
-        `Existing clone at '${worktreeDir}' is on branch '${currentBranch}', expected '${expectedBranch}'. ` +
+      return {
+        valid: false,
+        skip: {
+          kind: "branch_mismatch",
+          phase: "init",
+          currentBranch,
+          expectedBranch,
+        },
+        warnMessage:
+          `Existing clone at '${worktreeDir}' is on branch '${currentBranch}', expected '${expectedBranch}'. ` +
           `Switch the working tree to '${expectedBranch}' or update the config.`,
-        "CLONE_BRANCH_MISMATCH",
-      );
+        progressDetail: `current branch '${currentBranch}' is not '${expectedBranch}'`,
+      };
     }
+
+    return { valid: true };
   }
 
   private async maybeCleanupPartialClone(worktreeDir: string, cloneCreatedDir: boolean): Promise<void> {
@@ -354,22 +406,21 @@ export class CloneSyncService {
     try {
       currentBranch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
     } catch (error) {
-      this.logger.warn(`Could not read current branch from '${worktreeDir}': ${getErrorMessage(error)}`);
-      this.emitProgress({
-        phase: "skip",
-        message: `Skipping '${this.repoName}': could not read current branch`,
-      });
+      const errorMessage = getErrorMessage(error);
+      this.recordSkip(
+        { kind: "head_unreadable", phase: "sync", error: errorMessage },
+        `Could not read current branch from '${worktreeDir}': ${errorMessage}`,
+        `Skipping '${this.repoName}': could not read current branch`,
+      );
       return;
     }
 
     if (currentBranch !== branch) {
-      this.logger.warn(
+      this.recordSkip(
+        { kind: "branch_mismatch", phase: "sync", currentBranch, expectedBranch: branch },
         `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge.`,
+        `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
       );
-      this.emitProgress({
-        phase: "skip",
-        message: `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
-      });
       return;
     }
 
@@ -398,11 +449,11 @@ export class CloneSyncService {
         message.includes("Couldn't find remote ref") ||
         message.includes("not our ref")
       ) {
-        this.logger.warn(`Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`);
-        this.emitProgress({
-          phase: "skip",
-          message: `Skipping '${this.repoName}': origin/${branch} is missing`,
-        });
+        this.recordSkip(
+          { kind: "missing_remote_ref", branch, source: "fetch_error" },
+          `Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`,
+          `Skipping '${this.repoName}': origin/${branch} is missing`,
+        );
         return;
       } else {
         throw fetchError;
@@ -411,11 +462,11 @@ export class CloneSyncService {
     this.emitProgress({ phase: "fetch", message: `Fetched origin branches for '${this.repoName}'` });
 
     if (!(await this.hasRemoteBranch(git, branch))) {
-      this.logger.warn(`Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`);
-      this.emitProgress({
-        phase: "skip",
-        message: `Skipping '${this.repoName}': origin/${branch} is missing`,
-      });
+      this.recordSkip(
+        { kind: "missing_remote_ref", branch, source: "post_fetch_verify" },
+        `Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`,
+        `Skipping '${this.repoName}': origin/${branch} is missing`,
+      );
       return;
     }
 
@@ -434,11 +485,12 @@ export class CloneSyncService {
 
     const isClean = await this.gitService.checkWorktreeStatus(worktreeDir);
     if (!isClean) {
-      this.logger.info(`⏭️  Skipping ff-merge for '${this.repoName}' — working tree has local changes.`);
-      this.emitProgress({
-        phase: "skip",
-        message: `Skipping merge for '${this.repoName}': working tree has local changes`,
-      });
+      this.recordSkip(
+        { kind: "dirty_tree" },
+        `⏭️  Skipping ff-merge for '${this.repoName}' — working tree has local changes.`,
+        `Skipping merge for '${this.repoName}': working tree has local changes`,
+        "info",
+      );
       return;
     }
 
@@ -446,17 +498,19 @@ export class CloneSyncService {
     if (!canFastForward) {
       const isAhead = await this.gitService.isLocalAheadOfRemote(worktreeDir, branch);
       if (isAhead) {
-        this.logger.info(`⏭️  '${this.repoName}' has unpushed commits ahead of origin/${branch}. Skipping merge.`);
-        this.emitProgress({
-          phase: "skip",
-          message: `Skipping merge for '${this.repoName}': unpushed commits ahead of origin/${branch}`,
-        });
+        this.recordSkip(
+          { kind: "ahead_unpushed", branch },
+          `⏭️  '${this.repoName}' has unpushed commits ahead of origin/${branch}. Skipping merge.`,
+          `Skipping merge for '${this.repoName}': unpushed commits ahead of origin/${branch}`,
+          "info",
+        );
       } else {
-        this.logger.info(`⏭️  '${this.repoName}' has diverged from origin/${branch}. Skipping merge (no auto-reset).`);
-        this.emitProgress({
-          phase: "skip",
-          message: `Skipping merge for '${this.repoName}': diverged from origin/${branch}`,
-        });
+        this.recordSkip(
+          { kind: "diverged", branch },
+          `⏭️  '${this.repoName}' has diverged from origin/${branch}. Skipping merge (no auto-reset).`,
+          `Skipping merge for '${this.repoName}': diverged from origin/${branch}`,
+          "info",
+        );
       }
       return;
     }

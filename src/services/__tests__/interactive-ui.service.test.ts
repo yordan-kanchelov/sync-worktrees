@@ -49,6 +49,8 @@ const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance, mockSpawn, mo
         isInitialized: vi.fn<any>().mockReturnValue(false),
         isSyncInProgress: vi.fn<any>().mockReturnValue(false),
         updateLogger: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+        clearRecordedSkips: vi.fn<any>(),
         config: {} as any,
       } as any,
       mockSpawn: vi.fn<any>().mockImplementation(() => ({
@@ -133,6 +135,8 @@ describe("InteractiveUIService", () => {
       isInitialized: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
       updateLogger: vi.fn<any>(),
+      getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+      clearRecordedSkips: vi.fn<any>(),
       config: mockConfig,
     } as any;
 
@@ -381,6 +385,71 @@ describe("InteractiveUIService", () => {
       const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
 
       await expect(onManualSync()).resolves.not.toThrow();
+
+      service.destroy();
+    });
+
+    it("clears, collects, and logs clone-mode skips per cycle", async () => {
+      const skipService = {
+        sync: vi.fn<any>().mockResolvedValue({ started: true }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        clearRecordedSkips: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([
+          {
+            kind: "branch_mismatch",
+            phase: "sync",
+            currentBranch: "feature",
+            expectedBranch: "main",
+          },
+          { kind: "dirty_tree" },
+        ]),
+        config: { name: "alpha", worktreeDir: "/repo/alpha", repoUrl: "u" },
+      };
+
+      const service = new InteractiveUIService([skipService as any]);
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry));
+      service.getEvents().emit("uiReady");
+
+      const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
+      await onManualSync();
+
+      expect(skipService.clearRecordedSkips).toHaveBeenCalledTimes(1);
+      const messages = logs.map((l) => l.message);
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Clone-mode skip for 'alpha': clone is on 'feature', expected 'main'"),
+          expect.stringContaining("Clone-mode skip for 'alpha': working tree has local changes"),
+          expect.stringContaining("2 clone-mode skip(s) this cycle"),
+        ]),
+      );
+
+      service.destroy();
+    });
+
+    it("updates last-sync timestamp even when only clone-mode phase skips occurred", async () => {
+      const skipService = {
+        sync: vi.fn<any>().mockResolvedValue({ started: true }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        clearRecordedSkips: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([{ kind: "dirty_tree" }]),
+        config: { name: "alpha", worktreeDir: "/repo/alpha", repoUrl: "u" },
+      };
+
+      const service = new InteractiveUIService([skipService as any]);
+      const updateSpy = vi.fn();
+      service.getEvents().on("updateLastSyncTime", updateSpy);
+
+      const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
+      await onManualSync();
+
+      expect(updateSpy).toHaveBeenCalled();
 
       service.destroy();
     });

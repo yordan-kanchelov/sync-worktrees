@@ -11,11 +11,13 @@ import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { CLI_COMMANDS, parseArguments } from "./utils/cli";
+import { formatCloneSkipReason } from "./utils/clone-skip-format";
 import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
 import { fileExists } from "./utils/file-exists";
 import { promptForInitConfig } from "./utils/interactive";
 import { setupSignalHandlers } from "./utils/signal-handlers";
 
+import type { CloneSkipReason } from "./services/clone-sync.service";
 import type { ConfigFile, RepositoryConfig } from "./types";
 import type { CliOptions } from "./utils/cli";
 
@@ -87,10 +89,36 @@ async function runMultipleRepositories(
       ),
     );
 
+    const skipsByRepo: Array<{ repo: string; reasons: readonly CloneSkipReason[] }> = [];
+    let successCount = 0;
+    for (let i = 0; i < servicesToSync.length; i++) {
+      const { name, service } = servicesToSync[i];
+      const reasons = service.getRecordedSkips();
+      if (reasons.length > 0) {
+        skipsByRepo.push({ repo: name, reasons });
+      } else if (syncResults[i].status === "fulfilled") {
+        successCount++;
+      }
+    }
+
+    if (skipsByRepo.length > 0) {
+      const skipsRepoWord = skipsByRepo.length === 1 ? "repo" : "repos";
+      globalLogger.warn(`\n⚠️  Clone-mode skips (${skipsByRepo.length} ${skipsRepoWord}):`);
+      for (const { repo, reasons } of skipsByRepo) {
+        for (const reason of reasons) {
+          globalLogger.warn(`  • ${repo} — ${formatCloneSkipReason(reason)}`);
+        }
+      }
+    }
+
     const initFailures = initResults.filter((r) => r.status === "rejected").length;
     const syncFailures = syncResults.filter((r) => r.status === "rejected").length;
-    const successCount = syncResults.filter((r) => r.status === "fulfilled").length;
-    globalLogger.info(`\n✅ Successfully synced ${successCount}/${repositories.length} repositories`);
+    const failedCount = initFailures + syncFailures;
+    const skippedCount = skipsByRepo.length;
+    const processedRepoWord = repositories.length === 1 ? "repo" : "repos";
+    globalLogger.info(
+      `\n📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced, ${skippedCount} with clone-mode skips, ${failedCount} failed`,
+    );
 
     if (initFailures > 0 || syncFailures > 0) {
       process.exitCode = 1;

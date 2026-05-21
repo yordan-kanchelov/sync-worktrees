@@ -13,7 +13,7 @@ import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { retry } from "../utils/retry";
 import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
 
-import { CloneSyncService } from "./clone-sync.service";
+import { type CloneSkipReason, CloneSyncService } from "./clone-sync.service";
 import { GitService } from "./git.service";
 import { Logger } from "./logger.service";
 import { PathResolutionService } from "./path-resolution.service";
@@ -48,6 +48,7 @@ export class WorktreeSyncService {
   private syncInProgress: boolean = false;
   private pathResolution = new PathResolutionService();
   private progressListeners = new Set<ProgressListener>();
+  private skipsAccumulator: CloneSkipReason[] = [];
 
   constructor(public readonly config: Config) {
     this.logger = config.logger ?? Logger.createDefault(undefined, config.debug);
@@ -55,8 +56,19 @@ export class WorktreeSyncService {
     if (resolveMode(config) === REPOSITORY_MODES.CLONE) {
       this.cloneSyncService = new CloneSyncService(config, this.gitService, this.logger, {
         progressEmitter: (event): void => this.emitProgress(event),
+        onSkip: (reason): void => {
+          this.skipsAccumulator.push(reason);
+        },
       });
     }
+  }
+
+  public getRecordedSkips(): readonly CloneSkipReason[] {
+    return [...this.skipsAccumulator];
+  }
+
+  public clearRecordedSkips(): void {
+    this.skipsAccumulator = [];
   }
 
   private isCloneMode(): boolean {
