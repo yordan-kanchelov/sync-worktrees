@@ -361,6 +361,29 @@ describe("CloneSyncService", () => {
     });
   });
 
+  describe("getWorktrees", () => {
+    it("returns the direct clone checkout when it exists", async () => {
+      (fs.access as unknown as Mock).mockResolvedValue(undefined);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        if (args.join(" ") === "rev-parse --abbrev-ref HEAD") return "main";
+        return "";
+      });
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.getWorktrees()).resolves.toEqual([{ path: "/tmp/clone-demo", branch: "main" }]);
+    });
+
+    it("returns an empty list before the clone directory exists", async () => {
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.getWorktrees()).resolves.toEqual([]);
+      expect(simpleGit).not.toHaveBeenCalled();
+    });
+  });
+
   describe("runSyncAttempt", () => {
     function setInitialized(service: CloneSyncService): void {
       (service as unknown as { initialized: boolean }).initialized = true;

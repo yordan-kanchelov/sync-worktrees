@@ -122,6 +122,7 @@ function makeCtx(opts: {
   configuredRepoNames?: string[];
   allConfiguredWorktrees?: Record<string, Array<{ path: string; branch: string; isCurrent: boolean }>>;
   allConfiguredWorktreeErrors?: Record<string, string>;
+  service?: Record<string, unknown>;
 }): { ctx: RepositoryContext; git: MockGit; service: any } {
   const git: MockGit = {
     getWorktrees: vi.fn<any>().mockResolvedValue([]),
@@ -149,8 +150,11 @@ function makeCtx(opts: {
     })),
     sync: vi.fn<any>().mockResolvedValue({ started: true }),
     getGitService: () => git,
+    getWorktrees: vi.fn<any>().mockImplementation(() => (git.getWorktrees as any)()),
+    isCloneMode: vi.fn<any>().mockReturnValue(false),
     getRecordedSkips: vi.fn<any>().mockReturnValue([]),
     clearRecordedSkips: vi.fn<any>(),
+    ...opts.service,
   };
 
   const ctx = {
@@ -331,6 +335,40 @@ describe("handleListWorktrees", () => {
       error: "repo-b unavailable",
     });
   });
+
+  it("lists the single checkout for clone-mode repos", async () => {
+    const { ctx, git, service } = makeCtx({
+      service: {
+        isCloneMode: vi.fn<any>().mockReturnValue(true),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/clone", branch: "main" }]),
+      },
+      git: {
+        getWorktrees: vi.fn<any>().mockRejectedValue(new Error("bare repo missing")),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.worktrees).toHaveLength(1);
+    expect(body.worktrees[0]).toMatchObject({
+      path: "/repo/clone",
+      branch: "main",
+      label: "clean",
+    });
+    expect(service.getWorktrees).toHaveBeenCalled();
+    expect(git.getWorktrees).not.toHaveBeenCalled();
+  });
 });
 
 describe("handleCreateWorktree", () => {
@@ -500,6 +538,19 @@ describe("handleCreateWorktree", () => {
     expect(git.addWorktree).toHaveBeenCalled();
     expect(git.pushBranch).toHaveBeenCalledWith("new-branch");
   });
+
+  it("is unavailable for clone-mode repositories", async () => {
+    const { ctx, git, service } = makeCtx({
+      service: { isCloneMode: vi.fn<any>().mockReturnValue(true) },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(service.runExclusiveRepoOperation).not.toHaveBeenCalled();
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
 });
 
 describe("handleRemoveWorktree", () => {
@@ -540,6 +591,19 @@ describe("handleRemoveWorktree", () => {
     const body = parseResponse(result);
     expect(body.error).toBe(true);
     expect(body.message).toContain("not a registered worktree");
+    expect(git.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("is unavailable for clone-mode repositories", async () => {
+    const { ctx, git, service } = makeCtx({
+      service: { isCloneMode: vi.fn<any>().mockReturnValue(true) },
+    });
+
+    const result = await invoke(handleRemoveWorktree, ctx, { path: "/repo/clone", force: true });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(service.runExclusiveRepoOperation).not.toHaveBeenCalled();
     expect(git.removeWorktree).not.toHaveBeenCalled();
   });
 });
@@ -733,6 +797,19 @@ describe("handleUpdateWorktree", () => {
     expect(body.error).toBe(true);
     expect(body.message).toContain("not a registered worktree");
   });
+
+  it("is unavailable for clone-mode repositories", async () => {
+    const { ctx, git, service } = makeCtx({
+      service: { isCloneMode: vi.fn<any>().mockReturnValue(true) },
+    });
+
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/repo/clone" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(service.runExclusiveRepoOperation).not.toHaveBeenCalled();
+    expect(git.updateWorktree).not.toHaveBeenCalled();
+  });
 });
 
 describe("handleGetWorktreeStatus", () => {
@@ -750,6 +827,30 @@ describe("handleGetWorktreeStatus", () => {
     const body = parseResponse(result);
     expect(body.path).toContain("w/x");
     expect(body.isClean).toBe(false);
+  });
+
+  it("accepts the clone-mode checkout path from the service worktree list", async () => {
+    const { ctx, git, service } = makeCtx({
+      service: {
+        isCloneMode: vi.fn<any>().mockReturnValue(true),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/clone", branch: "main" }]),
+      },
+      git: {
+        getWorktrees: vi.fn<any>().mockRejectedValue(new Error("bare repo missing")),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          reasons: [],
+        }),
+      },
+    });
+
+    const result = await invoke(handleGetWorktreeStatus, ctx, { path: "/repo/clone" });
+    const body = parseResponse(result);
+
+    expect(body.path).toBe("/repo/clone");
+    expect(body.isClean).toBe(true);
+    expect(service.getWorktrees).toHaveBeenCalled();
+    expect(git.getWorktrees).not.toHaveBeenCalled();
   });
 });
 

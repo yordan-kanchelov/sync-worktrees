@@ -458,8 +458,7 @@ export class InteractiveUIService {
     }
 
     const service = this.syncServices[repoIndex];
-    const gitService = service.getGitService();
-    return gitService.getWorktrees();
+    return this.getWorktreesFromService(service);
   }
 
   public async getWorktreeStatusForRepo(repoIndex: number): Promise<WorktreeStatusEntry[]> {
@@ -469,7 +468,7 @@ export class InteractiveUIService {
 
     const service = this.syncServices[repoIndex];
     const gitService = service.getGitService();
-    const worktrees = await gitService.getWorktrees();
+    const worktrees = await this.getWorktreesFromService(service);
 
     const results = await Promise.allSettled(
       worktrees.map(async (wt) => {
@@ -481,6 +480,16 @@ export class InteractiveUIService {
     return results
       .filter((r): r is PromiseFulfilledResult<WorktreeStatusEntry> => r.status === "fulfilled")
       .map((r) => r.value);
+  }
+
+  private async getWorktreesFromService(service: WorktreeSyncService): Promise<Array<{ path: string; branch: string }>> {
+    const worktreeProvider = service as WorktreeSyncService & {
+      getWorktrees?: () => Promise<Array<{ path: string; branch: string }>>;
+    };
+    if (typeof worktreeProvider.getWorktrees === "function") {
+      return worktreeProvider.getWorktrees();
+    }
+    return service.getGitService().getWorktrees();
   }
 
   public async getDivergedDirectoriesForRepo(repoIndex: number): Promise<DivergedDirectoryInfo[]> {
@@ -839,8 +848,7 @@ export class InteractiveUIService {
       return;
     }
 
-    const gitService = service.getGitService();
-    const worktrees = await gitService.getWorktrees();
+    const worktrees = await this.getWorktreesFromService(service);
 
     const sourceWorktree = worktrees.find((w) => w.branch === baseBranch);
     const targetWorktree = worktrees.find((w) => w.branch === targetBranch);

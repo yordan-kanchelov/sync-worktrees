@@ -61,6 +61,23 @@ export class CloneSyncService {
     return this.initialized;
   }
 
+  async getWorktrees(): Promise<Array<{ path: string; branch: string }>> {
+    const worktreeDir = path.resolve(this.config.worktreeDir);
+    if (!(await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR)))) {
+      return [];
+    }
+
+    const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+    let branch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+
+    if (!branch || branch === "HEAD") {
+      const head = (await git.raw(["rev-parse", "--short", "HEAD"])).trim();
+      branch = head ? `(detached ${head})` : "(detached)";
+    }
+
+    return [{ path: worktreeDir, branch }];
+  }
+
   private get repoName(): string {
     return (this.config as RepositoryConfig).name ?? this.config.repoUrl;
   }

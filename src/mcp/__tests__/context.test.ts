@@ -337,6 +337,50 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
       await fs.rm(workspace, { recursive: true, force: true });
     }
   });
+
+  it("detects a configured clone-mode checkout as managed", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-cfg-"));
+    try {
+      const cloneDir = path.join(workspace, "slots", "game-platform");
+      await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
+      const nestedPath = path.join(cloneDir, "client");
+      await fs.mkdir(nestedPath, { recursive: true });
+
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { repositories: [
+        { name: "game-platform-slots", repoUrl: "https://github.com/test/game-platform.git", worktreeDir: "./slots/game-platform", mode: "clone", cronSchedule: "0 * * * *", runOnce: true }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      mockWorktreeList.mockImplementation((basePath: unknown, args: unknown) => {
+        if (basePath === cloneDir && Array.isArray(args) && args.join(" ") === "rev-parse --abbrev-ref HEAD") {
+          return Promise.resolve("master\n");
+        }
+        return Promise.reject(new Error("unexpected git call"));
+      });
+
+      const ctx = new RepositoryContext();
+      await ctx.loadConfig(configPath);
+      const result = await ctx.detectFromPath(nestedPath);
+      const details = await ctx.getAllConfiguredWorktreeDetails(result.currentWorktreePath);
+
+      expect(result.kind).toBe("managed");
+      expect(result.repoName).toBe("game-platform-slots");
+      expect(result.bareRepoPath).toBeNull();
+      expect(result.currentWorktreePath).toBe(cloneDir);
+      expect(result.allWorktrees).toEqual([{ path: cloneDir, branch: "master", isCurrent: true }]);
+      expect(result.capabilities.listWorktrees.available).toBe(true);
+      expect(result.capabilities.getStatus.available).toBe(true);
+      expect(result.capabilities.createWorktree.available).toBe(false);
+      expect(result.capabilities.updateWorktree.available).toBe(false);
+      expect(details.worktreesByRepo["game-platform-slots"]).toEqual([
+        { path: cloneDir, branch: "master", isCurrent: true },
+      ]);
+      expect(details.errorsByRepo).toEqual({});
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("RepositoryContext.getAllConfiguredWorktreeDetails", () => {

@@ -8,6 +8,7 @@ import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 import { normalizePathForCompare } from "../utils/path-compare";
+import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import type { Config, RepositoryConfig } from "../types";
@@ -365,6 +366,13 @@ export class RepositoryContext {
       return unsupported("No .git file found in path or any parent directory");
     }
     if (located.kind === "regular-git-dir") {
+      const cloneEntry = this.findConfiguredCloneEntry(worktreeRoot);
+      if (cloneEntry) {
+        return {
+          result: await this.buildCloneModeContext(cloneEntry, worktreeRoot, notes),
+          adminDir: null,
+        };
+      }
       return unsupported("Directory has .git folder (regular repo, not a sync-worktrees worktree)");
     }
 
@@ -603,6 +611,10 @@ export class RepositoryContext {
     entry: RepoEntry,
     currentWorktreePath: string | null,
   ): Promise<{ worktrees: DiscoveredWorktree[]; error?: string }> {
+    if (entry.source === "config" && resolveMode(entry.config) === REPOSITORY_MODES.CLONE) {
+      return this.readConfiguredCloneWorktree(entry, currentWorktreePath);
+    }
+
     if (entry.source !== "config" || !entry.config.bareRepoDir) return { worktrees: [] };
 
     const bareRepoPath = path.resolve(entry.config.bareRepoDir);
@@ -611,6 +623,90 @@ export class RepositoryContext {
     try {
       const output = await simpleGit(bareRepoPath).raw(["worktree", "list", "--porcelain"]);
       return { worktrees: parseWorktreeList(output, currentWorktreePath) };
+    } catch (err) {
+      return { worktrees: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  private findConfiguredCloneEntry(worktreeRoot: string): RepoEntry | null {
+    const foldedRoot = normalizePathForCompare(path.resolve(worktreeRoot));
+    for (const entry of this.repos.values()) {
+      if (entry.source !== "config" || resolveMode(entry.config) !== REPOSITORY_MODES.CLONE) continue;
+      if (normalizePathForCompare(path.resolve(entry.config.worktreeDir)) === foldedRoot) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  private async buildCloneModeContext(
+    entry: RepoEntry,
+    worktreeRoot: string,
+    notes: string[],
+  ): Promise<DiscoveredRepoContext> {
+    const resolvedRoot = path.resolve(worktreeRoot);
+    let currentBranch: string | null = null;
+    try {
+      currentBranch = await readCurrentBranch(resolvedRoot);
+    } catch (err) {
+      notes.push(`Could not read clone-mode branch: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const branch = currentBranch ?? entry.config.branch ?? "unknown";
+    const cloneModeReason = "clone-mode repositories have a single checkout; use sync for clone-mode updates";
+    const capabilities: Capabilities = {
+      listWorktrees: { available: true },
+      getStatus: { available: true },
+      createWorktree: { available: false, reason: cloneModeReason },
+      removeWorktree: { available: false, reason: cloneModeReason },
+      updateWorktree: { available: false, reason: cloneModeReason },
+      sync: { available: true },
+      initialize: { available: true },
+    };
+
+    const discovered: DiscoveredRepoContext = {
+      isWorktree: true,
+      kind: "managed",
+      currentBranch,
+      currentWorktreePath: resolvedRoot,
+      bareRepoPath: null,
+      repoUrl: entry.config.repoUrl,
+      worktreeDir: resolvedRoot,
+      allWorktrees: [{ path: resolvedRoot, branch, isCurrent: true }],
+      siblingRepositories: [],
+      configPath: this.configPath,
+      repoName: entry.name,
+      capabilities,
+      notes,
+    };
+
+    entry.discovered = discovered;
+    this.bootstrapCurrentRepo(entry.name, true);
+    return discovered;
+  }
+
+  private async readConfiguredCloneWorktree(
+    entry: RepoEntry,
+    currentWorktreePath: string | null,
+  ): Promise<{ worktrees: DiscoveredWorktree[]; error?: string }> {
+    const worktreePath = path.resolve(entry.config.worktreeDir);
+    if (!(await isDirectory(worktreePath)) || !(await hasGitMetadata(worktreePath))) {
+      return { worktrees: [] };
+    }
+
+    try {
+      const branch = await readCurrentBranch(worktreePath);
+      return {
+        worktrees: [
+          {
+            path: worktreePath,
+            branch,
+            isCurrent:
+              currentWorktreePath !== null &&
+              normalizePathForCompare(worktreePath) === normalizePathForCompare(currentWorktreePath),
+          },
+        ],
+      };
     } catch (err) {
       return { worktrees: [], error: err instanceof Error ? err.message : String(err) };
     }
@@ -653,6 +749,26 @@ async function isDirectory(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function hasGitMetadata(worktreePath: string): Promise<boolean> {
+  try {
+    await fs.stat(path.join(worktreePath, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readCurrentBranch(worktreePath: string): Promise<string> {
+  const git = simpleGit(worktreePath);
+  const branch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+  if (branch && branch !== "HEAD") {
+    return branch;
+  }
+
+  const head = (await git.raw(["rev-parse", "--short", "HEAD"])).trim();
+  return head ? `(detached ${head})` : "(detached)";
 }
 
 async function findWorktreeRoot(startPath: string): Promise<FindResult | null> {

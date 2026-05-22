@@ -71,8 +71,15 @@ export class WorktreeSyncService {
     this.skipsAccumulator = [];
   }
 
-  private isCloneMode(): boolean {
+  isCloneMode(): boolean {
     return this.cloneSyncService !== null;
+  }
+
+  async getWorktrees(): Promise<Array<{ path: string; branch: string }>> {
+    if (this.cloneSyncService) {
+      return this.cloneSyncService.getWorktrees();
+    }
+    return this.gitService.getWorktrees();
   }
 
   async initialize(): Promise<void> {

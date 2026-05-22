@@ -1335,6 +1335,16 @@ describe("InteractiveUIService", () => {
           { path: "/test/worktrees/main", branch: "main" },
           { path: "/test/worktrees/develop", branch: "develop" },
         ]),
+        getFullWorktreeStatus: vi.fn().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }),
         addWorktree: vi.fn().mockResolvedValue(undefined),
       };
 
@@ -1498,6 +1508,46 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
 
         await expect(service.getWorktreesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
+
+        service.destroy();
+      });
+
+      it("should use the service worktree provider for clone-mode repositories", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, mode: "clone", worktreeDir: "/test/clone" },
+          getGitService: vi.fn().mockReturnValue(mockGitService),
+          getWorktrees: vi.fn().mockResolvedValue([{ path: "/test/clone", branch: "main" }]),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const worktrees = await service.getWorktreesForRepo(0);
+
+        expect(worktrees).toEqual([{ path: "/test/clone", branch: "main" }]);
+        expect(cloneService.getWorktrees).toHaveBeenCalled();
+        expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+    });
+
+    describe("getWorktreeStatusForRepo", () => {
+      it("should load status for clone-mode checkout path", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, mode: "clone", worktreeDir: "/test/clone" },
+          getGitService: vi.fn().mockReturnValue(mockGitService),
+          getWorktrees: vi.fn().mockResolvedValue([{ path: "/test/clone", branch: "main" }]),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const statuses = await service.getWorktreeStatusForRepo(0);
+
+        expect(statuses).toHaveLength(1);
+        expect(statuses[0].path).toBe("/test/clone");
+        expect(statuses[0].branch).toBe("main");
+        expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/clone", true);
+        expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
         service.destroy();
       });
