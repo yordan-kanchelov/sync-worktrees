@@ -721,14 +721,14 @@ describe("RepositoryContext.autoSelectCurrentRepoIfSingleConfig", () => {
     expect(ctx.getCurrentRepo()).toBeNull();
   });
 
-  it("selects the lone configured repo even when detected entries also exist", () => {
+  it("refuses to select when any detected entry exists (ambiguity evidence)", () => {
     const ctx = new RepositoryContext();
     registerConfigured(ctx, "the-one");
-    registerDetected(ctx, "noise");
+    registerDetected(ctx, "cwd-detected");
 
     const result = ctx.autoSelectCurrentRepoIfSingleConfig();
-    expect(result).toBe("the-one");
-    expect(ctx.getCurrentRepo()).toBe("the-one");
+    expect(result).toBeNull();
+    expect(ctx.getCurrentRepo()).toBeNull();
   });
 
   it("does not overwrite an existing currentRepo", () => {
@@ -781,6 +781,35 @@ describe("RepositoryContext.getService error messages", () => {
     await expect(ctx.getService()).rejects.toThrow(/loadedRepos=2/);
     await expect(ctx.getService()).rejects.toThrow(/Configured repos: \[alpha, beta\]/);
     await expect(ctx.getService()).rejects.toThrow(/set_current_repository/);
+  });
+
+  it("lists detected repos with location when no current repo selected", async () => {
+    const ctx = new RepositoryContext({ launchCwd: "/work" });
+    ctx.__registerForTest("alpha", {
+      config: {
+        repoUrl: "https://example.com/alpha.git",
+        bareRepoDir: "/repos/alpha/.bare",
+        worktreeDir: "/repos/alpha/wt",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+    ctx.__registerForTest("__auto_detected__:other@/repos/other/.bare", {
+      config: {
+        repoUrl: "https://example.com/other.git",
+        bareRepoDir: "/repos/other/.bare",
+        worktreeDir: "/repos/other/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "detected" as const,
+    });
+
+    await expect(ctx.getService()).rejects.toThrow(
+      /Detected repos: \[__auto_detected__:other@\/repos\/other\/\.bare \(\/repos\/other\/\.bare\)\]/,
+    );
+    await expect(ctx.getService()).rejects.toThrow(/set_current_repository with one of the repo names above/);
   });
 
   it("throws diagnostic error when explicit repoName is unknown", async () => {

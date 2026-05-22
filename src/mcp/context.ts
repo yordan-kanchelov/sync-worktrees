@@ -555,15 +555,23 @@ export class RepositoryContext {
     const configured = this.getConfiguredRepositoryNames();
     const detected = Array.from(this.repos.values())
       .filter((e) => e.source === "detected")
-      .map((e) => e.name);
+      .map((e) => {
+        const location = e.discovered?.currentWorktreePath ?? e.config.bareRepoDir ?? e.config.worktreeDir;
+        return location ? `${e.name} (${location})` : e.name;
+      });
     const parts = [
       "No repository specified and no current repository set.",
       `launchCwd=${this.launchCwd}`,
       `configPath=${this.configPath ?? "none"}`,
       `loadedRepos=${this.repos.size} (config: ${configured.length}, detected: ${detected.length})`,
     ];
+    if (detected.length > 0) {
+      parts.push(`Detected repos: [${detected.join(", ")}].`);
+    }
     if (configured.length > 1) {
       parts.push(`Configured repos: [${configured.join(", ")}]. Pick one via set_current_repository or pass repoName.`);
+    } else if (detected.length > 0) {
+      parts.push("Recovery: call set_current_repository with one of the repo names above or pass repoName explicitly.");
     } else {
       parts.push(
         "Recovery: call detect_context {path: <workspace>}, load_config {configPath: <file>}, set SYNC_WORKTREES_CONFIG env var, or pass repoName explicitly.",
@@ -617,6 +625,13 @@ export class RepositoryContext {
 
   autoSelectCurrentRepoIfSingleConfig(): string | null {
     if (this.currentRepo !== null) return this.currentRepo;
+    // Refuse when any detected entry exists — discovery has already produced
+    // evidence of ambiguity (e.g. CWD inside a worktree of a different bare
+    // repo than the configured one). Silently picking the configured repo
+    // would route path-based tools to the wrong worktree.
+    for (const entry of this.repos.values()) {
+      if (entry.source === "detected") return null;
+    }
     const configured = this.getConfiguredRepositoryNames();
     if (configured.length !== 1) return null;
     this.currentRepo = configured[0];

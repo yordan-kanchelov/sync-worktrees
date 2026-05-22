@@ -195,10 +195,7 @@ async function runFromConfigFile(configPath: string, runOnceOverride = false): P
   const effectiveConfigFile = runOnceOverride
     ? { ...configFile, defaults: { ...(configFile.defaults ?? {}), runOnce: true } }
     : configFile;
-  const effectiveRepositories = runOnceOverride
-    ? repositories.map((repo) => ({ ...repo, runOnce: true }))
-    : repositories;
-  await runMultipleRepositories(effectiveConfigFile, effectiveRepositories, configPath);
+  await runMultipleRepositories(effectiveConfigFile, repositories, configPath);
 }
 
 async function resolveConfigOrExit(cliPath: string | undefined): Promise<string> {
