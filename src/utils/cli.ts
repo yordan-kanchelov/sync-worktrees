@@ -10,7 +10,7 @@ export const CLI_COMMANDS = {
 export type CliCommand = (typeof CLI_COMMANDS)[keyof typeof CLI_COMMANDS];
 
 export type CliOptions =
-  | { command: typeof CLI_COMMANDS.RUN; config?: string }
+  | { command: typeof CLI_COMMANDS.RUN; config?: string; runOnce: boolean }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
   | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string };
 
@@ -25,15 +25,22 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
       "$0",
       "Sync git worktrees against a config file",
       (y) =>
-        y.option("config", {
-          alias: "c",
-          type: "string",
-          description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
-        }),
+        y
+          .option("config", {
+            alias: "c",
+            type: "string",
+            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+          })
+          .option("runOnce", {
+            type: "boolean",
+            description: "Run a sync once and exit, overriding config runOnce settings for this invocation.",
+            default: false,
+          }),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.RUN,
           config: args.config,
+          runOnce: args.runOnce,
         };
       },
     )

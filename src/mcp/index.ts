@@ -30,7 +30,10 @@ async function main(): Promise<void> {
     process.stderr.write(`[sync-worktrees-mcp] Auto-detect failed: ${(err as Error).message}\n`);
   }
 
-  const server = createServer(context, { discovered });
+  const server = createServer(context, {
+    discovered,
+    configuredRepoCount: context.getConfiguredRepositoryNames().length,
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

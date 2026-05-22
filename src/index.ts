@@ -189,10 +189,16 @@ async function runList(configPath: string, filter?: string): Promise<void> {
   }
 }
 
-async function runFromConfigFile(configPath: string): Promise<void> {
+async function runFromConfigFile(configPath: string, runOnceOverride = false): Promise<void> {
   const configLoader = new ConfigLoaderService();
   const { repositories, configFile } = await configLoader.buildRepositories(configPath);
-  await runMultipleRepositories(configFile, repositories, configPath);
+  const effectiveConfigFile = runOnceOverride
+    ? { ...configFile, defaults: { ...(configFile.defaults ?? {}), runOnce: true } }
+    : configFile;
+  const effectiveRepositories = runOnceOverride
+    ? repositories.map((repo) => ({ ...repo, runOnce: true }))
+    : repositories;
+  await runMultipleRepositories(effectiveConfigFile, effectiveRepositories, configPath);
 }
 
 async function resolveConfigOrExit(cliPath: string | undefined): Promise<string> {
@@ -238,13 +244,13 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
   console.log(`\n💡 Next: sync-worktrees --config ${displayPath}`);
 }
 
-async function runSync(options: CliOptions): Promise<void> {
+async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMANDS.RUN }>): Promise<void> {
   const configPath = await resolveConfigOrExit(options.config);
   const displayPath = path.relative(process.cwd(), configPath) || configPath;
   console.log(`📄 Using config: ${displayPath}`);
 
   try {
-    await runFromConfigFile(configPath);
+    await runFromConfigFile(configPath, options.runOnce);
   } catch (error) {
     if (error instanceof ConfigFileNotFoundError) {
       console.error(`\n❌ Config file not found: ${error.configPath}`);

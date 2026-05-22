@@ -131,6 +131,15 @@ export class RepositoryContext {
   private configPath: string | null = null;
   private configLoader = new ConfigLoaderService();
   private discoveryCache = new Map<string, CachedDiscovery>();
+  private readonly launchCwd: string;
+
+  constructor(options: { launchCwd?: string } = {}) {
+    this.launchCwd = path.resolve(options.launchCwd ?? process.cwd());
+  }
+
+  getLaunchCwd(): string {
+    return this.launchCwd;
+  }
 
   async loadConfig(configPath: string, options: { setDefaultCurrent?: boolean } = {}): Promise<RepositoryConfig[]> {
     const setDefaultCurrent = options.setDefaultCurrent ?? true;
@@ -526,11 +535,11 @@ export class RepositoryContext {
   async getService(repoName?: string): Promise<WorktreeSyncService> {
     const name = repoName ?? this.currentRepo;
     if (!name) {
-      throw new Error("No repository specified and no current repository set");
+      throw new Error(this.buildNoRepoSelectedError());
     }
     const entry = this.repos.get(name);
     if (!entry) {
-      throw new Error(`Repository '${name}' not found. Load a config or run detect_context first.`);
+      throw new Error(this.buildRepoNotFoundError(name));
     }
     if (!entry.service) {
       const logger = createStderrLogger(entry.name);
@@ -540,6 +549,33 @@ export class RepositoryContext {
       });
     }
     return entry.service;
+  }
+
+  private buildNoRepoSelectedError(): string {
+    const configured = this.getConfiguredRepositoryNames();
+    const detected = Array.from(this.repos.values())
+      .filter((e) => e.source === "detected")
+      .map((e) => e.name);
+    const parts = [
+      "No repository specified and no current repository set.",
+      `launchCwd=${this.launchCwd}`,
+      `configPath=${this.configPath ?? "none"}`,
+      `loadedRepos=${this.repos.size} (config: ${configured.length}, detected: ${detected.length})`,
+    ];
+    if (configured.length > 1) {
+      parts.push(`Configured repos: [${configured.join(", ")}]. Pick one via set_current_repository or pass repoName.`);
+    } else {
+      parts.push(
+        "Recovery: call detect_context {path: <workspace>}, load_config {configPath: <file>}, set SYNC_WORKTREES_CONFIG env var, or pass repoName explicitly.",
+      );
+    }
+    return parts.join(" ");
+  }
+
+  private buildRepoNotFoundError(name: string): string {
+    const known = Array.from(this.repos.keys());
+    const knownStr = known.length === 0 ? "[]" : `[${known.join(", ")}]`;
+    return `Repository '${name}' not found. Known repos: ${knownStr}. Run load_config or detect_context to register it.`;
   }
 
   getEntry(repoName?: string): RepoEntry | null {
@@ -577,6 +613,14 @@ export class RepositoryContext {
     return Array.from(this.repos.values())
       .filter((entry) => entry.source === "config")
       .map((entry) => entry.name);
+  }
+
+  autoSelectCurrentRepoIfSingleConfig(): string | null {
+    if (this.currentRepo !== null) return this.currentRepo;
+    const configured = this.getConfiguredRepositoryNames();
+    if (configured.length !== 1) return null;
+    this.currentRepo = configured[0];
+    return this.currentRepo;
   }
 
   async getAllConfiguredWorktreeDetails(

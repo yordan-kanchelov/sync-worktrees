@@ -59,6 +59,9 @@ async function getReadyService(
     ensureInitialized?: boolean;
   } = {},
 ): Promise<{ discovered: DiscoveredRepoContext | null; service: RepoService; git: RepoGitService }> {
+  if (!repoName) {
+    ctx.autoSelectCurrentRepoIfSingleConfig();
+  }
   const discovered = ctx.getDiscoveredContext(repoName);
   if (options.capability && options.toolName) {
     ensureCapability(discovered, options.capability, options.toolName);

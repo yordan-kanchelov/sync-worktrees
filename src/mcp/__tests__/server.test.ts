@@ -132,8 +132,7 @@ describe("createServer", () => {
 
 describe("buildInstructions", () => {
   const baseInstructions =
-    "Before running git worktree operations, call `detect_context` with `includeAllWorktrees: true` at session start to learn every configured repository and worktree, plus the current repo, current branch, sibling repositories, and available capabilities. " +
-    "It walks up to auto-discover sync-worktrees.config.{js,mjs,cjs,ts}, reports config-driven sibling repositories, and reports per-capability {available, reason} so you can tell which tool is gated and why.";
+    "Call `detect_context {includeAllWorktrees:true}` at session start. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up; returns current+sibling repos/worktrees, current branch, per-capability {available,reason}.";
 
   function makeDiscovered(overrides: Partial<DiscoveredRepoContext> = {}): DiscoveredRepoContext {
     return {
@@ -185,25 +184,39 @@ describe("buildInstructions", () => {
     const result = buildInstructions({ discovered });
 
     expect(result.startsWith(baseInstructions)).toBe(true);
-    expect(result).toContain("Connect-time context");
-    expect(result).toContain("kind: managed");
-    expect(result).toContain("currentWorktreePath: /repos/my-repo/worktrees/feature-x");
-    expect(result).toContain("currentBranch: feature-x");
-    expect(result).toContain("configPath: /repos/sync-worktrees.config.js");
+    expect(result).toContain("Connect-time:");
+    expect(result).toContain("workspace=my-repo");
+    expect(result).toContain("path=/repos/my-repo/worktrees/feature-x");
+    expect(result).not.toContain("branch=");
+    expect(result).toContain("config=/repos/sync-worktrees.config.js");
+    expect(result).toContain("worktrees=0");
+    expect(result).toContain("set_current_repository");
+    expect(result).toContain("detect_context");
   });
 
   it("omits null fields from connect-time block", () => {
-    const discovered = makeDiscovered({ currentBranch: null, configPath: null });
+    const discovered = makeDiscovered({ currentBranch: null, configPath: null, repoName: null });
     const result = buildInstructions({ discovered });
 
-    expect(result).toContain("Connect-time context");
-    expect(result).toContain("kind: managed");
-    expect(result).toContain("currentWorktreePath:");
-    expect(result).not.toContain("currentBranch:");
-    expect(result).not.toContain("configPath:");
+    expect(result).toContain("Connect-time:");
+    expect(result).toContain("path=");
+    expect(result).not.toContain("workspace=");
+    expect(result).not.toContain("config=");
   });
 
-  it("does not include sibling worktree, sibling repo, or capability lists", () => {
+  it("includes configuredRepos count when configuredRepoCount provided", () => {
+    const discovered = makeDiscovered();
+    const result = buildInstructions({ discovered, configuredRepoCount: 4 });
+    expect(result).toContain("configuredRepos=4");
+  });
+
+  it("omits configuredRepos field when configuredRepoCount missing", () => {
+    const discovered = makeDiscovered();
+    const result = buildInstructions({ discovered });
+    expect(result).not.toContain("configuredRepos=");
+  });
+
+  it("counts worktrees in current repo without listing branch names or sibling repo names", () => {
     const discovered = makeDiscovered({
       allWorktrees: [
         { path: "/repos/my-repo/worktrees/main", branch: "main", isCurrent: false },
@@ -220,11 +233,12 @@ describe("buildInstructions", () => {
         },
       ],
     });
-    const result = buildInstructions({ discovered });
+    const result = buildInstructions({ discovered, configuredRepoCount: 3 });
 
-    expect(result).not.toContain("main");
+    expect(result).toContain("worktrees=2");
+    expect(result).toContain("configuredRepos=3");
+    expect(result).not.toContain("/repos/my-repo/worktrees/main");
     expect(result).not.toContain("other-repo");
-    expect(result).not.toContain("Sibling");
     expect(result).not.toContain("Disabled");
   });
 

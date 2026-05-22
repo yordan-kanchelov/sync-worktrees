@@ -665,3 +665,150 @@ describe("RepositoryContext.detectFromPath currentRepo bootstrap invariants", ()
     expect(ctx.__repoCountForTest()).toBe(sizeAfterFirst);
   });
 });
+
+describe("RepositoryContext.autoSelectCurrentRepoIfSingleConfig", () => {
+  function registerConfigured(ctx: RepositoryContext, name: string): void {
+    ctx.__registerForTest(name, {
+      config: {
+        repoUrl: `https://example.com/${name}.git`,
+        bareRepoDir: `/repos/${name}/.bare`,
+        worktreeDir: `/repos/${name}/worktrees`,
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+  }
+
+  function registerDetected(ctx: RepositoryContext, name: string): void {
+    ctx.__registerForTest(name, {
+      config: {
+        repoUrl: `https://example.com/${name}.git`,
+        bareRepoDir: `/repos/${name}/.bare`,
+        worktreeDir: `/repos/${name}/worktrees`,
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "detected" as const,
+    });
+  }
+
+  it("selects the single configured repo when currentRepo is null", () => {
+    const ctx = new RepositoryContext();
+    registerConfigured(ctx, "only-one");
+
+    const result = ctx.autoSelectCurrentRepoIfSingleConfig();
+    expect(result).toBe("only-one");
+    expect(ctx.getCurrentRepo()).toBe("only-one");
+  });
+
+  it("does nothing when multiple configured repos exist", () => {
+    const ctx = new RepositoryContext();
+    registerConfigured(ctx, "alpha");
+    registerConfigured(ctx, "beta");
+
+    const result = ctx.autoSelectCurrentRepoIfSingleConfig();
+    expect(result).toBeNull();
+    expect(ctx.getCurrentRepo()).toBeNull();
+  });
+
+  it("ignores detected-source entries when counting", () => {
+    const ctx = new RepositoryContext();
+    registerDetected(ctx, "detected-only");
+
+    const result = ctx.autoSelectCurrentRepoIfSingleConfig();
+    expect(result).toBeNull();
+    expect(ctx.getCurrentRepo()).toBeNull();
+  });
+
+  it("selects the lone configured repo even when detected entries also exist", () => {
+    const ctx = new RepositoryContext();
+    registerConfigured(ctx, "the-one");
+    registerDetected(ctx, "noise");
+
+    const result = ctx.autoSelectCurrentRepoIfSingleConfig();
+    expect(result).toBe("the-one");
+    expect(ctx.getCurrentRepo()).toBe("the-one");
+  });
+
+  it("does not overwrite an existing currentRepo", () => {
+    const ctx = new RepositoryContext();
+    registerConfigured(ctx, "first");
+    registerConfigured(ctx, "second");
+    ctx.__setCurrentRepoForTest("second");
+
+    const result = ctx.autoSelectCurrentRepoIfSingleConfig();
+    expect(result).toBe("second");
+    expect(ctx.getCurrentRepo()).toBe("second");
+  });
+});
+
+describe("RepositoryContext.getService error messages", () => {
+  it("throws diagnostic error when no repo selected and none loaded", async () => {
+    const ctx = new RepositoryContext({ launchCwd: "/tmp/somewhere" });
+
+    await expect(ctx.getService()).rejects.toThrow(/launchCwd=\/tmp\/somewhere/);
+    await expect(ctx.getService()).rejects.toThrow(/configPath=none/);
+    await expect(ctx.getService()).rejects.toThrow(/loadedRepos=0/);
+    await expect(ctx.getService()).rejects.toThrow(/detect_context/);
+    await expect(ctx.getService()).rejects.toThrow(/load_config/);
+    await expect(ctx.getService()).rejects.toThrow(/SYNC_WORKTREES_CONFIG/);
+  });
+
+  it("lists configured repos when multiple are loaded but none selected", async () => {
+    const ctx = new RepositoryContext({ launchCwd: "/work" });
+    ctx.__registerForTest("alpha", {
+      config: {
+        repoUrl: "https://example.com/alpha.git",
+        bareRepoDir: "/repos/alpha/.bare",
+        worktreeDir: "/repos/alpha/wt",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+    ctx.__registerForTest("beta", {
+      config: {
+        repoUrl: "https://example.com/beta.git",
+        bareRepoDir: "/repos/beta/.bare",
+        worktreeDir: "/repos/beta/wt",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+
+    await expect(ctx.getService()).rejects.toThrow(/loadedRepos=2/);
+    await expect(ctx.getService()).rejects.toThrow(/Configured repos: \[alpha, beta\]/);
+    await expect(ctx.getService()).rejects.toThrow(/set_current_repository/);
+  });
+
+  it("throws diagnostic error when explicit repoName is unknown", async () => {
+    const ctx = new RepositoryContext();
+    ctx.__registerForTest("known", {
+      config: {
+        repoUrl: "https://example.com/known.git",
+        bareRepoDir: "/repos/known/.bare",
+        worktreeDir: "/repos/known/wt",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+
+    await expect(ctx.getService("missing")).rejects.toThrow(/'missing' not found/);
+    await expect(ctx.getService("missing")).rejects.toThrow(/Known repos: \[known\]/);
+  });
+});
+
+describe("RepositoryContext launchCwd", () => {
+  it("defaults launchCwd to process.cwd()", () => {
+    const ctx = new RepositoryContext();
+    expect(ctx.getLaunchCwd()).toBe(path.resolve(process.cwd()));
+  });
+
+  it("resolves explicit launchCwd to an absolute path", () => {
+    const ctx = new RepositoryContext({ launchCwd: "/some/relative/../abs/path" });
+    expect(ctx.getLaunchCwd()).toBe(path.resolve("/some/relative/../abs/path"));
+  });
+});

@@ -167,6 +167,7 @@ function makeCtx(opts: {
     getService: vi.fn<any>().mockResolvedValue(service),
     loadConfig: vi.fn<any>().mockImplementation((opts.loadConfigImpl ?? (async () => [])) as any),
     getCurrentRepo: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
+    autoSelectCurrentRepoIfSingleConfig: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
     getRepositoryList: vi.fn<any>().mockReturnValue([]),
     getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(opts.configuredRepoNames ?? []),
     getAllConfiguredWorktreeDetails: vi.fn<any>().mockResolvedValue({
@@ -632,6 +633,18 @@ describe("handleSync", () => {
     expect(body.skips).toEqual([]);
   });
 
+  it("invokes autoSelectCurrentRepoIfSingleConfig when repoName is omitted", async () => {
+    const { ctx } = makeCtx({});
+    await invoke(handleSync, ctx, {});
+    expect((ctx as any).autoSelectCurrentRepoIfSingleConfig).toHaveBeenCalled();
+  });
+
+  it("does not invoke auto-select when repoName is explicitly passed", async () => {
+    const { ctx } = makeCtx({});
+    await invoke(handleSync, ctx, { repoName: "explicit" });
+    expect((ctx as any).autoSelectCurrentRepoIfSingleConfig).not.toHaveBeenCalled();
+  });
+
   it("surfaces recorded skips with formatted messages in the payload", async () => {
     const { ctx, service } = makeCtx({});
     service.getRecordedSkips.mockReturnValue([
@@ -827,6 +840,28 @@ describe("handleGetWorktreeStatus", () => {
     const body = parseResponse(result);
     expect(body.path).toContain("w/x");
     expect(body.isClean).toBe(false);
+  });
+
+  it("invokes autoSelectCurrentRepoIfSingleConfig when repoName is omitted on a path-based handler", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/x", branch: "x" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ isClean: true, reasons: [] }),
+      },
+    });
+    await invoke(handleGetWorktreeStatus, ctx, { path: "/w/x" });
+    expect((ctx as any).autoSelectCurrentRepoIfSingleConfig).toHaveBeenCalled();
+  });
+
+  it("does not invoke auto-select when repoName is explicitly passed on a path-based handler", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/x", branch: "x" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ isClean: true, reasons: [] }),
+      },
+    });
+    await invoke(handleGetWorktreeStatus, ctx, { path: "/w/x", repoName: "explicit" });
+    expect((ctx as any).autoSelectCurrentRepoIfSingleConfig).not.toHaveBeenCalled();
   });
 
   it("accepts the clone-mode checkout path from the service worktree list", async () => {
