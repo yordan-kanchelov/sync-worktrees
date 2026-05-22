@@ -809,6 +809,7 @@ describe("RepositoryContext.getService error messages", () => {
     await expect(ctx.getService()).rejects.toThrow(
       /Detected repos: \[__auto_detected__:other@\/repos\/other\/\.bare \(\/repos\/other\/\.bare\)\]/,
     );
+    await expect(ctx.getService()).rejects.toThrow(/Configured repos: \[alpha\]/);
     await expect(ctx.getService()).rejects.toThrow(/set_current_repository with one of the repo names above/);
   });
 

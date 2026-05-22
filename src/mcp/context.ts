@@ -568,9 +568,10 @@ export class RepositoryContext {
     if (detected.length > 0) {
       parts.push(`Detected repos: [${detected.join(", ")}].`);
     }
-    if (configured.length > 1) {
-      parts.push(`Configured repos: [${configured.join(", ")}]. Pick one via set_current_repository or pass repoName.`);
-    } else if (detected.length > 0) {
+    if (configured.length > 0) {
+      parts.push(`Configured repos: [${configured.join(", ")}].`);
+    }
+    if (configured.length > 0 || detected.length > 0) {
       parts.push("Recovery: call set_current_repository with one of the repo names above or pass repoName explicitly.");
     } else {
       parts.push(
