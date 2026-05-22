@@ -662,6 +662,41 @@ describe("InteractiveUIService", () => {
       service.destroy();
     });
 
+    it("preserves clone-mode skips recorded during reload initialization", async () => {
+      mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+        repositories: [
+          {
+            name: "alpha",
+            repoUrl: "https://github.com/test/repo.git",
+            worktreeDir: "/test/worktrees",
+            cronSchedule: "0 * * * *",
+            runOnce: false,
+          },
+        ],
+      });
+      mockWorktreeSyncServiceInstance.getRecordedSkips
+        .mockReturnValueOnce([{ kind: "head_unreadable", phase: "init", error: "bad HEAD" }])
+        .mockReturnValueOnce([]);
+
+      const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry));
+      service.getEvents().emit("uiReady");
+
+      const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+      await onReload();
+
+      const messages = logs.map((l) => l.message);
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          "Clone-mode skip for 'alpha': could not read HEAD: bad HEAD",
+          "⚠️  1 clone-mode skip(s) during reload",
+        ]),
+      );
+
+      service.destroy();
+    });
+
     it("should handle reload errors gracefully", async () => {
       mockConfigLoaderInstance.loadConfigFile.mockRejectedValue(new Error("Failed to load config"));
 

@@ -238,15 +238,23 @@ export class InteractiveUIService {
           this.limit(async () => {
             const service = new WorktreeSyncService(repoConfig);
             await service.initialize();
-            return service;
+            return {
+              service,
+              clonePhaseSkips: service.getRecordedSkips().map((reason) => ({
+                repo: repoConfig.name || repoConfig.repoUrl,
+                reason: formatCloneSkipReason(reason),
+              })),
+            };
           }),
         ),
       );
 
       const newServices: WorktreeSyncService[] = [];
+      const initClonePhaseSkips: Array<{ repo: string; reason: string }> = [];
       for (const result of initResults) {
         if (result.status === "fulfilled") {
-          newServices.push(result.value);
+          newServices.push(result.value.service);
+          initClonePhaseSkips.push(...result.value.clonePhaseSkips);
         } else {
           this.addLog(`Failed to initialize repository: ${result.reason}`, "error");
         }
@@ -272,7 +280,13 @@ export class InteractiveUIService {
       this.events.emit("updateRepositoryCount", this.repositoryCount);
       this.events.emit("updateCronSchedule", this.cronSchedule);
 
-      const { failures, skipped, clonePhaseSkips, attempted } = await this.runSyncServices(this.syncServices);
+      const {
+        failures,
+        skipped,
+        clonePhaseSkips: syncClonePhaseSkips,
+        attempted,
+      } = await this.runSyncServices(this.syncServices);
+      const clonePhaseSkips = [...initClonePhaseSkips, ...syncClonePhaseSkips];
       await this.recordSyncOutcome({ failures, skipped, attempted });
       this.setStatus("idle");
 
