@@ -652,7 +652,7 @@ export class RepositoryContext {
       notes.push(`Could not read clone-mode branch: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    const branch = currentBranch ?? entry.config.branch ?? "unknown";
+    const branch = currentBranch ?? "unknown";
     const cloneModeReason = "clone-mode repositories have a single checkout; use sync for clone-mode updates";
     const capabilities: Capabilities = {
       listWorktrees: { available: true },

@@ -381,6 +381,37 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
       await fs.rm(workspace, { recursive: true, force: true });
     }
   });
+
+  it("does not report configured clone-mode branch when checkout branch is unreadable", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-broken-branch-"));
+    try {
+      const cloneDir = path.join(workspace, "slots", "game-platform");
+      await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
+
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { repositories: [
+        { name: "game-platform-slots", repoUrl: "https://github.com/test/game-platform.git", worktreeDir: "./slots/game-platform", mode: "clone", branch: "configured-main", cronSchedule: "0 * * * *", runOnce: true }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      mockWorktreeList.mockImplementation((basePath: unknown, args: unknown) => {
+        if (basePath === cloneDir && Array.isArray(args) && args.join(" ") === "rev-parse --abbrev-ref HEAD") {
+          return Promise.reject(new Error("not a valid checkout"));
+        }
+        return Promise.reject(new Error("unexpected git call"));
+      });
+
+      const ctx = new RepositoryContext();
+      await ctx.loadConfig(configPath);
+      const result = await ctx.detectFromPath(cloneDir);
+
+      expect(result.currentBranch).toBeNull();
+      expect(result.allWorktrees).toEqual([{ path: cloneDir, branch: "unknown", isCurrent: true }]);
+      expect(result.notes).toContain("Could not read clone-mode branch: not a valid checkout");
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("RepositoryContext.getAllConfiguredWorktreeDetails", () => {
