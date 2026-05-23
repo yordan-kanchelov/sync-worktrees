@@ -10,9 +10,11 @@ import { makeGitProgressHandler } from "../utils/git-progress";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
+import { cloneSkipToOutcomeAction } from "./sync-outcome";
 
 import type { GitService } from "./git.service";
 import type { Logger } from "./logger.service";
+import type { SyncOutcomeAccumulator } from "./sync-outcome";
 import type { Config, RepositoryConfig } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
@@ -37,6 +39,7 @@ export class CloneSyncService {
   private branchCreatedActions: BranchCreatedActionsService;
   private progressEmitter?: GitProgressEmitter;
   private onSkip?: CloneSkipListener;
+  private outcomeAccumulator?: SyncOutcomeAccumulator;
 
   constructor(
     private config: Config,
@@ -112,6 +115,21 @@ export class CloneSyncService {
     }
   }
 
+  private async withOutcome<T>(outcome: SyncOutcomeAccumulator | undefined, operation: () => Promise<T>): Promise<T> {
+    const previousOutcome = this.outcomeAccumulator;
+    if (outcome) {
+      this.outcomeAccumulator = outcome;
+    }
+
+    try {
+      return await operation();
+    } finally {
+      if (outcome) {
+        this.outcomeAccumulator = previousOutcome;
+      }
+    }
+  }
+
   private recordSkip(
     reason: CloneSkipReason,
     logMessage: string,
@@ -129,6 +147,12 @@ export class CloneSyncService {
     } catch {
       // listeners must not break sync flow
     }
+    this.outcomeAccumulator?.add(
+      cloneSkipToOutcomeAction(reason, {
+        branch: this.resolvedBranch ?? this.config.branch,
+        path: this.config.worktreeDir,
+      }),
+    );
   }
 
   private clientFor(dir: string, blockMs: number): SimpleGit {
@@ -254,7 +278,11 @@ export class CloneSyncService {
     return this.resolvedBranch;
   }
 
-  async initialize(): Promise<void> {
+  async initialize(outcome?: SyncOutcomeAccumulator): Promise<void> {
+    return this.withOutcome(outcome, () => this.initializeInternal());
+  }
+
+  private async initializeInternal(): Promise<void> {
     const branch = await this.resolveBranch();
     const worktreeDir = this.config.worktreeDir;
 
@@ -301,6 +329,11 @@ export class CloneSyncService {
       await cloneClient.clone(this.config.repoUrl, worktreeDir, this.buildCloneArgs(branch));
     } catch (error) {
       await this.maybeCleanupPartialClone(worktreeDir, cloneCreatedDir);
+      this.outcomeAccumulator?.recordFailed("repo", getErrorMessage(error), {
+        reason: "clone_failed",
+        branch,
+        path: worktreeDir,
+      });
       throw error;
     }
 
@@ -325,6 +358,9 @@ export class CloneSyncService {
 
     await this.runInitialFileCopy(worktreeDir, branch);
 
+    // Only record `created` once init is fully complete; otherwise an aborted
+    // post-clone step would leave the outcome reporting both created and failed.
+    this.outcomeAccumulator?.recordCreated(branch, worktreeDir);
     this.initialized = true;
   }
 
@@ -438,7 +474,11 @@ export class CloneSyncService {
     }
   }
 
-  async runSyncAttempt(): Promise<void> {
+  async runSyncAttempt(outcome?: SyncOutcomeAccumulator): Promise<void> {
+    return this.withOutcome(outcome, () => this.runSyncAttemptInternal());
+  }
+
+  private async runSyncAttemptInternal(): Promise<void> {
     if (!this.initialized) {
       await this.initialize();
       return;
@@ -557,6 +597,11 @@ export class CloneSyncService {
         phase: "skip",
         message: `'${this.repoName}' already up to date with origin/${branch}`,
       });
+      this.outcomeAccumulator?.recordNoop("repo", "already_up_to_date", {
+        branch,
+        path: worktreeDir,
+        message: `Already up to date with origin/${branch}`,
+      });
       return;
     }
 
@@ -600,5 +645,6 @@ export class CloneSyncService {
     await git.merge([`origin/${branch}`, "--ff-only"]);
     this.logger.info(`✅ Updated '${this.repoName}' to origin/${branch}.`);
     this.emitProgress({ phase: "merge", message: `Updated '${this.repoName}' to origin/${branch}` });
+    this.outcomeAccumulator?.recordUpdated(branch, worktreeDir, "fast_forward");
   }
 }

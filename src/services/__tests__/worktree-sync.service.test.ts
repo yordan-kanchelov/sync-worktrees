@@ -224,7 +224,7 @@ describe("WorktreeSyncService", () => {
         { path: "/test/worktrees/old-branch", branch: "old-branch" },
       ]);
 
-      await service.sync();
+      const result = await service.sync();
 
       // Verify workflow steps
       expect(mockGitService.fetchAll).toHaveBeenCalled();
@@ -246,6 +246,17 @@ describe("WorktreeSyncService", () => {
 
       // Should prune at the end
       expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
+      expect(result).toMatchObject({
+        started: true,
+        outcome: {
+          mode: "worktree",
+          counts: expect.objectContaining({ created: 1, removed: 1, noop: 1 }),
+          actions: expect.arrayContaining([
+            { kind: "created", branch: "feature-2", path: wtPath("/test/worktrees", "feature-2") },
+            { kind: "removed", branch: "old-branch", path: path.join("/test/worktrees", "old-branch") },
+          ]),
+        },
+      });
     });
 
     it("should handle empty remote branches", async () => {

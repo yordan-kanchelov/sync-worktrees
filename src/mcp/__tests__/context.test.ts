@@ -59,6 +59,32 @@ async function makeWorktreeFixture(): Promise<{
   };
 }
 
+function registerConfigured(ctx: RepositoryContext, name: string): void {
+  ctx.__registerForTest(name, {
+    config: {
+      repoUrl: `https://example.com/${name}.git`,
+      bareRepoDir: `/repos/${name}/.bare`,
+      worktreeDir: `/repos/${name}/worktrees`,
+      cronSchedule: "0 * * * *",
+      runOnce: true,
+    },
+    source: "config" as const,
+  });
+}
+
+function registerDetected(ctx: RepositoryContext, name: string): void {
+  ctx.__registerForTest(name, {
+    config: {
+      repoUrl: `https://example.com/${name}.git`,
+      bareRepoDir: `/repos/${name}/.bare`,
+      worktreeDir: `/repos/${name}/worktrees`,
+      cronSchedule: "0 * * * *",
+      runOnce: true,
+    },
+    source: "detected" as const,
+  });
+}
+
 describe("RepositoryContext.detectFromPath", () => {
   let fixture: Awaited<ReturnType<typeof makeWorktreeFixture>>;
 
@@ -590,6 +616,33 @@ describe("RepositoryContext.getService", () => {
     await expect(ctx.getService()).rejects.toThrow(/No repository/);
   });
 
+  it("does not auto-select a single configured repo during direct service lookup", async () => {
+    const ctx = new RepositoryContext();
+    registerConfigured(ctx, "only-one");
+
+    await expect(ctx.getService()).rejects.toThrow(/No repository/);
+    expect(ctx.getCurrentRepo()).toBeNull();
+  });
+
+  it("returns service when explicit repoName exists", async () => {
+    const ctx = new RepositoryContext();
+    const service = { isInitialized: () => false };
+    ctx.__registerForTest("known", {
+      config: {
+        repoUrl: "https://example.com/known.git",
+        bareRepoDir: "/repos/known/.bare",
+        worktreeDir: "/repos/known/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+      service: service as any,
+    });
+
+    await expect(ctx.getService("known")).resolves.toBe(service);
+    expect(ctx.getCurrentRepo()).toBeNull();
+  });
+
   it("throws when named repo not found", async () => {
     const ctx = new RepositoryContext();
     await expect(ctx.getService("missing")).rejects.toThrow(/not found/);
@@ -667,31 +720,94 @@ describe("RepositoryContext.detectFromPath currentRepo bootstrap invariants", ()
 });
 
 describe("RepositoryContext.autoSelectCurrentRepoIfSingleConfig", () => {
-  function registerConfigured(ctx: RepositoryContext, name: string): void {
-    ctx.__registerForTest(name, {
-      config: {
-        repoUrl: `https://example.com/${name}.git`,
-        bareRepoDir: `/repos/${name}/.bare`,
-        worktreeDir: `/repos/${name}/worktrees`,
-        cronSchedule: "0 * * * *",
-        runOnce: true,
-      },
-      source: "config" as const,
-    });
-  }
+  it.each([
+    {
+      label: "no repos registered, no current repo",
+      configured: [],
+      detected: [],
+      current: null,
+      expectedDecision: { kind: "missing" },
+      expectedAutoSelect: null,
+      expectedCurrentAfterAutoSelect: null,
+    },
+    {
+      label: "one configured repo, no detected repos",
+      configured: ["only-one"],
+      detected: [],
+      current: null,
+      expectedDecision: { kind: "selected", repoName: "only-one", source: "single-config" },
+      expectedAutoSelect: "only-one",
+      expectedCurrentAfterAutoSelect: "only-one",
+    },
+    {
+      label: "multiple configured repos, no detected repos",
+      configured: ["alpha", "beta"],
+      detected: [],
+      current: null,
+      expectedDecision: { kind: "ambiguous" },
+      expectedAutoSelect: null,
+      expectedCurrentAfterAutoSelect: null,
+    },
+    {
+      label: "one detected repo, no configured repos",
+      configured: [],
+      detected: ["detected-only"],
+      current: null,
+      expectedDecision: { kind: "ambiguous" },
+      expectedAutoSelect: null,
+      expectedCurrentAfterAutoSelect: null,
+    },
+    {
+      label: "one configured repo plus one detected repo",
+      configured: ["alpha"],
+      detected: ["detected"],
+      current: null,
+      expectedDecision: { kind: "ambiguous" },
+      expectedAutoSelect: null,
+      expectedCurrentAfterAutoSelect: null,
+    },
+    {
+      label: "multiple configured repos plus one detected repo",
+      configured: ["alpha", "beta"],
+      detected: ["detected"],
+      current: null,
+      expectedDecision: { kind: "ambiguous" },
+      expectedAutoSelect: null,
+      expectedCurrentAfterAutoSelect: null,
+    },
+    {
+      label: "currentRepo already set",
+      configured: ["first", "second"],
+      detected: [],
+      current: "second",
+      expectedDecision: { kind: "selected", repoName: "second", source: "current" },
+      expectedAutoSelect: "second",
+      expectedCurrentAfterAutoSelect: "second",
+    },
+  ])(
+    "classifies selection state for $label",
+    ({ configured, detected, current, expectedDecision, expectedAutoSelect, expectedCurrentAfterAutoSelect }) => {
+      const ctx = new RepositoryContext();
+      for (const name of configured) registerConfigured(ctx, name);
+      for (const name of detected) registerDetected(ctx, name);
+      ctx.__setCurrentRepoForTest(current);
 
-  function registerDetected(ctx: RepositoryContext, name: string): void {
-    ctx.__registerForTest(name, {
-      config: {
-        repoUrl: `https://example.com/${name}.git`,
-        bareRepoDir: `/repos/${name}/.bare`,
-        worktreeDir: `/repos/${name}/worktrees`,
-        cronSchedule: "0 * * * *",
-        runOnce: true,
-      },
-      source: "detected" as const,
-    });
-  }
+      const state = ctx.__getRepositorySelectionStateForTest() as {
+        currentRepo: string | null;
+        configured: string[];
+        detected: string[];
+        defaultDecision: unknown;
+      };
+      expect(state.currentRepo).toBe(current);
+      expect(state.configured).toEqual(configured);
+      expect(state.detected).toEqual(detected);
+      expect(state.defaultDecision).toMatchObject(expectedDecision);
+
+      const result = ctx.autoSelectCurrentRepoIfSingleConfig();
+      expect(result).toBe(expectedAutoSelect);
+      expect(ctx.getCurrentRepo()).toBe(expectedCurrentAfterAutoSelect);
+    },
+  );
 
   it("selects the single configured repo when currentRepo is null", () => {
     const ctx = new RepositoryContext();

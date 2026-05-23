@@ -148,7 +148,15 @@ function makeCtx(opts: {
       started: true,
       value: await (operation as () => Promise<unknown>)(),
     })),
-    sync: vi.fn<any>().mockResolvedValue({ started: true }),
+    sync: vi.fn<any>().mockResolvedValue({
+      started: true,
+      outcome: {
+        mode: "worktree",
+        started: true,
+        counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 0, noop: 0 },
+        actions: [],
+      },
+    }),
     getGitService: () => git,
     getWorktrees: vi.fn<any>().mockImplementation(() => (git.getWorktrees as any)()),
     isCloneMode: vi.fn<any>().mockReturnValue(false),
@@ -630,6 +638,13 @@ describe("handleSync", () => {
     expect(typeof body.duration).toBe("number");
     expect(service.sync).toHaveBeenCalled();
     expect(service.clearRecordedSkips).toHaveBeenCalledTimes(1);
+    expect(body.outcome).toMatchObject({
+      mode: "worktree",
+      started: true,
+      counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 0, noop: 0 },
+      actions: [],
+    });
+    expect(typeof body.outcome.durationMs).toBe("number");
     expect(body.skips).toEqual([]);
   });
 

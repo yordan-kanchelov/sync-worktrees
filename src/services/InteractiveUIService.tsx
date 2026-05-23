@@ -738,7 +738,7 @@ export class InteractiveUIService {
     this.setStatus("syncing");
 
     try {
-      const { failures, skipped, clonePhaseSkips, attempted } = await this.runSyncServices(services);
+      const { failures, skipped, partialSkips, clonePhaseSkips, attempted } = await this.runSyncServices(services);
 
       if (options.logErrors) {
         for (const failure of failures) {
@@ -753,6 +753,9 @@ export class InteractiveUIService {
       }
       if (clonePhaseSkips.length > 0) {
         this.addLog(`⚠️  ${clonePhaseSkips.length} clone-mode skip(s) this cycle`, "warn");
+      }
+      for (const partial of partialSkips) {
+        this.addLog(`${partial.repo}: ${partial.reason}`, "info");
       }
 
       await this.recordSyncOutcome({ failures, skipped, attempted });
@@ -779,6 +782,7 @@ export class InteractiveUIService {
   private async runSyncServices(services: WorktreeSyncService[]): Promise<{
     failures: Array<{ repo: string; error: string }>;
     skipped: Array<{ repo: string; reason: string }>;
+    partialSkips: Array<{ repo: string; reason: string }>;
     clonePhaseSkips: Array<{ repo: string; reason: string }>;
     attempted: number;
   }> {
@@ -800,24 +804,35 @@ export class InteractiveUIService {
 
     const failures: Array<{ repo: string; error: string }> = [];
     const skipped: Array<{ repo: string; reason: string }> = [];
+    const partialSkips: Array<{ repo: string; reason: string }> = [];
     const clonePhaseSkips: Array<{ repo: string; reason: string }> = [];
     for (let i = 0; i < syncResults.length; i++) {
       const result = syncResults[i];
-      const repoName =
-        (services[i].config as RepositoryConfig).name || services[i].config.repoUrl;
+      const repoName = (services[i].config as RepositoryConfig).name || services[i].config.repoUrl;
       if (result.status === "rejected") {
         const fallbackName = (result.reason as { repoName?: string })?.repoName ?? repoName;
         const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
         failures.push({ repo: fallbackName, error: errorMessage });
       } else if (result.value.result && result.value.result.started === false) {
         skipped.push({ repo: repoName, reason: `sync skipped: ${result.value.result.reason}` });
+      } else if (result.status === "fulfilled" && result.value.result?.started === true) {
+        const outcome = result.value.result.outcome;
+        if (outcome?.counts.failed) {
+          failures.push({ repo: repoName, error: `${outcome.counts.failed} sync action(s) failed` });
+        }
+        // Per-action skips are informational; the repo did complete its sync
+        // attempt. Surface as a separate channel so updateLastSyncTime still
+        // runs and the per-cycle log stays at info-level.
+        if (outcome?.mode === "worktree" && outcome.counts.skipped > 0) {
+          partialSkips.push({ repo: repoName, reason: `${outcome.counts.skipped} sync action(s) skipped` });
+        }
       }
       for (const reason of services[i].getRecordedSkips()) {
         clonePhaseSkips.push({ repo: repoName, reason: formatCloneSkipReason(reason) });
       }
     }
 
-    return { failures, skipped, clonePhaseSkips, attempted: services.length };
+    return { failures, skipped, partialSkips, clonePhaseSkips, attempted: services.length };
   }
 
   private buildUiLogger(): Logger {

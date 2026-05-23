@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BranchCreatedActionsService } from "../branch-created-actions.service";
 import { CloneSyncService } from "../clone-sync.service";
 import { Logger } from "../logger.service";
+import { SyncOutcomeAccumulator } from "../sync-outcome";
 
 import type { Config } from "../../types";
 import type { CloneSkipReason } from "../clone-sync.service";
@@ -100,8 +101,9 @@ describe("CloneSyncService", () => {
       const config = makeConfig();
       const gitService = buildGitService();
       const service = new CloneSyncService(config, gitService, logger);
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
 
-      await service.initialize();
+      await service.initialize(outcome);
 
       expect(gitMock.clone).toHaveBeenCalledWith(
         config.repoUrl,
@@ -112,6 +114,10 @@ describe("CloneSyncService", () => {
       expect(gitMock.clone.mock.calls[0][2]).not.toContain("--depth");
       expect(gitMock.raw).toHaveBeenCalledWith(["remote", "set-branches", "origin", "*"]);
       expect(service.isInitialized()).toBe(true);
+      expect(outcome.toOutcome()).toMatchObject({
+        counts: expect.objectContaining({ created: 1 }),
+        actions: [{ kind: "created", branch: "main", path: config.worktreeDir }],
+      });
     });
 
     it("passes --depth for configured shallow clone depth", async () => {

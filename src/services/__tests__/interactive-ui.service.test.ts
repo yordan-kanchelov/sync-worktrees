@@ -453,6 +453,59 @@ describe("InteractiveUIService", () => {
 
       service.destroy();
     });
+
+    it("updates last-sync timestamp and logs at info when only per-action worktree skips occurred", async () => {
+      const partialService = {
+        sync: vi.fn<any>().mockResolvedValue({
+          started: true,
+          outcome: {
+            actions: [],
+            counts: {
+              created: 0,
+              removed: 0,
+              updated: 0,
+              skipped: 1,
+              preserved: 0,
+              failed: 0,
+              noop: 0,
+            },
+            mode: "worktree",
+            started: true,
+          },
+        }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        clearRecordedSkips: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+        config: { name: "alpha", worktreeDir: "/repo/alpha", repoUrl: "u" },
+      };
+
+      const service = new InteractiveUIService([partialService as any]);
+      const updateSpy = vi.fn();
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("updateLastSyncTime", updateSpy);
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry));
+      service.getEvents().emit("uiReady");
+
+      const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
+      await onManualSync();
+
+      // Last-sync time must still advance — per-action skips are not "whole repo skipped".
+      expect(updateSpy).toHaveBeenCalled();
+
+      // The cycle log message must be info-level (not warn) and must NOT contain
+      // the whole-repo "Sync skipped for" wording.
+      const partialLogs = logs.filter((l) => l.message.includes("1 sync action(s) skipped"));
+      expect(partialLogs.length).toBeGreaterThan(0);
+      for (const log of partialLogs) {
+        expect(log.level).toBe("info");
+        expect(log.message).not.toMatch(/^Sync skipped for/);
+      }
+
+      service.destroy();
+    });
   });
 
   describe("triggerInitialSync", () => {

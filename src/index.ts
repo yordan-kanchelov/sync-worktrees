@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "fs";
 import * as path from "path";
+import { fileURLToPath } from "url";
 
 import pLimit from "p-limit";
 
@@ -23,7 +25,7 @@ import type { CliOptions } from "./utils/cli";
 
 const signalHandle = setupSignalHandlers();
 
-async function runMultipleRepositories(
+export async function runMultipleRepositories(
   configFile: ConfigFile,
   repositories: RepositoryConfig[],
   configPath?: string,
@@ -80,7 +82,7 @@ async function runMultipleRepositories(
       servicesToSync.map(({ name, service }) =>
         limit(async () => {
           try {
-            await service.sync();
+            return await service.sync();
           } catch (error) {
             globalLogger.error(`❌ Error syncing repository '${name}':`, error);
             throw error;
@@ -90,14 +92,36 @@ async function runMultipleRepositories(
     );
 
     const skipsByRepo: Array<{ repo: string; reasons: readonly CloneSkipReason[] }> = [];
-    let successCount = 0;
+    const skippedNames = new Set<string>();
+    const outcomeFailedNames = new Set<string>();
+    const partialSkipNames = new Set<string>();
     for (let i = 0; i < servicesToSync.length; i++) {
       const { name, service } = servicesToSync[i];
       const reasons = service.getRecordedSkips();
       if (reasons.length > 0) {
         skipsByRepo.push({ repo: name, reasons });
-      } else if (syncResults[i].status === "fulfilled") {
-        successCount++;
+        skippedNames.add(name);
+      }
+
+      const result = syncResults[i];
+      if (result.status === "fulfilled") {
+        if (!result.value.started) {
+          skippedNames.add(name);
+          continue;
+        }
+
+        const counts = result.value.outcome?.counts;
+        if (counts) {
+          if (counts.failed > 0) {
+            outcomeFailedNames.add(name);
+          }
+          // Per-action skips are informational — they don't demote a repo that
+          // otherwise completed its sync attempt out of `successCount`. A
+          // failed repo's headline is its failure, so don't double-label it.
+          if (counts.skipped > 0 && !skippedNames.has(name) && !outcomeFailedNames.has(name)) {
+            partialSkipNames.add(name);
+          }
+        }
       }
     }
 
@@ -111,21 +135,31 @@ async function runMultipleRepositories(
       }
     }
 
-    const skippedNames = new Set(skipsByRepo.map(({ repo }) => repo));
     const initFailures = initResults.filter(
       (result, index) => result.status === "rejected" && !skippedNames.has(repositories[index].name),
     ).length;
     const syncFailures = syncResults.filter(
       (result, index) => result.status === "rejected" && !skippedNames.has(servicesToSync[index].name),
     ).length;
-    const failedCount = initFailures + syncFailures;
-    const skippedCount = skipsByRepo.length;
+    const failedCount = initFailures + syncFailures + outcomeFailedNames.size;
+    const skippedCount = skippedNames.size;
+    const successCount = syncResults.filter((result, index) => {
+      const repoName = servicesToSync[index].name;
+      return (
+        result.status === "fulfilled" &&
+        result.value.started &&
+        !skippedNames.has(repoName) &&
+        !outcomeFailedNames.has(repoName)
+      );
+    }).length;
     const processedRepoWord = repositories.length === 1 ? "repo" : "repos";
+    const skipSummaryLabel = skippedNames.size === skipsByRepo.length ? "with clone-mode skips" : "skipped";
+    const partialSuffix = partialSkipNames.size > 0 ? ` (${partialSkipNames.size} with partial skips)` : "";
     globalLogger.info(
-      `\n📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced, ${skippedCount} with clone-mode skips, ${failedCount} failed`,
+      `\n📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced${partialSuffix}, ${skippedCount} ${skipSummaryLabel}, ${failedCount} failed`,
     );
 
-    if (initFailures > 0 || syncFailures > 0) {
+    if (failedCount > 0) {
       process.exitCode = 1;
     }
   } else {
@@ -278,7 +312,22 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error("❌ Unhandled error:", error);
-  process.exit(1);
-});
+function isMainEntrypoint(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  // realpathSync resolves symlinks on the argv side so the guard works for
+  // npm/pnpm global-bin shims and macOS /tmp -> /private/tmp; import.meta.url
+  // is already the resolved path by default.
+  try {
+    return realpathSync(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainEntrypoint()) {
+  main().catch((error) => {
+    console.error("❌ Unhandled error:", error);
+    process.exit(1);
+  });
+}

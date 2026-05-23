@@ -74,6 +74,18 @@ interface RepoEntry {
   discovered?: DiscoveredRepoContext;
 }
 
+type RepositorySelectionDecision =
+  | { kind: "selected"; repoName: string; source: "current" | "explicit" | "single-config" }
+  | { kind: "ambiguous"; configured: string[]; detected: string[]; reason: string }
+  | { kind: "missing"; configured: string[]; detected: string[]; reason: string };
+
+interface RepositorySelectionState {
+  currentRepo: string | null;
+  configured: string[];
+  detected: string[];
+  defaultDecision: RepositorySelectionDecision;
+}
+
 interface CachedDiscovery {
   result: DiscoveredRepoContext;
   cachedAt: number;
@@ -250,6 +262,11 @@ export class RepositoryContext {
   /** @internal Test-only helper — returns the size of the discovery cache. */
   __discoveryCacheSizeForTest(): number {
     return this.discoveryCache.size;
+  }
+
+  /** @internal Test-only helper — exposes the internal selection state. */
+  __getRepositorySelectionStateForTest(): unknown {
+    return this.getRepositorySelectionState();
   }
 
   private async discoverSiblingRepositories(currentBareRepoPath: string): Promise<SiblingRepository[]> {
@@ -533,6 +550,13 @@ export class RepositoryContext {
   }
 
   async getService(repoName?: string): Promise<WorktreeSyncService> {
+    if (repoName) {
+      const explicit = this.selectExplicitRepository(repoName);
+      if (explicit.kind !== "selected") {
+        throw new Error(this.buildRepoNotFoundError(repoName));
+      }
+    }
+
     const name = repoName ?? this.currentRepo;
     if (!name) {
       throw new Error(this.buildNoRepoSelectedError());
@@ -551,27 +575,97 @@ export class RepositoryContext {
     return entry.service;
   }
 
-  private buildNoRepoSelectedError(): string {
+  private getRepositorySelectionState(): RepositorySelectionState {
     const configured = this.getConfiguredRepositoryNames();
-    const detected = Array.from(this.repos.values())
+    const detected = this.getDetectedRepositoryNames();
+    return {
+      currentRepo: this.currentRepo,
+      configured,
+      detected,
+      defaultDecision: this.selectDefaultRepository(configured, detected),
+    };
+  }
+
+  private selectExplicitRepository(repoName: string): RepositorySelectionDecision {
+    if (this.repos.has(repoName)) {
+      return { kind: "selected", repoName, source: "explicit" };
+    }
+    return {
+      kind: "missing",
+      configured: this.getConfiguredRepositoryNames(),
+      detected: this.getDetectedRepositoryNames(),
+      reason: `Repository '${repoName}' not found`,
+    };
+  }
+
+  private selectDefaultRepository(
+    configured = this.getConfiguredRepositoryNames(),
+    detected = this.getDetectedRepositoryNames(),
+  ): RepositorySelectionDecision {
+    if (this.currentRepo !== null) {
+      return { kind: "selected", repoName: this.currentRepo, source: "current" };
+    }
+    if (this.canAutoSelectSingleConfig(configured, detected)) {
+      return { kind: "selected", repoName: configured[0], source: "single-config" };
+    }
+    if (configured.length === 0 && detected.length === 0) {
+      return {
+        kind: "missing",
+        configured,
+        detected,
+        reason: "no configured or detected repositories are registered",
+      };
+    }
+    return {
+      kind: "ambiguous",
+      configured,
+      detected,
+      reason: "repository selection is ambiguous without currentRepo or explicit repoName",
+    };
+  }
+
+  private canAutoSelectSingleConfig(
+    configured = this.getConfiguredRepositoryNames(),
+    detected = this.getDetectedRepositoryNames(),
+  ): boolean {
+    return this.currentRepo === null && configured.length === 1 && detected.length === 0;
+  }
+
+  private getDetectedRepositoryNames(): string[] {
+    return Array.from(this.repos.values())
+      .filter((entry) => entry.source === "detected")
+      .map((entry) => entry.name);
+  }
+
+  private formatDetectedRepositoryNames(): string[] {
+    return Array.from(this.repos.values())
       .filter((e) => e.source === "detected")
       .map((e) => {
         const location = e.discovered?.currentWorktreePath ?? e.config.bareRepoDir ?? e.config.worktreeDir;
         return location ? `${e.name} (${location})` : e.name;
       });
+  }
+
+  private formatKnownRepositoryNames(names: string[]): string {
+    return names.length === 0 ? "[]" : `[${names.join(", ")}]`;
+  }
+
+  private buildNoRepoSelectedError(): string {
+    const selection = this.getRepositorySelectionState();
+    const detected = this.formatDetectedRepositoryNames();
     const parts = [
       "No repository specified and no current repository set.",
       `launchCwd=${this.launchCwd}`,
       `configPath=${this.configPath ?? "none"}`,
-      `loadedRepos=${this.repos.size} (config: ${configured.length}, detected: ${detected.length})`,
+      `loadedRepos=${this.repos.size} (config: ${selection.configured.length}, detected: ${selection.detected.length})`,
     ];
     if (detected.length > 0) {
-      parts.push(`Detected repos: [${detected.join(", ")}].`);
+      parts.push(`Detected repos: ${this.formatKnownRepositoryNames(detected)}.`);
     }
-    if (configured.length > 0) {
-      parts.push(`Configured repos: [${configured.join(", ")}].`);
+    if (selection.configured.length > 0) {
+      parts.push(`Configured repos: ${this.formatKnownRepositoryNames(selection.configured)}.`);
     }
-    if (configured.length > 0 || detected.length > 0) {
+    if (selection.configured.length > 0 || detected.length > 0) {
       parts.push("Recovery: call set_current_repository with one of the repo names above or pass repoName explicitly.");
     } else {
       parts.push(
@@ -583,7 +677,7 @@ export class RepositoryContext {
 
   private buildRepoNotFoundError(name: string): string {
     const known = Array.from(this.repos.keys());
-    const knownStr = known.length === 0 ? "[]" : `[${known.join(", ")}]`;
+    const knownStr = this.formatKnownRepositoryNames(known);
     return `Repository '${name}' not found. Known repos: ${knownStr}. Run load_config or detect_context to register it.`;
   }
 
@@ -625,17 +719,11 @@ export class RepositoryContext {
   }
 
   autoSelectCurrentRepoIfSingleConfig(): string | null {
-    if (this.currentRepo !== null) return this.currentRepo;
-    // Refuse when any detected entry exists — discovery has already produced
-    // evidence of ambiguity (e.g. CWD inside a worktree of a different bare
-    // repo than the configured one). Silently picking the configured repo
-    // would route path-based tools to the wrong worktree.
-    for (const entry of this.repos.values()) {
-      if (entry.source === "detected") return null;
+    const decision = this.selectDefaultRepository();
+    if (decision.kind !== "selected") return null;
+    if (decision.source === "single-config") {
+      this.currentRepo = decision.repoName;
     }
-    const configured = this.getConfiguredRepositoryNames();
-    if (configured.length !== 1) return null;
-    this.currentRepo = configured[0];
     return this.currentRepo;
   }
 

@@ -4,6 +4,7 @@ import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { PathResolutionService } from "../services/path-resolution.service";
+import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { WorktreeStatusService } from "../services/worktree-status.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { calculateDirectorySize } from "../utils/disk-space";
@@ -455,11 +456,26 @@ export async function handleSync(
     }
     const duration = Date.now() - start;
     ctx.invalidateDiscovered();
+    const outcome =
+      result.outcome ??
+      createEmptySyncOutcome(
+        isCloneModeService(service) ? "clone" : "worktree",
+        ctx.getEntry(params.repoName)?.name ?? params.repoName,
+        duration,
+      );
     const skips = service.getRecordedSkips().map((reason) => ({
       ...reason,
       message: formatCloneSkipReason(reason),
     }));
-    return formatToolResponse({ success: true, duration, skips });
+    return formatToolResponse({
+      success: true,
+      duration,
+      outcome: {
+        ...outcome,
+        durationMs: outcome.durationMs ?? duration,
+      },
+      skips,
+    });
   } finally {
     dispose();
   }

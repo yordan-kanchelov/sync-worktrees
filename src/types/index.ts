@@ -69,6 +69,43 @@ export interface ParallelismConfig {
 
 export type RepositoryMode = "clone" | "worktree";
 
+export type SyncOutcomeMode = RepositoryMode;
+
+export type SyncOutcomeScope = "repo" | "branch" | "worktree" | "sparse-checkout";
+
+export interface SyncOutcomeCounts {
+  created: number;
+  removed: number;
+  updated: number;
+  skipped: number;
+  preserved: number;
+  failed: number;
+  noop: number;
+}
+
+export type SyncOutcomeAction =
+  | { kind: "created"; branch: string; path: string }
+  | { kind: "removed"; branch: string; path: string }
+  | { kind: "updated"; branch: string; path: string; reason?: string }
+  | { kind: "noop"; scope: SyncOutcomeScope; reason: string; branch?: string; path?: string; message?: string }
+  | { kind: "skipped"; scope: SyncOutcomeScope; reason: string; branch?: string; path?: string; message?: string }
+  | { kind: "preserved-diverged"; branch: string; path: string; preservedPath: string }
+  | { kind: "failed"; scope: SyncOutcomeScope; error: string; reason?: string; branch?: string; path?: string };
+
+export interface SyncOutcome {
+  repoName?: string;
+  mode: SyncOutcomeMode;
+  started: true;
+  counts: SyncOutcomeCounts;
+  actions: SyncOutcomeAction[];
+  durationMs?: number;
+}
+
+export type SyncResult =
+  | { started: true; outcome: SyncOutcome }
+  | { started: false; reason: "in_progress" }
+  | { started: false; reason: "locked" };
+
 export interface Config {
   repoUrl: string;
   worktreeDir: string;

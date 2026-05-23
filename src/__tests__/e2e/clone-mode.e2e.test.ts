@@ -6,6 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const shouldSkip = process.env.SKIP_E2E_TESTS === "true";
 const describeOrSkip = shouldSkip ? describe.skip : describe;
+const shouldRunNetworkE2E = process.env.RUN_NETWORK_E2E === "true";
+const itNetwork = shouldRunNetworkE2E ? it : it.skip;
 
 const HELLO_WORLD = "https://github.com/octocat/Hello-World.git";
 const GITIGNORE = "https://github.com/github/gitignore.git";
@@ -119,28 +121,32 @@ export default {
     return fs.writeFile(configPath, configContent);
   }
 
-  it("clones directly into worktreeDir (no /branch subfolder, no .bare)", async () => {
-    const worktreeDir = path.join(tmpBase, "single-clone", "wt");
-    const configPath = await writeSingleCloneConfig("single", HELLO_WORLD, worktreeDir, "master");
+  itNetwork(
+    "clones directly into worktreeDir (no /branch subfolder, no .bare)",
+    async () => {
+      const worktreeDir = path.join(tmpBase, "single-clone", "wt");
+      const configPath = await writeSingleCloneConfig("single", HELLO_WORLD, worktreeDir, "master");
 
-    execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+      execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
 
-    const entries = await fs.readdir(worktreeDir);
-    expect(entries).toContain(".git");
-    expect(entries).toContain("README");
-    expect(entries).not.toContain("master");
-    expect(entries).not.toContain(".bare");
+      const entries = await fs.readdir(worktreeDir);
+      expect(entries).toContain(".git");
+      expect(entries).toContain("README");
+      expect(entries).not.toContain("master");
+      expect(entries).not.toContain(".bare");
 
-    const headBranch = execSync(`git -C "${worktreeDir}" rev-parse --abbrev-ref HEAD`, {
-      encoding: "utf-8",
-    }).trim();
-    expect(headBranch).toBe("master");
+      const headBranch = execSync(`git -C "${worktreeDir}" rev-parse --abbrev-ref HEAD`, {
+        encoding: "utf-8",
+      }).trim();
+      expect(headBranch).toBe("master");
 
-    const remoteUrl = execSync(`git -C "${worktreeDir}" remote get-url origin`, {
-      encoding: "utf-8",
-    }).trim();
-    expect(remoteUrl).toBe(HELLO_WORLD);
-  }, 90000);
+      const remoteUrl = execSync(`git -C "${worktreeDir}" remote get-url origin`, {
+        encoding: "utf-8",
+      }).trim();
+      expect(remoteUrl).toBe(HELLO_WORLD);
+    },
+    90000,
+  );
 
   it("keeps shallow clone-mode remote-tracking refs open to all remote branches", async () => {
     const remoteBare = await createLocalRemote("remote-branches");
@@ -209,51 +215,61 @@ export default {
     expect(remoteBranches).toContain("origin/feat/cloudflare-deploys");
   }, 60000);
 
-  it("is idempotent on subsequent runs (no re-clone, fetch-only sync)", async () => {
-    const worktreeDir = path.join(tmpBase, "idempotent-clone", "wt");
-    const configPath = await writeSingleCloneConfig("idempotent", HELLO_WORLD, worktreeDir, "master");
-    const command = `node "${cliPath}" --config "${configPath}"`;
+  itNetwork(
+    "is idempotent on subsequent runs (no re-clone, fetch-only sync)",
+    async () => {
+      const worktreeDir = path.join(tmpBase, "idempotent-clone", "wt");
+      const configPath = await writeSingleCloneConfig("idempotent", HELLO_WORLD, worktreeDir, "master");
+      const command = `node "${cliPath}" --config "${configPath}"`;
 
-    execSync(command, { encoding: "utf-8", timeout: 60000 });
+      execSync(command, { encoding: "utf-8", timeout: 60000 });
 
-    const secondRun = execSync(command, { encoding: "utf-8", timeout: 60000 });
+      const secondRun = execSync(command, { encoding: "utf-8", timeout: 60000 });
 
-    expect(secondRun).not.toContain("Cloning ");
-    expect(secondRun).toContain("up to date with origin/master");
-  }, 120000);
+      expect(secondRun).not.toContain("Cloning ");
+      expect(secondRun).toContain("up to date with origin/master");
+    },
+    120000,
+  );
 
-  it("soft-skips branch mismatch during initialize when checkout is on a different branch", async () => {
-    const worktreeDir = path.join(tmpBase, "mismatch-clone", "wt");
-    const configPath = await writeSingleCloneConfig("mismatch", HELLO_WORLD, worktreeDir, "master");
-    const command = `node "${cliPath}" --config "${configPath}"`;
+  itNetwork(
+    "soft-skips branch mismatch during initialize when checkout is on a different branch",
+    async () => {
+      const worktreeDir = path.join(tmpBase, "mismatch-clone", "wt");
+      const configPath = await writeSingleCloneConfig("mismatch", HELLO_WORLD, worktreeDir, "master");
+      const command = `node "${cliPath}" --config "${configPath}"`;
 
-    execSync(command, { encoding: "utf-8", timeout: 60000 });
+      execSync(command, { encoding: "utf-8", timeout: 60000 });
 
-    execSync(`git -C "${worktreeDir}" checkout -b sidebranch`, { encoding: "utf-8" });
+      execSync(`git -C "${worktreeDir}" checkout -b sidebranch`, { encoding: "utf-8" });
 
-    const output = execSync(`${command} 2>&1`, {
-      encoding: "utf-8",
-      timeout: 60000,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+      const output = execSync(`${command} 2>&1`, {
+        encoding: "utf-8",
+        timeout: 60000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
 
-    expect(output).toMatch(/is on branch 'sidebranch', expected 'master'/);
-    expect(output).toContain("Clone-mode skips");
-    expect(output).toMatch(/clone is on 'sidebranch', expected 'master' \(since process start\)/);
-    expect(output).toMatch(/Processed 1 repo: 0 synced, 1 with clone-mode skips, 0 failed/);
-    expect(output).not.toContain("CONFIG_CLONE_BRANCH_MISMATCH");
-  }, 120000);
+      expect(output).toMatch(/is on branch 'sidebranch', expected 'master'/);
+      expect(output).toContain("Clone-mode skips");
+      expect(output).toMatch(/clone is on 'sidebranch', expected 'master' \(since process start\)/);
+      expect(output).toMatch(/Processed 1 repo: 0 synced, 1 with clone-mode skips, 0 failed/);
+      expect(output).not.toContain("CONFIG_CLONE_BRANCH_MISMATCH");
+    },
+    120000,
+  );
 
-  it("supports mixed config: one clone-mode repo + one worktree-mode repo", async () => {
-    const configDir = path.join(tmpBase, "mixed-config");
-    await fs.mkdir(configDir, { recursive: true });
+  itNetwork(
+    "supports mixed config: one clone-mode repo + one worktree-mode repo",
+    async () => {
+      const configDir = path.join(tmpBase, "mixed-config");
+      await fs.mkdir(configDir, { recursive: true });
 
-    const cloneDir = path.join(configDir, "clone-repo");
-    const worktreeRoot = path.join(configDir, "worktree-repo");
-    const bareDir = path.join(configDir, ".bare-worktree");
+      const cloneDir = path.join(configDir, "clone-repo");
+      const worktreeRoot = path.join(configDir, "worktree-repo");
+      const bareDir = path.join(configDir, ".bare-worktree");
 
-    const configPath = path.join(configDir, "mixed.config.js");
-    const configContent = `
+      const configPath = path.join(configDir, "mixed.config.js");
+      const configContent = `
 export default {
   defaults: { cronSchedule: "0 * * * *", runOnce: true },
   repositories: [
@@ -274,42 +290,44 @@ export default {
   ]
 };
 `;
-    await fs.writeFile(configPath, configContent);
+      await fs.writeFile(configPath, configContent);
 
-    execSync(`node "${cliPath}" --config "${configPath}"`, {
-      encoding: "utf-8",
-      timeout: 180000,
-      env: { ...process.env, NODE_ENV: "production" },
-    });
+      execSync(`node "${cliPath}" --config "${configPath}"`, {
+        encoding: "utf-8",
+        timeout: 180000,
+        env: { ...process.env, NODE_ENV: "production" },
+      });
 
-    const cloneEntries = await fs.readdir(cloneDir);
-    expect(cloneEntries).toContain(".git");
-    expect(cloneEntries).toContain("README");
-    expect(cloneEntries).not.toContain("master");
-    const cloneHead = execSync(`git -C "${cloneDir}" rev-parse --abbrev-ref HEAD`, { encoding: "utf-8" }).trim();
-    expect(cloneHead).toBe("master");
+      const cloneEntries = await fs.readdir(cloneDir);
+      expect(cloneEntries).toContain(".git");
+      expect(cloneEntries).toContain("README");
+      expect(cloneEntries).not.toContain("master");
+      const cloneHead = execSync(`git -C "${cloneDir}" rev-parse --abbrev-ref HEAD`, { encoding: "utf-8" }).trim();
+      expect(cloneHead).toBe("master");
 
-    const bareExists = await fs
-      .access(bareDir)
-      .then(() => true)
-      .catch(() => false);
-    expect(bareExists).toBe(true);
+      const bareExists = await fs
+        .access(bareDir)
+        .then(() => true)
+        .catch(() => false);
+      expect(bareExists).toBe(true);
 
-    const worktreeEntries = await fs.readdir(worktreeRoot);
-    expect(worktreeEntries).toContain("main");
-    const mainWorktreePath = path.join(worktreeRoot, "main");
-    const mainHead = execSync(`git -C "${mainWorktreePath}" rev-parse --abbrev-ref HEAD`, {
-      encoding: "utf-8",
-    }).trim();
-    expect(mainHead).toBe("main");
+      const worktreeEntries = await fs.readdir(worktreeRoot);
+      expect(worktreeEntries).toContain("main");
+      const mainWorktreePath = path.join(worktreeRoot, "main");
+      const mainHead = execSync(`git -C "${mainWorktreePath}" rev-parse --abbrev-ref HEAD`, {
+        encoding: "utf-8",
+      }).trim();
+      expect(mainHead).toBe("main");
 
-    const lockDir = path.join(configDir, ".sync-worktrees-state");
-    const lockExists = await fs
-      .access(lockDir)
-      .then(() => true)
-      .catch(() => false);
-    expect(lockExists).toBe(true);
-  }, 240000);
+      const lockDir = path.join(configDir, ".sync-worktrees-state");
+      const lockExists = await fs
+        .access(lockDir)
+        .then(() => true)
+        .catch(() => false);
+      expect(lockExists).toBe(true);
+    },
+    240000,
+  );
 
   it("creates a shallow clone from config depth and unshallows when depth is removed", async () => {
     const remoteBare = await createLocalRemote("depth-remote");
