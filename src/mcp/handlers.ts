@@ -153,12 +153,14 @@ async function getWorktreesFromService(
 
 export async function handleDetectContext(
   ctx: RepositoryContext,
-  params: { path?: string; includeStatus?: boolean; includeAllWorktrees?: boolean },
+  params: { path?: string; includeStatus?: boolean; includeAllWorktrees?: boolean; detailed?: boolean },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const target = params.path ?? process.cwd();
   const discovered = await ctx.detectFromPath(target);
-  let response: DiscoveredRepoContext = discovered;
+  // configuredRepositories is server-wide loaded-config inventory, independent of params.path.
+  const configuredRepositories = await ctx.getConfiguredRepositorySummaries({ detailed: params.detailed ?? false });
+  let response = { ...discovered, configuredRepositories };
 
   if (params.includeAllWorktrees) {
     const details = await ctx.getAllConfiguredWorktreeDetails(discovered.currentWorktreePath);

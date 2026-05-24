@@ -440,6 +440,112 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
   });
 });
 
+describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
+  beforeEach(() => {
+    mockRemoteUrl.mockReset();
+    mockWorktreeList.mockReset();
+  });
+
+  it("returns lean configured repositories by default", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-"));
+    try {
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { repositories: [
+        { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", cronSchedule: "0 * * * *", runOnce: true },
+        { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *", runOnce: true }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      const ctx = new RepositoryContext();
+      await ctx.loadConfig(configPath);
+
+      await expect(ctx.getConfiguredRepositorySummaries()).resolves.toEqual([
+        { name: "ui", mode: "clone", checkoutPath: path.join(workspace, "ui"), isCurrent: true },
+        { name: "frontend", mode: "worktree", worktreeDir: path.join(workspace, "frontend"), isCurrent: false },
+      ]);
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("adds detailed local setup only when requested", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-detail-"));
+    try {
+      const cloneDir = path.join(workspace, "ui");
+      const bareDir = path.join(workspace, ".bare", "frontend");
+      await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
+      await fs.mkdir(bareDir, { recursive: true });
+
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { repositories: [
+        { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", branch: "main", cronSchedule: "0 * * * *", runOnce: true },
+        { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *", runOnce: true },
+        { name: "missing", repoUrl: "https://github.com/test/missing.git", bareRepoDir: "./.bare/missing", worktreeDir: "./missing", cronSchedule: "0 * * * *", runOnce: true }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      const ctx = new RepositoryContext();
+      await ctx.loadConfig(configPath);
+
+      mockWorktreeList.mockResolvedValue("true\n");
+
+      const summaries = await ctx.getConfiguredRepositorySummaries({ detailed: true });
+      expect(summaries).toEqual([
+        {
+          name: "ui",
+          mode: "clone",
+          checkoutPath: cloneDir,
+          repoUrl: "https://github.com/test/ui.git",
+          branch: "main",
+          isCurrent: true,
+          localReady: true,
+        },
+        {
+          name: "frontend",
+          mode: "worktree",
+          worktreeDir: path.join(workspace, "frontend"),
+          repoUrl: "https://github.com/test/frontend.git",
+          bareRepoDir: bareDir,
+          isCurrent: false,
+          localReady: true,
+        },
+        {
+          name: "missing",
+          mode: "worktree",
+          worktreeDir: path.join(workspace, "missing"),
+          repoUrl: "https://github.com/test/missing.git",
+          bareRepoDir: path.join(workspace, ".bare", "missing"),
+          isCurrent: false,
+          localReady: false,
+        },
+      ]);
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("returns server-wide inventory regardless of params.path semantics (no scoping)", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-scope-"));
+    try {
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { repositories: [
+        { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", cronSchedule: "0 * * * *", runOnce: true },
+        { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *", runOnce: true }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      const ctx = new RepositoryContext();
+      await ctx.loadConfig(configPath);
+
+      // Method takes no path argument — returns full server inventory unconditionally.
+      const summaries = await ctx.getConfiguredRepositorySummaries();
+      expect(summaries.map((s) => s.name).sort()).toEqual(["frontend", "ui"]);
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("RepositoryContext.getAllConfiguredWorktreeDetails", () => {
   beforeEach(() => {
     mockRemoteUrl.mockReset();

@@ -120,6 +120,7 @@ function makeCtx(opts: {
   loadConfigImpl?: (configPath: string) => Promise<unknown>;
   currentRepo?: string;
   configuredRepoNames?: string[];
+  configuredRepositorySummaries?: unknown[];
   allConfiguredWorktrees?: Record<string, Array<{ path: string; branch: string; isCurrent: boolean }>>;
   allConfiguredWorktreeErrors?: Record<string, string>;
   service?: Record<string, unknown>;
@@ -178,6 +179,7 @@ function makeCtx(opts: {
     autoSelectCurrentRepoIfSingleConfig: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
     getRepositoryList: vi.fn<any>().mockReturnValue([]),
     getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(opts.configuredRepoNames ?? []),
+    getConfiguredRepositorySummaries: vi.fn<any>().mockResolvedValue(opts.configuredRepositorySummaries ?? []),
     getAllConfiguredWorktreeDetails: vi.fn<any>().mockResolvedValue({
       worktreesByRepo: opts.allConfiguredWorktrees ?? {},
       errorsByRepo: opts.allConfiguredWorktreeErrors ?? {},
@@ -1163,12 +1165,14 @@ describe("handleDetectContext includeStatus", () => {
           ],
         }),
       ),
+      getConfiguredRepositorySummaries: vi.fn<any>().mockResolvedValue([]),
     } as unknown as RepositoryContext;
 
     const result = await invoke(handleDetectContext, ctx, {});
     const body = parseResponse(result);
     expect(body.allWorktrees[0].label).toBeUndefined();
     expect(body.allWorktrees[1].divergence).toBeUndefined();
+    expect(body.configuredRepositories).toEqual([]);
   });
 
   it("enriches allWorktrees with label/divergence/staleHint when includeStatus=true", async () => {
@@ -1181,6 +1185,7 @@ describe("handleDetectContext includeStatus", () => {
           ],
         }),
       ),
+      getConfiguredRepositorySummaries: vi.fn<any>().mockResolvedValue([]),
     } as unknown as RepositoryContext;
 
     const result = await invoke(handleDetectContext, ctx, { includeStatus: true });
@@ -1188,6 +1193,55 @@ describe("handleDetectContext includeStatus", () => {
     expect(body.allWorktrees[0].label).toBe("current");
     expect(body.allWorktrees[1].label).toBe("clean");
     expect(body.allWorktrees[0].staleHint).toBe(false);
+  });
+
+  it("returns lean mode-discriminated configured repository setup by default", async () => {
+    const configuredRepositorySummaries = [
+      { name: "ui", mode: "clone", checkoutPath: "/workspace/ui", isCurrent: false },
+      { name: "frontend", mode: "worktree", worktreeDir: "/workspace/frontend", isCurrent: true },
+    ];
+    const { ctx } = makeCtx({ configuredRepositorySummaries });
+
+    const result = await invoke(handleDetectContext, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.configuredRepositories).toEqual(configuredRepositorySummaries);
+    expect(ctx.getConfiguredRepositorySummaries).toHaveBeenCalledWith({ detailed: false });
+  });
+
+  it("returns detailed configured repository setup when detailed=true", async () => {
+    const configuredRepositorySummaries = [
+      {
+        name: "frontend",
+        mode: "worktree",
+        worktreeDir: "/workspace/frontend",
+        repoUrl: "https://github.com/test/frontend.git",
+        bareRepoDir: "/workspace/.bare/frontend",
+        isCurrent: true,
+        localReady: true,
+      },
+    ];
+    const { ctx } = makeCtx({ configuredRepositorySummaries });
+
+    const result = await invoke(handleDetectContext, ctx, { detailed: true });
+    const body = parseResponse(result);
+
+    expect(body.configuredRepositories).toEqual(configuredRepositorySummaries);
+    expect(ctx.getConfiguredRepositorySummaries).toHaveBeenCalledWith({ detailed: true });
+  });
+
+  it("returns server-wide configuredRepositories regardless of params.path", async () => {
+    const configuredRepositorySummaries = [
+      { name: "ui", mode: "clone", checkoutPath: "/workspace/ui", isCurrent: true },
+      { name: "frontend", mode: "worktree", worktreeDir: "/workspace/frontend", isCurrent: false },
+    ];
+    const { ctx } = makeCtx({ configuredRepositorySummaries });
+
+    const result = await invoke(handleDetectContext, ctx, { path: "/tmp/some-foreign-checkout" });
+    const body = parseResponse(result);
+
+    expect(body.configuredRepositories).toEqual(configuredRepositorySummaries);
+    expect(ctx.getConfiguredRepositorySummaries).toHaveBeenCalledWith({ detailed: false });
   });
 
   it("adds allWorktreesByRepo when includeAllWorktrees=true", async () => {
