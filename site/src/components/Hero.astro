@@ -1,9 +1,11 @@
 ---
 import Icon from "./Icon.astro";
 import CopyButton from "./CopyButton.astro";
+import packageMetadata from "../../../package.json";
 
 const npmCmd = "npm install -g sync-worktrees";
 const mcpCmd = "claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp";
+const packageVersion = packageMetadata.version;
 ---
 <section class="relative overflow-hidden bg-white">
   <div class="absolute inset-0 -z-10 section-grid-light"></div>
@@ -16,7 +18,7 @@ const mcpCmd = "claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-w
         class="inline-flex items-center gap-2 rounded-full border border-ink-200 bg-white/70 px-3 py-1 text-xs font-medium text-ink-700 backdrop-blur transition hover:border-accent-300 hover:text-accent-700"
       >
         <span class="inline-block size-1.5 rounded-full bg-signal-green"></span>
-        v3.6.3 — MIT licensed
+        v{packageVersion} — MIT licensed
         <span class="text-ink-400">·</span>
         <span class="inline-flex items-center gap-1">
           <Icon name="github" size={14} /> Star on GitHub
