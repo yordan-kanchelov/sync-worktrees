@@ -123,16 +123,55 @@ describe("createServer", () => {
       const payload = JSON.parse(result.contents[0].text);
       expect(payload.isWorktree).toBe(true);
       expect(payload.currentBranch).toBe("feature-x");
+      expect(Array.isArray(payload.configuredRepositories)).toBe(true);
     } finally {
       process.chdir(originalCwd);
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("workspace resource includes server-wide configuredRepositories when config is loaded", async () => {
+    const ctx = new RepositoryContext();
+    vi.spyOn(ctx, "detectFromPath").mockResolvedValue({
+      isWorktree: false,
+      kind: "unsupported",
+      currentBranch: null,
+      currentWorktreePath: null,
+      bareRepoPath: null,
+      repoUrl: null,
+      worktreeDir: null,
+      allWorktrees: [],
+      siblingRepositories: [],
+      configPath: null,
+      repoName: null,
+      capabilities: {} as any,
+      notes: [],
+    } as any);
+    vi.spyOn(ctx, "getConfiguredRepositorySummaries").mockResolvedValue([
+      { name: "ui", mode: "clone", checkoutPath: "/ws/ui", isCurrent: false },
+      { name: "frontend", mode: "worktree", worktreeDir: "/ws/frontend", isCurrent: true },
+    ]);
+
+    const server = createServer(ctx);
+    const registered = (server as any)._registeredResources as Record<
+      string,
+      { readCallback: (uri: URL) => Promise<{ contents: Array<{ text: string }> }> }
+    >;
+    const handler = registered["sync-worktrees://workspace"].readCallback;
+
+    const result = await handler(new URL("sync-worktrees://workspace"));
+    const payload = JSON.parse(result.contents[0].text);
+
+    expect(payload.configuredRepositories).toEqual([
+      { name: "ui", mode: "clone", checkoutPath: "/ws/ui", isCurrent: false },
+      { name: "frontend", mode: "worktree", worktreeDir: "/ws/frontend", isCurrent: true },
+    ]);
+  });
 });
 
 describe("buildInstructions", () => {
   const baseInstructions =
-    "Call `detect_context {includeAllWorktrees:true}` at session start. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up; returns current+sibling repos/worktrees, current branch, per-capability {available,reason}.";
+    "Call `detect_context` for the project map and live worktree state; `configuredRepositories` in its response is the server-wide loaded-config inventory. Use `set_current_repository` to switch repos. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up.";
 
   function makeDiscovered(overrides: Partial<DiscoveredRepoContext> = {}): DiscoveredRepoContext {
     return {
@@ -179,6 +218,14 @@ describe("buildInstructions", () => {
     expect(buildInstructions({ discovered })).toBe(baseInstructions);
   });
 
+  it("does not embed configuredRepositories inventory in instructions", () => {
+    const discovered = makeDiscovered();
+    const result = buildInstructions({ discovered, configuredRepoCount: 2 });
+    expect(result).not.toContain("Configured repositories:");
+    expect(result).not.toContain("(clone)=");
+    expect(result).not.toContain("(worktree)=");
+  });
+
   it("appends connect-time context when inside a managed worktree", () => {
     const discovered = makeDiscovered();
     const result = buildInstructions({ discovered });
@@ -190,8 +237,6 @@ describe("buildInstructions", () => {
     expect(result).not.toContain("branch=");
     expect(result).toContain("config=/repos/sync-worktrees.config.js");
     expect(result).toContain("worktrees=0");
-    expect(result).toContain("set_current_repository");
-    expect(result).toContain("detect_context");
   });
 
   it("omits null fields from connect-time block", () => {
@@ -244,7 +289,7 @@ describe("buildInstructions", () => {
 
   it("stays within size budget even with all fields populated", () => {
     const discovered = makeDiscovered();
-    const result = buildInstructions({ discovered });
+    const result = buildInstructions({ discovered, configuredRepoCount: 10 });
     expect(result.length).toBeLessThanOrEqual(baseInstructions.length + 500);
   });
 });

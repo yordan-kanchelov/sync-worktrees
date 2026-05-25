@@ -24,7 +24,7 @@ const REPO_NAME_DESCRIBE =
 const PATH_DESCRIBE_SUFFIX = "Absolute preferred; relative resolves from server CWD.";
 
 const SERVER_INSTRUCTIONS =
-  "Call `detect_context {includeAllWorktrees:true}` at session start. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up; returns current+sibling repos/worktrees, current branch, per-capability {available,reason}.";
+  "Call `detect_context` for the project map and live worktree state; `configuredRepositories` in its response is the server-wide loaded-config inventory. Use `set_current_repository` to switch repos. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up.";
 
 export interface ServerSnapshot {
   discovered: DiscoveredRepoContext | null;
@@ -33,7 +33,10 @@ export interface ServerSnapshot {
 
 export function buildInstructions(snapshot?: ServerSnapshot): string {
   const d = snapshot?.discovered;
-  if (!d || !d.isWorktree || d.kind !== "managed") return SERVER_INSTRUCTIONS;
+
+  if (!d || !d.isWorktree || d.kind !== "managed") {
+    return SERVER_INSTRUCTIONS;
+  }
 
   const fields: string[] = [];
   if (d.repoName) fields.push(`workspace=${d.repoName}`);
@@ -44,7 +47,7 @@ export function buildInstructions(snapshot?: ServerSnapshot): string {
   }
   fields.push(`worktrees=${d.allWorktrees.length}`);
 
-  return `${SERVER_INSTRUCTIONS} Connect-time: ${fields.join(" ")}. Switch repo: set_current_repository. Live state: detect_context {includeAllWorktrees:true}.`;
+  return `${SERVER_INSTRUCTIONS} Connect-time: ${fields.join(" ")}.`;
 }
 
 export function createServer(context: RepositoryContext, snapshot?: ServerSnapshot): McpServer {
@@ -64,22 +67,24 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     {
       title: "Workspace context",
       description:
-        "Workspace context: isWorktree, kind, currentWorktreePath, currentBranch, allWorktrees, siblingRepositories, configPath, capabilities {available,reason}. {isWorktree:false} when outside any workspace.",
+        "Workspace context: isWorktree, kind, currentWorktreePath, currentBranch, allWorktrees, siblingRepositories, configPath, capabilities {available,reason}, configuredRepositories (server-wide loaded-config inventory). {isWorktree:false} when outside any workspace.",
       mimeType: "application/json",
     },
     async (uri) => {
-      let discovered: unknown;
+      let payload: unknown;
       try {
-        discovered = await context.detectFromPath(process.cwd());
+        const discovered = await context.detectFromPath(process.cwd());
+        const configuredRepositories = await context.getConfiguredRepositorySummaries();
+        payload = { ...discovered, configuredRepositories };
       } catch (err) {
-        discovered = buildUnsupportedContext(process.cwd(), err instanceof Error ? err.message : String(err));
+        payload = buildUnsupportedContext(process.cwd(), err instanceof Error ? err.message : String(err));
       }
       return {
         contents: [
           {
             uri: uri.href,
             mimeType: "application/json",
-            text: JSON.stringify(discovered),
+            text: JSON.stringify(payload),
           },
         ],
       };
@@ -90,9 +95,14 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "detect_context",
     {
       description:
-        "Detect sync-worktrees structure from path (default: CWD). Reads .git, resolves bare repo, walks up to auto-load sync-worktrees.config.{js,mjs,cjs,ts}. Returns: bareRepoPath, allWorktrees, siblingRepositories, currentWorktreePath, configPath, capabilities {available,reason}, notes. Use at session start or to bootstrap from unknown checkout.",
+        "Detect sync-worktrees structure from path (default: CWD). Reads .git, resolves bare repo, walks up to auto-load sync-worktrees.config.{js,mjs,cjs,ts}. Returns: configuredRepositories (server-wide loaded-config inventory; independent of params.path), bareRepoPath, allWorktrees, siblingRepositories, currentWorktreePath, configPath, capabilities {available,reason}, notes. Lean configuredRepositories entries are mode-discriminated: clone → {name, mode:'clone', checkoutPath, isCurrent}; worktree → {name, mode:'worktree', worktreeDir, isCurrent}. detailed=true adds repoUrl, branch?, sparseCheckout?, localReady, plus bareRepoDir for worktree mode. Use at session start or to bootstrap from unknown checkout.",
       inputSchema: {
         path: z.string().optional().describe("Directory to inspect. Default: server CWD."),
+        detailed: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Expand configuredRepositories with repoUrl, branch, sparseCheckout, localReady, bareRepoDir."),
         includeAllWorktrees: z
           .boolean()
           .optional()

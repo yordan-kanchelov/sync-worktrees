@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import pLimit from "p-limit";
 import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
@@ -47,6 +48,28 @@ export interface SiblingRepository {
   present: boolean;
   configMatched: boolean;
 }
+
+interface ConfiguredRepositorySummaryBase {
+  name: string;
+  isCurrent: boolean;
+  repoUrl?: string;
+  branch?: string;
+  sparseCheckout?: RepositoryConfig["sparseCheckout"];
+  localReady?: boolean;
+}
+
+export interface ConfiguredCloneRepositorySummary extends ConfiguredRepositorySummaryBase {
+  mode: "clone";
+  checkoutPath: string;
+}
+
+export interface ConfiguredWorktreeRepositorySummary extends ConfiguredRepositorySummaryBase {
+  mode: "worktree";
+  worktreeDir: string;
+  bareRepoDir?: string;
+}
+
+export type ConfiguredRepositorySummary = ConfiguredCloneRepositorySummary | ConfiguredWorktreeRepositorySummary;
 
 export interface DiscoveredRepoContext {
   isWorktree: boolean;
@@ -718,6 +741,56 @@ export class RepositoryContext {
       .map((entry) => entry.name);
   }
 
+  async getConfiguredRepositorySummaries(options: { detailed?: boolean } = {}): Promise<ConfiguredRepositorySummary[]> {
+    const entries = Array.from(this.repos.values()).filter((entry) => entry.source === "config");
+    const currentRepo = this.currentRepo;
+
+    const buildLean = (entry: RepoEntry): ConfiguredRepositorySummary => {
+      const mode = resolveMode(entry.config);
+      const isCurrent = entry.name === currentRepo;
+      if (mode === REPOSITORY_MODES.CLONE) {
+        return { name: entry.name, mode: "clone", checkoutPath: path.resolve(entry.config.worktreeDir), isCurrent };
+      }
+      return { name: entry.name, mode: "worktree", worktreeDir: path.resolve(entry.config.worktreeDir), isCurrent };
+    };
+
+    if (!options.detailed) {
+      return entries.map(buildLean);
+    }
+
+    const limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+    return Promise.all(
+      entries.map((entry) =>
+        limit(async () => {
+          const summary = buildLean(entry);
+          summary.repoUrl = entry.config.repoUrl;
+          if (entry.config.branch) summary.branch = entry.config.branch;
+          if (entry.config.sparseCheckout) {
+            const sc = entry.config.sparseCheckout;
+            summary.sparseCheckout = {
+              ...sc,
+              include: [...sc.include],
+              ...(sc.exclude ? { exclude: [...sc.exclude] } : {}),
+            };
+          }
+
+          if (summary.mode === "clone") {
+            summary.localReady = await isGitCheckout(summary.checkoutPath);
+            return summary;
+          }
+
+          if (entry.config.bareRepoDir) {
+            summary.bareRepoDir = path.resolve(entry.config.bareRepoDir);
+            summary.localReady = await isDirectory(summary.bareRepoDir);
+          } else {
+            summary.localReady = false;
+          }
+          return summary;
+        }),
+      ),
+    );
+  }
+
   autoSelectCurrentRepoIfSingleConfig(): string | null {
     const decision = this.selectDefaultRepository();
     if (decision.kind !== "selected") return null;
@@ -903,6 +976,16 @@ async function hasGitMetadata(worktreePath: string): Promise<boolean> {
   try {
     await fs.stat(path.join(worktreePath, ".git"));
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isGitCheckout(checkoutPath: string): Promise<boolean> {
+  if (!(await isDirectory(checkoutPath))) return false;
+  try {
+    const inside = (await simpleGit(checkoutPath).raw(["rev-parse", "--is-inside-work-tree"])).trim();
+    return inside === "true";
   } catch {
     return false;
   }
