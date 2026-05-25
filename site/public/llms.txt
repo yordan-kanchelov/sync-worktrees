@@ -7,7 +7,7 @@ sync-worktrees materializes your entire branch + repo layout on disk — one fol
 ## Docs
 
 - [README](https://github.com/yordan-kanchelov/sync-worktrees/blob/main/README.md): Full installation, configuration reference, MCP integration, and TUI keybindings.
-- [Full landing-page text](https://sync-worktrees.dev/llms-full.txt): Hero copy, problem statement, feature descriptions, every MCP config snippet, and FAQ — all as plain text.
+- [Full landing-page text](https://sync-worktrees.com/llms-full.txt): Hero copy, problem statement, feature descriptions, every MCP config snippet, and FAQ — all as plain text.
 - [Architecture notes](https://github.com/yordan-kanchelov/sync-worktrees/tree/main/docs): Engineering design docs covering sync planning, MCP selection state, retry policy, and structured outcomes.
 - [Example config](https://github.com/yordan-kanchelov/sync-worktrees/blob/main/sync-worktrees.config.example.js): Annotated reference covering worktree mode, clone mode, filtering, retry, and cron scheduling.
 

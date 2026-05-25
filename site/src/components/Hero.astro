@@ -90,3 +90,10 @@ const packageVersion = packageMetadata.version;
     </div>
   </div>
 </section>
+
+<script is:inline>
+  document.querySelector('a[href="https://github.com/yordan-kanchelov/sync-worktrees"]')
+    ?.addEventListener("click", function () {
+      window.posthog?.capture("github_link_clicked", { location: "hero" });
+    });
+</script>

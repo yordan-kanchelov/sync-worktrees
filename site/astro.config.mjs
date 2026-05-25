@@ -3,7 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 import sitemap from "@astrojs/sitemap";
 import mdx from "@astrojs/mdx";
 
-const SITE_URL = process.env.SITE_URL || "https://sync-worktrees.dev";
+const SITE_URL = process.env.SITE_URL || "https://sync-worktrees.com";
 
 export default defineConfig({
   site: SITE_URL,

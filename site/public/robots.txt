@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://sync-worktrees.dev/sitemap-index.xml
+Sitemap: https://sync-worktrees.com/sitemap-index.xml

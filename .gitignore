@@ -23,3 +23,7 @@ sync-worktrees.config.js
 demo-recording/fixture/
 demo-recording/*.cast
 demo-recording/*.gif
+
+# Astro site build artifacts
+site/.astro/
+site/public/demo.gif

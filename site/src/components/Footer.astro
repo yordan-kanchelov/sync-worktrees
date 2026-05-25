@@ -37,3 +37,21 @@ import Icon from "./Icon.astro";
     </div>
   </div>
 </footer>
+
+<script is:inline>
+  (function () {
+    var labelMap = {
+      "https://github.com/yordan-kanchelov/sync-worktrees": "GitHub",
+      "https://www.npmjs.com/package/sync-worktrees": "npm",
+      "https://github.com/yordan-kanchelov/sync-worktrees/blob/main/CHANGELOG.md": "Changelog",
+      "https://github.com/yordan-kanchelov/sync-worktrees/issues": "Issues",
+    };
+    document.querySelectorAll("footer a").forEach(function (a) {
+      var href = a.getAttribute("href") || "";
+      if (!labelMap[href]) return;
+      a.addEventListener("click", function () {
+        window.posthog?.capture("footer_link_clicked", { link_label: labelMap[href] });
+      });
+    });
+  })();
+</script>

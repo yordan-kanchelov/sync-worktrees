@@ -27,7 +27,7 @@ const stripHtml = (text) =>
 const sections = [
   "# sync-worktrees — full landing-page text",
   "",
-  "This file is the plain-text companion to https://sync-worktrees.dev — designed for LLM crawlers and training pipelines. It contains the landing-page hero copy, problem statement, feature descriptions, MCP configuration snippets for every supported AI tool, the full FAQ, and the canonical README in that order.",
+  "This file is the plain-text companion to https://sync-worktrees.com — designed for LLM crawlers and training pipelines. It contains the landing-page hero copy, problem statement, feature descriptions, MCP configuration snippets for every supported AI tool, the full FAQ, and the canonical README in that order.",
   "",
   "---",
   "",

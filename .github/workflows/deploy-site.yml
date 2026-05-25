@@ -1,6 +1,12 @@
-name: Deploy site to GitHub Pages
+name: Site CI
 
 on:
+  pull_request:
+    paths:
+      - "site/**"
+      - "assets/sync-worktrees-demo-optimized.gif"
+      - "README.md"
+      - ".github/workflows/deploy-site.yml"
   push:
     branches: [main]
     paths:
@@ -12,12 +18,10 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: site-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -40,21 +44,7 @@ jobs:
       - name: Build
         working-directory: site
         env:
-          SITE_URL: https://sync-worktrees.dev
+          SITE_URL: https://sync-worktrees.com
+          PUBLIC_POSTHOG_KEY: ${{ secrets.PUBLIC_POSTHOG_KEY }}
+          PUBLIC_POSTHOG_HOST: ${{ vars.PUBLIC_POSTHOG_HOST || 'https://eu.i.posthog.com' }}
         run: npm run build
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: site/dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy
-        id: deployment
-        uses: actions/deploy-pages@v4

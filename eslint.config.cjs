@@ -95,9 +95,16 @@ module.exports = [
     },
   },
 
-  // JavaScript config files
+  // JavaScript config files and site build tooling
   {
-    files: ["eslint.config.js", "jest.config.js", "esbuild.config.js", "sync-worktrees.config*.js"],
+    files: [
+      "eslint.config.cjs",
+      "eslint.config.js",
+      "jest.config.js",
+      "esbuild.config.js",
+      "sync-worktrees.config*.js",
+      "site/**/*.mjs",
+    ],
     languageOptions: {
       globals: {
         ...globals.node,
@@ -114,6 +121,7 @@ module.exports = [
       "**/dist/",
       "**/coverage/",
       "**/node_modules/",
+      "**/.astro/",
       "**/.git/",
       "**/build/",
     ],

@@ -1,6 +1,7 @@
 ---
 import "../styles/globals.css";
 import packageMetadata from "../../../package.json";
+import PostHogAnalytics from "../components/PostHogAnalytics.astro";
 
 export interface Props {
   title?: string;
@@ -16,7 +17,7 @@ const {
   ogImage = "/og-image.png",
 } = Astro.props;
 
-const siteUrl = Astro.site?.toString().replace(/\/$/, "") ?? "https://sync-worktrees.dev";
+const siteUrl = Astro.site?.toString().replace(/\/$/, "") ?? "https://sync-worktrees.com";
 const canonicalUrl = canonical ?? new URL(Astro.url.pathname, siteUrl).toString();
 const ogImageUrl = new URL(ogImage, siteUrl).toString();
 const packageVersion = packageMetadata.version;
@@ -121,6 +122,7 @@ const faqJsonLd = {
 
     <script is:inline type="application/ld+json" set:html={JSON.stringify(softwareJsonLd)} />
     <script is:inline type="application/ld+json" set:html={JSON.stringify(faqJsonLd)} />
+    <PostHogAnalytics />
   </head>
   <body class="bg-white text-ink-900 font-sans antialiased">
     <slot />
@@ -136,6 +138,7 @@ const faqJsonLd = {
         navigator.clipboard.writeText(text).then(() => {
           btn.classList.add("copied");
           setTimeout(() => btn.classList.remove("copied"), 1600);
+          (window as any).posthog?.capture("command_copied", { command: text });
         });
       });
 
@@ -146,6 +149,7 @@ const faqJsonLd = {
         buttons.forEach((btn) => {
           btn.addEventListener("click", () => {
             const id = btn.getAttribute("data-tab");
+            (window as any).posthog?.capture("agent_tab_selected", { agent: id });
             buttons.forEach((b) => {
               const selected = b.getAttribute("data-tab") === id;
               b.setAttribute("aria-selected", String(selected));
