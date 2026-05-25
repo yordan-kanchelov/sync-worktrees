@@ -8,22 +8,22 @@ import Icon from "./Icon.astro";
         How it lays out
       </div>
       <h2 class="mt-4 text-balance text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl">
-        One bare repo. Many branches. One shared shape.
+        One bare repo per project. Many branches. One shared shape.
       </h2>
       <p class="mt-4 text-balance text-lg text-ink-600">
-        Sync-worktrees stores Git objects once in a bare repository, then materializes one working tree per remote branch. You and your AI agent both see the same layout — no surprises.
+        sync-worktrees stores Git objects once per repository, then materializes one working tree per remote branch. You and your AI agent both see the same layout — no surprises.
       </p>
     </div>
 
     <div class="mt-14 grid gap-6 lg:grid-cols-[1.3fr_1fr]">
-      <div class="rounded-2xl border border-ink-200 bg-white p-6 font-mono text-sm shadow-sm">
+      <div class="min-w-0 rounded-2xl border border-ink-200 bg-white p-6 font-mono text-sm shadow-sm">
         <div class="mb-3 flex items-center gap-2 text-xs uppercase tracking-wider text-ink-500">
           <Icon name="folder-tree" size={14} /> Filesystem layout
         </div>
 <pre class="overflow-x-auto text-ink-800 leading-relaxed">
 <span class="text-ink-400">.</span>
 ├── <span class="font-semibold text-ink-700">sync-worktrees.config.js</span>
-├── <span class="text-accent-700">.bare/</span>                          <span class="text-ink-400"># shared git database</span>
+├── <span class="text-accent-700">.bare/</span>                          <span class="text-ink-400"># shared git databases</span>
 │   ├── frontend/
 │   └── backend/
 └── <span class="text-accent-700">worktrees/</span>
@@ -38,7 +38,7 @@ import Icon from "./Icon.astro";
 </pre>
       </div>
 
-      <div class="rounded-2xl border border-ink-200 bg-white p-6 shadow-sm">
+      <div class="min-w-0 rounded-2xl border border-ink-200 bg-white p-6 shadow-sm">
         <div class="flex items-center gap-2 text-xs uppercase tracking-wider text-ink-500">
           <Icon name="command" size={14} /> Who sees what
         </div>
@@ -54,7 +54,7 @@ import Icon from "./Icon.astro";
               <Icon name="robot" size={14} /> Your AI agent
             </div>
             <p class="mt-1 text-sm text-ink-700">
-              Calls <code class="font-mono text-xs text-accent-800">detect_context</code> from any worktree and gets the entire layout back — every repo, every branch — in one response.
+              Calls <code class="font-mono text-xs text-accent-800">detect_context</code> from any managed worktree and gets the configured layout back — every repo, every branch — in one response.
             </p>
           </div>
         </div>

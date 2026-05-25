@@ -22,10 +22,10 @@ Yes. Per-repo branch include/exclude globs and sparse-checkout support let you s
 
 Force-pushes are detected and the divergent working copy is moved aside into a `.diverged/` directory rather than overwritten — uncommitted work is never silently lost. Deleted branches have their worktrees removed only if they are clean, with no unpushed commits, no stashes, and no operation in progress; anything else is preserved and surfaced in the TUI's status view.
 
-### Can I run it as a daemon or on a cron?
+### Can I run it continuously or on a cron?
 
 Yes. The default invocation launches the interactive TUI and syncs continuously based on the `cronSchedule` field in your config (per-repo overrides are supported). For one-shot or scripted use, pass `--runOnce`. For CI pipelines, point `--config` at your workspace config and the same one-shot path applies.
 
 ### Is it safe with uncommitted work?
 
-Yes. Sync operations never merge or rebase your working copies — they only fetch and create new worktrees. Worktree removal refuses on dirty trees, unpushed commits, stashes, or in-progress operations (merge/rebase/cherry-pick/revert/bisect). Newly created branches are pushed with explicit `--no-track` so they don't inherit `origin/main` as upstream by accident.
+Yes. Sync operations never merge or rebase your working copies. They fetch, create missing worktrees, fast-forward eligible existing worktrees, and prune only when the safety checks pass. Worktree removal refuses on dirty trees, unpushed commits, stashes, or in-progress operations (merge/rebase/cherry-pick/revert/bisect). Newly created branches are pushed with explicit `--no-track` so they don't inherit `origin/main` as upstream by accident.

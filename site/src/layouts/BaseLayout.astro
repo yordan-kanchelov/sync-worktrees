@@ -10,7 +10,7 @@ export interface Props {
 
 const {
   title = "sync-worktrees — Keep every branch checked out. For you and your AI agents.",
-  description = "Materialize your entire Git branch + repo layout on disk and expose it to any MCP-compatible AI tool. No stashing, no re-cloning, no re-explaining your codebase to Claude, Cursor, or Windsurf.",
+  description = "Materialize your entire Git branch + repo layout on disk and expose it to any MCP-compatible AI tool. No stashing, no re-cloning, no re-explaining your codebase to Claude Code, Cursor, Codex, or Windsurf.",
   canonical,
   ogImage = "/og-image.png",
 } = Astro.props;
@@ -41,12 +41,12 @@ const faqEntries = [
     a: "Force-pushes are detected and the divergent working copy is moved aside into a .diverged/ directory rather than overwritten — uncommitted work is never silently lost. Deleted branches have their worktrees removed only if they are clean, with no unpushed commits, no stashes, and no operation in progress; anything else is preserved and surfaced in the TUI's status view.",
   },
   {
-    q: "Can I run it as a daemon or on a cron?",
+    q: "Can I run it continuously or on a cron?",
     a: "Yes. The default invocation launches the interactive TUI and syncs continuously based on the cronSchedule field in your config (per-repo overrides are supported). For one-shot or scripted use, pass --runOnce. For CI pipelines, point --config at your workspace config and the same one-shot path applies.",
   },
   {
     q: "Is it safe with uncommitted work?",
-    a: "Yes. Sync operations never merge or rebase your working copies — they only fetch and create new worktrees. Worktree removal refuses on dirty trees, unpushed commits, stashes, or in-progress operations (merge/rebase/cherry-pick/revert/bisect). Newly created branches are pushed with explicit --no-track so they don't inherit origin/main as upstream by accident.",
+    a: "Yes. Sync operations never merge or rebase your working copies. They fetch, create missing worktrees, fast-forward eligible existing worktrees, and prune only when the safety checks pass. Worktree removal refuses on dirty trees, unpushed commits, stashes, or in-progress operations (merge/rebase/cherry-pick/revert/bisect). Newly created branches are pushed with explicit --no-track so they don't inherit origin/main as upstream by accident.",
   },
 ];
 
@@ -59,7 +59,7 @@ const softwareJsonLd = {
   operatingSystem: "macOS, Linux",
   url: siteUrl,
   downloadUrl: "https://www.npmjs.com/package/sync-worktrees",
-  softwareVersion: "3.6.2",
+  softwareVersion: "3.6.3",
   license: "https://opensource.org/licenses/MIT",
   offers: {
     "@type": "Offer",
@@ -117,8 +117,8 @@ const faqJsonLd = {
     <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM entry point" />
     <link rel="alternate" type="text/plain" href="/llms-full.txt" title="Full text for LLM training" />
 
-    <script type="application/ld+json" set:html={JSON.stringify(softwareJsonLd)} />
-    <script type="application/ld+json" set:html={JSON.stringify(faqJsonLd)} />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(softwareJsonLd)} />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(faqJsonLd)} />
   </head>
   <body class="bg-white text-ink-900 font-sans antialiased">
     <slot />

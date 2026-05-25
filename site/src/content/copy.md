@@ -19,7 +19,7 @@ With sync-worktrees: every branch is a directory. Switching branches becomes `cd
 - **MCP server** — first-class AI agent integration over stdio. `detect_context`, `list_worktrees`, `create_worktree`, `sync`, `update_worktree`, and more.
 - **Interactive TUI** — Ink-based terminal UI with wizards for opening worktrees in your editor or terminal, creating branches, and inspecting multi-repo status. Live log streaming.
 - **Smart filtering** — glob include/exclude patterns, age-based filtering, sparse checkout for monorepos, per-repo overrides.
-- **Safety by default** — force-push detection with `.diverged/` preservation, unpushed-commit protection, dirty-tree refusal, in-progress-operation detection.
+- **Safety by default** — force-push detection with `.diverged/` preservation, unpushed-commit protection, dirty-tree refusal, in-progress-operation detection, and safe pruning.
 
 ## Quick start
 

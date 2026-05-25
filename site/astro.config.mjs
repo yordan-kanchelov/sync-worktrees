@@ -1,5 +1,5 @@
 import { defineConfig } from "astro/config";
-import tailwind from "@astrojs/tailwind";
+import tailwindcss from "@tailwindcss/vite";
 import sitemap from "@astrojs/sitemap";
 import mdx from "@astrojs/mdx";
 
@@ -8,10 +8,12 @@ const SITE_URL = process.env.SITE_URL || "https://sync-worktrees.dev";
 export default defineConfig({
   site: SITE_URL,
   integrations: [
-    tailwind({ applyBaseStyles: false }),
     mdx(),
     sitemap(),
   ],
+  vite: {
+    plugins: [tailwindcss()],
+  },
   markdown: {
     shikiConfig: {
       themes: { light: "github-light", dark: "github-dark-default" },
