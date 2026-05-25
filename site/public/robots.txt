@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://sync-worktrees.dev/sitemap-index.xml

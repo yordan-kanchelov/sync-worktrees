@@ -1,0 +1,197 @@
+---
+import Icon from "./Icon.astro";
+import CopyButton from "./CopyButton.astro";
+import { Code } from "astro:components";
+
+const standardJson = `{
+  "mcpServers": {
+    "sync-worktrees": {
+      "command": "npx",
+      "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
+      "env": {
+        "SYNC_WORKTREES_CONFIG": "/absolute/path/to/sync-worktrees.config.js"
+      }
+    }
+  }
+}`;
+
+const tabs = [
+  {
+    id: "claude-code",
+    label: "Claude Code",
+    lang: "bash",
+    code: "claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp",
+    hint: "Use the Claude Code CLI. Append -e SYNC_WORKTREES_CONFIG=... to point at a config.",
+  },
+  {
+    id: "cursor",
+    label: "Cursor",
+    lang: "json",
+    code: standardJson,
+    hint: "Paste into ~/.cursor/mcp.json (global) or .cursor/mcp.json (per-project).",
+  },
+  {
+    id: "windsurf",
+    label: "Windsurf",
+    lang: "json",
+    code: standardJson,
+    hint: "Add to your Windsurf MCP config. SYNC_WORKTREES_CONFIG is optional — omit for auto-detect.",
+  },
+  {
+    id: "claude-desktop",
+    label: "Claude Desktop",
+    lang: "json",
+    code: standardJson,
+    hint: "Edit claude_desktop_config.json (~/Library/Application Support/Claude on macOS, %APPDATA%/Claude on Windows), then restart.",
+  },
+  {
+    id: "vscode",
+    label: "VS Code",
+    lang: "bash",
+    code: `code --add-mcp '{"name":"sync-worktrees","command":"npx","args":["-y","-p","sync-worktrees","sync-worktrees-mcp"]}'`,
+    hint: "Uses the GitHub Copilot Chat MCP integration. Or paste the standard JSON config manually.",
+  },
+  {
+    id: "codex",
+    label: "Codex",
+    lang: "bash",
+    code: "codex mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp",
+    hint: "Or edit ~/.codex/config.toml directly.",
+  },
+  {
+    id: "cline",
+    label: "Cline",
+    lang: "json",
+    code: `{
+  "mcpServers": {
+    "sync-worktrees": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
+      "disabled": false
+    }
+  }
+}`,
+    hint: "Edit cline_mcp_settings.json — see Cline's MCP configuration docs.",
+  },
+  {
+    id: "opencode",
+    label: "opencode",
+    lang: "json",
+    code: `{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "sync-worktrees": {
+      "type": "local",
+      "command": ["npx", "-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
+      "enabled": true
+    }
+  }
+}`,
+    hint: "Edit ~/.config/opencode/opencode.json.",
+  },
+  {
+    id: "warp",
+    label: "Warp",
+    lang: "json",
+    code: standardJson,
+    hint: "Settings → AI → Manage MCP Servers → + Add. Or run /add-mcp in the prompt.",
+  },
+  {
+    id: "gemini",
+    label: "Gemini CLI",
+    lang: "json",
+    code: standardJson,
+    hint: "Follow the Gemini CLI MCP install guide and use the standard config.",
+  },
+];
+
+const mcpTools = [
+  ["detect_context", "Resolve the workspace from any path. Returns every configured repo, every worktree, plus per-capability { available, reason } flags so the agent knows what it can actually call."],
+  ["list_worktrees", "Status-labelled list (clean / dirty / stale / current), divergence, safeToRemove, last sync. Cross-repo when no repoName is supplied."],
+  ["get_worktree_status", "Per-worktree detail: dirty files, unpushed commits, stashes, operation in progress."],
+  ["create_worktree", "Create a worktree for a branch. Optionally branches from baseBranch and publishes with --no-track + push -u."],
+  ["sync", "Full sync cycle: fetch, create, prune, update. Streams progress notifications."],
+  ["update_worktree", "Fast-forward one worktree to match upstream."],
+];
+---
+<section id="agents" class="relative overflow-hidden bg-ink-950 py-20 sm:py-28 text-ink-100">
+  <div class="absolute inset-0 -z-0 section-grid-dark"></div>
+  <div class="absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-accent-500/40 to-transparent"></div>
+
+  <div class="relative mx-auto max-w-6xl px-6">
+    <div class="mx-auto max-w-2xl text-center">
+      <div class="inline-flex items-center gap-2 rounded-full border border-ink-700 bg-ink-900/60 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-accent-300">
+        <Icon name="sparkle" size={12} /> AI agents
+      </div>
+      <h2 class="mt-4 text-balance text-4xl font-bold tracking-tight text-white sm:text-5xl">
+        Your workspace, exposed over MCP.
+      </h2>
+      <p class="mt-4 text-balance text-lg text-ink-300">
+        Installing the npm package ships a second binary, <code class="font-mono text-base text-accent-300">sync-worktrees-mcp</code>, that speaks the Model Context Protocol over stdio. Wire it into any MCP client and your agent can list, create, inspect, and sync worktrees directly.
+      </p>
+    </div>
+
+    <div class="mt-12 rounded-2xl border border-ink-700 bg-ink-900/70 p-1.5 shadow-2xl" data-tabs>
+      <div role="tablist" aria-label="MCP setup per AI tool" class="flex flex-wrap gap-1 rounded-xl bg-ink-950/60 p-1">
+        {tabs.map((t, i) => (
+          <button
+            type="button"
+            role="tab"
+            data-tab={t.id}
+            aria-selected={i === 0 ? "true" : "false"}
+            tabindex={i === 0 ? 0 : -1}
+            class="tab-button rounded-lg px-3 py-1.5 text-sm font-medium text-ink-300 transition hover:text-white"
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tabs.map((t, i) => (
+        <div
+          role="tabpanel"
+          data-panel={t.id}
+          hidden={i === 0 ? undefined : true}
+          class="tab-panel p-4 sm:p-5"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm text-ink-400">{t.hint}</p>
+            <CopyButton value={t.code} class="bg-ink-800 text-ink-200 hover:bg-ink-700" />
+          </div>
+          <div class="mt-3 overflow-x-auto rounded-xl border border-ink-800 bg-ink-950/80">
+            <Code code={t.code} lang={t.lang as any} theme="github-dark-default" wrap />
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <div class="mt-16 grid gap-6 lg:grid-cols-[1fr_1.2fr]">
+      <div>
+        <div class="inline-flex items-center gap-2 rounded-full border border-ink-700 bg-ink-900/60 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-300">
+          What your agent can do
+        </div>
+        <h3 class="mt-4 text-2xl font-bold text-white sm:text-3xl">
+          One <code class="font-mono text-xl text-accent-300">detect_context</code> call. Whole workspace shape.
+        </h3>
+        <p class="mt-4 text-ink-300">
+          An agent working in <code class="font-mono text-sm text-accent-300">frontend/</code> can discover every sibling repo and worktree you have configured in a single call — so "go look in the other repo" actually works without you re-orienting it.
+        </p>
+        <p class="mt-3 text-sm text-ink-400">
+          The response includes a per-capability <code class="font-mono text-xs text-accent-300">{`{ available, reason }`}</code> block, so the agent knows up front whether <code class="font-mono text-xs text-accent-300">sync</code>, <code class="font-mono text-xs text-accent-300">initialize</code>, or per-worktree operations will work from its current vantage point.
+        </p>
+      </div>
+
+      <div class="rounded-2xl border border-ink-800 bg-ink-900/40 p-5">
+        <ul class="divide-y divide-ink-800">
+          {mcpTools.map(([name, desc]) => (
+            <li class="flex flex-col gap-1 py-3 first:pt-0 last:pb-0 sm:flex-row sm:gap-4">
+              <code class="shrink-0 font-mono text-sm font-semibold text-accent-300 sm:w-44">{name}</code>
+              <span class="text-sm text-ink-300">{desc}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>

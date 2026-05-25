@@ -1,0 +1,24 @@
+# sync-worktrees
+
+> A workspace orchestrator for humans and AI agents. Keeps every Git branch across every repo you work on checked out as a stable directory, automatically synced with the remote, and exposed over MCP so AI coding assistants can navigate the workspace without re-orientation.
+
+sync-worktrees materializes your entire branch + repo layout on disk — one folder per branch, one shared `.git` database underneath — and ships an MCP server (`sync-worktrees-mcp`) so AI tools like Claude Code, Cursor, Windsurf, Codex, Cline, opencode, Warp, Gemini CLI, and VS Code Copilot can list, create, inspect, and sync worktrees through tool calls. Runs as a one-shot, a background daemon with cron scheduling, or an interactive Ink-based TUI. MIT licensed, Node 22+, macOS and Linux.
+
+## Docs
+
+- [README](https://github.com/yordan-kanchelov/sync-worktrees/blob/main/README.md): Full installation, configuration reference, MCP integration, and TUI keybindings.
+- [Full landing-page text](https://sync-worktrees.dev/llms-full.txt): Hero copy, problem statement, feature descriptions, every MCP config snippet, and FAQ — all as plain text.
+- [Architecture notes](https://github.com/yordan-kanchelov/sync-worktrees/tree/main/docs): Engineering design docs covering sync planning, MCP selection state, retry policy, and structured outcomes.
+- [Example config](https://github.com/yordan-kanchelov/sync-worktrees/blob/main/sync-worktrees.config.example.js): Annotated reference covering worktree mode, clone mode, filtering, retry, and cron scheduling.
+
+## Install
+
+- For developers: `npm install -g sync-worktrees`
+- For AI agents (Claude Code): `claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp`
+- For AI agents (standard MCP config): `npx -y -p sync-worktrees sync-worktrees-mcp` via stdio in any MCP client.
+
+## Optional
+
+- [npm package](https://www.npmjs.com/package/sync-worktrees)
+- [Changelog](https://github.com/yordan-kanchelov/sync-worktrees/blob/main/CHANGELOG.md)
+- [Issues](https://github.com/yordan-kanchelov/sync-worktrees/issues)

@@ -1,0 +1,90 @@
+---
+import Icon from "./Icon.astro";
+import CopyButton from "./CopyButton.astro";
+
+const npmCmd = "npm install -g sync-worktrees";
+const mcpCmd = "claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp";
+---
+<section class="relative overflow-hidden bg-white">
+  <div class="absolute inset-0 -z-10 section-grid-light"></div>
+  <div class="absolute inset-x-0 top-0 -z-10 h-96 bg-gradient-to-b from-accent-50/60 via-transparent to-transparent"></div>
+
+  <div class="mx-auto max-w-6xl px-6 pt-20 pb-12 sm:pt-28 sm:pb-16">
+    <div class="flex justify-center">
+      <a
+        href="https://github.com/yordan-kanchelov/sync-worktrees"
+        class="inline-flex items-center gap-2 rounded-full border border-ink-200 bg-white/70 px-3 py-1 text-xs font-medium text-ink-700 backdrop-blur transition hover:border-accent-300 hover:text-accent-700"
+      >
+        <span class="inline-block size-1.5 rounded-full bg-signal-green"></span>
+        v3.6.2 — MIT licensed
+        <span class="text-ink-400">·</span>
+        <span class="inline-flex items-center gap-1">
+          <Icon name="github" size={14} /> Star on GitHub
+        </span>
+      </a>
+    </div>
+
+    <h1 class="mt-8 text-balance text-center text-5xl font-bold tracking-tight text-ink-900 sm:text-6xl md:text-7xl">
+      Keep every branch checked out.
+      <span class="block bg-gradient-to-r from-accent-600 via-accent-500 to-accent-400 bg-clip-text text-transparent">
+        For you and your AI agents.
+      </span>
+    </h1>
+
+    <p class="mx-auto mt-6 max-w-3xl text-balance text-center text-lg leading-relaxed text-ink-600 sm:text-xl">
+      <strong class="text-ink-900">sync-worktrees</strong> materializes your entire branch and repo layout on disk,
+      keeps it in sync with the remote, and exposes it to any MCP-compatible AI tool —
+      <span class="whitespace-nowrap">no stashing,</span>
+      <span class="whitespace-nowrap">no re-cloning,</span>
+      no re-explaining your codebase.
+    </p>
+
+    <div class="mt-10 grid gap-4 sm:grid-cols-2">
+      <div class="group rounded-2xl border border-ink-200 bg-white p-5 shadow-sm transition hover:border-accent-300 hover:shadow-md">
+        <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink-500">
+          <Icon name="terminal" size={14} />
+          For developers
+        </div>
+        <div class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-ink-50 px-3 py-2.5 font-mono text-sm text-ink-800">
+          <span><span class="text-accent-600">$</span> {npmCmd}</span>
+          <CopyButton value={npmCmd} class="text-ink-600 hover:bg-white" />
+        </div>
+        <div class="mt-3 text-sm text-ink-600">
+          Node 22+ on macOS or Linux. Bare command launches the interactive TUI.
+        </div>
+      </div>
+
+      <div class="group rounded-2xl border border-ink-200 bg-white p-5 shadow-sm transition hover:border-accent-300 hover:shadow-md">
+        <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink-500">
+          <Icon name="robot" size={14} />
+          For AI agents
+        </div>
+        <div class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-ink-50 px-3 py-2.5 font-mono text-sm text-ink-800">
+          <span class="truncate"><span class="text-accent-600">$</span> {mcpCmd}</span>
+          <CopyButton value={mcpCmd} class="shrink-0 text-ink-600 hover:bg-white" />
+        </div>
+        <div class="mt-3 text-sm text-ink-600">
+          Claude Code shown — <a href="#agents" class="font-medium text-accent-700 underline-offset-4 hover:underline">setup for 9 other clients</a>.
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-14 overflow-hidden rounded-2xl border border-ink-200 bg-ink-900 shadow-2xl">
+      <div class="flex items-center gap-1.5 border-b border-ink-700 bg-ink-800 px-4 py-2.5">
+        <span class="size-3 rounded-full bg-[#ff5f57]"></span>
+        <span class="size-3 rounded-full bg-[#febc2e]"></span>
+        <span class="size-3 rounded-full bg-[#28c840]"></span>
+        <span class="ml-3 font-mono text-xs text-ink-400">sync-worktrees — demo</span>
+      </div>
+      <img
+        src="/demo.gif"
+        alt="Terminal recording of sync-worktrees: the interactive TUI shows multi-repo worktree status, then a sync operation runs across repositories and creates new branch worktrees."
+        loading="lazy"
+        decoding="async"
+        width="1280"
+        height="720"
+        class="block w-full"
+      />
+    </div>
+  </div>
+</section>

@@ -1,0 +1,68 @@
+---
+import Icon from "./Icon.astro";
+
+const without = [
+  "Stash half-finished work just to glance at another branch",
+  "Hunt for where you cloned that sibling repo last month",
+  "Switch branches in five repos because one feature spans them all",
+  "Re-explain to Claude or Cursor which directory holds which branch",
+  "Onboard new hires through a brittle copy-paste setup doc",
+];
+
+const withTool = [
+  "Switching branches becomes <code class=\"font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded\">cd</code>",
+  "Every repo lives at a predictable path you describe once in config",
+  "Multi-repo search is just <code class=\"font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded\">grep -r</code> across the workspace",
+  "AI agents call <code class=\"font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded\">detect_context</code> and see every repo at once",
+  "New machine: one config file, one command, the whole workspace materializes",
+];
+---
+<section class="relative bg-ink-50 py-20 sm:py-28">
+  <div class="mx-auto max-w-6xl px-6">
+    <div class="mx-auto max-w-2xl text-center">
+      <div class="inline-flex items-center gap-2 rounded-full border border-ink-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-600">
+        The problem
+      </div>
+      <h2 class="mt-4 text-balance text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl">
+        Branch-switching tax. Multiplied across repos. Multiplied by AI.
+      </h2>
+      <p class="mt-4 text-balance text-lg text-ink-600">
+        Modern features touch many branches across many repos, and your AI assistant has to keep up with all of them. The friction adds up fast.
+      </p>
+    </div>
+
+    <div class="mt-14 grid gap-6 lg:grid-cols-2">
+      <div class="rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
+        <div class="flex items-center gap-2 text-sm font-semibold text-rose-700">
+          <span class="inline-flex size-6 items-center justify-center rounded-full bg-rose-100 text-rose-700">✗</span>
+          Without sync-worktrees
+        </div>
+        <ul class="mt-5 space-y-3">
+          {without.map((line) => (
+            <li class="flex gap-3 text-ink-700">
+              <span class="mt-1.5 inline-block size-1.5 shrink-0 rounded-full bg-rose-400"></span>
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div class="rounded-2xl border border-emerald-200 bg-white p-6 shadow-sm">
+        <div class="flex items-center gap-2 text-sm font-semibold text-emerald-700">
+          <span class="inline-flex size-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+            <Icon name="check" size={14} />
+          </span>
+          With sync-worktrees
+        </div>
+        <ul class="mt-5 space-y-3">
+          {withTool.map((line) => (
+            <li class="flex gap-3 text-ink-700">
+              <span class="mt-1.5 inline-block size-1.5 shrink-0 rounded-full bg-emerald-400"></span>
+              <span set:html={line} />
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>

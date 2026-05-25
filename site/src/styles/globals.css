@@ -1,0 +1,84 @@
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --astro-code-foreground: #1e293b;
+  --astro-code-background: #f8fafc;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-feature-settings: "ss01", "cv11";
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.code-block {
+  @apply font-mono text-sm rounded-xl overflow-hidden border;
+}
+
+.code-block.dark {
+  @apply border-ink-700 bg-ink-900 text-ink-100;
+}
+
+.code-block.light {
+  @apply border-ink-200 bg-ink-50 text-ink-800;
+}
+
+.section-grid-light {
+  background-image:
+    linear-gradient(to right, rgba(15, 23, 42, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(15, 23, 42, 0.05) 1px, transparent 1px);
+  background-size: 32px 32px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 0%, black 35%, transparent 75%);
+          mask-image: radial-gradient(ellipse at 50% 0%, black 35%, transparent 75%);
+}
+
+.section-grid-dark {
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+  background-size: 40px 40px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 50%, black 30%, transparent 75%);
+          mask-image: radial-gradient(ellipse at 50% 50%, black 30%, transparent 75%);
+}
+
+.tab-button[aria-selected="true"] {
+  @apply bg-ink-800 text-white;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+details summary::-webkit-details-marker {
+  display: none;
+}
+
+details summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+details[open] summary .chev {
+  transform: rotate(90deg);
+}
+
+.chev {
+  transition: transform 0.2s ease;
+}
+
+.copy-button.copied .copy-icon { display: none; }
+.copy-button:not(.copied) .check-icon { display: none; }
