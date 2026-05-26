@@ -1,0 +1,57 @@
+---
+import Icon from "./Icon.astro";
+---
+<footer class="border-t border-ink-200 bg-ink-50 py-12">
+  <div class="mx-auto flex max-w-6xl flex-col gap-6 px-6 sm:flex-row sm:items-start sm:justify-between">
+    <div>
+      <div class="flex items-center gap-2 font-semibold text-ink-900">
+        <span class="inline-flex size-7 items-center justify-center rounded-lg bg-ink-900 text-white">
+          <Icon name="git-branch" size={14} />
+        </span>
+        sync-worktrees
+      </div>
+      <p class="mt-2 max-w-sm text-sm text-ink-600">
+        Open source under the MIT license. Built by <a href="https://github.com/yordan-kanchelov" class="font-medium text-ink-800 underline-offset-4 hover:underline">Yordan Kanchelov</a>.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-2 gap-x-12 gap-y-2 text-sm sm:grid-cols-3">
+      <a href="https://github.com/yordan-kanchelov/sync-worktrees" class="inline-flex items-center gap-2 text-ink-700 hover:text-ink-900">
+        <Icon name="github" size={14} /> GitHub
+      </a>
+      <a href="https://www.npmjs.com/package/sync-worktrees" class="inline-flex items-center gap-2 text-ink-700 hover:text-ink-900">
+        <Icon name="npm" size={14} /> npm
+      </a>
+      <a href="https://github.com/yordan-kanchelov/sync-worktrees/blob/main/CHANGELOG.md" class="text-ink-700 hover:text-ink-900">
+        Changelog
+      </a>
+      <a href="https://github.com/yordan-kanchelov/sync-worktrees/issues" class="text-ink-700 hover:text-ink-900">
+        Issues
+      </a>
+      <a href="/llms.txt" class="text-ink-700 hover:text-ink-900">
+        llms.txt
+      </a>
+      <a href="/llms-full.txt" class="text-ink-700 hover:text-ink-900">
+        llms-full.txt
+      </a>
+    </div>
+  </div>
+</footer>
+
+<script is:inline>
+  (function () {
+    var labelMap = {
+      "https://github.com/yordan-kanchelov/sync-worktrees": "GitHub",
+      "https://www.npmjs.com/package/sync-worktrees": "npm",
+      "https://github.com/yordan-kanchelov/sync-worktrees/blob/main/CHANGELOG.md": "Changelog",
+      "https://github.com/yordan-kanchelov/sync-worktrees/issues": "Issues",
+    };
+    document.querySelectorAll("footer a").forEach(function (a) {
+      var href = a.getAttribute("href") || "";
+      if (!labelMap[href]) return;
+      a.addEventListener("click", function () {
+        window.posthog?.capture("footer_link_clicked", { link_label: labelMap[href] });
+      });
+    });
+  })();
+</script>

@@ -93,11 +93,26 @@ export class SparseCheckoutService {
     }
   }
 
+  async readCurrentMode(worktreePath: string): Promise<SparseCheckoutMode | null> {
+    const git = this.gitFactory(worktreePath);
+    try {
+      const out = await git.raw(["config", "--bool", "--get", "core.sparseCheckoutCone"]);
+      const value = out.trim().toLowerCase();
+      if (value === "true") return "cone";
+      if (value === "false") return "no-cone";
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async needsUpdate(worktreePath: string, cfg: SparseCheckoutConfig): Promise<boolean> {
+    const desiredMode = this.resolveMode(cfg);
+    const currentMode = await this.readCurrentMode(worktreePath);
+    if (currentMode !== desiredMode) return true;
     const current = await this.readCurrent(worktreePath);
-    const desired = this.buildPatterns(cfg);
     if (current === null) return true;
-    return !this.patternsEqual(current, desired);
+    return !this.patternsEqual(current, this.buildPatternsForMode(cfg, desiredMode));
   }
 
   isNarrowing(currentPatterns: string[] | null, nextPatterns: string[]): boolean {

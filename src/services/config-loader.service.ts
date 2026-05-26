@@ -1,16 +1,26 @@
-import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
 
 import * as cron from "node-cron";
 
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
+import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
+import { fileExists } from "../utils/file-exists";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { normalizePathForCompare } from "../utils/path-compare";
+import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 
-import type { Config, ConfigFile, RepositoryConfig } from "../types";
+import type { Config, ConfigFile, RepositoryConfig, RepositoryMode } from "../types";
+
+const CLONE_MODE_CONFLICTING_FIELDS = [
+  "branchInclude",
+  "branchExclude",
+  "branchMaxAge",
+  "updateExistingWorktrees",
+  "bareRepoDir",
+] as const satisfies readonly (keyof RepositoryConfig)[];
 
 export class ConfigLoaderService {
   async findConfigUpward(startDir: string): Promise<string | null> {
@@ -20,11 +30,8 @@ export class ConfigLoaderService {
     while (true) {
       for (const name of CONFIG_FILE_NAMES) {
         const candidate = path.join(current, name);
-        try {
-          await fs.access(candidate);
+        if (await fileExists(candidate)) {
           return candidate;
-        } catch {
-          /* try next */
         }
       }
       if (current === root) return null;
@@ -37,10 +44,8 @@ export class ConfigLoaderService {
   async loadConfigFile(configPath: string): Promise<ConfigFile> {
     const absolutePath = path.resolve(configPath);
 
-    try {
-      await fs.access(absolutePath);
-    } catch {
-      throw new Error(`Config file not found: ${absolutePath}`);
+    if (!(await fileExists(absolutePath))) {
+      throw new ConfigFileNotFoundError(absolutePath);
     }
 
     try {
@@ -57,7 +62,7 @@ export class ConfigLoaderService {
 
       return config;
     } catch (error) {
-      if (error instanceof Error && error.message.includes("Config file not found")) {
+      if (error instanceof SyncWorktreesError) {
         throw error;
       }
       throw new Error(`Failed to load config file: ${(error as Error).message}`);
@@ -128,6 +133,14 @@ export class ConfigLoaderService {
         throw new Error(`Repository '${repoObj.name}' has invalid 'runOnce' property`);
       }
 
+      if (repoObj.debug !== undefined && typeof repoObj.debug !== "boolean") {
+        throw new Error(`Repository '${repoObj.name}' has invalid 'debug' property`);
+      }
+
+      if (repoObj.retry !== undefined) {
+        this.validateRetryConfig(repoObj.retry, `Repository '${repoObj.name}' retry config`);
+      }
+
       if (repoObj.filesToCopyOnBranchCreate !== undefined) {
         this.validateFilesToCopyConfig(repoObj.filesToCopyOnBranchCreate, `Repository '${repoObj.name}'`);
       }
@@ -139,6 +152,9 @@ export class ConfigLoaderService {
       if (repoObj.sparseCheckout !== undefined) {
         this.validateSparseCheckoutConfig(repoObj.sparseCheckout, `Repository '${repoObj.name}'`);
       }
+
+      this.validateDepth(repoObj.depth, `Repository '${repoObj.name}' depth`);
+      this.validateRepositoryMode(repoObj, configObj.defaults as Record<string, unknown> | undefined);
     });
 
     this.warnOnDuplicateRepoUrls(configObj.repositories as Array<Record<string, unknown>>);
@@ -159,8 +175,14 @@ export class ConfigLoaderService {
       if (defaults.runOnce !== undefined && typeof defaults.runOnce !== "boolean") {
         throw new Error("Invalid 'runOnce' in defaults");
       }
+      if (defaults.debug !== undefined && typeof defaults.debug !== "boolean") {
+        throw new Error("Invalid 'debug' in defaults");
+      }
       if (defaults.retry !== undefined && typeof defaults.retry !== "object") {
         throw new Error("Invalid 'retry' in defaults");
+      }
+      if (defaults.retry !== undefined) {
+        this.validateRetryConfig(defaults.retry, "defaults retry config");
       }
       if (defaults.filesToCopyOnBranchCreate !== undefined) {
         this.validateFilesToCopyConfig(defaults.filesToCopyOnBranchCreate, "defaults");
@@ -173,49 +195,20 @@ export class ConfigLoaderService {
       if (defaults.sparseCheckout !== undefined) {
         this.validateSparseCheckoutConfig(defaults.sparseCheckout, "defaults");
       }
+
+      this.validateDepth(defaults.depth, "defaults.depth");
+
+      if (defaults.mode !== undefined && !isRepositoryMode(defaults.mode)) {
+        throw new ConfigValidationError("defaults.mode", "must be 'clone' or 'worktree'");
+      }
+
+      if (defaults.branch !== undefined && (typeof defaults.branch !== "string" || defaults.branch.trim() === "")) {
+        throw new ConfigValidationError("defaults.branch", "must be a non-empty string");
+      }
     }
 
     if (configObj.retry !== undefined) {
-      if (typeof configObj.retry !== "object") {
-        throw new Error("'retry' must be an object");
-      }
-
-      const retry = configObj.retry as Record<string, unknown>;
-
-      if (retry.maxAttempts !== undefined) {
-        if (retry.maxAttempts !== "unlimited" && (typeof retry.maxAttempts !== "number" || retry.maxAttempts < 1)) {
-          throw new Error("Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number");
-        }
-      }
-
-      if (retry.maxLfsRetries !== undefined) {
-        if (typeof retry.maxLfsRetries !== "number" || retry.maxLfsRetries < 0) {
-          throw new Error("Invalid 'maxLfsRetries' in retry config. Must be a non-negative number");
-        }
-      }
-      if (
-        retry.initialDelayMs !== undefined &&
-        (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)
-      ) {
-        throw new Error("Invalid 'initialDelayMs' in retry config");
-      }
-      if (retry.maxDelayMs !== undefined && (typeof retry.maxDelayMs !== "number" || retry.maxDelayMs < 0)) {
-        throw new Error("Invalid 'maxDelayMs' in retry config");
-      }
-      if (
-        retry.backoffMultiplier !== undefined &&
-        (typeof retry.backoffMultiplier !== "number" || retry.backoffMultiplier < 1)
-      ) {
-        throw new Error("Invalid 'backoffMultiplier' in retry config");
-      }
-
-      const initialDelay = (retry.initialDelayMs as number) ?? DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS;
-      const maxDelay = (retry.maxDelayMs as number) ?? DEFAULT_CONFIG.RETRY.MAX_DELAY_MS;
-      if (initialDelay > maxDelay) {
-        throw new Error(
-          `Invalid retry config: 'initialDelayMs' (${initialDelay}) must not exceed 'maxDelayMs' (${maxDelay})`,
-        );
-      }
+      this.validateRetryConfig(configObj.retry, "retry config");
     }
 
     if (configObj.parallelism !== undefined) {
@@ -227,6 +220,60 @@ export class ConfigLoaderService {
       if (defaults.parallelism !== undefined) {
         this.validateParallelismConfig(defaults.parallelism, "defaults");
       }
+    }
+  }
+
+  private validateDepth(value: unknown, field: string): void {
+    if (value === undefined) return;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+      throw new ConfigValidationError(field, "must be a positive safe integer");
+    }
+  }
+
+  private validateRetryConfig(value: unknown, context: string): void {
+    if (typeof value !== "object" || value === null) {
+      throw new Error(context === "retry config" ? "'retry' must be an object" : `Invalid 'retry' in ${context}`);
+    }
+
+    const retry = value as Record<string, unknown>;
+
+    if (retry.maxAttempts !== undefined) {
+      if (retry.maxAttempts !== "unlimited" && (typeof retry.maxAttempts !== "number" || retry.maxAttempts < 1)) {
+        throw new Error("Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number");
+      }
+    }
+
+    if (retry.maxLfsRetries !== undefined) {
+      if (typeof retry.maxLfsRetries !== "number" || retry.maxLfsRetries < 0) {
+        throw new Error("Invalid 'maxLfsRetries' in retry config. Must be a non-negative number");
+      }
+    }
+
+    if (retry.initialDelayMs !== undefined && (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)) {
+      throw new Error("Invalid 'initialDelayMs' in retry config");
+    }
+
+    if (retry.maxDelayMs !== undefined && (typeof retry.maxDelayMs !== "number" || retry.maxDelayMs < 0)) {
+      throw new Error("Invalid 'maxDelayMs' in retry config");
+    }
+
+    if (
+      retry.backoffMultiplier !== undefined &&
+      (typeof retry.backoffMultiplier !== "number" || retry.backoffMultiplier < 1)
+    ) {
+      throw new Error("Invalid 'backoffMultiplier' in retry config");
+    }
+
+    if (retry.jitterMs !== undefined && (typeof retry.jitterMs !== "number" || retry.jitterMs < 0)) {
+      throw new Error("Invalid 'jitterMs' in retry config");
+    }
+
+    const initialDelay = (retry.initialDelayMs as number) ?? DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS;
+    const maxDelay = (retry.maxDelayMs as number) ?? DEFAULT_CONFIG.RETRY.MAX_DELAY_MS;
+    if (initialDelay > maxDelay) {
+      throw new Error(
+        `Invalid retry config: 'initialDelayMs' (${initialDelay}) must not exceed 'maxDelayMs' (${maxDelay})`,
+      );
     }
   }
 
@@ -349,6 +396,63 @@ export class ConfigLoaderService {
     }
   }
 
+  private validateRepositoryMode(
+    repoObj: Record<string, unknown>,
+    defaults: Record<string, unknown> | undefined,
+  ): void {
+    const repoName = repoObj.name as string;
+    const repoMode = repoObj.mode;
+
+    if (repoMode !== undefined && !isRepositoryMode(repoMode)) {
+      throw new ConfigValidationError(`Repository '${repoName}' mode`, "must be 'clone' or 'worktree'");
+    }
+
+    if (
+      repoObj.branch !== undefined &&
+      (typeof repoObj.branch !== "string" || (repoObj.branch as string).trim() === "")
+    ) {
+      throw new ConfigValidationError(`Repository '${repoName}' branch`, "must be a non-empty string");
+    }
+
+    const effectiveMode = (repoMode as RepositoryMode | undefined) ?? (defaults?.mode as RepositoryMode | undefined);
+    if (effectiveMode !== REPOSITORY_MODES.CLONE) {
+      const depthFromRepo = repoObj.depth;
+      const depthFromDefaults = defaults?.depth;
+      if (depthFromRepo !== undefined || depthFromDefaults !== undefined) {
+        const source = depthFromRepo !== undefined ? "repository" : "defaults";
+        throw new ConfigValidationError(
+          `Repository '${repoName}' depth`,
+          `only supported when mode is 'clone' (set on ${source})`,
+        );
+      }
+
+      const branchFromRepo = repoObj.branch;
+      const branchFromDefaults = defaults?.branch;
+      if (branchFromRepo !== undefined || branchFromDefaults !== undefined) {
+        const source = branchFromRepo !== undefined ? "repository" : "defaults";
+        throw new ConfigValidationError(
+          `Repository '${repoName}' branch`,
+          `only supported when mode is 'clone' (set on ${source})`,
+        );
+      }
+
+      return;
+    }
+
+    for (const field of CLONE_MODE_CONFLICTING_FIELDS) {
+      const fromRepo = repoObj[field];
+      const fromDefaults = defaults?.[field];
+      const present = fromRepo !== undefined || fromDefaults !== undefined;
+      if (present) {
+        const source = fromRepo !== undefined ? "repository" : "defaults";
+        throw new ConfigValidationError(
+          `Repository '${repoName}' ${field}`,
+          `not supported when mode is 'clone' (set on ${source})`,
+        );
+      }
+    }
+  }
+
   private validateHooksConfig(hooks: unknown, context: string): void {
     if (typeof hooks !== "object" || hooks === null) {
       throw new Error(`'hooks' in ${context} must be an object`);
@@ -379,33 +483,54 @@ export class ConfigLoaderService {
     globalRetry?: Config["retry"],
     allRepositories?: RepositoryConfig[],
   ): RepositoryConfig {
+    const mode: RepositoryMode = repo.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
+
     const resolved: RepositoryConfig = {
       name: repo.name,
       repoUrl: repo.repoUrl,
       worktreeDir: this.resolvePath(repo.worktreeDir, configDir),
       cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? DEFAULT_CONFIG.CRON_SCHEDULE,
       runOnce: repo.runOnce ?? defaults?.runOnce ?? false,
+      debug: repo.debug ?? defaults?.debug,
+      mode,
     };
 
-    if (repo.bareRepoDir) {
-      resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
-    } else if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories)) {
-      const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
-      resolved.bareRepoDir = this.resolvePath(`.bare/${sanitized}`, configDir);
+    if (configDir) {
+      resolved.__configFileDir = configDir;
+    }
+
+    if (mode === REPOSITORY_MODES.CLONE) {
+      if (repo.branch ?? defaults?.branch) {
+        resolved.branch = repo.branch ?? defaults?.branch;
+      }
+      if (repo.depth !== undefined || defaults?.depth !== undefined) {
+        resolved.depth = repo.depth ?? defaults?.depth;
+      }
     } else {
-      resolved.bareRepoDir = this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir);
-    }
+      if (repo.bareRepoDir) {
+        resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
+      } else if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories, defaults)) {
+        const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
+        resolved.bareRepoDir = this.resolvePath(`.bare/${sanitized}`, configDir);
+      } else {
+        resolved.bareRepoDir = this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir);
+      }
 
-    if (repo.branchMaxAge || defaults?.branchMaxAge) {
-      resolved.branchMaxAge = repo.branchMaxAge ?? defaults?.branchMaxAge;
-    }
+      if (repo.branchMaxAge || defaults?.branchMaxAge) {
+        resolved.branchMaxAge = repo.branchMaxAge ?? defaults?.branchMaxAge;
+      }
 
-    if (repo.branchInclude || defaults?.branchInclude) {
-      resolved.branchInclude = repo.branchInclude ?? defaults?.branchInclude;
-    }
+      if (repo.branchInclude || defaults?.branchInclude) {
+        resolved.branchInclude = repo.branchInclude ?? defaults?.branchInclude;
+      }
 
-    if (repo.branchExclude || defaults?.branchExclude) {
-      resolved.branchExclude = repo.branchExclude ?? defaults?.branchExclude;
+      if (repo.branchExclude || defaults?.branchExclude) {
+        resolved.branchExclude = repo.branchExclude ?? defaults?.branchExclude;
+      }
+
+      if (repo.updateExistingWorktrees !== undefined || defaults?.updateExistingWorktrees !== undefined) {
+        resolved.updateExistingWorktrees = repo.updateExistingWorktrees ?? defaults?.updateExistingWorktrees ?? true;
+      }
     }
 
     if (repo.skipLfs !== undefined || defaults?.skipLfs !== undefined) {
@@ -425,10 +550,6 @@ export class ConfigLoaderService {
         ...(defaults?.parallelism || {}),
         ...(repo.parallelism || {}),
       };
-    }
-
-    if (repo.updateExistingWorktrees !== undefined || defaults?.updateExistingWorktrees !== undefined) {
-      resolved.updateExistingWorktrees = repo.updateExistingWorktrees ?? defaults?.updateExistingWorktrees ?? true;
     }
 
     if (repo.filesToCopyOnBranchCreate || defaults?.filesToCopyOnBranchCreate) {
@@ -451,8 +572,11 @@ export class ConfigLoaderService {
     return resolved;
   }
 
-  private isDuplicateRepoUrl(repo: RepositoryConfig, all: RepositoryConfig[]): boolean {
-    const firstIndex = all.findIndex((r) => r.repoUrl === repo.repoUrl);
+  private isDuplicateRepoUrl(repo: RepositoryConfig, all: RepositoryConfig[], defaults?: Partial<Config>): boolean {
+    const firstIndex = all.findIndex((r) => {
+      const mode = r.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
+      return r.repoUrl === repo.repoUrl && mode === REPOSITORY_MODES.WORKTREE;
+    });
     const myIndex = all.indexOf(repo);
     return firstIndex !== -1 && myIndex !== -1 && myIndex !== firstIndex;
   }
@@ -508,7 +632,7 @@ export class ConfigLoaderService {
 
   async buildRepositories(
     configPath: string,
-    overrides?: { filter?: string; noUpdateExisting?: boolean; debug?: boolean },
+    overrides?: { filter?: string },
   ): Promise<{ repositories: RepositoryConfig[]; configFile: ConfigFile; configDir: string }> {
     const configFile = await this.loadConfigFile(configPath);
     const configDir = path.dirname(path.resolve(configPath));
@@ -521,14 +645,6 @@ export class ConfigLoaderService {
 
     if (overrides?.filter) {
       repositories = this.filterRepositories(repositories, overrides.filter);
-    }
-
-    if (overrides?.noUpdateExisting) {
-      repositories = repositories.map((repo) => ({ ...repo, updateExistingWorktrees: false }));
-    }
-
-    if (overrides?.debug) {
-      repositories = repositories.map((repo) => ({ ...repo, debug: true }));
     }
 
     return { repositories, configFile, configDir };

@@ -1,0 +1,60 @@
+---
+import Icon from "./Icon.astro";
+
+const faqs = [
+  {
+    q: "What's the difference between git worktree and sync-worktrees?",
+    a: "<code class=\"font-mono text-sm\">git worktree</code> is the underlying Git primitive: a single command that adds one extra working directory tied to a bare repository. sync-worktrees is a workspace orchestrator built on top of it — it manages the bare repo, materializes a directory for every remote branch automatically, prunes them when branches are deleted upstream, and keeps the whole thing fresh on a cron schedule. It also ships an interactive TUI and an MCP server so AI agents can navigate and operate the workspace.",
+  },
+  {
+    q: "Why use this instead of cloning each branch separately?",
+    a: "Cloning duplicates the entire Git object database for every branch — wasteful on disk and slow to refresh. Worktrees share one <code class=\"font-mono text-sm\">.git</code> directory among many checkouts, so disk usage scales with working-tree size, not with branch count. sync-worktrees automates the bookkeeping you'd otherwise have to do manually (creating worktrees for new remote branches, removing stale ones, handling force-pushes safely).",
+  },
+  {
+    q: "How does the MCP server help AI coding agents?",
+    a: "The bundled <code class=\"font-mono text-sm\">sync-worktrees-mcp</code> binary speaks the Model Context Protocol over stdio. AI agents (Claude Code, Cursor, Windsurf, Codex, Cline, opencode, Warp, Gemini CLI, VS Code Copilot) can call <code class=\"font-mono text-sm\">detect_context</code>, <code class=\"font-mono text-sm\">list_worktrees</code>, <code class=\"font-mono text-sm\">create_worktree</code>, <code class=\"font-mono text-sm\">sync</code>, and <code class=\"font-mono text-sm\">update_worktree</code> directly. In a single <code class=\"font-mono text-sm\">detect_context</code> call with <code class=\"font-mono text-sm\">includeAllWorktrees: true</code>, an agent working in one repo discovers every sibling repo and worktree you have configured — so \"go look in the other repo\" actually works without manual re-orientation.",
+  },
+  {
+    q: "Does it work with monorepos?",
+    a: "Yes. Per-repo branch include/exclude globs and sparse-checkout support let you scope each worktree to the slice of the monorepo you actually care about. Combined with <code class=\"font-mono text-sm\">branchMaxAge</code> to ignore stale branches, this keeps multi-million-line monorepos manageable on disk.",
+  },
+  {
+    q: "What happens when a branch is force-pushed or deleted upstream?",
+    a: "Force-pushes are detected and the divergent working copy is moved aside into a <code class=\"font-mono text-sm\">.diverged/</code> directory rather than overwritten — uncommitted work is never silently lost. Deleted branches have their worktrees removed only if they are clean, with no unpushed commits, no stashes, and no operation in progress; anything else is preserved and surfaced in the TUI's status view.",
+  },
+  {
+    q: "Can I run it continuously or on a cron?",
+    a: "Yes. The default invocation launches the interactive TUI and syncs continuously based on the <code class=\"font-mono text-sm\">cronSchedule</code> field in your config (per-repo overrides are supported). For one-shot or scripted use, pass <code class=\"font-mono text-sm\">--runOnce</code>. For CI pipelines, point <code class=\"font-mono text-sm\">--config</code> at your workspace config and the same one-shot path applies.",
+  },
+  {
+    q: "Is it safe with uncommitted work?",
+    a: "Yes. Sync operations never merge or rebase your working copies. They fetch, create missing worktrees, fast-forward eligible existing worktrees, and prune only when the safety checks pass. Worktree removal refuses on dirty trees, unpushed commits, stashes, or in-progress operations (merge/rebase/cherry-pick/revert/bisect). Newly created branches are pushed with explicit <code class=\"font-mono text-sm\">--no-track</code> so they don't inherit <code class=\"font-mono text-sm\">origin/main</code> as upstream by accident.",
+  },
+];
+---
+<section id="faq" class="bg-white py-20 sm:py-28">
+  <div class="mx-auto max-w-3xl px-6">
+    <div class="text-center">
+      <div class="inline-flex items-center gap-2 rounded-full border border-ink-200 bg-ink-50 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-600">
+        FAQ
+      </div>
+      <h2 class="mt-4 text-balance text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl">
+        Common questions
+      </h2>
+    </div>
+
+    <div class="mt-12 divide-y divide-ink-200 rounded-2xl border border-ink-200 bg-white shadow-sm">
+      {faqs.map((f) => (
+        <details class="group p-6 first:rounded-t-2xl last:rounded-b-2xl">
+          <summary class="flex cursor-pointer items-start justify-between gap-4 text-left">
+            <span class="text-base font-semibold text-ink-900">{f.q}</span>
+            <span class="chev mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-ink-50 text-ink-500">
+              <Icon name="chevron-right" size={14} />
+            </span>
+          </summary>
+          <div class="mt-3 text-sm leading-relaxed text-ink-600" set:html={f.a} />
+        </details>
+      ))}
+    </div>
+  </div>
+</section>

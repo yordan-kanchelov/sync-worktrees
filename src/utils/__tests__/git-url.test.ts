@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractRepoNameFromUrl, getDefaultBareRepoDir } from "../git-url";
+import { extractRepoNameFromUrl, getDefaultBareRepoDir, normalizeRepoUrlForComparison } from "../git-url";
 
 describe("git-url utilities", () => {
   describe("extractRepoNameFromUrl", () => {
@@ -52,6 +52,32 @@ describe("git-url utilities", () => {
       expect(() => extractRepoNameFromUrl("not-a-url")).toThrow("Invalid Git URL format");
       expect(() => extractRepoNameFromUrl("")).toThrow("Invalid Git URL format");
       expect(() => extractRepoNameFromUrl("/local/path")).toThrow("Invalid Git URL format");
+    });
+  });
+
+  describe("normalizeRepoUrlForComparison", () => {
+    it("treats trailing .git and trailing slash as equivalent", () => {
+      const base = normalizeRepoUrlForComparison("https://github.com/u/r.git");
+      expect(normalizeRepoUrlForComparison("https://github.com/u/r")).toBe(base);
+      expect(normalizeRepoUrlForComparison("https://github.com/u/r/")).toBe(base);
+      expect(normalizeRepoUrlForComparison("  https://github.com/u/r.git  ")).toBe(base);
+    });
+
+    it("lowercases scheme and host but preserves path case", () => {
+      expect(normalizeRepoUrlForComparison("HTTPS://GitHub.com/User/Repo.git")).toBe("https://github.com/User/Repo");
+    });
+
+    it("keeps scp-style and https forms distinct (no false equivalence)", () => {
+      expect(normalizeRepoUrlForComparison("git@github.com:u/r.git")).not.toBe(
+        normalizeRepoUrlForComparison("https://github.com/u/r.git"),
+      );
+    });
+
+    it("does NOT strip .git for local filesystem paths or file:// URLs", () => {
+      expect(normalizeRepoUrlForComparison("/tmp/project.git")).not.toBe(normalizeRepoUrlForComparison("/tmp/project"));
+      expect(normalizeRepoUrlForComparison("file:///tmp/project.git")).not.toBe(
+        normalizeRepoUrlForComparison("file:///tmp/project"),
+      );
     });
   });
 

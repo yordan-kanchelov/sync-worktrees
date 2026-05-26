@@ -49,6 +49,8 @@ const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance, mockSpawn, mo
         isInitialized: vi.fn<any>().mockReturnValue(false),
         isSyncInProgress: vi.fn<any>().mockReturnValue(false),
         updateLogger: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+        clearRecordedSkips: vi.fn<any>(),
         config: {} as any,
       } as any,
       mockSpawn: vi.fn<any>().mockImplementation(() => ({
@@ -133,6 +135,8 @@ describe("InteractiveUIService", () => {
       isInitialized: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
       updateLogger: vi.fn<any>(),
+      getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+      clearRecordedSkips: vi.fn<any>(),
       config: mockConfig,
     } as any;
 
@@ -384,6 +388,124 @@ describe("InteractiveUIService", () => {
 
       service.destroy();
     });
+
+    it("clears, collects, and logs clone-mode skips per cycle", async () => {
+      const skipService = {
+        sync: vi.fn<any>().mockResolvedValue({ started: true }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        clearRecordedSkips: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([
+          {
+            kind: "branch_mismatch",
+            phase: "sync",
+            currentBranch: "feature",
+            expectedBranch: "main",
+          },
+          { kind: "dirty_tree" },
+        ]),
+        config: { name: "alpha", worktreeDir: "/repo/alpha", repoUrl: "u" },
+      };
+
+      const service = new InteractiveUIService([skipService as any]);
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry));
+      service.getEvents().emit("uiReady");
+
+      const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
+      await onManualSync();
+
+      expect(skipService.clearRecordedSkips).toHaveBeenCalledTimes(1);
+      const messages = logs.map((l) => l.message);
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Clone-mode skip for 'alpha': clone is on 'feature', expected 'main'"),
+          expect.stringContaining("Clone-mode skip for 'alpha': working tree has local changes"),
+          expect.stringContaining("2 clone-mode skip(s) this cycle"),
+        ]),
+      );
+
+      service.destroy();
+    });
+
+    it("updates last-sync timestamp even when only clone-mode phase skips occurred", async () => {
+      const skipService = {
+        sync: vi.fn<any>().mockResolvedValue({ started: true }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        clearRecordedSkips: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([{ kind: "dirty_tree" }]),
+        config: { name: "alpha", worktreeDir: "/repo/alpha", repoUrl: "u" },
+      };
+
+      const service = new InteractiveUIService([skipService as any]);
+      const updateSpy = vi.fn();
+      service.getEvents().on("updateLastSyncTime", updateSpy);
+
+      const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
+      await onManualSync();
+
+      expect(updateSpy).toHaveBeenCalled();
+
+      service.destroy();
+    });
+
+    it("updates last-sync timestamp and logs at info when only per-action worktree skips occurred", async () => {
+      const partialService = {
+        sync: vi.fn<any>().mockResolvedValue({
+          started: true,
+          outcome: {
+            actions: [],
+            counts: {
+              created: 0,
+              removed: 0,
+              updated: 0,
+              skipped: 1,
+              preserved: 0,
+              failed: 0,
+              noop: 0,
+            },
+            mode: "worktree",
+            started: true,
+          },
+        }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        clearRecordedSkips: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+        config: { name: "alpha", worktreeDir: "/repo/alpha", repoUrl: "u" },
+      };
+
+      const service = new InteractiveUIService([partialService as any]);
+      const updateSpy = vi.fn();
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("updateLastSyncTime", updateSpy);
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry));
+      service.getEvents().emit("uiReady");
+
+      const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
+      await onManualSync();
+
+      // Last-sync time must still advance — per-action skips are not "whole repo skipped".
+      expect(updateSpy).toHaveBeenCalled();
+
+      // The cycle log message must be info-level (not warn) and must NOT contain
+      // the whole-repo "Sync skipped for" wording.
+      const partialLogs = logs.filter((l) => l.message.includes("1 sync action(s) skipped"));
+      expect(partialLogs.length).toBeGreaterThan(0);
+      for (const log of partialLogs) {
+        expect(log.level).toBe("info");
+        expect(log.message).not.toMatch(/^Sync skipped for/);
+      }
+
+      service.destroy();
+    });
   });
 
   describe("triggerInitialSync", () => {
@@ -589,6 +711,41 @@ describe("InteractiveUIService", () => {
       expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalledWith("/test/config.js");
       expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalled();
       expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalled();
+
+      service.destroy();
+    });
+
+    it("preserves clone-mode skips recorded during reload initialization", async () => {
+      mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+        repositories: [
+          {
+            name: "alpha",
+            repoUrl: "https://github.com/test/repo.git",
+            worktreeDir: "/test/worktrees",
+            cronSchedule: "0 * * * *",
+            runOnce: false,
+          },
+        ],
+      });
+      mockWorktreeSyncServiceInstance.getRecordedSkips
+        .mockReturnValueOnce([{ kind: "head_unreadable", phase: "init", error: "bad HEAD" }])
+        .mockReturnValueOnce([]);
+
+      const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry));
+      service.getEvents().emit("uiReady");
+
+      const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+      await onReload();
+
+      const messages = logs.map((l) => l.message);
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          "Clone-mode skip for 'alpha': could not read HEAD: bad HEAD",
+          "⚠️  1 clone-mode skip(s) during reload",
+        ]),
+      );
 
       service.destroy();
     });
@@ -1191,30 +1348,6 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
-      it("should apply CLI filter override during reload", async () => {
-        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
-          repositories: [
-            {
-              name: "test-repo",
-              repoUrl: "https://github.com/test/repo.git",
-              worktreeDir: "/test/worktrees",
-              cronSchedule: "0 * * * *",
-              runOnce: false,
-            },
-          ],
-        });
-
-        const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *", undefined, {
-          filter: "test-*",
-        });
-        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
-        await onReload();
-
-        expect(mockConfigLoaderInstance.filterRepositories).toHaveBeenCalledWith(expect.any(Array), "test-*");
-
-        service.destroy();
-      });
-
       it("should not re-render UI on reload (uses events instead)", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
           repositories: [
@@ -1290,6 +1423,16 @@ describe("InteractiveUIService", () => {
           { path: "/test/worktrees/main", branch: "main" },
           { path: "/test/worktrees/develop", branch: "develop" },
         ]),
+        getFullWorktreeStatus: vi.fn().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          canRemove: true,
+          reasons: [],
+        }),
         addWorktree: vi.fn().mockResolvedValue(undefined),
       };
 
@@ -1453,6 +1596,46 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
 
         await expect(service.getWorktreesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
+
+        service.destroy();
+      });
+
+      it("should use the service worktree provider for clone-mode repositories", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, mode: "clone", worktreeDir: "/test/clone" },
+          getGitService: vi.fn().mockReturnValue(mockGitService),
+          getWorktrees: vi.fn().mockResolvedValue([{ path: "/test/clone", branch: "main" }]),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const worktrees = await service.getWorktreesForRepo(0);
+
+        expect(worktrees).toEqual([{ path: "/test/clone", branch: "main" }]);
+        expect(cloneService.getWorktrees).toHaveBeenCalled();
+        expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+    });
+
+    describe("getWorktreeStatusForRepo", () => {
+      it("should load status for clone-mode checkout path", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, mode: "clone", worktreeDir: "/test/clone" },
+          getGitService: vi.fn().mockReturnValue(mockGitService),
+          getWorktrees: vi.fn().mockResolvedValue([{ path: "/test/clone", branch: "main" }]),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const statuses = await service.getWorktreeStatusForRepo(0);
+
+        expect(statuses).toHaveLength(1);
+        expect(statuses[0].path).toBe("/test/clone");
+        expect(statuses[0].branch).toBe("main");
+        expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/clone", true);
+        expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
         service.destroy();
       });

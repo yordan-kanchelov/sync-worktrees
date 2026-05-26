@@ -39,3 +39,23 @@ export function isLfsError(errorMessage: string): boolean {
 export function isLfsErrorFromError(error: unknown): boolean {
   return isLfsError(getErrorMessage(error));
 }
+
+/**
+ * git stderr fragments that indicate the requested remote ref does not exist
+ * (e.g. the tracked branch was deleted on the remote). Matched as substrings;
+ * callers force LC_ALL=C so these stay deterministic English.
+ */
+export const MISSING_REMOTE_REF_PATTERNS = Object.freeze([
+  "couldn't find remote ref",
+  "Couldn't find remote ref",
+  "not our ref",
+] as const);
+
+/**
+ * Checks if an error message indicates a missing remote ref.
+ * @param errorMessage The error message to check
+ * @returns true if the message indicates the remote ref is gone
+ */
+export function isMissingRemoteRefError(errorMessage: string): boolean {
+  return MISSING_REMOTE_REF_PATTERNS.some((pattern) => errorMessage.includes(pattern));
+}

@@ -1,0 +1,34 @@
+{
+  "name": "sync-worktrees-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Marketing landing page for sync-worktrees",
+  "scripts": {
+    "prebuild": "node scripts/copy-assets.mjs && node scripts/generate-og-image.mjs",
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build && node scripts/build-llms-full.mjs",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/mdx": "^5.0.6",
+    "@astrojs/sitemap": "^3.7.2",
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@tailwindcss/typography": "^0.5.19",
+    "@tailwindcss/vite": "^4.3.0",
+    "astro": "^6.3.7",
+    "tailwindcss": "^4.3.0",
+    "vite": "^7.3.3"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "@playwright/test": "^1.60.0",
+    "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "yaml": "^2.8.3"
+  }
+}

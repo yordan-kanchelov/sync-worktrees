@@ -4,7 +4,9 @@ import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { PathResolutionService } from "../services/path-resolution.service";
+import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { WorktreeStatusService } from "../services/worktree-status.service";
+import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { isValidGitBranchName } from "../utils/git-validation";
 import { pathsEqual } from "../utils/path-compare";
@@ -37,6 +39,8 @@ type ListedWorktree = {
 };
 
 const pathResolution = new PathResolutionService();
+const CLONE_MODE_WORKTREE_MUTATION_REASON =
+  "clone-mode repositories have a single checkout; use sync for clone-mode updates";
 
 function ensureCapability(discovered: DiscoveredRepoContext | null, key: CapabilityKey, toolName: string): void {
   if (!discovered) return;
@@ -56,6 +60,9 @@ async function getReadyService(
     ensureInitialized?: boolean;
   } = {},
 ): Promise<{ discovered: DiscoveredRepoContext | null; service: RepoService; git: RepoGitService }> {
+  if (!repoName) {
+    ctx.autoSelectCurrentRepoIfSingleConfig();
+  }
   const discovered = ctx.getDiscoveredContext(repoName);
   if (options.capability && options.toolName) {
     ensureCapability(discovered, options.capability, options.toolName);
@@ -90,9 +97,10 @@ async function runExclusiveRepoOperation<T>(
 async function ensureRepoWorktreePath(
   ctx: RepositoryContext,
   params: WorktreePathParams,
+  service: RepoService,
   git: RepoGitService,
 ): Promise<string> {
-  await ensurePathBelongsToRepo(ctx, params.path, params.repoName, git);
+  await ensurePathBelongsToRepo(ctx, params.path, params.repoName, service, git);
   return path.resolve(params.path);
 }
 
@@ -100,7 +108,8 @@ async function ensurePathBelongsToRepo(
   ctx: RepositoryContext,
   targetPath: string,
   repoName: string | undefined,
-  git: { getWorktrees: () => Promise<Array<{ path: string }>> },
+  service: RepoService,
+  git: RepoGitService,
 ): Promise<void> {
   const discovered = ctx.getDiscoveredContext(repoName);
   if (discovered?.allWorktrees.length) {
@@ -109,7 +118,7 @@ async function ensurePathBelongsToRepo(
   }
 
   try {
-    const worktrees = await git.getWorktrees();
+    const worktrees = await getWorktreesFromService(service, git);
     if (worktrees.some((w) => pathsEqual(w.path, targetPath))) return;
   } catch {
     // fall through to rejection
@@ -118,14 +127,40 @@ async function ensurePathBelongsToRepo(
   throw new Error(`Path '${targetPath}' is not a registered worktree of the current repository`);
 }
 
+function isCloneModeService(service: RepoService): boolean {
+  const candidate = service as RepoService & { isCloneMode?: () => boolean };
+  return typeof candidate.isCloneMode === "function" && candidate.isCloneMode();
+}
+
+function ensureWorktreeModeService(service: RepoService, toolName: string): void {
+  if (isCloneModeService(service)) {
+    throw new CapabilityUnavailableError(toolName, [CLONE_MODE_WORKTREE_MUTATION_REASON]);
+  }
+}
+
+async function getWorktreesFromService(
+  service: RepoService,
+  git: { getWorktrees: () => Promise<Array<{ path: string; branch: string }>> },
+): Promise<Array<{ path: string; branch: string }>> {
+  const candidate = service as RepoService & {
+    getWorktrees?: () => Promise<Array<{ path: string; branch: string }>>;
+  };
+  if (typeof candidate.getWorktrees === "function") {
+    return candidate.getWorktrees();
+  }
+  return git.getWorktrees();
+}
+
 export async function handleDetectContext(
   ctx: RepositoryContext,
-  params: { path?: string; includeStatus?: boolean; includeAllWorktrees?: boolean },
+  params: { path?: string; includeStatus?: boolean; includeAllWorktrees?: boolean; detailed?: boolean },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
   const target = params.path ?? process.cwd();
   const discovered = await ctx.detectFromPath(target);
-  let response: DiscoveredRepoContext = discovered;
+  // configuredRepositories is server-wide loaded-config inventory, independent of params.path.
+  const configuredRepositories = await ctx.getConfiguredRepositorySummaries({ detailed: params.detailed ?? false });
+  let response = { ...discovered, configuredRepositories };
 
   if (params.includeAllWorktrees) {
     const details = await ctx.getAllConfiguredWorktreeDetails(discovered.currentWorktreePath);
@@ -234,14 +269,14 @@ async function listWorktreesForRepo(
   includeSize: boolean | undefined,
   limit: Limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
 ): Promise<ListedWorktree[]> {
-  const { discovered, git } = await getReadyService(ctx, repoName, {
+  const { discovered, service, git } = await getReadyService(ctx, repoName, {
     capability: "listWorktrees",
     toolName: "list_worktrees",
   });
 
   let worktrees: Array<{ path: string; branch: string }>;
   try {
-    worktrees = await git.getWorktrees();
+    worktrees = await getWorktreesFromService(service, git);
   } catch {
     if (discovered) {
       worktrees = discovered.allWorktrees.map((w) => ({ path: w.path, branch: w.branch }));
@@ -288,11 +323,11 @@ export async function handleGetWorktreeStatus(
   params: { path: string; repoName?: string; includeDetails?: boolean },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const { git } = await getReadyService(ctx, params.repoName, {
+  const { service, git } = await getReadyService(ctx, params.repoName, {
     capability: "getStatus",
     toolName: "get_worktree_status",
   });
-  const resolvedPath = await ensureRepoWorktreePath(ctx, params, git);
+  const resolvedPath = await ensureRepoWorktreePath(ctx, params, service, git);
   const [status, divergence] = await Promise.all([
     git.getFullWorktreeStatus(params.path, params.includeDetails ?? false),
     getDivergence(params.path),
@@ -322,10 +357,11 @@ export async function handleCreateWorktree(
     capability: "createWorktree",
     toolName: "create_worktree",
   });
+  ensureWorktreeModeService(service, "create_worktree");
 
   return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
     if (!service.isInitialized()) {
-      await service.initialize();
+      await service.initializeUnlocked();
     }
 
     const existence = await git.branchExists(branchName);
@@ -377,12 +413,13 @@ export async function handleRemoveWorktree(
     capability: "removeWorktree",
     toolName: "remove_worktree",
   });
+  ensureWorktreeModeService(service, "remove_worktree");
 
   return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
     if (!service.isInitialized()) {
-      await service.initialize();
+      await service.initializeUnlocked();
     }
-    const removedPath = await ensureRepoWorktreePath(ctx, params, git);
+    const removedPath = await ensureRepoWorktreePath(ctx, params, service, git);
 
     if (!params.force) {
       const status = await git.getFullWorktreeStatus(params.path, false);
@@ -414,13 +451,33 @@ export async function handleSync(
   const dispose = attachProgressReporter(service, extra);
   try {
     const start = Date.now();
+    service.clearRecordedSkips();
     const result = await service.sync();
     if (!result.started) {
       throw new SyncInProgressError(ctx.getEntry(params.repoName)?.name ?? params.repoName ?? "unknown");
     }
     const duration = Date.now() - start;
     ctx.invalidateDiscovered();
-    return formatToolResponse({ success: true, duration });
+    const outcome =
+      result.outcome ??
+      createEmptySyncOutcome(
+        isCloneModeService(service) ? "clone" : "worktree",
+        ctx.getEntry(params.repoName)?.name ?? params.repoName,
+        duration,
+      );
+    const skips = service.getRecordedSkips().map((reason) => ({
+      ...reason,
+      message: formatCloneSkipReason(reason),
+    }));
+    return formatToolResponse({
+      success: true,
+      duration,
+      outcome: {
+        ...outcome,
+        durationMs: outcome.durationMs ?? duration,
+      },
+      skips,
+    });
   } finally {
     dispose();
   }
@@ -435,12 +492,13 @@ export async function handleUpdateWorktree(
     capability: "updateWorktree",
     toolName: "update_worktree",
   });
+  ensureWorktreeModeService(service, "update_worktree");
 
   return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
     if (!service.isInitialized()) {
-      await service.initialize();
+      await service.initializeUnlocked();
     }
-    const worktreePath = await ensureRepoWorktreePath(ctx, params, git);
+    const worktreePath = await ensureRepoWorktreePath(ctx, params, service, git);
 
     await git.updateWorktree(params.path);
     ctx.invalidateDiscovered();
@@ -464,7 +522,11 @@ export async function handleInitialize(
   const dispose = attachProgressReporter(service, extra);
   try {
     return await runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
-      await service.initialize();
+      await service.initializeUnlocked();
+      // A standalone initialize does not surface skips in its response. Clear the
+      // one-shot suppression token so a later independent `sync` re-detects and
+      // reports a wrong-branch / unreadable-HEAD clone instead of swallowing it.
+      service.clearPendingInitSkip();
       const git = service.getGitService();
       ctx.invalidateDiscovered();
       return formatToolResponse({

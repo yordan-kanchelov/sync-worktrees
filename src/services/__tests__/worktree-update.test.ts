@@ -19,6 +19,11 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
   let mockGitService: Mocked<GitService>;
   let mockLogger: Logger;
 
+  function attachMockGitService(): void {
+    (service as any).gitService = mockGitService;
+    (service as any).worktreeModeSyncRunner.gitService = mockGitService;
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -65,7 +70,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       getDefaultBranch: vi.fn().mockReturnValue("main"),
     } as any;
 
-    (service as any).gitService = mockGitService;
+    attachMockGitService();
   });
 
   describe("Update functionality enabled (default)", () => {
@@ -75,7 +80,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         return path.includes("feature");
       });
 
-      await service.sync();
+      const result = await service.sync();
 
       // Should check all worktrees
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
@@ -84,6 +89,16 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       // Should update only the feature branch
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(1);
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature");
+      expect(result).toMatchObject({
+        started: true,
+        outcome: {
+          mode: "worktree",
+          counts: expect.objectContaining({ updated: 1, noop: 2 }),
+          actions: expect.arrayContaining([
+            { kind: "updated", branch: "feature", path: "/test/worktrees/feature", reason: "fast_forward" },
+          ]),
+        },
+      });
     });
 
     it("should skip updating worktrees with an operation in progress", async () => {
@@ -91,10 +106,25 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       mockGitService.hasOperationInProgress.mockImplementation(async (p) => p.includes("feature"));
       mockGitService.isWorktreeBehind.mockResolvedValue(true);
 
-      await service.sync();
+      const result = await service.sync();
 
       // Should not call update on feature
       expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/test/worktrees/feature");
+      expect(result).toMatchObject({
+        started: true,
+        outcome: {
+          counts: expect.objectContaining({ skipped: 1 }),
+          actions: expect.arrayContaining([
+            {
+              kind: "skipped",
+              scope: "worktree",
+              reason: "operation_in_progress",
+              branch: "feature",
+              path: "/test/worktrees/feature",
+            },
+          ]),
+        },
+      });
     });
 
     it("should skip updating worktrees with local changes", async () => {
@@ -152,12 +182,27 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
       mockGitService.isWorktreeBehind.mockResolvedValue(true);
 
-      await service.sync();
+      const result = await service.sync();
 
       // Should only update worktrees that could be checked
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/main");
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/develop");
+
+      // A probe-only failure must NOT become a hard `recordFailed` (which would
+      // poison the exit code). It is recorded as `update_check_failed` skip.
+      if (result.started) {
+        expect(result.outcome?.counts.failed ?? 0).toBe(0);
+        expect(result.outcome?.counts.skipped ?? 0).toBeGreaterThanOrEqual(1);
+        const actions = result.outcome?.actions ?? [];
+        expect(actions).toContainEqual(
+          expect.objectContaining({
+            kind: "skipped",
+            scope: "worktree",
+            reason: "update_check_failed",
+          }),
+        );
+      }
     });
   });
 
@@ -166,7 +211,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       // Recreate service with branchMaxAge configured
       mockConfig.branchMaxAge = "1d";
       service = new WorktreeSyncService(mockConfig);
-      (service as any).gitService = mockGitService;
+      attachMockGitService();
 
       // Simulate that age filtering removed all but (intentionally) not returning main
       (mockGitService.getRemoteBranches as Mock).mockResolvedValue(["feature", "develop"]);
@@ -185,7 +230,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     it("should only create worktrees for branches matching include patterns", async () => {
       mockConfig.branchInclude = ["feature*"];
       service = new WorktreeSyncService(mockConfig);
-      (service as any).gitService = mockGitService;
+      attachMockGitService();
 
       (mockGitService.getRemoteBranches as Mock).mockResolvedValue([
         "main",
@@ -208,7 +253,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     it("should exclude branches matching exclude patterns", async () => {
       mockConfig.branchExclude = ["bugfix/*", "wip-*"];
       service = new WorktreeSyncService(mockConfig);
-      (service as any).gitService = mockGitService;
+      attachMockGitService();
 
       (mockGitService.getRemoteBranches as Mock).mockResolvedValue([
         "main",
@@ -236,7 +281,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       mockConfig.branchInclude = ["feature/*", "main"];
       mockConfig.branchMaxAge = "30d";
       service = new WorktreeSyncService(mockConfig);
-      (service as any).gitService = mockGitService;
+      attachMockGitService();
 
       (mockGitService.getRemoteBranchesWithActivity as Mock).mockResolvedValue([
         { branch: "main", lastActivity: now },
@@ -259,7 +304,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     it("should retain default branch regardless of branchExclude", async () => {
       mockConfig.branchExclude = ["main"];
       service = new WorktreeSyncService(mockConfig);
-      (service as any).gitService = mockGitService;
+      attachMockGitService();
 
       (mockGitService.getRemoteBranches as Mock).mockResolvedValue(["main", "feature/login"]);
       (mockGitService.getWorktrees as Mock).mockResolvedValue([]);
@@ -275,7 +320,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     beforeEach(() => {
       mockConfig.updateExistingWorktrees = false;
       service = new WorktreeSyncService(mockConfig);
-      (service as any).gitService = mockGitService;
+      attachMockGitService();
     });
 
     it("should not update any worktrees when disabled", async () => {
@@ -340,7 +385,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         getChangedPathsInRange,
       } as any;
 
-      (service as any).gitService = mockGitService;
+      attachMockGitService();
     }
 
     it("skips update when diff has no paths inside sparse include", async () => {

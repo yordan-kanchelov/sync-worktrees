@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import pLimit from "p-limit";
 import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
@@ -8,6 +9,7 @@ import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 import { normalizePathForCompare } from "../utils/path-compare";
+import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import type { Config, RepositoryConfig } from "../types";
@@ -47,6 +49,28 @@ export interface SiblingRepository {
   configMatched: boolean;
 }
 
+interface ConfiguredRepositorySummaryBase {
+  name: string;
+  isCurrent: boolean;
+  repoUrl?: string;
+  branch?: string;
+  sparseCheckout?: RepositoryConfig["sparseCheckout"];
+  localReady?: boolean;
+}
+
+export interface ConfiguredCloneRepositorySummary extends ConfiguredRepositorySummaryBase {
+  mode: "clone";
+  checkoutPath: string;
+}
+
+export interface ConfiguredWorktreeRepositorySummary extends ConfiguredRepositorySummaryBase {
+  mode: "worktree";
+  worktreeDir: string;
+  bareRepoDir?: string;
+}
+
+export type ConfiguredRepositorySummary = ConfiguredCloneRepositorySummary | ConfiguredWorktreeRepositorySummary;
+
 export interface DiscoveredRepoContext {
   isWorktree: boolean;
   kind: "managed" | "unmanaged" | "unsupported";
@@ -71,6 +95,18 @@ interface RepoEntry {
   source: "config" | "detected";
   service?: WorktreeSyncService;
   discovered?: DiscoveredRepoContext;
+}
+
+type RepositorySelectionDecision =
+  | { kind: "selected"; repoName: string; source: "current" | "explicit" | "single-config" }
+  | { kind: "ambiguous"; configured: string[]; detected: string[]; reason: string }
+  | { kind: "missing"; configured: string[]; detected: string[]; reason: string };
+
+interface RepositorySelectionState {
+  currentRepo: string | null;
+  configured: string[];
+  detected: string[];
+  defaultDecision: RepositorySelectionDecision;
 }
 
 interface CachedDiscovery {
@@ -130,6 +166,15 @@ export class RepositoryContext {
   private configPath: string | null = null;
   private configLoader = new ConfigLoaderService();
   private discoveryCache = new Map<string, CachedDiscovery>();
+  private readonly launchCwd: string;
+
+  constructor(options: { launchCwd?: string } = {}) {
+    this.launchCwd = path.resolve(options.launchCwd ?? process.cwd());
+  }
+
+  getLaunchCwd(): string {
+    return this.launchCwd;
+  }
 
   async loadConfig(configPath: string, options: { setDefaultCurrent?: boolean } = {}): Promise<RepositoryConfig[]> {
     const setDefaultCurrent = options.setDefaultCurrent ?? true;
@@ -240,6 +285,11 @@ export class RepositoryContext {
   /** @internal Test-only helper — returns the size of the discovery cache. */
   __discoveryCacheSizeForTest(): number {
     return this.discoveryCache.size;
+  }
+
+  /** @internal Test-only helper — exposes the internal selection state. */
+  __getRepositorySelectionStateForTest(): unknown {
+    return this.getRepositorySelectionState();
   }
 
   private async discoverSiblingRepositories(currentBareRepoPath: string): Promise<SiblingRepository[]> {
@@ -365,6 +415,13 @@ export class RepositoryContext {
       return unsupported("No .git file found in path or any parent directory");
     }
     if (located.kind === "regular-git-dir") {
+      const cloneEntry = this.findConfiguredCloneEntry(worktreeRoot);
+      if (cloneEntry) {
+        return {
+          result: await this.buildCloneModeContext(cloneEntry, worktreeRoot, notes),
+          adminDir: null,
+        };
+      }
       return unsupported("Directory has .git folder (regular repo, not a sync-worktrees worktree)");
     }
 
@@ -516,13 +573,20 @@ export class RepositoryContext {
   }
 
   async getService(repoName?: string): Promise<WorktreeSyncService> {
+    if (repoName) {
+      const explicit = this.selectExplicitRepository(repoName);
+      if (explicit.kind !== "selected") {
+        throw new Error(this.buildRepoNotFoundError(repoName));
+      }
+    }
+
     const name = repoName ?? this.currentRepo;
     if (!name) {
-      throw new Error("No repository specified and no current repository set");
+      throw new Error(this.buildNoRepoSelectedError());
     }
     const entry = this.repos.get(name);
     if (!entry) {
-      throw new Error(`Repository '${name}' not found. Load a config or run detect_context first.`);
+      throw new Error(this.buildRepoNotFoundError(name));
     }
     if (!entry.service) {
       const logger = createStderrLogger(entry.name);
@@ -532,6 +596,112 @@ export class RepositoryContext {
       });
     }
     return entry.service;
+  }
+
+  private getRepositorySelectionState(): RepositorySelectionState {
+    const configured = this.getConfiguredRepositoryNames();
+    const detected = this.getDetectedRepositoryNames();
+    return {
+      currentRepo: this.currentRepo,
+      configured,
+      detected,
+      defaultDecision: this.selectDefaultRepository(configured, detected),
+    };
+  }
+
+  private selectExplicitRepository(repoName: string): RepositorySelectionDecision {
+    if (this.repos.has(repoName)) {
+      return { kind: "selected", repoName, source: "explicit" };
+    }
+    return {
+      kind: "missing",
+      configured: this.getConfiguredRepositoryNames(),
+      detected: this.getDetectedRepositoryNames(),
+      reason: `Repository '${repoName}' not found`,
+    };
+  }
+
+  private selectDefaultRepository(
+    configured = this.getConfiguredRepositoryNames(),
+    detected = this.getDetectedRepositoryNames(),
+  ): RepositorySelectionDecision {
+    if (this.currentRepo !== null) {
+      return { kind: "selected", repoName: this.currentRepo, source: "current" };
+    }
+    if (this.canAutoSelectSingleConfig(configured, detected)) {
+      return { kind: "selected", repoName: configured[0], source: "single-config" };
+    }
+    if (configured.length === 0 && detected.length === 0) {
+      return {
+        kind: "missing",
+        configured,
+        detected,
+        reason: "no configured or detected repositories are registered",
+      };
+    }
+    return {
+      kind: "ambiguous",
+      configured,
+      detected,
+      reason: "repository selection is ambiguous without currentRepo or explicit repoName",
+    };
+  }
+
+  private canAutoSelectSingleConfig(
+    configured = this.getConfiguredRepositoryNames(),
+    detected = this.getDetectedRepositoryNames(),
+  ): boolean {
+    return this.currentRepo === null && configured.length === 1 && detected.length === 0;
+  }
+
+  private getDetectedRepositoryNames(): string[] {
+    return Array.from(this.repos.values())
+      .filter((entry) => entry.source === "detected")
+      .map((entry) => entry.name);
+  }
+
+  private formatDetectedRepositoryNames(): string[] {
+    return Array.from(this.repos.values())
+      .filter((e) => e.source === "detected")
+      .map((e) => {
+        const location = e.discovered?.currentWorktreePath ?? e.config.bareRepoDir ?? e.config.worktreeDir;
+        return location ? `${e.name} (${location})` : e.name;
+      });
+  }
+
+  private formatKnownRepositoryNames(names: string[]): string {
+    return names.length === 0 ? "[]" : `[${names.join(", ")}]`;
+  }
+
+  private buildNoRepoSelectedError(): string {
+    const selection = this.getRepositorySelectionState();
+    const detected = this.formatDetectedRepositoryNames();
+    const parts = [
+      "No repository specified and no current repository set.",
+      `launchCwd=${this.launchCwd}`,
+      `configPath=${this.configPath ?? "none"}`,
+      `loadedRepos=${this.repos.size} (config: ${selection.configured.length}, detected: ${selection.detected.length})`,
+    ];
+    if (detected.length > 0) {
+      parts.push(`Detected repos: ${this.formatKnownRepositoryNames(detected)}.`);
+    }
+    if (selection.configured.length > 0) {
+      parts.push(`Configured repos: ${this.formatKnownRepositoryNames(selection.configured)}.`);
+    }
+    if (selection.configured.length > 0 || detected.length > 0) {
+      parts.push("Recovery: call set_current_repository with one of the repo names above or pass repoName explicitly.");
+    } else {
+      parts.push(
+        "Recovery: call detect_context {path: <workspace>}, load_config {configPath: <file>}, set SYNC_WORKTREES_CONFIG env var, or pass repoName explicitly.",
+      );
+    }
+    return parts.join(" ");
+  }
+
+  private buildRepoNotFoundError(name: string): string {
+    const known = Array.from(this.repos.keys());
+    const knownStr = this.formatKnownRepositoryNames(known);
+    return `Repository '${name}' not found. Known repos: ${knownStr}. Run load_config or detect_context to register it.`;
   }
 
   getEntry(repoName?: string): RepoEntry | null {
@@ -571,6 +741,65 @@ export class RepositoryContext {
       .map((entry) => entry.name);
   }
 
+  async getConfiguredRepositorySummaries(options: { detailed?: boolean } = {}): Promise<ConfiguredRepositorySummary[]> {
+    const entries = Array.from(this.repos.values()).filter((entry) => entry.source === "config");
+    const currentRepo = this.currentRepo;
+
+    const buildLean = (entry: RepoEntry): ConfiguredRepositorySummary => {
+      const mode = resolveMode(entry.config);
+      const isCurrent = entry.name === currentRepo;
+      if (mode === REPOSITORY_MODES.CLONE) {
+        return { name: entry.name, mode: "clone", checkoutPath: path.resolve(entry.config.worktreeDir), isCurrent };
+      }
+      return { name: entry.name, mode: "worktree", worktreeDir: path.resolve(entry.config.worktreeDir), isCurrent };
+    };
+
+    if (!options.detailed) {
+      return entries.map(buildLean);
+    }
+
+    const limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+    return Promise.all(
+      entries.map((entry) =>
+        limit(async () => {
+          const summary = buildLean(entry);
+          summary.repoUrl = entry.config.repoUrl;
+          if (entry.config.branch) summary.branch = entry.config.branch;
+          if (entry.config.sparseCheckout) {
+            const sc = entry.config.sparseCheckout;
+            summary.sparseCheckout = {
+              ...sc,
+              include: [...sc.include],
+              ...(sc.exclude ? { exclude: [...sc.exclude] } : {}),
+            };
+          }
+
+          if (summary.mode === "clone") {
+            summary.localReady = await isGitCheckout(summary.checkoutPath);
+            return summary;
+          }
+
+          if (entry.config.bareRepoDir) {
+            summary.bareRepoDir = path.resolve(entry.config.bareRepoDir);
+            summary.localReady = await isDirectory(summary.bareRepoDir);
+          } else {
+            summary.localReady = false;
+          }
+          return summary;
+        }),
+      ),
+    );
+  }
+
+  autoSelectCurrentRepoIfSingleConfig(): string | null {
+    const decision = this.selectDefaultRepository();
+    if (decision.kind !== "selected") return null;
+    if (decision.source === "single-config") {
+      this.currentRepo = decision.repoName;
+    }
+    return this.currentRepo;
+  }
+
   async getAllConfiguredWorktreeDetails(
     currentWorktreePath: string | null = null,
   ): Promise<{ worktreesByRepo: Record<string, DiscoveredWorktree[]>; errorsByRepo: Record<string, string> }> {
@@ -603,6 +832,10 @@ export class RepositoryContext {
     entry: RepoEntry,
     currentWorktreePath: string | null,
   ): Promise<{ worktrees: DiscoveredWorktree[]; error?: string }> {
+    if (entry.source === "config" && resolveMode(entry.config) === REPOSITORY_MODES.CLONE) {
+      return this.readConfiguredCloneWorktree(entry, currentWorktreePath);
+    }
+
     if (entry.source !== "config" || !entry.config.bareRepoDir) return { worktrees: [] };
 
     const bareRepoPath = path.resolve(entry.config.bareRepoDir);
@@ -611,6 +844,90 @@ export class RepositoryContext {
     try {
       const output = await simpleGit(bareRepoPath).raw(["worktree", "list", "--porcelain"]);
       return { worktrees: parseWorktreeList(output, currentWorktreePath) };
+    } catch (err) {
+      return { worktrees: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  private findConfiguredCloneEntry(worktreeRoot: string): RepoEntry | null {
+    const foldedRoot = normalizePathForCompare(path.resolve(worktreeRoot));
+    for (const entry of this.repos.values()) {
+      if (entry.source !== "config" || resolveMode(entry.config) !== REPOSITORY_MODES.CLONE) continue;
+      if (normalizePathForCompare(path.resolve(entry.config.worktreeDir)) === foldedRoot) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  private async buildCloneModeContext(
+    entry: RepoEntry,
+    worktreeRoot: string,
+    notes: string[],
+  ): Promise<DiscoveredRepoContext> {
+    const resolvedRoot = path.resolve(worktreeRoot);
+    let currentBranch: string | null = null;
+    try {
+      currentBranch = await readCurrentBranch(resolvedRoot);
+    } catch (err) {
+      notes.push(`Could not read clone-mode branch: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const branch = currentBranch ?? "unknown";
+    const cloneModeReason = "clone-mode repositories have a single checkout; use sync for clone-mode updates";
+    const capabilities: Capabilities = {
+      listWorktrees: { available: true },
+      getStatus: { available: true },
+      createWorktree: { available: false, reason: cloneModeReason },
+      removeWorktree: { available: false, reason: cloneModeReason },
+      updateWorktree: { available: false, reason: cloneModeReason },
+      sync: { available: true },
+      initialize: { available: true },
+    };
+
+    const discovered: DiscoveredRepoContext = {
+      isWorktree: true,
+      kind: "managed",
+      currentBranch,
+      currentWorktreePath: resolvedRoot,
+      bareRepoPath: null,
+      repoUrl: entry.config.repoUrl,
+      worktreeDir: resolvedRoot,
+      allWorktrees: [{ path: resolvedRoot, branch, isCurrent: true }],
+      siblingRepositories: [],
+      configPath: this.configPath,
+      repoName: entry.name,
+      capabilities,
+      notes,
+    };
+
+    entry.discovered = discovered;
+    this.bootstrapCurrentRepo(entry.name, true);
+    return discovered;
+  }
+
+  private async readConfiguredCloneWorktree(
+    entry: RepoEntry,
+    currentWorktreePath: string | null,
+  ): Promise<{ worktrees: DiscoveredWorktree[]; error?: string }> {
+    const worktreePath = path.resolve(entry.config.worktreeDir);
+    if (!(await isDirectory(worktreePath)) || !(await hasGitMetadata(worktreePath))) {
+      return { worktrees: [] };
+    }
+
+    try {
+      const branch = await readCurrentBranch(worktreePath);
+      return {
+        worktrees: [
+          {
+            path: worktreePath,
+            branch,
+            isCurrent:
+              currentWorktreePath !== null &&
+              normalizePathForCompare(worktreePath) === normalizePathForCompare(currentWorktreePath),
+          },
+        ],
+      };
     } catch (err) {
       return { worktrees: [], error: err instanceof Error ? err.message : String(err) };
     }
@@ -653,6 +970,36 @@ async function isDirectory(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function hasGitMetadata(worktreePath: string): Promise<boolean> {
+  try {
+    await fs.stat(path.join(worktreePath, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isGitCheckout(checkoutPath: string): Promise<boolean> {
+  if (!(await isDirectory(checkoutPath))) return false;
+  try {
+    const inside = (await simpleGit(checkoutPath).raw(["rev-parse", "--is-inside-work-tree"])).trim();
+    return inside === "true";
+  } catch {
+    return false;
+  }
+}
+
+async function readCurrentBranch(worktreePath: string): Promise<string> {
+  const git = simpleGit(worktreePath);
+  const branch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+  if (branch && branch !== "HEAD") {
+    return branch;
+  }
+
+  const head = (await git.raw(["rev-parse", "--short", "HEAD"])).trim();
+  return head ? `(detached ${head})` : "(detached)";
 }
 
 async function findWorktreeRoot(startPath: string): Promise<FindResult | null> {

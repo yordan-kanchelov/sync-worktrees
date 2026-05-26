@@ -49,7 +49,7 @@ export default {
 
     await fs.writeFile(configPath, configContent);
 
-    const output = execSync(`node "${cliPath}" --config "${configPath}" --list`, {
+    const output = execSync(`node "${cliPath}" list --config "${configPath}"`, {
       encoding: "utf-8",
     });
 
@@ -129,7 +129,7 @@ export default {
 
     await fs.writeFile(configPath, configContent);
 
-    const output = execSync(`node "${cliPath}" --config "${configPath}" --list`, {
+    const output = execSync(`node "${cliPath}" list --config "${configPath}"`, {
       encoding: "utf-8",
     });
 
@@ -166,7 +166,7 @@ export default {
 
     await fs.writeFile(configPath, configContent);
 
-    const output = execSync(`node "${cliPath}" --config "${configPath}" --filter "repo-beta" --list`, {
+    const output = execSync(`node "${cliPath}" list --config "${configPath}" --filter "repo-beta"`, {
       encoding: "utf-8",
     });
 
@@ -204,7 +204,7 @@ export default {
 
     await fs.writeFile(configPath, configContent);
 
-    const output = execSync(`node "${cliPath}" --config "${configPath}" --filter "frontend-*" --list`, {
+    const output = execSync(`node "${cliPath}" list --config "${configPath}" --filter "frontend-*"`, {
       encoding: "utf-8",
     });
 
@@ -238,7 +238,7 @@ export default {
 
     await fs.writeFile(configPath, configContent);
 
-    const output = execSync(`node "${cliPath}" --config "${configPath}" --list`, {
+    const output = execSync(`node "${cliPath}" list --config "${configPath}"`, {
       encoding: "utf-8",
     });
 
@@ -266,7 +266,7 @@ export default {
 
     await fs.writeFile(configPath, configContent);
 
-    const output = execSync(`node "${cliPath}" --config "${configPath}" --list`, {
+    const output = execSync(`node "${cliPath}" list --config "${configPath}"`, {
       encoding: "utf-8",
     });
 

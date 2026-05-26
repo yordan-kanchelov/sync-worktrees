@@ -2,69 +2,49 @@ import * as path from "path";
 
 import { confirm, input, select } from "@inquirer/prompts";
 
-import { generateConfigFile, getDefaultConfigPath } from "./config-generator";
 import { extractRepoNameFromUrl } from "./git-url";
 
-import type { Config } from "../types";
+import type { InitConfigInput } from "../types";
 
-export interface PromptResult {
-  config: Config;
-  savedConfigPath?: string;
-}
-
-export async function promptForConfig(partialConfig: Partial<Config>): Promise<PromptResult> {
+export async function promptForInitConfig(): Promise<InitConfigInput> {
   console.log("🔧 Welcome to sync-worktrees interactive setup!\n");
 
-  let repoUrl = partialConfig.repoUrl;
-  if (!repoUrl) {
-    repoUrl = await input({
-      message: "Enter the Git repository URL (e.g., https://github.com/user/repo.git):",
-      validate: (value: string) => {
-        if (!value.trim()) {
-          return "Repository URL is required";
-        }
-        try {
-          // Basic URL validation
-          if (!value.match(/^(https?:\/\/|ssh:\/\/|git@|file:\/\/).*$/)) {
-            return "Please enter a valid Git URL (https://, ssh://, git@, or file://)";
-          }
-          return true;
-        } catch {
-          return "Please enter a valid URL";
-        }
-      },
-    });
+  const repoUrl = await input({
+    message: "Enter the Git repository URL (e.g., https://github.com/user/repo.git):",
+    validate: (value: string) => {
+      if (!value.trim()) {
+        return "Repository URL is required";
+      }
+      if (!value.match(/^(https?:\/\/|ssh:\/\/|git@|file:\/\/).*$/)) {
+        return "Please enter a valid Git URL (https://, ssh://, git@, or file://)";
+      }
+      return true;
+    },
+  });
+
+  const repoName = extractRepoNameFromUrl(repoUrl);
+  const defaultWorktreeDir = repoName ? `./${repoName}` : "";
+
+  let worktreeDir = await input({
+    message: "Enter the directory for storing worktrees:",
+    default: defaultWorktreeDir,
+    validate: (value: string) => {
+      if (!value.trim() && !defaultWorktreeDir) {
+        return "Worktree directory is required";
+      }
+      return true;
+    },
+  });
+
+  if (!worktreeDir.trim() && defaultWorktreeDir) {
+    worktreeDir = defaultWorktreeDir;
   }
 
-  let worktreeDir = partialConfig.worktreeDir;
-  if (!worktreeDir) {
-    // Extract repository name from URL to suggest as default
-    const repoName = repoUrl ? extractRepoNameFromUrl(repoUrl) : "";
-    const defaultWorktreeDir = repoName ? `./${repoName}` : "";
-
-    worktreeDir = await input({
-      message: "Enter the directory for storing worktrees:",
-      default: defaultWorktreeDir,
-      validate: (value: string) => {
-        // Allow empty input to use default value
-        if (!value.trim() && !defaultWorktreeDir) {
-          return "Worktree directory is required";
-        }
-        return true;
-      },
-    });
-
-    // Use default if empty input
-    if (!worktreeDir.trim() && defaultWorktreeDir) {
-      worktreeDir = defaultWorktreeDir;
-    }
-
-    if (!path.isAbsolute(worktreeDir)) {
-      worktreeDir = path.resolve(worktreeDir);
-    }
+  if (!path.isAbsolute(worktreeDir)) {
+    worktreeDir = path.resolve(worktreeDir);
   }
 
-  let bareRepoDir = partialConfig.bareRepoDir;
+  let bareRepoDir: string | undefined;
   const askForBareDir = await confirm({
     message: "Would you like to specify a custom location for the bare repository?",
     default: false,
@@ -86,97 +66,38 @@ export async function promptForConfig(partialConfig: Partial<Config>): Promise<P
     }
   }
 
-  let runOnce = partialConfig.runOnce;
-  let cronSchedule = partialConfig.cronSchedule || "0 * * * *";
-
-  if (runOnce === undefined) {
-    const runMode = await select({
-      message: "How would you like to run the sync?",
-      choices: [
-        { name: "Run once", value: "once" },
-        { name: "Schedule with cron", value: "scheduled" },
-      ],
-    });
-    runOnce = runMode === "once";
-
-    if (!runOnce && !partialConfig.cronSchedule) {
-      cronSchedule = await input({
-        message: "Enter the cron schedule (or press enter for default):",
-        default: "0 * * * *",
-        validate: (value: string) => {
-          if (!value.trim()) {
-            return "Cron schedule is required";
-          }
-          const parts = value.trim().split(" ");
-          if (parts.length < 5) {
-            return "Invalid cron pattern. Expected format: '* * * * *'";
-          }
-          return true;
-        },
-      });
-    }
-  }
-
-  const finalConfig: Config = {
-    repoUrl,
-    worktreeDir,
-    cronSchedule,
-    runOnce: runOnce || false,
-    bareRepoDir,
-  };
-
-  console.log("\n📋 Configuration summary:");
-  console.log(`   Repository URL: ${finalConfig.repoUrl}`);
-  console.log(`   Worktrees:      ${finalConfig.worktreeDir}`);
-  if (finalConfig.bareRepoDir) {
-    console.log(`   Bare repo:      ${finalConfig.bareRepoDir}`);
-  } else {
-    console.log(`   Bare repo:      .bare/<repo-name> (default)`);
-  }
-  if (finalConfig.runOnce) {
-    console.log(`   Mode:           Run once`);
-  } else {
-    console.log(`   Mode:           Scheduled (${finalConfig.cronSchedule})`);
-  }
-  console.log("");
-
-  // Ask if user wants to save configuration to a file
-  const saveConfig = await confirm({
-    message: "Would you like to save this configuration to a file for future use?",
-    default: true,
+  const runMode = await select({
+    message: "How would you like to run the sync?",
+    choices: [
+      { name: "Run once", value: "once" },
+      { name: "Schedule with cron", value: "scheduled" },
+    ],
   });
+  const runOnce = runMode === "once";
 
-  let savedConfigPath: string | undefined;
-  if (saveConfig) {
-    const defaultConfigPath = getDefaultConfigPath();
-    let configPath = await input({
-      message: "Enter the path for the config file:",
-      default: defaultConfigPath,
+  let cronSchedule = "0 * * * *";
+  if (!runOnce) {
+    cronSchedule = await input({
+      message: "Enter the cron schedule (or press enter for default):",
+      default: "0 * * * *",
       validate: (value: string) => {
         if (!value.trim()) {
-          return "Config file path is required";
+          return "Cron schedule is required";
         }
-        if (!value.endsWith(".js")) {
-          return "Config file must have a .js extension";
+        const parts = value.trim().split(" ");
+        if (parts.length < 5) {
+          return "Invalid cron pattern. Expected format: '* * * * *'";
         }
         return true;
       },
     });
-
-    if (!path.isAbsolute(configPath)) {
-      configPath = path.resolve(configPath);
-    }
-
-    try {
-      await generateConfigFile(finalConfig, configPath);
-      savedConfigPath = configPath;
-      console.log(`\n✅ Configuration saved to: ${configPath}`);
-      console.log(`\n💡 Next time run \`sync-worktrees\` from this directory — the config will be auto-loaded.`);
-      console.log("");
-    } catch (error) {
-      console.error(`\n❌ Failed to save config file: ${(error as Error).message}`);
-    }
   }
 
-  return { config: finalConfig, savedConfigPath };
+  return {
+    repoUrl,
+    worktreeDir,
+    bareRepoDir,
+    cronSchedule,
+    runOnce,
+  };
 }

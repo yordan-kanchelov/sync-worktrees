@@ -1,0 +1,56 @@
+---
+import { Code } from "astro:components";
+import CopyButton from "./CopyButton.astro";
+
+const steps = [
+  {
+    title: "Install",
+    body: "Globally via npm. Node 22+, macOS or Linux.",
+    code: "npm install -g sync-worktrees",
+    lang: "bash",
+  },
+  {
+    title: "Run the init wizard",
+    body: "Generates sync-worktrees.config.js next to where you ran it. Edit later to add more repos.",
+    code: "cd ~/projects/my-sync-dir\nsync-worktrees init",
+    lang: "bash",
+  },
+  {
+    title: "Launch the TUI — or sync once",
+    body: "Bare command opens the interactive UI and keeps syncing on schedule. Use --runOnce for CI or scripted runs.",
+    code: "sync-worktrees                # interactive TUI + cron\nsync-worktrees --runOnce      # one-shot",
+    lang: "bash",
+  },
+];
+---
+<section id="quickstart" class="bg-white py-20 sm:py-28">
+  <div class="mx-auto max-w-6xl px-6">
+    <div class="mx-auto max-w-2xl text-center">
+      <div class="inline-flex items-center gap-2 rounded-full border border-ink-200 bg-ink-50 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-600">
+        Quick start
+      </div>
+      <h2 class="mt-4 text-balance text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl">
+        Three commands to a synced workspace.
+      </h2>
+    </div>
+
+    <ol class="mt-14 grid gap-6 md:grid-cols-3">
+      {steps.map((s, i) => (
+        <li class="relative rounded-2xl border border-ink-200 bg-white p-6 shadow-sm">
+          <div class="absolute -top-3 left-6 inline-flex size-8 items-center justify-center rounded-full border border-ink-200 bg-white text-sm font-semibold text-ink-700 shadow-sm">
+            {i + 1}
+          </div>
+          <h3 class="mt-2 text-lg font-semibold text-ink-900">{s.title}</h3>
+          <p class="mt-2 text-sm text-ink-600">{s.body}</p>
+          <div class="mt-4 overflow-hidden rounded-xl border border-ink-200 bg-ink-50">
+            <div class="flex items-center justify-between border-b border-ink-200 bg-white/70 px-3 py-1.5">
+              <span class="font-mono text-xs text-ink-500">terminal</span>
+              <CopyButton value={s.code} class="text-ink-600 hover:bg-white" />
+            </div>
+            <Code code={s.code} lang={s.lang as any} theme="github-light" wrap />
+          </div>
+        </li>
+      ))}
+    </ol>
+  </div>
+</section>

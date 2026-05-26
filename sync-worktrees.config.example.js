@@ -1,3 +1,5 @@
+// @ts-check
+
 /**
  * Example configuration file for sync-worktrees
  *
@@ -8,7 +10,8 @@
 import os from 'os';
 import path from 'path';
 
-export default {
+/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
+const config = {
   // Global defaults for all repositories (optional)
   defaults: {
     // Default cron schedule: every hour
@@ -259,9 +262,59 @@ export default {
           // "cd $SYNC_WORKTREES_WORKTREE_PATH && ./setup-dev.sh"
         ]
       }
+    },
+
+    // Clone mode: one checked-out branch directly into worktreeDir (no worktreeDir/<branch> subfolder).
+    // Use when sibling monorepo dependencies must live at fixed relative paths.
+    //
+    // - mode: "clone" disables the bare-repo + per-branch-worktree layout for this repo.
+    // - branch is optional; when omitted, remote HEAD is resolved via `git ls-remote --symref`.
+    // - origin keeps the normal all-branches fetch refspec, so `git branch -r` and
+    //   `git fetch --all --prune` can see every remote branch.
+    // - depth is optional and config-file only; it maps to `git clone --depth <N>` on the
+    //   initial clone with `--no-single-branch`. Sync fetches keep using depth while the
+    //   repository is already shallow, but do not convert an existing full clone into a
+    //   shallow one. If depth is later removed, an existing shallow clone is automatically
+    //   unshallowed before normal sync.
+    // - Conflicts with branchInclude / branchExclude / branchMaxAge / updateExistingWorktrees /
+    //   bareRepoDir — setting any of these on a clone-mode repo (or via defaults inherited into it)
+    //   is a validation error.
+    // - sparseCheckout, filesToCopyOnBranchCreate, and skipLfs still apply.
+    //   filesToCopyOnBranchCreate fires exactly once on the initial clone.
+    //   hooks.onBranchCreated does NOT fire on the initial clone in clone-mode (clone-mode
+    //   tracks a single fixed branch with no later branch-creation event); the hook is
+    //   reserved for TUI-initiated branch creation.
+    //   sparseCheckout is re-applied every sync (config drift converges).
+    // - Lock file lives at `<configDir>/.sync-worktrees-state/<sanitized-name>-<hash>.lock` —
+    //   never inside the cloned repo, so no .gitignore noise.
+    //
+    // Example: three monorepo-sibling components that import each other via fixed `../` paths.
+    {
+      name: "game-platform",
+      repoUrl: "ssh://git@bitbucket.example.com/cf/game-platform.git",
+      worktreeDir: "./slots/game-platform",
+      mode: "clone",
+      branch: "main",
+      depth: 1,
+    },
+    {
+      name: "base-slot",
+      repoUrl: "ssh://git@bitbucket.example.com/cf-basic-slot/base-slot.git",
+      worktreeDir: "./slots/engines/base-slot",
+      mode: "clone",
+      branch: "main",
+    },
+    {
+      name: "communicator-base",
+      repoUrl: "ssh://git@bitbucket.example.com/cf-components/communicator-base.git",
+      worktreeDir: "./slots/communicator-base",
+      mode: "clone",
+      // No branch → resolves to remote HEAD at clone time.
     }
   ]
 };
+
+export default config;
 
 // Advanced example: Dynamic configuration based on environment
 /*

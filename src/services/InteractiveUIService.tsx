@@ -9,10 +9,11 @@ import App from "../components/App";
 import { DEFAULT_CONFIG } from "../constants";
 import { WorktreeSyncService } from "./worktree-sync.service";
 import { ConfigLoaderService } from "./config-loader.service";
-import { FileCopyService } from "./file-copy.service";
+import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { HookExecutionService } from "./hook-execution.service";
 import { PathResolutionService } from "./path-resolution.service";
 import { Logger, LogOutputFn, LogLevel } from "./logger.service";
+import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
@@ -26,12 +27,6 @@ import type { RepositoryConfig, HookContext, WorktreeStatusEntry, DivergedDirect
 const WAIT_SYNC_FAST_TIMEOUT_MS = 2000;
 const WAIT_SYNC_DEFAULT_TIMEOUT_MS = 30000;
 
-export interface ReloadOptions {
-  filter?: string;
-  noUpdateExisting?: boolean;
-  debug?: boolean;
-}
-
 export class InteractiveUIService {
   private app: Instance | null = null;
   private syncServices: WorktreeSyncService[];
@@ -42,11 +37,11 @@ export class InteractiveUIService {
   private logBuffer: Array<{ message: string; level: "info" | "warn" | "error" }> = [];
   private uiReady = false;
   private hookExecutionService = new HookExecutionService();
+  private branchCreatedActions = new BranchCreatedActionsService();
   private pathResolution = new PathResolutionService();
   private limit: ReturnType<typeof pLimit>;
   private reloadInProgress = false;
   private isDestroyed = false;
-  private reloadOptions: ReloadOptions;
   private events: AppEventEmitter;
   private ownsEvents: boolean;
   private unsubscribeCallbacks: Array<() => void> = [];
@@ -56,7 +51,6 @@ export class InteractiveUIService {
     configPath?: string,
     cronSchedule?: string,
     maxParallel?: number,
-    reloadOptions?: ReloadOptions,
     events?: AppEventEmitter,
   ) {
     this.ownsEvents = events === undefined;
@@ -70,7 +64,6 @@ export class InteractiveUIService {
     this.cronSchedule = cronSchedule;
     this.repositoryCount = syncServices.length;
     this.limit = pLimit(maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
-    this.reloadOptions = reloadOptions ?? {};
 
     this.startBufferFlushCheck();
     this.renderUI();
@@ -238,26 +231,30 @@ export class InteractiveUIService {
       // Validate and load new config BEFORE canceling old cron jobs
       // to prevent a window with no cron running on validation failure
       const configLoader = new ConfigLoaderService();
-      const { repositories } = await configLoader.buildRepositories(this.configPath, {
-        filter: this.reloadOptions.filter,
-        noUpdateExisting: this.reloadOptions.noUpdateExisting,
-        debug: this.reloadOptions.debug,
-      });
+      const { repositories } = await configLoader.buildRepositories(this.configPath);
 
       const initResults = await Promise.allSettled(
         repositories.map((repoConfig) =>
           this.limit(async () => {
             const service = new WorktreeSyncService(repoConfig);
             await service.initialize();
-            return service;
+            return {
+              service,
+              clonePhaseSkips: service.getRecordedSkips().map((reason) => ({
+                repo: repoConfig.name || repoConfig.repoUrl,
+                reason: formatCloneSkipReason(reason),
+              })),
+            };
           }),
         ),
       );
 
       const newServices: WorktreeSyncService[] = [];
+      const initClonePhaseSkips: Array<{ repo: string; reason: string }> = [];
       for (const result of initResults) {
         if (result.status === "fulfilled") {
-          newServices.push(result.value);
+          newServices.push(result.value.service);
+          initClonePhaseSkips.push(...result.value.clonePhaseSkips);
         } else {
           this.addLog(`Failed to initialize repository: ${result.reason}`, "error");
         }
@@ -283,12 +280,24 @@ export class InteractiveUIService {
       this.events.emit("updateRepositoryCount", this.repositoryCount);
       this.events.emit("updateCronSchedule", this.cronSchedule);
 
-      const { failures, skipped, attempted } = await this.runSyncServices(this.syncServices);
+      const {
+        failures,
+        skipped,
+        clonePhaseSkips: syncClonePhaseSkips,
+        attempted,
+      } = await this.runSyncServices(this.syncServices);
+      const clonePhaseSkips = [...initClonePhaseSkips, ...syncClonePhaseSkips];
       await this.recordSyncOutcome({ failures, skipped, attempted });
       this.setStatus("idle");
 
       for (const skip of skipped) {
         this.addLog(`Sync skipped for '${skip.repo}': ${skip.reason}`, "warn");
+      }
+      for (const skip of clonePhaseSkips) {
+        this.addLog(`Clone-mode skip for '${skip.repo}': ${skip.reason}`, "warn");
+      }
+      if (clonePhaseSkips.length > 0) {
+        this.addLog(`⚠️  ${clonePhaseSkips.length} clone-mode skip(s) during reload`, "warn");
       }
       if (failures.length > 0) {
         for (const failure of failures) {
@@ -463,8 +472,7 @@ export class InteractiveUIService {
     }
 
     const service = this.syncServices[repoIndex];
-    const gitService = service.getGitService();
-    return gitService.getWorktrees();
+    return this.getWorktreesFromService(service);
   }
 
   public async getWorktreeStatusForRepo(repoIndex: number): Promise<WorktreeStatusEntry[]> {
@@ -474,7 +482,7 @@ export class InteractiveUIService {
 
     const service = this.syncServices[repoIndex];
     const gitService = service.getGitService();
-    const worktrees = await gitService.getWorktrees();
+    const worktrees = await this.getWorktreesFromService(service);
 
     const results = await Promise.allSettled(
       worktrees.map(async (wt) => {
@@ -486,6 +494,16 @@ export class InteractiveUIService {
     return results
       .filter((r): r is PromiseFulfilledResult<WorktreeStatusEntry> => r.status === "fulfilled")
       .map((r) => r.value);
+  }
+
+  private async getWorktreesFromService(service: WorktreeSyncService): Promise<Array<{ path: string; branch: string }>> {
+    const worktreeProvider = service as WorktreeSyncService & {
+      getWorktrees?: () => Promise<Array<{ path: string; branch: string }>>;
+    };
+    if (typeof worktreeProvider.getWorktrees === "function") {
+      return worktreeProvider.getWorktrees();
+    }
+    return service.getGitService().getWorktrees();
   }
 
   public async getDivergedDirectoriesForRepo(repoIndex: number): Promise<DivergedDirectoryInfo[]> {
@@ -720,7 +738,7 @@ export class InteractiveUIService {
     this.setStatus("syncing");
 
     try {
-      const { failures, skipped, attempted } = await this.runSyncServices(services);
+      const { failures, skipped, partialSkips, clonePhaseSkips, attempted } = await this.runSyncServices(services);
 
       if (options.logErrors) {
         for (const failure of failures) {
@@ -729,6 +747,15 @@ export class InteractiveUIService {
       }
       for (const skip of skipped) {
         this.addLog(`Sync skipped for '${skip.repo}': ${skip.reason}`, "warn");
+      }
+      for (const skip of clonePhaseSkips) {
+        this.addLog(`Clone-mode skip for '${skip.repo}': ${skip.reason}`, "warn");
+      }
+      if (clonePhaseSkips.length > 0) {
+        this.addLog(`⚠️  ${clonePhaseSkips.length} clone-mode skip(s) this cycle`, "warn");
+      }
+      for (const partial of partialSkips) {
+        this.addLog(`${partial.repo}: ${partial.reason}`, "info");
       }
 
       await this.recordSyncOutcome({ failures, skipped, attempted });
@@ -755,11 +782,14 @@ export class InteractiveUIService {
   private async runSyncServices(services: WorktreeSyncService[]): Promise<{
     failures: Array<{ repo: string; error: string }>;
     skipped: Array<{ repo: string; reason: string }>;
+    partialSkips: Array<{ repo: string; reason: string }>;
+    clonePhaseSkips: Array<{ repo: string; reason: string }>;
     attempted: number;
   }> {
     const syncResults = await Promise.allSettled(
       services.map((service) =>
         this.limit(async () => {
+          service.clearRecordedSkips();
           if (!service.isInitialized()) {
             await service.initialize();
           }
@@ -774,20 +804,45 @@ export class InteractiveUIService {
 
     const failures: Array<{ repo: string; error: string }> = [];
     const skipped: Array<{ repo: string; reason: string }> = [];
+    const partialSkips: Array<{ repo: string; reason: string }> = [];
+    const clonePhaseSkips: Array<{ repo: string; reason: string }> = [];
     for (let i = 0; i < syncResults.length; i++) {
       const result = syncResults[i];
+      const repoName = (services[i].config as RepositoryConfig).name || services[i].config.repoUrl;
       if (result.status === "rejected") {
-        const repoName = (result.reason as { repoName?: string })?.repoName ?? "unknown";
+        const fallbackName = (result.reason as { repoName?: string })?.repoName ?? repoName;
         const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
-        failures.push({ repo: repoName, error: errorMessage });
+        failures.push({ repo: fallbackName, error: errorMessage });
       } else if (result.value.result && result.value.result.started === false) {
-        const repoName =
-          (services[i].config as RepositoryConfig).name || services[i].config.repoUrl;
         skipped.push({ repo: repoName, reason: `sync skipped: ${result.value.result.reason}` });
+      } else if (result.status === "fulfilled" && result.value.result?.started === true) {
+        const outcome = result.value.result.outcome;
+        if (outcome?.counts.failed) {
+          failures.push({ repo: repoName, error: `${outcome.counts.failed} sync action(s) failed` });
+        }
+        // Per-action skips are informational; the repo did complete its sync
+        // attempt. Surface as a separate channel so updateLastSyncTime still
+        // runs and the per-cycle log stays at info-level.
+        if (outcome?.mode === "worktree" && outcome.counts.skipped > 0) {
+          partialSkips.push({ repo: repoName, reason: `${outcome.counts.skipped} sync action(s) skipped` });
+        }
+      }
+      for (const reason of services[i].getRecordedSkips()) {
+        clonePhaseSkips.push({ repo: repoName, reason: formatCloneSkipReason(reason) });
       }
     }
 
-    return { failures, skipped, attempted: services.length };
+    return { failures, skipped, partialSkips, clonePhaseSkips, attempted: services.length };
+  }
+
+  private buildUiLogger(): Logger {
+    return new Logger({
+      outputFn: (msg: string, level: LogLevel): void => {
+        const uiLevel: "info" | "warn" | "error" =
+          level === "warn" ? "warn" : level === "error" ? "error" : "info";
+        this.addLog(msg, uiLevel);
+      },
+    });
   }
 
   public executeOnBranchCreatedHooks(repoIndex: number, context: HookContext): void {
@@ -797,30 +852,16 @@ export class InteractiveUIService {
 
     const service = this.syncServices[repoIndex];
     const config = service.config;
+    const repoName = (config as RepositoryConfig).name || config.repoUrl;
 
-    if (!config.hooks?.onBranchCreated?.length) {
-      return;
-    }
-
-    this.addLog(`Running ${config.hooks.onBranchCreated.length} hook(s) for branch '${context.branchName}'...`, "info");
-
-    this.hookExecutionService.executeOnBranchCreated(config.hooks, context, {
-      onStdout: (data) => {
-        this.addLog(`[hook] ${data}`, "info");
-      },
-      onStderr: (data) => {
-        this.addLog(`[hook] ${data}`, "warn");
-      },
-      onError: (command, error) => {
-        this.addLog(`[hook] Failed to execute '${command}': ${error.message}`, "error");
-      },
-      onComplete: (command, exitCode) => {
-        if (exitCode === 0) {
-          this.addLog(`[hook] Command completed successfully`, "info");
-        } else if (exitCode !== null) {
-          this.addLog(`[hook] Command exited with code ${exitCode}`, "warn");
-        }
-      },
+    this.branchCreatedActions.runHooks({
+      config,
+      repoName,
+      branchName: context.branchName,
+      worktreePath: context.worktreePath,
+      baseBranch: context.baseBranch,
+      logger: this.buildUiLogger(),
+      hookExecutionService: this.hookExecutionService,
     });
   }
 
@@ -836,8 +877,7 @@ export class InteractiveUIService {
       return;
     }
 
-    const gitService = service.getGitService();
-    const worktrees = await gitService.getWorktrees();
+    const worktrees = await this.getWorktreesFromService(service);
 
     const sourceWorktree = worktrees.find((w) => w.branch === baseBranch);
     const targetWorktree = worktrees.find((w) => w.branch === targetBranch);
@@ -847,27 +887,13 @@ export class InteractiveUIService {
       return;
     }
 
-    const fileCopyService = new FileCopyService();
-
-    try {
-      const result = await fileCopyService.copyFiles(
-        sourceWorktree.path,
-        targetWorktree.path,
-        config.filesToCopyOnBranchCreate,
-      );
-
-      if (result.copied.length > 0) {
-        this.addLog(`📋 Copied ${result.copied.length} file(s) to new branch: ${result.copied.join(", ")}`, "info");
-      }
-      if (result.errors.length > 0) {
-        this.addLog(`⚠️ Failed to copy ${result.errors.length} file(s):`, "warn");
-        for (const err of result.errors) {
-          this.addLog(`  - ${err.file}: ${err.error}`, "warn");
-        }
-      }
-    } catch (error) {
-      this.addLog(`Failed to copy files to new branch: ${error}`, "error");
-    }
+    await this.branchCreatedActions.copyFiles({
+      config,
+      branchName: targetBranch,
+      worktreePath: targetWorktree.path,
+      sourceDir: sourceWorktree.path,
+      logger: this.buildUiLogger(),
+    });
   }
 
   public async destroy(fast = false): Promise<void> {

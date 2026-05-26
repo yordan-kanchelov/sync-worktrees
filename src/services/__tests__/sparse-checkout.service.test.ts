@@ -147,22 +147,69 @@ describe("SparseCheckoutService", () => {
     });
   });
 
+  describe("readCurrentMode", () => {
+    it("returns 'cone' when core.sparseCheckoutCone is true", async () => {
+      mockGit.raw.mockResolvedValue("true\n");
+      expect(await service.readCurrentMode("/wt")).toBe("cone");
+    });
+
+    it("returns 'no-cone' when core.sparseCheckoutCone is false", async () => {
+      mockGit.raw.mockResolvedValue("false\n");
+      expect(await service.readCurrentMode("/wt")).toBe("no-cone");
+    });
+
+    it("returns null when config is missing (git exits non-zero)", async () => {
+      mockGit.raw.mockRejectedValue(new Error("exit code 1"));
+      expect(await service.readCurrentMode("/wt")).toBeNull();
+    });
+
+    it("returns null when value is unrecognized", async () => {
+      mockGit.raw.mockResolvedValue("maybe\n");
+      expect(await service.readCurrentMode("/wt")).toBeNull();
+    });
+  });
+
   describe("needsUpdate", () => {
     const cfg: SparseCheckoutConfig = { include: ["apps"] };
 
-    it("returns true when not configured", async () => {
-      mockGit.raw.mockResolvedValue("");
+    function mockGitResponses(responses: { configMode: string | Error; sparseList?: string }): void {
+      mockGit.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key.startsWith("config")) {
+          if (responses.configMode instanceof Error) throw responses.configMode;
+          return responses.configMode;
+        }
+        if (key.startsWith("sparse-checkout list")) {
+          return responses.sparseList ?? "";
+        }
+        return "";
+      });
+    }
+
+    it("returns true when not configured (no mode, no list)", async () => {
+      mockGitResponses({ configMode: new Error("missing") });
       expect(await service.needsUpdate("/wt", cfg)).toBe(true);
     });
 
-    it("returns false when current matches desired (order-insensitive)", async () => {
-      mockGit.raw.mockResolvedValue("apps\n");
+    it("returns false when mode and patterns both match (cone)", async () => {
+      mockGitResponses({ configMode: "true\n", sparseList: "apps\n" });
       expect(await service.needsUpdate("/wt", cfg)).toBe(false);
     });
 
-    it("returns true when patterns differ", async () => {
-      mockGit.raw.mockResolvedValue("apps\npackages\n");
+    it("returns true when patterns differ even if mode matches", async () => {
+      mockGitResponses({ configMode: "true\n", sparseList: "apps\npackages\n" });
       expect(await service.needsUpdate("/wt", cfg)).toBe(true);
+    });
+
+    it("returns true when mode differs even if patterns match", async () => {
+      mockGitResponses({ configMode: "false\n", sparseList: "apps\n" });
+      expect(await service.needsUpdate("/wt", cfg)).toBe(true);
+    });
+
+    it("returns true when auto-promoted no-cone differs from existing cone", async () => {
+      const promoted: SparseCheckoutConfig = { include: ["/*"], exclude: ["docs"], mode: "cone" };
+      mockGitResponses({ configMode: "true\n", sparseList: "/*\n!docs\n" });
+      expect(await service.needsUpdate("/wt", promoted)).toBe(true);
     });
   });
 

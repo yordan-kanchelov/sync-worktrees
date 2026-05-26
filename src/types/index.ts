@@ -7,6 +7,7 @@ export interface RetryConfig {
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;
+  jitterMs?: number;
 }
 
 export interface HookContext {
@@ -67,6 +68,45 @@ export interface ParallelismConfig {
   maxBranchFetches?: number;
 }
 
+export type RepositoryMode = "clone" | "worktree";
+
+export type SyncOutcomeMode = RepositoryMode;
+
+export type SyncOutcomeScope = "repo" | "branch" | "worktree" | "sparse-checkout";
+
+export interface SyncOutcomeCounts {
+  created: number;
+  removed: number;
+  updated: number;
+  skipped: number;
+  preserved: number;
+  failed: number;
+  noop: number;
+}
+
+export type SyncOutcomeAction =
+  | { kind: "created"; branch: string; path: string }
+  | { kind: "removed"; branch: string; path: string }
+  | { kind: "updated"; branch: string; path: string; reason?: string }
+  | { kind: "noop"; scope: SyncOutcomeScope; reason: string; branch?: string; path?: string; message?: string }
+  | { kind: "skipped"; scope: SyncOutcomeScope; reason: string; branch?: string; path?: string; message?: string }
+  | { kind: "preserved-diverged"; branch: string; path: string; preservedPath: string }
+  | { kind: "failed"; scope: SyncOutcomeScope; error: string; reason?: string; branch?: string; path?: string };
+
+export interface SyncOutcome {
+  repoName?: string;
+  mode: SyncOutcomeMode;
+  started: true;
+  counts: SyncOutcomeCounts;
+  actions: SyncOutcomeAction[];
+  durationMs?: number;
+}
+
+export type SyncResult =
+  | { started: true; outcome: SyncOutcome }
+  | { started: false; reason: "in_progress" }
+  | { started: false; reason: "locked" };
+
 export interface Config {
   repoUrl: string;
   worktreeDir: string;
@@ -86,6 +126,32 @@ export interface Config {
   hooks?: HooksConfig;
   sparseCheckout?: SparseCheckoutConfig;
   /**
+   * Repository strategy. `worktree` (default) clones once as a bare repo and
+   * maintains one worktree per remote branch under `worktreeDir/<branch>`.
+   * `clone` performs a normal `git clone --branch <branch>` directly into
+   * `worktreeDir` — no bare repo, no branch subfolder, one checked-out branch
+   * with normal origin/* remote-tracking refs. Designed for monorepo sibling
+   * dependencies that need fixed relative paths.
+   */
+  mode?: RepositoryMode;
+  /**
+   * Branch to clone when `mode === "clone"`. If omitted, resolves to the
+   * remote default branch via `git ls-remote --symref <url> HEAD`.
+   */
+  branch?: string;
+  /**
+   * Shallow clone depth for config-file clone-mode repositories. Maps to
+   * `git clone --depth <N> --no-single-branch` on initial clone and keeps
+   * shallow sync fetches at the configured depth.
+   */
+  depth?: number;
+  /**
+   * Internal: directory of the loaded config file. Used to anchor the lock
+   * location for clone-mode repos. Populated by ConfigLoaderService — not
+   * a user-facing field.
+   */
+  __configFileDir?: string;
+  /**
    * Inactivity timeout (ms) for fetch/standard git operations.
    * Triggers when no stdout/stderr data arrives within window.
    * Default: 300_000 (5 min). Set 0 to disable.
@@ -102,6 +168,11 @@ export interface Config {
 export interface RepositoryConfig extends Config {
   name: string;
 }
+
+export type InitConfigInput = Pick<
+  RepositoryConfig,
+  "repoUrl" | "worktreeDir" | "bareRepoDir" | "cronSchedule" | "runOnce"
+>;
 
 export interface ConfigFile {
   defaults?: Partial<Config>;
@@ -129,4 +200,84 @@ export interface DivergedDirectoryInfo {
   divergedAt: string;
   sizeBytes: number;
   sizeFormatted: string;
+}
+
+export type SyncWorktreesRetryConfig = RetryConfig;
+export type SyncWorktreesParallelismConfig = ParallelismConfig;
+export type SyncWorktreesHooksConfig = HooksConfig;
+export type SyncWorktreesSparseCheckoutMode = SparseCheckoutMode;
+export type SyncWorktreesSparseCheckoutConfig = SparseCheckoutConfig;
+export type SyncWorktreesRepositoryMode = RepositoryMode;
+
+interface SyncWorktreesCommonConfigFields {
+  cronSchedule?: string;
+  runOnce?: boolean;
+  retry?: SyncWorktreesRetryConfig;
+  parallelism?: SyncWorktreesParallelismConfig;
+  skipLfs?: boolean;
+  debug?: boolean;
+  filesToCopyOnBranchCreate?: string[];
+  hooks?: SyncWorktreesHooksConfig;
+  sparseCheckout?: SyncWorktreesSparseCheckoutConfig;
+}
+
+interface SyncWorktreesRepositoryBase extends SyncWorktreesCommonConfigFields {
+  name: string;
+  repoUrl: string;
+  worktreeDir: string;
+}
+
+export interface SyncWorktreesCloneRepository extends SyncWorktreesRepositoryBase {
+  mode: "clone";
+  branch?: string;
+  depth?: number;
+  bareRepoDir?: never;
+  branchMaxAge?: never;
+  branchInclude?: never;
+  branchExclude?: never;
+  updateExistingWorktrees?: never;
+}
+
+export interface SyncWorktreesWorktreeRepository extends SyncWorktreesRepositoryBase {
+  mode?: "worktree";
+  bareRepoDir?: string;
+  branchMaxAge?: string;
+  branchInclude?: string[];
+  branchExclude?: string[];
+  updateExistingWorktrees?: boolean;
+  branch?: never;
+  depth?: never;
+}
+
+export type SyncWorktreesRepository = SyncWorktreesCloneRepository | SyncWorktreesWorktreeRepository;
+
+type SyncWorktreesDefaultsBase = SyncWorktreesCommonConfigFields;
+
+export interface SyncWorktreesCloneDefaults extends SyncWorktreesDefaultsBase {
+  mode: "clone";
+  branch?: string;
+  depth?: number;
+  branchMaxAge?: never;
+  branchInclude?: never;
+  branchExclude?: never;
+  updateExistingWorktrees?: never;
+}
+
+export interface SyncWorktreesWorktreeDefaults extends SyncWorktreesDefaultsBase {
+  mode?: "worktree";
+  branchMaxAge?: string;
+  branchInclude?: string[];
+  branchExclude?: string[];
+  updateExistingWorktrees?: boolean;
+  branch?: never;
+  depth?: never;
+}
+
+export type SyncWorktreesDefaults = SyncWorktreesCloneDefaults | SyncWorktreesWorktreeDefaults;
+
+export interface SyncWorktreesConfig {
+  defaults?: SyncWorktreesDefaults;
+  repositories: SyncWorktreesRepository[];
+  retry?: SyncWorktreesRetryConfig;
+  parallelism?: SyncWorktreesParallelismConfig;
 }

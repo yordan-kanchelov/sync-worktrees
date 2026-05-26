@@ -237,6 +237,22 @@ describe("ConfigLoaderService", () => {
       );
     });
 
+    it("should throw error for invalid debug type", async () => {
+      const configPath = path.join(tempDir, "invalid-debug.config.js");
+      const configContent = `
+        export default {
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", debug: "yes" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Repository 'test' has invalid 'debug' property",
+      );
+    });
+
     it("should throw error for invalid defaults object", async () => {
       const configPath = path.join(tempDir, "invalid-defaults.config.js");
       const configContent = `
@@ -280,6 +296,21 @@ describe("ConfigLoaderService", () => {
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Invalid 'runOnce' in defaults");
+    });
+
+    it("should throw error for invalid debug in defaults", async () => {
+      const configPath = path.join(tempDir, "invalid-defaults-debug.config.js");
+      const configContent = `
+        export default {
+          defaults: { debug: "yes" },
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Invalid 'debug' in defaults");
     });
   });
 
@@ -352,6 +383,35 @@ describe("ConfigLoaderService", () => {
 
       expect(resolved.cronSchedule).toBe("0 0 * * *");
       expect(resolved.runOnce).toBe(false);
+    });
+
+    it("should preserve debug from defaults for config-only runs", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, { debug: true });
+
+      expect(resolved.debug).toBe(true);
+    });
+
+    it("should let repository debug override defaults", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        debug: false,
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(repo, { debug: true });
+
+      expect(resolved.debug).toBe(false);
     });
   });
 
@@ -467,7 +527,8 @@ describe("ConfigLoaderService", () => {
             maxAttempts: 5,
             initialDelayMs: 2000,
             maxDelayMs: 60000,
-            backoffMultiplier: 3
+            backoffMultiplier: 3,
+            jitterMs: 250
           },
           repositories: [{
             name: "test-repo",
@@ -485,6 +546,7 @@ describe("ConfigLoaderService", () => {
         initialDelayMs: 2000,
         maxDelayMs: 60000,
         backoffMultiplier: 3,
+        jitterMs: 250,
       });
     });
 
@@ -587,6 +649,25 @@ describe("ConfigLoaderService", () => {
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
         "Invalid 'backoffMultiplier' in retry config",
       );
+    });
+
+    it("should reject negative jitterMs", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          retry: {
+            jitterMs: -1
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Invalid 'jitterMs' in retry config");
     });
 
     it("should reject non-object retry configuration", async () => {

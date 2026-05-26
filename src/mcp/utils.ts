@@ -10,7 +10,7 @@ export function formatToolResponse(data: unknown): CallToolResult {
     content: [
       {
         type: "text",
-        text: JSON.stringify(data, null, 2),
+        text: JSON.stringify(data),
       },
     ],
   };
@@ -42,7 +42,7 @@ export function formatErrorResponse(error: unknown): CallToolResult {
     content: [
       {
         type: "text",
-        text: JSON.stringify(body, null, 2),
+        text: JSON.stringify(body),
       },
     ],
     isError: true,

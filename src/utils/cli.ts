@@ -1,173 +1,104 @@
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 
-import type { Config } from "../types";
+export const CLI_COMMANDS = {
+  RUN: "run",
+  INIT: "init",
+  LIST: "list",
+} as const;
 
-export interface CliOptions extends Partial<Config> {
-  config?: string;
-  filter?: string;
-  list?: boolean;
-  bareRepoDir?: string;
-  branchMaxAge?: string;
-  branchInclude?: string[];
-  branchExclude?: string[];
-  skipLfs?: boolean;
-  noUpdateExisting?: boolean;
-  debug?: boolean;
-  syncOnStart?: boolean;
-}
+export type CliCommand = (typeof CLI_COMMANDS)[keyof typeof CLI_COMMANDS];
 
-export function parseArguments(): CliOptions {
-  const argv = yargs(hideBin(process.argv))
-    .option("config", {
-      alias: "c",
-      type: "string",
-      description: "Path to JavaScript config file",
-    })
-    .option("filter", {
-      alias: "f",
-      type: "string",
-      description: "Filter repositories by name (supports wildcards and comma-separated values)",
-    })
-    .option("list", {
-      alias: "l",
-      type: "boolean",
-      description: "List configured repositories and exit",
-      default: false,
-    })
-    .option("bareRepoDir", {
-      alias: "b",
-      type: "string",
-      description: "Directory for storing bare repositories (default: .bare/<repo-name>).",
-    })
-    .option("repoUrl", {
-      alias: "u",
-      type: "string",
-      description: "Git repository URL (e.g., SSH or HTTPS).",
-    })
-    .option("worktreeDir", {
-      alias: "w",
-      type: "string",
-      description: "Absolute path to the directory for storing worktrees.",
-    })
-    .option("cronSchedule", {
-      alias: "s",
-      type: "string",
-      description: "Cron schedule for how often to run the sync.",
-      default: "0 * * * *",
-    })
-    .option("runOnce", {
-      type: "boolean",
-      description: "Run the sync process once and then exit, without scheduling.",
-      default: false,
-    })
-    .option("branchMaxAge", {
-      alias: "a",
-      type: "string",
-      description: "Maximum age of branches to sync (e.g., '30d', '6m', '1y').",
-    })
-    .option("branchInclude", {
-      type: "string",
-      description: "Only sync branches matching these patterns (comma-separated, supports wildcards).",
-    })
-    .option("branchExclude", {
-      type: "string",
-      description: "Exclude branches matching these patterns (comma-separated, supports wildcards).",
-    })
-    .option("skipLfs", {
-      type: "boolean",
-      description: "Skip Git LFS downloads when fetching and creating worktrees.",
-      default: false,
-    })
-    .option("no-update-existing", {
-      type: "boolean",
-      description: "Disable automatic updates of existing worktrees.",
-      default: false,
-    })
-    .option("debug", {
-      alias: "d",
-      type: "boolean",
-      description: "Enable debug mode to show detailed reasons why worktrees are not cleaned up.",
-      default: false,
-    })
-    .option("sync-on-start", {
-      type: "boolean",
-      description: "Run sync immediately when starting the interactive UI (config mode only).",
-      default: false,
-    })
+export type CliOptions =
+  | { command: typeof CLI_COMMANDS.RUN; config?: string; runOnce: boolean }
+  | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
+  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string };
+
+export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptions {
+  let parsed: CliOptions | undefined;
+
+  yargs(argv)
+    .scriptName("sync-worktrees")
+    .parserConfiguration({ "camel-case-expansion": false })
+    .strict()
+    .command(
+      "$0",
+      "Sync git worktrees against a config file",
+      (y) =>
+        y
+          .option("config", {
+            alias: "c",
+            type: "string",
+            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+          })
+          .option("runOnce", {
+            type: "boolean",
+            description: "Run a sync once and exit, overriding config runOnce settings for this invocation.",
+            default: false,
+          }),
+      (args) => {
+        parsed = {
+          command: CLI_COMMANDS.RUN,
+          config: args.config,
+          runOnce: args.runOnce,
+        };
+      },
+    )
+    .command(
+      CLI_COMMANDS.INIT,
+      "Create a new config file interactively",
+      (y) =>
+        y
+          .option("config", {
+            alias: "c",
+            type: "string",
+            description: "Target path for the generated config file (default: ./sync-worktrees.config.js).",
+          })
+          .option("force", {
+            type: "boolean",
+            description: "Overwrite the target file if it already exists.",
+            default: false,
+          }),
+      (args) => {
+        parsed = {
+          command: CLI_COMMANDS.INIT,
+          config: args.config,
+          force: args.force,
+        };
+      },
+    )
+    .command(
+      CLI_COMMANDS.LIST,
+      "List repositories configured in a config file and exit",
+      (y) =>
+        y
+          .option("config", {
+            alias: "c",
+            type: "string",
+            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+          })
+          .option("filter", {
+            alias: "f",
+            type: "string",
+            description: "Filter repositories by name (wildcards, comma-separated).",
+          }),
+      (args) => {
+        parsed = {
+          command: CLI_COMMANDS.LIST,
+          config: args.config,
+          filter: args.filter,
+        };
+      },
+    )
+    .demandCommand(0, 0)
     .help()
     .alias("help", "h")
+    .version()
     .parseSync();
 
-  return {
-    config: argv.config,
-    filter: argv.filter,
-    list: argv.list,
-    repoUrl: argv.repoUrl,
-    worktreeDir: argv.worktreeDir,
-    cronSchedule: argv.cronSchedule,
-    runOnce: argv.runOnce,
-    bareRepoDir: argv.bareRepoDir,
-    branchMaxAge: argv.branchMaxAge,
-    branchInclude: argv.branchInclude ? argv.branchInclude.split(",").map((p: string) => p.trim()) : undefined,
-    branchExclude: argv.branchExclude ? argv.branchExclude.split(",").map((p: string) => p.trim()) : undefined,
-    skipLfs: argv.skipLfs,
-    noUpdateExisting: argv["no-update-existing"] as boolean,
-    debug: argv.debug,
-    syncOnStart: argv["sync-on-start"] as boolean,
-  };
-}
-
-export function isInteractiveMode(config: Partial<Config>): boolean {
-  return !config.repoUrl || !config.worktreeDir;
-}
-
-export function reconstructCliCommand(config: Config): string {
-  const executable = process.argv[1].includes("ts-node") ? "ts-node src/index.ts" : "sync-worktrees";
-
-  const args: string[] = [];
-
-  args.push(`--repoUrl "${config.repoUrl}"`);
-
-  if (config.worktreeDir) {
-    args.push(`--worktreeDir "${config.worktreeDir}"`);
+  if (!parsed) {
+    throw new Error("Failed to parse CLI arguments");
   }
 
-  if (config.bareRepoDir) {
-    args.push(`--bareRepoDir "${config.bareRepoDir}"`);
-  }
-
-  if (config.cronSchedule && config.cronSchedule !== "0 * * * *") {
-    args.push(`--cronSchedule "${config.cronSchedule}"`);
-  }
-
-  if (config.runOnce) {
-    args.push("--runOnce");
-  }
-
-  if (config.branchMaxAge) {
-    args.push(`--branchMaxAge "${config.branchMaxAge}"`);
-  }
-
-  if (config.branchInclude?.length) {
-    args.push(`--branchInclude "${config.branchInclude.join(",")}"`);
-  }
-
-  if (config.branchExclude?.length) {
-    args.push(`--branchExclude "${config.branchExclude.join(",")}"`);
-  }
-
-  if (config.skipLfs) {
-    args.push("--skip-lfs");
-  }
-
-  if (config.updateExistingWorktrees === false) {
-    args.push("--no-update-existing");
-  }
-
-  if (config.debug) {
-    args.push("--debug");
-  }
-
-  return `${executable} ${args.join(" ")}`;
+  return parsed;
 }

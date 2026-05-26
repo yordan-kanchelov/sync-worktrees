@@ -8,6 +8,9 @@ coverage/
 .nyc_output/
 *.tsbuildinfo
 
+# Local Codex CLI config
+.codex/
+
 # npm pack artifacts
 *.tgz
 
@@ -17,3 +20,13 @@ coverage/
 
 # User config files (but keep examples)
 sync-worktrees.config.js
+!demo-recording/sync-worktrees.config.js
+
+# Demo recording artifacts
+demo-recording/fixture/
+demo-recording/*.cast
+demo-recording/*.gif
+
+# Astro site build artifacts
+site/.astro/
+site/public/demo.gif

@@ -19,29 +19,35 @@ import { wrapHandler } from "./utils";
 import type { DiscoveredRepoContext, RepositoryContext } from "./context";
 
 const REPO_NAME_DESCRIBE =
-  "Repository name from loaded config. If omitted, uses the current repository set via set_current_repository or the only loaded repo.";
+  "Repo name from loaded config. Omit to use current (set via set_current_repository) or the only loaded repo.";
 
-const PATH_DESCRIBE_SUFFIX = "Absolute path preferred; relative paths resolve from the server's CWD.";
+const PATH_DESCRIBE_SUFFIX = "Absolute preferred; relative resolves from server CWD.";
 
 const SERVER_INSTRUCTIONS =
-  "Before running git worktree operations, call `detect_context` with `includeAllWorktrees: true` at session start to learn every configured repository and worktree, plus the current repo, current branch, sibling repositories, and available capabilities. " +
-  "It walks up to auto-discover sync-worktrees.config.{js,mjs,cjs,ts}, reports config-driven sibling repositories, and reports per-capability {available, reason} so you can tell which tool is gated and why.";
+  "Call `detect_context` for the project map and live worktree state; `configuredRepositories` in its response is the server-wide loaded-config inventory. Use `set_current_repository` to switch repos. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up.";
 
 export interface ServerSnapshot {
   discovered: DiscoveredRepoContext | null;
+  configuredRepoCount?: number;
 }
 
 export function buildInstructions(snapshot?: ServerSnapshot): string {
   const d = snapshot?.discovered;
-  if (!d || !d.isWorktree || d.kind !== "managed") return SERVER_INSTRUCTIONS;
 
-  const lines: string[] = ["Connect-time context (call `detect_context` for live state):"];
-  if (d.kind) lines.push(`- kind: ${d.kind}`);
-  if (d.currentWorktreePath) lines.push(`- currentWorktreePath: ${d.currentWorktreePath}`);
-  if (d.currentBranch) lines.push(`- currentBranch: ${d.currentBranch}`);
-  if (d.configPath) lines.push(`- configPath: ${d.configPath}`);
+  if (!d || !d.isWorktree || d.kind !== "managed") {
+    return SERVER_INSTRUCTIONS;
+  }
 
-  return `${SERVER_INSTRUCTIONS}\n\n${lines.join("\n")}`;
+  const fields: string[] = [];
+  if (d.repoName) fields.push(`workspace=${d.repoName}`);
+  if (d.currentWorktreePath) fields.push(`path=${d.currentWorktreePath}`);
+  if (d.configPath) fields.push(`config=${d.configPath}`);
+  if (typeof snapshot?.configuredRepoCount === "number") {
+    fields.push(`configuredRepos=${snapshot.configuredRepoCount}`);
+  }
+  fields.push(`worktrees=${d.allWorktrees.length}`);
+
+  return `${SERVER_INSTRUCTIONS} Connect-time: ${fields.join(" ")}.`;
 }
 
 export function createServer(context: RepositoryContext, snapshot?: ServerSnapshot): McpServer {
@@ -61,22 +67,24 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     {
       title: "Workspace context",
       description:
-        "Current sync-worktrees workspace context: whether CWD is inside a managed worktree, the current branch, sibling worktrees, sibling repositories, auto-discovered configPath, and per-capability {available, reason}. Returns { isWorktree: false } when CWD is outside any workspace.",
+        "Workspace context: isWorktree, kind, currentWorktreePath, currentBranch, allWorktrees, siblingRepositories, configPath, capabilities {available,reason}, configuredRepositories (server-wide loaded-config inventory). {isWorktree:false} when outside any workspace.",
       mimeType: "application/json",
     },
     async (uri) => {
-      let discovered: unknown;
+      let payload: unknown;
       try {
-        discovered = await context.detectFromPath(process.cwd());
+        const discovered = await context.detectFromPath(process.cwd());
+        const configuredRepositories = await context.getConfiguredRepositorySummaries();
+        payload = { ...discovered, configuredRepositories };
       } catch (err) {
-        discovered = buildUnsupportedContext(process.cwd(), err instanceof Error ? err.message : String(err));
+        payload = buildUnsupportedContext(process.cwd(), err instanceof Error ? err.message : String(err));
       }
       return {
         contents: [
           {
             uri: uri.href,
             mimeType: "application/json",
-            text: JSON.stringify(discovered, null, 2),
+            text: JSON.stringify(payload),
           },
         ],
       };
@@ -87,22 +95,23 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "detect_context",
     {
       description:
-        "Detect sync-worktrees structure from a filesystem path. Reads .git file, resolves bare repo, discovers sibling worktrees, walks up for a sync-worktrees.config.{js,mjs,cjs,ts}, and lists configured sibling repositories. Defaults to CWD. " +
-        "Use when: bootstrapping from an unknown checkout. " +
-        "Returns: discovered repo root, bare repo path, all sibling worktrees, sibling repositories, current worktree path, configPath (auto-found), per-capability {available, reason}, notes[].",
+        "Detect sync-worktrees structure from path (default: CWD). Reads .git, resolves bare repo, walks up to auto-load sync-worktrees.config.{js,mjs,cjs,ts}. Returns: configuredRepositories (server-wide loaded-config inventory; independent of params.path), bareRepoPath, allWorktrees, siblingRepositories, currentWorktreePath, configPath, capabilities {available,reason}, notes. Lean configuredRepositories entries are mode-discriminated: clone → {name, mode:'clone', checkoutPath, isCurrent}; worktree → {name, mode:'worktree', worktreeDir, isCurrent}. detailed=true adds repoUrl, branch?, sparseCheckout?, localReady, plus bareRepoDir for worktree mode. Use at session start or to bootstrap from unknown checkout.",
       inputSchema: {
-        path: z.string().optional().describe("Directory path to inspect. Defaults to the server's CWD."),
+        path: z.string().optional().describe("Directory to inspect. Default: server CWD."),
+        detailed: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Expand configuredRepositories with repoUrl, branch, sparseCheckout, localReady, bareRepoDir."),
         includeAllWorktrees: z
           .boolean()
           .optional()
-          .describe(
-            "If true, includes allWorktreesByRepo with worktrees for every configured repository, keyed by repoName, and allWorktreeErrorsByRepo for repos that could not be enumerated. Default: false.",
-          ),
+          .describe("Include allWorktreesByRepo + allWorktreeErrorsByRepo for each configured repo. Default: false."),
         includeStatus: z
           .boolean()
           .optional()
           .describe(
-            "If true, enriches worktree entries with label, divergence, and staleHint. Adds one git status + rev-list per worktree. Default: false (cheap path).",
+            "Enrich entries with label, divergence, staleHint. Adds 1 git status + rev-list per worktree. Default: false.",
           ),
       },
       annotations: {
@@ -119,20 +128,14 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "list_worktrees",
     {
       description:
-        "List worktrees with enriched status. Without repoName and with a loaded config, returns all configured repositories grouped by repoName. With repoName, returns that single repository. " +
-        "Returns worktree entries as { path, branch, isCurrent, label (clean|dirty|stale|current|unknown), status, divergence (ahead/behind), safeToRemove: { safe, reason }, lastSyncAt, sizeBytes }.",
+        "List worktrees with status. No repoName + config loaded = all configured repos grouped by repoName. With repoName = single repo. Entries: {path, branch, isCurrent, label (clean|dirty|stale|current|unknown), status, divergence, safeToRemove, lastSyncAt, sizeBytes}.",
       inputSchema: {
-        repoName: z
-          .string()
-          .optional()
-          .describe(
-            "Repository name from loaded config. If omitted and a config is loaded, lists all configured repos.",
-          ),
+        repoName: z.string().optional().describe("Repo name. Omit + config loaded = list all configured repos."),
         includeSize: z
           .boolean()
           .optional()
           .describe(
-            "If true, computes the on-disk size of each worktree (in bytes). Slow on large worktrees. Default: false (sizeBytes returned as null).",
+            "Compute on-disk size per worktree (bytes). Slow on large worktrees. Default: false (sizeBytes=null).",
           ),
       },
       annotations: {
@@ -149,15 +152,14 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "get_worktree_status",
     {
       description:
-        "Get detailed status for one worktree (dirty files, unpushed commits, stashes, upstream gone, operations in progress). " +
-        "Returns: full status object plus divergence { ahead, behind } and resolved absolute path.",
+        "Detailed status for one worktree: dirty files, unpushed commits, stashes, upstream gone, ops in progress. Returns: status + divergence {ahead,behind} + resolved path.",
       inputSchema: {
         path: z.string().describe(`Worktree path. ${PATH_DESCRIBE_SUFFIX}`),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
         includeDetails: z
           .boolean()
           .optional()
-          .describe("If true, includes file-level lists (modified, untracked, staged). Default: false (counts only)."),
+          .describe("Include file-level lists (modified, untracked, staged). Default: false (counts only)."),
       },
       annotations: {
         title: "Get worktree status",
@@ -173,24 +175,16 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "create_worktree",
     {
       description:
-        "Create a worktree for a branch. If the branch exists (local or remote), checks it out; otherwise creates it from baseBranch and pushes the new branch to origin by default. " +
-        "Key params: baseBranch is required only when the branch does not yet exist — pass it defensively if unsure. push=false opts out for newly created branches. " +
-        "Preconditions: repository must be initialized (auto-runs on first call). " +
-        "Returns: { success, branchName, worktreePath, created, pushed }.",
+        "Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Returns: {success, branchName, worktreePath, created, pushed}.",
       inputSchema: {
-        branchName: z
-          .string()
-          .describe("Branch name. Slashes and special chars are sanitized for the worktree directory name."),
+        branchName: z.string().describe("Branch name. Slashes/special chars sanitized for dir name."),
         baseBranch: z
           .string()
           .optional()
           .describe(
-            "Base branch for creating a new branch. Required if branchName does not exist locally or remotely; ignored otherwise.",
+            "Base for new branch. Required if branchName doesn't exist locally or remotely; ignored otherwise.",
           ),
-        push: z
-          .boolean()
-          .optional()
-          .describe("Push the newly created branch to origin. Default: true. Ignored if the branch already existed."),
+        push: z.boolean().optional().describe("Push new branch to origin. Default: true. Ignored if branch existed."),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       },
       annotations: {
@@ -208,17 +202,13 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "remove_worktree",
     {
       description:
-        "Remove a worktree. Runs safety checks first: rejects if worktree is dirty, has unpushed commits, has stashes, or has an in-progress git operation (merge/rebase/cherry-pick/revert/bisect). " +
-        "force=true: runs `git worktree remove --force`, which DELETES uncommitted and untracked files in the worktree directory. Branch ref, stashes, and remote state are preserved. " +
-        "Returns: { success, removedPath }.",
+        "Remove worktree. Safety checks reject if dirty, unpushed commits, stashes, or op in progress (merge/rebase/cherry-pick/revert/bisect). force=true: `git worktree remove --force` DELETES uncommitted/untracked files in dir; branch ref + stashes + remote preserved. Returns: {success, removedPath}.",
       inputSchema: {
         path: z.string().describe(`Worktree path to remove. ${PATH_DESCRIBE_SUFFIX}`),
         force: z
           .boolean()
           .optional()
-          .describe(
-            "Skip safety checks and delete uncommitted/untracked files in the worktree directory. Branch ref is preserved. Default: false.",
-          ),
+          .describe("Skip safety checks; deletes uncommitted/untracked files. Branch ref preserved. Default: false."),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       },
       annotations: {
@@ -236,10 +226,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "sync",
     {
       description:
-        "Full repo-wide synchronization: fetch all, create worktrees for new remote branches, remove worktrees for pruned remote branches (clean only), fast-forward existing worktrees. Emits progress notifications. " +
-        "Do not use when: you only need to update one worktree — use update_worktree. Only need to create one — use create_worktree. " +
-        "Preconditions: config must be loaded (load_config) and the repository initialized (auto-runs on first call). " +
-        "Returns: { success, duration } after sync completes.",
+        "Repo-wide sync: fetch, create worktrees for new remote branches, remove pruned (clean only), fast-forward existing. Emits progress. Single worktree? Use update_worktree. Single create? Use create_worktree. Preconditions: config loaded + repo initialized (auto-runs). Returns: {success, duration, skips}.",
       inputSchema: {
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       },
@@ -258,8 +245,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "update_worktree",
     {
       description:
-        "Fast-forward one worktree to match its upstream. No merge commits, no rebasing, aborts if not fast-forwardable. " +
-        "Do not use when: you want to update every worktree in the repo — use sync.",
+        "Fast-forward one worktree to upstream. No merge, no rebase, aborts if not fast-forwardable. Whole repo? Use sync.",
       inputSchema: {
         path: z.string().describe(`Worktree path to fast-forward. ${PATH_DESCRIBE_SUFFIX}`),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
@@ -279,9 +265,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "initialize",
     {
       description:
-        "Initialize a repository: clone as bare repo if missing, create main worktree. Safe to call on already-initialized repos (no-op-ish). Emits progress notifications. " +
-        "Preconditions: config must be loaded (load_config) so the repo's URL and paths are known. " +
-        "Returns: { success, defaultBranch, worktreeDir }.",
+        "Initialize repo: clone as bare if missing, create main worktree. Idempotent. Emits progress. Preconditions: config loaded. Returns: {success, defaultBranch, worktreeDir}.",
       inputSchema: {
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       },
@@ -300,16 +284,12 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "load_config",
     {
       description:
-        "Load or reload a sync-worktrees JavaScript config file into the server's session. Replaces any previously loaded repositories. " +
-        "Call this before sync/initialize/create_worktree when using a config-driven workflow. " +
-        "Returns: { configPath, currentRepository, repositories: [{ name, repoUrl, worktreeDir, source }] }.",
+        "Load/reload sync-worktrees JS config into session. Replaces previously loaded repos. Call before sync/initialize/create_worktree in config-driven workflow. Returns: {configPath, currentRepository, repositories: [{name, repoUrl, worktreeDir, source}]}.",
       inputSchema: {
         configPath: z
           .string()
           .optional()
-          .describe(
-            "Path to the config file. If omitted, falls back to the SYNC_WORKTREES_CONFIG env var. Errors if neither is set.",
-          ),
+          .describe("Config file path. Falls back to SYNC_WORKTREES_CONFIG env var. Errors if neither set."),
       },
       annotations: {
         title: "Load sync-worktrees config",
@@ -326,10 +306,9 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "set_current_repository",
     {
       description:
-        "Set the current repository for subsequent tool calls that omit repoName. Session-scoped; not persisted across server restarts. " +
-        "Preconditions: load_config must have been called so the name is known.",
+        "Set current repo for tool calls that omit repoName. Session-scoped. Preconditions: load_config called.",
       inputSchema: {
-        repoName: z.string().describe("Repository name as listed in the loaded config's `repositories[].name`."),
+        repoName: z.string().describe("Repo name from loaded config repositories[].name."),
       },
       annotations: {
         title: "Set current repository",

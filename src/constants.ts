@@ -89,6 +89,7 @@ export const ENV_CONSTANTS = {
 export const PATH_CONSTANTS = {
   GIT_DIR: ".git",
   README: "README",
+  CLONE_INIT_MARKER: ".sync-worktrees-clone-init",
 } as const;
 
 export const CONFIG_FILE_NAMES = [

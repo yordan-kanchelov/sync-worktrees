@@ -5,6 +5,7 @@ import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
 import { WorktreeError } from "../errors";
+import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
@@ -17,7 +18,9 @@ import { WorktreeStatusService } from "./worktree-status.service";
 import type { WorktreeStatusResult } from "./worktree-status.service";
 import type { Config } from "../types";
 import type { SyncMetadata } from "../types/sync-metadata";
-import type { SimpleGit, SimpleGitOptions, SimpleGitProgressEvent } from "simple-git";
+import type { SimpleGit, SimpleGitOptions } from "simple-git";
+
+export type RemoteRelationship = "up_to_date" | "fast_forward" | "local_ahead" | "diverged" | "indeterminate_shallow";
 
 export type GitServiceOptions = Pick<
   Config,
@@ -91,28 +94,9 @@ export class GitService {
   }
 
   private buildSimpleGitOptions(blockMs: number): Partial<SimpleGitOptions> {
-    const options: Partial<SimpleGitOptions> = { progress: this.makeProgressHandler() };
+    const options: Partial<SimpleGitOptions> = { progress: makeGitProgressHandler(this.logger) };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
-  }
-
-  private makeProgressHandler(): (event: SimpleGitProgressEvent) => void {
-    const lastBucket = new Map<string, number>();
-    return (event: SimpleGitProgressEvent): void => {
-      if (event.method !== "fetch" && event.method !== "clone" && event.method !== "pull") return;
-      const key = `${event.method}:${event.stage}`;
-      const bucket = Math.floor(event.progress / GIT_CONSTANTS.PROGRESS_BUCKET_PERCENT);
-      let last = lastBucket.get(key) ?? -1;
-      // Stage restart on a new operation (e.g. second fetch on the same cached SimpleGit
-      // instance): bucket regresses below `last`. Reset so the new run logs from scratch.
-      if (bucket < last) {
-        last = -1;
-      }
-      if (bucket <= last && event.progress < 100) return;
-      lastBucket.set(key, bucket);
-      const total = event.total > 0 ? `${event.processed}/${event.total}` : `${event.processed}`;
-      this.logger.info(`  ↳ ${event.method} ${event.stage}: ${event.progress}% (${total})`);
-    };
   }
 
   updateLogger(logger: Logger): void {
@@ -252,6 +236,60 @@ export class GitService {
 
   getBareRepoPath(): string {
     return this.bareRepoPath;
+  }
+
+  async getRemoteDefaultBranch(repoUrl: string): Promise<string> {
+    const git = simpleGit(this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
+
+    try {
+      const out = await git.raw(["ls-remote", "--symref", repoUrl, "HEAD"]);
+      const match = out.match(/^ref: refs\/heads\/(\S+)\s+HEAD/m);
+      if (match && match[1]) {
+        return match[1];
+      }
+    } catch {
+      /* fall through to probe candidates */
+    }
+
+    // symref HEAD was unavailable/unparsed: probe common branch names, but only
+    // auto-pick when the choice is unambiguous. Guessing by fixed priority when
+    // several exist can silently track the wrong branch (e.g. 'main' when the
+    // remote's real default is 'master').
+    const existing: string[] = [];
+    for (const candidate of GIT_CONSTANTS.COMMON_DEFAULT_BRANCHES) {
+      try {
+        const out = await git.raw(["ls-remote", "--exit-code", repoUrl, `refs/heads/${candidate}`]);
+        if (out.trim().length > 0) {
+          existing.push(candidate);
+        }
+      } catch {
+        /* candidate missing — try next */
+      }
+    }
+
+    if (existing.length === 1) {
+      this.logger.warn(
+        `Could not read symref HEAD for '${repoUrl}'; using the only common branch found ('${existing[0]}') as the default.`,
+      );
+      return existing[0];
+    }
+
+    if (existing.length > 1) {
+      throw new Error(
+        `Unable to detect default branch for '${repoUrl}': symref HEAD is unavailable and multiple common branches exist (${existing.join(", ")}). ` +
+          `Set 'branch' explicitly in the repository config.`,
+      );
+    }
+
+    throw new Error(
+      `Unable to detect default branch for '${repoUrl}'. ` +
+        `Set 'branch' explicitly in the repository config or ensure the remote is reachable.`,
+    );
+  }
+
+  async verifyLfs(worktreePath: string, label: string): Promise<void> {
+    if (this.isLfsSkipEnabled()) return;
+    await this.verifyLfsFilesDownloaded(worktreePath, label);
   }
 
   async fetchAll(): Promise<void> {
@@ -958,6 +996,46 @@ export class GitService {
 
       // If merge base equals remote, local is ahead (remote is ancestor of local)
       return mergeBaseSha === remoteShaTrimmed;
+    } catch {
+      return false;
+    }
+  }
+
+  async classifyRemoteRelationship(worktreePath: string, branch: string): Promise<RemoteRelationship> {
+    const worktreeGit = this.getCachedGit(worktreePath);
+
+    let headSha: string;
+    let remoteSha: string;
+    try {
+      headSha = (await worktreeGit.revparse(["HEAD"])).trim();
+      remoteSha = (await worktreeGit.revparse([`refs/remotes/origin/${branch}`])).trim();
+    } catch {
+      return "diverged";
+    }
+
+    if (headSha === remoteSha) return "up_to_date";
+
+    let mergeBase = "";
+    let mergeBaseFailed = false;
+    try {
+      mergeBase = (await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`])).trim();
+    } catch {
+      mergeBaseFailed = true;
+    }
+    // simple-git swallows merge-base exit 1 and returns "" — treat empty output as failure too.
+    if (mergeBaseFailed || !mergeBase) {
+      if (await this.isShallowRepository(worktreeGit)) return "indeterminate_shallow";
+      return "diverged";
+    }
+    if (mergeBase === headSha) return "fast_forward";
+    if (mergeBase === remoteSha) return "local_ahead";
+    return "diverged";
+  }
+
+  private async isShallowRepository(git: SimpleGit): Promise<boolean> {
+    try {
+      const output = await git.raw(["rev-parse", "--is-shallow-repository"]);
+      return output.trim() === "true";
     } catch {
       return false;
     }
