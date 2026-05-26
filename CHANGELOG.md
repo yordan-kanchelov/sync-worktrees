@@ -1,5 +1,69 @@
 # sync-worktrees
 
+## 4.0.0
+
+### Major Changes
+
+- 497c18e: **Breaking**: collapse the CLI to a config-file-only workflow.
+
+  `sync-worktrees` now does one thing: load a config file and run it. Every knob (`runOnce`, branch filters, LFS, mode, depth, retry, parallelism, debug, `updateExistingWorktrees`, etc.) lives in the config file.
+
+  ### Removed CLI flags
+
+  `--repoUrl` (`-u`), `--worktreeDir` (`-w`), `--cronSchedule` (`-s`), `--bareRepoDir` (`-b`), `--branchMaxAge` (`-a`), `--branchInclude`, `--branchExclude`, `--skipLfs`, `--no-update-existing`, `--mode`, `--branch`, `--runOnce`, `--debug`, `--sync-on-start`, `--filter` (on the default command), `--list`.
+
+  The single-repo flag invocation, the missing-config-file rescue prompt, and the auto-launched interactive setup are all gone.
+
+  ### New surface
+
+  ```text
+  sync-worktrees [--config <path>]
+  sync-worktrees init [--config <path>] [--force]
+  sync-worktrees list [--config <path>] [--filter <pat>]
+  ```
+
+  - `init` writes a new config file (`./sync-worktrees.config.js` by default) and exits. Refuses to overwrite an existing target unless `--force` is passed. Atomic write via `flag: "wx"` — no TOCTOU between check and write.
+  - `list` is the new home for what used to be `--list`.
+  - `--filter` only exists on `list` (it's a list-query parameter, not a sync-run override).
+  - yargs is configured with `camel-case-expansion: false` and `strict()` — typos and removed flags fail loudly.
+
+  ### Migration
+  - Replace any single-repo CLI invocation with a config file (run `sync-worktrees init` to generate one).
+  - Replace `sync-worktrees --list ...` with `sync-worktrees list ...`.
+  - Move `--runOnce` to `defaults.runOnce: true` in the config file. (Per-repo `runOnce` only suppresses TUI cron scheduling for that one repo — to run the whole CLI as one-shot, set it under `defaults`.)
+  - Move `--no-update-existing` to `updateExistingWorktrees: false` (per-repo or under `defaults`).
+  - Move `--debug` to `debug: true` (per-repo or under `defaults`; included in the exported config types).
+  - Move `--filter` (sync-run shard targeting) into the config file by maintaining narrower per-environment configs.
+
+  ### Internals
+  - New `ConfigFileNotFoundError` typed error in `src/errors`; `loadConfigFile` throws it instead of a stringly-typed `Error`.
+  - `runSingleRepository`, `reconstructCliCommand`, `isInteractiveMode`, `CliOptions` extras removed.
+  - `InteractiveUIService.ReloadOptions` removed (the TUI no longer carries CLI overrides).
+  - `Config` and `RepositoryConfig` gain three optional fields for the new clone-mode surface: `mode?: "clone" | "worktree"`, `branch?: string`, and `depth?: number`. Existing worktree-mode configs do not need to set them (defaults preserve current behavior); integrators with custom `Config` consumers may need to widen their types.
+
+### Minor Changes
+
+- 497c18e: Add `mode: "clone"` repository strategy. When set, the tool runs `git clone --branch <X> --single-branch` directly into `worktreeDir` — no bare repo, no `worktreeDir/<branch>` subfolder — and on each sync tick fetches + fast-forwards if the working tree is clean. Clone-mode initialize/sync operations now also emit structured progress notifications for branch resolution, clone/fetch progress, sparse-checkout, LFS verification, skip reasons, and fast-forward updates. Designed for monorepo sibling dependencies that require fixed relative paths between repos. The default mode remains `worktree` (no behavior change for existing configs).
+
+  Shallow clone-mode repos (`depth: N`) no longer misclassify a fast-forward-able remote as `diverged` when `git merge-base` cannot walk past the shallow boundary. `GitService.classifyRemoteRelationship()` replaces the boolean `canFastForward()` check inside clone-mode and distinguishes `up_to_date`, `fast_forward`, `local_ahead`, `diverged`, and `indeterminate_shallow`. When the relationship is indeterminate, clone-mode now deepens the local view by successive absolute `--depth` targets (50 → 200 → 1000, skipping any target ≤ configured depth) and re-classifies after each step. If the budget exhausts without a verdict the run records a new `indeterminate_shallow` soft skip distinct from `diverged`, including the highest deepen target attempted, so operators can grep logs and choose to remove or raise `depth`.
+
+- 497c18e: Add published config autocomplete types for JavaScript config files. Generated and example configs now use `// @ts-check` plus JSDoc `@satisfies` annotations with zero runtime imports, and the package publishes `dist/index.d.ts` for editors to resolve `SyncWorktreesConfig`.
+
+### Patch Changes
+
+- 497c18e: Internal polish follow-up to the CLI collapse refactor:
+  - Extract `fileExists()` helper, dedupe 8 inline `fs.access` existence checks across config + status paths.
+  - Replace `InitConfigInput` interface with `Pick<RepositoryConfig, ...>` so init wizard input type auto-tracks `RepositoryConfig`.
+  - Add `CLI_COMMANDS` const + discriminated `CliOptions` union; `main()` now uses `switch` with exhaustive `never` guard so future commands fail at compile time.
+  - Collapse `runMultipleRepositories` signature — takes the loaded `ConfigFile` directly and derives `runOnce` / `maxParallel` internally.
+  - Multi-repo runner already sets `process.exitCode = 1` on any init/sync failure (shipped in the parent PR).
+
+- 497c18e: Discoverability + AI-agent positioning:
+  - Updated package description and added `mcp`, `model-context-protocol`, `claude-code`, `claude-desktop`, `cursor`, `ai-agent`, `ai-tools`, `agentic` keywords so the package surfaces in MCP/AI-agent searches on npm.
+  - Restructured README: added shields.io badges, a "pick your path" Quickstart with CLI / Claude Code / generic-MCP-client snippets, and a "Why it pairs with AI agents" worked example showing the typical agent tool-call sequence.
+  - Reordered the Features list to lead with the MCP server and the interactive TUI.
+  - Added top-level `AGENTS.md` with bootstrap order, tool-selection guidance, and safety rules for agents using the MCP server.
+
 ## 3.6.3
 
 ### Patch Changes
