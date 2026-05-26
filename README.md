@@ -35,7 +35,10 @@ Smallest config that produces this:
 
 ```javascript
 // sync-worktrees.config.js
-export default {
+// @ts-check
+
+/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
+const config = {
   repositories: [
     {
       name: "my-repo",
@@ -44,6 +47,8 @@ export default {
     },
   ],
 };
+
+export default config;
 ```
 
 Run `sync-worktrees` from the directory holding the config and you get:
@@ -333,7 +338,10 @@ Config files are JavaScript ES modules. Relative paths resolve from the config f
 ### Minimal config
 
 ```javascript
-export default {
+// @ts-check
+
+/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
+const config = {
   repositories: [
     {
       name: "my-project",
@@ -342,12 +350,17 @@ export default {
     },
   ],
 };
+
+export default config;
 ```
 
 ### Multi-repo config
 
 ```javascript
-export default {
+// @ts-check
+
+/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
+const config = {
   defaults: {
     cronSchedule: "0 * * * *",        // hourly
     branchMaxAge: "30d",               // ignore stale branches
@@ -371,7 +384,7 @@ export default {
     },
     {
       name: "backend",
-      repoUrl: process.env.BACKEND_REPO_URL,
+      repoUrl: process.env.BACKEND_REPO_URL || "https://github.com/company/backend.git",
       worktreeDir: "/absolute/path/backend-worktrees",
       branchMaxAge: "6m",
       branchInclude: ["feature/*", "release-*", "main"],
@@ -379,6 +392,8 @@ export default {
     },
   ],
 };
+
+export default config;
 ```
 
 Notes:
@@ -412,7 +427,10 @@ Clone mode rejects `branchInclude`, `branchExclude`, `branchMaxAge`, `updateExis
 For monorepos where you only need a subset of folders, set `sparseCheckout` per repository entry. The tool runs `git worktree add --no-checkout`, configures sparse-checkout, then materializes only the included paths. The same repository URL can be listed multiple times under different `name`s with different sparse patterns to build domain-grouped layouts.
 
 ```javascript
-export default {
+// @ts-check
+
+/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
+const config = {
   repositories: [
     {
       name: "roulette-game-client",
@@ -428,6 +446,8 @@ export default {
     },
   ],
 };
+
+export default config;
 ```
 
 **Modes:**
@@ -511,7 +531,7 @@ For every knob (timeouts, parallelism, jitter, sparse-update behavior, retry tun
 
 ## CLI options
 
-The CLI loads a config file and runs it. Most run-mode settings (debug, branch filters, retry, parallelism, LFS, clone mode, depth, etc.) live in the config file. Use `--runOnce` for an ad-hoc one-shot run without editing config.
+The CLI loads a config file and runs it. Most run-mode settings (branch filters, retry, parallelism, LFS, clone mode, depth, etc.) live in the config file. Use `--runOnce` for an ad-hoc one-shot run without editing config.
 
 | Option | Alias | Description | Default |
 |--------|-------|-------------|---------|

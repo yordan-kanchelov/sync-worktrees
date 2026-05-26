@@ -165,6 +165,46 @@ describe("ConfigLoaderService - clone mode", () => {
     await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/depth.*clone/);
   });
 
+  it("rejects direct branch on a worktree-mode repo (#3)", async () => {
+    const configPath = await writeConfig(`
+      export default {
+        repositories: [
+          {
+            name: "demo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "/tmp/demo",
+            mode: "worktree",
+            branch: "release",
+          },
+        ],
+      };
+    `);
+
+    await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+      /branch.*only supported when mode is 'clone'/,
+    );
+  });
+
+  it("rejects defaults.branch inherited by a worktree-mode repo (#3)", async () => {
+    const configPath = await writeConfig(`
+      export default {
+        defaults: { branch: "release" },
+        repositories: [
+          {
+            name: "demo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "/tmp/demo",
+            mode: "worktree",
+          },
+        ],
+      };
+    `);
+
+    await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+      /branch.*only supported when mode is 'clone'/,
+    );
+  });
+
   it("rejects invalid mode value", async () => {
     const configPath = await writeConfig(`
       export default {

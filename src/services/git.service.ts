@@ -251,15 +251,34 @@ export class GitService {
       /* fall through to probe candidates */
     }
 
+    // symref HEAD was unavailable/unparsed: probe common branch names, but only
+    // auto-pick when the choice is unambiguous. Guessing by fixed priority when
+    // several exist can silently track the wrong branch (e.g. 'main' when the
+    // remote's real default is 'master').
+    const existing: string[] = [];
     for (const candidate of GIT_CONSTANTS.COMMON_DEFAULT_BRANCHES) {
       try {
         const out = await git.raw(["ls-remote", "--exit-code", repoUrl, `refs/heads/${candidate}`]);
         if (out.trim().length > 0) {
-          return candidate;
+          existing.push(candidate);
         }
       } catch {
         /* candidate missing — try next */
       }
+    }
+
+    if (existing.length === 1) {
+      this.logger.warn(
+        `Could not read symref HEAD for '${repoUrl}'; using the only common branch found ('${existing[0]}') as the default.`,
+      );
+      return existing[0];
+    }
+
+    if (existing.length > 1) {
+      throw new Error(
+        `Unable to detect default branch for '${repoUrl}': symref HEAD is unavailable and multiple common branches exist (${existing.join(", ")}). ` +
+          `Set 'branch' explicitly in the repository config.`,
+      );
     }
 
     throw new Error(

@@ -7,6 +7,7 @@ export interface RetryConfig {
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;
+  jitterMs?: number;
 }
 
 export interface HookContext {
@@ -199,4 +200,83 @@ export interface DivergedDirectoryInfo {
   divergedAt: string;
   sizeBytes: number;
   sizeFormatted: string;
+}
+
+export type SyncWorktreesRetryConfig = RetryConfig;
+export type SyncWorktreesParallelismConfig = ParallelismConfig;
+export type SyncWorktreesHooksConfig = HooksConfig;
+export type SyncWorktreesSparseCheckoutMode = SparseCheckoutMode;
+export type SyncWorktreesSparseCheckoutConfig = SparseCheckoutConfig;
+export type SyncWorktreesRepositoryMode = RepositoryMode;
+
+interface SyncWorktreesCommonConfigFields {
+  cronSchedule?: string;
+  runOnce?: boolean;
+  retry?: SyncWorktreesRetryConfig;
+  parallelism?: SyncWorktreesParallelismConfig;
+  skipLfs?: boolean;
+  filesToCopyOnBranchCreate?: string[];
+  hooks?: SyncWorktreesHooksConfig;
+  sparseCheckout?: SyncWorktreesSparseCheckoutConfig;
+}
+
+interface SyncWorktreesRepositoryBase extends SyncWorktreesCommonConfigFields {
+  name: string;
+  repoUrl: string;
+  worktreeDir: string;
+}
+
+export interface SyncWorktreesCloneRepository extends SyncWorktreesRepositoryBase {
+  mode: "clone";
+  branch?: string;
+  depth?: number;
+  bareRepoDir?: never;
+  branchMaxAge?: never;
+  branchInclude?: never;
+  branchExclude?: never;
+  updateExistingWorktrees?: never;
+}
+
+export interface SyncWorktreesWorktreeRepository extends SyncWorktreesRepositoryBase {
+  mode?: "worktree";
+  bareRepoDir?: string;
+  branchMaxAge?: string;
+  branchInclude?: string[];
+  branchExclude?: string[];
+  updateExistingWorktrees?: boolean;
+  branch?: never;
+  depth?: never;
+}
+
+export type SyncWorktreesRepository = SyncWorktreesCloneRepository | SyncWorktreesWorktreeRepository;
+
+type SyncWorktreesDefaultsBase = SyncWorktreesCommonConfigFields;
+
+export interface SyncWorktreesCloneDefaults extends SyncWorktreesDefaultsBase {
+  mode: "clone";
+  branch?: string;
+  depth?: number;
+  branchMaxAge?: never;
+  branchInclude?: never;
+  branchExclude?: never;
+  updateExistingWorktrees?: never;
+}
+
+export interface SyncWorktreesWorktreeDefaults extends SyncWorktreesDefaultsBase {
+  mode?: "worktree";
+  branchMaxAge?: string;
+  branchInclude?: string[];
+  branchExclude?: string[];
+  updateExistingWorktrees?: boolean;
+  branch?: never;
+  depth?: never;
+}
+
+export type SyncWorktreesDefaults = SyncWorktreesCloneDefaults | SyncWorktreesWorktreeDefaults;
+
+export interface SyncWorktreesConfig {
+  defaults?: SyncWorktreesDefaults;
+  repositories: SyncWorktreesRepository[];
+  retry?: SyncWorktreesRetryConfig;
+  parallelism?: SyncWorktreesParallelismConfig;
 }

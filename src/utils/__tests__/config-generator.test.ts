@@ -31,6 +31,10 @@ describe("Config Generator", () => {
       await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain("// @ts-check");
+      expect(content).toContain('/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */');
+      expect(content).toContain("const config = {");
+      expect(content).toContain("export default config;");
       expect(content).toContain('name: "repo"');
       expect(content).toContain('repoUrl: "https://github.com/user/repo.git"');
       expect(content).toContain('worktreeDir: "/absolute/path/to/worktrees"');

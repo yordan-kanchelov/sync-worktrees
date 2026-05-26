@@ -523,6 +523,10 @@ export async function handleInitialize(
   try {
     return await runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
       await service.initializeUnlocked();
+      // A standalone initialize does not surface skips in its response. Clear the
+      // one-shot suppression token so a later independent `sync` re-detects and
+      // reports a wrong-branch / unreadable-HEAD clone instead of swallowing it.
+      service.clearPendingInitSkip();
       const git = service.getGitService();
       ctx.invalidateDiscovered();
       return formatToolResponse({

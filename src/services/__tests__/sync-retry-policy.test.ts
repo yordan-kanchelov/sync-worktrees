@@ -40,6 +40,7 @@ describe("SyncRetryPolicy", () => {
           initialDelayMs: 10,
           maxDelayMs: 20,
           backoffMultiplier: 3,
+          jitterMs: 7,
         },
       }),
     );
@@ -52,6 +53,7 @@ describe("SyncRetryPolicy", () => {
       initialDelayMs: 10,
       maxDelayMs: 20,
       backoffMultiplier: 3,
+      jitterMs: 7,
     });
   });
 

@@ -280,6 +280,79 @@ describe("CloneSyncService", () => {
       );
     });
 
+    it("records a wrong-branch skip exactly once across init + runSyncAttempt (#1)", async () => {
+      const skips: CloneSkipReason[] = [];
+      (fs.readdir as unknown as Mock).mockResolvedValue([".git"]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "develop";
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        return "";
+      });
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
+        onSkip: (reason) => skips.push(reason),
+      });
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+
+      // init records the skip; the immediately following runSyncAttempt (same
+      // sync operation) must NOT record it again — neither in the skip stream
+      // nor in counts.skipped.
+      await service.initialize(outcome);
+      await service.runSyncAttempt(outcome);
+
+      expect(skips).toEqual([
+        { kind: "branch_mismatch", phase: "init", currentBranch: "develop", expectedBranch: "main" },
+      ]);
+      expect(outcome.toOutcome().counts.skipped).toBe(1);
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it("soft-skips with origin_mismatch when an existing clone's origin differs from repoUrl (#2)", async () => {
+      const skips: CloneSkipReason[] = [];
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "remote get-url origin") return "https://github.com/example/other.git";
+        return "";
+      });
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
+        onSkip: (reason) => skips.push(reason),
+      });
+
+      await service.initialize();
+
+      expect(skips).toEqual([
+        {
+          kind: "origin_mismatch",
+          actual: "https://github.com/example/other.git",
+          expected: "https://github.com/example/repo.git",
+        },
+      ]);
+      expect(gitMock.clone).not.toHaveBeenCalled();
+    });
+
+    it("does not flag origin_mismatch for .git/trailing-slash-equivalent origin URLs (#2)", async () => {
+      const skips: CloneSkipReason[] = [];
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        // config repoUrl is "...repo.git"; on-disk origin lacks the .git suffix.
+        if (key === "remote get-url origin") return "https://github.com/example/repo";
+        return "";
+      });
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
+        onSkip: (reason) => skips.push(reason),
+      });
+
+      await service.initialize();
+
+      expect(skips).toEqual([]);
+      expect(service.isInitialized()).toBe(true);
+    });
+
     it("soft-skips and records head_unreadable when HEAD read fails on existing clone", async () => {
       const skips: CloneSkipReason[] = [];
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
@@ -755,12 +828,42 @@ describe("CloneSyncService", () => {
       expect(skips).toEqual([{ kind: "missing_remote_ref", branch: "main", source: "fetch_error" }]);
     });
 
+    it("soft-skips when the LFS-disabled retry fetch hits a missing remote ref (#7)", async () => {
+      const { service, skips } = buildServiceWithSkips(buildGitService());
+      gitMock.fetch
+        .mockRejectedValueOnce(new Error("smudge filter lfs failed"))
+        .mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/main"));
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([{ kind: "missing_remote_ref", branch: "main", source: "fetch_error" }]);
+      expect(gitMock.fetch).toHaveBeenCalledTimes(2);
+      expect(gitMock.merge).not.toHaveBeenCalled();
+    });
+
+    it("propagates a non-missing-ref failure from the LFS-disabled retry fetch (#7)", async () => {
+      const { service } = buildServiceWithSkips(buildGitService());
+      gitMock.fetch
+        .mockRejectedValueOnce(new Error("smudge filter lfs failed"))
+        .mockRejectedValueOnce(new Error("network is unreachable"));
+
+      await expect(service.runSyncAttempt()).rejects.toThrow("network is unreachable");
+    });
+
+    it("forces LC_ALL=C / LANG=C on git clients so error classification stays locale-stable (#4)", async () => {
+      const { service } = buildServiceWithSkips(buildGitService());
+
+      await service.runSyncAttempt();
+
+      expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ LC_ALL: "C", LANG: "C" }));
+    });
+
     it("records missing_remote_ref source 'post_fetch_verify' when fetch succeeds but ref is pruned", async () => {
       const { service, skips } = buildServiceWithSkips(buildGitService());
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key.startsWith("show-ref --verify --quiet refs/remotes/origin/main")) {
+        if (key.startsWith("show-ref --verify refs/remotes/origin/main")) {
           throw new Error("show-ref: ref not found");
         }
         return "";

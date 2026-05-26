@@ -4,12 +4,13 @@
   "type": "module",
   "description": "Automatically synchronize Git worktrees with remote branches - perfect for multi-branch development workflows",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "sync-worktrees": "dist/index.js",
     "sync-worktrees-mcp": "dist/mcp-server.js"
   },
   "scripts": {
-    "build": "node esbuild.config.js",
+    "build": "node esbuild.config.js && tsc --emitDeclarationOnly",
     "start": "node dist/index.js",
     "watch": "tsc --watch",
     "lint": "eslint .",

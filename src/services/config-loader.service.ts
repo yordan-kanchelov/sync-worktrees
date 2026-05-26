@@ -133,6 +133,10 @@ export class ConfigLoaderService {
         throw new Error(`Repository '${repoObj.name}' has invalid 'runOnce' property`);
       }
 
+      if (repoObj.retry !== undefined) {
+        this.validateRetryConfig(repoObj.retry, `Repository '${repoObj.name}' retry config`);
+      }
+
       if (repoObj.filesToCopyOnBranchCreate !== undefined) {
         this.validateFilesToCopyConfig(repoObj.filesToCopyOnBranchCreate, `Repository '${repoObj.name}'`);
       }
@@ -170,6 +174,9 @@ export class ConfigLoaderService {
       if (defaults.retry !== undefined && typeof defaults.retry !== "object") {
         throw new Error("Invalid 'retry' in defaults");
       }
+      if (defaults.retry !== undefined) {
+        this.validateRetryConfig(defaults.retry, "defaults retry config");
+      }
       if (defaults.filesToCopyOnBranchCreate !== undefined) {
         this.validateFilesToCopyConfig(defaults.filesToCopyOnBranchCreate, "defaults");
       }
@@ -194,46 +201,7 @@ export class ConfigLoaderService {
     }
 
     if (configObj.retry !== undefined) {
-      if (typeof configObj.retry !== "object") {
-        throw new Error("'retry' must be an object");
-      }
-
-      const retry = configObj.retry as Record<string, unknown>;
-
-      if (retry.maxAttempts !== undefined) {
-        if (retry.maxAttempts !== "unlimited" && (typeof retry.maxAttempts !== "number" || retry.maxAttempts < 1)) {
-          throw new Error("Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number");
-        }
-      }
-
-      if (retry.maxLfsRetries !== undefined) {
-        if (typeof retry.maxLfsRetries !== "number" || retry.maxLfsRetries < 0) {
-          throw new Error("Invalid 'maxLfsRetries' in retry config. Must be a non-negative number");
-        }
-      }
-      if (
-        retry.initialDelayMs !== undefined &&
-        (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)
-      ) {
-        throw new Error("Invalid 'initialDelayMs' in retry config");
-      }
-      if (retry.maxDelayMs !== undefined && (typeof retry.maxDelayMs !== "number" || retry.maxDelayMs < 0)) {
-        throw new Error("Invalid 'maxDelayMs' in retry config");
-      }
-      if (
-        retry.backoffMultiplier !== undefined &&
-        (typeof retry.backoffMultiplier !== "number" || retry.backoffMultiplier < 1)
-      ) {
-        throw new Error("Invalid 'backoffMultiplier' in retry config");
-      }
-
-      const initialDelay = (retry.initialDelayMs as number) ?? DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS;
-      const maxDelay = (retry.maxDelayMs as number) ?? DEFAULT_CONFIG.RETRY.MAX_DELAY_MS;
-      if (initialDelay > maxDelay) {
-        throw new Error(
-          `Invalid retry config: 'initialDelayMs' (${initialDelay}) must not exceed 'maxDelayMs' (${maxDelay})`,
-        );
-      }
+      this.validateRetryConfig(configObj.retry, "retry config");
     }
 
     if (configObj.parallelism !== undefined) {
@@ -252,6 +220,56 @@ export class ConfigLoaderService {
     if (value === undefined) return;
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
       throw new ConfigValidationError(field, "must be a positive safe integer");
+    }
+  }
+
+  private validateRetryConfig(value: unknown, context: string): void {
+    if (typeof value !== "object" || value === null) {
+      throw new Error(context === "retry config" ? "'retry' must be an object" : `Invalid 'retry' in ${context}`);
+    }
+
+    const retry = value as Record<string, unknown>;
+
+    if (retry.maxAttempts !== undefined) {
+      if (retry.maxAttempts !== "unlimited" && (typeof retry.maxAttempts !== "number" || retry.maxAttempts < 1)) {
+        throw new Error("Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number");
+      }
+    }
+
+    if (retry.maxLfsRetries !== undefined) {
+      if (typeof retry.maxLfsRetries !== "number" || retry.maxLfsRetries < 0) {
+        throw new Error("Invalid 'maxLfsRetries' in retry config. Must be a non-negative number");
+      }
+    }
+
+    if (
+      retry.initialDelayMs !== undefined &&
+      (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)
+    ) {
+      throw new Error("Invalid 'initialDelayMs' in retry config");
+    }
+
+    if (retry.maxDelayMs !== undefined && (typeof retry.maxDelayMs !== "number" || retry.maxDelayMs < 0)) {
+      throw new Error("Invalid 'maxDelayMs' in retry config");
+    }
+
+    if (
+      retry.backoffMultiplier !== undefined &&
+      (typeof retry.backoffMultiplier !== "number" || retry.backoffMultiplier < 1)
+    ) {
+      throw new Error("Invalid 'backoffMultiplier' in retry config");
+    }
+
+    if (retry.jitterMs !== undefined && (typeof retry.jitterMs !== "number" || retry.jitterMs < 0)) {
+      throw new Error("Invalid 'jitterMs' in retry config");
+    }
+
+    const initialDelay = (retry.initialDelayMs as number) ?? DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS;
+    const maxDelay = (retry.maxDelayMs as number) ?? DEFAULT_CONFIG.RETRY.MAX_DELAY_MS;
+    if (initialDelay > maxDelay) {
+      throw new Error(
+        `Invalid retry config: 'initialDelayMs' (${initialDelay}) must not exceed 'maxDelayMs' (${maxDelay})`,
+      );
     }
   }
 
@@ -403,6 +421,17 @@ export class ConfigLoaderService {
           `only supported when mode is 'clone' (set on ${source})`,
         );
       }
+
+      const branchFromRepo = repoObj.branch;
+      const branchFromDefaults = defaults?.branch;
+      if (branchFromRepo !== undefined || branchFromDefaults !== undefined) {
+        const source = branchFromRepo !== undefined ? "repository" : "defaults";
+        throw new ConfigValidationError(
+          `Repository '${repoName}' branch`,
+          `only supported when mode is 'clone' (set on ${source})`,
+        );
+      }
+
       return;
     }
 

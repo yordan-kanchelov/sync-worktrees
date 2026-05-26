@@ -23,6 +23,18 @@ import type { CloneSkipReason } from "./services/clone-sync.service";
 import type { ConfigFile, RepositoryConfig } from "./types";
 import type { CliOptions } from "./utils/cli";
 
+export type {
+  SyncWorktreesConfig,
+  SyncWorktreesDefaults,
+  SyncWorktreesHooksConfig,
+  SyncWorktreesParallelismConfig,
+  SyncWorktreesRepository,
+  SyncWorktreesRepositoryMode,
+  SyncWorktreesRetryConfig,
+  SyncWorktreesSparseCheckoutConfig,
+  SyncWorktreesSparseCheckoutMode,
+} from "./types";
+
 const signalHandle = setupSignalHandlers();
 
 export async function runMultipleRepositories(

@@ -45,3 +45,25 @@ export function getDefaultBareRepoDir(repoUrl: string, baseDir: string = ".bare"
   const repoName = extractRepoNameFromUrl(repoUrl);
   return `${baseDir}/${repoName}`;
 }
+
+/**
+ * Normalizes a Git remote URL for equivalence comparison only: trims, lowercases
+ * a leading `scheme://host`, and strips a trailing slash and a single trailing
+ * `.git`. Intentionally does NOT equate scp-style (git@host:path) with https://
+ * forms — those are left distinct. Use only to decide whether two URLs point at
+ * the same remote, never as a canonical URL for git operations.
+ */
+export function normalizeRepoUrlForComparison(url: string): string {
+  let normalized = url.trim();
+  // Only forge-style remotes (http(s)/ssh/git:// and scp git@host:path) treat a
+  // trailing ".git" as optional/equivalent. For file:// and bare local paths,
+  // "foo.git" and "foo" can be genuinely different directories, so we must NOT
+  // strip ".git" there or we'd hide a real origin mismatch.
+  const isForgeUrl = /^(https?|ssh|git):\/\//i.test(normalized) || /^[\w.-]+@[^/]+:/.test(normalized);
+  normalized = normalized.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+/, (prefix) => prefix.toLowerCase());
+  normalized = normalized.replace(/\/+$/, "");
+  if (isForgeUrl) {
+    normalized = normalized.replace(/\.git$/, "");
+  }
+  return normalized;
+}

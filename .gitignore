@@ -8,6 +8,9 @@ coverage/
 .nyc_output/
 *.tsbuildinfo
 
+# Local Codex CLI config
+.codex/
+
 # npm pack artifacts
 *.tgz
 

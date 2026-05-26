@@ -163,6 +163,7 @@ function makeCtx(opts: {
     isCloneMode: vi.fn<any>().mockReturnValue(false),
     getRecordedSkips: vi.fn<any>().mockReturnValue([]),
     clearRecordedSkips: vi.fn<any>(),
+    clearPendingInitSkip: vi.fn<any>(),
     ...opts.service,
   };
 

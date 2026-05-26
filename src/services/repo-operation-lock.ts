@@ -4,8 +4,11 @@ import * as path from "path";
 import * as lockfile from "proper-lockfile";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../constants";
+import { getErrorMessage } from "../utils/lfs-error";
 import { getCloneModeLockTarget } from "../utils/lock-path";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
+
+import { Logger } from "./logger.service";
 
 import type { Config } from "../types";
 import type { GitService } from "./git.service";
@@ -16,7 +19,12 @@ export class RepoOperationLock {
   constructor(
     private config: Config,
     private gitService: GitService,
+    private logger: Logger = Logger.createDefault(),
   ) {}
+
+  updateLogger(logger: Logger): void {
+    this.logger = logger;
+  }
 
   async acquire(): Promise<RepoLockRelease | null> {
     if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
@@ -64,10 +72,18 @@ export class RepoOperationLock {
         realpath: false,
       });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ELOCKED") {
         return null;
       }
-      throw error;
+      // A lock we cannot acquire (read-only FS, EACCES/EROFS/EPERM surfaced at
+      // lock time rather than during prep) must be a clean skip, never a fatal
+      // error that crashes the whole multi-repo run. Surface it as a warning so
+      // the cause is visible.
+      this.logger.warn(
+        `Could not acquire repo lock at '${lockTarget}' (${code ?? "unknown"}: ${getErrorMessage(error)}); skipping.`,
+      );
+      return null;
     }
   }
 }

@@ -9,6 +9,7 @@ import { RepoOperationLock } from "../repo-operation-lock";
 
 import type { Config } from "../../types";
 import type { GitService } from "../git.service";
+import type { Logger } from "../logger.service";
 import type { Mock } from "vitest";
 
 vi.mock("fs/promises");
@@ -92,5 +93,28 @@ describe("RepoOperationLock", () => {
     const lock = new RepoOperationLock(makeConfig(), gitService as GitService);
 
     await expect(lock.acquire()).resolves.toBeNull();
+  });
+
+  it("returns null and warns when lock acquisition fails for a non-ELOCKED reason in worktree mode (#5)", async () => {
+    const error = new Error("permission denied") as NodeJS.ErrnoException;
+    error.code = "EACCES";
+    (lockfile.lock as Mock).mockRejectedValue(error);
+    const warn = vi.fn();
+    const lock = new RepoOperationLock(makeConfig(), gitService as GitService, { warn } as unknown as Logger);
+
+    await expect(lock.acquire()).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("EACCES"));
+  });
+
+  it("returns null and warns when lock acquisition fails for a non-ELOCKED reason in clone mode (#5)", async () => {
+    const error = new Error("read-only file system") as NodeJS.ErrnoException;
+    error.code = "EROFS";
+    (lockfile.lock as Mock).mockRejectedValue(error);
+    const warn = vi.fn();
+    const config = makeConfig({ mode: "clone", branch: "main", __configFileDir: "/tmp/config" });
+    const lock = new RepoOperationLock(config, gitService as GitService, { warn } as unknown as Logger);
+
+    await expect(lock.acquire()).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("EROFS"));
   });
 });

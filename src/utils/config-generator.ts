@@ -86,12 +86,17 @@ export async function generateConfigFile(
     repositories: [repository],
   };
 
-  const configContent = `/**
+  const configContent = `// @ts-check
+
+/**
  * Sync-worktrees configuration file
  * Generated on ${new Date().toISOString()}
  */
 
-export default ${serializeToESM(configObject)};
+/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
+const config = ${serializeToESM(configObject)};
+
+export default config;
 `;
 
   try {

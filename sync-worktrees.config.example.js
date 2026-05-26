@@ -1,3 +1,5 @@
+// @ts-check
+
 /**
  * Example configuration file for sync-worktrees
  *
@@ -8,7 +10,8 @@
 import os from 'os';
 import path from 'path';
 
-export default {
+/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
+const config = {
   // Global defaults for all repositories (optional)
   defaults: {
     // Default cron schedule: every hour
@@ -310,6 +313,8 @@ export default {
     }
   ]
 };
+
+export default config;
 
 // Advanced example: Dynamic configuration based on environment
 /*

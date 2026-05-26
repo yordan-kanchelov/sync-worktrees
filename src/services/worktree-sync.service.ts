@@ -39,7 +39,7 @@ export class WorktreeSyncService {
   constructor(public readonly config: Config) {
     this.logger = config.logger ?? Logger.createDefault(undefined, config.debug);
     this.gitService = new GitService(config, this.logger);
-    this.repoOperationLock = new RepoOperationLock(config, this.gitService);
+    this.repoOperationLock = new RepoOperationLock(config, this.gitService, this.logger);
     this.retryPolicy = new SyncRetryPolicy(config, this.gitService, this.logger);
     this.worktreeModeSyncRunner = new WorktreeModeSyncRunner(
       config,
@@ -63,6 +63,10 @@ export class WorktreeSyncService {
 
   public clearRecordedSkips(): void {
     this.skipsAccumulator = [];
+  }
+
+  public clearPendingInitSkip(): void {
+    this.cloneSyncService?.clearPendingInitSkip();
   }
 
   public getLastOutcome(): SyncOutcome | null {
@@ -120,6 +124,7 @@ export class WorktreeSyncService {
     this.cloneSyncService?.updateLogger(logger);
     this.retryPolicy.updateLogger(logger);
     this.worktreeModeSyncRunner.updateLogger(logger);
+    this.repoOperationLock.updateLogger(logger);
   }
 
   onProgress(listener: ProgressListener): () => void {

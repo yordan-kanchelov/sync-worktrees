@@ -7,7 +7,8 @@ import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError } from "../errors";
 import { fileExists } from "../utils/file-exists";
 import { makeGitProgressHandler } from "../utils/git-progress";
-import { getErrorMessage, isLfsError } from "../utils/lfs-error";
+import { normalizeRepoUrlForComparison } from "../utils/git-url";
+import { getErrorMessage, isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
 
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { cloneSkipToOutcomeAction } from "./sync-outcome";
@@ -29,7 +30,8 @@ export type CloneSkipReason =
   | { kind: "diverged"; branch: string }
   | { kind: "ahead_unpushed"; branch: string }
   | { kind: "missing_remote_ref"; branch: string; source: "fetch_error" | "post_fetch_verify" }
-  | { kind: "indeterminate_shallow"; branch: string; deepenedTo: number | null };
+  | { kind: "indeterminate_shallow"; branch: string; deepenedTo: number | null }
+  | { kind: "origin_mismatch"; actual: string; expected: string };
 
 export type CloneSkipListener = (reason: CloneSkipReason) => void;
 
@@ -40,6 +42,10 @@ export class CloneSyncService {
   private progressEmitter?: GitProgressEmitter;
   private onSkip?: CloneSkipListener;
   private outcomeAccumulator?: SyncOutcomeAccumulator;
+  // One-shot suppression token. When init records a wrong-branch / unreadable-HEAD
+  // skip for an existing clone, it sets this so the immediately following
+  // runSyncAttempt (same sync operation) does not record the identical skip again.
+  private pendingInitSkip: CloneSkipReason | null = null;
 
   constructor(
     private config: Config,
@@ -62,6 +68,10 @@ export class CloneSyncService {
 
   isInitialized(): boolean {
     return this.initialized;
+  }
+
+  clearPendingInitSkip(): void {
+    this.pendingInitSkip = null;
   }
 
   async getWorktrees(): Promise<Array<{ path: string; branch: string }>> {
@@ -156,8 +166,19 @@ export class CloneSyncService {
   }
 
   private clientFor(dir: string, blockMs: number): SimpleGit {
-    const base = simpleGit(dir, this.buildGitOptions(blockMs));
-    return this.isLfsSkipEnabled() ? base.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : base;
+    return simpleGit(dir, this.buildGitOptions(blockMs)).env(this.buildGitEnv());
+  }
+
+  // Force a stable C locale so git's stderr is deterministic English. The
+  // missing-remote-ref and LFS error classification matches on those strings
+  // and would otherwise misfire under a non-English LANG/LC_ALL. simple-git's
+  // .env() merges this object with process.env (PATH etc. preserved).
+  private buildGitEnv(opts: { forceLfsSkip?: boolean } = {}): Record<string, string> {
+    const env: Record<string, string> = { LC_ALL: "C", LANG: "C" };
+    if (opts.forceLfsSkip || this.isLfsSkipEnabled()) {
+      env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
+    }
+    return env;
   }
 
   private buildCloneArgs(branch: string): string[] {
@@ -207,9 +228,61 @@ export class CloneSyncService {
     return source.startsWith("refs/heads/") && destination?.startsWith("refs/remotes/origin/") === true;
   }
 
+  private recordMissingRemoteRefSkip(branch: string): void {
+    this.recordSkip(
+      { kind: "missing_remote_ref", branch, source: "fetch_error" },
+      `Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`,
+      `Skipping '${this.repoName}': origin/${branch} is missing`,
+    );
+  }
+
+  private async fetchWithRecovery(
+    git: SimpleGit,
+    fetchArgs: string[],
+    worktreeDir: string,
+    branch: string,
+  ): Promise<{ skipped: boolean }> {
+    try {
+      await git.fetch(fetchArgs);
+      return { skipped: false };
+    } catch (fetchError) {
+      const message = getErrorMessage(fetchError);
+      if (isLfsError(message)) {
+        this.logger.info(`⚠️  LFS error during fetch for '${this.repoName}'; retrying with LFS disabled.`);
+        this.emitProgress({ phase: "fetch", message: `Retrying fetch for '${this.repoName}' with LFS disabled` });
+        const lfsSkipGit = simpleGit(worktreeDir, this.buildGitOptions(this.getFetchTimeoutMs())).env(
+          this.buildGitEnv({ forceLfsSkip: true }),
+        );
+        try {
+          await lfsSkipGit.fetch(fetchArgs);
+          return { skipped: false };
+        } catch (retryError) {
+          // The LFS-disabled retry can itself hit a deleted remote branch —
+          // classify it as a soft skip too, instead of letting it escape as a
+          // hard failure.
+          if (isMissingRemoteRefError(getErrorMessage(retryError))) {
+            this.recordMissingRemoteRefSkip(branch);
+            return { skipped: true };
+          }
+          // Otherwise propagate the retry error unchanged so the outer retry
+          // policy's LFS handling still sees an accurate error.
+          throw retryError;
+        }
+      }
+      if (isMissingRemoteRefError(message)) {
+        this.recordMissingRemoteRefSkip(branch);
+        return { skipped: true };
+      }
+      throw fetchError;
+    }
+  }
+
   private async hasRemoteBranch(git: SimpleGit, branch: string): Promise<boolean> {
     try {
-      await git.raw(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`]);
+      // simple-git resolves `show-ref --quiet` even when git exits 1, so keep
+      // stdout enabled (no --quiet) to get a real reject on a missing ref —
+      // otherwise the post-fetch missing_remote_ref skip would never fire.
+      await git.raw(["show-ref", "--verify", `refs/remotes/origin/${branch}`]);
       return true;
     } catch {
       return false;
@@ -283,6 +356,7 @@ export class CloneSyncService {
   }
 
   private async initializeInternal(): Promise<void> {
+    this.pendingInitSkip = null;
     const branch = await this.resolveBranch();
     const worktreeDir = this.config.worktreeDir;
 
@@ -298,6 +372,7 @@ export class CloneSyncService {
       const result = await this.validateExistingClone(branch);
       if (!result.valid) {
         this.recordSkip(result.skip, result.warnMessage, `Skipping '${this.repoName}': ${result.progressDetail}`);
+        this.pendingInitSkip = result.skip;
         this.initialized = true;
         return;
       }
@@ -322,8 +397,7 @@ export class CloneSyncService {
     this.logger.info(`Cloning '${this.config.repoUrl}' (${branch}) into '${worktreeDir}'...`);
     this.emitProgress({ phase: "clone", message: `Cloning '${this.repoName}' (${branch})` });
 
-    const cloneGit = simpleGit(this.buildGitOptions(this.getCloneTimeoutMs()));
-    const cloneClient = this.isLfsSkipEnabled() ? cloneGit.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : cloneGit;
+    const cloneClient = simpleGit(this.buildGitOptions(this.getCloneTimeoutMs())).env(this.buildGitEnv());
 
     try {
       await cloneClient.clone(this.config.repoUrl, worktreeDir, this.buildCloneArgs(branch));
@@ -364,21 +438,45 @@ export class CloneSyncService {
     this.initialized = true;
   }
 
+  // Detects an on-disk clone whose `origin` no longer matches the configured
+  // repoUrl (e.g. repoUrl was repointed in config). Returns a skip descriptor so
+  // we never fetch/ff-merge from the wrong remote; null when origin matches or
+  // can't be read. Comparison is normalized so https/.git/trailing-slash
+  // variants don't false-positive; the raw URLs are kept in the message.
+  private async evaluateOriginMatch(
+    git: SimpleGit,
+    worktreeDir: string,
+  ): Promise<{ skip: CloneSkipReason; warnMessage: string; progressDetail: string } | null> {
+    let originUrl: string;
+    try {
+      originUrl = (await git.raw(["remote", "get-url", "origin"])).trim();
+    } catch {
+      this.logger.warn(`Could not read 'origin' remote URL from existing clone at '${worktreeDir}'.`);
+      return null;
+    }
+
+    if (!originUrl || normalizeRepoUrlForComparison(originUrl) === normalizeRepoUrlForComparison(this.config.repoUrl)) {
+      return null;
+    }
+
+    return {
+      skip: { kind: "origin_mismatch", actual: originUrl, expected: this.config.repoUrl },
+      warnMessage:
+        `Existing clone at '${worktreeDir}' has origin '${originUrl}', expected '${this.config.repoUrl}'. ` +
+        `Update the remote ('git remote set-url origin <url>') or point worktreeDir at a fresh path.`,
+      progressDetail: `origin '${originUrl}' is not '${this.config.repoUrl}'`,
+    };
+  }
+
   private async validateExistingClone(
     expectedBranch: string,
   ): Promise<{ valid: true } | { valid: false; skip: CloneSkipReason; warnMessage: string; progressDetail: string }> {
     const worktreeDir = this.config.worktreeDir;
     const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
 
-    try {
-      const originUrl = (await git.raw(["remote", "get-url", "origin"])).trim();
-      if (originUrl && originUrl !== this.config.repoUrl) {
-        this.logger.warn(
-          `Existing clone at '${worktreeDir}' has origin '${originUrl}', expected '${this.config.repoUrl}'.`,
-        );
-      }
-    } catch {
-      this.logger.warn(`Could not read 'origin' remote URL from existing clone at '${worktreeDir}'.`);
+    const originMismatch = await this.evaluateOriginMatch(git, worktreeDir);
+    if (originMismatch) {
+      return { valid: false, ...originMismatch };
     }
 
     let currentBranch: string;
@@ -481,6 +579,16 @@ export class CloneSyncService {
   private async runSyncAttemptInternal(): Promise<void> {
     if (!this.initialized) {
       await this.initialize();
+      // init ran here and recorded any skip itself; no duplicate to suppress.
+      this.pendingInitSkip = null;
+      return;
+    }
+
+    // If init already recorded a wrong-branch / unreadable-HEAD skip for the
+    // current clone state during this same sync operation, don't record it a
+    // second time. Consume the one-shot token; later ticks re-evaluate fresh.
+    if (this.pendingInitSkip) {
+      this.pendingInitSkip = null;
       return;
     }
 
@@ -510,40 +618,27 @@ export class CloneSyncService {
       return;
     }
 
+    // Re-check every tick (not just at init): the daemon reuses this service, so
+    // a clone whose origin no longer matches repoUrl must keep being skipped
+    // rather than fetching from the wrong remote.
+    const originMismatch = await this.evaluateOriginMatch(git, worktreeDir);
+    if (originMismatch) {
+      this.recordSkip(
+        originMismatch.skip,
+        originMismatch.warnMessage,
+        `Skipping '${this.repoName}': ${originMismatch.progressDetail}`,
+      );
+      return;
+    }
+
     await this.unshallowIfDepthRemoved(git);
 
     await this.ensureAllRemoteBranchesRefspec(git);
 
     const fetchArgs = await this.buildFetchArgs(git);
     this.emitProgress({ phase: "fetch", message: `Fetching origin branches for '${this.repoName}'` });
-    try {
-      await git.fetch(fetchArgs);
-    } catch (fetchError) {
-      const message = getErrorMessage(fetchError);
-      if (isLfsError(message)) {
-        this.logger.info(`⚠️  LFS error during fetch for '${this.repoName}'; retrying with LFS disabled.`);
-        this.emitProgress({
-          phase: "fetch",
-          message: `Retrying fetch for '${this.repoName}' with LFS disabled`,
-        });
-        const lfsSkipGit = simpleGit(worktreeDir, this.buildGitOptions(this.getFetchTimeoutMs())).env({
-          [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1",
-        });
-        await lfsSkipGit.fetch(fetchArgs);
-      } else if (
-        message.includes("couldn't find remote ref") ||
-        message.includes("Couldn't find remote ref") ||
-        message.includes("not our ref")
-      ) {
-        this.recordSkip(
-          { kind: "missing_remote_ref", branch, source: "fetch_error" },
-          `Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`,
-          `Skipping '${this.repoName}': origin/${branch} is missing`,
-        );
-        return;
-      } else {
-        throw fetchError;
-      }
+    if ((await this.fetchWithRecovery(git, fetchArgs, worktreeDir, branch)).skipped) {
+      return;
     }
     this.emitProgress({ phase: "fetch", message: `Fetched origin branches for '${this.repoName}'` });
 

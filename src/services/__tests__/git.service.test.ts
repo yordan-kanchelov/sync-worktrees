@@ -106,6 +106,44 @@ describe("GitService", () => {
     gitService = new GitService(mockConfig, mockLogger);
   });
 
+  describe("getRemoteDefaultBranch (#6)", () => {
+    it("returns the branch from ls-remote --symref HEAD", async () => {
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        const a = args as string[];
+        if (a[0] === "ls-remote" && a[1] === "--symref") return "ref: refs/heads/trunk\tHEAD\nabc\tHEAD\n";
+        return "";
+      });
+
+      await expect(gitService.getRemoteDefaultBranch(TEST_URLS.github)).resolves.toBe("trunk");
+    });
+
+    it("falls back to the sole existing common branch when symref is unavailable", async () => {
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        const a = args as string[];
+        if (a[0] === "ls-remote" && a[1] === "--symref") return ""; // no symref line -> probe
+        if (a[0] === "ls-remote" && a.includes("refs/heads/master")) return "sha\trefs/heads/master\n";
+        return ""; // main/develop/trunk absent
+      });
+
+      await expect(gitService.getRemoteDefaultBranch(TEST_URLS.github)).resolves.toBe("master");
+    });
+
+    it("throws instead of guessing when symref is unavailable and multiple common branches exist", async () => {
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        const a = args as string[];
+        if (a[0] === "ls-remote" && a[1] === "--symref") return "";
+        if (a[0] === "ls-remote" && (a.includes("refs/heads/main") || a.includes("refs/heads/master"))) {
+          return `sha\t${a[a.length - 1]}\n`;
+        }
+        return "";
+      });
+
+      await expect(gitService.getRemoteDefaultBranch(TEST_URLS.github)).rejects.toThrow(
+        /multiple common branches exist/,
+      );
+    });
+  });
+
   describe("initialize", () => {
     it("should use existing bare repository when it exists", async () => {
       // Mock fs.access to succeed (bare repo exists)

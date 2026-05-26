@@ -22,6 +22,8 @@ export function formatCloneSkipReason(reason: CloneSkipReason): string {
       return reason.deepenedTo === null
         ? `unable to classify origin/${reason.branch} (no deepening attempted — configured depth already at or above all deepen targets) — remove 'depth' to unshallow`
         : `unable to classify origin/${reason.branch} after deepening shallow history to ${reason.deepenedTo} commits — remove or raise 'depth' to unshallow`;
+    case "origin_mismatch":
+      return `clone origin is '${reason.actual}', expected '${reason.expected}'`;
     default: {
       const _exhaustive: never = reason;
       return _exhaustive;

@@ -467,7 +467,8 @@ describe("ConfigLoaderService", () => {
             maxAttempts: 5,
             initialDelayMs: 2000,
             maxDelayMs: 60000,
-            backoffMultiplier: 3
+            backoffMultiplier: 3,
+            jitterMs: 250
           },
           repositories: [{
             name: "test-repo",
@@ -485,6 +486,7 @@ describe("ConfigLoaderService", () => {
         initialDelayMs: 2000,
         maxDelayMs: 60000,
         backoffMultiplier: 3,
+        jitterMs: 250,
       });
     });
 
@@ -587,6 +589,25 @@ describe("ConfigLoaderService", () => {
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
         "Invalid 'backoffMultiplier' in retry config",
       );
+    });
+
+    it("should reject negative jitterMs", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          retry: {
+            jitterMs: -1
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Invalid 'jitterMs' in retry config");
     });
 
     it("should reject non-object retry configuration", async () => {

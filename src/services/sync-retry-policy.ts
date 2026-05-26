@@ -31,6 +31,7 @@ export class SyncRetryPolicy {
       initialDelayMs: this.config.retry?.initialDelayMs ?? 1000,
       maxDelayMs: this.config.retry?.maxDelayMs ?? 30000,
       backoffMultiplier: this.config.retry?.backoffMultiplier ?? 2,
+      jitterMs: this.config.retry?.jitterMs ?? 0,
       onRetry: (error, attempt, context): void => {
         const errorMessage = getErrorMessage(error);
         this.logger.info(`\n⚠️  Sync attempt ${attempt} failed: ${errorMessage}`);
