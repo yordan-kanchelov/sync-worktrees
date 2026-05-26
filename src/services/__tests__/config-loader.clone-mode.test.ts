@@ -304,6 +304,33 @@ describe("ConfigLoaderService - clone mode", () => {
     expect(resolved.__configFileDir).toBe("/some/config-dir");
   });
 
+  it("does not let clone-mode repos consume the default worktree bareRepoDir", () => {
+    const cloneRepo: RepositoryConfig = {
+      name: "clone-side",
+      repoUrl: TEST_URLS.github,
+      worktreeDir: "/tmp/clone-side",
+      cronSchedule: "0 * * * *",
+      runOnce: false,
+      mode: "clone",
+      branch: "main",
+    };
+    const worktreeRepo: RepositoryConfig = {
+      name: "worktree-side",
+      repoUrl: TEST_URLS.github,
+      worktreeDir: "/tmp/worktree-side",
+      cronSchedule: "0 * * * *",
+      runOnce: false,
+      mode: "worktree",
+    };
+
+    const resolved = configLoader.resolveRepositoryConfig(worktreeRepo, undefined, "/some/config-dir", undefined, [
+      cloneRepo,
+      worktreeRepo,
+    ]);
+
+    expect(resolved.bareRepoDir).toBe(path.join("/some/config-dir", ".bare", "repo"));
+  });
+
   it("resolves depth for clone mode with repo overriding defaults", () => {
     const repo: RepositoryConfig = {
       name: "demo",

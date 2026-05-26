@@ -133,6 +133,10 @@ export class ConfigLoaderService {
         throw new Error(`Repository '${repoObj.name}' has invalid 'runOnce' property`);
       }
 
+      if (repoObj.debug !== undefined && typeof repoObj.debug !== "boolean") {
+        throw new Error(`Repository '${repoObj.name}' has invalid 'debug' property`);
+      }
+
       if (repoObj.retry !== undefined) {
         this.validateRetryConfig(repoObj.retry, `Repository '${repoObj.name}' retry config`);
       }
@@ -170,6 +174,9 @@ export class ConfigLoaderService {
       }
       if (defaults.runOnce !== undefined && typeof defaults.runOnce !== "boolean") {
         throw new Error("Invalid 'runOnce' in defaults");
+      }
+      if (defaults.debug !== undefined && typeof defaults.debug !== "boolean") {
+        throw new Error("Invalid 'debug' in defaults");
       }
       if (defaults.retry !== undefined && typeof defaults.retry !== "object") {
         throw new Error("Invalid 'retry' in defaults");
@@ -242,10 +249,7 @@ export class ConfigLoaderService {
       }
     }
 
-    if (
-      retry.initialDelayMs !== undefined &&
-      (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)
-    ) {
+    if (retry.initialDelayMs !== undefined && (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)) {
       throw new Error("Invalid 'initialDelayMs' in retry config");
     }
 
@@ -487,6 +491,7 @@ export class ConfigLoaderService {
       worktreeDir: this.resolvePath(repo.worktreeDir, configDir),
       cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? DEFAULT_CONFIG.CRON_SCHEDULE,
       runOnce: repo.runOnce ?? defaults?.runOnce ?? false,
+      debug: repo.debug ?? defaults?.debug,
       mode,
     };
 
@@ -504,7 +509,7 @@ export class ConfigLoaderService {
     } else {
       if (repo.bareRepoDir) {
         resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
-      } else if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories)) {
+      } else if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories, defaults)) {
         const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
         resolved.bareRepoDir = this.resolvePath(`.bare/${sanitized}`, configDir);
       } else {
@@ -567,8 +572,11 @@ export class ConfigLoaderService {
     return resolved;
   }
 
-  private isDuplicateRepoUrl(repo: RepositoryConfig, all: RepositoryConfig[]): boolean {
-    const firstIndex = all.findIndex((r) => r.repoUrl === repo.repoUrl);
+  private isDuplicateRepoUrl(repo: RepositoryConfig, all: RepositoryConfig[], defaults?: Partial<Config>): boolean {
+    const firstIndex = all.findIndex((r) => {
+      const mode = r.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
+      return r.repoUrl === repo.repoUrl && mode === REPOSITORY_MODES.WORKTREE;
+    });
     const myIndex = all.indexOf(repo);
     return firstIndex !== -1 && myIndex !== -1 && myIndex !== firstIndex;
   }

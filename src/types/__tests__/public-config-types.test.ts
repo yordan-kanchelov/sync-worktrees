@@ -20,6 +20,7 @@ type CommonConfigKeys =
   | "retry"
   | "parallelism"
   | "skipLfs"
+  | "debug"
   | "filesToCopyOnBranchCreate"
   | "hooks"
   | "sparseCheckout";
@@ -33,7 +34,7 @@ type CloneOnlyConfigKeys = "branch" | "depth";
 type DiscriminantConfigKeys = "mode";
 type BaseIdentityConfigKeys = "repoUrl" | "worktreeDir";
 // Set internally or read only at runtime — intentionally absent from the public input surface.
-type InternalOnlyConfigKeys = "logger" | "debug" | "__configFileDir" | "fetchTimeoutMs" | "cloneTimeoutMs";
+type InternalOnlyConfigKeys = "logger" | "__configFileDir" | "fetchTimeoutMs" | "cloneTimeoutMs";
 
 type ClassifiedConfigKeys =
   | CommonConfigKeys
@@ -85,6 +86,7 @@ const worktreeModeConfig = {
       maxRepositories: 2,
       maxBranchFetches: 3,
     },
+    debug: true,
     sparseCheckout: {
       include: ["src"],
       skipUpdateWhenOutsideSparse: false,
@@ -118,6 +120,7 @@ const cloneModeConfig = {
       branch: "main",
       depth: 1,
       skipLfs: true,
+      debug: false,
       filesToCopyOnBranchCreate: [".env.local"],
       sparseCheckout: { include: ["packages/app"] },
     },

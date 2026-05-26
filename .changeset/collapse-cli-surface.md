@@ -31,7 +31,7 @@ sync-worktrees list [--config <path>] [--filter <pat>]
 - Replace `sync-worktrees --list ...` with `sync-worktrees list ...`.
 - Move `--runOnce` to `defaults.runOnce: true` in the config file. (Per-repo `runOnce` only suppresses TUI cron scheduling for that one repo — to run the whole CLI as one-shot, set it under `defaults`.)
 - Move `--no-update-existing` to `updateExistingWorktrees: false` (per-repo or under `defaults`).
-- Move `--debug` to `debug: true` (per-repo or under `defaults`).
+- Move `--debug` to `debug: true` (per-repo or under `defaults`; included in the exported config types).
 - Move `--filter` (sync-run shard targeting) into the config file by maintaining narrower per-environment configs.
 
 ### Internals

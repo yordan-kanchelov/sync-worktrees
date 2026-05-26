@@ -215,6 +215,7 @@ interface SyncWorktreesCommonConfigFields {
   retry?: SyncWorktreesRetryConfig;
   parallelism?: SyncWorktreesParallelismConfig;
   skipLfs?: boolean;
+  debug?: boolean;
   filesToCopyOnBranchCreate?: string[];
   hooks?: SyncWorktreesHooksConfig;
   sparseCheckout?: SyncWorktreesSparseCheckoutConfig;
