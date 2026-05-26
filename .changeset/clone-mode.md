@@ -1,7 +1,0 @@
----
-"sync-worktrees": minor
----
-
-Add `mode: "clone"` repository strategy. When set, the tool runs `git clone --branch <X> --single-branch` directly into `worktreeDir` — no bare repo, no `worktreeDir/<branch>` subfolder — and on each sync tick fetches + fast-forwards if the working tree is clean. Clone-mode initialize/sync operations now also emit structured progress notifications for branch resolution, clone/fetch progress, sparse-checkout, LFS verification, skip reasons, and fast-forward updates. Designed for monorepo sibling dependencies that require fixed relative paths between repos. The default mode remains `worktree` (no behavior change for existing configs).
-
-Shallow clone-mode repos (`depth: N`) no longer misclassify a fast-forward-able remote as `diverged` when `git merge-base` cannot walk past the shallow boundary. `GitService.classifyRemoteRelationship()` replaces the boolean `canFastForward()` check inside clone-mode and distinguishes `up_to_date`, `fast_forward`, `local_ahead`, `diverged`, and `indeterminate_shallow`. When the relationship is indeterminate, clone-mode now deepens the local view by successive absolute `--depth` targets (50 → 200 → 1000, skipping any target ≤ configured depth) and re-classifies after each step. If the budget exhausts without a verdict the run records a new `indeterminate_shallow` soft skip distinct from `diverged`, including the highest deepen target attempted, so operators can grep logs and choose to remove or raise `depth`.
