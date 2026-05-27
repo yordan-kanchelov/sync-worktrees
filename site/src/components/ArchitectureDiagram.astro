@@ -8,10 +8,10 @@ import Icon from "./Icon.astro";
         How it lays out
       </div>
       <h2 class="mt-4 text-balance text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl">
-        One bare repo per project. Many branches. One shared shape.
+        Worktree mode: one bare repo, many branches, one shared shape.
       </h2>
       <p class="mt-4 text-balance text-lg text-ink-600">
-        sync-worktrees stores Git objects once per repository, then materializes one working tree per remote branch. You and your AI agent both see the same layout — no surprises.
+        In worktree mode, sync-worktrees stores Git objects once per repository, then creates one working tree per selected remote branch — you and your AI agent see the same layout. (Clone mode is flatter: a single branch checked out right at the path, no <code class="font-mono text-base">.bare/</code>.)
       </p>
     </div>
 
@@ -54,7 +54,7 @@ import Icon from "./Icon.astro";
               <Icon name="robot" size={14} /> Your AI agent
             </div>
             <p class="mt-1 text-sm text-ink-700">
-              Calls <code class="font-mono text-xs text-accent-800">detect_context</code> from any managed worktree and gets the configured layout back — every repo, every branch — in one response.
+              Calls <code class="font-mono text-xs text-accent-800">detect_context</code> with <code class="font-mono text-xs text-accent-800">includeAllWorktrees: true</code> from any managed worktree and gets every configured repo and worktree back in one response.
             </p>
           </div>
         </div>

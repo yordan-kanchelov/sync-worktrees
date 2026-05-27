@@ -1,24 +1,27 @@
 ---
+import { getEntry } from "astro:content";
 import { Code } from "astro:components";
 import CopyButton from "./CopyButton.astro";
+
+const commands = (await getEntry("commands", "main"))!.data;
 
 const steps = [
   {
     title: "Install",
     body: "Globally via npm. Node 22+, macOS or Linux.",
-    code: "npm install -g sync-worktrees",
+    code: commands.npmInstall,
     lang: "bash",
   },
   {
     title: "Run the init wizard",
     body: "Generates sync-worktrees.config.js next to where you ran it. Edit later to add more repos.",
-    code: "cd ~/projects/my-sync-dir\nsync-worktrees init",
+    code: `cd ~/projects/my-sync-dir\n${commands.init}`,
     lang: "bash",
   },
   {
     title: "Launch the TUI — or sync once",
     body: "Bare command opens the interactive UI and keeps syncing on schedule. Use --runOnce for CI or scripted runs.",
-    code: "sync-worktrees                # interactive TUI + cron\nsync-worktrees --runOnce      # one-shot",
+    code: `${commands.runTui}                # interactive TUI + cron\n${commands.runOnce}      # one-shot`,
     lang: "bash",
   },
 ];
@@ -47,7 +50,9 @@ const steps = [
               <span class="font-mono text-xs text-ink-500">terminal</span>
               <CopyButton value={s.code} class="text-ink-600 hover:bg-white" />
             </div>
-            <Code code={s.code} lang={s.lang as any} theme="github-light" wrap />
+            <div class="[&_pre]:m-0! [&_pre]:bg-transparent! [&_pre]:px-4! [&_pre]:py-3! [&_pre]:text-[13px] [&_pre]:leading-6">
+              <Code code={s.code} lang={s.lang as any} theme="github-light" wrap />
+            </div>
           </div>
         </li>
       ))}

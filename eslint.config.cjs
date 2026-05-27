@@ -124,6 +124,8 @@ module.exports = [
       "**/.astro/",
       "**/.git/",
       "**/build/",
+      // The site/ workspace has its own toolchain (astro check); don't lint it from the root.
+      "site/",
     ],
   },
 ];

@@ -1,0 +1,53 @@
+---
+import { getEntry } from "astro:content";
+import Icon from "./Icon.astro";
+import CopyButton from "./CopyButton.astro";
+
+const commands = (await getEntry("commands", "main"))!.data;
+const positioning = (await getEntry("positioning", "main"))!.data;
+const npmCmd = commands.npmInstall;
+const repoUrl = "https://github.com/yordan-kanchelov/sync-worktrees";
+---
+<section class="relative overflow-hidden bg-ink-950 py-20 sm:py-24 text-ink-100">
+  <div class="absolute inset-0 -z-0 section-grid-dark"></div>
+  <div class="absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-accent-500/40 to-transparent"></div>
+
+  <div class="relative mx-auto max-w-3xl px-6 text-center">
+    <h2 class="text-balance text-4xl font-bold tracking-tight text-white sm:text-5xl">
+      {positioning.ctaHeadline}
+    </h2>
+    <p class="mx-auto mt-4 max-w-xl text-balance text-lg text-ink-300">
+      {positioning.ctaSubhead}
+    </p>
+
+    <div class="mx-auto mt-8 flex max-w-md items-center justify-between gap-2 rounded-xl border border-ink-700 bg-ink-900/70 px-4 py-3 font-mono text-sm text-ink-100">
+      <span class="min-w-0 truncate"><span class="text-accent-400">$</span> {npmCmd}</span>
+      <CopyButton value={npmCmd} class="shrink-0 bg-ink-800 text-ink-200 hover:bg-ink-700" />
+    </div>
+
+    <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
+      <a
+        href={repoUrl}
+        data-cta="github"
+        class="inline-flex items-center gap-2 rounded-full border border-ink-700 bg-ink-900/60 px-4 py-2 text-sm font-medium text-ink-100 transition hover:border-accent-400 hover:text-white"
+      >
+        <Icon name="github" size={16} /> Star on GitHub
+      </a>
+      <a
+        href="#quickstart"
+        data-cta="quickstart"
+        class="inline-flex items-center gap-2 rounded-full bg-accent-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent-400"
+      >
+        Read the quick start <Icon name="arrow-right" size={16} />
+      </a>
+    </div>
+  </div>
+</section>
+
+<script is:inline>
+  document.querySelectorAll("[data-cta]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      window.posthog?.capture("cta_clicked", { target: el.getAttribute("data-cta") });
+    });
+  });
+</script>

@@ -1,38 +1,10 @@
 ---
+import { getCollection } from "astro:content";
 import Icon from "./Icon.astro";
 
-const features = [
-  {
-    icon: "git-branch",
-    title: "Worktree mode",
-    body: "Every remote branch gets its own directory, all sharing one .git database. Disk usage scales with working-tree size, not branch count.",
-  },
-  {
-    icon: "clone",
-    title: "Clone mode",
-    body: "When one checkout is enough, drop a plain single-branch clone at a fixed path. First-class alternative for dependency siblings.",
-  },
-  {
-    icon: "robot",
-    title: "MCP server",
-    body: "Ships sync-worktrees-mcp as a second binary. AI agents call detect_context, list_worktrees, create_worktree, sync, and update_worktree over stdio.",
-  },
-  {
-    icon: "monitor",
-    title: "Interactive TUI",
-    body: "Ink-based terminal UI with wizards for opening worktrees in editor or terminal, creating branches, and inspecting multi-repo status.",
-  },
-  {
-    icon: "filter",
-    title: "Smart filtering",
-    body: "Glob include/exclude, age-based pruning, sparse checkout for monorepos, per-repo overrides. Keep huge repos manageable.",
-  },
-  {
-    icon: "shield",
-    title: "Safety by default",
-    body: "Force-push detection with .diverged/ preservation. Refuses to remove worktrees with uncommitted work, unpushed commits, or stashes.",
-  },
-];
+const features = (await getCollection("features"))
+  .sort((a, b) => a.data.order - b.data.order)
+  .map((e) => e.data);
 ---
 <section class="bg-white py-20 sm:py-28">
   <div class="mx-auto max-w-6xl px-6">

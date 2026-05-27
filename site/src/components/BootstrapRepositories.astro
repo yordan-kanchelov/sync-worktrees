@@ -1,0 +1,164 @@
+---
+import { Code } from "astro:components";
+import CopyButton from "./CopyButton.astro";
+import Icon from "./Icon.astro";
+
+const configCode = `// sync-worktrees.config.js
+
+/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
+const config = {
+  defaults: {
+    branchInclude: ["main", "feature/*", "release-*"],
+    branchExclude: ["wip-*", "tmp-*"],
+  },
+  repositories: [
+    {
+      name: "frontend",
+      repoUrl: "git@github.com:company/frontend.git",
+      worktreeDir: "./worktrees/frontend",
+    },
+    {
+      name: "backend",
+      repoUrl: "git@github.com:company/backend.git",
+      worktreeDir: "./worktrees/backend",
+      branchMaxAge: "6m",
+    },
+  ],
+};
+
+export default config;`;
+
+const commandCode = `sync-worktrees`;
+
+const highlights = [
+  {
+    title: "Selected branches only",
+    body: "Keep main, feature, and release branches while excluding wip branches or stale branches by age.",
+  },
+  {
+    title: "Stable paths for humans",
+    body: "Jump straight to ./worktrees/frontend/feature-login instead of checking out and stashing.",
+  },
+  {
+    title: "Same map for agents",
+    body: "AI tools can discover the configured workspace instead of asking where sibling repos live.",
+  },
+];
+---
+<section id="solution" class="bg-white py-20 sm:py-28">
+  <div class="mx-auto max-w-6xl px-6">
+    <div class="mx-auto max-w-3xl text-center">
+      <div class="inline-flex items-center gap-2 rounded-full border border-ink-200 bg-ink-50 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-600">
+        The solution
+      </div>
+      <h2 class="mt-4 text-balance text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl">
+        Declare the workspace once. Get every selected branch at a stable path.
+      </h2>
+      <p class="mt-4 text-balance text-lg text-ink-600">
+        Describe your repos, branch rules, and folder layout in one config. sync-worktrees clones what is missing, creates matching worktrees, and keeps every selected repo branch discoverable at a predictable path.
+      </p>
+    </div>
+
+    <div class="mt-14 grid items-stretch gap-4 lg:grid-cols-[1fr_auto_1fr_auto_1.25fr]">
+      <div class="min-w-0 rounded-2xl border border-rose-200 bg-rose-50/50 p-5">
+        <div class="flex items-center gap-2 text-sm font-semibold text-rose-700">
+          <span class="inline-flex size-7 items-center justify-center rounded-full bg-white text-xs ring-1 ring-rose-200">1</span>
+          Branch chaos
+        </div>
+        <div class="mt-4 space-y-2 font-mono text-sm text-ink-700">
+          <div class="rounded-lg bg-white px-3 py-2 ring-1 ring-rose-100">frontend: main? feature?</div>
+          <div class="rounded-lg bg-white px-3 py-2 ring-1 ring-rose-100">backend: release? local?</div>
+          <div class="rounded-lg bg-white px-3 py-2 ring-1 ring-rose-100">agent: where is the other repo?</div>
+        </div>
+      </div>
+
+      <div class="hidden items-center text-ink-300 lg:flex">
+        <Icon name="arrow-right" size={22} />
+      </div>
+
+      <div class="min-w-0 rounded-2xl border border-ink-200 bg-ink-900 p-5 text-white shadow-sm">
+        <div class="flex items-center gap-2 text-sm font-semibold text-white">
+          <span class="inline-flex size-7 items-center justify-center rounded-full bg-ink-800 text-xs ring-1 ring-ink-700">2</span>
+          Run one command
+        </div>
+        <div class="mt-4 overflow-hidden rounded-xl border border-ink-700 bg-ink-950">
+          <div class="flex items-center justify-between border-b border-ink-800 px-3 py-1.5">
+            <span class="font-mono text-xs text-ink-400">terminal</span>
+            <CopyButton value={commandCode} class="text-ink-300 hover:bg-ink-800" />
+          </div>
+          <div class="[&_pre]:m-0! [&_pre]:bg-transparent! [&_pre]:px-3! [&_pre]:py-2.5!">
+            <Code code={commandCode} lang="bash" theme="github-dark-default" wrap />
+          </div>
+        </div>
+        <p class="mt-4 text-sm leading-relaxed text-ink-300">
+          Run it next to the config. The filesystem becomes the workspace map.
+        </p>
+      </div>
+
+      <div class="hidden items-center text-ink-300 lg:flex">
+        <Icon name="arrow-right" size={22} />
+      </div>
+
+      <div class="min-w-0 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-5 shadow-sm">
+        <div class="flex items-center gap-2 text-sm font-semibold text-emerald-800">
+          <span class="inline-flex size-7 items-center justify-center rounded-full bg-white text-xs ring-1 ring-emerald-200">3</span>
+          Stable paths
+        </div>
+        <div class="mt-4 rounded-xl border border-emerald-200 bg-white p-4 font-mono text-xs leading-relaxed text-ink-700">
+<pre class="overflow-x-auto">
+worktrees/
+├── frontend/
+│   ├── main/
+│   └── feature-login/
+└── backend/
+    ├── main/
+    └── release-2.4/
+</pre>
+        </div>
+        <p class="mt-4 text-sm leading-relaxed text-ink-700">
+          <code class="font-mono text-xs text-emerald-800">frontend/main</code> always lives at <code class="font-mono text-xs text-emerald-800">./worktrees/frontend/main</code>.
+        </p>
+      </div>
+    </div>
+
+    <div class="mt-6 grid gap-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-start">
+      <div class="min-w-0 overflow-hidden rounded-2xl border border-ink-200 bg-white shadow-sm">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-ink-200 bg-ink-50 px-4 py-3">
+          <div class="flex items-center gap-3">
+            <span class="inline-flex size-8 items-center justify-center rounded-full border border-ink-200 bg-white text-sm font-semibold text-ink-700">
+              cfg
+            </span>
+            <div>
+              <h3 class="text-sm font-semibold text-ink-900">Create sync-worktrees.config.js</h3>
+              <p class="text-xs text-ink-500">The config decides which repo branches get a folder.</p>
+            </div>
+          </div>
+          <CopyButton value={configCode} class="text-ink-600 hover:bg-white" />
+        </div>
+        <div class="overflow-x-auto bg-ink-50 [&_pre]:m-0! [&_pre]:bg-transparent! [&_pre]:p-4! [&_pre]:text-[13px] [&_pre]:leading-6">
+          <Code code={configCode} lang="javascript" theme="github-light" wrap />
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-ink-200 bg-ink-50 p-5">
+        <div class="flex items-center gap-2 text-sm font-semibold text-ink-900">
+          <Icon name="command" size={16} />
+          Why this removes the tax
+        </div>
+        <div class="mt-5 grid gap-4 sm:grid-cols-3 lg:grid-cols-1">
+          {highlights.map(({ title, body }) => (
+            <div class="flex gap-3">
+              <span class="mt-1 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-accent-100 text-accent-700 ring-1 ring-accent-200">
+                <Icon name="check" size={12} />
+              </span>
+              <div>
+                <h4 class="text-sm font-semibold text-ink-900">{title}</h4>
+                <p class="mt-1 text-sm leading-relaxed text-ink-600">{body}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

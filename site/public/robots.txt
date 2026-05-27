@@ -1,3 +1,6 @@
+# Crawlers and AI agents welcome — nothing here is off-limits.
+# Plain-text summaries built for LLMs: /llms.txt and /llms-full.txt
+
 User-agent: *
 Allow: /
 
