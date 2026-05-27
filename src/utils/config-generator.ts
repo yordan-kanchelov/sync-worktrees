@@ -78,11 +78,15 @@ export async function generateConfigFile(
     repository.bareRepoDir = useRelativeBare ? `./${bareRepoDirRelative}` : input.bareRepoDir;
   }
 
-  const configObject = {
-    defaults: {
-      cronSchedule: input.cronSchedule,
-      runOnce: input.runOnce,
-    },
+  const defaults: SerializableObject = {
+    cronSchedule: input.cronSchedule,
+  };
+  if (input.runOnce) {
+    defaults.runOnce = input.runOnce;
+  }
+
+  const configObject: SerializableObject = {
+    defaults,
     repositories: [repository],
   };
 

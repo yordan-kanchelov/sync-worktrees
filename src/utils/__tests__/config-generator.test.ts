@@ -19,7 +19,7 @@ describe("Config Generator", () => {
   });
 
   describe("generateConfigFile", () => {
-    it("generates a basic config file", async () => {
+    it("generates a basic config file and omits default-valued runOnce", async () => {
       const input: InitConfigInput = {
         repoUrl: "https://github.com/user/repo.git",
         worktreeDir: "/absolute/path/to/worktrees",
@@ -39,7 +39,9 @@ describe("Config Generator", () => {
       expect(content).toContain('repoUrl: "https://github.com/user/repo.git"');
       expect(content).toContain('worktreeDir: "/absolute/path/to/worktrees"');
       expect(content).toContain('cronSchedule: "0 * * * *"');
-      expect(content).toContain("runOnce: false");
+
+      // runOnce: false is the default and must not be serialized.
+      expect(content).not.toContain("runOnce");
     });
 
     it("emits runOnce: true and custom cronSchedule", async () => {
