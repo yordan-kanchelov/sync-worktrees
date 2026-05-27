@@ -2,7 +2,7 @@
 
 > A workspace orchestrator for humans and AI agents. Keeps every Git branch across every repo you work on checked out as a stable directory, automatically synced with the remote, and exposed over MCP so AI coding assistants can navigate the workspace without re-orientation.
 
-sync-worktrees materializes your entire branch + repo layout on disk — one folder per branch, shared Git object storage underneath — and ships an MCP server (`sync-worktrees-mcp`) so AI tools like Claude Code, Cursor, Windsurf, Codex, Cline, opencode, Warp, Gemini CLI, and VS Code Copilot can list, create, inspect, and sync worktrees through tool calls. Runs as a one-shot sync or an interactive Ink-based TUI with cron scheduling. MIT licensed, Node 22+, macOS and Linux.
+sync-worktrees keeps every branch checked out as its own folder — one folder per branch, shared Git object storage underneath — and ships an MCP server (`sync-worktrees-mcp`) so AI tools like Claude Code, Cursor, Windsurf, Claude Desktop, VS Code, Codex, Cline, opencode, Warp, and Gemini CLI can list, create, inspect, and sync worktrees through tool calls. Runs as a one-shot sync or an interactive Ink-based TUI with cron scheduling. MIT licensed, Node 22+, macOS and Linux.
 
 ## Docs
 

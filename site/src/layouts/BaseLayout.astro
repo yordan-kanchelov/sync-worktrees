@@ -12,7 +12,7 @@ export interface Props {
 
 const {
   title = "sync-worktrees — Keep every branch checked out. For you and your AI agents.",
-  description = "Materialize your entire Git branch + repo layout on disk and expose it to any MCP-compatible AI tool. No stashing, no re-cloning, no re-explaining your codebase to Claude Code, Cursor, Codex, or Windsurf.",
+  description = "Keep every Git branch across every repo checked out as a folder you can cd into — auto-synced with the remote and exposed to your AI agents over MCP. No stashing, no re-cloning, no re-explaining your codebase to Claude Code, Cursor, Codex, or Windsurf.",
   canonical,
   ogImage = "/og-image.png",
 } = Astro.props;
@@ -33,7 +33,7 @@ const faqEntries = [
   },
   {
     q: "How does the MCP server help AI coding agents?",
-    a: "The bundled sync-worktrees-mcp binary speaks the Model Context Protocol over stdio. AI agents (Claude Code, Cursor, Windsurf, Codex, Cline, opencode, Warp, Gemini CLI, VS Code Copilot) can call detect_context, list_worktrees, create_worktree, sync, and update_worktree directly. In a single detect_context call with includeAllWorktrees: true, an agent working in one repo discovers every sibling repo and worktree you have configured — so 'go look in the other repo' actually works without manual re-orientation.",
+    a: "The bundled sync-worktrees-mcp binary speaks the Model Context Protocol over stdio. AI agents (Claude Code, Cursor, Windsurf, Claude Desktop, VS Code, Codex, Cline, opencode, Warp, Gemini CLI) can call tools like detect_context, list_worktrees, create_worktree, sync, and update_worktree directly. In a single detect_context call with includeAllWorktrees: true, an agent working in one repo discovers every sibling repo and worktree you have configured — so 'go look in the other repo' actually works without manual re-orientation.",
   },
   {
     q: "Does it work with monorepos?",
@@ -108,6 +108,7 @@ const faqJsonLd = {
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:image" content={ogImageUrl} />
+    <meta property="og:image:alt" content="sync-worktrees — keep every branch checked out, for you and your AI agents." />
     <meta property="og:site_name" content="sync-worktrees" />
 
     <!-- Twitter -->
@@ -115,6 +116,7 @@ const faqJsonLd = {
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageUrl} />
+    <meta name="twitter:image:alt" content="sync-worktrees — keep every branch checked out, for you and your AI agents." />
 
     <!-- Hints for crawlers and AI tools -->
     <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM entry point" />
