@@ -4,18 +4,18 @@ title: Landing-page hero and section copy
 
 # Keep every branch checked out. For you and your AI agents.
 
-sync-worktrees materializes your entire branch and repo layout on disk, keeps it in sync with the remote, and exposes it to any MCP-compatible AI tool — no stashing, no re-cloning, no re-explaining your codebase.
+sync-worktrees turns every branch across all your repos into a folder you can `cd` into — kept current with the remote automatically, and exposed to your AI agents over MCP. No stashing, no re-cloning, no re-explaining your codebase. Your Git history is stored once and shared, so each extra branch only costs its working files, not another copy of the repo.
 
 ## The problem
 
 Without sync-worktrees: stash half-finished work, hunt for where you cloned a sibling repo, switch branches in five repos because one feature spans all of them, re-explain to an AI assistant which directory holds which branch.
 
-With sync-worktrees: every branch is a directory. Switching branches becomes `cd`. Searching across repos becomes `grep -r`. AI agents see the same workspace shape you do, so "look in the other repo" actually works.
+With sync-worktrees: every branch is a directory, kept fresh on a schedule so you never run `git fetch` by hand. Switching branches becomes `cd`. Searching across repos becomes `grep -r`. Your `.git` history is stored once and shared, so each branch only adds its working files. AI agents see the same workspace shape you do, so "look in the other repo" actually works.
 
 ## Features
 
 - **Worktree mode** — one folder per remote branch, one shared `.git` database underneath. Disk usage scales with working-tree size, not branch count.
-- **Clone mode** — single-branch checkout at a fixed path. For dependency siblings, single-purpose dev environments, or anywhere one checkout is enough.
+- **Clone mode** — a single branch checked out at a fixed path (no `.bare/`, no per-branch subfolders). For dependency siblings, single-purpose dev environments, or anywhere one checkout is enough.
 - **MCP server** — first-class AI agent integration over stdio. `detect_context`, `list_worktrees`, `create_worktree`, `sync`, `update_worktree`, and more.
 - **Interactive TUI** — Ink-based terminal UI with wizards for opening worktrees in your editor or terminal, creating branches, and inspecting multi-repo status. Live log streaming.
 - **Smart filtering** — glob include/exclude patterns, age-based filtering, sparse checkout for monorepos, per-repo overrides.
