@@ -1,0 +1,24 @@
+- id: detect_context
+  name: detect_context
+  desc: "Resolve the workspace from any path. Can include every configured repo and worktree, plus per-capability { available, reason } flags so the agent knows what it can actually call."
+  order: 1
+- id: list_worktrees
+  name: list_worktrees
+  desc: "Status-labelled list (clean / dirty / stale / current), divergence, safeToRemove, last sync. Cross-repo when no repoName is supplied."
+  order: 2
+- id: get_worktree_status
+  name: get_worktree_status
+  desc: "Per-worktree detail: dirty files, unpushed commits, stashes, operation in progress."
+  order: 3
+- id: create_worktree
+  name: create_worktree
+  desc: "Create a worktree for a branch. When creating a new branch, optionally branch from baseBranch and publish with --no-track + push -u."
+  order: 4
+- id: sync
+  name: sync
+  desc: "Full sync cycle: fetch, create, prune, update. Streams progress notifications."
+  order: 5
+- id: update_worktree
+  name: update_worktree
+  desc: "Fast-forward one worktree to match upstream."
+  order: 6

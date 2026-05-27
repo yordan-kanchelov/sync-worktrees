@@ -1,119 +1,24 @@
 ---
+import { getCollection, getEntry } from "astro:content";
 import Icon from "./Icon.astro";
 import CopyButton from "./CopyButton.astro";
 import { Code } from "astro:components";
 
-const standardJson = `{
-  "mcpServers": {
-    "sync-worktrees": {
-      "command": "npx",
-      "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
-      "env": {
-        "SYNC_WORKTREES_CONFIG": "/absolute/path/to/sync-worktrees.config.js"
-      }
-    }
-  }
-}`;
+const commands = (await getEntry("commands", "main"))!.data;
 
-const tabs = [
-  {
-    id: "claude-code",
-    label: "Claude Code",
-    lang: "bash",
-    code: "claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp",
-    hint: "Use the Claude Code CLI. Append -e SYNC_WORKTREES_CONFIG=... to point at a config.",
-  },
-  {
-    id: "cursor",
-    label: "Cursor",
-    lang: "json",
-    code: standardJson,
-    hint: "Paste into ~/.cursor/mcp.json (global) or .cursor/mcp.json (per-project).",
-  },
-  {
-    id: "windsurf",
-    label: "Windsurf",
-    lang: "json",
-    code: standardJson,
-    hint: "Add to your Windsurf MCP config. SYNC_WORKTREES_CONFIG is optional — omit for auto-detect.",
-  },
-  {
-    id: "claude-desktop",
-    label: "Claude Desktop",
-    lang: "json",
-    code: standardJson,
-    hint: "Edit claude_desktop_config.json (~/Library/Application Support/Claude on macOS, %APPDATA%/Claude on Windows), then restart.",
-  },
-  {
-    id: "vscode",
-    label: "VS Code",
-    lang: "bash",
-    code: `code --add-mcp '{"name":"sync-worktrees","command":"npx","args":["-y","-p","sync-worktrees","sync-worktrees-mcp"]}'`,
-    hint: "Uses the GitHub Copilot Chat MCP integration. Or paste the standard JSON config manually.",
-  },
-  {
-    id: "codex",
-    label: "Codex",
-    lang: "bash",
-    code: "codex mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp",
-    hint: "Or edit ~/.codex/config.toml directly.",
-  },
-  {
-    id: "cline",
-    label: "Cline",
-    lang: "json",
-    code: `{
-  "mcpServers": {
-    "sync-worktrees": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
-      "disabled": false
-    }
-  }
-}`,
-    hint: "Edit cline_mcp_settings.json — see Cline's MCP configuration docs.",
-  },
-  {
-    id: "opencode",
-    label: "opencode",
-    lang: "json",
-    code: `{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "sync-worktrees": {
-      "type": "local",
-      "command": ["npx", "-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
-      "enabled": true
-    }
-  }
-}`,
-    hint: "Edit ~/.config/opencode/opencode.json.",
-  },
-  {
-    id: "warp",
-    label: "Warp",
-    lang: "json",
-    code: standardJson,
-    hint: "Settings → AI → Manage MCP Servers → + Add. Or run /add-mcp in the prompt.",
-  },
-  {
-    id: "gemini",
-    label: "Gemini CLI",
-    lang: "json",
-    code: standardJson,
-    hint: "Follow the Gemini CLI MCP install guide and use the standard config.",
-  },
-];
+const tabs = (await getCollection("clients"))
+  .sort((a, b) => a.data.order - b.data.order)
+  .map((c) => ({
+    id: c.id,
+    label: c.data.label,
+    lang: c.data.lang,
+    hint: c.data.hint,
+    code: c.data.useStandardJson ? commands.standardJson : (c.data.code ?? commands.claudeMcpAdd),
+  }));
 
-const mcpTools = [
-  ["detect_context", "Resolve the workspace from any path. Can include every configured repo and worktree, plus per-capability { available, reason } flags so the agent knows what it can actually call."],
-  ["list_worktrees", "Status-labelled list (clean / dirty / stale / current), divergence, safeToRemove, last sync. Cross-repo when no repoName is supplied."],
-  ["get_worktree_status", "Per-worktree detail: dirty files, unpushed commits, stashes, operation in progress."],
-  ["create_worktree", "Create a worktree for a branch. When creating a new branch, optionally branch from baseBranch and publish with --no-track + push -u."],
-  ["sync", "Full sync cycle: fetch, create, prune, update. Streams progress notifications."],
-  ["update_worktree", "Fast-forward one worktree to match upstream."],
-];
+const mcpTools = (await getCollection("mcpTools"))
+  .sort((a, b) => a.data.order - b.data.order)
+  .map((t) => [t.data.name, t.data.desc] as const);
 ---
 <section id="agents" class="relative overflow-hidden bg-ink-950 py-20 sm:py-28 text-ink-100">
   <div class="absolute inset-0 -z-0 section-grid-dark"></div>

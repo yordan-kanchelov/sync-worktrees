@@ -1,0 +1,48 @@
+- id: without-1
+  side: without
+  text: "Stash half-finished work just to glance at another branch"
+  order: 1
+- id: without-2
+  side: without
+  text: "Hunt for where you cloned that sibling repo last month"
+  order: 2
+- id: without-3
+  side: without
+  text: "Switch branches in five repos because one feature spans them all"
+  order: 3
+- id: without-4
+  side: without
+  text: "Re-explain to Claude or Cursor which directory holds which branch"
+  order: 4
+- id: without-5
+  side: without
+  text: "Onboard new hires through a brittle copy-paste setup doc"
+  order: 5
+- id: with-1
+  side: with
+  text: "Branches stay fresh on a schedule — clean worktrees fast-forward themselves, no manual `git fetch`"
+  order: 1
+- id: with-2
+  side: with
+  text: "Switching branches becomes `cd`"
+  order: 2
+- id: with-3
+  side: with
+  text: "Every repo lives at a predictable path you describe once in config"
+  order: 3
+- id: with-4
+  side: with
+  text: "Multi-repo search is just `grep -r` across the workspace"
+  order: 4
+- id: with-5
+  side: with
+  text: "Your `.git` history is stored once and shared — each branch adds only its working files, not another repo copy"
+  order: 5
+- id: with-6
+  side: with
+  text: "AI agents call `detect_context` and see every repo at once"
+  order: 6
+- id: with-7
+  side: with
+  text: "New machine: one config file, one command, the whole workspace appears"
+  order: 7

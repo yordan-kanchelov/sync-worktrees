@@ -2,6 +2,10 @@
 import "../styles/globals.css";
 import packageMetadata from "../../../package.json";
 import PostHogAnalytics from "../components/PostHogAnalytics.astro";
+import { getCollection, getEntry } from "astro:content";
+import { mdToPlainText } from "../lib/markdown-inline";
+
+const positioning = (await getEntry("positioning", "main"))!.data;
 
 export interface Props {
   title?: string;
@@ -11,8 +15,8 @@ export interface Props {
 }
 
 const {
-  title = "sync-worktrees — Keep every branch checked out. For you and your AI agents.",
-  description = "Keep every Git branch across every repo checked out as a folder you can cd into — auto-synced with the remote and exposed to your AI agents over MCP. No stashing, no re-cloning, no re-explaining your codebase to Claude Code, Cursor, Codex, or Windsurf.",
+  title = positioning.metaTitle,
+  description = positioning.metaDescription,
   canonical,
   ogImage = "/og-image.png",
 } = Astro.props;
@@ -22,36 +26,7 @@ const canonicalUrl = canonical ?? new URL(Astro.url.pathname, siteUrl).toString(
 const ogImageUrl = new URL(ogImage, siteUrl).toString();
 const packageVersion = packageMetadata.version;
 
-const faqEntries = [
-  {
-    q: "What's the difference between git worktree and sync-worktrees?",
-    a: "git worktree is the underlying Git primitive: a single command that adds one extra working directory backed by a shared .git database (it works with any repo, bare or not). sync-worktrees is a workspace orchestrator built on top of it — in worktree mode it sets up a bare repo, creates a directory for every selected remote branch automatically, prunes them when branches are deleted upstream, and keeps the whole thing fresh on a cron schedule. It also ships an interactive TUI and an MCP server so AI agents can navigate and operate the workspace.",
-  },
-  {
-    q: "Why use this instead of cloning each branch separately?",
-    a: "Cloning duplicates the entire Git object database for every branch — wasteful on disk and slow to refresh. Worktrees share one .git directory among many checkouts, so disk usage scales with working-tree size, not with branch count. sync-worktrees automates the bookkeeping you'd otherwise have to do manually (creating worktrees for new remote branches, removing stale ones, handling force-pushes safely).",
-  },
-  {
-    q: "How does the MCP server help AI coding agents?",
-    a: "The bundled sync-worktrees-mcp binary speaks the Model Context Protocol over stdio. AI agents (Claude Code, Cursor, Windsurf, Claude Desktop, VS Code, Codex, Cline, opencode, Warp, Gemini CLI) can call tools like detect_context, list_worktrees, create_worktree, sync, and update_worktree directly. In a single detect_context call with includeAllWorktrees: true, an agent working in one repo discovers every sibling repo and worktree you have configured — so 'go look in the other repo' actually works without manual re-orientation.",
-  },
-  {
-    q: "Does it work with monorepos?",
-    a: "Yes. Per-repo branch include/exclude globs and sparse-checkout support let you scope each worktree to the slice of the monorepo you actually care about. Combined with branchMaxAge to ignore stale branches, this keeps multi-million-line monorepos manageable on disk.",
-  },
-  {
-    q: "What happens when a branch is force-pushed or deleted upstream?",
-    a: "Force-pushes are detected and the divergent working copy is moved aside into a .diverged/ directory rather than overwritten — uncommitted work is never silently lost. Deleted branches have their worktrees removed only if they are clean, with no unpushed commits, no stashes, and no operation in progress; anything else is preserved and surfaced in the TUI's status view.",
-  },
-  {
-    q: "Can I run it continuously or on a cron?",
-    a: "Yes. The default invocation launches the interactive TUI and syncs continuously based on the cronSchedule field in your config (per-repo overrides are supported). For one-shot or scripted use, pass --runOnce. For CI pipelines, point --config at your workspace config and the same one-shot path applies.",
-  },
-  {
-    q: "Is it safe with uncommitted work?",
-    a: "Yes. Sync operations never merge or rebase your working copies. They fetch, create missing worktrees, fast-forward eligible existing worktrees, and prune only when the safety checks pass. Worktree removal refuses on dirty trees, unpushed commits, stashes, or in-progress operations (merge/rebase/cherry-pick/revert/bisect). Newly created branches are pushed with explicit --no-track so they don't inherit origin/main as upstream by accident.",
-  },
-];
+const faqs = (await getCollection("faq")).sort((a, b) => a.data.order - b.data.order);
 
 const softwareJsonLd = {
   "@context": "https://schema.org",
@@ -81,10 +56,10 @@ const softwareJsonLd = {
 const faqJsonLd = {
   "@context": "https://schema.org",
   "@type": "FAQPage",
-  mainEntity: faqEntries.map(({ q, a }) => ({
+  mainEntity: faqs.map((entry) => ({
     "@type": "Question",
-    name: q,
-    acceptedAnswer: { "@type": "Answer", text: a },
+    name: entry.data.question,
+    acceptedAnswer: { "@type": "Answer", text: mdToPlainText(entry.body ?? "") },
   })),
 };
 ---
@@ -108,7 +83,7 @@ const faqJsonLd = {
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:image" content={ogImageUrl} />
-    <meta property="og:image:alt" content="sync-worktrees — keep every branch checked out, for you and your AI agents." />
+    <meta property="og:image:alt" content={positioning.ogImageAlt} />
     <meta property="og:site_name" content="sync-worktrees" />
 
     <!-- Twitter -->
@@ -116,7 +91,7 @@ const faqJsonLd = {
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageUrl} />
-    <meta name="twitter:image:alt" content="sync-worktrees — keep every branch checked out, for you and your AI agents." />
+    <meta name="twitter:image:alt" content={positioning.ogImageAlt} />
 
     <!-- Hints for crawlers and AI tools -->
     <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM entry point" />

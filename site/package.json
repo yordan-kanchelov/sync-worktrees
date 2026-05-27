@@ -8,7 +8,7 @@
     "prebuild": "node scripts/copy-assets.mjs && node scripts/generate-og-image.mjs",
     "dev": "astro dev",
     "start": "astro dev",
-    "build": "astro build && node scripts/build-llms-full.mjs",
+    "build": "astro build",
     "preview": "astro preview",
     "astro": "astro"
   },

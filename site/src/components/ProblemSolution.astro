@@ -1,23 +1,11 @@
 ---
+import { getCollection } from "astro:content";
 import Icon from "./Icon.astro";
+import { inlineCodeToHtml } from "../lib/markdown-inline";
 
-const without = [
-  "Stash half-finished work just to glance at another branch",
-  "Hunt for where you cloned that sibling repo last month",
-  "Switch branches in five repos because one feature spans them all",
-  "Re-explain to Claude or Cursor which directory holds which branch",
-  "Onboard new hires through a brittle copy-paste setup doc",
-];
-
-const withTool = [
-  "Branches stay fresh on a schedule — clean worktrees fast-forward themselves, no manual <code class=\"font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded\">git fetch</code>",
-  "Switching branches becomes <code class=\"font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded\">cd</code>",
-  "Every repo lives at a predictable path you describe once in config",
-  "Multi-repo search is just <code class=\"font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded\">grep -r</code> across the workspace",
-  "Your <code class=\"font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded\">.git</code> history is stored once and shared — each branch adds only its working files, not another repo copy",
-  "AI agents call <code class=\"font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded\">detect_context</code> and see every repo at once",
-  "New machine: one config file, one command, the whole workspace appears",
-];
+const bullets = (await getCollection("problemSolution")).sort((a, b) => a.data.order - b.data.order);
+const without = bullets.filter((b) => b.data.side === "without").map((b) => b.data.text);
+const withTool = bullets.filter((b) => b.data.side === "with").map((b) => b.data.text);
 ---
 <section class="relative bg-ink-50 py-20 sm:py-28">
   <div class="mx-auto max-w-6xl px-6">
@@ -43,7 +31,7 @@ const withTool = [
           {without.map((line) => (
             <li class="flex gap-3 text-ink-700">
               <span class="mt-1.5 inline-block size-1.5 shrink-0 rounded-full bg-rose-400"></span>
-              <span>{line}</span>
+              <span set:html={inlineCodeToHtml(line)} />
             </li>
           ))}
         </ul>
@@ -60,7 +48,7 @@ const withTool = [
           {withTool.map((line) => (
             <li class="flex gap-3 text-ink-700">
               <span class="mt-1.5 inline-block size-1.5 shrink-0 rounded-full bg-emerald-400"></span>
-              <span set:html={line} />
+              <span set:html={inlineCodeToHtml(line)} />
             </li>
           ))}
         </ul>

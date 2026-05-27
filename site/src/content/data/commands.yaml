@@ -1,0 +1,18 @@
+main:
+  npmInstall: "npm install -g sync-worktrees"
+  claudeMcpAdd: "claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp"
+  init: "sync-worktrees init"
+  runTui: "sync-worktrees"
+  runOnce: "sync-worktrees --runOnce"
+  standardJson: |-
+    {
+      "mcpServers": {
+        "sync-worktrees": {
+          "command": "npx",
+          "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
+          "env": {
+            "SYNC_WORKTREES_CONFIG": "/absolute/path/to/sync-worktrees.config.js"
+          }
+        }
+      }
+    }

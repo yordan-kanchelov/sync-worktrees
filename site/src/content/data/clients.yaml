@@ -1,0 +1,83 @@
+# MCP client roster + per-client setup snippets — single source for the
+# AgentIntegration tabs, and the client labels reused in llms.txt / llms-full.
+# claude-code has no `code`: it resolves to commands.claudeMcpAdd at render so the
+# install command lives in exactly one place.
+- id: claude-code
+  label: Claude Code
+  lang: bash
+  hint: "Use the Claude Code CLI. Append -e SYNC_WORKTREES_CONFIG=... to point at a config."
+  order: 1
+- id: cursor
+  label: Cursor
+  lang: json
+  useStandardJson: true
+  hint: "Paste into ~/.cursor/mcp.json (global) or .cursor/mcp.json (per-project)."
+  order: 2
+- id: windsurf
+  label: Windsurf
+  lang: json
+  useStandardJson: true
+  hint: "Add to your Windsurf MCP config. SYNC_WORKTREES_CONFIG is optional — omit for auto-detect."
+  order: 3
+- id: claude-desktop
+  label: Claude Desktop
+  lang: json
+  useStandardJson: true
+  hint: "Edit claude_desktop_config.json (~/Library/Application Support/Claude on macOS, %APPDATA%/Claude on Windows), then restart."
+  order: 4
+- id: vscode
+  label: VS Code
+  lang: bash
+  code: "code --add-mcp '{\"name\":\"sync-worktrees\",\"command\":\"npx\",\"args\":[\"-y\",\"-p\",\"sync-worktrees\",\"sync-worktrees-mcp\"]}'"
+  hint: "Uses the GitHub Copilot Chat MCP integration. Or paste the standard JSON config manually."
+  order: 5
+- id: codex
+  label: Codex
+  lang: bash
+  code: "codex mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp"
+  hint: "Or edit ~/.codex/config.toml directly."
+  order: 6
+- id: cline
+  label: Cline
+  lang: json
+  code: |-
+    {
+      "mcpServers": {
+        "sync-worktrees": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
+          "disabled": false
+        }
+      }
+    }
+  hint: "Edit cline_mcp_settings.json — see Cline's MCP configuration docs."
+  order: 7
+- id: opencode
+  label: opencode
+  lang: json
+  code: |-
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "sync-worktrees": {
+          "type": "local",
+          "command": ["npx", "-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
+          "enabled": true
+        }
+      }
+    }
+  hint: "Edit ~/.config/opencode/opencode.json."
+  order: 8
+- id: warp
+  label: Warp
+  lang: json
+  useStandardJson: true
+  hint: "Settings → AI → Manage MCP Servers → + Add. Or run /add-mcp in the prompt."
+  order: 9
+- id: gemini
+  label: Gemini CLI
+  lang: json
+  useStandardJson: true
+  hint: "Follow the Gemini CLI MCP install guide and use the standard config."
+  order: 10

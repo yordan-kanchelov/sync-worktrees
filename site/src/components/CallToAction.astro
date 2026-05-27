@@ -1,8 +1,11 @@
 ---
+import { getEntry } from "astro:content";
 import Icon from "./Icon.astro";
 import CopyButton from "./CopyButton.astro";
 
-const npmCmd = "npm install -g sync-worktrees";
+const commands = (await getEntry("commands", "main"))!.data;
+const positioning = (await getEntry("positioning", "main"))!.data;
+const npmCmd = commands.npmInstall;
 const repoUrl = "https://github.com/yordan-kanchelov/sync-worktrees";
 ---
 <section class="relative overflow-hidden bg-ink-950 py-20 sm:py-24 text-ink-100">
@@ -11,10 +14,10 @@ const repoUrl = "https://github.com/yordan-kanchelov/sync-worktrees";
 
   <div class="relative mx-auto max-w-3xl px-6 text-center">
     <h2 class="text-balance text-4xl font-bold tracking-tight text-white sm:text-5xl">
-      Every branch, checked out and current. From one config.
+      {positioning.ctaHeadline}
     </h2>
     <p class="mx-auto mt-4 max-w-xl text-balance text-lg text-ink-300">
-      Install it, point it at your repos, and stop paying the branch-switching tax — for you and your AI agents.
+      {positioning.ctaSubhead}
     </p>
 
     <div class="mx-auto mt-8 flex max-w-md items-center justify-between gap-2 rounded-xl border border-ink-700 bg-ink-900/70 px-4 py-3 font-mono text-sm text-ink-100">

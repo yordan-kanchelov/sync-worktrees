@@ -1,0 +1,30 @@
+- id: worktree-mode
+  icon: git-branch
+  title: Worktree mode
+  body: "Every remote branch gets its own directory, all sharing one .git database. Disk usage scales with working-tree size, not branch count."
+  order: 1
+- id: clone-mode
+  icon: clone
+  title: Clone mode
+  body: "When one checkout is enough, get a single branch checked out at a fixed path — no .bare/, no per-branch subfolders. First-class alternative for dependency siblings."
+  order: 2
+- id: mcp-server
+  icon: robot
+  title: MCP server
+  body: "Ships sync-worktrees-mcp as a second binary. AI agents call tools like detect_context, list_worktrees, create_worktree, sync, and update_worktree over stdio."
+  order: 3
+- id: tui
+  icon: monitor
+  title: Interactive TUI
+  body: "Ink-based terminal UI with wizards for opening worktrees in editor or terminal, creating branches, and inspecting multi-repo status."
+  order: 4
+- id: filtering
+  icon: filter
+  title: Smart filtering
+  body: "Glob include/exclude, age-based pruning, sparse checkout for monorepos, per-repo overrides. Keep huge repos manageable."
+  order: 5
+- id: safety
+  icon: shield
+  title: Safety by default
+  body: "By default it won't touch your work: sync and removal refuse worktrees with uncommitted changes, unpushed commits, stashes, or in-progress operations, and force-pushed history is moved aside into .diverged/ rather than overwritten."
+  order: 6
