@@ -10,7 +10,6 @@ const config = {
   defaults: {
     branchInclude: ["main", "feature/*", "release-*"],
     branchExclude: ["wip-*", "tmp-*"],
-    updateExistingWorktrees: true,
   },
   repositories: [
     {
@@ -129,7 +128,7 @@ worktrees/
             </span>
             <div>
               <h3 class="text-sm font-semibold text-ink-900">Create sync-worktrees.config.js</h3>
-              <p class="text-xs text-ink-500">The config decides which repo branches materialize.</p>
+              <p class="text-xs text-ink-500">The config decides which repo branches get a folder.</p>
             </div>
           </div>
           <CopyButton value={configCode} class="text-ink-600 hover:bg-white" />

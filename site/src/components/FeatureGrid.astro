@@ -10,7 +10,7 @@ const features = [
   {
     icon: "clone",
     title: "Clone mode",
-    body: "When one checkout is enough, drop a plain single-branch clone at a fixed path. First-class alternative for dependency siblings.",
+    body: "When one checkout is enough, get a single branch checked out at a fixed path — no .bare/, no per-branch subfolders. First-class alternative for dependency siblings.",
   },
   {
     icon: "robot",
@@ -30,7 +30,7 @@ const features = [
   {
     icon: "shield",
     title: "Safety by default",
-    body: "Force-push detection with .diverged/ preservation. Refuses to remove worktrees with uncommitted work, unpushed commits, or stashes.",
+    body: "By default it won't touch your work: sync and removal refuse worktrees with uncommitted changes, unpushed commits, stashes, or in-progress operations, and force-pushed history is moved aside into .diverged/ rather than overwritten.",
   },
 ];
 ---

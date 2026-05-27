@@ -6,6 +6,23 @@ import packageMetadata from "../../../package.json";
 const npmCmd = "npm install -g sync-worktrees";
 const mcpCmd = "claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp";
 const packageVersion = packageMetadata.version;
+
+// Live star count, fetched at build time. Falls back to no count if the API is
+// unreachable or rate-limited so the build never depends on network access.
+let starCount: number | null = null;
+try {
+  const res = await fetch("https://api.github.com/repos/yordan-kanchelov/sync-worktrees", {
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "sync-worktrees-site" },
+  });
+  if (res.ok) {
+    const data = await res.json();
+    if (typeof data.stargazers_count === "number") starCount = data.stargazers_count;
+  }
+} catch {
+  starCount = null;
+}
+const starLabel =
+  starCount === null ? null : starCount >= 1000 ? `${(starCount / 1000).toFixed(1)}k` : `${starCount}`;
 ---
 <section class="relative overflow-hidden bg-white">
   <div class="absolute inset-0 -z-10 section-grid-light"></div>
@@ -23,6 +40,11 @@ const packageVersion = packageMetadata.version;
         <span class="inline-flex items-center gap-1">
           <Icon name="github" size={14} /> Star on GitHub
         </span>
+        {starLabel && (
+          <span class="ml-0.5 inline-flex items-center gap-1 rounded-full bg-ink-100 px-1.5 py-0.5 text-[11px] font-semibold text-ink-700">
+            ★ {starLabel}
+          </span>
+        )}
       </a>
     </div>
 
@@ -34,11 +56,16 @@ const packageVersion = packageMetadata.version;
     </h1>
 
     <p class="mx-auto mt-6 max-w-3xl text-balance text-center text-lg leading-relaxed text-ink-600 sm:text-xl">
-      <strong class="text-ink-900">sync-worktrees</strong> materializes your entire branch and repo layout on disk,
-      keeps it in sync with the remote, and exposes it to any MCP-compatible AI tool —
-      <span class="whitespace-nowrap">no stashing,</span>
+      <strong class="text-ink-900">sync-worktrees</strong> turns every branch across all your repos
+      into a folder you can <code class="rounded bg-ink-100 px-1.5 py-0.5 font-mono text-base text-ink-800">cd</code> into —
+      kept current with the remote automatically, and exposed to your AI agents over MCP.
+      <span class="whitespace-nowrap">No stashing,</span>
       <span class="whitespace-nowrap">no re-cloning,</span>
       no re-explaining your codebase.
+    </p>
+    <p class="mx-auto mt-3 max-w-2xl text-balance text-center text-sm leading-relaxed text-ink-500">
+      Your Git history is stored once and shared, so each extra branch only costs its working files —
+      not another copy of the repo.
     </p>
 
     <div class="mt-10 grid gap-4 sm:grid-cols-2">
@@ -52,7 +79,7 @@ const packageVersion = packageMetadata.version;
           <CopyButton value={npmCmd} class="shrink-0 text-ink-600 hover:bg-white" />
         </div>
         <div class="mt-3 text-sm text-ink-600">
-          Node 22+ on macOS or Linux. Bare command launches the interactive TUI.
+          Node 22+ on macOS or Linux. Run <code class="font-mono text-xs">init</code> once to write a config, then it syncs on a schedule.
         </div>
       </div>
 
