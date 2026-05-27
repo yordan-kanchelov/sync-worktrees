@@ -17,6 +17,7 @@ const packageVersion = packageMetadata.version;
 let starCount: number | null = null;
 try {
   const res = await fetch("https://api.github.com/repos/yordan-kanchelov/sync-worktrees", {
+    signal: AbortSignal.timeout(3000),
     headers: { Accept: "application/vnd.github+json", "User-Agent": "sync-worktrees-site" },
   });
   if (res.ok) {

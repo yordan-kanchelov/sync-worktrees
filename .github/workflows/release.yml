@@ -11,7 +11,6 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write
-  pages: write
 
 jobs:
   release:
@@ -61,12 +60,18 @@ jobs:
     needs: release
     if: needs.release.outputs.published == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v6

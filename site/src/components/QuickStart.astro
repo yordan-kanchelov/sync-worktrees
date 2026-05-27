@@ -50,7 +50,7 @@ const steps = [
               <span class="font-mono text-xs text-ink-500">terminal</span>
               <CopyButton value={s.code} class="text-ink-600 hover:bg-white" />
             </div>
-            <div class="[&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!px-4 [&_pre]:!py-3 [&_pre]:text-[13px] [&_pre]:leading-6">
+            <div class="[&_pre]:m-0! [&_pre]:bg-transparent! [&_pre]:px-4! [&_pre]:py-3! [&_pre]:text-[13px] [&_pre]:leading-6">
               <Code code={s.code} lang={s.lang as any} theme="github-light" wrap />
             </div>
           </div>
