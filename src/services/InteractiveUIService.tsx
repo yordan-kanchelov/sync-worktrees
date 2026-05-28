@@ -475,7 +475,7 @@ export class InteractiveUIService {
       repoIndex,
       repoName,
       sizeBytes: failedAllPaths ? null : sizeBytes,
-      sizeFormatted: failedAllPaths ? "N/A" : partialFailure ? `~${formatBytes(sizeBytes)}` : formatBytes(sizeBytes),
+      sizeFormatted: failedAllPaths ? "N/A" : partialFailure ? `≥${formatBytes(sizeBytes)}` : formatBytes(sizeBytes),
       bareSizeBytes,
       worktreeSizeBytes,
       error: errors.length > 0 ? errors.join("; ") : undefined,
