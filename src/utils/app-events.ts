@@ -1,6 +1,17 @@
+export interface AppSyncProgress {
+  repo: string;
+  phase: string;
+  message: string;
+  progress?: number;
+  processed?: number;
+  total?: number;
+  completed?: boolean;
+}
+
 type AppEventMap = {
   updateLastSyncTime: void;
   setStatus: "idle" | "syncing";
+  setSyncProgress: AppSyncProgress | null;
   setDiskSpace: string;
   addLog: { message: string; level: "info" | "warn" | "error" };
   uiReady: void;

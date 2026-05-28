@@ -8,25 +8,25 @@ const commands = (await getEntry("commands", "main"))!.data;
 const steps = [
   {
     title: "Install",
-    body: "Globally via npm. Node 22+, macOS or Linux.",
+    body: "Global npm install. Node 22+, macOS or Linux.",
     code: commands.npmInstall,
     lang: "bash",
   },
   {
     title: "Run the init wizard",
-    body: "Generates sync-worktrees.config.js next to where you ran it. Edit later to add more repos.",
+    body: "Writes sync-worktrees.config.js where you run it. Add more repos later.",
     code: `cd ~/projects/my-sync-dir\n${commands.init}`,
     lang: "bash",
   },
   {
     title: "Launch the TUI — or sync once",
-    body: "Bare command opens the interactive UI and keeps syncing on schedule. Use --runOnce for CI or scripted runs.",
+    body: "Bare command = interactive UI + cron. --runOnce for CI.",
     code: `${commands.runTui}                # interactive TUI + cron\n${commands.runOnce}      # one-shot`,
     lang: "bash",
   },
 ];
 ---
-<section id="quickstart" class="bg-white py-20 sm:py-28">
+<section id="quickstart" class="bg-white pb-20 sm:pb-28">
   <div class="mx-auto max-w-6xl px-6">
     <div class="mx-auto max-w-2xl text-center">
       <div class="inline-flex items-center gap-2 rounded-full border border-ink-200 bg-ink-50 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-600">

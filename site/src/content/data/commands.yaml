@@ -9,10 +9,7 @@ main:
       "mcpServers": {
         "sync-worktrees": {
           "command": "npx",
-          "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
-          "env": {
-            "SYNC_WORKTREES_CONFIG": "/absolute/path/to/sync-worktrees.config.js"
-          }
+          "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"]
         }
       }
     }

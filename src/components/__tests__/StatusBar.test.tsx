@@ -59,6 +59,73 @@ describe("StatusBar", () => {
 
       expect(lastFrame()).toContain("Syncing...");
     });
+
+    it("should show current progress while syncing", () => {
+      const { lastFrame } = render(
+        <StatusBar
+          {...defaultProps}
+          status="syncing"
+          syncProgressEntries={[
+            {
+              repo: "game-platform",
+              phase: "fetch",
+              message: "fetch receiving: 75% (70914/94551)",
+              progress: 75,
+            },
+          ]}
+        />,
+      );
+
+      expect(lastFrame()).toContain("Progress:");
+      expect(lastFrame()).toContain("[game-platform] fetch receiving: 75% (70914/94551)");
+    });
+
+    it("should show a waiting progress message before the first progress event", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} status="syncing" />);
+
+      expect(lastFrame()).toContain("Progress:");
+      expect(lastFrame()).toContain("waiting for progress events");
+    });
+
+    it("should show concurrent progress for two repositories", () => {
+      const { lastFrame } = render(
+        <StatusBar
+          {...defaultProps}
+          status="syncing"
+          maxProgressLines={2}
+          syncProgressEntries={[
+            {
+              repo: "game-platform",
+              phase: "fetch",
+              message: "fetch receiving: 75% (70914/94551)",
+              progress: 75,
+            },
+            {
+              repo: "game-platform-slots",
+              phase: "fetch",
+              message: "fetch receiving: 50% (47276/94551)",
+              progress: 50,
+            },
+          ]}
+        />,
+      );
+
+      expect(lastFrame()).toContain("[game-platform] fetch receiving: 75% (70914/94551)");
+      expect(lastFrame()).toContain("[game-platform-slots] fetch receiving: 50% (47276/94551)");
+    });
+
+    it("should not show stale progress when idle", () => {
+      const { lastFrame } = render(
+        <StatusBar
+          {...defaultProps}
+          status="idle"
+          syncProgressEntries={[{ repo: "repo", phase: "fetch", message: "fetch remote", progress: 50 }]}
+        />,
+      );
+
+      expect(lastFrame()).not.toContain("Progress:");
+      expect(lastFrame()).not.toContain("fetch remote");
+    });
   });
 
   describe("last sync time", () => {

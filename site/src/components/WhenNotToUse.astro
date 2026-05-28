@@ -1,0 +1,47 @@
+---
+const cases = [
+  {
+    title: "Solo on your own repos, no collaboration",
+    body: "Branches don't change underneath you, so auto-sync buys little — and a small workspace rarely needs a bootstrapping config.",
+  },
+  {
+    title: "One repo, one branch you ever touch",
+    body: "Plain git worktree, or a single clone, is enough.",
+  },
+  {
+    title: "Tiny repos where re-cloning is instant",
+    body: "The disk and bookkeeping savings don't matter.",
+  },
+  {
+    title: "You don't want many persistent branch directories",
+    body: "sync-worktrees keeps a folder per branch on disk by design.",
+  },
+];
+---
+<section class="bg-ink-50 py-20 sm:py-28">
+  <div class="mx-auto max-w-3xl px-6">
+    <div class="text-center">
+      <div class="inline-flex items-center gap-2 rounded-full border border-ink-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-600">
+        When not to use it
+      </div>
+      <h2 class="mt-4 text-balance text-4xl font-bold tracking-tight text-ink-900 sm:text-5xl">
+        Skip it for simple Git setups.
+      </h2>
+      <p class="mt-4 text-balance text-lg text-ink-600">
+        sync-worktrees earns its keep across many branches and repos. Skip it if:
+      </p>
+    </div>
+
+    <ul class="mt-10 grid gap-4 sm:grid-cols-2">
+      {cases.map(({ title, body }) => (
+        <li class="rounded-2xl border border-ink-200 bg-white p-5">
+          <div class="flex items-center gap-2 text-sm font-semibold text-ink-900">
+            <span class="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-ink-100 text-ink-500">–</span>
+            {title}
+          </div>
+          <p class="mt-2 text-sm leading-relaxed text-ink-600">{body}</p>
+        </li>
+      ))}
+    </ul>
+  </div>
+</section>

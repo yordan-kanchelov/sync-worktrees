@@ -2,7 +2,12 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { Box, Text, useInput } from "ink";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
-import type { WorktreeStatusEntry, DivergedDirectoryInfo } from "../types";
+import type {
+  WorktreeStatusEntry,
+  DivergedDirectoryInfo,
+  RepositoryListEntry,
+  RepositoryDiskUsage,
+} from "../types";
 import { getErrorMessage } from "../utils/lfs-error";
 
 export type { WorktreeStatusEntry };
@@ -10,12 +15,18 @@ export type { WorktreeStatusEntry };
 type ViewStep = "SELECT_PROJECT" | "VIEW_STATUS" | "ERROR";
 
 export interface WorktreeStatusViewProps {
-  repositories: Array<{ index: number; name: string; repoUrl: string }>;
+  repositories: RepositoryListEntry[];
   getWorktreeStatusForRepo: (index: number) => Promise<WorktreeStatusEntry[]>;
+  getRepositoryDiskUsage?: (index: number) => Promise<RepositoryDiskUsage>;
   getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
   deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
   onClose: () => void;
 }
+
+type RepositoryDiskUsageState =
+  | { status: "loading" }
+  | { status: "ready"; usage: RepositoryDiskUsage }
+  | { status: "error" };
 
 type ListItem =
   | { type: "worktree"; entry: WorktreeStatusEntry }
@@ -120,6 +131,7 @@ const formatDivergedDate = (dateStr: string): string => {
 const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   repositories,
   getWorktreeStatusForRepo,
+  getRepositoryDiskUsage,
   getDivergedDirectoriesForRepo,
   deleteDivergedDirectory,
   onClose,
@@ -135,6 +147,8 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [entryFilter, setEntryFilter] = useState("");
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [repoDiskUsage, setRepoDiskUsage] = useState<Record<number, RepositoryDiskUsageState>>({});
+  const requestedDiskUsageRef = useRef<Set<number>>(new Set());
 
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -198,6 +212,39 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     },
     [getWorktreeStatusForRepo, getDivergedDirectoriesForRepo],
   );
+
+  useEffect(() => {
+    if (!getRepositoryDiskUsage) return undefined;
+
+    let cancelled = false;
+    const indexesToLoad = repositories
+      .map((repo) => repo.index)
+      .filter((repoIndex) => !requestedDiskUsageRef.current.has(repoIndex));
+
+    if (indexesToLoad.length === 0) return undefined;
+
+    for (const repoIndex of indexesToLoad) {
+      requestedDiskUsageRef.current.add(repoIndex);
+      setRepoDiskUsage((prev) => ({ ...prev, [repoIndex]: { status: "loading" } }));
+
+      void getRepositoryDiskUsage(repoIndex)
+        .then((usage) => {
+          if (cancelled) return;
+          setRepoDiskUsage((prev) => ({ ...prev, [repoIndex]: { status: "ready", usage } }));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setRepoDiskUsage((prev) => ({
+            ...prev,
+            [repoIndex]: { status: "error" },
+          }));
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repositories, getRepositoryDiskUsage]);
 
   useEffect(() => {
     if (step === "VIEW_STATUS" && entries.length === 0 && !loading && selectedRepoIndexRef.current >= 0) {
@@ -356,10 +403,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                 const isSelected = actualIdx === selectedProjectIndex;
                 return (
                   <Box key={repo.index}>
-                    <Text color={isSelected ? "cyan" : undefined}>
-                      {isSelected ? "> " : "  "}
-                      {repo.name}
-                    </Text>
+                    <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "> " : "  "}</Text>
+                    <Box width={38}>
+                      <Text color={isSelected ? "cyan" : undefined}>{repo.name}</Text>
+                    </Box>
+                    {getRepositoryDiskUsage && <Text dimColor> </Text>}
+                    {renderRepositoryDiskUsage(repo.index)}
                   </Box>
                 );
               })}
@@ -412,6 +461,23 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         {entry.divergedAt && <Text dimColor> Diverged: {entry.divergedAt}</Text>}
         <Text dimColor> Size: {entry.sizeFormatted}</Text>
       </Box>
+    );
+  };
+
+  const renderRepositoryDiskUsage = (repoIndex: number) => {
+    if (!getRepositoryDiskUsage) return null;
+
+    const state = repoDiskUsage[repoIndex];
+    if (!state || state.status === "loading") {
+      return <Text dimColor>Size: calculating...</Text>;
+    }
+    if (state.status === "error") {
+      return <Text color="red">Size: N/A</Text>;
+    }
+    return (
+      <Text>
+        Size: <Text color="magenta">{state.usage.sizeFormatted}</Text>
+      </Text>
     );
   };
 
@@ -564,6 +630,11 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     );
   };
 
+  const selectedRepo =
+    selectedRepoIndexRef.current >= 0
+      ? repositories.find((repo) => repo.index === selectedRepoIndexRef.current)
+      : undefined;
+
   return (
     <Box flexDirection="column" marginTop={1} marginBottom={1}>
       <Box borderStyle="round" borderColor="green" paddingX={2} paddingY={1} flexDirection="column" width={70}>
@@ -578,11 +649,13 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
           </Text>
         </Box>
 
-        {repositories.length > 1 && step === "VIEW_STATUS" && !loading && selectedRepoIndexRef.current >= 0 && (
+        {step === "VIEW_STATUS" && selectedRepo && (
           <Box marginBottom={1}>
             <Text>
-              Repository: <Text color="cyan">{repositories.find((r) => r.index === selectedRepoIndexRef.current)?.name}</Text>
+              Repository: <Text color="cyan">{selectedRepo.name}</Text>
             </Text>
+            {getRepositoryDiskUsage && <Text dimColor>  </Text>}
+            {renderRepositoryDiskUsage(selectedRepo.index)}
           </Box>
         )}
 

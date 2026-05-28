@@ -193,6 +193,22 @@ export interface WorktreeStatusEntry {
   status: WorktreeStatusResult;
 }
 
+export interface RepositoryListEntry {
+  index: number;
+  name: string;
+  repoUrl: string;
+}
+
+export interface RepositoryDiskUsage {
+  repoIndex: number;
+  repoName: string;
+  sizeBytes: number | null;
+  sizeFormatted: string;
+  bareSizeBytes: number;
+  worktreeSizeBytes: number;
+  error?: string;
+}
+
 export interface DivergedDirectoryInfo {
   name: string;
   path: string;
