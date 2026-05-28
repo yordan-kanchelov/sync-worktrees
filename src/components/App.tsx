@@ -7,7 +7,14 @@ import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
 import LogPanel from "./LogPanel";
 import type { AppEventEmitter } from "../utils/app-events";
-import type { HookContext, WorktreeStatusEntry, DivergedDirectoryInfo } from "../types";
+import type { AppSyncProgress } from "../utils/app-events";
+import type {
+  HookContext,
+  WorktreeStatusEntry,
+  DivergedDirectoryInfo,
+  RepositoryListEntry,
+  RepositoryDiskUsage,
+} from "../types";
 
 export type { HookContext, WorktreeStatusEntry };
 
@@ -18,7 +25,9 @@ export interface AppProps {
   onManualSync: () => void;
   onReload: () => void;
   onQuit: () => Promise<void>;
-  getRepositoryList: () => Array<{ index: number; name: string; repoUrl: string }>;
+  maxProgressLines?: number;
+  getRepositoryList: () => RepositoryListEntry[];
+  getRepositoryDiskUsage?: (index: number) => Promise<RepositoryDiskUsage>;
   getBranchesForRepo: (index: number) => Promise<string[]>;
   getDefaultBranchForRepo: (index: number) => string;
   fetchForRepo?: (index: number) => Promise<void>;
@@ -58,7 +67,9 @@ const App: React.FC<AppProps> = ({
   onManualSync,
   onReload,
   onQuit,
+  maxProgressLines = 2,
   getRepositoryList,
+  getRepositoryDiskUsage,
   getBranchesForRepo,
   getDefaultBranchForRepo,
   fetchForRepo,
@@ -78,6 +89,7 @@ const App: React.FC<AppProps> = ({
   const [showOpenEditorWizard, setShowOpenEditorWizard] = useState(false);
   const [showWorktreeStatus, setShowWorktreeStatus] = useState(false);
   const [status, setStatus] = useState<"idle" | "syncing">("idle");
+  const [syncProgressEntries, setSyncProgressEntries] = useState<AppSyncProgress[]>([]);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [diskSpaceUsed, setDiskSpaceUsed] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -155,6 +167,7 @@ const App: React.FC<AppProps> = ({
   const updateLastSyncTime = useCallback(() => {
     setLastSyncTime(new Date());
     setStatus("idle");
+    setSyncProgressEntries([]);
   }, []);
 
   useEffect(() => {
@@ -162,9 +175,31 @@ const App: React.FC<AppProps> = ({
       events.on("updateLastSyncTime", () => {
         setLastSyncTime(new Date());
         setStatus("idle");
+        setSyncProgressEntries([]);
       }),
       events.on("setStatus", (newStatus: "idle" | "syncing") => {
         setStatus(newStatus);
+        if (newStatus === "idle") {
+          setSyncProgressEntries([]);
+        }
+      }),
+      events.on("setSyncProgress", (progress: AppSyncProgress | null) => {
+        if (progress === null) {
+          setSyncProgressEntries([]);
+          return;
+        }
+        setSyncProgressEntries((prev) => {
+          if (progress.completed) {
+            return prev.filter((entry) => entry.repo !== progress.repo);
+          }
+
+          const existingIndex = prev.findIndex((entry) => entry.repo === progress.repo);
+          if (existingIndex === -1) {
+            return [...prev, progress];
+          }
+
+          return prev.map((entry, index) => (index === existingIndex ? progress : entry));
+        });
       }),
       events.on("setDiskSpace", (diskSpace: string) => {
         setDiskSpaceUsed(diskSpace);
@@ -188,7 +223,8 @@ const App: React.FC<AppProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const statusBarHeight = 5;
+  const progressLineCount = status === "syncing" ? Math.max(1, maxProgressLines) : 0;
+  const statusBarHeight = 5 + progressLineCount;
   const terminalRows = stdout.rows ?? 24;
   const logPanelHeight = Math.max(5, terminalRows - statusBarHeight);
   const showModal = showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus;
@@ -262,6 +298,7 @@ const App: React.FC<AppProps> = ({
         <WorktreeStatusView
           repositories={getRepositoryList()}
           getWorktreeStatusForRepo={getWorktreeStatusForRepo}
+          getRepositoryDiskUsage={getRepositoryDiskUsage}
           getDivergedDirectoriesForRepo={getDivergedDirectoriesForRepo}
           deleteDivergedDirectory={deleteDivergedDirectory}
           onClose={() => setShowWorktreeStatus(false)}
@@ -270,6 +307,8 @@ const App: React.FC<AppProps> = ({
 
       <StatusBar
         status={status}
+        syncProgressEntries={syncProgressEntries}
+        maxProgressLines={maxProgressLines}
         repositoryCount={repoCount}
         lastSyncTime={lastSyncTime}
         cronSchedule={schedule}

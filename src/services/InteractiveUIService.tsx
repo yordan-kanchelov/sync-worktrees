@@ -17,12 +17,20 @@ import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
+import { resolveMode } from "../utils/repo-mode";
 import { shellEscape } from "../utils/shell-escape";
 import * as fs from "fs/promises";
 import { calculateDirectorySize, formatBytes } from "../utils/disk-space";
 import { formatDuration } from "../utils/timing";
 import { GIT_CONSTANTS, METADATA_CONSTANTS, TERMINAL_CONSTANTS } from "../constants";
-import type { RepositoryConfig, HookContext, WorktreeStatusEntry, DivergedDirectoryInfo } from "../types";
+import type {
+  RepositoryConfig,
+  HookContext,
+  WorktreeStatusEntry,
+  DivergedDirectoryInfo,
+  RepositoryListEntry,
+  RepositoryDiskUsage,
+} from "../types";
 
 const WAIT_SYNC_FAST_TIMEOUT_MS = 2000;
 const WAIT_SYNC_DEFAULT_TIMEOUT_MS = 30000;
@@ -40,11 +48,13 @@ export class InteractiveUIService {
   private branchCreatedActions = new BranchCreatedActionsService();
   private pathResolution = new PathResolutionService();
   private limit: ReturnType<typeof pLimit>;
+  private maxProgressLines: number;
   private reloadInProgress = false;
   private isDestroyed = false;
   private events: AppEventEmitter;
   private ownsEvents: boolean;
   private unsubscribeCallbacks: Array<() => void> = [];
+  private progressUnsubscribers: Array<() => void> = [];
 
   constructor(
     syncServices: WorktreeSyncService[],
@@ -63,10 +73,12 @@ export class InteractiveUIService {
     this.configPath = configPath;
     this.cronSchedule = cronSchedule;
     this.repositoryCount = syncServices.length;
-    this.limit = pLimit(maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
+    this.maxProgressLines = Math.max(1, maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
+    this.limit = pLimit(this.maxProgressLines);
 
     this.startBufferFlushCheck();
     this.renderUI();
+    this.subscribeToServiceProgress();
     this.injectLoggersIntoServices();
 
     // Add initial log after a short delay to verify the pipeline works
@@ -109,6 +121,27 @@ export class InteractiveUIService {
         }),
       );
     }
+  }
+
+  private subscribeToServiceProgress(): void {
+    for (const unsubscribe of this.progressUnsubscribers) {
+      unsubscribe();
+    }
+    this.progressUnsubscribers = this.syncServices.map((service, index) => {
+      const repoName = this.getRepoName(index);
+      if (!service.onProgress) return () => undefined;
+      return service.onProgress((event) => {
+        if (this.isDestroyed) return;
+        this.events.emit("setSyncProgress", {
+          repo: repoName,
+          phase: event.phase,
+          message: event.message,
+          progress: event.progress,
+          processed: event.processed,
+          total: event.total,
+        });
+      });
+    });
   }
 
   public addLog(message: string, level: "info" | "warn" | "error" = "info"): void {
@@ -170,6 +203,7 @@ export class InteractiveUIService {
         events={this.events}
         repositoryCount={this.repositoryCount}
         cronSchedule={this.cronSchedule}
+        maxProgressLines={this.maxProgressLines}
         onManualSync={() => this.handleManualSync()}
         onReload={() => this.handleReload()}
         onQuit={() => this.handleQuit()}
@@ -182,6 +216,7 @@ export class InteractiveUIService {
         }
         getWorktreesForRepo={(index: number) => this.getWorktreesForRepo(index)}
         getWorktreeStatusForRepo={(index: number) => this.getWorktreeStatusForRepo(index)}
+        getRepositoryDiskUsage={(index: number) => this.getRepositoryDiskUsage(index)}
         getDivergedDirectoriesForRepo={(index: number) => this.getDivergedDirectoriesForRepo(index)}
         deleteDivergedDirectory={(repoIndex: number, name: string) =>
           this.deleteDivergedDirectory(repoIndex, name)
@@ -270,6 +305,7 @@ export class InteractiveUIService {
 
       this.syncServices = newServices;
       this.repositoryCount = this.syncServices.length;
+      this.subscribeToServiceProgress();
       this.injectLoggersIntoServices();
 
       const uniqueSchedules = [...new Set(this.syncServices.map((s) => s.config.cronSchedule))];
@@ -360,6 +396,9 @@ export class InteractiveUIService {
   public setStatus(status: "idle" | "syncing"): void {
     if (this.isDestroyed) return;
     this.events.emit("setStatus", status);
+    if (status === "idle") {
+      this.events.emit("setSyncProgress", null);
+    }
   }
 
   public setDiskSpace(diskSpace: string): void {
@@ -382,7 +421,7 @@ export class InteractiveUIService {
     }
   }
 
-  public getRepositoryList(): Array<{ index: number; name: string; repoUrl: string }> {
+  public getRepositoryList(): RepositoryListEntry[] {
     return this.syncServices.map((service, index) => ({
       index,
       name: this.getRepoName(index),
@@ -393,6 +432,53 @@ export class InteractiveUIService {
   private getRepoName(index: number): string {
     const service = this.syncServices[index];
     return (service.config as RepositoryConfig).name || `repo-${index}`;
+  }
+
+  public async getRepositoryDiskUsage(repoIndex: number): Promise<RepositoryDiskUsage> {
+    if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
+      throw new Error(`Invalid repository index: ${repoIndex}`);
+    }
+
+    const service = this.syncServices[repoIndex];
+    const config = service.config;
+    const repoName = this.getRepoName(repoIndex);
+    const mode = resolveMode(config);
+    const sizeTargets: Array<{ kind: "bare" | "worktree"; path: string }> = [
+      ...(mode === "worktree"
+        ? [{ kind: "bare" as const, path: config.bareRepoDir || getDefaultBareRepoDir(config.repoUrl) }]
+        : []),
+      { kind: "worktree", path: config.worktreeDir },
+    ];
+
+    let bareSizeBytes = 0;
+    let worktreeSizeBytes = 0;
+    const errors: string[] = [];
+
+    for (const target of sizeTargets) {
+      try {
+        const size = await calculateDirectorySize(target.path);
+        if (target.kind === "bare") {
+          bareSizeBytes = size;
+        } else {
+          worktreeSizeBytes = size;
+        }
+      } catch (error) {
+        errors.push(`${target.path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    const sizeBytes = bareSizeBytes + worktreeSizeBytes;
+    const failedAllPaths = errors.length === sizeTargets.length;
+
+    return {
+      repoIndex,
+      repoName,
+      sizeBytes: failedAllPaths ? null : sizeBytes,
+      sizeFormatted: failedAllPaths ? "N/A" : formatBytes(sizeBytes),
+      bareSizeBytes,
+      worktreeSizeBytes,
+      error: errors.length > 0 ? errors.join("; ") : undefined,
+    };
   }
 
   public async getBranchesForRepo(repoIndex: number): Promise<string[]> {
@@ -787,19 +873,28 @@ export class InteractiveUIService {
     attempted: number;
   }> {
     const syncResults = await Promise.allSettled(
-      services.map((service) =>
-        this.limit(async () => {
+      services.map((service) => {
+        const repoName = (service.config as RepositoryConfig).name || service.config.repoUrl;
+        return this.limit(async () => {
           service.clearRecordedSkips();
-          if (!service.isInitialized()) {
-            await service.initialize();
+          try {
+            if (!service.isInitialized()) {
+              await service.initialize();
+            }
+            const result = await service.sync();
+            return { service, result };
+          } finally {
+            this.events.emit("setSyncProgress", {
+              repo: repoName,
+              phase: "complete",
+              message: "Finished",
+              completed: true,
+            });
           }
-          const result = await service.sync();
-          return { service, result };
         }).catch((error) => {
-          const repoName = (service.config as RepositoryConfig).name || service.config.repoUrl;
           throw Object.assign(error instanceof Error ? error : new Error(String(error)), { repoName });
-        }),
-      ),
+        });
+      }),
     );
 
     const failures: Array<{ repo: string; error: string }> = [];
@@ -915,6 +1010,10 @@ export class InteractiveUIService {
       unsubscribe();
     }
     this.unsubscribeCallbacks = [];
+    for (const unsubscribe of this.progressUnsubscribers) {
+      unsubscribe();
+    }
+    this.progressUnsubscribers = [];
     if (this.ownsEvents) {
       this.events.removeAllListeners();
     }

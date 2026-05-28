@@ -61,6 +61,101 @@ describe("App", () => {
       expect(lastFrame()).toContain("Syncing...");
     });
 
+    it("should render sync progress events in the status bar", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", {
+        repo: "game-platform",
+        phase: "fetch",
+        message: "fetch receiving: 75% (70914/94551)",
+        progress: 75,
+      });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Progress:");
+      expect(lastFrame()).toContain("[game-platform] fetch receiving: 75% (70914/94551)");
+    });
+
+    it("should render progress for concurrent repositories", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", {
+        repo: "game-platform",
+        phase: "fetch",
+        message: "fetch receiving: 75% (70914/94551)",
+        progress: 75,
+      });
+      appEvents.emit("setSyncProgress", {
+        repo: "game-platform-slots",
+        phase: "fetch",
+        message: "fetch receiving: 50% (47276/94551)",
+        progress: 50,
+      });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("[game-platform] fetch receiving: 75% (70914/94551)");
+      expect(lastFrame()).toContain("[game-platform-slots] fetch receiving: 50% (47276/94551)");
+    });
+
+    it("should remove a repository progress row when it completes", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", {
+        repo: "game-platform",
+        phase: "fetch",
+        message: "fetch receiving",
+      });
+      appEvents.emit("setSyncProgress", {
+        repo: "game-platform-slots",
+        phase: "fetch",
+        message: "fetch receiving",
+      });
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("[game-platform] fetch receiving");
+      expect(lastFrame()).toContain("[game-platform-slots] fetch receiving");
+
+      appEvents.emit("setSyncProgress", {
+        repo: "game-platform",
+        phase: "complete",
+        message: "Finished",
+        completed: true,
+      });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("[game-platform] fetch receiving");
+      expect(lastFrame()).toContain("[game-platform-slots] fetch receiving");
+    });
+
+    it("should clear sync progress when status returns to idle", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", {
+        repo: "repo",
+        phase: "fetch",
+        message: "fetch remote",
+      });
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("fetch remote");
+
+      appEvents.emit("setStatus", "idle");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("Progress:");
+      expect(lastFrame()).not.toContain("fetch remote");
+    });
+
     it("should clean up event subscriptions on unmount", async () => {
       const { unmount, lastFrame } = render(<App {...defaultProps} />);
 

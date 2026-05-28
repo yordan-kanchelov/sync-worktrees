@@ -2,15 +2,27 @@ import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
 import { CronExpressionParser } from "cron-parser";
 
+import type { AppSyncProgress } from "../utils/app-events";
+
 export interface StatusBarProps {
   status: "idle" | "syncing";
+  syncProgressEntries?: AppSyncProgress[];
+  maxProgressLines?: number;
   repositoryCount: number;
   lastSyncTime: Date | null;
   cronSchedule?: string;
   diskSpaceUsed?: string;
 }
 
-const StatusBar: React.FC<StatusBarProps> = ({ status, repositoryCount, lastSyncTime, cronSchedule, diskSpaceUsed }) => {
+const StatusBar: React.FC<StatusBarProps> = ({
+  status,
+  syncProgressEntries = [],
+  maxProgressLines = 2,
+  repositoryCount,
+  lastSyncTime,
+  cronSchedule,
+  diskSpaceUsed,
+}) => {
   const [nextSyncTime, setNextSyncTime] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -48,6 +60,17 @@ const StatusBar: React.FC<StatusBarProps> = ({ status, repositoryCount, lastSync
     return status === "syncing" ? "⟳" : "✓";
   };
 
+  const formatProgress = (syncProgress: AppSyncProgress): string => {
+    const percent =
+      syncProgress.progress === undefined || syncProgress.message.includes(`${syncProgress.progress}%`)
+        ? ""
+        : ` ${syncProgress.progress}%`;
+    return `[${syncProgress.repo}] ${syncProgress.message}${percent}`;
+  };
+
+  const progressLineCount = Math.max(1, maxProgressLines);
+  const visibleProgress = syncProgressEntries.slice(-progressLineCount);
+
   return (
     <Box borderStyle="single" paddingX={1}>
       <Box flexDirection="column" width="100%">
@@ -70,6 +93,19 @@ const StatusBar: React.FC<StatusBarProps> = ({ status, repositoryCount, lastSync
             </Text>
           )}
         </Box>
+        {status === "syncing" &&
+          Array.from({ length: progressLineCount }).map((_, index) => {
+            const entry = visibleProgress[index];
+            const message = entry ? formatProgress(entry) : index === 0 ? "waiting for progress events" : "";
+            return (
+              <Box key={index}>
+                <Text wrap="truncate">
+                  {message ? "Progress: " : " "}
+                  {message && <Text color="cyan">{message}</Text>}
+                </Text>
+              </Box>
+            );
+          })}
         <Box justifyContent="space-between">
           <Text>
             Disk Space: <Text color="magenta">{diskSpaceUsed || "Calculating..."}</Text>

@@ -4,6 +4,7 @@ import * as path from "path";
 import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { calculateDirectorySize, formatBytes } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
 
 import type { Config } from "../../types";
@@ -49,6 +50,7 @@ const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance, mockSpawn, mo
         isInitialized: vi.fn<any>().mockReturnValue(false),
         isSyncInProgress: vi.fn<any>().mockReturnValue(false),
         updateLogger: vi.fn<any>(),
+        onProgress: vi.fn<any>().mockReturnValue(vi.fn()),
         getRecordedSkips: vi.fn<any>().mockReturnValue([]),
         clearRecordedSkips: vi.fn<any>(),
         config: {} as any,
@@ -135,6 +137,7 @@ describe("InteractiveUIService", () => {
       isInitialized: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
       updateLogger: vi.fn<any>(),
+      onProgress: vi.fn<any>().mockReturnValue(vi.fn()),
       getRecordedSkips: vi.fn<any>().mockReturnValue([]),
       clearRecordedSkips: vi.fn<any>(),
       config: mockConfig,
@@ -144,6 +147,7 @@ describe("InteractiveUIService", () => {
     mockWorktreeSyncServiceInstance.initialize.mockResolvedValue(undefined);
     mockWorktreeSyncServiceInstance.isInitialized.mockReturnValue(false);
     mockWorktreeSyncServiceInstance.isSyncInProgress.mockReturnValue(false);
+    mockWorktreeSyncServiceInstance.onProgress.mockReturnValue(vi.fn());
     mockWorktreeSyncServiceInstance.config = mockConfig;
 
     delete (globalThis as any).__inkAppMethods;
@@ -165,6 +169,30 @@ describe("InteractiveUIService", () => {
     it("should initialize with multiple sync services", () => {
       const service = new InteractiveUIService([mockSyncService, mockSyncService], undefined, "0 * * * *");
       expect(service).toBeDefined();
+      service.destroy();
+    });
+
+    it("should forward service progress events with the repository name", () => {
+      let progressListener: ((event: { phase: string; message: string; progress?: number }) => void) | undefined;
+      mockSyncService.onProgress.mockImplementation((listener) => {
+        progressListener = listener;
+        return vi.fn();
+      });
+
+      const service = new InteractiveUIService([mockSyncService]);
+      const progressSpy = vi.fn();
+      service.getEvents().on("setSyncProgress", progressSpy);
+
+      progressListener?.({ phase: "fetch", message: "fetch receiving: 75% (3/4)", progress: 75 });
+
+      expect(progressSpy).toHaveBeenCalledWith({
+        repo: "repo-0",
+        phase: "fetch",
+        message: "fetch receiving: 75% (3/4)",
+        progress: 75,
+        processed: undefined,
+        total: undefined,
+      });
       service.destroy();
     });
 
@@ -1470,6 +1498,69 @@ describe("InteractiveUIService", () => {
         const repos = service.getRepositoryList();
 
         expect(repos[0].name).toBe("repo-0");
+
+        service.destroy();
+      });
+    });
+
+    describe("getRepositoryDiskUsage", () => {
+      it("should calculate disk usage for a worktree-mode repository", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const usage = await service.getRepositoryDiskUsage(0);
+
+        expect(calculateDirectorySize).toHaveBeenCalledWith(".bare/repo");
+        expect(calculateDirectorySize).toHaveBeenCalledWith("/test/worktrees");
+        expect(formatBytes).toHaveBeenCalledWith(2048);
+        expect(usage).toEqual({
+          repoIndex: 0,
+          repoName: "repo-0",
+          sizeBytes: 2048,
+          sizeFormatted: "1.0 KB",
+          bareSizeBytes: 1024,
+          worktreeSizeBytes: 1024,
+          error: undefined,
+        });
+
+        service.destroy();
+      });
+
+      it("should calculate only checkout size for clone-mode repositories", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, mode: "clone", worktreeDir: "/test/clone" },
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const usage = await service.getRepositoryDiskUsage(0);
+
+        expect(calculateDirectorySize).toHaveBeenCalledTimes(1);
+        expect(calculateDirectorySize).toHaveBeenCalledWith("/test/clone");
+        expect(usage.bareSizeBytes).toBe(0);
+        expect(usage.worktreeSizeBytes).toBe(1024);
+
+        service.destroy();
+      });
+
+      it("should return N/A when all repository size paths fail", async () => {
+        vi.mocked(calculateDirectorySize)
+          .mockRejectedValueOnce(new Error("ENOENT"))
+          .mockRejectedValueOnce(new Error("ENOENT"));
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const usage = await service.getRepositoryDiskUsage(0);
+
+        expect(usage.sizeBytes).toBeNull();
+        expect(usage.sizeFormatted).toBe("N/A");
+        expect(usage.error).toContain("ENOENT");
+
+        service.destroy();
+      });
+
+      it("should throw for invalid repo index", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.getRepositoryDiskUsage(-1)).rejects.toThrow("Invalid repository index: -1");
 
         service.destroy();
       });

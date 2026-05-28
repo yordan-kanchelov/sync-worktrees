@@ -18,6 +18,7 @@ import { WorktreeStatusService } from "./worktree-status.service";
 import type { WorktreeStatusResult } from "./worktree-status.service";
 import type { Config } from "../types";
 import type { SyncMetadata } from "../types/sync-metadata";
+import type { GitProgressEmitter } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export type RemoteRelationship = "up_to_date" | "fast_forward" | "local_ahead" | "diverged" | "indeterminate_shallow";
@@ -59,6 +60,7 @@ export class GitService {
   constructor(
     private config: GitServiceOptions,
     logger?: Logger,
+    private progressEmitter?: GitProgressEmitter,
   ) {
     this.logger = logger ?? Logger.createDefault(undefined, config.debug);
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
@@ -94,7 +96,9 @@ export class GitService {
   }
 
   private buildSimpleGitOptions(blockMs: number): Partial<SimpleGitOptions> {
-    const options: Partial<SimpleGitOptions> = { progress: makeGitProgressHandler(this.logger) };
+    const options: Partial<SimpleGitOptions> = {
+      progress: makeGitProgressHandler(this.logger, (event) => this.progressEmitter?.(event)),
+    };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
   }

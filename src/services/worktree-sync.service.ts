@@ -38,7 +38,7 @@ export class WorktreeSyncService {
 
   constructor(public readonly config: Config) {
     this.logger = config.logger ?? Logger.createDefault(undefined, config.debug);
-    this.gitService = new GitService(config, this.logger);
+    this.gitService = new GitService(config, this.logger, (event): void => this.emitProgress(event));
     this.repoOperationLock = new RepoOperationLock(config, this.gitService, this.logger);
     this.retryPolicy = new SyncRetryPolicy(config, this.gitService, this.logger);
     this.worktreeModeSyncRunner = new WorktreeModeSyncRunner(

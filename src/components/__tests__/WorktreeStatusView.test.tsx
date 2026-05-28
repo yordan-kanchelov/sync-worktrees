@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import WorktreeStatusView, { WorktreeStatusViewProps } from "../WorktreeStatusView";
 import type { WorktreeStatusResult } from "../../services/worktree-status.service";
-import type { WorktreeStatusEntry, DivergedDirectoryInfo } from "../../types";
+import type { WorktreeStatusEntry, DivergedDirectoryInfo, RepositoryDiskUsage } from "../../types";
 
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -24,6 +24,15 @@ const makeEntry = (branch: string, statusOverrides: Partial<WorktreeStatusResult
   branch,
   path: `/worktrees/${branch}`,
   status: makeStatus(statusOverrides),
+});
+
+const makeDiskUsage = (repoIndex: number, sizeFormatted: string): RepositoryDiskUsage => ({
+  repoIndex,
+  repoName: `repo-${repoIndex + 1}`,
+  sizeBytes: 1024 * (repoIndex + 1),
+  sizeFormatted,
+  bareSizeBytes: 512,
+  worktreeSizeBytes: 512 * (repoIndex + 1),
 });
 
 describe("WorktreeStatusView", () => {
@@ -118,6 +127,44 @@ describe("WorktreeStatusView", () => {
       const { lastFrame } = render(<WorktreeStatusView {...defaultProps} />);
       expect(lastFrame()).toContain("Filter:");
       expect(lastFrame()).toContain("(2/2 matches)");
+    });
+
+    it("should lazy load repository disk usage in project selection", async () => {
+      const getRepositoryDiskUsage = vi
+        .fn()
+        .mockResolvedValueOnce(makeDiskUsage(0, "1.00 KB"))
+        .mockResolvedValueOnce(makeDiskUsage(1, "2.00 KB"));
+
+      const { lastFrame } = render(
+        <WorktreeStatusView {...defaultProps} getRepositoryDiskUsage={getRepositoryDiskUsage} />,
+      );
+
+      expect(lastFrame()).toContain("Select repository");
+      expect(lastFrame()).toContain("Size: calculating");
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(getRepositoryDiskUsage).toHaveBeenCalledWith(0);
+      expect(getRepositoryDiskUsage).toHaveBeenCalledWith(1);
+      expect(lastFrame()).toContain("1.00 KB");
+      expect(lastFrame()).toContain("2.00 KB");
+    });
+
+    it("should show repository disk usage in the selected status header", async () => {
+      const singleRepoProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "single-repo", repoUrl: "https://example.com/repo.git" }],
+        getRepositoryDiskUsage: vi.fn().mockResolvedValue(makeDiskUsage(0, "1.00 KB")),
+      };
+      const { lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Repository:");
+      expect(lastFrame()).toContain("single-repo");
+      expect(lastFrame()).toContain("1.00 KB");
     });
   });
 
