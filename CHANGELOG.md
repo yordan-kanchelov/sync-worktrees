@@ -1,5 +1,12 @@
 # sync-worktrees
 
+## 4.1.1
+
+### Patch Changes
+
+- 0b590f5: Fix the landing-page hero headline clipping the descenders of its gradient line. The `bg-clip-text` line had an implicit `line-height: 1`, so the gradient box stopped at the baseline and characters like "y"/"g" were cut off; added line-height and bottom padding so descenders render fully.
+- 0b590f5: Tidy interactive UI progress and disk usage reporting: drop the StatusBar progress percent suffix that never fired (every git progress message already embeds its percentage) and relied on a fragile substring check, and mark repository disk-usage totals as a lower bound (`≥`) when only some size paths fail — the failed path counts as zero, so the total is a guaranteed undercount rather than a confident exact value.
+
 ## 4.1.0
 
 ### Minor Changes
