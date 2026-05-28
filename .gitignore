@@ -24,6 +24,7 @@ sync-worktrees.config.js
 
 # Demo recording artifacts
 demo-recording/fixture/
+demo-recording/.sync-worktrees-state/
 demo-recording/*.cast
 demo-recording/*.gif
 
