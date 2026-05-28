@@ -16,15 +16,15 @@ export type GitProgressEmitter = (event: GitProgressEvent) => void;
 /**
  * Build a progress callback for simple-git's `progress` option that:
  *   - filters to clone/fetch/pull events only,
- *   - emits at most one log per (method,stage) bucket of PROGRESS_BUCKET_PERCENT,
- *   - always emits the 100% completion line,
+ *   - emits at most one progress event per (method,stage) bucket of PROGRESS_BUCKET_PERCENT,
+ *   - always emits the 100% completion event,
  *   - detects stage restarts (bucket regression on the same cached SimpleGit
  *     instance, e.g. a second fetch) and resets the bucket so the new run
- *     logs from scratch.
+ *     emits from scratch.
  *
  * State (the bucket map) is closure-local — pass one handler per SimpleGit
- * client. The contract is user-visible log output, so prefer this shared
- * factory over copies in each caller.
+ * client. Keep progress logs at debug level so normal logs can stay readable
+ * while interactive surfaces and MCP notifications consume structured events.
  */
 export function makeGitProgressHandler(
   logger: Logger,
@@ -41,7 +41,7 @@ export function makeGitProgressHandler(
     lastBucket.set(key, bucket);
     const total = event.total > 0 ? `${event.processed}/${event.total}` : `${event.processed}`;
     const message = `${event.method} ${event.stage}: ${event.progress}% (${total})`;
-    logger.info(`  ↳ ${message}`);
+    logger.debug(`  ↳ ${message}`);
     emitProgress?.({
       phase: event.method,
       message,
