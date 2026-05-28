@@ -60,13 +60,7 @@ const StatusBar: React.FC<StatusBarProps> = ({
     return status === "syncing" ? "⟳" : "✓";
   };
 
-  const formatProgress = (syncProgress: AppSyncProgress): string => {
-    const percent =
-      syncProgress.progress === undefined || syncProgress.message.includes(`${syncProgress.progress}%`)
-        ? ""
-        : ` ${syncProgress.progress}%`;
-    return `[${syncProgress.repo}] ${syncProgress.message}${percent}`;
-  };
+  const formatProgress = (syncProgress: AppSyncProgress): string => `[${syncProgress.repo}] ${syncProgress.message}`;
 
   const progressLineCount = Math.max(1, maxProgressLines);
   const visibleProgress = syncProgressEntries.slice(-progressLineCount);

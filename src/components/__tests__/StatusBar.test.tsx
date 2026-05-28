@@ -126,6 +126,19 @@ describe("StatusBar", () => {
       expect(lastFrame()).not.toContain("Progress:");
       expect(lastFrame()).not.toContain("fetch remote");
     });
+
+    it("should not synthesize a percent that is absent from the progress message", () => {
+      const { lastFrame } = render(
+        <StatusBar
+          {...defaultProps}
+          status="syncing"
+          syncProgressEntries={[{ repo: "repo", phase: "fetch", message: "Receiving objects", progress: 42 }]}
+        />,
+      );
+
+      expect(lastFrame()).toContain("[repo] Receiving objects");
+      expect(lastFrame()).not.toContain("42%");
+    });
   });
 
   describe("last sync time", () => {
