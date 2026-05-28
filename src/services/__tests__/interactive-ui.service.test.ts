@@ -1557,6 +1557,23 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
+      it("should mark the size approximate when only some paths fail", async () => {
+        // Bare succeeds, worktree path fails: the total is a known undercount,
+        // so it must be flagged approximate instead of shown as an exact size.
+        vi.mocked(calculateDirectorySize)
+          .mockResolvedValueOnce(1024)
+          .mockRejectedValueOnce(new Error("ENOENT"));
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const usage = await service.getRepositoryDiskUsage(0);
+
+        expect(usage.sizeFormatted).toMatch(/^~/);
+        expect(usage.sizeBytes).toBe(1024);
+        expect(usage.error).toContain("ENOENT");
+
+        service.destroy();
+      });
+
       it("should throw for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
