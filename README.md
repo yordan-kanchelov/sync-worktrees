@@ -31,6 +31,8 @@ The default — **worktree mode** — gives every remote branch its own director
    - Fetches latest changes (no merge — your local work stays untouched).
    - Removes directories for branches deleted upstream (preserves dirty trees and unpushed commits).
 
+The bare repository is not an extra object store layered on top — it is the single Git database every worktree attaches to natively, so branches share history for free (no `--reference`, no alternates). The bare layout exists only so that no branch is a privileged "main" checkout: every branch, the default included, is a peer directory.
+
 Smallest config that produces this:
 
 ```javascript
