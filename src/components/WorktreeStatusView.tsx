@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, usePaste } from "ink";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
 import type {
@@ -360,6 +360,18 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
       }
     } else if (step === "ERROR") {
       onClose();
+    }
+  });
+
+  usePaste((text) => {
+    if (confirmDelete !== null) return;
+    if (step === "SELECT_PROJECT") {
+      setProjectFilter((prev) => prev + text);
+      setSelectedProjectIndex(0);
+    } else if (step === "VIEW_STATUS" && !loading) {
+      setEntryFilter((prev) => prev + text);
+      setSelectedEntryIndex(0);
+      setExpandedEntry(null);
     }
   });
 

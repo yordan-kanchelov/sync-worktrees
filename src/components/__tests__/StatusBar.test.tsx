@@ -1,5 +1,5 @@
 import React from "react";
-import { render } from "ink-testing-library";
+import { render, cleanup } from "ink-testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import StatusBar, { StatusBarProps } from "../StatusBar";
@@ -20,6 +20,10 @@ describe("StatusBar", () => {
     };
   });
 
+  afterEach(() => {
+    cleanup();
+  });
+
   describe("rendering", () => {
     it("should render status bar with repository count", () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} />);
@@ -34,6 +38,24 @@ describe("StatusBar", () => {
 
       const { lastFrame: frame2 } = render(<StatusBar {...defaultProps} repositoryCount={10} />);
       expect(frame2()).toContain("10");
+    });
+
+    it("should render active interactive operations even while idle", () => {
+      const { lastFrame } = render(
+        <StatusBar {...defaultProps} status="idle" activeOps={["Creating worktree feature/x"]} />,
+      );
+
+      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Creating worktree feature/x");
+    });
+
+    it("should render active operations alongside a running sync", () => {
+      const { lastFrame } = render(
+        <StatusBar {...defaultProps} status="syncing" activeOps={["Creating worktree feature/y"]} />,
+      );
+
+      expect(lastFrame()).toContain("Syncing...");
+      expect(lastFrame()).toContain("Creating worktree feature/y");
     });
   });
 

@@ -1,6 +1,6 @@
 import React from "react";
-import { render } from "ink-testing-library";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import OpenEditorWizard, { OpenEditorWizardProps } from "../OpenEditorWizard";
 
@@ -24,6 +24,10 @@ describe("OpenEditorWizard", () => {
       openTerminalInWorktree: vi.fn().mockReturnValue({ success: true }),
       onClose: vi.fn(),
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {

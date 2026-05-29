@@ -1,6 +1,6 @@
 import React from "react";
-import { render } from "ink-testing-library";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import WorktreeStatusView, { WorktreeStatusViewProps } from "../WorktreeStatusView";
 import type { WorktreeStatusResult } from "../../services/worktree-status.service";
@@ -94,6 +94,10 @@ describe("WorktreeStatusView", () => {
       getWorktreeStatusForRepo: vi.fn().mockResolvedValue(defaultEntries),
       onClose: vi.fn(),
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {

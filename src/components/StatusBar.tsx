@@ -7,6 +7,7 @@ import type { AppSyncProgress } from "../utils/app-events";
 export interface StatusBarProps {
   status: "idle" | "syncing";
   syncProgressEntries?: AppSyncProgress[];
+  activeOps?: string[];
   maxProgressLines?: number;
   repositoryCount: number;
   lastSyncTime: Date | null;
@@ -17,6 +18,7 @@ export interface StatusBarProps {
 const StatusBar: React.FC<StatusBarProps> = ({
   status,
   syncProgressEntries = [],
+  activeOps = [],
   maxProgressLines = 2,
   repositoryCount,
   lastSyncTime,
@@ -100,6 +102,14 @@ const StatusBar: React.FC<StatusBarProps> = ({
               </Box>
             );
           })}
+        {activeOps.map((label, index) => (
+          <Box key={`op-${index}`}>
+            <Text wrap="truncate">
+              <Text color="yellow">⏳ </Text>
+              <Text color="yellow">{label}</Text>
+            </Text>
+          </Box>
+        ))}
         <Box justifyContent="space-between">
           <Text>
             Disk Space: <Text color="magenta">{diskSpaceUsed || "Calculating..."}</Text>

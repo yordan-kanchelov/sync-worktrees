@@ -1,6 +1,6 @@
 import React from "react";
-import { render } from "ink-testing-library";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import BranchCreationWizard, { BranchCreationWizardProps } from "../BranchCreationWizard";
 
@@ -21,6 +21,10 @@ describe("BranchCreationWizard", () => {
       onClose: vi.fn(),
       onComplete: vi.fn(),
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {
@@ -161,6 +165,32 @@ describe("BranchCreationWizard", () => {
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Select base branch");
+    });
+
+    it("should sanitize a pasted branch name, dropping disallowed characters", async () => {
+      const singleRepoProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      };
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      stdin.write("\r"); // Select base branch
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Enter new branch name");
+
+      // Bracketed paste (\x1b[200~ … \x1b[201~). Spaces and "!" are outside the
+      // [a-zA-Z0-9/._-] allowlist and must be stripped; the "/" is valid in a
+      // branch name and must survive — otherwise pasted names create bad refs.
+      stdin.write("\u001B[200~feature/new thing!\u001B[201~");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("feature/newthing");
+
+      stdin.write("\r"); // Submit
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(singleRepoProps.createAndPushBranch).toHaveBeenCalledWith(0, "main", "feature/newthing");
     });
   });
 

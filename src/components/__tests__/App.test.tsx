@@ -1,6 +1,6 @@
 import React from "react";
-import { render } from "ink-testing-library";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import App, { AppProps } from "../App";
 import { AppEventEmitter } from "../../utils/app-events";
@@ -31,6 +31,10 @@ describe("App", () => {
       createWorktreeForBranch: vi.fn().mockResolvedValue(undefined),
       getWorktreeStatusForRepo: vi.fn().mockResolvedValue([]),
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {
@@ -330,6 +334,49 @@ describe("App", () => {
       stdin.write("r");
 
       expect(onReload).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("commands available while syncing", () => {
+    // create/open/status no longer require an idle status: they either don't touch
+    // git (open/status) or queue behind the sync (create). See the repo-mutex design.
+    it("should open the branch creation wizard with c while syncing", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write("c");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Select base branch:");
+    });
+
+    it("should open the open-worktree wizard with o while syncing", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write("o");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Select worktree:");
+    });
+
+    it("should open the worktree status view with w while syncing", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write("w");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Worktree Status");
     });
   });
 

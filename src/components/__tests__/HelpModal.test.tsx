@@ -1,6 +1,6 @@
 import React from "react";
-import { render } from "ink-testing-library";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import HelpModal, { HelpModalProps } from "../HelpModal";
 
@@ -11,6 +11,10 @@ describe("HelpModal", () => {
     defaultProps = {
       onClose: vi.fn(),
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {
@@ -61,7 +65,9 @@ describe("HelpModal", () => {
       const { stdin } = render(<HelpModal onClose={onClose} />);
 
       stdin.write("\x1b");
-      await new Promise((resolve) => setImmediate(resolve));
+      // Ink v7 buffers a lone ESC and flushes it as `key.escape` after a 20ms
+      // debounce (to disambiguate it from the start of an escape sequence).
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(onClose).toHaveBeenCalled();
     });

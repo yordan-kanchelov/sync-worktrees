@@ -1,7 +1,7 @@
 main:
   heroHeadlineLine1: "Keep every branch checked out."
   heroHeadlineLine2: "For you and your AI agents."
-  heroSubhead: "makes every branch in every repo a folder you `cd` into — auto-synced with the remote and exposed to your AI agents over MCP. No stashing, no re-cloning, no re-explaining your codebase."
+  heroSubhead: "turns every Git branch, in every repo, into a folder on disk — auto-synced with the remote. `cd` instead of stashing, `grep -r` across repos, and your AI agents see the whole workspace over MCP."
   heroDiskNote: "Git history is stored once and shared — each extra branch costs only its working files, not another clone."
   metaTitle: "sync-worktrees — Keep every branch checked out. For you and your AI agents."
   metaDescription: "Keep every Git branch across every repo checked out as a folder you can cd into — auto-synced with the remote and exposed to your AI agents over MCP. No stashing, no re-cloning, no re-explaining your codebase to Claude Code, Cursor, Codex, or Windsurf."

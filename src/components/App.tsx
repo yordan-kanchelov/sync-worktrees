@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Box, useInput, useStdout } from "ink";
+import { Box, useInput, useWindowSize } from "ink";
 import StatusBar from "./StatusBar";
 import HelpModal from "./HelpModal";
 import BranchCreationWizard from "./BranchCreationWizard";
@@ -89,6 +89,10 @@ const App: React.FC<AppProps> = ({
   const [showOpenEditorWizard, setShowOpenEditorWizard] = useState(false);
   const [showWorktreeStatus, setShowWorktreeStatus] = useState(false);
   const [status, setStatus] = useState<"idle" | "syncing">("idle");
+  // Interactive operations (branch/worktree creation) run independently of sync and
+  // queue behind it. Tracked separately so they don't drive the sync `status` spinner.
+  const [activeOps, setActiveOps] = useState<Array<{ id: number; label: string }>>([]);
+  const opIdRef = useRef(0);
   const [syncProgressEntries, setSyncProgressEntries] = useState<AppSyncProgress[]>([]);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [diskSpaceUsed, setDiskSpaceUsed] = useState<string | null>(null);
@@ -96,7 +100,7 @@ const App: React.FC<AppProps> = ({
   const [repoCount, setRepoCount] = useState(repositoryCount);
   const [schedule, setSchedule] = useState(cronSchedule);
 
-  const { stdout } = useStdout();
+  const { rows } = useWindowSize();
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     setLogs((prev) => {
@@ -135,11 +139,11 @@ const App: React.FC<AppProps> = ({
       onQuit().catch((err) => console.error("Quit failed:", err));
     } else if (input === "?" || input === "h") {
       setShowHelp(true);
-    } else if (input === "c" && status === "idle") {
+    } else if (input === "c") {
       setShowBranchWizard(true);
-    } else if (input === "o" && status === "idle") {
+    } else if (input === "o") {
       setShowOpenEditorWizard(true);
-    } else if (input === "w" && status === "idle" && getWorktreeStatusForRepo) {
+    } else if (input === "w" && getWorktreeStatusForRepo) {
       setShowWorktreeStatus(true);
     } else if (input === "s" && status !== "syncing") {
       setStatus("syncing");
@@ -224,8 +228,8 @@ const App: React.FC<AppProps> = ({
   }, []);
 
   const progressLineCount = status === "syncing" ? Math.max(1, maxProgressLines) : 0;
-  const statusBarHeight = 5 + progressLineCount;
-  const terminalRows = stdout.rows ?? 24;
+  const statusBarHeight = 5 + progressLineCount + activeOps.length;
+  const terminalRows = rows ?? 24;
   const logPanelHeight = Math.max(5, terminalRows - statusBarHeight);
   const showModal = showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus;
 
@@ -244,7 +248,8 @@ const App: React.FC<AppProps> = ({
           createAndPushBranch={createAndPushBranch}
           onClose={() => setShowBranchWizard(false)}
           onBranchCreated={(context) => {
-            setStatus("syncing");
+            const opId = ++opIdRef.current;
+            setActiveOps((prev) => [...prev, { id: opId, label: `Creating worktree ${context.newBranch}` }]);
             (async () => {
               try {
                 await createWorktreeForBranch(context.repoIndex, context.newBranch);
@@ -274,7 +279,7 @@ const App: React.FC<AppProps> = ({
                   level: "error",
                 });
               } finally {
-                setStatus("idle");
+                setActiveOps((prev) => prev.filter((op) => op.id !== opId));
               }
             })().catch((err) => console.error("Branch creation unhandled error:", err));
           }}
@@ -308,6 +313,7 @@ const App: React.FC<AppProps> = ({
       <StatusBar
         status={status}
         syncProgressEntries={syncProgressEntries}
+        activeOps={activeOps.map((op) => op.label)}
         maxProgressLines={maxProgressLines}
         repositoryCount={repoCount}
         lastSyncTime={lastSyncTime}
