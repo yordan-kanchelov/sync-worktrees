@@ -46,11 +46,15 @@ const starLabel =
         <span class="inline-flex items-center gap-1">
           <Icon name="github" size={14} /> Star on GitHub
         </span>
-        {starLabel && (
-          <span class="ml-0.5 inline-flex items-center gap-1 rounded-full bg-ink-100 px-1.5 py-0.5 text-[11px] font-semibold text-ink-700">
-            ★ {starLabel}
-          </span>
-        )}
+        <span
+          id="gh-stars"
+          class:list={[
+            "ml-0.5 inline-flex items-center gap-1 rounded-full bg-ink-100 px-1.5 py-0.5 text-[11px] font-semibold text-ink-700",
+            { hidden: !starLabel },
+          ]}
+        >
+          ★ <span data-star-value>{starLabel}</span>
+        </span>
       </a>
     </div>
 
@@ -123,4 +127,23 @@ const starLabel =
     ?.addEventListener("click", function () {
       window.posthog?.capture("github_link_clicked", { location: "hero" });
     });
+
+  // Refresh the build-time star count with a live value on page load, so the
+  // badge stays current between static rebuilds.
+  fetch("https://api.github.com/repos/yordan-kanchelov/sync-worktrees", {
+    headers: { Accept: "application/vnd.github+json" },
+  })
+    .then(function (res) {
+      return res.ok ? res.json() : null;
+    })
+    .then(function (data) {
+      if (!data || typeof data.stargazers_count !== "number") return;
+      var badge = document.getElementById("gh-stars");
+      var value = badge && badge.querySelector("[data-star-value]");
+      if (!badge || !value) return;
+      var n = data.stargazers_count;
+      value.textContent = n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
+      badge.classList.remove("hidden");
+    })
+    .catch(function () {});
 </script>
