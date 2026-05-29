@@ -1,5 +1,5 @@
 ---
-import { getCollection, getEntry } from "astro:content";
+import { getEntry } from "astro:content";
 import Icon from "./Icon.astro";
 import CopyButton from "./CopyButton.astro";
 import packageMetadata from "../../../package.json";
@@ -7,10 +7,19 @@ import { inlineCodeToHtml } from "../lib/markdown-inline";
 
 const commands = (await getEntry("commands", "main"))!.data;
 const positioning = (await getEntry("positioning", "main"))!.data;
-const otherClientCount = (await getCollection("clients")).length - 1;
 const npmCmd = commands.npmInstall;
-const mcpCmd = commands.claudeMcpAdd;
 const packageVersion = packageMetadata.version;
+
+const showcaseConfig = `repositories: [
+  {
+    name: "frontend",
+    repoUrl: "github.com/acme/frontend",
+  },
+  {
+    name: "backend",
+    repoUrl: "github.com/acme/backend",
+  },
+];`;
 
 // Live star count, fetched at build time. Falls back to no count if the API is
 // unreachable or rate-limited so the build never depends on network access.
@@ -58,7 +67,11 @@ const starLabel =
       </a>
     </div>
 
-    <h1 class="mt-8 text-balance text-center text-5xl font-bold leading-[1.12] tracking-tight text-ink-900 sm:text-6xl md:text-7xl">
+    <p class="mt-8 text-center text-xs font-semibold uppercase tracking-wider text-ink-500">
+      Automatic Git worktree sync · TUI · MCP server
+    </p>
+
+    <h1 class="mt-4 text-balance text-center text-5xl font-bold leading-[1.12] tracking-tight text-ink-900 sm:text-6xl md:text-7xl">
       {positioning.heroHeadlineLine1}
       <span class="block bg-gradient-to-r from-accent-600 via-accent-500 to-accent-400 bg-clip-text pb-[0.15em] text-transparent">
         {positioning.heroHeadlineLine2}
@@ -72,52 +85,73 @@ const starLabel =
       {positioning.heroDiskNote}
     </p>
 
-    <div class="mt-10 grid gap-4 sm:grid-cols-2">
-      <div class="group min-w-0 rounded-2xl border border-ink-200 bg-white p-5 shadow-sm transition hover:border-accent-300 hover:shadow-md">
-        <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink-500">
-          <Icon name="terminal" size={14} />
-          For developers
+    <div class="mx-auto mt-12 grid max-w-5xl items-stretch gap-4 lg:grid-cols-[1fr_auto_1fr]">
+      <div class="min-w-0 rounded-2xl border border-ink-200 bg-white p-5 text-left shadow-sm">
+        <div class="flex items-center gap-2 text-sm font-semibold text-ink-700">
+          <span class="inline-flex size-7 items-center justify-center rounded-full bg-ink-50 text-xs ring-1 ring-ink-200">1</span>
+          Just a config
         </div>
-        <div class="mt-3 flex min-w-0 items-center justify-between gap-2 rounded-lg bg-ink-50 px-3 py-2.5 font-mono text-sm text-ink-800">
-          <span class="min-w-0 truncate"><span class="text-accent-600">$</span> {npmCmd}</span>
-          <CopyButton value={npmCmd} class="shrink-0 text-ink-600 hover:bg-white" />
+        <div class="mt-4 rounded-xl bg-ink-50 p-4 font-mono text-xs leading-6 text-ink-700 ring-1 ring-ink-100">
+          <pre class="overflow-x-auto">{showcaseConfig}</pre>
         </div>
-        <div class="mt-3 text-sm text-ink-600">
-          Node 22+ on macOS or Linux. Run <code class="font-mono text-xs">init</code> once to write a config, then it syncs on a schedule.
-        </div>
+        <p class="mt-4 text-sm leading-relaxed text-ink-600">
+          Declare your repos and branches once. Commit the file — every teammate and every new machine rebuilds the exact same workspace.
+        </p>
       </div>
 
-      <div class="group min-w-0 rounded-2xl border border-ink-200 bg-white p-5 shadow-sm transition hover:border-accent-300 hover:shadow-md">
-        <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink-500">
-          <Icon name="robot" size={14} />
-          For AI agents
+      <div class="flex items-center justify-center gap-3">
+        <div class="rounded-lg bg-ink-900 px-3 py-2 font-mono text-sm text-white shadow-sm">
+          <span class="text-accent-400">$</span> sync-worktrees
         </div>
-        <div class="mt-3 flex min-w-0 items-center justify-between gap-2 rounded-lg bg-ink-50 px-3 py-2.5 font-mono text-sm text-ink-800">
-          <span class="min-w-0 truncate"><span class="text-accent-600">$</span> {mcpCmd}</span>
-          <CopyButton value={mcpCmd} class="shrink-0 text-ink-600 hover:bg-white" />
+        <span class="text-ink-300 rotate-90 lg:rotate-0">
+          <Icon name="arrow-right" size={22} />
+        </span>
+      </div>
+
+      <div class="min-w-0 overflow-hidden rounded-2xl border border-ink-800 bg-ink-900 text-left shadow-lg">
+        <div class="flex items-center gap-1.5 border-b border-ink-800 px-4 py-2.5">
+          <span class="size-3 rounded-full bg-[#ff5f57]"></span>
+          <span class="size-3 rounded-full bg-[#febc2e]"></span>
+          <span class="size-3 rounded-full bg-[#28c840]"></span>
+          <span class="ml-2 font-mono text-xs text-ink-400">bootstrapping — in seconds</span>
         </div>
-        <div class="mt-3 text-sm text-ink-600">
-          Claude Code shown — <a href="#agents" class="font-medium text-accent-700 underline-offset-4 hover:underline">setup for {otherClientCount} other clients</a>.
+        <div class="space-y-1 p-4 font-mono text-xs leading-5 text-ink-200">
+          <div class="sw-line" style="animation-delay:0s"><span class="text-emerald-400">✓</span> cloned frontend</div>
+          <div class="sw-line" style="animation-delay:0.4s"><span class="text-emerald-400">✓</span> frontend/main</div>
+          <div class="sw-line" style="animation-delay:0.8s"><span class="text-emerald-400">✓</span> frontend/feature-login</div>
+          <div class="sw-line" style="animation-delay:1.2s"><span class="text-emerald-400">✓</span> cloned backend</div>
+          <div class="sw-line" style="animation-delay:1.6s"><span class="text-emerald-400">✓</span> backend/main</div>
+          <div class="sw-line" style="animation-delay:2s"><span class="text-emerald-400">✓</span> backend/release-2.4</div>
+          <div class="sw-line mt-2 border-t border-ink-800 pt-2 text-ink-400" style="animation-delay:2.6s">worktrees/</div>
+          <div class="sw-line text-ink-200" style="animation-delay:2.85s">├─&nbsp;frontend/</div>
+          <div class="sw-line text-ink-400" style="animation-delay:3s">│&nbsp;&nbsp;├─&nbsp;main</div>
+          <div class="sw-line text-ink-400" style="animation-delay:3.15s">│&nbsp;&nbsp;└─&nbsp;feature-login</div>
+          <div class="sw-line text-ink-200" style="animation-delay:3.35s">└─&nbsp;backend/</div>
+          <div class="sw-line text-ink-400" style="animation-delay:3.5s">&nbsp;&nbsp;&nbsp;├─&nbsp;main</div>
+          <div class="sw-line text-ink-400" style="animation-delay:3.65s">&nbsp;&nbsp;&nbsp;└─&nbsp;release-2.4</div>
+          <div class="sw-line mt-2 border-t border-ink-800 pt-2 text-accent-400" style="animation-delay:4s">↳ MCP exposes this workspace to agents</div>
+          <div class="sw-line pt-1 font-semibold text-emerald-400" style="animation-delay:4.4s">workspace ready</div>
         </div>
       </div>
     </div>
 
-    <div class="mt-14 overflow-hidden rounded-2xl border border-ink-200 bg-ink-900 shadow-2xl">
-      <div class="flex items-center gap-1.5 border-b border-ink-700 bg-ink-800 px-4 py-2.5">
-        <span class="size-3 rounded-full bg-[#ff5f57]"></span>
-        <span class="size-3 rounded-full bg-[#febc2e]"></span>
-        <span class="size-3 rounded-full bg-[#28c840]"></span>
-        <span class="ml-3 font-mono text-xs text-ink-400">sync-worktrees — demo</span>
+    <div class="mt-10 flex flex-col items-center gap-4">
+      <a
+        href="#quickstart"
+        class="inline-flex items-center gap-2 rounded-full bg-accent-500 px-6 py-3 text-base font-semibold text-white shadow-sm transition hover:bg-accent-400"
+      >
+        Get started <Icon name="arrow-right" size={18} />
+      </a>
+      <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-sm">
+        <span class="inline-flex items-center gap-2 font-mono text-ink-600">
+          <span class="text-accent-600">$</span> {npmCmd}
+          <CopyButton value={npmCmd} class="text-ink-500 hover:bg-ink-100" />
+        </span>
+        <span class="text-ink-300" aria-hidden="true">·</span>
+        <a href="#agents" class="font-medium text-accent-700 underline-offset-4 hover:underline">
+          Works with AI agents via MCP →
+        </a>
       </div>
-      <img
-        src="/demo.gif"
-        alt="Terminal recording of sync-worktrees: the interactive TUI shows multi-repo worktree status, then a sync operation runs across repositories and creates new branch worktrees."
-        loading="lazy"
-        decoding="async"
-        width="1280"
-        height="720"
-        class="block w-full"
-      />
     </div>
   </div>
 </section>
@@ -147,3 +181,36 @@ const starLabel =
     })
     .catch(function () {});
 </script>
+
+<style>
+  .sw-line {
+    opacity: 0;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .sw-line {
+      animation: sw-cascade 7s ease-in-out infinite;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sw-line {
+      opacity: 1;
+    }
+  }
+  @keyframes sw-cascade {
+    0%,
+    4% {
+      opacity: 0;
+      transform: translateY(3px);
+    }
+    10%,
+    86% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    94%,
+    100% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+  }
+</style>
