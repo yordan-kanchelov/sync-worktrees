@@ -1,6 +1,6 @@
 import React from "react";
-import { render } from "ink-testing-library";
-import { describe, it, expect, beforeEach } from "vitest";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import LogViewer, { LogViewerProps } from "../LogViewer";
 import { LogEntry } from "../App";
@@ -13,6 +13,10 @@ describe("LogViewer", () => {
       logs: [],
       maxLines: 100,
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {

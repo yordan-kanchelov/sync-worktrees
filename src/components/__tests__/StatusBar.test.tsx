@@ -1,5 +1,5 @@
 import React from "react";
-import { render } from "ink-testing-library";
+import { render, cleanup } from "ink-testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import StatusBar, { StatusBarProps } from "../StatusBar";
@@ -18,6 +18,10 @@ describe("StatusBar", () => {
       cronSchedule: undefined,
       diskSpaceUsed: undefined,
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {

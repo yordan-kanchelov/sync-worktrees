@@ -1,6 +1,6 @@
 import React from "react";
-import { render } from "ink-testing-library";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import BranchCreationWizard, { BranchCreationWizardProps } from "../BranchCreationWizard";
 
@@ -21,6 +21,10 @@ describe("BranchCreationWizard", () => {
       onClose: vi.fn(),
       onComplete: vi.fn(),
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {

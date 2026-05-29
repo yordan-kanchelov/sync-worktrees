@@ -1,6 +1,6 @@
 import React from "react";
-import { render } from "ink-testing-library";
-import { describe, it, expect, beforeEach } from "vitest";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import LogPanel, { LogPanelProps } from "../LogPanel";
 import type { LogEntry } from "../App";
@@ -23,6 +23,10 @@ describe("LogPanel", () => {
       height: 10,
       isActive: true,
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {

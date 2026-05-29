@@ -1,6 +1,6 @@
 import React from "react";
-import { render } from "ink-testing-library";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import App, { AppProps } from "../App";
 import { AppEventEmitter } from "../../utils/app-events";
@@ -31,6 +31,10 @@ describe("App", () => {
       createWorktreeForBranch: vi.fn().mockResolvedValue(undefined),
       getWorktreeStatusForRepo: vi.fn().mockResolvedValue([]),
     };
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   describe("rendering", () => {

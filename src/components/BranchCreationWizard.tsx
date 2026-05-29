@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, usePaste } from "ink";
 
 import { isValidGitBranchName } from "../utils/git-validation";
 
@@ -259,6 +259,18 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
       }
     } else if (step === "RESULT") {
       onComplete(result?.success ?? false);
+    }
+  });
+
+  usePaste((text) => {
+    if (step === "SELECT_PROJECT") {
+      setProjectFilter((prev) => prev + text);
+      setSelectedProjectIndex(0);
+    } else if (step === "SELECT_BRANCH") {
+      setBranchFilter((prev) => prev + text);
+      setSelectedBranchIndex(0);
+    } else if (step === "ENTER_NAME") {
+      setBranchName((prev) => prev + text.replace(/[^a-zA-Z0-9/._-]/g, ""));
     }
   });
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, usePaste } from "ink";
 
 type WizardStep = "SELECT_PROJECT" | "SELECT_WORKTREE" | "OPENING" | "ERROR";
 
@@ -146,6 +146,16 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
       }
     } else if (step === "ERROR") {
       onClose();
+    }
+  });
+
+  usePaste((text) => {
+    if (step === "SELECT_PROJECT") {
+      setProjectFilter((prev) => prev + text);
+      setSelectedProjectIndex(0);
+    } else if (step === "SELECT_WORKTREE") {
+      setWorktreeFilter((prev) => prev + text);
+      setSelectedWorktreeIndex(0);
     }
   });
 

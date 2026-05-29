@@ -235,6 +235,10 @@ export class InteractiveUIService {
           this.executeOnBranchCreatedHooks(repoIndex, context)
         }
       />,
+      {
+        alternateScreen: true,
+        incrementalRendering: true,
+      },
     );
   }
 

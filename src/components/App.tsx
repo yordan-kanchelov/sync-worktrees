@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Box, useInput, useStdout } from "ink";
+import { Box, useInput, useWindowSize } from "ink";
 import StatusBar from "./StatusBar";
 import HelpModal from "./HelpModal";
 import BranchCreationWizard from "./BranchCreationWizard";
@@ -96,7 +96,7 @@ const App: React.FC<AppProps> = ({
   const [repoCount, setRepoCount] = useState(repositoryCount);
   const [schedule, setSchedule] = useState(cronSchedule);
 
-  const { stdout } = useStdout();
+  const { rows } = useWindowSize();
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     setLogs((prev) => {
@@ -225,7 +225,7 @@ const App: React.FC<AppProps> = ({
 
   const progressLineCount = status === "syncing" ? Math.max(1, maxProgressLines) : 0;
   const statusBarHeight = 5 + progressLineCount;
-  const terminalRows = stdout.rows ?? 24;
+  const terminalRows = rows ?? 24;
   const logPanelHeight = Math.max(5, terminalRows - statusBarHeight);
   const showModal = showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus;
 
