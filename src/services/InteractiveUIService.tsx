@@ -515,11 +515,17 @@ export class InteractiveUIService {
     }
 
     const service = this.syncServices[repoIndex];
-    if (!service.isInitialized()) {
-      await service.initialize();
+    const result = await service.runQueuedRepoOperation(async () => {
+      // Use the unlocked init path: initialize() re-enters the repo mutex and would
+      // self-deadlock inside this queued operation.
+      if (!service.isInitialized()) {
+        await service.initializeUnlocked();
+      }
+      await service.getGitService().fetchAll();
+    });
+    if (!result.started) {
+      throw new Error("Another process holds the repository lock; fetch skipped. Try again.");
     }
-    const gitService = service.getGitService();
-    await gitService.fetchAll();
   }
 
   public async createAndPushBranch(
@@ -534,27 +540,40 @@ export class InteractiveUIService {
     const service = this.syncServices[repoIndex];
     const gitService = service.getGitService();
 
-    const maxAttempts = 10;
-    let finalName = branchName;
-    let suffix = 0;
+    // Serialize branch+push behind any in-flight sync so it can't race git's
+    // index/refs. addWorktree (createWorktreeForBranch) is a separate queued op.
+    const result = await service.runQueuedRepoOperation(async () => {
+      const maxAttempts = 10;
+      let finalName = branchName;
+      let suffix = 0;
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        await gitService.createBranch(finalName, baseBranch);
-        await gitService.pushBranch(finalName);
-        return { success: true, finalName };
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes("already exists")) {
-          suffix++;
-          finalName = `${branchName}-${suffix}`;
-          continue;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          await gitService.createBranch(finalName, baseBranch);
+          await gitService.pushBranch(finalName);
+          return { success: true, finalName };
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (errorMessage.includes("already exists")) {
+            suffix++;
+            finalName = `${branchName}-${suffix}`;
+            continue;
+          }
+          return { success: false, finalName: branchName, error: errorMessage };
         }
-        return { success: false, finalName: branchName, error: errorMessage };
       }
-    }
 
-    return { success: false, finalName: branchName, error: `Failed to create branch after ${maxAttempts} attempts` };
+      return { success: false, finalName: branchName, error: `Failed to create branch after ${maxAttempts} attempts` };
+    });
+
+    if (!result.started) {
+      return {
+        success: false,
+        finalName: branchName,
+        error: "Another process holds the repository lock; branch not created. Try again.",
+      };
+    }
+    return result.value;
   }
 
   public async getWorktreesForRepo(repoIndex: number): Promise<Array<{ path: string; branch: string }>> {
@@ -690,7 +709,12 @@ export class InteractiveUIService {
     const worktreeDir = service.config.worktreeDir;
     const worktreePath = this.pathResolution.getBranchWorktreePath(worktreeDir, branchName);
 
-    await gitService.addWorktree(branchName, worktreePath);
+    const result = await service.runQueuedRepoOperation(async () => {
+      await gitService.addWorktree(branchName, worktreePath);
+    });
+    if (!result.started) {
+      throw new Error("Another process holds the repository lock; worktree not created. Try again.");
+    }
   }
 
   public openEditorInWorktree(worktreePath: string): { success: boolean; error?: string } {

@@ -47,8 +47,12 @@ const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance, mockSpawn, mo
       mockWorktreeSyncServiceInstance: {
         sync: vi.fn<any>(),
         initialize: vi.fn<any>(),
+        initializeUnlocked: vi.fn<any>().mockResolvedValue(undefined),
         isInitialized: vi.fn<any>().mockReturnValue(false),
         isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        runQueuedRepoOperation: vi
+          .fn<any>()
+          .mockImplementation(async (op: any) => ({ started: true, value: await op() })),
         updateLogger: vi.fn<any>(),
         onProgress: vi.fn<any>().mockReturnValue(vi.fn()),
         getRecordedSkips: vi.fn<any>().mockReturnValue([]),
@@ -134,8 +138,12 @@ describe("InteractiveUIService", () => {
     mockSyncService = {
       sync: vi.fn<any>().mockResolvedValue(undefined),
       initialize: vi.fn<any>().mockResolvedValue(undefined),
+      initializeUnlocked: vi.fn<any>().mockResolvedValue(undefined),
       isInitialized: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+      runQueuedRepoOperation: vi
+        .fn<any>()
+        .mockImplementation(async (op: any) => ({ started: true, value: await op() })),
       updateLogger: vi.fn<any>(),
       onProgress: vi.fn<any>().mockReturnValue(vi.fn()),
       getRecordedSkips: vi.fn<any>().mockReturnValue([]),
@@ -1462,6 +1470,7 @@ describe("InteractiveUIService", () => {
           reasons: [],
         }),
         addWorktree: vi.fn().mockResolvedValue(undefined),
+        fetchAll: vi.fn().mockResolvedValue(undefined),
       };
 
       mockSyncService.getGitService = vi.fn().mockReturnValue(mockGitService);
@@ -1685,6 +1694,29 @@ describe("InteractiveUIService", () => {
 
         service.destroy();
       });
+
+      it("should serialize branch creation through the queued repo lock", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+        await service.createAndPushBranch(0, "main", "feature/new");
+
+        // Branch+push must run behind any in-flight sync to avoid racing git's refs.
+        expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
+
+        service.destroy();
+      });
+
+      it("should return a failure (not throw) when another process holds the repo lock", async () => {
+        (mockSyncService.runQueuedRepoOperation as any).mockResolvedValueOnce({ started: false, reason: "locked" });
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/new");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/repository lock/i);
+        expect(mockGitService.createBranch).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
     });
 
     describe("getWorktreesForRepo", () => {
@@ -1766,6 +1798,64 @@ describe("InteractiveUIService", () => {
         await expect(service.createWorktreeForBranch(-1, "feature/new")).rejects.toThrow(
           "Invalid repository index: -1",
         );
+
+        service.destroy();
+      });
+
+      it("should serialize worktree creation through the queued repo lock", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+        await service.createWorktreeForBranch(0, "feature/new");
+
+        expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
+
+        service.destroy();
+      });
+
+      it("should throw when another process holds the repo lock", async () => {
+        (mockSyncService.runQueuedRepoOperation as any).mockResolvedValueOnce({ started: false, reason: "locked" });
+
+        const service = new InteractiveUIService([mockSyncService]);
+        await expect(service.createWorktreeForBranch(0, "feature/new")).rejects.toThrow(/repository lock/i);
+        expect(mockGitService.addWorktree).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+    });
+
+    describe("fetchForRepo", () => {
+      it("should fetch through the queued repo lock using the unlocked init path", async () => {
+        mockSyncService.isInitialized = vi.fn().mockReturnValue(false);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await service.fetchForRepo(0);
+
+        expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
+        expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
+        // Must use initializeUnlocked inside the queued op; initialize() would
+        // re-enter the repo mutex and self-deadlock.
+        expect(mockSyncService.initializeUnlocked).toHaveBeenCalledTimes(1);
+        expect(mockSyncService.initialize).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it("should not re-initialize when already initialized", async () => {
+        mockSyncService.isInitialized = vi.fn().mockReturnValue(true);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await service.fetchForRepo(0);
+
+        expect(mockSyncService.initializeUnlocked).not.toHaveBeenCalled();
+        expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
+
+        service.destroy();
+      });
+
+      it("should throw when another process holds the repo lock", async () => {
+        (mockSyncService.runQueuedRepoOperation as any).mockResolvedValueOnce({ started: false, reason: "locked" });
+
+        const service = new InteractiveUIService([mockSyncService]);
+        await expect(service.fetchForRepo(0)).rejects.toThrow(/repository lock/i);
 
         service.destroy();
       });

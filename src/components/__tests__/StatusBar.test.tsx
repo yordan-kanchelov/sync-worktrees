@@ -39,6 +39,24 @@ describe("StatusBar", () => {
       const { lastFrame: frame2 } = render(<StatusBar {...defaultProps} repositoryCount={10} />);
       expect(frame2()).toContain("10");
     });
+
+    it("should render active interactive operations even while idle", () => {
+      const { lastFrame } = render(
+        <StatusBar {...defaultProps} status="idle" activeOps={["Creating worktree feature/x"]} />,
+      );
+
+      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Creating worktree feature/x");
+    });
+
+    it("should render active operations alongside a running sync", () => {
+      const { lastFrame } = render(
+        <StatusBar {...defaultProps} status="syncing" activeOps={["Creating worktree feature/y"]} />,
+      );
+
+      expect(lastFrame()).toContain("Syncing...");
+      expect(lastFrame()).toContain("Creating worktree feature/y");
+    });
   });
 
   describe("status display", () => {

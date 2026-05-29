@@ -1,3 +1,5 @@
+import pLimit from "p-limit";
+
 import { getErrorMessage } from "../utils/lfs-error";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { retry } from "../utils/retry";
@@ -28,7 +30,11 @@ export class WorktreeSyncService {
   private gitService: GitService;
   private cloneSyncService: CloneSyncService | null = null;
   private logger: Logger;
-  private syncInProgress: boolean = false;
+  // In-process FIFO serializer for all bare-repo-mutating operations (sync, init,
+  // interactive create). One per repo. wait:true callers queue behind an in-flight op;
+  // wait:false callers fail fast. The cross-process file lock (RepoOperationLock) is
+  // acquired inside the mutex body for multi-process safety.
+  private repoMutex = pLimit(1);
   private progressEmitter = new ProgressEmitter();
   private repoOperationLock: RepoOperationLock;
   private retryPolicy: SyncRetryPolicy;
@@ -111,7 +117,7 @@ export class WorktreeSyncService {
   }
 
   isSyncInProgress(): boolean {
-    return this.syncInProgress;
+    return this.repoMutex.activeCount + this.repoMutex.pendingCount > 0;
   }
 
   getGitService(): GitService {
@@ -131,42 +137,42 @@ export class WorktreeSyncService {
     return this.progressEmitter.onProgress(listener);
   }
 
-  async runExclusiveRepoOperation<T>(operation: () => Promise<T>): Promise<ExclusiveRepoOperationResult<T>> {
-    if (this.syncInProgress) {
+  async runExclusiveRepoOperation<T>(
+    operation: () => Promise<T>,
+    options: { wait?: boolean } = {},
+  ): Promise<ExclusiveRepoOperationResult<T>> {
+    // Fail-fast callers (sync, init, MCP) bail when any repo op is active or queued.
+    // wait:true callers (interactive create) skip this check and queue on the mutex,
+    // running once the in-flight op releases. The count check and the repoMutex()
+    // enqueue below execute synchronously with no await between them, so on the
+    // single JS thread a second fail-fast caller always observes the first.
+    if (!options.wait && this.repoMutex.activeCount + this.repoMutex.pendingCount > 0) {
       this.logger.warn("⚠️  Another repository operation is already in progress, skipping...");
       return { started: false, reason: "in_progress" };
     }
-    // Claim the in-process slot synchronously so a second caller arriving while
-    // we await acquire() sees "in_progress" instead of also passing the check.
-    this.syncInProgress = true;
 
-    let release: RepoLockRelease | null;
-    try {
-      release = await this.repoOperationLock.acquire();
-    } catch (error) {
-      this.syncInProgress = false;
-      throw error;
-    }
-
-    if (release === null) {
-      this.syncInProgress = false;
-      this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
-      return { started: false, reason: "locked" };
-    }
-
-    try {
-      return { started: true, value: await operation() };
-    } finally {
-      // Release the file lock first; only then clear the in-process flag so
-      // another caller arriving in this window gets "in_progress" rather than
-      // ELOCKED from proper-lockfile.
-      try {
-        await release();
-      } catch (releaseError) {
-        this.logger.warn(`Failed to release sync lock: ${getErrorMessage(releaseError)}`);
+    return this.repoMutex(async (): Promise<ExclusiveRepoOperationResult<T>> => {
+      const release: RepoLockRelease | null = await this.repoOperationLock.acquire();
+      if (release === null) {
+        this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
+        return { started: false, reason: "locked" };
       }
-      this.syncInProgress = false;
-    }
+
+      try {
+        return { started: true, value: await operation() };
+      } finally {
+        try {
+          await release();
+        } catch (releaseError) {
+          this.logger.warn(`Failed to release sync lock: ${getErrorMessage(releaseError)}`);
+        }
+      }
+    });
+  }
+
+  // Interactive variant: queues behind any in-flight sync/op instead of failing fast.
+  async runQueuedRepoOperation<T>(operation: () => Promise<T>): Promise<ExclusiveRepoOperationResult<T>> {
+    return this.runExclusiveRepoOperation(operation, { wait: true });
   }
 
   private emitProgress(event: ProgressEvent): void {
