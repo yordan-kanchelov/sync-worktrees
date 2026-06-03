@@ -1,11 +1,13 @@
 import pLimit from "p-limit";
 
+import { ENV_CONSTANTS } from "../constants";
 import { getErrorMessage } from "../utils/lfs-error";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { retry } from "../utils/retry";
 import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
 
 import { type CloneSkipReason, CloneSyncService } from "./clone-sync.service";
+import { GitMaintenanceService } from "./git-maintenance.service";
 import { GitService } from "./git.service";
 import { Logger } from "./logger.service";
 import { ProgressEmitter } from "./progress-emitter";
@@ -37,6 +39,7 @@ export class WorktreeSyncService {
   private repoMutex = pLimit(1);
   private progressEmitter = new ProgressEmitter();
   private repoOperationLock: RepoOperationLock;
+  private maintenanceService: GitMaintenanceService;
   private retryPolicy: SyncRetryPolicy;
   private worktreeModeSyncRunner: WorktreeModeSyncRunner;
   private skipsAccumulator: CloneSkipReason[] = [];
@@ -46,6 +49,7 @@ export class WorktreeSyncService {
     this.logger = config.logger ?? Logger.createDefault(undefined, config.debug);
     this.gitService = new GitService(config, this.logger, (event): void => this.emitProgress(event));
     this.repoOperationLock = new RepoOperationLock(config, this.gitService, this.logger);
+    this.maintenanceService = new GitMaintenanceService(config, this.gitService, this.logger);
     this.retryPolicy = new SyncRetryPolicy(config, this.gitService, this.logger);
     this.worktreeModeSyncRunner = new WorktreeModeSyncRunner(
       config,
@@ -90,6 +94,20 @@ export class WorktreeSyncService {
     return this.gitService.getWorktrees();
   }
 
+  async getRemoteBranches(): Promise<string[]> {
+    if (this.cloneSyncService) {
+      return this.cloneSyncService.getRemoteBranches();
+    }
+    return this.gitService.getRemoteBranches();
+  }
+
+  async checkoutBranch(branchName: string): Promise<void> {
+    if (!this.cloneSyncService) {
+      throw new Error("checkoutBranch is only available for clone-mode repositories");
+    }
+    await this.cloneSyncService.checkoutBranch(branchName);
+  }
+
   async initialize(): Promise<void> {
     if (this.isInitialized()) return;
     const result = await this.runExclusiveRepoOperation(() => this.initializeUnlocked());
@@ -131,6 +149,18 @@ export class WorktreeSyncService {
     this.retryPolicy.updateLogger(logger);
     this.worktreeModeSyncRunner.updateLogger(logger);
     this.repoOperationLock.updateLogger(logger);
+    this.maintenanceService.updateLogger(logger);
+  }
+
+  // Runs git gc when due, inside the already-held repo lock (mirrors
+  // initializeUnlocked — must NOT re-acquire runExclusiveRepoOperation or it
+  // would self-deadlock/skip). Skipped under NODE_ENV=test so unit suites don't
+  // shell out to real git; GitMaintenanceService is covered by its own tests.
+  private async runMaintenanceIfDueUnlocked(): Promise<void> {
+    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
+      return;
+    }
+    await this.maintenanceService.runIfDueUnlocked();
   }
 
   onProgress(listener: ProgressListener): () => void {
@@ -234,6 +264,8 @@ export class WorktreeSyncService {
           this.logger.table(formatTimingTable(durationMs, phaseResults, repoName));
         }
       }
+
+      await this.runMaintenanceIfDueUnlocked();
 
       return this.lastOutcome ?? outcome.toOutcome(durationMs);
     });

@@ -23,7 +23,8 @@ type CommonConfigKeys =
   | "debug"
   | "filesToCopyOnBranchCreate"
   | "hooks"
-  | "sparseCheckout";
+  | "sparseCheckout"
+  | "maintenance";
 type WorktreeOnlyConfigKeys =
   | "bareRepoDir"
   | "branchMaxAge"

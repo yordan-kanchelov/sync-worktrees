@@ -140,7 +140,10 @@ describe("InteractiveUIService", () => {
       initialize: vi.fn<any>().mockResolvedValue(undefined),
       initializeUnlocked: vi.fn<any>().mockResolvedValue(undefined),
       isInitialized: vi.fn<any>().mockReturnValue(false),
+      isCloneMode: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+      getRemoteBranches: vi.fn<any>(),
+      checkoutBranch: vi.fn<any>().mockResolvedValue(undefined),
       runQueuedRepoOperation: vi
         .fn<any>()
         .mockImplementation(async (op: any) => ({ started: true, value: await op() })),
@@ -1474,6 +1477,7 @@ describe("InteractiveUIService", () => {
       };
 
       mockSyncService.getGitService = vi.fn().mockReturnValue(mockGitService);
+      mockSyncService.getRemoteBranches = vi.fn().mockResolvedValue(["main", "develop", "feature/test"]);
     });
 
     describe("getRepositoryList", () => {
@@ -1597,7 +1601,7 @@ describe("InteractiveUIService", () => {
         const branches = await service.getBranchesForRepo(0);
 
         expect(branches).toEqual(["main", "develop", "feature/test"]);
-        expect(mockGitService.getRemoteBranches).toHaveBeenCalled();
+        expect(mockSyncService.getRemoteBranches).toHaveBeenCalled();
 
         service.destroy();
       });
@@ -1608,7 +1612,7 @@ describe("InteractiveUIService", () => {
         const branches = await service.getBranchesForRepo(0);
 
         expect(branches).toEqual([]);
-        expect(mockGitService.getRemoteBranches).not.toHaveBeenCalled();
+        expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
 
         service.destroy();
       });
@@ -1788,6 +1792,22 @@ describe("InteractiveUIService", () => {
           "feature/new",
           expect.stringMatching(/^\/test\/worktrees\/feature-new-[a-f0-9]{8}$/),
         );
+
+        service.destroy();
+      });
+
+      it("should checkout the branch for clone-mode repositories", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          isCloneMode: vi.fn().mockReturnValue(true),
+          checkoutBranch: vi.fn().mockResolvedValue(undefined),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        await service.createWorktreeForBranch(0, "feature/new");
+
+        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new");
+        expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
         service.destroy();
       });

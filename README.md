@@ -418,9 +418,9 @@ Set `mode: "clone"` to clone one checked-out branch directly into `worktreeDir` 
 }
 ```
 
-Clone mode keeps the normal `+refs/heads/*:refs/remotes/origin/*` fetch refspec, so `git branch -r` and `git fetch --all --prune` can see all remote branches. `branch` controls the checked-out branch that sync-worktrees fast-forwards on each sync. Omit `branch` and the remote HEAD is resolved at clone time.
+Clone mode keeps only the checked-out branch materialized as a local `origin/*` ref. Branch discovery uses remote metadata, so the tool can list remote branches without downloading object closure for every branch tip. `branch` controls the checked-out branch that sync-worktrees fast-forwards on each sync. Omit `branch` and the remote HEAD is resolved at clone time.
 
-`depth` is valid only for clone-mode repositories and must be a positive safe integer. Shallow clones use `--no-single-branch` so all remote branch refs remain visible at the configured depth. If you later remove `depth` from the config, the next sync unshallows the existing clone with `git fetch --unshallow`.
+`depth` is valid only for clone-mode repositories and must be a positive safe integer. Shallow clones use `--single-branch --no-tags`, and sync fetches keep only the tracked branch at the configured depth. If you later remove `depth` from the config, the next sync unshallows the existing clone with `git fetch --unshallow --no-tags`.
 
 Clone mode rejects `branchInclude`, `branchExclude`, `branchMaxAge`, `updateExistingWorktrees`, and `bareRepoDir` at validation time (whether set directly or inherited via `defaults`) — they have no meaning for a single-branch checkout.
 
@@ -462,6 +462,25 @@ If you set `exclude` or `!`-prefixed patterns while `mode: "cone"` is explicit, 
 **Duplicate `repoUrl` handling:** The first entry per `repoUrl` keeps the URL-derived bare path (`.bare/<repo-slug>`). Subsequent duplicate entries auto-derive `bareRepoDir` from `name` (`.bare/<name>`). Pin `bareRepoDir` explicitly on duplicate entries if you want config order to be irrelevant.
 
 **Narrowing safety:** When a sync would narrow an existing worktree's sparse patterns (remove a previously included path), it first checks the worktree is clean. If there are uncommitted changes, unpushed commits, or in-progress operations, the sparse update is skipped with a warning.
+
+### Maintenance
+
+Over time a repository accumulates unreachable Git objects — clone mode leaves them behind when single-branch fetches narrow refs, and both modes churn objects as branches come and go. The optional `maintenance` block runs `git gc` periodically to reclaim that storage and consolidate pack files. It applies to both modes and runs at the tail of a successful sync, under the same repository operation lock as the sync itself (so it never races a fetch, merge, or worktree operation).
+
+```javascript
+defaults: {
+  maintenance: {
+    enabled: true,      // default: true
+    interval: "7d",     // default: "7d" — minimum time between runs
+    aggressive: false,  // default: false
+  },
+}
+```
+
+- **`interval`** is a duration string (`h`/`d`/`w`/`m`/`y`). The last run is timestamped in the object store (`<bare-repo>/sync-worktrees-maintenance.json`, or `<worktreeDir>/.git/…` in clone mode), so throttling survives daemon restarts and repeated `runOnce` invocations.
+- **`aggressive: false`** (default) runs plain `git gc`, which honors Git's two-week grace period — recently-unreachable objects (and anything reachable from a branch, tag, stash, or reflog) are always preserved.
+- **`aggressive: true`** runs `git gc --prune=now`, pruning recently-unreachable objects immediately. Use it only for explicit reclamation; the default is the safe choice.
+- A maintenance failure is logged as a warning and never fails the sync. The attempt is still timestamped, so a broken `gc` is throttled instead of retried every tick.
 
 ### Branch filtering
 

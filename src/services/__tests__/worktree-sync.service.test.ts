@@ -2,10 +2,12 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import simpleGit from "simple-git";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_BRANCHES, createMockLogger } from "../../__tests__/test-utils";
+import { GitMaintenanceService } from "../git-maintenance.service";
 import { PathResolutionService } from "../path-resolution.service";
+import { RepoOperationLock } from "../repo-operation-lock";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
 const pathResolution = new PathResolutionService();
@@ -1375,6 +1377,38 @@ describe("WorktreeSyncService", () => {
       expect(applyToWorktree).not.toHaveBeenCalled();
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Failed to update sparse-checkout"));
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("boom"));
+    });
+  });
+
+  describe("maintenance wiring", () => {
+    let maintenanceSpy: ReturnType<typeof vi.spyOn>;
+    let prevNodeEnv: string | undefined;
+
+    beforeEach(() => {
+      // The call site is gated off under NODE_ENV=test; flip it so the wiring runs.
+      // Stub the cross-process lock so flipping the env doesn't trigger real locking.
+      prevNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = "production";
+      vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue(async () => {});
+      maintenanceSpy = vi.spyOn(GitMaintenanceService.prototype, "runIfDueUnlocked").mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      process.env.NODE_ENV = prevNodeEnv;
+      vi.restoreAllMocks();
+    });
+
+    it("runs maintenance once after a successful sync, inside the lock", async () => {
+      const svc = new WorktreeSyncService(mockConfig);
+      await svc.sync();
+      expect(maintenanceSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not run maintenance when the sync fails", async () => {
+      mockGitService.fetchAll.mockRejectedValue(new Error("Fetch failed"));
+      const svc = new WorktreeSyncService(mockConfig);
+      await expect(svc.sync()).rejects.toThrow("Fetch failed");
+      expect(maintenanceSpy).not.toHaveBeenCalled();
     });
   });
 });

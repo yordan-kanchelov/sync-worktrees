@@ -6,6 +6,7 @@ import * as cron from "node-cron";
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
 import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
+import { parseDuration } from "../utils/date-filter";
 import { fileExists } from "../utils/file-exists";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { normalizePathForCompare } from "../utils/path-compare";
@@ -153,6 +154,10 @@ export class ConfigLoaderService {
         this.validateSparseCheckoutConfig(repoObj.sparseCheckout, `Repository '${repoObj.name}'`);
       }
 
+      if (repoObj.maintenance !== undefined) {
+        this.validateMaintenanceConfig(repoObj.maintenance, `Repository '${repoObj.name}'`);
+      }
+
       this.validateDepth(repoObj.depth, `Repository '${repoObj.name}' depth`);
       this.validateRepositoryMode(repoObj, configObj.defaults as Record<string, unknown> | undefined);
     });
@@ -196,6 +201,10 @@ export class ConfigLoaderService {
         this.validateSparseCheckoutConfig(defaults.sparseCheckout, "defaults");
       }
 
+      if (defaults.maintenance !== undefined) {
+        this.validateMaintenanceConfig(defaults.maintenance, "defaults");
+      }
+
       this.validateDepth(defaults.depth, "defaults.depth");
 
       if (defaults.mode !== undefined && !isRepositoryMode(defaults.mode)) {
@@ -227,6 +236,25 @@ export class ConfigLoaderService {
     if (value === undefined) return;
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
       throw new ConfigValidationError(field, "must be a positive safe integer");
+    }
+  }
+
+  private validateMaintenanceConfig(value: unknown, context: string): void {
+    if (value === undefined) return;
+    if (typeof value !== "object" || value === null) {
+      throw new Error(`'maintenance' in ${context} must be an object`);
+    }
+    const maintenance = value as Record<string, unknown>;
+    if (maintenance.enabled !== undefined && typeof maintenance.enabled !== "boolean") {
+      throw new Error(`'maintenance.enabled' in ${context} must be a boolean`);
+    }
+    if (maintenance.aggressive !== undefined && typeof maintenance.aggressive !== "boolean") {
+      throw new Error(`'maintenance.aggressive' in ${context} must be a boolean`);
+    }
+    if (maintenance.interval !== undefined) {
+      if (typeof maintenance.interval !== "string" || parseDuration(maintenance.interval) === null) {
+        throw new Error(`'maintenance.interval' in ${context} must be a duration string like '7d', '24h', or '2w'`);
+      }
     }
   }
 
@@ -567,6 +595,13 @@ export class ConfigLoaderService {
     const sparse = repo.sparseCheckout ?? defaults?.sparseCheckout;
     if (sparse) {
       resolved.sparseCheckout = sparse;
+    }
+
+    if (repo.maintenance || defaults?.maintenance) {
+      resolved.maintenance = {
+        ...(defaults?.maintenance || {}),
+        ...(repo.maintenance || {}),
+      };
     }
 
     return resolved;

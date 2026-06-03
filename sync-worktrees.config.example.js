@@ -24,6 +24,15 @@ const config = {
     // skipLfs: true,  // Skip downloading large files tracked by Git LFS
     // Auto-update worktrees that are behind upstream (optional)
     // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
+    // Periodic `git gc` of the object store (optional, applies to both modes).
+    // Reclaims unreachable objects and consolidates packs. Runs at the tail of a
+    // successful sync, throttled by `interval`, under the repo operation lock.
+    // maintenance: {
+    //   enabled: true,        // Default: true. Set false to disable entirely.
+    //   interval: "7d",       // Default: "7d". Min time between runs (e.g. "24h", "2w").
+    //   aggressive: false,    // Default: false. true => `git gc --prune=now` (skips the
+    //                         // 2-week grace and prunes recently-unreachable objects now).
+    // },
   },
   
   // Retry configuration for handling transient errors (optional)
@@ -269,13 +278,13 @@ const config = {
     //
     // - mode: "clone" disables the bare-repo + per-branch-worktree layout for this repo.
     // - branch is optional; when omitted, remote HEAD is resolved via `git ls-remote --symref`.
-    // - origin keeps the normal all-branches fetch refspec, so `git branch -r` and
-    //   `git fetch --all --prune` can see every remote branch.
+    // - origin tracks only the checked-out branch. Branch discovery uses remote
+    //   metadata instead of materializing every origin/* ref locally.
     // - depth is optional and config-file only; it maps to `git clone --depth <N>` on the
-    //   initial clone with `--no-single-branch`. Sync fetches keep using depth while the
-    //   repository is already shallow, but do not convert an existing full clone into a
-    //   shallow one. If depth is later removed, an existing shallow clone is automatically
-    //   unshallowed before normal sync.
+    //   initial single-branch clone. Sync fetches keep using depth while the repository
+    //   is already shallow, but do not convert an existing full clone into a shallow one.
+    //   If depth is later removed, an existing shallow clone is automatically unshallowed
+    //   before normal sync. Clone-mode clone/fetch operations also use --no-tags.
     // - Conflicts with branchInclude / branchExclude / branchMaxAge / updateExistingWorktrees /
     //   bareRepoDir — setting any of these on a clone-mode repo (or via defaults inherited into it)
     //   is a validation error.

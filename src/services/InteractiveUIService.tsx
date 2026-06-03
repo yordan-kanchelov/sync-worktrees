@@ -495,8 +495,7 @@ export class InteractiveUIService {
     if (!service.isInitialized()) {
       return [];
     }
-    const gitService = service.getGitService();
-    return gitService.getRemoteBranches();
+    return service.getRemoteBranches();
   }
 
   public getDefaultBranchForRepo(repoIndex: number): string {
@@ -520,6 +519,10 @@ export class InteractiveUIService {
       // self-deadlock inside this queued operation.
       if (!service.isInitialized()) {
         await service.initializeUnlocked();
+      }
+      if (service.isCloneMode()) {
+        await service.getRemoteBranches();
+        return;
       }
       await service.getGitService().fetchAll();
     });
@@ -710,6 +713,10 @@ export class InteractiveUIService {
     const worktreePath = this.pathResolution.getBranchWorktreePath(worktreeDir, branchName);
 
     const result = await service.runQueuedRepoOperation(async () => {
+      if (service.isCloneMode()) {
+        await service.checkoutBranch(branchName);
+        return;
+      }
       await gitService.addWorktree(branchName, worktreePath);
     });
     if (!result.started) {

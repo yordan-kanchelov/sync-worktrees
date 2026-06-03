@@ -68,6 +68,23 @@ export interface ParallelismConfig {
   maxBranchFetches?: number;
 }
 
+export interface MaintenanceConfig {
+  /** Enable periodic `git gc`. Default: true. */
+  enabled?: boolean;
+  /**
+   * Minimum time between maintenance runs (duration string, e.g. "7d", "24h").
+   * Default: "7d". Throttled via a persisted timestamp so it survives daemon
+   * restarts and repeated `runOnce` invocations.
+   */
+  interval?: string;
+  /**
+   * When true, run `git gc --prune=now` instead of plain `git gc`. This prunes
+   * recently-unreachable objects immediately, bypassing Git's default 2-week
+   * grace period. Off by default — only enable for explicit aggressive cleanup.
+   */
+  aggressive?: boolean;
+}
+
 export type RepositoryMode = "clone" | "worktree";
 
 export type SyncOutcomeMode = RepositoryMode;
@@ -126,6 +143,13 @@ export interface Config {
   hooks?: HooksConfig;
   sparseCheckout?: SparseCheckoutConfig;
   /**
+   * Periodic Git object-store maintenance (`git gc`). Applies to both modes.
+   * Reclaims unreachable objects left behind by ref narrowing / branch churn
+   * and consolidates pack files. Throttled by `interval` (default 7d) and runs
+   * under the repository operation lock at the tail of a successful sync.
+   */
+  maintenance?: MaintenanceConfig;
+  /**
    * Repository strategy. `worktree` (default) clones once as a bare repo and
    * maintains one worktree per remote branch under `worktreeDir/<branch>`.
    * `clone` performs a normal `git clone --branch <branch>` directly into
@@ -141,8 +165,8 @@ export interface Config {
   branch?: string;
   /**
    * Shallow clone depth for config-file clone-mode repositories. Maps to
-   * `git clone --depth <N> --no-single-branch` on initial clone and keeps
-   * shallow sync fetches at the configured depth.
+   * `git clone --single-branch --no-tags --depth <N>` on initial clone and
+   * keeps shallow sync fetches for the tracked branch at the configured depth.
    */
   depth?: number;
   /**
@@ -224,6 +248,7 @@ export type SyncWorktreesHooksConfig = HooksConfig;
 export type SyncWorktreesSparseCheckoutMode = SparseCheckoutMode;
 export type SyncWorktreesSparseCheckoutConfig = SparseCheckoutConfig;
 export type SyncWorktreesRepositoryMode = RepositoryMode;
+export type SyncWorktreesMaintenanceConfig = MaintenanceConfig;
 
 interface SyncWorktreesCommonConfigFields {
   cronSchedule?: string;
@@ -235,6 +260,7 @@ interface SyncWorktreesCommonConfigFields {
   filesToCopyOnBranchCreate?: string[];
   hooks?: SyncWorktreesHooksConfig;
   sparseCheckout?: SyncWorktreesSparseCheckoutConfig;
+  maintenance?: SyncWorktreesMaintenanceConfig;
 }
 
 interface SyncWorktreesRepositoryBase extends SyncWorktreesCommonConfigFields {

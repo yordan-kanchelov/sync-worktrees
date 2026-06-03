@@ -148,7 +148,7 @@ export default {
     90000,
   );
 
-  it("keeps shallow clone-mode remote-tracking refs open to all remote branches", async () => {
+  it("keeps shallow clone-mode materialized to the tracked branch only", async () => {
     const remoteBare = await createLocalRemote("remote-branches");
     const seedDir = path.join(tmpBase, "remote-branches-seed");
     execSync(`git -C "${seedDir}" switch -c "feat/cloudflare-deploys"`, { encoding: "utf-8" });
@@ -168,22 +168,20 @@ export default {
       encoding: "utf-8",
     }).trim();
     const remoteBranches = execSync(`git -C "${worktreeDir}" branch -r --list`, { encoding: "utf-8" });
+    const discoveredBranches = execSync(`git -C "${worktreeDir}" ls-remote --heads origin`, { encoding: "utf-8" });
     const cloneHead = execSync(`git -C "${worktreeDir}" rev-parse --abbrev-ref HEAD`, { encoding: "utf-8" }).trim();
     const isShallow = execSync(`git -C "${worktreeDir}" rev-parse --is-shallow-repository`, {
       encoding: "utf-8",
     }).trim();
-    const featureCommitCount = execSync(`git -C "${worktreeDir}" rev-list --count origin/feat/cloudflare-deploys`, {
-      encoding: "utf-8",
-    }).trim();
 
-    expect(fetchRefspec).toBe("+refs/heads/*:refs/remotes/origin/*");
-    expect(remoteBranches).toContain("origin/feat/cloudflare-deploys");
+    expect(fetchRefspec).toBe("+refs/heads/main:refs/remotes/origin/main");
+    expect(remoteBranches).not.toContain("origin/feat/cloudflare-deploys");
+    expect(discoveredBranches).toContain("refs/heads/feat/cloudflare-deploys");
     expect(cloneHead).toBe("main");
     expect(isShallow).toBe("true");
-    expect(featureCommitCount).toBe("1");
   }, 60000);
 
-  it("widens legacy single-branch clone refspecs and fetches missing remote branches", async () => {
+  it("narrows legacy single-branch clone refspecs without fetching unrelated remote branches", async () => {
     const remoteBare = await createLocalRemote("legacy-remote-branches");
     const seedDir = path.join(tmpBase, "legacy-remote-branches-seed");
     execSync(`git -C "${seedDir}" switch -c "feat/cloudflare-deploys"`, { encoding: "utf-8" });
@@ -211,8 +209,8 @@ export default {
     const remoteBranches = execSync(`git -C "${worktreeDir}" branch -r --list`, { encoding: "utf-8" });
 
     expect(beforeBranch).toBe("");
-    expect(fetchRefspec).toBe("+refs/heads/*:refs/remotes/origin/*");
-    expect(remoteBranches).toContain("origin/feat/cloudflare-deploys");
+    expect(fetchRefspec).toBe("+refs/heads/main:refs/remotes/origin/main");
+    expect(remoteBranches).not.toContain("origin/feat/cloudflare-deploys");
   }, 60000);
 
   itNetwork(

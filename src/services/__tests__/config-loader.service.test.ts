@@ -415,6 +415,68 @@ describe("ConfigLoaderService", () => {
     });
   });
 
+  describe("maintenance configuration", () => {
+    const baseRepo = {
+      name: "test",
+      repoUrl: "https://github.com/test/repo.git",
+      worktreeDir: "/worktrees",
+      cronSchedule: "0 * * * *",
+      runOnce: false,
+    };
+
+    it("merges maintenance from defaults and lets repo override per-key", () => {
+      const resolved = configLoader.resolveRepositoryConfig(
+        { ...baseRepo, maintenance: { interval: "1d" } },
+        { maintenance: { enabled: true, interval: "7d", aggressive: true } },
+      );
+
+      expect(resolved.maintenance).toEqual({ enabled: true, interval: "1d", aggressive: true });
+    });
+
+    it("leaves maintenance undefined when neither defaults nor repo set it", () => {
+      const resolved = configLoader.resolveRepositoryConfig(baseRepo, {});
+      expect(resolved.maintenance).toBeUndefined();
+    });
+
+    async function loadWith(maintenance: string): Promise<unknown> {
+      const configPath = path.join(tempDir, "maint.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/wt", maintenance: ${maintenance} }] };`,
+      );
+      return configLoader.loadConfigFile(configPath);
+    }
+
+    it("rejects a non-object maintenance value", async () => {
+      await expect(loadWith("true")).rejects.toThrow("'maintenance' in Repository 'r' must be an object");
+    });
+
+    it("rejects a non-boolean maintenance.enabled", async () => {
+      await expect(loadWith('{ enabled: "yes" }')).rejects.toThrow(
+        "'maintenance.enabled' in Repository 'r' must be a boolean",
+      );
+    });
+
+    it("rejects an invalid maintenance.interval duration", async () => {
+      await expect(loadWith('{ interval: "soon" }')).rejects.toThrow(
+        "'maintenance.interval' in Repository 'r' must be a duration string",
+      );
+    });
+
+    it("rejects a non-boolean maintenance.aggressive", async () => {
+      await expect(loadWith("{ aggressive: 1 }")).rejects.toThrow(
+        "'maintenance.aggressive' in Repository 'r' must be a boolean",
+      );
+    });
+
+    it("accepts a valid maintenance block", async () => {
+      const config = (await loadWith('{ enabled: true, interval: "2w", aggressive: false }')) as {
+        repositories: Array<{ maintenance?: unknown }>;
+      };
+      expect(config.repositories[0].maintenance).toEqual({ enabled: true, interval: "2w", aggressive: false });
+    });
+  });
+
   describe("filterRepositories", () => {
     const repos = [
       {

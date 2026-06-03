@@ -54,6 +54,10 @@ export const DEFAULT_CONFIG = {
   CLONE_TIMEOUT_MS: 900_000,
   LOCK_STALE_MS: 600_000,
   LOCK_UPDATE_MS: 30_000,
+  MAINTENANCE: {
+    ENABLED: true,
+    INTERVAL: "7d",
+  },
 } as const;
 
 export const ERROR_MESSAGES = {
@@ -97,6 +101,10 @@ export const CONFIG_FILE_NAMES = [
   "sync-worktrees.config.mjs",
   "sync-worktrees.config.cjs",
 ] as const;
+
+export const MAINTENANCE_CONSTANTS = {
+  STATE_FILENAME: "sync-worktrees-maintenance.json",
+} as const;
 
 export const METADATA_CONSTANTS = {
   MAX_HISTORY_ENTRIES: 10,
