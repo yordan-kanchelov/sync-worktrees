@@ -1617,6 +1617,34 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
+      it("should discover remote branches for uninitialized clone-mode repos", async () => {
+        mockSyncService.isInitialized.mockReturnValue(false);
+        mockSyncService.isCloneMode.mockReturnValue(true);
+        mockSyncService.getRemoteBranches.mockResolvedValue(["main", "feature/fresh-clone"]);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const branches = await service.getBranchesForRepo(0);
+
+        expect(branches).toEqual(["main", "feature/fresh-clone"]);
+        expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
+
+        service.destroy();
+      });
+
+      it("should return empty array if uninitialized clone-mode branch discovery fails", async () => {
+        mockSyncService.isInitialized.mockReturnValue(false);
+        mockSyncService.isCloneMode.mockReturnValue(true);
+        mockSyncService.getRemoteBranches.mockRejectedValue(new Error("ls-remote failed"));
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const branches = await service.getBranchesForRepo(0);
+
+        expect(branches).toEqual([]);
+        expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
+
+        service.destroy();
+      });
+
       it("should throw error for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 

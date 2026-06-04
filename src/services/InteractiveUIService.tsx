@@ -493,6 +493,13 @@ export class InteractiveUIService {
 
     const service = this.syncServices[repoIndex];
     if (!service.isInitialized()) {
+      if (service.isCloneMode()) {
+        try {
+          return await service.getRemoteBranches();
+        } catch {
+          return [];
+        }
+      }
       return [];
     }
     return service.getRemoteBranches();
