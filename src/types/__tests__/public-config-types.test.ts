@@ -30,7 +30,8 @@ type WorktreeOnlyConfigKeys =
   | "branchMaxAge"
   | "branchInclude"
   | "branchExclude"
-  | "updateExistingWorktrees";
+  | "updateExistingWorktrees"
+  | "trash";
 type CloneOnlyConfigKeys = "branch" | "depth";
 type DiscriminantConfigKeys = "mode";
 type BaseIdentityConfigKeys = "repoUrl" | "worktreeDir";

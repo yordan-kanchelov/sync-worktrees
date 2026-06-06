@@ -102,6 +102,22 @@ export class PathResolutionError extends SyncWorktreesError {
   }
 }
 
+export class TrashError extends SyncWorktreesError {
+  constructor(message: string, code: string, cause?: Error) {
+    super(message, `TRASH_${code}`, cause);
+  }
+}
+
+export class TrashOperationError extends TrashError {
+  constructor(
+    public readonly operation: string,
+    details: string,
+    cause?: Error,
+  ) {
+    super(`Trash operation '${operation}' failed: ${details}`, "OPERATION_FAILED", cause);
+  }
+}
+
 export class LfsError extends GitError {
   constructor(message: string, cause?: Error) {
     super(`LFS operation failed: ${message}`, "LFS_ERROR", cause);

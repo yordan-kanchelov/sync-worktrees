@@ -74,6 +74,9 @@ describe("Rebased Branch Handling", () => {
       runOnce: true,
       updateExistingWorktrees: true,
       logger: mockLogger,
+      // These suites assert the direct .diverged/ mechanism; the trash
+      // pipeline has its own suites.
+      trash: { enabled: false },
     };
 
     mockGitService = mockGitServiceInstance;

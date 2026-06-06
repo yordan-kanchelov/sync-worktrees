@@ -21,6 +21,7 @@ const CLONE_MODE_CONFLICTING_FIELDS = [
   "branchMaxAge",
   "updateExistingWorktrees",
   "bareRepoDir",
+  "trash",
 ] as const satisfies readonly (keyof RepositoryConfig)[];
 
 export class ConfigLoaderService {
@@ -158,6 +159,10 @@ export class ConfigLoaderService {
         this.validateMaintenanceConfig(repoObj.maintenance, `Repository '${repoObj.name}'`);
       }
 
+      if (repoObj.trash !== undefined) {
+        this.validateTrashConfig(repoObj.trash, `Repository '${repoObj.name}'`);
+      }
+
       this.validateDepth(repoObj.depth, `Repository '${repoObj.name}' depth`);
       this.validateRepositoryMode(repoObj, configObj.defaults as Record<string, unknown> | undefined);
     });
@@ -203,6 +208,10 @@ export class ConfigLoaderService {
 
       if (defaults.maintenance !== undefined) {
         this.validateMaintenanceConfig(defaults.maintenance, "defaults");
+      }
+
+      if (defaults.trash !== undefined) {
+        this.validateTrashConfig(defaults.trash, "defaults");
       }
 
       this.validateDepth(defaults.depth, "defaults.depth");
@@ -255,6 +264,32 @@ export class ConfigLoaderService {
       if (typeof maintenance.interval !== "string" || parseDuration(maintenance.interval) === null) {
         throw new Error(`'maintenance.interval' in ${context} must be a duration string like '7d', '24h', or '2w'`);
       }
+    }
+  }
+
+  private validateTrashConfig(value: unknown, context: string): void {
+    if (value === undefined) return;
+    if (typeof value !== "object" || value === null) {
+      throw new Error(`'trash' in ${context} must be an object`);
+    }
+    const trash = value as Record<string, unknown>;
+    if (trash.enabled !== undefined && typeof trash.enabled !== "boolean") {
+      throw new Error(`'trash.enabled' in ${context} must be a boolean`);
+    }
+    if (trash.migrateLegacy !== undefined && typeof trash.migrateLegacy !== "boolean") {
+      throw new Error(`'trash.migrateLegacy' in ${context} must be a boolean`);
+    }
+    if (
+      trash.retentionDays !== undefined &&
+      (typeof trash.retentionDays !== "number" || !Number.isFinite(trash.retentionDays) || trash.retentionDays <= 0)
+    ) {
+      throw new Error(`'trash.retentionDays' in ${context} must be a positive number`);
+    }
+    if (
+      trash.warnSizeBytes !== undefined &&
+      (typeof trash.warnSizeBytes !== "number" || !Number.isFinite(trash.warnSizeBytes) || trash.warnSizeBytes <= 0)
+    ) {
+      throw new Error(`'trash.warnSizeBytes' in ${context} must be a positive number`);
     }
   }
 
@@ -601,6 +636,13 @@ export class ConfigLoaderService {
       resolved.maintenance = {
         ...(defaults?.maintenance || {}),
         ...(repo.maintenance || {}),
+      };
+    }
+
+    if (repo.trash || defaults?.trash) {
+      resolved.trash = {
+        ...(defaults?.trash || {}),
+        ...(repo.trash || {}),
       };
     }
 

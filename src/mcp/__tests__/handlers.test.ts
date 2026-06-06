@@ -1,3 +1,5 @@
+import * as path from "path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -5,9 +7,11 @@ import {
   handleDetectContext,
   handleGetWorktreeStatus,
   handleInitialize,
+  handleListTrash,
   handleListWorktrees,
   handleLoadConfig,
   handleRemoveWorktree,
+  handleRestoreTrash,
   handleSetCurrentRepository,
   handleSync,
   handleUpdateWorktree,
@@ -159,6 +163,17 @@ function makeCtx(opts: {
       },
     }),
     getGitService: () => git,
+    getTrashService: vi.fn<any>().mockReturnValue({
+      isEnabled: vi.fn<any>().mockReturnValue(false),
+      getRetentionDays: vi.fn<any>().mockReturnValue(30),
+      getTrashRoot: vi.fn<any>().mockReturnValue("/repo/worktrees/.trash"),
+      listEntries: vi.fn<any>().mockResolvedValue({ entries: [], invalid: [] }),
+      getSummary: vi
+        .fn<any>()
+        .mockResolvedValue({ itemCount: 0, totalSizeBytes: 0, unknownSizeCount: 0, soonestExpiresAt: null }),
+      trashDirectory: vi.fn<any>(),
+      restore: vi.fn<any>(),
+    }),
     getWorktrees: vi.fn<any>().mockImplementation(() => (git.getWorktrees as any)()),
     isCloneMode: vi.fn<any>().mockReturnValue(false),
     getRecordedSkips: vi.fn<any>().mockReturnValue([]),
@@ -617,6 +632,161 @@ describe("handleRemoveWorktree", () => {
     expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
     expect(service.runExclusiveRepoOperation).not.toHaveBeenCalled();
     expect(git.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("routes through trash when enabled: the full removal sequence runs as one service operation", async () => {
+    const trashAndUnregisterWorktree = vi.fn<any>().mockResolvedValue({
+      entry: {
+        manifest: { id: "trash-1", branch: "x" },
+        containerPath: "/repo/worktrees/.trash/trash-1",
+        payloadPath: "/repo/worktrees/.trash/trash-1/payload",
+      },
+    });
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/foo", branch: "x" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ canRemove: true, reasons: [] }),
+      },
+      service: {
+        getTrashService: vi.fn<any>().mockReturnValue({
+          isEnabled: vi.fn<any>().mockReturnValue(true),
+          trashAndUnregisterWorktree,
+        }),
+      },
+    });
+
+    const result = await invoke(handleRemoveWorktree, ctx, { path: "/foo" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.trashedAs).toBe("trash-1");
+    expect(body.warning).toBeUndefined();
+    expect(trashAndUnregisterWorktree).toHaveBeenCalledWith({
+      dirPath: path.resolve("/foo"),
+      branch: "x",
+      reason: "manual",
+    });
+    expect(git.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("reports a leftover branch ref as a warning, not a failure — the payload is already safe in trash", async () => {
+    const trashAndUnregisterWorktree = vi.fn<any>().mockResolvedValue({
+      entry: {
+        manifest: { id: "trash-2", branch: "x" },
+        containerPath: "/repo/worktrees/.trash/trash-2",
+        payloadPath: "/repo/worktrees/.trash/trash-2/payload",
+      },
+      branchRefError: "ref locked",
+    });
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/foo", branch: "x" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ canRemove: true, reasons: [] }),
+      },
+      service: {
+        getTrashService: vi.fn<any>().mockReturnValue({
+          isEnabled: vi.fn<any>().mockReturnValue(true),
+          trashAndUnregisterWorktree,
+        }),
+      },
+    });
+
+    const result = await invoke(handleRemoveWorktree, ctx, { path: "/foo" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.trashedAs).toBe("trash-2");
+    expect(body.warning).toMatchObject({ kind: "leftover_branch_ref", branch: "x" });
+    expect(body.warning.message).toContain("ref locked");
+  });
+});
+
+describe("handleListTrash", () => {
+  it("returns entries with totals derived from manifests", async () => {
+    const manifest = {
+      id: "t1",
+      branch: "feature-x",
+      reason: "prune",
+      deletedAt: "2026-06-01T00:00:00.000Z",
+      expiresAt: "2026-07-01T00:00:00.000Z",
+      originalPath: "/repo/worktrees/feature-x",
+      sizeBytes: 2048,
+      headOid: "abc123",
+      pinRef: "refs/sync-worktrees/trash/t1",
+    };
+    const { ctx } = makeCtx({
+      service: {
+        getTrashService: vi.fn<any>().mockReturnValue({
+          isEnabled: vi.fn<any>().mockReturnValue(true),
+          getRetentionDays: vi.fn<any>().mockReturnValue(30),
+          getTrashRoot: vi.fn<any>().mockReturnValue("/repo/worktrees/.trash"),
+          listEntries: vi.fn<any>().mockResolvedValue({
+            entries: [{ manifest, containerPath: "/c", payloadPath: "/p" }],
+            invalid: ["/repo/worktrees/.trash/junk"],
+          }),
+        }),
+      },
+    });
+
+    const result = await invoke(handleListTrash, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.itemCount).toBe(1);
+    expect(body.totalSizeBytes).toBe(2048);
+    expect(body.soonestExpiresAt).toBe("2026-07-01T00:00:00.000Z");
+    expect(body.entries[0]).toMatchObject({ id: "t1", branch: "feature-x", restoreMode: "worktree" });
+    expect(body.unrecognized).toEqual(["/repo/worktrees/.trash/junk"]);
+  });
+
+  it("is unavailable for clone-mode repositories", async () => {
+    const { ctx } = makeCtx({
+      service: { isCloneMode: vi.fn<any>().mockReturnValue(true) },
+    });
+
+    const result = await invoke(handleListTrash, ctx, {});
+    const body = parseResponse(result);
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+  });
+});
+
+describe("handleRestoreTrash", () => {
+  it("restores under the repo lock and reports the destination", async () => {
+    const restore = vi.fn<any>().mockResolvedValue({
+      id: "t1",
+      branch: "feature-x",
+      headOid: "abc123",
+      pinRef: "refs/sync-worktrees/trash/t1",
+      originalPath: "/repo/worktrees/feature-x",
+    });
+    const { ctx, service } = makeCtx({
+      service: {
+        getTrashService: vi.fn<any>().mockReturnValue({ restore }),
+      },
+    });
+
+    const result = await invoke(handleRestoreTrash, ctx, { id: "t1" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.restoredPath).toBe("/repo/worktrees/feature-x");
+    expect(body.restoredAsWorktree).toBe(true);
+    expect(restore).toHaveBeenCalledWith("t1");
+    expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces restore failures without crashing the server", async () => {
+    const { ctx } = makeCtx({
+      service: {
+        getTrashService: vi.fn<any>().mockReturnValue({
+          restore: vi.fn<any>().mockRejectedValue(new Error("no trash entry with id 'missing'")),
+        }),
+      },
+    });
+
+    const result = await invoke(handleRestoreTrash, ctx, { id: "missing" });
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("no trash entry");
   });
 });
 

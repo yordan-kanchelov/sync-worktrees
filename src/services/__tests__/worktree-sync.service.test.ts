@@ -9,6 +9,8 @@ import { WorktreeNotCleanError } from "../../errors";
 import { GitMaintenanceService } from "../git-maintenance.service";
 import { PathResolutionService } from "../path-resolution.service";
 import { RepoOperationLock } from "../repo-operation-lock";
+import { TrashMigrationService } from "../trash-migration.service";
+import { TrashReaperService } from "../trash-reaper.service";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
 const pathResolution = new PathResolutionService();
@@ -65,6 +67,11 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([]),
       checkoutHead: vi.fn<any>().mockResolvedValue(undefined),
       getSparseCheckoutService: vi.fn(),
+      updateRef: vi.fn<any>().mockResolvedValue(undefined),
+      deleteRef: vi.fn<any>().mockResolvedValue(undefined),
+      listRefs: vi.fn<any>().mockResolvedValue([]),
+      deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
+      setStaleDirectoryTrasher: vi.fn(),
     } as any,
   };
 });
@@ -95,6 +102,9 @@ describe("WorktreeSyncService", () => {
       cronSchedule: "0 * * * *",
       runOnce: false,
       logger: mockLogger,
+      // These suites assert the direct-delete mechanism; the trash pipeline
+      // has its own suites (trash.service / trash-reaper / trash-migration).
+      trash: { enabled: false },
     };
 
     // Reference the hoisted mock instance
@@ -1004,6 +1014,145 @@ describe("WorktreeSyncService", () => {
       // Should only update feature-2 (clean and behind)
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(1);
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature-2");
+    });
+
+    // Default-on trash: removals must move data into .trash/ instead of
+    // deleting, and a trash failure must leave the worktree in place.
+    describe("trash-enabled removal pipeline", () => {
+      const oldBranchPath = path.join("/test/worktrees", "old-branch");
+
+      beforeEach(() => {
+        service = new WorktreeSyncService({ ...mockConfig, trash: undefined });
+
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if (!(dirPath as string).endsWith("worktrees")) {
+            const error: any = new Error("ENOENT: no such file or directory");
+            error.code = "ENOENT";
+            throw error;
+          }
+          return ["old-branch"];
+        });
+        (fs.rename as Mock<any>).mockResolvedValue(undefined);
+        (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
+        (fs.appendFile as Mock<any>).mockResolvedValue(undefined);
+
+        mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
+        mockGitService.getWorktrees.mockResolvedValue([{ path: oldBranchPath, branch: "old-branch" }]);
+      });
+
+      it("prunes by moving the worktree into .trash/, clearing registration, and deleting the branch ref", async () => {
+        await service.sync();
+
+        expect(fs.rename).toHaveBeenCalledWith(oldBranchPath, expect.stringContaining(path.join(".trash", "")));
+        expect(mockGitService.removeWorktree).toHaveBeenCalledWith(oldBranchPath, { force: true });
+        expect(mockGitService.deleteLocalBranch).toHaveBeenCalledWith("old-branch");
+        expect(mockGitService.updateRef).toHaveBeenCalledWith(
+          expect.stringContaining("refs/sync-worktrees/trash/"),
+          "abc123",
+        );
+      });
+
+      it("records the prune as removed with a warning when the branch ref cannot be deleted — payload already safe", async () => {
+        mockGitService.deleteLocalBranch.mockRejectedValue(new Error("ref locked"));
+
+        const result = await service.sync();
+
+        expect(mockGitService.removeWorktree).toHaveBeenCalledWith(oldBranchPath, { force: true });
+        expect(result).toMatchObject({
+          started: true,
+          outcome: {
+            counts: expect.objectContaining({ removed: 1, failed: 0 }),
+            actions: expect.arrayContaining([
+              expect.objectContaining({
+                kind: "removed",
+                branch: "old-branch",
+                warning: expect.stringContaining("leftover_branch_ref"),
+              }),
+            ]),
+          },
+        });
+      });
+
+      it("skips the removal entirely when the move to trash fails — fail closed, worktree stays", async () => {
+        (fs.rename as Mock<any>).mockImplementation(async (...args: unknown[]) => {
+          if ((args[1] as string).endsWith("payload")) {
+            throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+          }
+        });
+
+        const result = await service.sync();
+
+        expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          started: true,
+          outcome: {
+            counts: expect.objectContaining({ removed: 0 }),
+            actions: expect.arrayContaining([
+              expect.objectContaining({ kind: "skipped", reason: "trash_failed", branch: "old-branch" }),
+            ]),
+          },
+        });
+      });
+
+      it("moves orphaned directories to trash instead of rm -rf", async () => {
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if (!(dirPath as string).endsWith("worktrees")) {
+            const error: any = new Error("ENOENT: no such file or directory");
+            error.code = "ENOENT";
+            throw error;
+          }
+          return ["orphan-dir"];
+        });
+        (fs.stat as Mock<any>).mockResolvedValue({ isDirectory: () => true, isFile: () => false });
+        (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+          if ((p as string).endsWith(`${path.sep}.git`)) {
+            throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+          }
+        });
+        mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
+        mockGitService.getWorktrees.mockResolvedValue([]);
+
+        await service.sync();
+
+        const orphanPath = path.join("/test/worktrees", "orphan-dir");
+        expect(fs.rename).toHaveBeenCalledWith(orphanPath, expect.stringContaining(".trash"));
+        expect(fs.rm).not.toHaveBeenCalledWith(orphanPath, expect.anything());
+      });
+    });
+  });
+
+  describe("trash maintenance wiring", () => {
+    let migrationSpy: ReturnType<typeof vi.spyOn>;
+    let reaperSpy: ReturnType<typeof vi.spyOn>;
+    let prevNodeEnv: string | undefined;
+
+    beforeEach(() => {
+      prevNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = "production";
+      vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue(async () => {});
+      vi.spyOn(GitMaintenanceService.prototype, "runIfDueUnlocked").mockResolvedValue(undefined);
+      migrationSpy = vi.spyOn(TrashMigrationService.prototype, "migrateLegacyUnlocked").mockResolvedValue(undefined);
+      reaperSpy = vi.spyOn(TrashReaperService.prototype, "reapExpiredUnlocked").mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      process.env.NODE_ENV = prevNodeEnv;
+      vi.restoreAllMocks();
+    });
+
+    it("adopts legacy backups and reaps expired trash after a successful sync", async () => {
+      const svc = new WorktreeSyncService(mockConfig);
+      await svc.sync();
+      expect(migrationSpy).toHaveBeenCalledTimes(1);
+      expect(reaperSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not run trash maintenance when the sync fails", async () => {
+      mockGitService.fetchAll.mockRejectedValue(new Error("Fetch failed"));
+      const svc = new WorktreeSyncService(mockConfig);
+      await expect(svc.sync()).rejects.toThrow("Fetch failed");
+      expect(migrationSpy).not.toHaveBeenCalled();
+      expect(reaperSpy).not.toHaveBeenCalled();
     });
   });
 

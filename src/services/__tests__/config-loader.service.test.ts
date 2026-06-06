@@ -477,6 +477,77 @@ describe("ConfigLoaderService", () => {
     });
   });
 
+  describe("trash configuration", () => {
+    const baseRepo = {
+      name: "test",
+      repoUrl: "https://github.com/test/repo.git",
+      worktreeDir: "/worktrees",
+      cronSchedule: "0 * * * *",
+      runOnce: false,
+    };
+
+    it("merges trash from defaults and lets repo override per-key", () => {
+      const resolved = configLoader.resolveRepositoryConfig(
+        { ...baseRepo, trash: { retentionDays: 7 } },
+        { trash: { enabled: true, retentionDays: 30, migrateLegacy: false } },
+      );
+
+      expect(resolved.trash).toEqual({ enabled: true, retentionDays: 7, migrateLegacy: false });
+    });
+
+    it("leaves trash undefined when neither defaults nor repo set it", () => {
+      const resolved = configLoader.resolveRepositoryConfig(baseRepo, {});
+      expect(resolved.trash).toBeUndefined();
+    });
+
+    async function loadWith(trash: string): Promise<unknown> {
+      const configPath = path.join(tempDir, "trash.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/wt", trash: ${trash} }] };`,
+      );
+      return configLoader.loadConfigFile(configPath);
+    }
+
+    it("rejects a non-object trash value", async () => {
+      await expect(loadWith("true")).rejects.toThrow("'trash' in Repository 'r' must be an object");
+    });
+
+    it("rejects a non-boolean trash.enabled", async () => {
+      await expect(loadWith('{ enabled: "yes" }')).rejects.toThrow(
+        "'trash.enabled' in Repository 'r' must be a boolean",
+      );
+    });
+
+    it("rejects a non-positive trash.retentionDays", async () => {
+      await expect(loadWith("{ retentionDays: 0 }")).rejects.toThrow(
+        "'trash.retentionDays' in Repository 'r' must be a positive number",
+      );
+    });
+
+    it("rejects a non-positive trash.warnSizeBytes", async () => {
+      await expect(loadWith("{ warnSizeBytes: -5 }")).rejects.toThrow(
+        "'trash.warnSizeBytes' in Repository 'r' must be a positive number",
+      );
+    });
+
+    it("rejects trash on clone-mode repositories — clone mode never removes its checkout", async () => {
+      const configPath = path.join(tempDir, "trash-clone.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/wt", mode: "clone", trash: { enabled: true } }] };`,
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/trash/);
+    });
+
+    it("accepts a valid trash block", async () => {
+      const config = (await loadWith("{ enabled: true, retentionDays: 14, warnSizeBytes: 1073741824 }")) as {
+        repositories: Array<{ trash?: unknown }>;
+      };
+      expect(config.repositories[0].trash).toEqual({ enabled: true, retentionDays: 14, warnSizeBytes: 1073741824 });
+    });
+  });
+
   describe("filterRepositories", () => {
     const repos = [
       {

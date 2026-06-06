@@ -835,6 +835,79 @@ export class GitService {
     this.logger.info("Pruned worktree metadata.");
   }
 
+  async updateRef(refName: string, sha: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["update-ref", refName, sha]);
+  }
+
+  async deleteRef(refName: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["update-ref", "-d", refName]);
+  }
+
+  async listRefs(prefix: string): Promise<string[]> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const raw = await bareGit.raw(["for-each-ref", "--format=%(refname)", prefix]);
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+
+  async localBranchExists(branchName: string): Promise<boolean> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    try {
+      await bareGit.raw(["show-ref", "--verify", "--quiet", `${GIT_CONSTANTS.REFS.HEADS}${branchName}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getLocalBranchCommit(branchName: string): Promise<string | null> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    try {
+      return (await bareGit.raw(["rev-parse", `${GIT_CONSTANTS.REFS.HEADS}${branchName}^{commit}`])).trim();
+    } catch {
+      return null;
+    }
+  }
+
+  async createBranchAt(branchName: string, sha: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["branch", branchName, sha]);
+  }
+
+  async deleteLocalBranch(branchName: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["branch", "-D", branchName]);
+  }
+
+  // Registers the worktree and writes its .git link without populating files —
+  // restore overlays the preserved payload instead of a fresh checkout.
+  async addWorktreeNoCheckout(branchName: string, worktreePath: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const absoluteWorktreePath = path.resolve(worktreePath);
+    await fs.mkdir(path.dirname(absoluteWorktreePath), { recursive: true });
+    await bareGit.raw(["worktree", "add", "--no-checkout", absoluteWorktreePath, branchName]);
+  }
+
+  // Mixed reset: points the index at HEAD without touching working files, so
+  // overlaid payload content shows up as ordinary uncommitted changes.
+  async resetWorktreeIndex(worktreePath: string): Promise<void> {
+    const worktreeGit = this.getCachedGit(worktreePath);
+    await worktreeGit.raw(["reset"]);
+  }
+
+  // Injected by WorktreeSyncService when trash is enabled, so stale-directory
+  // cleanup follows the same reversible-removal pipeline as everything else.
+  // GitService cannot own a TrashService directly (TrashService depends on it).
+  private staleDirectoryTrasher: ((dirPath: string) => Promise<string>) | null = null;
+
+  setStaleDirectoryTrasher(trasher: (dirPath: string) => Promise<string>): void {
+    this.staleDirectoryTrasher = trasher;
+  }
+
   // A stale directory that contains a .git may be a live checkout that git
   // failed to report; quarantine it instead of deleting.
   private async clearStaleWorktreeDirectory(absoluteWorktreePath: string): Promise<void> {
@@ -845,6 +918,22 @@ export class GitService {
         "clear-stale-directory",
         `Cannot verify whether '${absoluteWorktreePath}' is a live checkout; refusing to clear it`,
       );
+    }
+
+    if (this.staleDirectoryTrasher) {
+      try {
+        const trashPath = await this.staleDirectoryTrasher(absoluteWorktreePath);
+        this.logger.info(`  - Moved stale directory at '${absoluteWorktreePath}' to trash ('${trashPath}')`);
+        return;
+      } catch (error) {
+        // Cannot preserve it -> refuse to clear it (the caller's worktree
+        // creation fails rather than silently deleting unknown content).
+        throw new GitOperationError(
+          "clear-stale-directory",
+          `Cannot move stale directory '${absoluteWorktreePath}' to trash: ${getErrorMessage(error)}`,
+          error instanceof Error ? error : undefined,
+        );
+      }
     }
 
     if (gitProbe === "exists") {

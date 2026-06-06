@@ -187,7 +187,8 @@ describe("Integration Tests", () => {
 
   describe("Complex scenarios", () => {
     it("should handle mixed operations: add, remove, and skip", async () => {
-      const config = createMockConfig({ runOnce: true, logger: mockLogger });
+      // Asserts the direct-delete mechanism; the trash pipeline has its own suites.
+      const config = createMockConfig({ runOnce: true, logger: mockLogger, trash: { enabled: false } });
 
       // Setup: existing worktrees include some to keep, some to remove
       (fs.readdir as Mock<any>).mockResolvedValue([

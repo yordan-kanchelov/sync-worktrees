@@ -2,6 +2,7 @@ import pLimit from "p-limit";
 
 import { ENV_CONSTANTS } from "../constants";
 import { getErrorMessage } from "../utils/lfs-error";
+import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { retry } from "../utils/retry";
 import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
@@ -11,9 +12,13 @@ import { GitMaintenanceService } from "./git-maintenance.service";
 import { GitService } from "./git.service";
 import { Logger } from "./logger.service";
 import { ProgressEmitter } from "./progress-emitter";
+import { RemovalAuditService } from "./removal-audit.service";
 import { RepoOperationLock } from "./repo-operation-lock";
 import { SyncOutcomeAccumulator } from "./sync-outcome";
 import { SyncRetryPolicy } from "./sync-retry-policy";
+import { TrashMigrationService } from "./trash-migration.service";
+import { TrashReaperService } from "./trash-reaper.service";
+import { TrashService } from "./trash.service";
 import { WorktreeModeSyncRunner } from "./worktree-mode-sync-runner";
 
 import type { ProgressEvent, ProgressListener } from "./progress-emitter";
@@ -42,6 +47,9 @@ export class WorktreeSyncService {
   private maintenanceService: GitMaintenanceService;
   private retryPolicy: SyncRetryPolicy;
   private worktreeModeSyncRunner: WorktreeModeSyncRunner;
+  private trashService: TrashService;
+  private trashReaper: TrashReaperService;
+  private trashMigration: TrashMigrationService;
   private skipsAccumulator: CloneSkipReason[] = [];
   private lastOutcome: SyncOutcome | null = null;
 
@@ -51,6 +59,15 @@ export class WorktreeSyncService {
     this.repoOperationLock = new RepoOperationLock(config, this.gitService, this.logger);
     this.maintenanceService = new GitMaintenanceService(config, this.gitService, this.logger);
     this.retryPolicy = new SyncRetryPolicy(config, this.gitService, this.logger);
+    const removalAudit = new RemovalAuditService(getRemovalAuditLogPath(config));
+    this.trashService = new TrashService(config, this.gitService, this.logger, removalAudit);
+    this.trashReaper = new TrashReaperService(config, this.trashService, this.logger, removalAudit, this.gitService);
+    this.trashMigration = new TrashMigrationService(config, this.trashService, this.logger);
+    if (this.trashService.isEnabled()) {
+      this.gitService.setStaleDirectoryTrasher(
+        async (dirPath) => (await this.trashService.trashDirectory({ dirPath, reason: "orphan" })).payloadPath,
+      );
+    }
     this.worktreeModeSyncRunner = new WorktreeModeSyncRunner(
       config,
       this.gitService,
@@ -142,6 +159,10 @@ export class WorktreeSyncService {
     return this.gitService;
   }
 
+  getTrashService(): TrashService {
+    return this.trashService;
+  }
+
   updateLogger(logger: Logger): void {
     this.logger = logger;
     this.gitService.updateLogger(logger);
@@ -150,6 +171,9 @@ export class WorktreeSyncService {
     this.worktreeModeSyncRunner.updateLogger(logger);
     this.repoOperationLock.updateLogger(logger);
     this.maintenanceService.updateLogger(logger);
+    this.trashService.updateLogger(logger);
+    this.trashReaper.updateLogger(logger);
+    this.trashMigration.updateLogger(logger);
   }
 
   // Runs git gc when due, inside the already-held repo lock (mirrors
@@ -161,6 +185,24 @@ export class WorktreeSyncService {
       return;
     }
     await this.maintenanceService.runIfDueUnlocked();
+  }
+
+  // Same contract as runMaintenanceIfDueUnlocked: tail of a successful sync,
+  // inside the held lock, never fails the sync. Runs before gc so freshly
+  // reaped pin refs can be collected in the same maintenance window.
+  private async runTrashMaintenanceUnlocked(): Promise<void> {
+    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
+      return;
+    }
+    if (this.cloneSyncService) {
+      return;
+    }
+    try {
+      await this.trashMigration.migrateLegacyUnlocked();
+      await this.trashReaper.reapExpiredUnlocked();
+    } catch (error) {
+      this.logger.warn(`⚠️ Trash maintenance failed: ${getErrorMessage(error)}`);
+    }
   }
 
   onProgress(listener: ProgressListener): () => void {
@@ -265,6 +307,7 @@ export class WorktreeSyncService {
         }
       }
 
+      await this.runTrashMaintenanceUnlocked();
       await this.runMaintenanceIfDueUnlocked();
 
       return this.lastOutcome ?? outcome.toOutcome(durationMs);

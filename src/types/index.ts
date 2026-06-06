@@ -85,6 +85,21 @@ export interface MaintenanceConfig {
   aggressive?: boolean;
 }
 
+export interface TrashConfig {
+  /** Route removals through `<worktreeDir>/.trash/` instead of deleting. Default: true. */
+  enabled?: boolean;
+  /** Days each trashed item is retained before the reaper deletes it. Default: 30. */
+  retentionDays?: number;
+  /** Log a warning when total trash size exceeds this many bytes. No default (off). */
+  warnSizeBytes?: number;
+  /**
+   * Adopt pre-trash `.removed/` and `.diverged/` entries (exact known dirname
+   * formats only) into `.trash/` so they age out under the same retention
+   * policy. Default: true.
+   */
+  migrateLegacy?: boolean;
+}
+
 export type RepositoryMode = "clone" | "worktree";
 
 export type SyncOutcomeMode = RepositoryMode;
@@ -103,7 +118,7 @@ export interface SyncOutcomeCounts {
 
 export type SyncOutcomeAction =
   | { kind: "created"; branch: string; path: string }
-  | { kind: "removed"; branch: string; path: string }
+  | { kind: "removed"; branch: string; path: string; warning?: string }
   | { kind: "updated"; branch: string; path: string; reason?: string }
   | { kind: "noop"; scope: SyncOutcomeScope; reason: string; branch?: string; path?: string; message?: string }
   | { kind: "skipped"; scope: SyncOutcomeScope; reason: string; branch?: string; path?: string; message?: string }
@@ -149,6 +164,15 @@ export interface Config {
    * under the repository operation lock at the tail of a successful sync.
    */
   maintenance?: MaintenanceConfig;
+  /**
+   * Reversible removals: every automatic or manual removal moves the directory
+   * into `<worktreeDir>/.trash/<id>/` with a manifest and a pin ref
+   * (`refs/sync-worktrees/trash/<id>`) that keeps the trashed HEAD's objects
+   * alive through `git gc` for the retention window. A reaper deletes expired
+   * items at the tail of a successful sync. Worktree mode only — clone mode
+   * never removes its checkout.
+   */
+  trash?: TrashConfig;
   /**
    * Repository strategy. `worktree` (default) clones once as a bare repo and
    * maintains one worktree per remote branch under `worktreeDir/<branch>`.
@@ -249,6 +273,7 @@ export type SyncWorktreesSparseCheckoutMode = SparseCheckoutMode;
 export type SyncWorktreesSparseCheckoutConfig = SparseCheckoutConfig;
 export type SyncWorktreesRepositoryMode = RepositoryMode;
 export type SyncWorktreesMaintenanceConfig = MaintenanceConfig;
+export type SyncWorktreesTrashConfig = TrashConfig;
 
 interface SyncWorktreesCommonConfigFields {
   cronSchedule?: string;
@@ -278,6 +303,7 @@ export interface SyncWorktreesCloneRepository extends SyncWorktreesRepositoryBas
   branchInclude?: never;
   branchExclude?: never;
   updateExistingWorktrees?: never;
+  trash?: never;
 }
 
 export interface SyncWorktreesWorktreeRepository extends SyncWorktreesRepositoryBase {
@@ -287,6 +313,7 @@ export interface SyncWorktreesWorktreeRepository extends SyncWorktreesRepository
   branchInclude?: string[];
   branchExclude?: string[];
   updateExistingWorktrees?: boolean;
+  trash?: SyncWorktreesTrashConfig;
   branch?: never;
   depth?: never;
 }
@@ -303,6 +330,7 @@ export interface SyncWorktreesCloneDefaults extends SyncWorktreesDefaultsBase {
   branchInclude?: never;
   branchExclude?: never;
   updateExistingWorktrees?: never;
+  trash?: never;
 }
 
 export interface SyncWorktreesWorktreeDefaults extends SyncWorktreesDefaultsBase {
@@ -311,6 +339,7 @@ export interface SyncWorktreesWorktreeDefaults extends SyncWorktreesDefaultsBase
   branchInclude?: string[];
   branchExclude?: string[];
   updateExistingWorktrees?: boolean;
+  trash?: SyncWorktreesTrashConfig;
   branch?: never;
   depth?: never;
 }

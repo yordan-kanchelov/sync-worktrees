@@ -258,18 +258,20 @@ Open `Settings` → `AI` → `Manage MCP Servers` → `+ Add` (see [Warp MCP doc
 
 ### Available tools
 
-| Tool | Purpose |
-|------|---------|
-| `detect_context` | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report config-driven sibling repositories and capabilities. Pass `includeAllWorktrees: true` to include every configured repo's worktrees keyed by repo name. |
-| `list_worktrees` | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos. |
-| `get_worktree_status` | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress). |
-| `create_worktree` | Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`. |
-| `remove_worktree` | Remove a worktree after safety checks; `force=true` skips validation. |
-| `update_worktree` | Fast-forward one worktree to match upstream. |
-| `sync` | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. |
-| `initialize` | Clone the bare repo and create the main worktree. Requires config. Streams progress. |
-| `load_config` | Load or reload a config file at runtime. |
-| `set_current_repository` | Select the active repo when multiple are configured. |
+| Tool                     | Purpose                                                                                                                                                                                                                           |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `detect_context`         | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report config-driven sibling repositories and capabilities. Pass `includeAllWorktrees: true` to include every configured repo's worktrees keyed by repo name. |
+| `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
+| `get_worktree_status`    | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress).                                                                                                                                 |
+| `create_worktree`        | Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`.                                                                                  |
+| `remove_worktree`        | Remove a worktree after safety checks; `force=true` skips validation. With trash enabled (default), the directory is moved to `.trash/` and the response includes `trashedAs` for later restore.                                  |
+| `list_trash`             | List trash entries with id, branch, reason, size, expiry, and `restoreMode` (`worktree` or `plain`).                                                                                                                              |
+| `restore_trash`          | Restore a trash entry by id — recreates the branch and worktree at the pinned commit and overlays the preserved files. See [Trash and restore](#trash-and-restore).                                                               |
+| `update_worktree`        | Fast-forward one worktree to match upstream.                                                                                                                                                                                      |
+| `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications.                                                                                                                                  |
+| `initialize`             | Clone the bare repo and create the main worktree. Requires config. Streams progress.                                                                                                                                              |
+| `load_config`            | Load or reload a config file at runtime.                                                                                                                                                                                          |
+| `set_current_repository` | Select the active repo when multiple are configured.                                                                                                                                                                              |
 
 All tools that target a single repo accept an optional `repoName`. When omitted, they use the current repository — set by auto-detect, the first entry in the config, or `set_current_repository`.
 
@@ -286,19 +288,19 @@ Running `sync-worktrees` without `runOnce` drops you into an interactive termina
 
 ### Keybindings
 
-| Key | Action |
-|-----|--------|
-| `s` | Manually trigger sync for all repositories |
-| `c` | Create a new branch (wizard) |
-| `o` | Open a worktree in terminal or editor (wizard) |
-| `w` | View worktree status across repos |
-| `r` | Reload configuration and re-sync |
-| `?` / `h` | Toggle help screen |
-| `q` / `Esc` | Gracefully quit |
-| `j` / `↓` | Scroll log down one line |
-| `k` / `↑` | Scroll log up one line |
-| `gg` | Jump to top of log |
-| `G` | Jump to bottom (re-enables auto-scroll) |
+| Key         | Action                                         |
+| ----------- | ---------------------------------------------- |
+| `s`         | Manually trigger sync for all repositories     |
+| `c`         | Create a new branch (wizard)                   |
+| `o`         | Open a worktree in terminal or editor (wizard) |
+| `w`         | View worktree status across repos              |
+| `r`         | Reload configuration and re-sync               |
+| `?` / `h`   | Toggle help screen                             |
+| `q` / `Esc` | Gracefully quit                                |
+| `j` / `↓`   | Scroll log down one line                       |
+| `k` / `↑`   | Scroll log up one line                         |
+| `gg`        | Jump to top of log                             |
+| `G`         | Jump to bottom (re-enables auto-scroll)        |
 
 ### Wizards
 
@@ -306,25 +308,25 @@ Running `sync-worktrees` without `runOnce` drops you into an interactive termina
 - **Branch creation wizard (`c`)** — pick a repo, pick a base branch from a live-filtered list, type the new branch name. Names are validated against Git's rules; if the desired name already exists, a numeric suffix (`-2`, `-3`, …) is suggested automatically.
 - **Worktree status view (`w`)** — flat list of every worktree across every configured repo, each tagged with status flags:
 
-  | Flag | Meaning |
-  |------|---------|
-  | `✓` | Clean |
-  | `M` | Modified / uncommitted changes |
-  | `↑` | Unpushed commits |
-  | `S` | Stashed changes |
-  | `⚠` | Operation in progress (merge/rebase/cherry-pick/revert/bisect) |
-  | `⊞` | Modified submodules |
-  | `✗` | Upstream branch is gone |
+  | Flag | Meaning                                                        |
+  | ---- | -------------------------------------------------------------- |
+  | `✓`  | Clean                                                          |
+  | `M`  | Modified / uncommitted changes                                 |
+  | `↑`  | Unpushed commits                                               |
+  | `S`  | Stashed changes                                                |
+  | `⚠`  | Operation in progress (merge/rebase/cherry-pick/revert/bisect) |
+  | `⊞`  | Modified submodules                                            |
+  | `✗`  | Upstream branch is gone                                        |
 
   Press `Enter` on an entry to expand file/commit/stash counts. The view also surfaces `.diverged/` directories preserved from past force-pushes; press `d` (with `y`/`n` confirmation) to delete one after reviewing.
 
 ### Terminal mode environment variables
 
-| Variable | Purpose | Default behavior |
-|----------|---------|------------------|
-| `SYNC_WORKTREES_TERMINAL` | Override the terminal launcher on any platform. Value is a command string; the tmux invocation is appended via `sh -c`. Example: `SYNC_WORKTREES_TERMINAL="alacritty -e"`. | See per-platform defaults below. |
-| `TERMINAL` | Linux-only fallback when `SYNC_WORKTREES_TERMINAL` is unset. Same format. | Probes `gnome-terminal`, `konsole`, `alacritty`, `kitty`, `xterm` in order. |
-| `EDITOR` / `VISUAL` | Editor mode launcher. | Falls back to `code`. |
+| Variable                  | Purpose                                                                                                                                                                    | Default behavior                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `SYNC_WORKTREES_TERMINAL` | Override the terminal launcher on any platform. Value is a command string; the tmux invocation is appended via `sh -c`. Example: `SYNC_WORKTREES_TERMINAL="alacritty -e"`. | See per-platform defaults below.                                            |
+| `TERMINAL`                | Linux-only fallback when `SYNC_WORKTREES_TERMINAL` is unset. Same format.                                                                                                  | Probes `gnome-terminal`, `konsole`, `alacritty`, `kitty`, `xterm` in order. |
+| `EDITOR` / `VISUAL`       | Editor mode launcher.                                                                                                                                                      | Falls back to `code`.                                                       |
 
 Per-platform terminal defaults (when no env override is set):
 
@@ -364,8 +366,8 @@ export default config;
 /** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
 const config = {
   defaults: {
-    cronSchedule: "0 * * * *",        // hourly
-    branchMaxAge: "30d",               // ignore stale branches
+    cronSchedule: "0 * * * *", // hourly
+    branchMaxAge: "30d", // ignore stale branches
     branchExclude: ["wip-*", "tmp-*"],
     updateExistingWorktrees: true,
   },
@@ -382,7 +384,7 @@ const config = {
       name: "frontend",
       repoUrl: "https://github.com/company/frontend.git",
       worktreeDir: "./worktrees/frontend",
-      cronSchedule: "*/30 * * * *",   // override default
+      cronSchedule: "*/30 * * * *", // override default
     },
     {
       name: "backend",
@@ -390,7 +392,7 @@ const config = {
       worktreeDir: "/absolute/path/backend-worktrees",
       branchMaxAge: "6m",
       branchInclude: ["feature/*", "release-*", "main"],
-      retry: { maxAttempts: 10 },     // per-repo override
+      retry: { maxAttempts: 10 }, // per-repo override
     },
   ],
 };
@@ -527,14 +529,87 @@ The TUI's worktree status view (`w`) lists diverged directories and offers a gui
 
 Clean rebases where file content matches the upstream are auto-applied with no detour through `.diverged/`. Diverged-but-no-local-commits is also handled without preservation, since there's no user work to keep.
 
+With trash enabled (the default), the preserved copy lands in `.trash/` instead of `.diverged/`, so it ages out under the retention policy and can be restored as a full worktree — see [Trash and restore](#trash-and-restore). The `.diverged/` layout above applies when trash is disabled.
+
+### Trash and restore
+
+Every removal — age-based prune, orphan cleanup, diverged-branch replacement, and manual `remove_worktree` — is reversible by default. Instead of deleting, sync-worktrees moves the directory into a per-workspace trash with a manifest describing how to put it back:
+
+```
+my-repo-worktrees/
+├── main/
+├── feature-a/
+└── .trash/
+    └── 2026-06-06T18-30-00-000Z-feature-x-a1b2c3/
+        ├── manifest.json     # branch, reason, original path, HEAD commit, expiry
+        └── payload/          # the directory exactly as it was, including uncommitted work
+```
+
+When the removed directory was a branch worktree, a pin ref (`refs/sync-worktrees/trash/<id>`) keeps the trashed HEAD's objects alive through `git gc` for the whole retention window — even though the local branch ref itself is deleted after trashing. Each entry expires on its own clock; a reaper deletes expired entries at the tail of a successful sync.
+
+```javascript
+defaults: {
+  trash: {
+    enabled: true,        // default: true — disabling restores direct deletion
+    retentionDays: 30,    // default: 30
+    warnSizeBytes: 5e9,   // optional: warn when total trash exceeds this
+    migrateLegacy: true,  // default: true — adopt old .removed/ and .diverged/ entries
+  },
+}
+```
+
+**Restoring via MCP** (or any MCP client):
+
+1. `list_trash` — shows every entry with its `id`, branch, reason, expiry, and `restoreMode`:
+   - `worktree` — the entry has a branch, a recorded HEAD commit, and a live pin ref; it can come back as a fully registered worktree.
+   - `plain` — files only (orphan directories, or entries whose commit could not be pinned).
+2. `restore_trash` with the `id`. For a `worktree` entry this:
+   - recreates the local branch at the pinned commit (a leftover branch ref already at that commit is reused);
+   - registers a fresh worktree at the original path (`git worktree add --no-checkout`);
+   - overlays the preserved files, so uncommitted/untracked work from the time of removal shows up as ordinary unstaged changes;
+   - deletes the trash entry and its pin ref.
+
+Restore never clobbers live data — it refuses when:
+
+- the original path is occupied (common for diverged-replace entries, where a fresh worktree was created at the same path: remove that worktree first, then restore);
+- a branch with the same name exists at a _different_ commit (move or delete that branch first, or copy the files out of `payload/` manually).
+
+**Restoring manually** (no MCP): read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
+
+```bash
+cd my-repo-worktrees/.trash/<id>
+cat manifest.json
+git -C <bare-repo> branch <branch> <headOid>
+git -C <bare-repo> worktree add --no-checkout <originalPath> <branch>
+cp -R payload/. <originalPath>/   # then restore the .git link git wrote:
+git -C <bare-repo> worktree repair <originalPath>
+git -C <originalPath> reset       # index at HEAD, payload shows as unstaged changes
+cd .. && rm -rf <id>              # discard the trash entry when done
+git -C <bare-repo> update-ref -d refs/sync-worktrees/trash/<id>   # drop the pin
+```
+
+Notes:
+
+- Trash applies to worktree mode only; clone mode never removes its checkout.
+- Anything in `.trash/` without a valid manifest is left alone by the reaper and reported, never deleted.
+- Pin refs whose trash entry is gone (e.g. a failed cleanup, a manually emptied `.trash/`) are swept by the reaper on the next sync, so nothing stays pinned forever.
+- A failure to move a directory into trash (e.g. trash on a different filesystem) skips the removal entirely — the worktree stays in place.
+- Worktrees containing submodules are preserved byte-for-byte; nested submodule state is restored as-is but submodules are not re-registered automatically.
+
 ### Retry and LFS
 
 The tool retries network errors (timeouts, DNS failures, access issues) and filesystem race conditions automatically:
 
 ```javascript
-retry: { maxAttempts: 5 }              // try 5 times then stop
-retry: { maxAttempts: "unlimited" }    // keep trying forever (default)
-retry: { maxDelayMs: 60000 }           // cap retry delay at 1 minute
+retry: {
+  maxAttempts: 5;
+} // try 5 times then stop
+retry: {
+  maxAttempts: "unlimited";
+} // keep trying forever (default)
+retry: {
+  maxDelayMs: 60000;
+} // cap retry delay at 1 minute
 ```
 
 For repositories with Git LFS issues or large files you don't need, set `skipLfs: true` in `defaults` or per repository. The tool also retries LFS-specific failures with LFS disabled (configurable via `retry.maxLfsRetries`).
@@ -554,12 +629,12 @@ For every knob (timeouts, parallelism, jitter, sparse-update behavior, retry tun
 
 The CLI loads a config file and runs it. Most run-mode settings (branch filters, retry, parallelism, LFS, clone mode, depth, etc.) live in the config file. Use `--runOnce` for an ad-hoc one-shot run without editing config.
 
-| Option | Alias | Description | Default |
-|--------|-------|-------------|---------|
-| `--config` | `-c` | Path to JavaScript config file (auto-detected in CWD when omitted) | - |
-| `--runOnce` | - | Run a sync once and exit, overriding config `runOnce` settings for this invocation | `false` |
-| `--help` | `-h` | Show help | - |
-| `--version` | - | Print version | - |
+| Option      | Alias | Description                                                                        | Default |
+| ----------- | ----- | ---------------------------------------------------------------------------------- | ------- |
+| `--config`  | `-c`  | Path to JavaScript config file (auto-detected in CWD when omitted)                 | -       |
+| `--runOnce` | -     | Run a sync once and exit, overriding config `runOnce` settings for this invocation | `false` |
+| `--help`    | `-h`  | Show help                                                                          | -       |
+| `--version` | -     | Print version                                                                      | -       |
 
 Subcommands:
 

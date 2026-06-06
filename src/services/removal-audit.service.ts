@@ -8,7 +8,11 @@ export type RemovalAuditAction =
   | "orphan_delete"
   | "orphan_quarantine"
   | "diverged_replace"
-  | "manual_remove";
+  | "manual_remove"
+  | "trash_create"
+  | "trash_adopt"
+  | "trash_restore"
+  | "trash_reap";
 
 export interface RemovalAuditEntry {
   action: RemovalAuditAction;
@@ -17,6 +21,8 @@ export interface RemovalAuditEntry {
   branch?: string;
   status?: WorktreeStatusResult;
   quarantinePath?: string;
+  trashId?: string;
+  trashPath?: string;
   error?: string;
 }
 

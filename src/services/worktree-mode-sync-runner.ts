@@ -4,7 +4,7 @@ import * as path from "path";
 import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import { WorktreeNotCleanError } from "../errors";
+import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { probePathExists } from "../utils/file-exists";
@@ -14,6 +14,7 @@ import { quarantineDirectory } from "../utils/quarantine";
 
 import { PathResolutionService } from "./path-resolution.service";
 import { RemovalAuditService } from "./removal-audit.service";
+import { TrashService } from "./trash.service";
 import { createWorktreeSyncPlan } from "./worktree-sync-planner";
 
 import type { GitService } from "./git.service";
@@ -21,6 +22,7 @@ import type { Logger } from "./logger.service";
 import type { ProgressEmitter } from "./progress-emitter";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
 import type { SyncRetryContext } from "./sync-retry-policy";
+import type { TrashManifest } from "./trash.service";
 import type { WorktreeStatusDetails } from "./worktree-status.service";
 import type { CreateAction, PruneAction, SparseAction, SyncPlan, UpdateAction } from "./worktree-sync-planner";
 import type { Config } from "../types";
@@ -29,6 +31,7 @@ import type { PhaseTimer } from "../utils/timing";
 export class WorktreeModeSyncRunner {
   private pathResolution = new PathResolutionService();
   private removalAudit: RemovalAuditService;
+  private trashService: TrashService;
 
   constructor(
     private config: Config,
@@ -37,10 +40,12 @@ export class WorktreeModeSyncRunner {
     private progressEmitter: ProgressEmitter,
   ) {
     this.removalAudit = new RemovalAuditService(getRemovalAuditLogPath(config));
+    this.trashService = new TrashService(config, gitService, logger, this.removalAudit);
   }
 
   updateLogger(logger: Logger): void {
     this.logger = logger;
+    this.trashService.updateLogger(logger);
   }
 
   async runSyncAttempt(
@@ -415,9 +420,22 @@ export class WorktreeModeSyncRunner {
                   });
                   return;
                 }
-                await this.gitService.removeWorktree(worktreePath);
-                this.logger.info(`  ✅ Removed worktree for '${branchName}'`);
-                outcome.recordRemoved(branchName, worktreePath);
+                let refWarning: string | undefined;
+                if (this.trashService.isEnabled()) {
+                  const { entry, branchRefError } = await this.trashService.trashAndUnregisterWorktree({
+                    dirPath: worktreePath,
+                    branch: branchName,
+                    reason: "prune",
+                  });
+                  if (branchRefError !== undefined) {
+                    refWarning = `leftover_branch_ref: could not delete branch ref '${branchName}': ${branchRefError}`;
+                  }
+                  this.logger.info(`  ✅ Moved worktree for '${branchName}' to trash (id: ${entry.manifest.id})`);
+                } else {
+                  await this.gitService.removeWorktree(worktreePath);
+                  this.logger.info(`  ✅ Removed worktree for '${branchName}'`);
+                }
+                outcome.recordRemoved(branchName, worktreePath, refWarning);
                 await this.removalAudit
                   .record({ action: "prune_remove", result: "success", path: worktreePath, branch: branchName })
                   .catch((auditError: unknown) =>
@@ -427,6 +445,15 @@ export class WorktreeModeSyncRunner {
                 if (error instanceof WorktreeNotCleanError) {
                   this.logger.warn(`  ⚠️ Skipping removal of '${branchName}' - git refused: ${getErrorMessage(error)}`);
                   outcome.recordSkipped("worktree", "git_refused_removal", {
+                    branch: branchName,
+                    path: worktreePath,
+                    message: getErrorMessage(error),
+                  });
+                  return;
+                }
+                if (error instanceof TrashOperationError) {
+                  this.logger.warn(`  ⚠️ Skipping removal of '${branchName}' - ${getErrorMessage(error)}`);
+                  outcome.recordSkipped("worktree", "trash_failed", {
                     branch: branchName,
                     path: worktreePath,
                     message: getErrorMessage(error),
@@ -811,6 +838,17 @@ export class WorktreeModeSyncRunner {
               this.logger.warn(`  - ⚠️ Skipping orphaned directory ${dir}: cannot verify it is not a live checkout`);
               continue;
             }
+
+            if (this.trashService.isEnabled()) {
+              try {
+                const entry = await this.trashService.trashDirectory({ dirPath, reason: "orphan" });
+                this.logger.info(`  - Moved orphaned directory '${dir}' to trash (id: ${entry.manifest.id})`);
+              } catch (trashError) {
+                this.logger.warn(`  - ⚠️ Skipping orphaned directory ${dir} - ${getErrorMessage(trashError)}`);
+              }
+              continue;
+            }
+
             if (gitProbe === "exists") {
               const quarantinePath = await quarantineDirectory(dirPath);
               this.logger.warn(
@@ -870,7 +908,7 @@ export class WorktreeModeSyncRunner {
       } else {
         this.logger.info(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
 
-        const divergedPath = await this.divergeWorktree(worktree.path, worktree.branch);
+        const { divergedPath, manifest } = await this.divergeWorktree(worktree.path, worktree.branch);
         const relativePath = path.relative(process.cwd(), divergedPath);
         outcome.recordPreservedDiverged(worktree.branch, worktree.path, divergedPath);
 
@@ -882,6 +920,12 @@ export class WorktreeModeSyncRunner {
         // force is safe here: the directory was already moved to .diverged/,
         // so only the stale registration is being cleared.
         await this.gitService.removeWorktree(worktree.path, { force: true });
+        // Deliberately fatal on failure (unlike prune): addWorktree below
+        // would silently recreate the worktree from the stale local branch
+        // instead of upstream if the ref survived.
+        if (manifest !== null) {
+          await this.trashService.deleteTrashedBranchRef(manifest);
+        }
         await this.removalAudit
           .record({
             action: "diverged_replace",
@@ -913,7 +957,20 @@ export class WorktreeModeSyncRunner {
     }
   }
 
-  private async divergeWorktree(worktreePath: string, branchName: string): Promise<string> {
+  private async divergeWorktree(
+    worktreePath: string,
+    branchName: string,
+  ): Promise<{ divergedPath: string; manifest: TrashManifest | null }> {
+    if (this.trashService.isEnabled()) {
+      const entry = await this.trashService.trashDirectory({
+        dirPath: worktreePath,
+        branch: branchName,
+        reason: "diverged-replace",
+      });
+      await this.writeDivergedInfoFile(entry.payloadPath, worktreePath, branchName, entry.manifest.headOid);
+      return { divergedPath: entry.payloadPath, manifest: entry.manifest };
+    }
+
     const divergedBaseDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
 
     const timestamp = new Date().toISOString().split("T")[0];
@@ -935,26 +992,35 @@ export class WorktreeModeSyncRunner {
       }
     }
 
+    await this.writeDivergedInfoFile(divergedPath, worktreePath, branchName, null);
+
+    return { divergedPath, manifest: null };
+  }
+
+  private async writeDivergedInfoFile(
+    preservedPath: string,
+    originalPath: string,
+    branchName: string,
+    knownLocalCommit: string | null,
+  ): Promise<void> {
     const metadata = {
       originalBranch: branchName,
       divergedAt: new Date().toISOString(),
       reason: METADATA_CONSTANTS.DIVERGED_REASON,
-      originalPath: worktreePath,
-      localCommit: await this.gitService.getCurrentCommit(divergedPath),
+      originalPath,
+      localCommit: knownLocalCommit ?? (await this.gitService.getCurrentCommit(preservedPath)),
       remoteCommit: await this.gitService.getRemoteCommit(`origin/${branchName}`),
       instruction: `To preserve your changes:
   1. Review: git diff origin/${branchName}
   2. Keep changes: git push --force-with-lease origin ${branchName}
   3. Discard changes: rm -rf this directory
 
-  Original worktree location: ${worktreePath}`,
+  Original worktree location: ${originalPath}`,
     };
 
     await fs.writeFile(
-      path.join(divergedPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE),
+      path.join(preservedPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE),
       JSON.stringify(metadata, null, 2),
     );
-
-    return divergedPath;
   }
 }

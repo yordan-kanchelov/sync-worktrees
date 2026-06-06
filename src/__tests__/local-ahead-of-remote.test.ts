@@ -73,6 +73,9 @@ describe("Local Branch Ahead of Remote", () => {
       runOnce: true,
       updateExistingWorktrees: true,
       logger: mockLogger,
+      // These suites assert the direct-delete mechanism; the trash pipeline
+      // has its own suites.
+      trash: { enabled: false },
     };
 
     mockGitService = mockGitServiceInstance;

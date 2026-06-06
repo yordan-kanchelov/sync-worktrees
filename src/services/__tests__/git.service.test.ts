@@ -465,6 +465,22 @@ describe("GitService", () => {
     });
   });
 
+  describe("listRefs", () => {
+    beforeEach(async () => {
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+    });
+
+    it("returns trimmed refnames under the prefix and drops blank lines", async () => {
+      mockGit.raw.mockResolvedValueOnce("refs/sync-worktrees/trash/a\nrefs/sync-worktrees/trash/b\n\n" as any);
+
+      const refs = await gitService.listRefs("refs/sync-worktrees/trash");
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["for-each-ref", "--format=%(refname)", "refs/sync-worktrees/trash"]);
+      expect(refs).toEqual(["refs/sync-worktrees/trash/a", "refs/sync-worktrees/trash/b"]);
+    });
+  });
+
   describe("getRemoteBranchesWithActivity", () => {
     beforeEach(async () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
@@ -1355,6 +1371,41 @@ describe("GitService", () => {
 
       expect(fs.rm).not.toHaveBeenCalledWith(target, { recursive: true, force: true });
       expect(fs.rename).not.toHaveBeenCalled();
+    });
+
+    it("routes stale-directory cleanup through the injected trasher instead of deleting", async () => {
+      const target = "/test/worktrees/feature-1";
+      const trasher = vi.fn<any>().mockResolvedValue("/test/worktrees/.trash/id/payload");
+      gitService.setStaleDirectoryTrasher(trasher as unknown as (dirPath: string) => Promise<string>);
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (Array.isArray(args) && args[0] === "worktree" && args[1] === "list") {
+          return Promise.resolve(createWorktreeListOutput([{ path: "/test/repo", branch: "main", commit: "abc123" }]));
+        }
+        return Promise.resolve("");
+      });
+
+      await gitService.addWorktree("feature-1", target);
+
+      expect(trasher).toHaveBeenCalledWith(target);
+      expect(fs.rm).not.toHaveBeenCalledWith(target, { recursive: true, force: true });
+      expect(fs.rename).not.toHaveBeenCalled();
+    });
+
+    it("fails the worktree creation when the trasher cannot preserve the stale directory", async () => {
+      const target = "/test/worktrees/feature-1";
+      gitService.setStaleDirectoryTrasher(
+        vi.fn<any>().mockRejectedValue(new Error("EXDEV")) as unknown as (dirPath: string) => Promise<string>,
+      );
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (Array.isArray(args) && args[0] === "worktree" && args[1] === "list") {
+          return Promise.resolve(createWorktreeListOutput([{ path: "/test/repo", branch: "main", commit: "abc123" }]));
+        }
+        return Promise.resolve("");
+      });
+
+      await expect(gitService.addWorktree("feature-1", target)).rejects.toThrow(/trash/);
+
+      expect(fs.rm).not.toHaveBeenCalledWith(target, { recursive: true, force: true });
     });
   });
 

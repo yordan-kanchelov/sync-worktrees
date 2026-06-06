@@ -7,6 +7,8 @@ export const GIT_CONSTANTS = {
   BARE_DIR_NAME: ".bare",
   DIVERGED_DIR_NAME: ".diverged",
   REMOVED_DIR_NAME: ".removed",
+  TRASH_DIR_NAME: ".trash",
+  TRASH_REF_PREFIX: "refs/sync-worktrees/trash/",
   LFS_HEADER: "version https://git-lfs.github.com/spec/",
   SUBMODULE_STATUS_ADDED: "+",
   SUBMODULE_STATUS_REMOVED: "-",
@@ -59,6 +61,11 @@ export const DEFAULT_CONFIG = {
     ENABLED: true,
     INTERVAL: "7d",
   },
+  TRASH: {
+    ENABLED: true,
+    RETENTION_DAYS: 30,
+    MIGRATE_LEGACY: true,
+  },
 } as const;
 
 export const ERROR_MESSAGES = {
@@ -105,6 +112,12 @@ export const CONFIG_FILE_NAMES = [
 
 export const MAINTENANCE_CONSTANTS = {
   STATE_FILENAME: "sync-worktrees-maintenance.json",
+} as const;
+
+export const TRASH_CONSTANTS = {
+  MANIFEST_FILENAME: "manifest.json",
+  PAYLOAD_DIRNAME: "payload",
+  SCHEMA_VERSION: 1,
 } as const;
 
 export const METADATA_CONSTANTS = {

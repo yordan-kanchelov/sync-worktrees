@@ -64,8 +64,8 @@ export class SyncOutcomeAccumulator {
     this.add({ kind: "created", branch, path });
   }
 
-  recordRemoved(branch: string, path: string): void {
-    this.add({ kind: "removed", branch, path });
+  recordRemoved(branch: string, path: string, warning?: string): void {
+    this.add({ kind: "removed", branch, path, ...(warning !== undefined && { warning }) });
   }
 
   recordUpdated(branch: string, path: string, reason?: string): void {
