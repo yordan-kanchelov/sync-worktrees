@@ -6,6 +6,7 @@ export const GIT_CONSTANTS = {
   COMMON_DEFAULT_BRANCHES: ["main", "master", "develop", "trunk"],
   BARE_DIR_NAME: ".bare",
   DIVERGED_DIR_NAME: ".diverged",
+  REMOVED_DIR_NAME: ".removed",
   LFS_HEADER: "version https://git-lfs.github.com/spec/",
   SUBMODULE_STATUS_ADDED: "+",
   SUBMODULE_STATUS_REMOVED: "-",

@@ -4,11 +4,13 @@ import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { PathResolutionService } from "../services/path-resolution.service";
+import { RemovalAuditService } from "../services/removal-audit.service";
 import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { WorktreeStatusService } from "../services/worktree-status.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { isValidGitBranchName } from "../utils/git-validation";
+import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { pathsEqual } from "../utils/path-compare";
 
 import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } from "./utils";
@@ -17,6 +19,7 @@ import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summa
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
 import type { HandlerExtra } from "./utils";
 import type { WorktreeLabel } from "./worktree-summary";
+import type { WorktreeStatusResult } from "../services/worktree-status.service";
 import type { ProgressEvent } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -421,14 +424,19 @@ export async function handleRemoveWorktree(
     }
     const removedPath = await ensureRepoWorktreePath(ctx, params, service, git);
 
+    let status: WorktreeStatusResult | undefined;
     if (!params.force) {
-      const status = await git.getFullWorktreeStatus(params.path, false);
+      status = await git.getFullWorktreeStatus(params.path, false);
       if (!status.canRemove) {
         throw new Error(`Cannot remove worktree: ${status.reasons.join(", ")}. Use force=true to override.`);
       }
     }
 
-    await git.removeWorktree(params.path);
+    await git.removeWorktree(params.path, { force: params.force === true });
+    // Best-effort, non-gating: the user is present and confirming.
+    await new RemovalAuditService(getRemovalAuditLogPath(service.config))
+      .record({ action: "manual_remove", result: "success", path: params.path, status })
+      .catch(() => undefined);
     ctx.invalidateDiscovered();
 
     return formatToolResponse({

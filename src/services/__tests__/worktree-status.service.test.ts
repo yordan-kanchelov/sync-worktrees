@@ -148,7 +148,9 @@ describe("WorktreeStatusService", () => {
 
   describe("getFullWorktreeStatus", () => {
     it("should return safe-to-remove status when directory does not exist", async () => {
-      (fs.access as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.access as Mock<any>).mockRejectedValue(
+        Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }),
+      );
 
       const result = await service.getFullWorktreeStatus("/test/nonexistent-worktree");
 
@@ -193,7 +195,9 @@ describe("WorktreeStatusService", () => {
       }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       const result = await service.getFullWorktreeStatus("/test/worktree");
 
@@ -261,7 +265,7 @@ describe("WorktreeStatusService", () => {
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
       (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
         if (target === "/test/worktree") return undefined;
-        throw new Error("Not found");
+        throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
       });
 
       const result = await service.getFullWorktreeStatus("/test/worktree");
@@ -288,7 +292,9 @@ describe("WorktreeStatusService", () => {
         return "0\n";
       }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       const result = await service.getFullWorktreeStatus("/test/worktree");
 
@@ -299,12 +305,12 @@ describe("WorktreeStatusService", () => {
   });
 
   describe("hasUnpushedCommits", () => {
-    it("should return false for detached HEAD", async () => {
+    it("should return true for detached HEAD (may sit on unreachable commits)", async () => {
       mockGit.branch.mockResolvedValue({ current: "", detached: true } as any);
 
       const result = await service.hasUnpushedCommits("/test/worktree");
 
-      expect(result).toBe(false);
+      expect(result).toBe(true);
     });
 
     it("should return true when there are unpushed commits", async () => {
@@ -316,12 +322,17 @@ describe("WorktreeStatusService", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "main", "--not", "--remotes"]);
     });
 
-    it("should use lastSyncCommit when provided", async () => {
-      mockGit.raw.mockResolvedValue("2\n");
+    it("should also check lastSyncCommit in addition to the any-remote check", async () => {
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg.includes("--remotes")) return "0\n";
+        return "2\n";
+      }) as any);
 
       const result = await service.hasUnpushedCommits("/test/worktree", "abc123");
 
       expect(result).toBe(true);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "main", "--not", "--remotes"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
     });
 
@@ -449,7 +460,9 @@ describe("WorktreeStatusService", () => {
   describe("hasOperationInProgress", () => {
     it("should return true when merge is in progress", async () => {
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
-      (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found")).mockResolvedValueOnce(undefined);
+      (fs.access as Mock<any>)
+        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }))
+        .mockResolvedValueOnce(undefined);
 
       const result = await service.hasOperationInProgress("/test/worktree");
 
@@ -459,7 +472,7 @@ describe("WorktreeStatusService", () => {
 
     it("should return false when no operation is in progress", async () => {
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       const result = await service.hasOperationInProgress("/test/worktree");
 
@@ -480,7 +493,7 @@ describe("WorktreeStatusService", () => {
     it("should resolve .git file to actual git directory", async () => {
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => true });
       (fs.readFile as Mock<any>).mockResolvedValue("gitdir: /real/git/dir\n");
-      (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>).mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       const result = await service.hasOperationInProgress("/test/worktree");
 
@@ -501,7 +514,9 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("0\n");
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       await expect(service.validateWorktreeForRemoval("/test/worktree")).resolves.not.toThrow();
     });
@@ -517,7 +532,9 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("0\n");
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       await expect(service.validateWorktreeForRemoval("/test/worktree")).rejects.toThrow(WorktreeNotCleanError);
     });
@@ -533,7 +550,9 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("3\n");
       mockGit.stashList.mockResolvedValue({ total: 1 } as any);
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       try {
         await service.validateWorktreeForRemoval("/test/worktree");
@@ -561,7 +580,9 @@ describe("WorktreeStatusService", () => {
         return "0\n";
       }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       await expect(service.validateWorktreeForRemoval("/test/worktree")).resolves.not.toThrow();
     });
@@ -579,7 +600,9 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("2\n");
       mockGit.stashList.mockResolvedValue({ total: 1 } as any);
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       const status = await service.getFullWorktreeStatus("/test/worktree", true);
 
@@ -600,7 +623,9 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("2\n");
       mockGit.stashList.mockResolvedValue({ total: 1 } as any);
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       const status = await service.getFullWorktreeStatus("/test/worktree", false);
 
@@ -618,7 +643,9 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("2\n");
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       const status = await service.getFullWorktreeStatus("/test/worktree", false, "abc123");
 
@@ -637,13 +664,135 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockResolvedValue("0\n");
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("Not found"));
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       const status = await service.getFullWorktreeStatus("/test/worktree", false, "lastSyncCommit123");
 
       expect(status.hasUnpushedCommits).toBe(false);
       expect(status.canRemove).toBe(true);
       expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "lastSyncCommit123..HEAD"]);
+    });
+  });
+
+  // Removal-safety regression tests: a worktree with an unpushed
+  // commit was removed by the age-based prune. Every ambiguous probe result
+  // must read as "cannot verify => cannot remove".
+  describe("fail-closed removal safety", () => {
+    const errnoError = (code: string): NodeJS.ErrnoException =>
+      Object.assign(new Error(`${code}: probe failed`), { code });
+
+    const cleanStatus = {
+      modified: [],
+      deleted: [],
+      renamed: [],
+      created: [],
+      conflicted: [],
+      not_added: [],
+    };
+
+    const setupCleanWorktreeMocks = (): void => {
+      mockGit.status.mockResolvedValue(cleanStatus as any);
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
+          return "origin/main\n";
+        }
+        if (firstArg[0] === "submodule") {
+          return "";
+        }
+        return "0\n";
+      }) as any);
+      mockGit.branch.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg && firstArg[0] === "-r") {
+          return { all: ["origin/main"] } as any;
+        }
+        return { current: "main", detached: false } as any;
+      }) as any);
+      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+      (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined).mockRejectedValue(errnoError("ENOENT"));
+    };
+
+    it("must not report removable when the worktree path check fails with EMFILE", async () => {
+      (fs.access as Mock<any>).mockRejectedValue(errnoError("EMFILE"));
+
+      const result = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(result.canRemove).toBe(false);
+      expect(result.hasUnpushedCommits).toBe(true);
+      expect(result.reasons.length).toBeGreaterThan(0);
+    });
+
+    it("still reports removable when the worktree path is genuinely missing (ENOENT)", async () => {
+      (fs.access as Mock<any>).mockRejectedValue(errnoError("ENOENT"));
+
+      const result = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(result.canRemove).toBe(true);
+    });
+
+    it("must not report a detached-HEAD worktree as removable", async () => {
+      setupCleanWorktreeMocks();
+      mockGit.branch.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg && firstArg[0] === "-r") {
+          return { all: ["origin/main"] } as any;
+        }
+        return { current: "", detached: true } as any;
+      }) as any);
+
+      const result = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(result.canRemove).toBe(false);
+      expect(result.reasons).toContain("detached HEAD");
+    });
+
+    it("must block removal when commits are missing from all remotes even if lastSyncCommit == HEAD", async () => {
+      setupCleanWorktreeMocks();
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
+          return "origin/main\n";
+        }
+        if (firstArg[0] === "submodule") {
+          return "";
+        }
+        if (firstArg[0] === "rev-list" && firstArg.includes("--remotes")) {
+          return "1\n";
+        }
+        return "0\n";
+      }) as any);
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, "headCommitSha");
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "main", "--not", "--remotes"]);
+      expect(status.hasUnpushedCommits).toBe(true);
+      expect(status.canRemove).toBe(false);
+    });
+
+    it("must report an operation in progress when operation-file probes fail with EMFILE", async () => {
+      setupCleanWorktreeMocks();
+      (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+        if (target === "/test/worktree") return undefined;
+        throw errnoError("EMFILE");
+      });
+
+      const result = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(result.hasOperationInProgress).toBe(true);
+      expect(result.canRemove).toBe(false);
+    });
+
+    it("still allows removal of a genuinely clean, fully pushed worktree with lastSyncCommit", async () => {
+      setupCleanWorktreeMocks();
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, "abc123");
+
+      expect(status.hasUnpushedCommits).toBe(false);
+      expect(status.canRemove).toBe(true);
     });
   });
 });

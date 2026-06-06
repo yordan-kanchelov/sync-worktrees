@@ -3,11 +3,13 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
-import { WorktreeError } from "../errors";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
+import { probePathExists } from "../utils/file-exists";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
+import { quarantineDirectory } from "../utils/quarantine";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import { Logger } from "./logger.service";
@@ -537,9 +539,12 @@ export class GitService {
       } else {
         // Directory exists but is not a valid worktree - clean it up
         this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}'`);
-        await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
+        await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof GitOperationError || error instanceof WorktreeError) {
+        throw error;
+      }
       // Directory doesn't exist, which is expected - continue with creation
     }
 
@@ -599,12 +604,7 @@ export class GitService {
 
         this.logger.warn(`  - Worktree already registered but missing. Pruning and retrying...`);
         await bareGit.raw(["worktree", "prune"]);
-        // Clean up directory if it exists
-        try {
-          await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
-        } catch {
-          // Directory might not exist, ignore
-        }
+        await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
         let retryCreatedNewBranch = false;
         try {
           const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
@@ -664,9 +664,12 @@ export class GitService {
         } else {
           // Directory exists but is not a valid worktree - clean it up
           this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}' before fallback attempt`);
-          await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
+          await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof GitOperationError || error instanceof WorktreeError) {
+          throw error;
+        }
         // Directory doesn't exist, which is expected - continue with fallback
       }
 
@@ -797,10 +800,25 @@ export class GitService {
     return wrapped;
   }
 
-  async removeWorktree(worktreePath: string): Promise<void> {
+  async removeWorktree(worktreePath: string, options?: { force?: boolean }): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
 
-    await bareGit.raw(["worktree", "remove", worktreePath, "--force"]);
+    // Non-forced by default: git's own refusal to delete a dirty worktree is
+    // the last line of defense when our status checks were wrong. --force is
+    // reserved for callers that already preserved the data (diverged flow) or
+    // explicit user override.
+    const args = ["worktree", "remove", worktreePath];
+    if (options?.force) args.push("--force");
+
+    try {
+      await bareGit.raw(args);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (!options?.force && /contains modified or untracked files|use --force/i.test(message)) {
+        throw new WorktreeNotCleanError(worktreePath, [`git refused removal: ${message}`]);
+      }
+      throw error;
+    }
     this.logger.info(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
 
     // Clean up metadata using the worktree path
@@ -815,6 +833,29 @@ export class GitService {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     await bareGit.raw(["worktree", "prune"]);
     this.logger.info("Pruned worktree metadata.");
+  }
+
+  // A stale directory that contains a .git may be a live checkout that git
+  // failed to report; quarantine it instead of deleting.
+  private async clearStaleWorktreeDirectory(absoluteWorktreePath: string): Promise<void> {
+    const gitProbe = await probePathExists(path.join(absoluteWorktreePath, PATH_CONSTANTS.GIT_DIR));
+
+    if (gitProbe === "unknown") {
+      throw new GitOperationError(
+        "clear-stale-directory",
+        `Cannot verify whether '${absoluteWorktreePath}' is a live checkout; refusing to clear it`,
+      );
+    }
+
+    if (gitProbe === "exists") {
+      const quarantinePath = await quarantineDirectory(absoluteWorktreePath);
+      this.logger.warn(
+        `  - ⚠️ Directory at '${absoluteWorktreePath}' contains a .git; quarantined to '${quarantinePath}' instead of deleting.`,
+      );
+      return;
+    }
+
+    await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
   }
 
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {

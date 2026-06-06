@@ -5,6 +5,7 @@ import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_BRANCHES, createMockLogger } from "../../__tests__/test-utils";
+import { WorktreeNotCleanError } from "../../errors";
 import { GitMaintenanceService } from "../git-maintenance.service";
 import { PathResolutionService } from "../path-resolution.service";
 import { RepoOperationLock } from "../repo-operation-lock";
@@ -554,6 +555,14 @@ describe("WorktreeSyncService", () => {
       const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
       (fs.stat as Mock<any>).mockResolvedValue(mockStat);
 
+      // Orphans contain no .git, so deletion is allowed
+      (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+        if ((target as string).endsWith(`${path.sep}.git`)) {
+          throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+        }
+        return undefined;
+      });
+
       // Mock fs.rm
       (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
@@ -588,6 +597,13 @@ describe("WorktreeSyncService", () => {
       const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
       (fs.stat as Mock<any>).mockResolvedValue(mockStat);
 
+      (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+        if ((target as string).endsWith(`${path.sep}.git`)) {
+          throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+        }
+        return undefined;
+      });
+
       // Mock fs.rm to throw an error
       (fs.rm as Mock<any>).mockRejectedValue(new Error("Permission denied"));
 
@@ -612,6 +628,132 @@ describe("WorktreeSyncService", () => {
       expect(mockLogger.error).toHaveBeenCalledWith("Error during orphaned directory cleanup:", expect.any(Error));
 
       expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
+    });
+
+    // Removal-safety regression tests: orphan cleanup must never
+    // destroy a directory that may be a live checkout, and removals must leave
+    // a persistent audit trail.
+    describe("orphaned directory removal safety", () => {
+      const orphanPath = path.join("/test/worktrees", "live-checkout");
+      const errnoError = (code: string): NodeJS.ErrnoException =>
+        Object.assign(new Error(`${code}: probe failed`), { code });
+
+      afterEach(() => {
+        mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
+        mockGitService.getWorktrees.mockResolvedValue([]);
+        (fs.access as Mock<any>).mockReset();
+      });
+
+      const setupOrphan = (gitProbe: "exists" | "missing" | "unknown"): void => {
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if ((dirPath as string).endsWith(".diverged")) {
+            throw errnoError("ENOENT");
+          }
+          return ["live-checkout"];
+        });
+        mockGitService.getWorktrees.mockResolvedValue([]);
+        mockGitService.getRemoteBranches.mockResolvedValue([]);
+        (fs.stat as Mock<any>).mockResolvedValue({ isDirectory: vi.fn().mockReturnValue(true) });
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        (fs.rename as Mock<any>).mockResolvedValue(undefined);
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (target === path.join(orphanPath, ".git")) {
+            if (gitProbe === "exists") return undefined;
+            throw errnoError(gitProbe === "missing" ? "ENOENT" : "EMFILE");
+          }
+          return undefined;
+        });
+      };
+
+      it("quarantines an orphaned directory containing a git checkout instead of deleting it", async () => {
+        setupOrphan("exists");
+
+        await service.sync();
+
+        expect(fs.rm).not.toHaveBeenCalledWith(orphanPath, expect.anything());
+        expect(fs.rename).toHaveBeenCalledWith(orphanPath, expect.stringContaining(".removed"));
+      });
+
+      it("skips orphan deletion when the .git probe fails for unknown reasons", async () => {
+        setupOrphan("unknown");
+
+        await service.sync();
+
+        expect(fs.rm).not.toHaveBeenCalledWith(orphanPath, expect.anything());
+        expect(fs.rename).not.toHaveBeenCalledWith(orphanPath, expect.anything());
+      });
+
+      it("still deletes an orphaned directory without a git checkout", async () => {
+        setupOrphan("missing");
+
+        await service.sync();
+
+        expect(fs.rm).toHaveBeenCalledWith(orphanPath, { recursive: true, force: true });
+      });
+    });
+
+    describe("removal audit log", () => {
+      afterEach(() => {
+        mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
+        mockGitService.getWorktrees.mockResolvedValue([]);
+        mockGitService.removeWorktree.mockResolvedValue(undefined);
+        (fs.appendFile as Mock<any>).mockReset();
+      });
+
+      const setupStaleWorktree = (): void => {
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if ((dirPath as string).endsWith(".diverged")) {
+            const error: any = new Error("ENOENT: no such file or directory");
+            error.code = "ENOENT";
+            throw error;
+          }
+          return ["old-branch"];
+        });
+        mockGitService.getWorktrees.mockResolvedValue([
+          { path: path.join("/test/worktrees", "old-branch"), branch: "old-branch" },
+        ]);
+        mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
+        (fs.appendFile as Mock<any>).mockResolvedValue(undefined);
+      };
+
+      it("appends an audit record before removing a pruned worktree", async () => {
+        setupStaleWorktree();
+
+        await service.sync();
+
+        expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
+        expect(fs.appendFile).toHaveBeenCalledWith(
+          expect.stringContaining("removals"),
+          expect.stringContaining("old-branch"),
+          expect.anything(),
+        );
+        const auditOrder = (fs.appendFile as Mock<any>).mock.invocationCallOrder[0];
+        const removeOrder = (mockGitService.removeWorktree as Mock<any>).mock.invocationCallOrder[0];
+        expect(auditOrder).toBeLessThan(removeOrder);
+      });
+
+      it("does not remove the worktree when the audit record cannot be written", async () => {
+        setupStaleWorktree();
+        (fs.appendFile as Mock<any>).mockRejectedValue(Object.assign(new Error("EACCES"), { code: "EACCES" }));
+
+        await service.sync();
+
+        expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+      });
+
+      it("treats git's refusal of a non-forced removal as a skip, not a failure", async () => {
+        setupStaleWorktree();
+        mockGitService.removeWorktree.mockRejectedValue(
+          new WorktreeNotCleanError(path.join("/test/worktrees", "old-branch"), ["contains modified files"]),
+        );
+
+        const result = await service.sync();
+
+        expect(result).toMatchObject({
+          started: true,
+          outcome: { counts: expect.objectContaining({ removed: 0, failed: 0 }) },
+        });
+      });
     });
 
     describe("branches with slashes in names", () => {
@@ -724,6 +866,12 @@ describe("WorktreeSyncService", () => {
 
         const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
         (fs.stat as Mock<any>).mockResolvedValue(mockStat);
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if ((target as string).endsWith(`${path.sep}.git`)) {
+            throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+          }
+          return undefined;
+        });
         (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
         await service.sync();
@@ -937,7 +1085,8 @@ describe("WorktreeSyncService", () => {
 
       expect(fs.rename).toHaveBeenCalled();
       expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining(".diverged-info.json"), expect.any(String));
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-1");
+      // force is safe: the directory was already moved to .diverged/
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-1", { force: true });
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
     });
 
@@ -969,7 +1118,7 @@ describe("WorktreeSyncService", () => {
         recursive: true,
       });
       expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-1");
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-1", { force: true });
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
     });
 

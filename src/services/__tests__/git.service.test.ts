@@ -13,6 +13,7 @@ import {
   createMockLogger,
   createWorktreeListOutput,
 } from "../../__tests__/test-utils";
+import { WorktreeNotCleanError } from "../../errors";
 import { GitService } from "../git.service";
 
 import type { Config } from "../../types";
@@ -666,7 +667,9 @@ describe("GitService", () => {
     });
 
     it("should clean up orphaned directory before creating worktree", async () => {
-      (fs.access as Mock<any>).mockResolvedValueOnce(undefined);
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined) // directory exists
+        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" })); // no .git inside
 
       mockGit.raw.mockReset();
       mockGit.raw
@@ -712,7 +715,8 @@ describe("GitService", () => {
     it("should clean up orphaned directory in fallback path when tracking fails", async () => {
       (fs.access as Mock<any>)
         .mockRejectedValueOnce(new Error("Not found")) // First check - directory doesn't exist
-        .mockResolvedValueOnce(undefined); // Second check in fallback - directory exists
+        .mockResolvedValueOnce(undefined) // Second check in fallback - directory exists
+        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" })); // no .git inside
 
       mockGit.raw.mockReset();
       mockGit.raw
@@ -754,7 +758,9 @@ describe("GitService", () => {
     it("should handle stale worktree registration (registered but prunable)", async () => {
       const worktreePath = "/test/worktrees/feature-1";
 
-      (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found")); // Directory doesn't exist initially
+      (fs.access as Mock<any>)
+        .mockRejectedValueOnce(new Error("Not found")) // Directory doesn't exist initially
+        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" })); // no .git inside stale dir
 
       mockGit.raw.mockReset();
       mockGit.raw
@@ -1249,6 +1255,109 @@ describe("GitService", () => {
     });
   });
 
+  // Removal-safety regression tests: --force bypassed git's own
+  // refusal to delete dirty worktrees, and stale-directory cleanup could
+  // destroy a live checkout.
+  describe("removeWorktree safety", () => {
+    beforeEach(async () => {
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+      (mockGit.raw as Mock).mockClear();
+    });
+
+    it("removes without --force by default so git can refuse dirty worktrees", async () => {
+      (mockGit.raw as Mock).mockResolvedValue("");
+
+      await gitService.removeWorktree("/test/worktrees/feature-1");
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "/test/worktrees/feature-1"]);
+    });
+
+    it("passes --force only when explicitly requested", async () => {
+      (mockGit.raw as Mock).mockResolvedValue("");
+
+      await gitService.removeWorktree("/test/worktrees/feature-1", { force: true });
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "/test/worktrees/feature-1", "--force"]);
+    });
+
+    it("surfaces git's refusal as WorktreeNotCleanError and keeps metadata", async () => {
+      (mockGit.raw as Mock).mockRejectedValue(
+        new Error("fatal: '/test/worktrees/feature-1' contains modified or untracked files, use --force to delete it"),
+      );
+
+      await expect(gitService.removeWorktree("/test/worktrees/feature-1")).rejects.toBeInstanceOf(
+        WorktreeNotCleanError,
+      );
+      expect(mockMetadataService.deleteMetadataFromPath).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("addWorktree stale directory safety", () => {
+    beforeEach(async () => {
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+    });
+
+    it("quarantines an existing non-worktree directory containing a .git instead of deleting it", async () => {
+      const target = "/test/worktrees/feature-1";
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (Array.isArray(args) && args[0] === "worktree" && args[1] === "list") {
+          return Promise.resolve(createWorktreeListOutput([{ path: "/test/repo", branch: "main", commit: "abc123" }]));
+        }
+        return Promise.resolve("");
+      });
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+
+      await gitService.addWorktree("feature-1", target);
+
+      expect(fs.rm).not.toHaveBeenCalledWith(target, { recursive: true, force: true });
+      expect(fs.rename).toHaveBeenCalledWith(target, expect.stringContaining(".removed"));
+    });
+
+    it("still deletes a stale directory that does not contain a .git", async () => {
+      const target = "/test/worktrees/feature-1";
+      (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+        if (p === path.join(target, ".git")) {
+          throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+        }
+        return undefined;
+      });
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (Array.isArray(args) && args[0] === "worktree" && args[1] === "list") {
+          return Promise.resolve(createWorktreeListOutput([{ path: "/test/repo", branch: "main", commit: "abc123" }]));
+        }
+        return Promise.resolve("");
+      });
+
+      await gitService.addWorktree("feature-1", target);
+
+      expect(fs.rm).toHaveBeenCalledWith(target, { recursive: true, force: true });
+      expect(fs.rename).not.toHaveBeenCalled();
+    });
+
+    it("refuses to clear the stale directory when the .git probe fails for unknown reasons", async () => {
+      const target = "/test/worktrees/feature-1";
+      (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+        if (p === path.join(target, ".git")) {
+          throw Object.assign(new Error("EMFILE: too many open files"), { code: "EMFILE" });
+        }
+        return undefined;
+      });
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (Array.isArray(args) && args[0] === "worktree" && args[1] === "list") {
+          return Promise.resolve(createWorktreeListOutput([{ path: "/test/repo", branch: "main", commit: "abc123" }]));
+        }
+        return Promise.resolve("");
+      });
+
+      await expect(gitService.addWorktree("feature-1", target)).rejects.toThrow();
+
+      expect(fs.rm).not.toHaveBeenCalledWith(target, { recursive: true, force: true });
+      expect(fs.rename).not.toHaveBeenCalled();
+    });
+  });
+
   describe("hasUnpushedCommits", () => {
     it("should use metadata when upstream is gone", async () => {
       await gitService.initialize();
@@ -1271,8 +1380,8 @@ describe("GitService", () => {
         }),
         raw: vi
           .fn<any>()
-          .mockResolvedValueOnce("2\n") // 2 commits after last sync
-          .mockResolvedValueOnce("5\n"), // 5 total unpushed (fallback, should not be called)
+          .mockResolvedValueOnce("2\n") // 2 commits not on any remote
+          .mockResolvedValueOnce("5\n"), // commits since last sync (short-circuited, should not be called)
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -1283,8 +1392,14 @@ describe("GitService", () => {
         ".bare/repo",
         "/test/worktrees/feature-deleted",
       );
-      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
-      // Should not fall back to regular check
+      // The any-remote check runs first and is sufficient to block on its own
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith([
+        "rev-list",
+        "--count",
+        "feature-deleted",
+        "--not",
+        "--remotes",
+      ]);
       expect(mockWorktreeGit.raw).toHaveBeenCalledTimes(1);
     });
 

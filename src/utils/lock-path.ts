@@ -33,3 +33,24 @@ export function getCloneModeLockTarget(config: Config): RepoLockTarget {
   const dir = path.join(stateBase, "sync-worktrees", "locks");
   return { dir, file: `${hash}.lock` };
 }
+
+export function getRemovalAuditLogPath(config: Config): string {
+  const name = (config as RepositoryConfig).name;
+  const configDir = config.__configFileDir;
+
+  const hash = createHash("sha256").update(path.resolve(config.worktreeDir)).digest("hex").slice(0, 16);
+
+  if (configDir) {
+    return path.join(
+      configDir,
+      ".sync-worktrees-state",
+      `${sanitizeNameForPath(name ?? "repo", "removal audit log name")}-${hash}-removals.jsonl`,
+    );
+  }
+
+  const stateBase =
+    process.env.XDG_STATE_HOME && process.env.XDG_STATE_HOME.length > 0
+      ? process.env.XDG_STATE_HOME
+      : path.join(os.homedir(), ".cache");
+  return path.join(stateBase, "sync-worktrees", "removals", `${hash}.jsonl`);
+}

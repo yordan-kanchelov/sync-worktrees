@@ -592,7 +592,7 @@ describe("handleRemoveWorktree", () => {
     const body = parseResponse(result);
     expect(body.success).toBe(true);
     expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
-    expect(git.removeWorktree).toHaveBeenCalledWith("/foo");
+    expect(git.removeWorktree).toHaveBeenCalledWith("/foo", { force: true });
   });
 
   it("rejects path not belonging to the repository", async () => {

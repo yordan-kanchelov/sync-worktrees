@@ -3,12 +3,17 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { WorktreeNotCleanError } from "../errors";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
+import { probePathExists } from "../utils/file-exists";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
+import { getRemovalAuditLogPath } from "../utils/lock-path";
+import { quarantineDirectory } from "../utils/quarantine";
 
 import { PathResolutionService } from "./path-resolution.service";
+import { RemovalAuditService } from "./removal-audit.service";
 import { createWorktreeSyncPlan } from "./worktree-sync-planner";
 
 import type { GitService } from "./git.service";
@@ -23,13 +28,16 @@ import type { PhaseTimer } from "../utils/timing";
 
 export class WorktreeModeSyncRunner {
   private pathResolution = new PathResolutionService();
+  private removalAudit: RemovalAuditService;
 
   constructor(
     private config: Config,
     private gitService: GitService,
     private logger: Logger,
     private progressEmitter: ProgressEmitter,
-  ) {}
+  ) {
+    this.removalAudit = new RemovalAuditService(getRemovalAuditLogPath(config));
+  }
 
   updateLogger(logger: Logger): void {
     this.logger = logger;
@@ -386,10 +394,45 @@ export class WorktreeModeSyncRunner {
                   });
                   return;
                 }
+                // The audit record must exist before the data is gone; an
+                // unwritable audit log blocks removal (fail-closed).
+                try {
+                  await this.removalAudit.record({
+                    action: "prune_remove",
+                    result: "attempt",
+                    path: worktreePath,
+                    branch: branchName,
+                    status: recheck,
+                  });
+                } catch (auditError) {
+                  this.logger.warn(
+                    `  ⚠️ Skipping removal of '${branchName}' - cannot write removal audit log: ${getErrorMessage(auditError)}`,
+                  );
+                  outcome.recordSkipped("worktree", "audit_log_unavailable", {
+                    branch: branchName,
+                    path: worktreePath,
+                    message: getErrorMessage(auditError),
+                  });
+                  return;
+                }
                 await this.gitService.removeWorktree(worktreePath);
                 this.logger.info(`  ✅ Removed worktree for '${branchName}'`);
                 outcome.recordRemoved(branchName, worktreePath);
+                await this.removalAudit
+                  .record({ action: "prune_remove", result: "success", path: worktreePath, branch: branchName })
+                  .catch((auditError: unknown) =>
+                    this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
+                  );
               } catch (error) {
+                if (error instanceof WorktreeNotCleanError) {
+                  this.logger.warn(`  ⚠️ Skipping removal of '${branchName}' - git refused: ${getErrorMessage(error)}`);
+                  outcome.recordSkipped("worktree", "git_refused_removal", {
+                    branch: branchName,
+                    path: worktreePath,
+                    message: getErrorMessage(error),
+                  });
+                  return;
+                }
                 this.logger.error(`  ❌ Failed to remove worktree for '${branchName}':`, getErrorMessage(error));
                 outcome.recordFailed("worktree", getErrorMessage(error), {
                   reason: "remove_failed",
@@ -756,10 +799,41 @@ export class WorktreeModeSyncRunner {
           const dirPath = path.join(this.config.worktreeDir, dir);
           try {
             const stat = await fs.stat(dirPath);
-            if (stat.isDirectory()) {
-              await fs.rm(dirPath, { recursive: true, force: true });
-              this.logger.info(`  - Removed orphaned directory: ${dir}`);
+            if (!stat.isDirectory()) {
+              continue;
             }
+
+            // An "orphan" containing a .git may be a live checkout that git
+            // failed to report (corrupt admin dir, transient list error) —
+            // quarantine it instead of deleting.
+            const gitProbe = await probePathExists(path.join(dirPath, PATH_CONSTANTS.GIT_DIR));
+            if (gitProbe === "unknown") {
+              this.logger.warn(`  - ⚠️ Skipping orphaned directory ${dir}: cannot verify it is not a live checkout`);
+              continue;
+            }
+            if (gitProbe === "exists") {
+              const quarantinePath = await quarantineDirectory(dirPath);
+              this.logger.warn(
+                `  - ⚠️ Orphaned directory ${dir} contains a .git; quarantined to '${quarantinePath}' instead of deleting.`,
+              );
+              await this.removalAudit
+                .record({ action: "orphan_quarantine", result: "success", path: dirPath, quarantinePath })
+                .catch((auditError: unknown) =>
+                  this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
+                );
+              continue;
+            }
+
+            try {
+              await this.removalAudit.record({ action: "orphan_delete", result: "attempt", path: dirPath });
+            } catch (auditError) {
+              this.logger.warn(
+                `  - ⚠️ Skipping orphaned directory ${dir} - cannot write removal audit log: ${getErrorMessage(auditError)}`,
+              );
+              continue;
+            }
+            await fs.rm(dirPath, { recursive: true, force: true });
+            this.logger.info(`  - Removed orphaned directory: ${dir}`);
           } catch (error) {
             this.logger.error(`  - Failed to remove orphaned directory ${dir}:`, error);
           }
@@ -805,7 +879,20 @@ export class WorktreeModeSyncRunner {
         this.logger.info(`     cd ${relativePath}`);
         this.logger.info(`     git diff origin/${worktree.branch}`);
 
-        await this.gitService.removeWorktree(worktree.path);
+        // force is safe here: the directory was already moved to .diverged/,
+        // so only the stale registration is being cleared.
+        await this.gitService.removeWorktree(worktree.path, { force: true });
+        await this.removalAudit
+          .record({
+            action: "diverged_replace",
+            result: "success",
+            path: worktree.path,
+            branch: worktree.branch,
+            quarantinePath: divergedPath,
+          })
+          .catch((auditError: unknown) =>
+            this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
+          );
         await this.gitService.addWorktree(worktree.branch, worktree.path);
         this.logger.info(`   Created fresh worktree from upstream at: ${worktree.path}`);
       }

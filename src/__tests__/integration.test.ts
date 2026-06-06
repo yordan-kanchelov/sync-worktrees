@@ -237,7 +237,7 @@ branch refs/heads/dirty-branch
           pathStr.includes("rebase-merge") ||
           pathStr.includes("rebase-apply")
         ) {
-          throw new Error("Not found");
+          throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
         }
         return undefined;
       });
@@ -353,10 +353,11 @@ branch refs/heads/dirty-branch
         ]),
       );
 
-      // Should remove old-feature with full path
-      expect(operationCalls).toContainEqual(["worktree", "remove", "/test/worktrees/old-feature", "--force"]);
+      // Should remove old-feature with full path (non-forced so git can refuse dirty worktrees)
+      expect(operationCalls).toContainEqual(["worktree", "remove", "/test/worktrees/old-feature"]);
 
       // Should NOT remove dirty-branch
+      expect(operationCalls).not.toContainEqual(["worktree", "remove", "/test/worktrees/dirty-branch"]);
       expect(operationCalls).not.toContainEqual(["worktree", "remove", "/test/worktrees/dirty-branch", "--force"]);
 
       // Should log warning about dirty-branch
