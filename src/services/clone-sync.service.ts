@@ -204,6 +204,7 @@ export class CloneSyncService {
   private async configureSingleBranchRemote(git: SimpleGit, branch: string): Promise<void> {
     await git.raw(["config", "--replace-all", "remote.origin.fetch", this.getBranchRefspec(branch)]);
     await git.raw(["config", "--replace-all", "remote.origin.tagOpt", "--no-tags"]);
+    await this.deleteStaleRemoteTrackingRefs(git, branch);
   }
 
   private recordMissingRemoteRefSkip(branch: string): void {
@@ -361,11 +362,68 @@ export class CloneSyncService {
     }
   }
 
-  private async deleteRemoteTrackingRef(git: SimpleGit, branch: string): Promise<void> {
+  private async localBranchCanFastForward(git: SimpleGit, branch: string): Promise<boolean> {
+    const localRef = `refs/heads/${branch}`;
+    const remoteRef = `refs/remotes/origin/${branch}`;
+    let localSha: string;
+    let remoteSha: string;
     try {
-      await git.raw(["update-ref", "-d", `refs/remotes/origin/${branch}`]);
+      localSha = (await git.raw(["rev-parse", localRef])).trim();
+      remoteSha = (await git.raw(["rev-parse", remoteRef])).trim();
     } catch {
-      // The old tracking ref may already be absent; branch switching should not fail because cleanup did.
+      return false;
+    }
+
+    if (localSha === remoteSha) return true;
+
+    try {
+      const mergeBase = (await git.raw(["merge-base", localRef, remoteRef])).trim();
+      return mergeBase === localSha;
+    } catch {
+      return false;
+    }
+  }
+
+  private async deleteRemoteTrackingRef(git: SimpleGit, refName: string): Promise<void> {
+    try {
+      await git.raw(["update-ref", "-d", refName]);
+    } catch {
+      // Stale remote refs are best-effort cleanup; sync correctness comes from the narrowed refspec.
+    }
+  }
+
+  private async deleteStaleRemoteTrackingRefs(git: SimpleGit, branch: string): Promise<void> {
+    let refsOutput: string;
+    try {
+      refsOutput = await git.raw(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]);
+    } catch {
+      return;
+    }
+
+    const keepRef = `refs/remotes/origin/${branch}`;
+    const refsToDelete = refsOutput
+      .split(/\r?\n/)
+      .map((ref) => ref.trim())
+      .filter((ref) => ref && ref !== keepRef && ref !== "refs/remotes/origin/HEAD");
+
+    for (const ref of refsToDelete) {
+      await this.deleteRemoteTrackingRef(git, ref);
+    }
+  }
+
+  private async restoreBranchAfterCheckoutFailure(
+    git: SimpleGit,
+    previousBranch: string,
+    attemptedBranch: string,
+  ): Promise<void> {
+    if (!previousBranch || previousBranch === "HEAD" || previousBranch === attemptedBranch) return;
+
+    try {
+      await git.raw(["switch", previousBranch]);
+    } catch (error) {
+      this.logger.warn(
+        `Failed to restore '${this.repoName}' to '${previousBranch}' after checkout failure: ${getErrorMessage(error)}`,
+      );
     }
   }
 
@@ -376,10 +434,16 @@ export class CloneSyncService {
 
     const worktreeDir = this.config.worktreeDir;
     const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+    const originMismatch = await this.evaluateOriginMatch(git, worktreeDir);
+    if (originMismatch) {
+      throw new Error(`Cannot switch '${this.repoName}' to '${branch}': ${originMismatch.progressDetail}.`);
+    }
+
     const currentBranch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
     if (currentBranch === branch) {
       await this.configureSingleBranchRemote(git, branch);
       this.resolvedBranch = branch;
+      this.pendingInitSkip = null;
       return;
     }
 
@@ -394,17 +458,30 @@ export class CloneSyncService {
     }
 
     if (await this.localBranchExists(git, branch)) {
-      await git.raw(["switch", branch]);
-      await git.merge([`origin/${branch}`, "--ff-only"]);
+      if (!(await this.localBranchCanFastForward(git, branch))) {
+        throw new Error(
+          `Cannot switch '${this.repoName}' to '${branch}': local branch has diverged from origin/${branch}.`,
+        );
+      }
+
+      let switched = false;
+      try {
+        await git.raw(["switch", branch]);
+        switched = true;
+        await git.merge([`origin/${branch}`, "--ff-only"]);
+      } catch (error) {
+        if (switched) {
+          await this.restoreBranchAfterCheckoutFailure(git, currentBranch, branch);
+        }
+        throw error;
+      }
     } else {
       await git.raw(["switch", "-c", branch, "--track", `origin/${branch}`]);
     }
 
     await this.configureSingleBranchRemote(git, branch);
-    if (currentBranch && currentBranch !== "HEAD") {
-      await this.deleteRemoteTrackingRef(git, currentBranch);
-    }
     this.resolvedBranch = branch;
+    this.pendingInitSkip = null;
   }
 
   async initialize(outcome?: SyncOutcomeAccumulator): Promise<void> {

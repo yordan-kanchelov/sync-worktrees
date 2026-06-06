@@ -499,14 +499,42 @@ describe("CloneSyncService", () => {
   });
 
   describe("checkoutBranch", () => {
+    it("does not fetch from a clone whose origin mismatches config during initialization", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/other.git";
+        return "";
+      });
+
+      await expect(service.checkoutBranch("feature/new")).rejects.toThrow(
+        "origin 'https://github.com/example/other.git' is not 'https://github.com/example/repo.git'",
+      );
+
+      expect(service.isInitialized()).toBe(true);
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/new"]);
+    });
+
     it("fetches only the requested branch and creates a safe tracking branch", async () => {
       const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true";
         if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
+        if (key === "for-each-ref --format=%(refname) refs/remotes/origin") {
+          return [
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/feature/new",
+            "refs/remotes/origin/old",
+          ].join("\n");
+        }
         return "";
       });
 
@@ -529,6 +557,60 @@ describe("CloneSyncService", () => {
         "+refs/heads/feature/new:refs/remotes/origin/feature/new",
       ]);
       expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/main"]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/old"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/HEAD"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/feature/new"]);
+    });
+
+    it("does not switch to an existing local branch that cannot fast-forward to origin", async () => {
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === "show-ref --verify refs/heads/feature/existing") return "";
+        if (key === "rev-parse refs/heads/feature/existing") return "1111111";
+        if (key === "rev-parse refs/remotes/origin/feature/existing") return "2222222";
+        if (key === "merge-base refs/heads/feature/existing refs/remotes/origin/feature/existing") return "3333333";
+        return "";
+      });
+
+      await expect(service.checkoutBranch("feature/existing")).rejects.toThrow(
+        "local branch has diverged from origin/feature/existing",
+      );
+
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/existing"]);
+      expect(gitMock.merge).not.toHaveBeenCalled();
+    });
+
+    it("restores the previous branch when merge fails after switching to an existing local branch", async () => {
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === "show-ref --verify refs/heads/feature/existing") return "";
+        if (key === "rev-parse refs/heads/feature/existing") return "1111111";
+        if (key === "rev-parse refs/remotes/origin/feature/existing") return "2222222";
+        if (key === "merge-base refs/heads/feature/existing refs/remotes/origin/feature/existing") return "1111111";
+        return "";
+      });
+      gitMock.merge.mockRejectedValueOnce(new Error("Not possible to fast-forward"));
+
+      await expect(service.checkoutBranch("feature/existing")).rejects.toThrow("Not possible to fast-forward");
+
+      expect(gitMock.raw).toHaveBeenCalledWith(["switch", "feature/existing"]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["switch", "main"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith([
+        "config",
+        "--replace-all",
+        "remote.origin.fetch",
+        "+refs/heads/feature/existing:refs/remotes/origin/feature/existing",
+      ]);
     });
   });
 

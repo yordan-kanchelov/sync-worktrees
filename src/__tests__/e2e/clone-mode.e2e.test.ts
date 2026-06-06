@@ -181,7 +181,7 @@ export default {
     expect(isShallow).toBe("true");
   }, 60000);
 
-  it("narrows legacy single-branch clone refspecs without fetching unrelated remote branches", async () => {
+  it("narrows legacy all-branches clone refspecs and deletes stale remote refs", async () => {
     const remoteBare = await createLocalRemote("legacy-remote-branches");
     const seedDir = path.join(tmpBase, "legacy-remote-branches-seed");
     execSync(`git -C "${seedDir}" switch -c "feat/cloudflare-deploys"`, { encoding: "utf-8" });
@@ -191,7 +191,7 @@ export default {
     execSync(`git -C "${seedDir}" push origin "feat/cloudflare-deploys"`, { encoding: "utf-8" });
 
     const worktreeDir = path.join(tmpBase, "legacy-remote-branches", "wt");
-    execSync(`git clone --branch main --single-branch "file://${remoteBare}" "${worktreeDir}"`, {
+    execSync(`git clone --branch main "file://${remoteBare}" "${worktreeDir}"`, {
       encoding: "utf-8",
     });
 
@@ -208,7 +208,7 @@ export default {
     }).trim();
     const remoteBranches = execSync(`git -C "${worktreeDir}" branch -r --list`, { encoding: "utf-8" });
 
-    expect(beforeBranch).toBe("");
+    expect(beforeBranch).toContain("origin/feat/cloudflare-deploys");
     expect(fetchRefspec).toBe("+refs/heads/main:refs/remotes/origin/main");
     expect(remoteBranches).not.toContain("origin/feat/cloudflare-deploys");
   }, 60000);
