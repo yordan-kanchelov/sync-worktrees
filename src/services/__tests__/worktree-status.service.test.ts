@@ -795,4 +795,149 @@ describe("WorktreeStatusService", () => {
       expect(status.canRemove).toBe(true);
     });
   });
+
+  // Squash-merge + remote branch deletion: commits read as "unpushed" via
+  // rev-list, but metadata recorded the upstream tip while the ref existed.
+  // HEAD being an ancestor of that tip proves every local commit was pushed.
+  describe("fullyPushedUpstreamDeleted", () => {
+    const recordedTip = { ref: "origin/feature", oid: "squashtip123", recordedAt: "2026-06-01T00:00:00.000Z" };
+
+    const cleanStatus = {
+      modified: [],
+      deleted: [],
+      renamed: [],
+      created: [],
+      conflicted: [],
+      not_added: [],
+    };
+
+    const setupGoneUpstreamWorktree = (opts: { headIsAncestorOfTip: boolean; remoteBranches?: string[] }): void => {
+      mockGit.status.mockResolvedValue(cleanStatus as any);
+      mockGit.branch.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg && firstArg[0] === "-r") {
+          return { all: opts.remoteBranches ?? ["origin/main"] } as any;
+        }
+        return { current: "feature", detached: false } as any;
+      }) as any);
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
+          throw new Error("fatal: ambiguous argument 'feature@{upstream}': unknown revision or path");
+        }
+        if (firstArg[0] === "rev-list" && firstArg[2] === "squashtip123..HEAD") {
+          return opts.headIsAncestorOfTip ? "0\n" : "5\n";
+        }
+        if (firstArg[0] === "rev-list") return "39\n";
+        if (firstArg[0] === "submodule") return "";
+        return "0\n";
+      }) as any);
+      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+      (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+      (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+        if (target === "/test/worktree") return undefined;
+        throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
+      });
+    };
+
+    it("allows removal when the recorded ref is gone and HEAD is an ancestor of the recorded tip", async () => {
+      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "squashtip123..HEAD"]);
+      expect(status.hasUnpushedCommits).toBe(true);
+      expect(status.fullyPushedUpstreamDeleted).toBe(true);
+      expect(status.canRemove).toBe(true);
+      expect(status.reasons).not.toContain("unpushed commits");
+    });
+
+    it("blocks removal when no recorded tip exists (pre-feature worktree, lost metadata)", async () => {
+      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, undefined);
+
+      expect(status.fullyPushedUpstreamDeleted).toBe(false);
+      expect(status.canRemove).toBe(false);
+      expect(status.reasons).toContain("unpushed commits");
+    });
+
+    it("blocks removal when commits were added after the upstream deletion (HEAD not an ancestor)", async () => {
+      setupGoneUpstreamWorktree({ headIsAncestorOfTip: false });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+
+      expect(status.fullyPushedUpstreamDeleted).toBe(false);
+      expect(status.canRemove).toBe(false);
+      expect(status.reasons).toContain("unpushed commits");
+    });
+
+    it("fails closed when the recorded oid no longer resolves (gc'd away)", async () => {
+      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
+          throw new Error("fatal: ambiguous argument 'feature@{upstream}': unknown revision or path");
+        }
+        if (firstArg[0] === "rev-list" && firstArg[2] === "squashtip123..HEAD") {
+          throw new Error("fatal: bad revision 'squashtip123..HEAD'");
+        }
+        if (firstArg[0] === "rev-list") return "39\n";
+        if (firstArg[0] === "submodule") return "";
+        return "0\n";
+      }) as any);
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+
+      expect(status.fullyPushedUpstreamDeleted).toBe(false);
+      expect(status.canRemove).toBe(false);
+    });
+
+    it("does not apply the override while the recorded ref still exists on the remote (force-push case)", async () => {
+      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true, remoteBranches: ["origin/main", "origin/feature"] });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+
+      expect(status.fullyPushedUpstreamDeleted).toBe(false);
+      expect(status.canRemove).toBe(false);
+    });
+
+    it("fails closed when the remote branch list is empty (fetch may have failed)", async () => {
+      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true, remoteBranches: [] });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+
+      expect(status.fullyPushedUpstreamDeleted).toBe(false);
+      expect(status.canRemove).toBe(false);
+    });
+
+    it("never applies the override to a detached HEAD", async () => {
+      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
+      mockGit.branch.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg && firstArg[0] === "-r") {
+          return { all: ["origin/main"] } as any;
+        }
+        return { current: "", detached: true } as any;
+      }) as any);
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+
+      expect(status.fullyPushedUpstreamDeleted).toBe(false);
+      expect(status.canRemove).toBe(false);
+      expect(status.reasons).toContain("detached HEAD");
+    });
+
+    it("validateWorktreeForRemoval accepts a fully-pushed worktree with the recorded tip", async () => {
+      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
+
+      await expect(service.validateWorktreeForRemoval("/test/worktree", undefined, recordedTip)).resolves.not.toThrow();
+    });
+
+    it("validateWorktreeForRemoval still rejects without the recorded tip", async () => {
+      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
+
+      await expect(service.validateWorktreeForRemoval("/test/worktree")).rejects.toThrow(WorktreeNotCleanError);
+    });
+  });
 });

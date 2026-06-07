@@ -7,11 +7,8 @@ import {
   handleDetectContext,
   handleGetWorktreeStatus,
   handleInitialize,
-  handleListTrash,
   handleListWorktrees,
   handleLoadConfig,
-  handleRemoveWorktree,
-  handleRestoreTrash,
   handleSetCurrentRepository,
   handleSync,
   handleUpdateWorktree,
@@ -198,69 +195,6 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
       },
     },
     wrapHandler((params, extra) => handleCreateWorktree(context, params, extra)),
-  );
-
-  server.registerTool(
-    "remove_worktree",
-    {
-      description:
-        "Remove worktree. Safety checks reject if dirty, unpushed commits, stashes, or op in progress (merge/rebase/cherry-pick/revert/bisect). With trash enabled (default) the directory moves to <worktreeDir>/.trash/ and is restorable via restore_trash for the retention window. force=true skips the safety checks; with trash disabled it DELETES uncommitted/untracked files. Returns: {success, removedPath, trashedAs?}.",
-      inputSchema: {
-        path: z.string().describe(`Worktree path to remove. ${PATH_DESCRIBE_SUFFIX}`),
-        force: z
-          .boolean()
-          .optional()
-          .describe("Skip safety checks; deletes uncommitted/untracked files. Branch ref preserved. Default: false."),
-        repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
-      },
-      annotations: {
-        title: "Remove worktree",
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    wrapHandler((params, extra) => handleRemoveWorktree(context, params, extra)),
-  );
-
-  server.registerTool(
-    "list_trash",
-    {
-      description:
-        "List trashed (removed but retained) directories for a repo: id, branch, reason, deletedAt, expiresAt, size, restoreMode ('worktree' = branch + files at the pinned commit, 'plain' = files only). Includes totals and the trash root path. Entries expire per trash.retentionDays (default 30d) and are deleted by the reaper at the end of a sync.",
-      inputSchema: {
-        repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
-      },
-      annotations: {
-        title: "List trash entries",
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
-    wrapHandler((params, extra) => handleListTrash(context, params, extra)),
-  );
-
-  server.registerTool(
-    "restore_trash",
-    {
-      description:
-        "Restore a trash entry by id (from list_trash). Entries with a branch + pinned commit are restored as a registered worktree (branch recreated at the trashed HEAD, preserved files overlaid); others are restored as plain directories. Refuses if the destination path or branch already exists. Returns: {success, restoredPath, branch, restoredAsWorktree}.",
-      inputSchema: {
-        id: z.string().describe("Trash entry id from list_trash."),
-        repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
-      },
-      annotations: {
-        title: "Restore from trash",
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    wrapHandler((params, extra) => handleRestoreTrash(context, params, extra)),
   );
 
   server.registerTool(

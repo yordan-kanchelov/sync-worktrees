@@ -123,6 +123,69 @@ describe("WorktreeMetadataService", () => {
     });
   });
 
+  describe("recordRemoteTip", () => {
+    const mockWorktreePath = "/test/worktrees/feature-branch";
+    const validMetadata: SyncMetadata = {
+      lastSyncCommit: "abc123",
+      lastSyncDate: "2024-01-15T10:00:00Z",
+      upstreamBranch: "origin/feature-branch",
+      createdFrom: { branch: "main", commit: "def456" },
+      syncHistory: [],
+    };
+
+    beforeEach(() => {
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
+    });
+
+    it("records the tip into existing metadata", async () => {
+      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(validMetadata));
+
+      await service.recordRemoteTip(mockBareRepoPath, mockWorktreePath, "origin/feature-branch", "tip123");
+
+      expect(fs.writeFile).toHaveBeenCalledTimes(1);
+      const written = JSON.parse((fs.writeFile as Mock<any>).mock.calls[0][1] as string) as SyncMetadata;
+      expect(written.lastKnownRemoteTip).toMatchObject({ ref: "origin/feature-branch", oid: "tip123" });
+      expect(written.lastKnownRemoteTip?.recordedAt).toBeTruthy();
+      expect(written.lastSyncCommit).toBe("abc123");
+    });
+
+    it("does not rewrite metadata when the recorded tip is unchanged", async () => {
+      (fs.readFile as Mock<any>).mockResolvedValue(
+        JSON.stringify({
+          ...validMetadata,
+          lastKnownRemoteTip: { ref: "origin/feature-branch", oid: "tip123", recordedAt: "2024-01-15T10:00:00Z" },
+        }),
+      );
+
+      await service.recordRemoteTip(mockBareRepoPath, mockWorktreePath, "origin/feature-branch", "tip123");
+
+      expect(fs.writeFile).not.toHaveBeenCalled();
+    });
+
+    it("overwrites a stale tip when the remote moved", async () => {
+      (fs.readFile as Mock<any>).mockResolvedValue(
+        JSON.stringify({
+          ...validMetadata,
+          lastKnownRemoteTip: { ref: "origin/feature-branch", oid: "oldtip", recordedAt: "2024-01-15T10:00:00Z" },
+        }),
+      );
+
+      await service.recordRemoteTip(mockBareRepoPath, mockWorktreePath, "origin/feature-branch", "newtip");
+
+      const written = JSON.parse((fs.writeFile as Mock<any>).mock.calls[0][1] as string) as SyncMetadata;
+      expect(written.lastKnownRemoteTip?.oid).toBe("newtip");
+    });
+
+    it("skips silently when no metadata exists (cannot fabricate proof)", async () => {
+      (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+      await service.recordRemoteTip(mockBareRepoPath, mockWorktreePath, "origin/feature-branch", "tip123");
+
+      expect(fs.writeFile).not.toHaveBeenCalled();
+    });
+  });
+
   describe("deleteMetadata", () => {
     it("should delete metadata file", async () => {
       (fs.unlink as Mock<any>).mockResolvedValue(undefined);

@@ -4,6 +4,7 @@ import * as path from "path";
 import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, MAINTENANCE_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { atomicWriteFile } from "../utils/atomic-write";
 import { parseDuration } from "../utils/date-filter";
 import { getErrorMessage } from "../utils/lfs-error";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
@@ -104,13 +105,10 @@ export class GitMaintenanceService {
   }
 
   private async writeState(statePath: string, state: MaintenanceState): Promise<void> {
-    const tmpPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
     try {
-      await fs.writeFile(tmpPath, JSON.stringify(state, null, 2), "utf-8");
-      await fs.rename(tmpPath, statePath);
+      await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
     } catch (error) {
       this.logger.warn(`Failed to persist maintenance state: ${getErrorMessage(error)}`);
-      await fs.rm(tmpPath, { force: true }).catch(() => {});
     }
   }
 

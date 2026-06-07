@@ -4,14 +4,11 @@ import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { PathResolutionService } from "../services/path-resolution.service";
-import { RemovalAuditService } from "../services/removal-audit.service";
 import { createEmptySyncOutcome } from "../services/sync-outcome";
-import { isWorktreeRestorable, summarizeTrashEntries } from "../services/trash.service";
 import { WorktreeStatusService } from "../services/worktree-status.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
-import { calculateDirectorySize, formatBytes } from "../utils/disk-space";
+import { calculateDirectorySize } from "../utils/disk-space";
 import { isValidGitBranchName } from "../utils/git-validation";
-import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { pathsEqual } from "../utils/path-compare";
 
 import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } from "./utils";
@@ -20,7 +17,6 @@ import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summa
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
 import type { HandlerExtra } from "./utils";
 import type { WorktreeLabel } from "./worktree-summary";
-import type { WorktreeStatusResult } from "../services/worktree-status.service";
 import type { ProgressEvent } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -241,8 +237,8 @@ export async function handleListWorktrees(
       configuredRepoNames.map((repoName) =>
         limit(async () => {
           try {
-            const { worktrees, trash } = await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit);
-            return [repoName, { worktrees, trash }] as const;
+            const { worktrees } = await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit);
+            return [repoName, { worktrees }] as const;
           } catch (err) {
             return [
               repoName,
@@ -259,34 +255,8 @@ export async function handleListWorktrees(
     return formatToolResponse({ repositories: Object.fromEntries(repositories) });
   }
 
-  const { worktrees, trash } = await listWorktreesForRepo(ctx, params.repoName, params.includeSize);
-  return formatToolResponse({ worktrees, trash });
-}
-
-type TrashSummaryPayload = {
-  enabled: boolean;
-  retentionDays: number;
-  itemCount: number;
-  totalSizeBytes: number;
-  totalSizeFormatted: string;
-  unknownSizeCount: number;
-  soonestExpiresAt: string | null;
-};
-
-async function getTrashSummaryForService(service: RepoService): Promise<TrashSummaryPayload | null> {
-  if (isCloneModeService(service)) return null;
-  try {
-    const trash = service.getTrashService();
-    const summary = await trash.getSummary();
-    return {
-      enabled: trash.isEnabled(),
-      retentionDays: trash.getRetentionDays(),
-      ...summary,
-      totalSizeFormatted: formatBytes(summary.totalSizeBytes),
-    };
-  } catch {
-    return null;
-  }
+  const { worktrees } = await listWorktreesForRepo(ctx, params.repoName, params.includeSize);
+  return formatToolResponse({ worktrees });
 }
 
 async function listWorktreesForRepo(
@@ -294,7 +264,7 @@ async function listWorktreesForRepo(
   repoName: string | undefined,
   includeSize: boolean | undefined,
   limit: Limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
-): Promise<{ worktrees: ListedWorktree[]; trash: TrashSummaryPayload | null }> {
+): Promise<{ worktrees: ListedWorktree[] }> {
   const { discovered, service, git } = await getReadyService(ctx, repoName, {
     capability: "listWorktrees",
     toolName: "list_worktrees",
@@ -341,7 +311,7 @@ async function listWorktreesForRepo(
     ),
   );
 
-  return { worktrees: results, trash: await getTrashSummaryForService(service) };
+  return { worktrees: results };
 }
 
 export async function handleGetWorktreeStatus(
@@ -426,130 +396,6 @@ export async function handleCreateWorktree(
       worktreePath: path.resolve(worktreePath),
       created,
       pushed,
-    });
-  });
-}
-
-export async function handleRemoveWorktree(
-  ctx: RepositoryContext,
-  params: { path: string; force?: boolean; repoName?: string },
-  _extra?: HandlerExtra,
-): Promise<CallToolResult> {
-  const { service, git } = await getReadyService(ctx, params.repoName, {
-    capability: "removeWorktree",
-    toolName: "remove_worktree",
-  });
-  ensureWorktreeModeService(service, "remove_worktree");
-
-  return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
-    if (!service.isInitialized()) {
-      await service.initializeUnlocked();
-    }
-    const removedPath = await ensureRepoWorktreePath(ctx, params, service, git);
-
-    let status: WorktreeStatusResult | undefined;
-    if (!params.force) {
-      status = await git.getFullWorktreeStatus(params.path, false);
-      if (!status.canRemove) {
-        throw new Error(`Cannot remove worktree: ${status.reasons.join(", ")}. Use force=true to override.`);
-      }
-    }
-
-    const trash = service.getTrashService();
-    let trashId: string | undefined;
-    let warning: { kind: "leftover_branch_ref"; branch: string; message: string } | undefined;
-    if (trash.isEnabled()) {
-      const worktrees = await git.getWorktrees();
-      const branch = worktrees.find((wt) => pathsEqual(wt.path, removedPath))?.branch ?? null;
-      const { entry, branchRefError } = await trash.trashAndUnregisterWorktree({
-        dirPath: removedPath,
-        branch,
-        reason: "manual",
-      });
-      if (branchRefError !== undefined) {
-        warning = { kind: "leftover_branch_ref", branch: branch ?? "unknown", message: branchRefError };
-      }
-      trashId = entry.manifest.id;
-    } else {
-      await git.removeWorktree(params.path, { force: params.force === true });
-    }
-    // Best-effort, non-gating: the user is present and confirming.
-    await new RemovalAuditService(getRemovalAuditLogPath(service.config))
-      .record({ action: "manual_remove", result: "success", path: params.path, status })
-      .catch(() => undefined);
-    ctx.invalidateDiscovered();
-
-    return formatToolResponse({
-      success: true,
-      removedPath,
-      ...(trashId !== undefined && { trashedAs: trashId }),
-      ...(warning !== undefined && { warning }),
-    });
-  });
-}
-
-export async function handleListTrash(
-  ctx: RepositoryContext,
-  params: { repoName?: string },
-  _extra?: HandlerExtra,
-): Promise<CallToolResult> {
-  const { service } = await getReadyService(ctx, params.repoName, {
-    capability: "listWorktrees",
-    toolName: "list_trash",
-  });
-  ensureWorktreeModeService(service, "list_trash");
-
-  const trash = service.getTrashService();
-  const { entries, invalid } = await trash.listEntries();
-  const summary = summarizeTrashEntries(entries);
-  const items = entries.map(({ manifest }) => ({
-    id: manifest.id,
-    branch: manifest.branch,
-    reason: manifest.reason,
-    deletedAt: manifest.deletedAt,
-    expiresAt: manifest.expiresAt,
-    originalPath: manifest.originalPath,
-    sizeBytes: manifest.sizeBytes,
-    sizeFormatted: manifest.sizeBytes !== null ? formatBytes(manifest.sizeBytes) : null,
-    restoreMode: isWorktreeRestorable(manifest) ? "worktree" : "plain",
-  }));
-
-  return formatToolResponse({
-    trashRoot: trash.getTrashRoot(),
-    enabled: trash.isEnabled(),
-    retentionDays: trash.getRetentionDays(),
-    itemCount: summary.itemCount,
-    totalSizeBytes: summary.totalSizeBytes,
-    totalSizeFormatted: formatBytes(summary.totalSizeBytes),
-    soonestExpiresAt: summary.soonestExpiresAt,
-    entries: items,
-    ...(invalid.length > 0 && { unrecognized: invalid }),
-  });
-}
-
-export async function handleRestoreTrash(
-  ctx: RepositoryContext,
-  params: { id: string; repoName?: string },
-  _extra?: HandlerExtra,
-): Promise<CallToolResult> {
-  const { service } = await getReadyService(ctx, params.repoName, {
-    capability: "removeWorktree",
-    toolName: "restore_trash",
-  });
-  ensureWorktreeModeService(service, "restore_trash");
-
-  return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
-    if (!service.isInitialized()) {
-      await service.initializeUnlocked();
-    }
-    const manifest = await service.getTrashService().restore(params.id);
-    ctx.invalidateDiscovered();
-
-    return formatToolResponse({
-      success: true,
-      restoredPath: manifest.originalPath,
-      branch: manifest.branch,
-      restoredAsWorktree: isWorktreeRestorable(manifest),
     });
   });
 }

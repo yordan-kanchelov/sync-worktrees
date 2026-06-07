@@ -76,6 +76,23 @@ export class TrashReaperService {
         continue;
       }
 
+      // "Fully pushed before upstream deletion" entries keep their commits
+      // alive past payload expiry: move the pin to a permanent keep ref BEFORE
+      // deleting anything. On failure defer the whole reap to the next run —
+      // these commits may be the only copy left anywhere.
+      let keepRef: string | null = null;
+      if (entry.manifest.keepPinOnReap && entry.manifest.headOid) {
+        keepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${entry.manifest.id}`;
+        try {
+          await this.gitService.updateRef(keepRef, entry.manifest.headOid);
+        } catch (error) {
+          this.logger.warn(
+            `⚠️ Trash reaper: cannot create keep ref '${keepRef}' for '${entry.manifest.id}'; deferring reap: ${getErrorMessage(error)}`,
+          );
+          continue;
+        }
+      }
+
       try {
         await this.removalAudit.record({
           action: "trash_reap",
@@ -122,6 +139,11 @@ export class TrashReaperService {
       this.logger.info(
         `🗑️ Trash reaper: deleted expired entry '${entry.manifest.id}' (trashed ${entry.manifest.deletedAt})`,
       );
+      if (keepRef) {
+        this.logger.info(
+          `   Commits remain recoverable at '${keepRef}' (${entry.manifest.headOid}) — recover with: git branch <name> ${entry.manifest.headOid}`,
+        );
+      }
       await this.removalAudit
         .record({
           action: "trash_reap",

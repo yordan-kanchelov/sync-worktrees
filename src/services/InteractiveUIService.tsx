@@ -492,17 +492,17 @@ export class InteractiveUIService {
     }
 
     const service = this.syncServices[repoIndex];
-    if (!service.isInitialized()) {
-      if (service.isCloneMode()) {
-        try {
-          return await service.getRemoteBranches();
-        } catch {
-          return [];
-        }
-      }
+    if (service.isInitialized()) {
+      return service.getRemoteBranches();
+    }
+    if (!service.isCloneMode()) {
       return [];
     }
-    return service.getRemoteBranches();
+    try {
+      return await service.getRemoteBranches();
+    } catch {
+      return [];
+    }
   }
 
   public getDefaultBranchForRepo(repoIndex: number): string {
@@ -528,7 +528,8 @@ export class InteractiveUIService {
         await service.initializeUnlocked();
       }
       if (service.isCloneMode()) {
-        await service.getRemoteBranches();
+        // Clone-mode tracks a single branch; there is nothing to fetch-all here.
+        // Branch discovery is a live `git ls-remote` performed when the picker opens.
         return;
       }
       await service.getGitService().fetchAll();

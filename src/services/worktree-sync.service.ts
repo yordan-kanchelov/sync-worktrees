@@ -1,6 +1,7 @@
 import pLimit from "p-limit";
 
 import { ENV_CONSTANTS } from "../constants";
+import { ConfigError } from "../errors";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
@@ -120,7 +121,7 @@ export class WorktreeSyncService {
 
   async checkoutBranch(branchName: string): Promise<void> {
     if (!this.cloneSyncService) {
-      throw new Error("checkoutBranch is only available for clone-mode repositories");
+      throw new ConfigError("checkoutBranch is only available for clone-mode repositories", "CLONE_MODE_REQUIRED");
     }
     await this.cloneSyncService.checkoutBranch(branchName);
   }

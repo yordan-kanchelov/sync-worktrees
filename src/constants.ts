@@ -9,6 +9,7 @@ export const GIT_CONSTANTS = {
   REMOVED_DIR_NAME: ".removed",
   TRASH_DIR_NAME: ".trash",
   TRASH_REF_PREFIX: "refs/sync-worktrees/trash/",
+  KEEP_REF_PREFIX: "refs/sync-worktrees/keep/",
   LFS_HEADER: "version https://git-lfs.github.com/spec/",
   SUBMODULE_STATUS_ADDED: "+",
   SUBMODULE_STATUS_REMOVED: "-",

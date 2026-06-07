@@ -10,6 +10,7 @@ import { getErrorMessage } from "../utils/lfs-error";
 
 import { Logger } from "./logger.service";
 
+import type { LastKnownRemoteTip } from "../types/sync-metadata";
 import type { SimpleGit } from "simple-git";
 
 export interface WorktreeStatusDetails {
@@ -38,6 +39,11 @@ export interface WorktreeStatusResult {
   hasOperationInProgress: boolean;
   hasModifiedSubmodules: boolean;
   upstreamGone: boolean;
+  // True when commits look unpushed only because the upstream ref was deleted
+  // (squash-merge + branch deletion): metadata recorded the upstream tip while
+  // it existed, that ref is now gone, and HEAD is an ancestor of (or equal to)
+  // the recorded tip — so every local commit was on the remote at some point.
+  fullyPushedUpstreamDeleted: boolean;
   canRemove: boolean;
   reasons: string[];
   details?: WorktreeStatusDetails;
@@ -62,6 +68,9 @@ interface WorktreeSnapshot {
   unpushedAnyRemoteCount: number | null;
   sinceSyncCount: number | null;
   sinceSyncChecked: boolean;
+  // null = no recorded tip to check against; false also covers probe errors
+  // (e.g. the recorded oid was gc'd away), which must read as "not proven".
+  headPushedToRecordedTip: boolean | null;
   stashTotal: number | null;
   submoduleStatus: string | null;
   operationFile: string | null;
@@ -109,6 +118,7 @@ export class WorktreeStatusService {
     worktreePath: string,
     includeDetails = false,
     lastSyncCommit?: string,
+    lastKnownRemoteTip?: LastKnownRemoteTip,
   ): Promise<WorktreeStatusResult> {
     const pathProbe = await probePathExists(worktreePath);
     if (pathProbe === "missing") {
@@ -119,6 +129,7 @@ export class WorktreeStatusService {
         hasOperationInProgress: false,
         hasModifiedSubmodules: false,
         upstreamGone: false,
+        fullyPushedUpstreamDeleted: false,
         canRemove: true,
         reasons: [],
       };
@@ -133,12 +144,13 @@ export class WorktreeStatusService {
         hasOperationInProgress: true,
         hasModifiedSubmodules: true,
         upstreamGone: false,
+        fullyPushedUpstreamDeleted: false,
         canRemove: false,
         reasons: ["cannot verify worktree path (filesystem probe failed)"],
       };
     }
 
-    const snap = await this.collectSnapshot(worktreePath, lastSyncCommit);
+    const snap = await this.collectSnapshot(worktreePath, lastSyncCommit, lastKnownRemoteTip);
 
     const isClean = this.deriveIsClean(snap);
     // Removal requires BOTH unpushed checks to pass independently: commits
@@ -147,6 +159,15 @@ export class WorktreeStatusService {
     const anyRemoteUnpushed = (snap.unpushedAnyRemoteCount ?? 1) > 0;
     const sinceSyncUnpushed = snap.sinceSyncChecked && (snap.sinceSyncCount ?? 1) > 0;
     const hasUnpushedCommits = !snap.detached && (anyRemoteUnpushed || sinceSyncUnpushed);
+    // "Unpushed" override for squash-merge + branch deletion: only when the
+    // recorded upstream ref is verifiably gone from a non-empty remote-branch
+    // list (an empty list means the fetch may have failed — fail closed) AND
+    // HEAD is an ancestor of the tip recorded while the ref still existed.
+    const recordedRefGone =
+      lastKnownRemoteTip !== undefined &&
+      snap.remoteBranches.length > 0 &&
+      !snap.remoteBranches.includes(lastKnownRemoteTip.ref);
+    const fullyPushedUpstreamDeleted = hasUnpushedCommits && recordedRefGone && snap.headPushedToRecordedTip === true;
     const hasStashedChanges = snap.stashTotal === null ? true : snap.stashTotal > 0;
     const hasOperationInProgress =
       snap.gitDir === null ? true : snap.operationFile !== null || snap.operationProbeUnknown;
@@ -158,7 +179,7 @@ export class WorktreeStatusService {
 
     const reasons: string[] = [];
     if (!isClean) reasons.push("uncommitted changes");
-    if (hasUnpushedCommits) reasons.push("unpushed commits");
+    if (hasUnpushedCommits && !fullyPushedUpstreamDeleted) reasons.push("unpushed commits");
     if (hasStashedChanges) reasons.push("stashed changes");
     if (hasOperationInProgress) reasons.push("operation in progress");
     if (hasModifiedSubmodules) reasons.push("modified submodules");
@@ -169,7 +190,7 @@ export class WorktreeStatusService {
 
     const canRemove =
       isClean &&
-      !hasUnpushedCommits &&
+      (!hasUnpushedCommits || fullyPushedUpstreamDeleted) &&
       !hasStashedChanges &&
       !hasOperationInProgress &&
       !hasModifiedSubmodules &&
@@ -184,13 +205,18 @@ export class WorktreeStatusService {
       hasOperationInProgress,
       hasModifiedSubmodules,
       upstreamGone,
+      fullyPushedUpstreamDeleted,
       canRemove,
       reasons,
       details,
     };
   }
 
-  private async collectSnapshot(worktreePath: string, lastSyncCommit?: string): Promise<WorktreeSnapshot> {
+  private async collectSnapshot(
+    worktreePath: string,
+    lastSyncCommit?: string,
+    lastKnownRemoteTip?: LastKnownRemoteTip,
+  ): Promise<WorktreeSnapshot> {
     const git = this.createGitInstance(worktreePath);
 
     const [status, branchResult, remoteBranchesResult, stashResult, submoduleResult, gitDirResult] = await Promise.all([
@@ -220,8 +246,9 @@ export class WorktreeStatusService {
     let upstream: string | null = null;
     let unpushedAnyRemoteCount: number | null = null;
     let sinceSyncCount: number | null = null;
+    let headPushedToRecordedTip: boolean | null = null;
     if (!detached && currentBranch) {
-      const [upstreamResult, anyRemoteResult, sinceSyncResult] = await Promise.all([
+      const [upstreamResult, anyRemoteResult, sinceSyncResult, recordedTipResult] = await Promise.all([
         git.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]).then(
           (raw) => ({ ok: true as const, value: raw }),
           (error: unknown) => ({ ok: false as const, error }),
@@ -236,7 +263,19 @@ export class WorktreeStatusService {
               (error: unknown) => ({ ok: false as const, error }),
             )
           : Promise.resolve(null),
+        // Zero commits in <tip>..HEAD ⟺ HEAD is the recorded tip or behind it.
+        // NOT merge-base --is-ancestor: simple-git resolves its silent exit-1
+        // ("not an ancestor") as success because nothing is written to stderr.
+        // Any failure (e.g. the recorded oid was gc'd) reads as "not proven".
+        lastKnownRemoteTip
+          ? git.raw(["rev-list", "--count", `${lastKnownRemoteTip.oid}..HEAD`]).then(
+              (raw) => this.parseCount(raw) === 0,
+              () => false,
+            )
+          : Promise.resolve(null),
       ]);
+
+      headPushedToRecordedTip = recordedTipResult;
 
       if (upstreamResult.ok) {
         upstream = upstreamResult.value.trim() || null;
@@ -288,6 +327,7 @@ export class WorktreeStatusService {
       unpushedAnyRemoteCount,
       sinceSyncCount,
       sinceSyncChecked: lastSyncCommit !== undefined,
+      headPushedToRecordedTip,
       stashTotal: stashResult?.total ?? null,
       submoduleStatus: submoduleResult,
       operationFile: operationProbe.file,
@@ -492,8 +532,12 @@ export class WorktreeStatusService {
     }
   }
 
-  async validateWorktreeForRemoval(worktreePath: string, lastSyncCommit?: string): Promise<void> {
-    const status = await this.getFullWorktreeStatus(worktreePath, false, lastSyncCommit);
+  async validateWorktreeForRemoval(
+    worktreePath: string,
+    lastSyncCommit?: string,
+    lastKnownRemoteTip?: LastKnownRemoteTip,
+  ): Promise<void> {
+    const status = await this.getFullWorktreeStatus(worktreePath, false, lastSyncCommit, lastKnownRemoteTip);
 
     if (!status.canRemove) {
       throw new WorktreeNotCleanError(worktreePath, status.reasons);

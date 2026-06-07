@@ -3,7 +3,8 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import { GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import { atomicWriteFile } from "../utils/atomic-write";
 
 import { Logger } from "./logger.service";
 
@@ -48,28 +49,7 @@ export class WorktreeMetadataService {
   async saveMetadata(bareRepoPath: string, worktreeName: string, metadata: SyncMetadata): Promise<void> {
     const metadataPath = await this.getMetadataPath(bareRepoPath, worktreeName);
     await fs.mkdir(path.dirname(metadataPath), { recursive: true });
-
-    // Write to temp file then rename for atomicity — prevents corruption on crash.
-    // Unique suffix avoids collisions between concurrent writers for the same worktree.
-    const tmpPath = `${metadataPath}.${process.pid}.${Date.now()}.tmp`;
-    let renamed = false;
-    try {
-      await fs.writeFile(tmpPath, JSON.stringify(metadata, null, 2), "utf-8");
-      try {
-        await fs.rename(tmpPath, metadataPath);
-        renamed = true;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === ERROR_MESSAGES.EXDEV) {
-          await fs.copyFile(tmpPath, metadataPath);
-        } else {
-          throw err;
-        }
-      }
-    } finally {
-      if (!renamed) {
-        await fs.unlink(tmpPath).catch(() => undefined);
-      }
-    }
+    await atomicWriteFile(metadataPath, JSON.stringify(metadata, null, 2));
   }
 
   async loadMetadata(bareRepoPath: string, worktreeName: string): Promise<SyncMetadata | null> {
@@ -231,6 +211,31 @@ export class WorktreeMetadataService {
     }
 
     // Save using the directory name
+    await this.saveMetadata(bareRepoPath, worktreeDirName, existing);
+  }
+
+  /**
+   * Records the upstream tip observed during this sync. This is what later
+   * proves "HEAD was fully pushed" after the remote branch is deleted, so it
+   * must only ever be overwritten with a live observation — callers must not
+   * invoke this once the upstream ref is gone.
+   */
+  async recordRemoteTip(bareRepoPath: string, worktreePath: string, ref: string, oid: string): Promise<void> {
+    const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
+    const existing = await this.loadMetadataFromPath(bareRepoPath, worktreePath);
+
+    if (!existing) {
+      // debug, not warn: this runs every sync tick for every worktree, and a
+      // legacy worktree without metadata would otherwise spam the log forever.
+      this.logger.debug(`No metadata found for worktree ${worktreeDirName}; skipping remote tip recording`);
+      return;
+    }
+
+    if (existing.lastKnownRemoteTip?.ref === ref && existing.lastKnownRemoteTip.oid === oid) {
+      return;
+    }
+
+    existing.lastKnownRemoteTip = { ref, oid, recordedAt: new Date().toISOString() };
     await this.saveMetadata(bareRepoPath, worktreeDirName, existing);
   }
 

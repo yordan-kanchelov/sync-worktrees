@@ -966,7 +966,39 @@ export class GitService {
 
   async getFullWorktreeStatus(worktreePath: string, includeDetails = false): Promise<WorktreeStatusResult> {
     const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
-    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails, metadata?.lastSyncCommit);
+    return this.statusService.getFullWorktreeStatus(
+      worktreePath,
+      includeDetails,
+      metadata?.lastSyncCommit,
+      metadata?.lastKnownRemoteTip,
+    );
+  }
+
+  /** Map of remote branch name (without "origin/") → tip oid, from the bare repo. */
+  async getRemoteBranchTips(): Promise<Map<string, string>> {
+    const git = this.getGit();
+    const raw = await git.raw(["for-each-ref", "--format=%(refname:short) %(objectname)", GIT_CONSTANTS.REFS.REMOTES]);
+    const tips = new Map<string, string>();
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const spaceIdx = trimmed.lastIndexOf(" ");
+      if (spaceIdx <= 0) continue;
+      const ref = trimmed.slice(0, spaceIdx);
+      const oid = trimmed.slice(spaceIdx + 1);
+      if (!ref.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) || ref === `${GIT_CONSTANTS.REMOTE_PREFIX}HEAD`) continue;
+      tips.set(ref.slice(GIT_CONSTANTS.REMOTE_PREFIX.length), oid);
+    }
+    return tips;
+  }
+
+  async recordRemoteTip(worktreePath: string, branchName: string, oid: string): Promise<void> {
+    await this.metadataService.recordRemoteTip(
+      this.bareRepoPath,
+      worktreePath,
+      `${GIT_CONSTANTS.REMOTE_PREFIX}${branchName}`,
+      oid,
+    );
   }
 
   async hasModifiedSubmodules(worktreePath: string): Promise<boolean> {

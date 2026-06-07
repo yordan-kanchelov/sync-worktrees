@@ -264,9 +264,6 @@ Open `Settings` → `AI` → `Manage MCP Servers` → `+ Add` (see [Warp MCP doc
 | `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
 | `get_worktree_status`    | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress).                                                                                                                                 |
 | `create_worktree`        | Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`.                                                                                  |
-| `remove_worktree`        | Remove a worktree after safety checks; `force=true` skips validation. With trash enabled (default), the directory is moved to `.trash/` and the response includes `trashedAs` for later restore.                                  |
-| `list_trash`             | List trash entries with id, branch, reason, size, expiry, and `restoreMode` (`worktree` or `plain`).                                                                                                                              |
-| `restore_trash`          | Restore a trash entry by id — recreates the branch and worktree at the pinned commit and overlays the preserved files. See [Trash and restore](#trash-and-restore).                                                               |
 | `update_worktree`        | Fast-forward one worktree to match upstream.                                                                                                                                                                                      |
 | `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications.                                                                                                                                  |
 | `initialize`             | Clone the bare repo and create the main worktree. Requires config. Streams progress.                                                                                                                                              |
@@ -277,7 +274,7 @@ All tools that target a single repo accept an optional `repoName`. When omitted,
 
 ### Safety
 
-- `remove_worktree` refuses to delete worktrees with uncommitted changes, unpushed commits, stashes, or operations in progress (merge/rebase/cherry-pick/revert/bisect). Pass `force=true` to override.
+- The MCP surface exposes no removal or trash operations — an agent cannot delete a worktree or touch the trash through it. Removal happens via sync's own safety-gated pruning or manual git commands.
 - `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk.
 - Branches created by sync-worktrees use `--no-track` first, then publish with `git push -u origin <branch>`, so they do not inherit `origin/main` as their upstream.
 - Path-targeted tools verify the supplied path is a registered worktree of the selected repository.
@@ -481,7 +478,7 @@ defaults: {
 
 - **`interval`** is a duration string (`h`/`d`/`w`/`m`/`y`). The last run is timestamped in the object store (`<bare-repo>/sync-worktrees-maintenance.json`, or `<worktreeDir>/.git/…` in clone mode), so throttling survives daemon restarts and repeated `runOnce` invocations.
 - **`aggressive: false`** (default) runs plain `git gc`, which honors Git's two-week grace period — recently-unreachable objects (and anything reachable from a branch, tag, stash, or reflog) are always preserved.
-- **`aggressive: true`** runs `git gc --prune=now`, pruning recently-unreachable objects immediately. Use it only for explicit reclamation; the default is the safe choice.
+- **`aggressive: true`** runs `git gc --prune=now`, pruning recently-unreachable objects immediately. Use it only for explicit reclamation; the default is the safe choice. The repository operation lock only serializes sync-worktrees' own operations — `--prune=now` can still race manual `git` work happening in the checkout outside the daemon, so avoid enabling it on repositories you also edit by hand concurrently.
 - A maintenance failure is logged as a warning and never fails the sync. The attempt is still timestamped, so a broken `gc` is throttled instead of retried every tick.
 
 ### Branch filtering
@@ -533,7 +530,7 @@ With trash enabled (the default), the preserved copy lands in `.trash/` instead 
 
 ### Trash and restore
 
-Every removal — age-based prune, orphan cleanup, diverged-branch replacement, and manual `remove_worktree` — is reversible by default. Instead of deleting, sync-worktrees moves the directory into a per-workspace trash with a manifest describing how to put it back:
+Every removal — age-based prune, orphan cleanup, and diverged-branch replacement — is reversible by default. Instead of deleting, sync-worktrees moves the directory into a per-workspace trash with a manifest describing how to put it back:
 
 ```
 my-repo-worktrees/
@@ -558,23 +555,9 @@ defaults: {
 }
 ```
 
-**Restoring via MCP** (or any MCP client):
+Trash entries are deliberately not exposed through the MCP server — listing, restoring, and purging are human operations.
 
-1. `list_trash` — shows every entry with its `id`, branch, reason, expiry, and `restoreMode`:
-   - `worktree` — the entry has a branch, a recorded HEAD commit, and a live pin ref; it can come back as a fully registered worktree.
-   - `plain` — files only (orphan directories, or entries whose commit could not be pinned).
-2. `restore_trash` with the `id`. For a `worktree` entry this:
-   - recreates the local branch at the pinned commit (a leftover branch ref already at that commit is reused);
-   - registers a fresh worktree at the original path (`git worktree add --no-checkout`);
-   - overlays the preserved files, so uncommitted/untracked work from the time of removal shows up as ordinary unstaged changes;
-   - deletes the trash entry and its pin ref.
-
-Restore never clobbers live data — it refuses when:
-
-- the original path is occupied (common for diverged-replace entries, where a fresh worktree was created at the same path: remove that worktree first, then restore);
-- a branch with the same name exists at a _different_ commit (move or delete that branch first, or copy the files out of `payload/` manually).
-
-**Restoring manually** (no MCP): read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
+**Restoring**: read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
 
 ```bash
 cd my-repo-worktrees/.trash/<id>

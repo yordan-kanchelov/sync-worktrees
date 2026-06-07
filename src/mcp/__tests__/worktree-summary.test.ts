@@ -12,6 +12,7 @@ function makeStatus(overrides: Partial<WorktreeStatusResult> = {}): WorktreeStat
     hasOperationInProgress: false,
     hasModifiedSubmodules: false,
     upstreamGone: false,
+    fullyPushedUpstreamDeleted: false,
     canRemove: true,
     reasons: [],
     ...overrides,

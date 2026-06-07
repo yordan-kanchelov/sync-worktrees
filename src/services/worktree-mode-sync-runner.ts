@@ -23,7 +23,7 @@ import type { ProgressEmitter } from "./progress-emitter";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
 import type { SyncRetryContext } from "./sync-retry-policy";
 import type { TrashManifest } from "./trash.service";
-import type { WorktreeStatusDetails } from "./worktree-status.service";
+import type { WorktreeStatusDetails, WorktreeStatusResult } from "./worktree-status.service";
 import type { CreateAction, PruneAction, SparseAction, SyncPlan, UpdateAction } from "./worktree-sync-planner";
 import type { Config } from "../types";
 import type { PhaseTimer } from "../utils/timing";
@@ -79,6 +79,7 @@ export class WorktreeModeSyncRunner {
     );
 
     await this.createNewWorktreesWithTiming(syncPlan, phaseTimer, outcome);
+    await this.recordRemoteBranchTips([...worktrees, ...syncPlan.create.filter((action) => action.kind === "create")]);
     await this.pruneOldWorktreesWithTiming(syncPlan.prune, phaseTimer, outcome);
 
     if (this.config.updateExistingWorktrees !== false) {
@@ -316,6 +317,43 @@ export class WorktreeModeSyncRunner {
     this.logger.info(`  Created ${successCount}/${plan.length} worktrees successfully`);
   }
 
+  // Persist each worktree's upstream tip while the remote ref still exists.
+  // This is the proof consulted after a squash-merge deletes the branch:
+  // "HEAD was on the remote before the deletion" — without it every such
+  // worktree reads as having unpushed commits forever. Best-effort: a failed
+  // recording only means that worktree stays conservatively preserved.
+  private async recordRemoteBranchTips(worktrees: Array<{ path: string; branch: string }>): Promise<void> {
+    try {
+      const tips = await this.gitService.getRemoteBranchTips();
+      if (tips.size === 0) return;
+
+      const limit = pLimit(this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+
+      await Promise.all(
+        worktrees.map((wt) =>
+          limit(async () => {
+            const oid = tips.get(wt.branch);
+            if (!oid) return;
+            await this.gitService
+              .recordRemoteTip(wt.path, wt.branch, oid)
+              .catch((error: unknown) =>
+                this.logger.warn(`  - ⚠️ Could not record remote tip for '${wt.branch}': ${getErrorMessage(error)}`),
+              );
+          }),
+        ),
+      );
+    } catch (error) {
+      this.logger.warn(`⚠️ Could not record remote branch tips: ${getErrorMessage(error)}`);
+    }
+  }
+
+  // A removal authorized only by the fully-pushed proof must stay reversible:
+  // without trash it would be a permanent delete of commits whose remote
+  // branch may have been deleted unmerged.
+  private blockedByDisabledTrash(status: WorktreeStatusResult): boolean {
+    return status.fullyPushedUpstreamDeleted && !this.trashService.isEnabled();
+  }
+
   private async pruneOldWorktreesWithTiming(
     actions: PruneAction[],
     phaseTimer: PhaseTimer,
@@ -362,7 +400,18 @@ export class WorktreeModeSyncRunner {
         if (result.status === "fulfilled") {
           const { branchName, worktreePath, status } = result.value;
           if (status.canRemove) {
-            toRemove.push({ branchName, worktreePath });
+            if (this.blockedByDisabledTrash(status)) {
+              this.logger.warn(
+                `  - ⚠️ '${branchName}' was fully pushed before its remote branch was deleted, but trash is disabled — keeping worktree. Enable trash for reversible auto-removal, or remove manually.`,
+              );
+              outcome.recordSkipped("worktree", "fully_pushed_trash_disabled", {
+                branch: branchName,
+                path: worktreePath,
+                message: "fully pushed before upstream deletion; trash disabled",
+              });
+            } else {
+              toRemove.push({ branchName, worktreePath });
+            }
           } else {
             toSkip.push({ branchName, worktreePath, status });
           }
@@ -388,7 +437,7 @@ export class WorktreeModeSyncRunner {
               try {
                 // Re-validate status immediately before removal to close TOCTOU window.
                 const recheck = await this.gitService.getFullWorktreeStatus(worktreePath, false);
-                if (!recheck.canRemove) {
+                if (!recheck.canRemove || this.blockedByDisabledTrash(recheck)) {
                   this.logger.warn(
                     `  ⚠️ Skipping removal of '${branchName}' - status changed since initial check: ${recheck.reasons.join(", ")}`,
                   );
@@ -426,11 +475,17 @@ export class WorktreeModeSyncRunner {
                     dirPath: worktreePath,
                     branch: branchName,
                     reason: "prune",
+                    keepPinOnReap: recheck.fullyPushedUpstreamDeleted,
                   });
                   if (branchRefError !== undefined) {
                     refWarning = `leftover_branch_ref: could not delete branch ref '${branchName}': ${branchRefError}`;
                   }
-                  this.logger.info(`  ✅ Moved worktree for '${branchName}' to trash (id: ${entry.manifest.id})`);
+                  const pushedNote = recheck.fullyPushedUpstreamDeleted
+                    ? " — was fully pushed before its remote branch was deleted"
+                    : "";
+                  this.logger.info(
+                    `  ✅ Moved worktree for '${branchName}' to trash (id: ${entry.manifest.id})${pushedNote}`,
+                  );
                 } else {
                   await this.gitService.removeWorktree(worktreePath);
                   this.logger.info(`  ✅ Removed worktree for '${branchName}'`);

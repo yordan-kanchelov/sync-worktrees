@@ -4,7 +4,7 @@ import * as path from "path";
 import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import { ConfigError } from "../errors";
+import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../errors";
 import { fileExists } from "../utils/file-exists";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { normalizeRepoUrlForComparison } from "../utils/git-url";
@@ -436,7 +436,10 @@ export class CloneSyncService {
     const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
     const originMismatch = await this.evaluateOriginMatch(git, worktreeDir);
     if (originMismatch) {
-      throw new Error(`Cannot switch '${this.repoName}' to '${branch}': ${originMismatch.progressDetail}.`);
+      throw new ConfigError(
+        `Cannot switch '${this.repoName}' to '${branch}': ${originMismatch.progressDetail}.`,
+        "ORIGIN_MISMATCH",
+      );
     }
 
     const currentBranch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
@@ -449,19 +452,22 @@ export class CloneSyncService {
 
     const isClean = await this.gitService.checkWorktreeStatus(worktreeDir);
     if (!isClean) {
-      throw new Error(`Cannot switch '${this.repoName}' to '${branch}': working tree has local changes.`);
+      throw new WorktreeNotCleanError(worktreeDir, ["working tree has local changes"]);
     }
+
+    // Converge shallow state like runSyncAttempt does: with no configured depth an
+    // existing shallow clone is unshallowed before the branch fetch, so switching
+    // branches doesn't leave the new branch shallow while the rest is full.
+    await this.unshallowIfDepthRemoved(git);
 
     const fetchArgs = await this.buildFetchArgs(git, branch);
     if ((await this.fetchWithRecovery(git, fetchArgs, worktreeDir, branch)).skipped) {
-      throw new Error(`Cannot switch '${this.repoName}' to '${branch}': origin/${branch} is missing.`);
+      throw new GitOperationError("checkout", `origin/${branch} is missing for '${this.repoName}'`);
     }
 
     if (await this.localBranchExists(git, branch)) {
       if (!(await this.localBranchCanFastForward(git, branch))) {
-        throw new Error(
-          `Cannot switch '${this.repoName}' to '${branch}': local branch has diverged from origin/${branch}.`,
-        );
+        throw new FastForwardError(branch);
       }
 
       let switched = false;

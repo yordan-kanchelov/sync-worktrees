@@ -190,7 +190,6 @@ describe("buildInstructions", () => {
         listWorktrees: { available: true },
         getStatus: { available: true },
         createWorktree: { available: true },
-        removeWorktree: { available: true },
         updateWorktree: { available: true },
         sync: { available: true },
         initialize: { available: true },

@@ -4,6 +4,7 @@ import * as path from "path";
 
 import { DEFAULT_CONFIG, GIT_CONSTANTS, PATH_CONSTANTS, TRASH_CONSTANTS } from "../constants";
 import { TrashOperationError } from "../errors";
+import { atomicWriteFile } from "../utils/atomic-write";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { getErrorMessage } from "../utils/lfs-error";
@@ -28,6 +29,11 @@ export interface TrashManifest {
   pinRef: string | null;
   source: "worktree" | ".removed" | ".diverged";
   legacyOriginalName: string | null;
+  // When true the reaper moves the pin to a permanent keep ref instead of
+  // unpinning. Set for removals authorized only by "fully pushed before
+  // upstream deletion" proof — the remote may have deleted an unmerged
+  // branch, so the commits must never become gc-eligible silently.
+  keepPinOnReap?: boolean;
 }
 
 export interface TrashEntry {
@@ -79,6 +85,7 @@ export interface TrashDirectoryOptions {
   /** Where restore should put the payload back; defaults to dirPath. */
   originalPath?: string;
   auditAction?: "trash_create" | "trash_adopt";
+  keepPinOnReap?: boolean;
 }
 
 // Reversible removal: directories land in <worktreeDir>/.trash/<id>/payload
@@ -111,8 +118,15 @@ export class TrashService {
   async trashDirectory(options: TrashDirectoryOptions): Promise<TrashEntry> {
     const deletedAt = options.deletedAt ?? new Date();
     const expiresAt = new Date(deletedAt.getTime() + this.getRetentionDays() * 86_400_000);
+    const keepPinOnReap = options.keepPinOnReap ?? false;
 
     const headOid = options.headOid !== undefined ? options.headOid : await this.resolveHeadOid(options);
+    if (keepPinOnReap && !headOid) {
+      throw new TrashOperationError(
+        "trash-directory",
+        `cannot create keep-on-reap trash entry for '${options.dirPath}': HEAD commit could not be resolved`,
+      );
+    }
     const sizeBytes = await calculateDirectorySize(options.dirPath).catch(() => null);
 
     // Non-recursive container mkdir + EEXIST retry: the undo path below may
@@ -120,6 +134,13 @@ export class TrashService {
     await fs.mkdir(this.getTrashRoot(), { recursive: true });
     const { id, containerPath } = await this.createContainer(deletedAt, path.basename(options.dirPath));
     const pinRef = headOid ? await this.createPinRef(id, headOid) : null;
+    if (keepPinOnReap && !pinRef) {
+      await this.undoPartialTrash(containerPath, pinRef);
+      throw new TrashOperationError(
+        "trash-directory",
+        `cannot create keep-on-reap trash entry '${id}' for '${options.dirPath}': pin ref could not be created`,
+      );
+    }
     const payloadPath = path.join(containerPath, TRASH_CONSTANTS.PAYLOAD_DIRNAME);
 
     const manifest: TrashManifest = {
@@ -135,6 +156,7 @@ export class TrashService {
       pinRef,
       source: options.source ?? "worktree",
       legacyOriginalName: options.legacyOriginalName ?? null,
+      keepPinOnReap,
     };
 
     try {
@@ -208,11 +230,6 @@ export class TrashService {
     return { entries, invalid };
   }
 
-  async getSummary(): Promise<TrashSummary> {
-    const { entries } = await this.listEntries();
-    return summarizeTrashEntries(entries);
-  }
-
   // The full reversible-removal sequence shared by prune and manual removal:
   // payload to trash, dangling registration cleared, branch ref deleted.
   // A ref-delete failure is a hygiene problem, not a failed removal — the
@@ -222,6 +239,7 @@ export class TrashService {
     dirPath: string;
     branch: string | null;
     reason: TrashReason;
+    keepPinOnReap?: boolean;
   }): Promise<{ entry: TrashEntry; branchRefError?: string }> {
     const entry = await this.trashDirectory(options);
     // force is safe here: the directory was already moved to trash, so only
@@ -400,9 +418,7 @@ export class TrashService {
 
   private async writeManifest(containerPath: string, manifest: TrashManifest): Promise<void> {
     const manifestPath = path.join(containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
-    const tempPath = `${manifestPath}.tmp`;
-    await fs.writeFile(tempPath, JSON.stringify(manifest, null, 2), "utf-8");
-    await fs.rename(tempPath, manifestPath);
+    await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
   }
 
   private async readManifest(containerPath: string): Promise<TrashManifest | null> {

@@ -3,6 +3,7 @@ import * as fs from "fs/promises";
 import simpleGit from "simple-git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../../errors";
 import { BranchCreatedActionsService } from "../branch-created-actions.service";
 import { CloneSyncService } from "../clone-sync.service";
 import { Logger } from "../logger.service";
@@ -508,9 +509,13 @@ describe("CloneSyncService", () => {
         return "";
       });
 
-      await expect(service.checkoutBranch("feature/new")).rejects.toThrow(
-        "origin 'https://github.com/example/other.git' is not 'https://github.com/example/repo.git'",
-      );
+      await expect(service.checkoutBranch("feature/new")).rejects.toMatchObject({
+        constructor: ConfigError,
+        code: "CONFIG_ORIGIN_MISMATCH",
+        message: expect.stringContaining(
+          "origin 'https://github.com/example/other.git' is not 'https://github.com/example/repo.git'",
+        ),
+      });
 
       expect(service.isInitialized()).toBe(true);
       expect(gitMock.fetch).not.toHaveBeenCalled();
@@ -577,9 +582,10 @@ describe("CloneSyncService", () => {
         return "";
       });
 
-      await expect(service.checkoutBranch("feature/existing")).rejects.toThrow(
-        "local branch has diverged from origin/feature/existing",
-      );
+      await expect(service.checkoutBranch("feature/existing")).rejects.toMatchObject({
+        constructor: FastForwardError,
+        branchName: "feature/existing",
+      });
 
       expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/existing"]);
       expect(gitMock.merge).not.toHaveBeenCalled();
@@ -610,6 +616,59 @@ describe("CloneSyncService", () => {
         "--replace-all",
         "remote.origin.fetch",
         "+refs/heads/feature/existing:refs/remotes/origin/feature/existing",
+      ]);
+    });
+
+    it("throws WorktreeNotCleanError without fetching when the working tree is dirty", async () => {
+      const service = new CloneSyncService(
+        makeConfig(),
+        buildGitService({ checkWorktreeStatus: vi.fn().mockResolvedValue(false) }),
+        logger,
+      );
+      (service as unknown as { initialized: boolean }).initialized = true;
+
+      await expect(service.checkoutBranch("feature/new")).rejects.toMatchObject({
+        constructor: WorktreeNotCleanError,
+        reasons: ["working tree has local changes"],
+      });
+
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it("throws GitOperationError when origin no longer has the requested branch", async () => {
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/feature/new"));
+
+      await expect(service.checkoutBranch("feature/new")).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("origin/feature/new is missing"),
+      });
+
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+    });
+
+    it("unshallows a shallow clone before the branch fetch when no depth is configured", async () => {
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "true";
+        if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
+        return "";
+      });
+
+      await service.checkoutBranch("feature/new");
+
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow", "--no-tags"]);
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(2, [
+        "origin",
+        "--prune",
+        "--no-tags",
+        "--progress",
+        "+refs/heads/feature/new:refs/remotes/origin/feature/new",
       ]);
     });
   });

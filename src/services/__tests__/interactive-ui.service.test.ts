@@ -1907,6 +1907,19 @@ describe("InteractiveUIService", () => {
 
         service.destroy();
       });
+
+      it("is a no-op for clone-mode repos (branch discovery is live at picker open)", async () => {
+        mockSyncService.isInitialized = vi.fn().mockReturnValue(true);
+        mockSyncService.isCloneMode = vi.fn().mockReturnValue(true);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await service.fetchForRepo(0);
+
+        expect(mockGitService.fetchAll).not.toHaveBeenCalled();
+        expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
     });
 
     describe("openEditorInWorktree", () => {

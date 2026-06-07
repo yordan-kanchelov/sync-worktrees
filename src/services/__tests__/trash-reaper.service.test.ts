@@ -63,7 +63,10 @@ describe("TrashReaperService", () => {
     await cleanupTempDirectories();
   });
 
-  async function makeEntry(name: string, options: { ageDays: number; branch?: string }): Promise<TrashEntry> {
+  async function makeEntry(
+    name: string,
+    options: { ageDays: number; branch?: string; keepPinOnReap?: boolean },
+  ): Promise<TrashEntry> {
     const dir = path.join(worktreeDir, name);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, "file.txt"), "data");
@@ -73,6 +76,7 @@ describe("TrashReaperService", () => {
       headOid: options.branch ? "abc123" : null,
       reason: "prune",
       deletedAt: new Date(Date.now() - options.ageDays * DAY_MS),
+      keepPinOnReap: options.keepPinOnReap,
     });
   }
 
@@ -184,6 +188,48 @@ describe("TrashReaperService", () => {
     await reaper.reapExpiredUnlocked();
 
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Trash holds"));
+  });
+
+  it("moves the pin to a permanent keep ref when reaping a keepPinOnReap entry", async () => {
+    const expired = await makeEntry("fully-pushed", { ageDays: 31, branch: "fully-pushed", keepPinOnReap: true });
+
+    await reaper.reapExpiredUnlocked();
+
+    await expect(fs.access(expired.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${expired.manifest.id}`, "abc123");
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
+  });
+
+  it("defers the whole reap when the keep ref cannot be created — the pin may guard the last copy", async () => {
+    const expired = await makeEntry("keep-fails", { ageDays: 31, branch: "keep-fails", keepPinOnReap: true });
+    gitStub.updateRef.mockRejectedValue(new Error("ref store readonly"));
+
+    await reaper.reapExpiredUnlocked();
+
+    await expect(fs.access(expired.containerPath)).resolves.toBeUndefined();
+    expect(gitStub.deleteRef).not.toHaveBeenCalledWith(expired.manifest.pinRef);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("deferring reap"));
+  });
+
+  it("does not keep-ref ordinary entries — only fully-pushed removals survive past expiry", async () => {
+    const expired = await makeEntry("ordinary", { ageDays: 31, branch: "ordinary" });
+
+    await reaper.reapExpiredUnlocked();
+
+    await expect(fs.access(expired.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(gitStub.updateRef).not.toHaveBeenCalledWith(
+      expect.stringContaining("refs/sync-worktrees/keep/"),
+      expect.anything(),
+    );
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
+  });
+
+  it("orphan pin-ref sweep never touches keep refs", async () => {
+    gitStub.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/some-old-id"]);
+
+    await reaper.reapExpiredUnlocked();
+
+    expect(gitStub.deleteRef).not.toHaveBeenCalledWith("refs/sync-worktrees/keep/some-old-id");
   });
 
   it("skips entries whose expiry is unparseable instead of guessing", async () => {

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTempDirectories, createMockLogger, createTempDirectory } from "../../__tests__/test-utils";
 import { GIT_CONSTANTS, TRASH_CONSTANTS } from "../../constants";
 import { TrashOperationError } from "../../errors";
-import { TrashService } from "../trash.service";
+import { TrashService, summarizeTrashEntries } from "../trash.service";
 
 import type { Config } from "../../types";
 import type { GitService } from "../git.service";
@@ -167,6 +167,46 @@ describe("TrashService", () => {
       );
     });
 
+    it("refuses keep-on-reap removal when HEAD cannot be resolved before unregistering the worktree", async () => {
+      gitStub.getCurrentCommit.mockRejectedValue(new Error("missing head"));
+      const source = await makeSourceDir("unknown-head");
+
+      await expect(
+        service.trashAndUnregisterWorktree({
+          dirPath: source,
+          branch: "unknown-head",
+          reason: "manual",
+          keepPinOnReap: true,
+        }),
+      ).rejects.toBeInstanceOf(TrashOperationError);
+
+      await expect(fs.access(source)).resolves.toBeUndefined();
+      expect(gitStub.removeWorktree).not.toHaveBeenCalled();
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
+      const trashContents = await fs.readdir(service.getTrashRoot()).catch(() => []);
+      expect(trashContents).toEqual([]);
+    });
+
+    it("refuses keep-on-reap removal when the pin ref cannot be created before deleting the branch", async () => {
+      gitStub.updateRef.mockRejectedValue(new Error("bad object"));
+      const source = await makeSourceDir("unpinned-keep");
+
+      await expect(
+        service.trashAndUnregisterWorktree({
+          dirPath: source,
+          branch: "unpinned-keep",
+          reason: "manual",
+          keepPinOnReap: true,
+        }),
+      ).rejects.toBeInstanceOf(TrashOperationError);
+
+      await expect(fs.access(source)).resolves.toBeUndefined();
+      expect(gitStub.removeWorktree).not.toHaveBeenCalled();
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
+      const trashContents = await fs.readdir(service.getTrashRoot()).catch(() => []);
+      expect(trashContents).toEqual([]);
+    });
+
     it("returns the ref-delete failure as a warning — the payload is already safe in trash", async () => {
       const source = await makeSourceDir("feature-leftover");
       gitStub.deleteLocalBranch.mockRejectedValue(new Error("ref locked"));
@@ -183,7 +223,7 @@ describe("TrashService", () => {
     });
   });
 
-  describe("listEntries / getSummary", () => {
+  describe("listEntries / summarizeTrashEntries", () => {
     it("returns only manifested entries and flags unrecognized content instead of hiding it", async () => {
       const sourceA = await makeSourceDir("entry-a");
       const sourceB = await makeSourceDir("entry-b");
@@ -198,7 +238,7 @@ describe("TrashService", () => {
       expect(entries).toHaveLength(2);
       expect(invalid).toEqual([junkDir]);
 
-      const summary = await service.getSummary();
+      const summary = summarizeTrashEntries(entries);
       expect(summary.itemCount).toBe(2);
       expect(summary.totalSizeBytes).toBeGreaterThanOrEqual(0);
       expect(summary.soonestExpiresAt).toBe(
@@ -208,7 +248,7 @@ describe("TrashService", () => {
 
     it("returns empty results when no trash root exists yet", async () => {
       await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [] });
-      await expect(service.getSummary()).resolves.toEqual({
+      expect(summarizeTrashEntries([])).toEqual({
         itemCount: 0,
         totalSizeBytes: 0,
         unknownSizeCount: 0,

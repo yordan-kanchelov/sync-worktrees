@@ -5,7 +5,7 @@ import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_BRANCHES, createMockLogger } from "../../__tests__/test-utils";
-import { WorktreeNotCleanError } from "../../errors";
+import { ConfigError, WorktreeNotCleanError } from "../../errors";
 import { GitMaintenanceService } from "../git-maintenance.service";
 import { PathResolutionService } from "../path-resolution.service";
 import { RepoOperationLock } from "../repo-operation-lock";
@@ -46,6 +46,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
         hasOperationInProgress: false,
         hasModifiedSubmodules: false,
         upstreamGone: false,
+        fullyPushedUpstreamDeleted: false,
         canRemove: true,
         reasons: [],
       }),
@@ -65,6 +66,8 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([]),
+      getRemoteBranchTips: vi.fn<any>().mockResolvedValue(new Map()),
+      recordRemoteTip: vi.fn<any>().mockResolvedValue(undefined),
       checkoutHead: vi.fn<any>().mockResolvedValue(undefined),
       getSparseCheckoutService: vi.fn(),
       updateRef: vi.fn<any>().mockResolvedValue(undefined),
@@ -217,6 +220,7 @@ describe("WorktreeSyncService", () => {
         hasOperationInProgress: false,
         hasModifiedSubmodules: false,
         upstreamGone: false,
+        fullyPushedUpstreamDeleted: false,
         canRemove: true,
         reasons: [],
       });
@@ -301,6 +305,7 @@ describe("WorktreeSyncService", () => {
           hasOperationInProgress: false,
           hasModifiedSubmodules: false,
           upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
           canRemove: false,
           reasons: ["uncommitted changes"],
         },
@@ -315,6 +320,7 @@ describe("WorktreeSyncService", () => {
           hasOperationInProgress: false,
           hasModifiedSubmodules: false,
           upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
           canRemove: false,
           reasons: ["unpushed commits"],
         },
@@ -329,6 +335,7 @@ describe("WorktreeSyncService", () => {
           hasOperationInProgress: false,
           hasModifiedSubmodules: false,
           upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
           canRemove: false,
           reasons: ["uncommitted changes", "unpushed commits"],
         },
@@ -373,6 +380,7 @@ describe("WorktreeSyncService", () => {
         hasOperationInProgress: false,
         hasModifiedSubmodules: false,
         upstreamGone: true,
+        fullyPushedUpstreamDeleted: false,
         canRemove: false,
         reasons: ["unpushed commits"],
       });
@@ -500,6 +508,7 @@ describe("WorktreeSyncService", () => {
           hasOperationInProgress: false,
           hasModifiedSubmodules: false,
           upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
           canRemove: true,
           reasons: [],
         }) // deleted-clean: can remove
@@ -510,6 +519,7 @@ describe("WorktreeSyncService", () => {
           hasOperationInProgress: false,
           hasModifiedSubmodules: false,
           upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
           canRemove: false,
           reasons: ["uncommitted changes"],
         }) // deleted-dirty: has uncommitted changes
@@ -520,6 +530,7 @@ describe("WorktreeSyncService", () => {
           hasOperationInProgress: false,
           hasModifiedSubmodules: false,
           upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
           canRemove: false,
           reasons: ["unpushed commits"],
         }) // deleted-unpushed: has unpushed commits
@@ -530,6 +541,7 @@ describe("WorktreeSyncService", () => {
           hasOperationInProgress: false,
           hasModifiedSubmodules: false,
           upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
           canRemove: true,
           reasons: [],
         }); // deleted-clean: TOCTOU re-validation before removal
@@ -545,6 +557,83 @@ describe("WorktreeSyncService", () => {
       // Verify all safety checks were performed via getFullWorktreeStatus
       // 3 initial checks + 1 TOCTOU re-validation before removal
       expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledTimes(4);
+    });
+
+    it("keeps a fully-pushed worktree when trash is disabled — removal would be irreversible", async () => {
+      mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["squash-merged"];
+      });
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/squash-merged", branch: "squash-merged" },
+      ]);
+      mockGitService.getFullWorktreeStatus.mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: true,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        fullyPushedUpstreamDeleted: true,
+        canRemove: true,
+        reasons: [],
+      });
+
+      const result = await service.sync();
+
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        started: true,
+        outcome: {
+          actions: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "skipped",
+              reason: "fully_pushed_trash_disabled",
+              branch: "squash-merged",
+            }),
+          ]),
+        },
+      });
+    });
+
+    it("records the upstream tip for every worktree whose remote branch still exists", async () => {
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
+      mockGitService.getRemoteBranchTips.mockResolvedValue(
+        new Map([
+          ["main", "tip-main"],
+          ["feature-1", "tip-f1"],
+        ]),
+      );
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+        if ((dirPath as string).endsWith(".diverged")) {
+          const error: any = new Error("ENOENT: no such file or directory");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return ["main", "feature-1", "gone-branch"];
+      });
+      mockGitService.getWorktrees.mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature-1", branch: "feature-1" },
+        { path: "/test/worktrees/gone-branch", branch: "gone-branch" },
+      ]);
+
+      await service.sync();
+
+      expect(mockGitService.recordRemoteTip).toHaveBeenCalledWith("/test/worktrees/main", "main", "tip-main");
+      expect(mockGitService.recordRemoteTip).toHaveBeenCalledWith("/test/worktrees/feature-1", "feature-1", "tip-f1");
+      // Recording must never run for a branch whose remote ref is already gone —
+      // it would overwrite the proof with nothing.
+      expect(mockGitService.recordRemoteTip).not.toHaveBeenCalledWith(
+        "/test/worktrees/gone-branch",
+        expect.anything(),
+        expect.anything(),
+      );
     });
 
     it("should clean up orphaned directories that are not Git worktrees", async () => {
@@ -1094,6 +1183,42 @@ describe("WorktreeSyncService", () => {
         });
       });
 
+      it("trashes a fully-pushed worktree with keepPinOnReap so its commits survive trash expiry", async () => {
+        mockGitService.getFullWorktreeStatus.mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: true,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          fullyPushedUpstreamDeleted: true,
+          canRemove: true,
+          reasons: [],
+        });
+
+        await service.sync();
+
+        expect(fs.rename).toHaveBeenCalledWith(oldBranchPath, expect.stringContaining(".trash"));
+        const manifestWrite = (fs.writeFile as Mock<any>).mock.calls.find((call) =>
+          (call[0] as string).includes("manifest.json"),
+        );
+        expect(manifestWrite).toBeDefined();
+        expect(JSON.parse(manifestWrite![1] as string)).toMatchObject({
+          branch: "old-branch",
+          keepPinOnReap: true,
+        });
+      });
+
+      it("ordinary prunes do not set keepPinOnReap", async () => {
+        await service.sync();
+
+        const manifestWrite = (fs.writeFile as Mock<any>).mock.calls.find((call) =>
+          (call[0] as string).includes("manifest.json"),
+        );
+        expect(manifestWrite).toBeDefined();
+        expect(JSON.parse(manifestWrite![1] as string)).toMatchObject({ keepPinOnReap: false });
+      });
+
       it("moves orphaned directories to trash instead of rm -rf", async () => {
         (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
           if (!(dirPath as string).endsWith("worktrees")) {
@@ -1582,6 +1707,7 @@ describe("WorktreeSyncService", () => {
         hasOperationInProgress: false,
         hasModifiedSubmodules: false,
         upstreamGone: false,
+        fullyPushedUpstreamDeleted: false,
         canRemove: false,
         reasons: ["uncommitted changes"],
       });
@@ -1603,6 +1729,7 @@ describe("WorktreeSyncService", () => {
         hasOperationInProgress: false,
         hasModifiedSubmodules: false,
         upstreamGone: false,
+        fullyPushedUpstreamDeleted: false,
         canRemove: false,
         reasons: ["unpushed commits"],
       });
@@ -1624,6 +1751,7 @@ describe("WorktreeSyncService", () => {
         hasOperationInProgress: true,
         hasModifiedSubmodules: false,
         upstreamGone: false,
+        fullyPushedUpstreamDeleted: false,
         canRemove: false,
         reasons: ["rebase in progress"],
       });
@@ -1645,6 +1773,7 @@ describe("WorktreeSyncService", () => {
         hasOperationInProgress: false,
         hasModifiedSubmodules: false,
         upstreamGone: false,
+        fullyPushedUpstreamDeleted: false,
         canRemove: true,
         reasons: [],
       });
@@ -1675,6 +1804,16 @@ describe("WorktreeSyncService", () => {
       expect(applyToWorktree).not.toHaveBeenCalled();
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Failed to update sparse-checkout"));
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("boom"));
+    });
+  });
+
+  describe("checkoutBranch wrapper", () => {
+    it("rejects with a typed ConfigError on a worktree-mode repository", async () => {
+      const svc = new WorktreeSyncService(mockConfig);
+      await expect(svc.checkoutBranch("feature/new")).rejects.toMatchObject({
+        constructor: ConfigError,
+        code: "CONFIG_CLONE_MODE_REQUIRED",
+      });
     });
   });
 
