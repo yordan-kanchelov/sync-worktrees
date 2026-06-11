@@ -2,6 +2,7 @@
 import { getEntry } from "astro:content";
 import { Code } from "astro:components";
 import CopyButton from "./CopyButton.astro";
+import { inlineCodeToHtml } from "../lib/markdown-inline";
 
 const commands = (await getEntry("commands", "main"))!.data;
 
@@ -20,8 +21,8 @@ const steps = [
   },
   {
     title: "Launch the TUI — or sync once",
-    body: "Bare command = interactive UI + cron. --runOnce for CI.",
-    code: `${commands.runTui}                # interactive TUI + cron\n${commands.runOnce}      # one-shot`,
+    body: "Bare command = interactive UI + cron. `--runOnce` for CI.",
+    code: `# interactive TUI + cron\n${commands.runTui}\n# one-shot\n${commands.runOnce}`,
     lang: "bash",
   },
 ];
@@ -44,7 +45,7 @@ const steps = [
             {i + 1}
           </div>
           <h3 class="mt-2 text-lg font-semibold text-ink-900">{s.title}</h3>
-          <p class="mt-2 text-sm text-ink-600">{s.body}</p>
+          <p class="mt-2 text-sm text-ink-600" set:html={inlineCodeToHtml(s.body)} />
           <div class="mt-4 overflow-hidden rounded-xl border border-ink-200 bg-ink-50">
             <div class="flex items-center justify-between border-b border-ink-200 bg-white/70 px-3 py-1.5">
               <span class="font-mono text-xs text-ink-500">terminal</span>

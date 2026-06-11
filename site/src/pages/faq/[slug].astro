@@ -1,0 +1,75 @@
+---
+import { getCollection, render } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import Footer from "../../components/Footer.astro";
+import Icon from "../../components/Icon.astro";
+import { mdToPlainText } from "../../lib/markdown-inline";
+import { faqSlug, faqUrl, faqMetaDescription } from "../../lib/faq";
+
+export async function getStaticPaths() {
+  const entries = (await getCollection("faq")).sort((a, b) => a.data.order - b.data.order);
+  return entries.map((entry) => ({
+    params: { slug: faqSlug(entry.id) },
+    props: { entry, entries },
+  }));
+}
+
+const { entry, entries } = Astro.props;
+const { Content } = await render(entry);
+const others = entries.filter((e) => e.id !== entry.id);
+
+const faqJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: [
+    {
+      "@type": "Question",
+      name: entry.data.question,
+      acceptedAnswer: { "@type": "Answer", text: mdToPlainText(entry.body ?? "") },
+    },
+  ],
+};
+---
+<BaseLayout
+  title={`${entry.data.question} — sync-worktrees FAQ`}
+  description={faqMetaDescription(entry.body ?? "")}
+  extraJsonLd={[faqJsonLd]}
+>
+  <main class="bg-white">
+    <div class="mx-auto max-w-3xl px-6 py-16 sm:py-24">
+      <nav class="flex items-center gap-2 text-sm" aria-label="Breadcrumb">
+        <a href="/" class="inline-flex items-center gap-2 font-medium text-ink-600 hover:text-ink-900">
+          <span class="inline-flex size-6 items-center justify-center rounded-md bg-ink-900 text-white">
+            <Icon name="git-branch" size={12} />
+          </span>
+          sync-worktrees
+        </a>
+        <span class="text-ink-300">/</span>
+        <a href="/#faq" class="text-ink-600 hover:text-ink-900">FAQ</a>
+      </nav>
+
+      <article class="mt-10">
+        <h1 class="text-balance text-3xl font-bold tracking-tight text-ink-900 sm:text-4xl">
+          {entry.data.question}
+        </h1>
+        <div class="prose prose-slate mt-6 max-w-none text-ink-700 prose-code:rounded prose-code:bg-ink-50 prose-code:px-1.5 prose-code:py-0.5 prose-code:font-mono prose-code:text-[0.85em] prose-code:before:content-none prose-code:after:content-none">
+          <Content />
+        </div>
+      </article>
+
+      <section class="mt-16 border-t border-ink-200 pt-8">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-ink-500">More questions</h2>
+        <ul class="mt-4 space-y-2 text-sm">
+          {others.map((e) => (
+            <li>
+              <a href={faqUrl(e.id)} class="font-medium text-ink-800 underline-offset-4 hover:underline">
+                {e.data.question}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </div>
+  </main>
+  <Footer />
+</BaseLayout>

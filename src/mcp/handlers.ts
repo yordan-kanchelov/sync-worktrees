@@ -237,12 +237,8 @@ export async function handleListWorktrees(
       configuredRepoNames.map((repoName) =>
         limit(async () => {
           try {
-            return [
-              repoName,
-              {
-                worktrees: await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit),
-              },
-            ] as const;
+            const worktrees = await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit);
+            return [repoName, { worktrees }] as const;
           } catch (err) {
             return [
               repoName,
@@ -259,8 +255,8 @@ export async function handleListWorktrees(
     return formatToolResponse({ repositories: Object.fromEntries(repositories) });
   }
 
-  const results = await listWorktreesForRepo(ctx, params.repoName, params.includeSize);
-  return formatToolResponse({ worktrees: results });
+  const worktrees = await listWorktreesForRepo(ctx, params.repoName, params.includeSize);
+  return formatToolResponse({ worktrees });
 }
 
 async function listWorktreesForRepo(
@@ -404,40 +400,6 @@ export async function handleCreateWorktree(
   });
 }
 
-export async function handleRemoveWorktree(
-  ctx: RepositoryContext,
-  params: { path: string; force?: boolean; repoName?: string },
-  _extra?: HandlerExtra,
-): Promise<CallToolResult> {
-  const { service, git } = await getReadyService(ctx, params.repoName, {
-    capability: "removeWorktree",
-    toolName: "remove_worktree",
-  });
-  ensureWorktreeModeService(service, "remove_worktree");
-
-  return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
-    if (!service.isInitialized()) {
-      await service.initializeUnlocked();
-    }
-    const removedPath = await ensureRepoWorktreePath(ctx, params, service, git);
-
-    if (!params.force) {
-      const status = await git.getFullWorktreeStatus(params.path, false);
-      if (!status.canRemove) {
-        throw new Error(`Cannot remove worktree: ${status.reasons.join(", ")}. Use force=true to override.`);
-      }
-    }
-
-    await git.removeWorktree(params.path);
-    ctx.invalidateDiscovered();
-
-    return formatToolResponse({
-      success: true,
-      removedPath,
-    });
-  });
-}
-
 export async function handleSync(
   ctx: RepositoryContext,
   params: { repoName?: string },
@@ -451,7 +413,6 @@ export async function handleSync(
   const dispose = attachProgressReporter(service, extra);
   try {
     const start = Date.now();
-    service.clearRecordedSkips();
     const result = await service.sync();
     if (!result.started) {
       throw new SyncInProgressError(ctx.getEntry(params.repoName)?.name ?? params.repoName ?? "unknown");
@@ -545,9 +506,15 @@ export async function handleLoadConfig(
   params: { configPath?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const configPath = params.configPath ?? process.env.SYNC_WORKTREES_CONFIG;
+  const configPath =
+    params.configPath ??
+    process.env.SYNC_WORKTREES_CONFIG ??
+    ctx.getConfigPath() ??
+    (await detectConfigFromLaunchCwd(ctx));
   if (!configPath) {
-    throw new Error("configPath required (or set SYNC_WORKTREES_CONFIG env var)");
+    throw new Error(
+      "configPath required (or set SYNC_WORKTREES_CONFIG env var, call detect_context with a path, or launch from a sync-worktrees workspace)",
+    );
   }
   await ctx.loadConfig(configPath);
   return formatToolResponse({
@@ -555,6 +522,20 @@ export async function handleLoadConfig(
     currentRepository: ctx.getCurrentRepo(),
     repositories: ctx.getRepositoryList(),
   });
+}
+
+async function detectConfigFromLaunchCwd(ctx: RepositoryContext): Promise<string | null> {
+  try {
+    const discovered = await ctx.detectFromPath(ctx.getLaunchCwd());
+    if (discovered.configPath) return discovered.configPath;
+    // detectFromPath only records configs that loaded successfully; a found
+    // but broken config would otherwise be invisible here. Return it so the
+    // loadConfig call surfaces the real parse error instead of the generic
+    // "configPath required" message.
+    return await ctx.findConfigUpward(ctx.getLaunchCwd());
+  } catch {
+    return null;
+  }
 }
 
 export async function handleSetCurrentRepository(

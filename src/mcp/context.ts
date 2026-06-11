@@ -24,7 +24,6 @@ export interface Capabilities {
   listWorktrees: CapabilityState;
   getStatus: CapabilityState;
   createWorktree: CapabilityState;
-  removeWorktree: CapabilityState;
   updateWorktree: CapabilityState;
   sync: CapabilityState;
   initialize: CapabilityState;
@@ -126,7 +125,6 @@ function emptyCapabilities(reason?: string): Capabilities {
     listWorktrees: { ...state },
     getStatus: { ...state },
     createWorktree: { ...state },
-    removeWorktree: { ...state },
     updateWorktree: { ...state },
     sync: { ...state },
     initialize: { ...state },
@@ -174,6 +172,10 @@ export class RepositoryContext {
 
   getLaunchCwd(): string {
     return this.launchCwd;
+  }
+
+  async findConfigUpward(startDir: string): Promise<string | null> {
+    return this.configLoader.findConfigUpward(startDir);
   }
 
   async loadConfig(configPath: string, options: { setDefaultCurrent?: boolean } = {}): Promise<RepositoryConfig[]> {
@@ -493,7 +495,6 @@ export class RepositoryContext {
       listWorktrees: { available: true },
       getStatus: { available: true },
       createWorktree: repoUrl !== null ? { available: true } : { available: false, reason: noUrlReason },
-      removeWorktree: { available: true },
       updateWorktree: { available: true },
       sync: { available: false, reason: "no config and no remote URL" },
       initialize: { available: false, reason: "no config and no remote URL" },
@@ -879,7 +880,6 @@ export class RepositoryContext {
       listWorktrees: { available: true },
       getStatus: { available: true },
       createWorktree: { available: false, reason: cloneModeReason },
-      removeWorktree: { available: false, reason: cloneModeReason },
       updateWorktree: { available: false, reason: cloneModeReason },
       sync: { available: true },
       initialize: { available: true },

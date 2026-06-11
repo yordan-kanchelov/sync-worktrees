@@ -58,6 +58,14 @@ describe("Integration Tests", () => {
     (fs.access as Mock<any>).mockResolvedValue(undefined);
     (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
     (fs.readdir as Mock<any>).mockResolvedValue(["main"]);
+    // Removal audit records gate destructive operations and are written via
+    // fs.open + appendFile + sync (durable append), not fs.appendFile.
+    (fs.open as Mock<any>).mockResolvedValue({
+      writeFile: vi.fn<any>().mockResolvedValue(undefined),
+      appendFile: vi.fn<any>().mockResolvedValue(undefined),
+      sync: vi.fn<any>().mockResolvedValue(undefined),
+      close: vi.fn<any>().mockResolvedValue(undefined),
+    });
   });
 
   describe("Full sync workflow", () => {
@@ -187,7 +195,8 @@ describe("Integration Tests", () => {
 
   describe("Complex scenarios", () => {
     it("should handle mixed operations: add, remove, and skip", async () => {
-      const config = createMockConfig({ runOnce: true, logger: mockLogger });
+      // Asserts the direct-delete mechanism; the trash pipeline has its own suites.
+      const config = createMockConfig({ runOnce: true, logger: mockLogger, trash: { enabled: false } });
 
       // Setup: existing worktrees include some to keep, some to remove
       (fs.readdir as Mock<any>).mockResolvedValue([
@@ -237,7 +246,7 @@ branch refs/heads/dirty-branch
           pathStr.includes("rebase-merge") ||
           pathStr.includes("rebase-apply")
         ) {
-          throw new Error("Not found");
+          throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
         }
         return undefined;
       });
@@ -353,10 +362,11 @@ branch refs/heads/dirty-branch
         ]),
       );
 
-      // Should remove old-feature with full path
-      expect(operationCalls).toContainEqual(["worktree", "remove", "/test/worktrees/old-feature", "--force"]);
+      // Should remove old-feature with full path (non-forced so git can refuse dirty worktrees)
+      expect(operationCalls).toContainEqual(["worktree", "remove", "/test/worktrees/old-feature"]);
 
       // Should NOT remove dirty-branch
+      expect(operationCalls).not.toContainEqual(["worktree", "remove", "/test/worktrees/dirty-branch"]);
       expect(operationCalls).not.toContainEqual(["worktree", "remove", "/test/worktrees/dirty-branch", "--force"]);
 
       // Should log warning about dirty-branch

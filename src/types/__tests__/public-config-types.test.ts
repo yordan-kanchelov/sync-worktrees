@@ -23,13 +23,15 @@ type CommonConfigKeys =
   | "debug"
   | "filesToCopyOnBranchCreate"
   | "hooks"
-  | "sparseCheckout";
+  | "sparseCheckout"
+  | "maintenance";
 type WorktreeOnlyConfigKeys =
   | "bareRepoDir"
   | "branchMaxAge"
   | "branchInclude"
   | "branchExclude"
-  | "updateExistingWorktrees";
+  | "updateExistingWorktrees"
+  | "trash";
 type CloneOnlyConfigKeys = "branch" | "depth";
 type DiscriminantConfigKeys = "mode";
 type BaseIdentityConfigKeys = "repoUrl" | "worktreeDir";
@@ -59,6 +61,15 @@ type _AllConfigKeysClassified = Expect<Equal<UnclassifiedConfigKeys, never>>;
 type PublicCommonShape = { [K in CommonConfigKeys]-?: Exclude<SyncWorktreesWorktreeRepository[K], undefined> };
 type InternalCommonShape = { [K in CommonConfigKeys]-?: Exclude<Config[K], undefined> };
 type _CommonFieldTypesMatch = Expect<Equal<PublicCommonShape, InternalCommonShape>>;
+
+// Same guard for worktree-only fields: dropping `trash` (or any of these) from
+// the public worktree repository type, or letting its type diverge from the
+// internal `Config`, must fail typecheck rather than slip through.
+type PublicWorktreeOnlyShape = {
+  [K in WorktreeOnlyConfigKeys]-?: Exclude<SyncWorktreesWorktreeRepository[K], undefined>;
+};
+type InternalWorktreeOnlyShape = { [K in WorktreeOnlyConfigKeys]-?: Exclude<Config[K], undefined> };
+type _WorktreeOnlyFieldTypesMatch = Expect<Equal<PublicWorktreeOnlyShape, InternalWorktreeOnlyShape>>;
 
 const minimalConfig = {
   repositories: [

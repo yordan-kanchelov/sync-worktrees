@@ -4,7 +4,7 @@ import * as path from "path";
 import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import { ConfigError } from "../errors";
+import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../errors";
 import { fileExists } from "../utils/file-exists";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { normalizeRepoUrlForComparison } from "../utils/git-url";
@@ -20,7 +20,6 @@ import type { Config, RepositoryConfig } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
-const ALL_REMOTE_BRANCHES_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";
 const SHALLOW_RELATION_DEEPEN_TARGETS = [50, 200, 1000] as const;
 
 export type CloneSkipReason =
@@ -182,50 +181,30 @@ export class CloneSyncService {
   }
 
   private buildCloneArgs(branch: string): string[] {
-    const args = ["--branch", branch, "--progress"];
+    const args = ["--branch", branch, "--single-branch", "--no-tags", "--progress"];
     if (this.config.depth !== undefined) {
-      args.push("--depth", String(this.config.depth), "--no-single-branch");
-    }
-    return args;
-  }
-
-  private async buildFetchArgs(git: SimpleGit): Promise<string[]> {
-    const args = ["origin", "--prune", "--progress"];
-    if (this.config.depth !== undefined && (await this.isShallowRepository(git))) {
       args.push("--depth", String(this.config.depth));
     }
     return args;
   }
 
-  private async ensureAllRemoteBranchesRefspec(git: SimpleGit): Promise<void> {
-    let fetchRefspecs: string[] = [];
-    try {
-      const output = await git.raw(["config", "--get-all", "remote.origin.fetch"]);
-      fetchRefspecs = output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
-    } catch {
-      fetchRefspecs = [];
-    }
-
-    if (fetchRefspecs.includes(ALL_REMOTE_BRANCHES_REFSPEC)) return;
-
-    const customRefspecs = fetchRefspecs.filter((refspec) => !this.isOriginRemoteBranchTrackingRefspec(refspec));
-
-    this.logger.info(`Configuring '${this.repoName}' to fetch all remote branches from origin.`);
-    await git.raw(["remote", "set-branches", "origin", "*"]);
-    for (const refspec of customRefspecs) {
-      await git.raw(["config", "--add", "remote.origin.fetch", refspec]);
-    }
+  private getBranchRefspec(branch: string): string {
+    return `+refs/heads/${branch}:refs/remotes/origin/${branch}`;
   }
 
-  private isOriginRemoteBranchTrackingRefspec(refspec: string): boolean {
-    const withoutForce = refspec.startsWith("+") ? refspec.slice(1) : refspec;
-    if (withoutForce.startsWith("^")) return false;
+  private async buildFetchArgs(git: SimpleGit, branch: string): Promise<string[]> {
+    const args = ["origin", "--prune", "--no-tags", "--progress"];
+    if (this.config.depth !== undefined && (await this.isShallowRepository(git))) {
+      args.push("--depth", String(this.config.depth));
+    }
+    args.push(this.getBranchRefspec(branch));
+    return args;
+  }
 
-    const [source, destination] = withoutForce.split(":");
-    return source.startsWith("refs/heads/") && destination?.startsWith("refs/remotes/origin/") === true;
+  private async configureSingleBranchRemote(git: SimpleGit, branch: string): Promise<void> {
+    await git.raw(["config", "--replace-all", "remote.origin.fetch", this.getBranchRefspec(branch)]);
+    await git.raw(["config", "--replace-all", "remote.origin.tagOpt", "--no-tags"]);
+    await this.deleteStaleRemoteTrackingRefs(git, branch);
   }
 
   private recordMissingRemoteRefSkip(branch: string): void {
@@ -241,7 +220,13 @@ export class CloneSyncService {
     fetchArgs: string[],
     worktreeDir: string,
     branch: string,
+    // checkoutBranch reports its own hard error — recording a "Skipping sync"
+    // skip there would double-report a user-initiated action as a sync skip.
+    recordSkip = true,
   ): Promise<{ skipped: boolean }> {
+    const recordMissing = (): void => {
+      if (recordSkip) this.recordMissingRemoteRefSkip(branch);
+    };
     try {
       await git.fetch(fetchArgs);
       return { skipped: false };
@@ -261,7 +246,7 @@ export class CloneSyncService {
           // classify it as a soft skip too, instead of letting it escape as a
           // hard failure.
           if (isMissingRemoteRefError(getErrorMessage(retryError))) {
-            this.recordMissingRemoteRefSkip(branch);
+            recordMissing();
             return { skipped: true };
           }
           // Otherwise propagate the retry error unchanged so the outer retry
@@ -270,7 +255,7 @@ export class CloneSyncService {
         }
       }
       if (isMissingRemoteRefError(message)) {
-        this.recordMissingRemoteRefSkip(branch);
+        recordMissing();
         return { skipped: true };
       }
       throw fetchError;
@@ -306,7 +291,7 @@ export class CloneSyncService {
     this.logger.info(
       `[deepen] Existing shallow clone for '${this.repoName}' has no configured depth; fetching full history...`,
     );
-    await git.fetch(["--unshallow"]);
+    await git.fetch(["--unshallow", "--no-tags"]);
   }
 
   private getDeepenTargets(): readonly number[] {
@@ -331,8 +316,9 @@ export class CloneSyncService {
       "--depth",
       String(targetDepth),
       "--prune",
+      "--no-tags",
       "--progress",
-      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+      this.getBranchRefspec(branch),
     ]);
   }
 
@@ -349,6 +335,213 @@ export class CloneSyncService {
     this.logger.info(`  ↳ resolved default branch: ${this.resolvedBranch}`);
     this.emitProgress({ phase: "branch", message: `Resolved default branch '${this.resolvedBranch}'` });
     return this.resolvedBranch;
+  }
+
+  private parseLsRemoteHeads(output: string): string[] {
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => line.split(/\s+/)[1] ?? "")
+      .filter((ref) => ref.startsWith("refs/heads/"))
+      .map((ref) => ref.slice("refs/heads/".length))
+      .filter((branch) => branch.length > 0);
+  }
+
+  async getRemoteBranches(): Promise<string[]> {
+    const worktreeDir = path.resolve(this.config.worktreeDir);
+    const repoArg = (await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR))) ? "origin" : this.config.repoUrl;
+    const git =
+      repoArg === "origin"
+        ? this.clientFor(worktreeDir, this.getFetchTimeoutMs())
+        : simpleGit(this.buildGitOptions(this.getFetchTimeoutMs())).env(this.buildGitEnv());
+    const output = await git.raw(["ls-remote", "--heads", repoArg]);
+    return this.parseLsRemoteHeads(output);
+  }
+
+  private async localBranchExists(git: SimpleGit, branch: string): Promise<boolean> {
+    try {
+      await git.raw(["show-ref", "--verify", `refs/heads/${branch}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async localBranchCanFastForward(git: SimpleGit, branch: string): Promise<boolean> {
+    const localRef = `refs/heads/${branch}`;
+    const remoteRef = `refs/remotes/origin/${branch}`;
+    let localSha: string;
+    let remoteSha: string;
+    try {
+      localSha = (await git.raw(["rev-parse", localRef])).trim();
+      remoteSha = (await git.raw(["rev-parse", remoteRef])).trim();
+    } catch {
+      return false;
+    }
+
+    if (localSha === remoteSha) return true;
+
+    try {
+      const mergeBase = (await git.raw(["merge-base", localRef, remoteRef])).trim();
+      return mergeBase === localSha;
+    } catch {
+      return false;
+    }
+  }
+
+  private async deleteRemoteTrackingRef(git: SimpleGit, refName: string): Promise<void> {
+    try {
+      await git.raw(["update-ref", "-d", refName]);
+    } catch {
+      // Stale remote refs are best-effort cleanup; sync correctness comes from the narrowed refspec.
+    }
+  }
+
+  private async deleteStaleRemoteTrackingRefs(git: SimpleGit, branch: string): Promise<void> {
+    let refsOutput: string;
+    try {
+      refsOutput = await git.raw(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]);
+    } catch {
+      return;
+    }
+
+    const keepRef = `refs/remotes/origin/${branch}`;
+    const refsToDelete = refsOutput
+      .split(/\r?\n/)
+      .map((ref) => ref.trim())
+      .filter((ref) => ref && ref !== keepRef && ref !== "refs/remotes/origin/HEAD");
+
+    for (const ref of refsToDelete) {
+      await this.deleteRemoteTrackingRef(git, ref);
+    }
+  }
+
+  private async restoreBranchAfterCheckoutFailure(
+    git: SimpleGit,
+    previousBranch: string,
+    attemptedBranch: string,
+  ): Promise<void> {
+    if (!previousBranch || previousBranch === "HEAD" || previousBranch === attemptedBranch) return;
+
+    try {
+      await git.raw(["switch", previousBranch]);
+    } catch (error) {
+      this.logger.warn(
+        `Failed to restore '${this.repoName}' to '${previousBranch}' after checkout failure: ${getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  async checkoutBranch(branch: string, options: { allowConfigDrift?: boolean } = {}): Promise<void> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    // Checkout is a convergence action by default: it brings an existing clone
+    // in line with the configured branch. Arbitrary targets would leave
+    // config.branch stale, so every later sync (and every restart) soft-skips
+    // with branch_mismatch after the refspec was already narrowed.
+    // allowConfigDrift is the TUI's explicit opt-out for branches it just
+    // created and pushed — the drift is then intentional and warned about.
+    const targetBranch = await this.resolveBranch();
+    if (branch !== targetBranch && !options.allowConfigDrift) {
+      throw new ConfigError(
+        this.config.branch
+          ? `Cannot switch '${this.repoName}' to '${branch}': clone mode tracks the configured branch '${targetBranch}'. Update 'branch' in the config file first, then run checkout to converge.`
+          : `Cannot switch '${this.repoName}' to '${branch}': no 'branch' is configured, so this clone tracks the remote default branch '${targetBranch}'. Set branch: "${branch}" in the config file first.`,
+        "CLONE_BRANCH_MISMATCH",
+      );
+    }
+
+    const worktreeDir = this.config.worktreeDir;
+    const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+    const originMismatch = await this.evaluateOriginMatch(git, worktreeDir);
+    if (originMismatch) {
+      throw new ConfigError(
+        `Cannot switch '${this.repoName}' to '${branch}': ${originMismatch.progressDetail}.`,
+        "ORIGIN_MISMATCH",
+      );
+    }
+
+    const currentBranch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    // On a detached HEAD `git switch` only warns about leaving commits behind,
+    // and the restore path below cannot return to "HEAD" — refuse instead of
+    // stranding commits in the reflog.
+    if (currentBranch === "HEAD") {
+      throw new GitOperationError(
+        "checkout",
+        `'${this.repoName}' is on a detached HEAD; check out a branch manually (preserving any local commits) before switching the tracked branch`,
+      );
+    }
+    if (currentBranch === branch) {
+      await this.configureSingleBranchRemote(git, branch);
+      this.resolvedBranch = branch;
+      this.pendingInitSkip = null;
+      this.warnConfigDriftAfterCheckout(branch, targetBranch);
+      return;
+    }
+
+    const isClean = await this.gitService.checkWorktreeStatus(worktreeDir);
+    if (!isClean) {
+      throw new WorktreeNotCleanError(worktreeDir, ["working tree has local changes"]);
+    }
+
+    // Converge shallow state like runSyncAttempt does: with no configured depth an
+    // existing shallow clone is unshallowed before the branch fetch, so switching
+    // branches doesn't leave the new branch shallow while the rest is full.
+    await this.unshallowIfDepthRemoved(git);
+
+    const fetchArgs = await this.buildFetchArgs(git, branch);
+    if ((await this.fetchWithRecovery(git, fetchArgs, worktreeDir, branch, false)).skipped) {
+      throw new GitOperationError("checkout", `origin/${branch} is missing for '${this.repoName}'`);
+    }
+    // Same post-fetch verify as runSyncAttempt: a fetch can succeed without
+    // materializing the ref, which would otherwise surface downstream as a
+    // misleading FastForwardError.
+    if (!(await this.hasRemoteBranch(git, branch))) {
+      throw new GitOperationError(
+        "checkout",
+        `origin/${branch} did not materialize after fetch for '${this.repoName}'`,
+      );
+    }
+
+    if (await this.localBranchExists(git, branch)) {
+      if (!(await this.localBranchCanFastForward(git, branch))) {
+        throw new FastForwardError(branch);
+      }
+
+      let switched = false;
+      try {
+        await git.raw(["switch", branch]);
+        switched = true;
+        await git.merge([`origin/${branch}`, "--ff-only"]);
+      } catch (error) {
+        if (switched) {
+          await this.restoreBranchAfterCheckoutFailure(git, currentBranch, branch);
+        }
+        throw error;
+      }
+    } else {
+      await git.raw(["switch", "-c", branch, "--track", `origin/${branch}`]);
+    }
+
+    await this.configureSingleBranchRemote(git, branch);
+    this.resolvedBranch = branch;
+    this.pendingInitSkip = null;
+    this.warnConfigDriftAfterCheckout(branch, targetBranch);
+  }
+
+  // resolvedBranch keeps in-session syncs on the new branch, but the config
+  // file still names the old one: the next process start will soft-skip with
+  // branch_mismatch on every tick until the config is updated.
+  private warnConfigDriftAfterCheckout(branch: string, targetBranch: string): void {
+    if (branch === targetBranch) return;
+    this.logger.warn(
+      `⚠️ '${this.repoName}' now tracks '${branch}', but the config ${
+        this.config.branch ? `still says branch '${targetBranch}'` : `resolves the remote default '${targetBranch}'`
+      }. Set branch: "${branch}" in the config file — after a restart every sync will soft-skip with branch_mismatch until it matches.`,
+    );
   }
 
   async initialize(outcome?: SyncOutcomeAccumulator): Promise<void> {
@@ -377,7 +570,7 @@ export class CloneSyncService {
         return;
       }
       const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
-      await this.ensureAllRemoteBranchesRefspec(git);
+      await this.configureSingleBranchRemote(git, branch);
       this.initialized = true;
       this.emitProgress({ phase: "clone", message: `Existing clone validated for '${this.repoName}'` });
       return;
@@ -412,7 +605,7 @@ export class CloneSyncService {
     }
 
     const worktreeGit = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
-    await this.ensureAllRemoteBranchesRefspec(worktreeGit);
+    await this.configureSingleBranchRemote(worktreeGit, branch);
 
     this.logger.info(`✅ Clone successful.`);
     this.emitProgress({ phase: "clone", message: `Clone successful for '${this.repoName}'` });
@@ -612,7 +805,8 @@ export class CloneSyncService {
     if (currentBranch !== branch) {
       this.recordSkip(
         { kind: "branch_mismatch", phase: "sync", currentBranch, expectedBranch: branch },
-        `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge.`,
+        `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge. ` +
+          `Update 'branch' in the config or switch the clone back.`,
         `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
       );
       return;
@@ -633,14 +827,14 @@ export class CloneSyncService {
 
     await this.unshallowIfDepthRemoved(git);
 
-    await this.ensureAllRemoteBranchesRefspec(git);
+    await this.configureSingleBranchRemote(git, branch);
 
-    const fetchArgs = await this.buildFetchArgs(git);
-    this.emitProgress({ phase: "fetch", message: `Fetching origin branches for '${this.repoName}'` });
+    const fetchArgs = await this.buildFetchArgs(git, branch);
+    this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
     if ((await this.fetchWithRecovery(git, fetchArgs, worktreeDir, branch)).skipped) {
       return;
     }
-    this.emitProgress({ phase: "fetch", message: `Fetched origin branches for '${this.repoName}'` });
+    this.emitProgress({ phase: "fetch", message: `Fetched origin/${branch} for '${this.repoName}'` });
 
     if (!(await this.hasRemoteBranch(git, branch))) {
       this.recordSkip(

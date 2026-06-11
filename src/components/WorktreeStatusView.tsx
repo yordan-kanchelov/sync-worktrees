@@ -56,9 +56,15 @@ const getStatusFlags = (status: WorktreeStatusResult): React.ReactNode => {
   }
   if (status.hasUnpushedCommits) {
     flags.push(
-      <Text key="unpushed" color="cyan">
-        ↑
-      </Text>,
+      status.fullyPushedUpstreamDeleted ? (
+        <Text key="unpushed" color="green">
+          ⇡
+        </Text>
+      ) : (
+        <Text key="unpushed" color="cyan">
+          ↑
+        </Text>
+      ),
     );
   }
   if (status.hasStashedChanges) {
@@ -103,7 +109,11 @@ const getStatusSummary = (status: WorktreeStatusResult): string => {
     if (fileCount > 0) parts.push(`${fileCount} changed`);
   }
   if (status.hasUnpushedCommits && details?.unpushedCommitCount) {
-    parts.push(`${details.unpushedCommitCount} unpushed`);
+    parts.push(
+      status.fullyPushedUpstreamDeleted
+        ? "pushed, remote branch deleted"
+        : `${details.unpushedCommitCount} unpushed`,
+    );
   }
   if (status.hasStashedChanges && details?.stashCount) {
     parts.push(`${details.stashCount} stash`);
@@ -447,9 +457,16 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
             {details.renamedFiles > 0 && <Text color="blue"> Renamed: {details.renamedFiles}</Text>}
             {details.untrackedFiles > 0 && <Text color="gray"> Untracked: {details.untrackedFiles}</Text>}
             {details.conflictedFiles > 0 && <Text color="red"> Conflicted: {details.conflictedFiles}</Text>}
-            {(details.unpushedCommitCount ?? 0) > 0 && (
-              <Text color="cyan"> Unpushed commits: {details.unpushedCommitCount}</Text>
-            )}
+            {(details.unpushedCommitCount ?? 0) > 0 &&
+              (status.fullyPushedUpstreamDeleted ? (
+                <Text color="green">
+                  {" "}
+                  Fully pushed before remote branch deletion ({details.unpushedCommitCount} commit
+                  {details.unpushedCommitCount === 1 ? "" : "s"} not on any remote — likely squash-merged)
+                </Text>
+              ) : (
+                <Text color="cyan"> Unpushed commits: {details.unpushedCommitCount}</Text>
+              ))}
             {(details.stashCount ?? 0) > 0 && <Text color="magenta"> Stashes: {details.stashCount}</Text>}
             {details.operationType && <Text color="red"> Operation: {details.operationType}</Text>}
             {details.modifiedSubmodules && details.modifiedSubmodules.length > 0 && (

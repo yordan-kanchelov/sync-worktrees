@@ -140,7 +140,10 @@ describe("InteractiveUIService", () => {
       initialize: vi.fn<any>().mockResolvedValue(undefined),
       initializeUnlocked: vi.fn<any>().mockResolvedValue(undefined),
       isInitialized: vi.fn<any>().mockReturnValue(false),
+      isCloneMode: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+      getRemoteBranches: vi.fn<any>(),
+      checkoutBranch: vi.fn<any>().mockResolvedValue(undefined),
       runQueuedRepoOperation: vi
         .fn<any>()
         .mockImplementation(async (op: any) => ({ started: true, value: await op() })),
@@ -1474,6 +1477,7 @@ describe("InteractiveUIService", () => {
       };
 
       mockSyncService.getGitService = vi.fn().mockReturnValue(mockGitService);
+      mockSyncService.getRemoteBranches = vi.fn().mockResolvedValue(["main", "develop", "feature/test"]);
     });
 
     describe("getRepositoryList", () => {
@@ -1597,7 +1601,7 @@ describe("InteractiveUIService", () => {
         const branches = await service.getBranchesForRepo(0);
 
         expect(branches).toEqual(["main", "develop", "feature/test"]);
-        expect(mockGitService.getRemoteBranches).toHaveBeenCalled();
+        expect(mockSyncService.getRemoteBranches).toHaveBeenCalled();
 
         service.destroy();
       });
@@ -1608,7 +1612,35 @@ describe("InteractiveUIService", () => {
         const branches = await service.getBranchesForRepo(0);
 
         expect(branches).toEqual([]);
-        expect(mockGitService.getRemoteBranches).not.toHaveBeenCalled();
+        expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+
+      it("should discover remote branches for uninitialized clone-mode repos", async () => {
+        mockSyncService.isInitialized.mockReturnValue(false);
+        mockSyncService.isCloneMode.mockReturnValue(true);
+        mockSyncService.getRemoteBranches.mockResolvedValue(["main", "feature/fresh-clone"]);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const branches = await service.getBranchesForRepo(0);
+
+        expect(branches).toEqual(["main", "feature/fresh-clone"]);
+        expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
+
+        service.destroy();
+      });
+
+      it("should return empty array if uninitialized clone-mode branch discovery fails", async () => {
+        mockSyncService.isInitialized.mockReturnValue(false);
+        mockSyncService.isCloneMode.mockReturnValue(true);
+        mockSyncService.getRemoteBranches.mockRejectedValue(new Error("ls-remote failed"));
+        const service = new InteractiveUIService([mockSyncService]);
+
+        const branches = await service.getBranchesForRepo(0);
+
+        expect(branches).toEqual([]);
+        expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
 
         service.destroy();
       });
@@ -1792,6 +1824,24 @@ describe("InteractiveUIService", () => {
         service.destroy();
       });
 
+      it("should checkout the branch for clone-mode repositories", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          isCloneMode: vi.fn().mockReturnValue(true),
+          checkoutBranch: vi.fn().mockResolvedValue(undefined),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        await service.createWorktreeForBranch(0, "feature/new");
+
+        // allowConfigDrift: the wizard just created+pushed this branch, so the
+        // switch is intentional drift from config.branch (warned downstream).
+        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new", { allowConfigDrift: true });
+        expect(mockGitService.addWorktree).not.toHaveBeenCalled();
+
+        service.destroy();
+      });
+
       it("should throw error for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
@@ -1856,6 +1906,19 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockSyncService]);
         await expect(service.fetchForRepo(0)).rejects.toThrow(/repository lock/i);
+
+        service.destroy();
+      });
+
+      it("is a no-op for clone-mode repos (branch discovery is live at picker open)", async () => {
+        mockSyncService.isInitialized = vi.fn().mockReturnValue(true);
+        mockSyncService.isCloneMode = vi.fn().mockReturnValue(true);
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await service.fetchForRepo(0);
+
+        expect(mockGitService.fetchAll).not.toHaveBeenCalled();
+        expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
 
         service.destroy();
       });

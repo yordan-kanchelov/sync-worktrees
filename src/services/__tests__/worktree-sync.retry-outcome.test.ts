@@ -25,6 +25,7 @@ vi.mock("../git.service", () => ({
       isInitialized: vi.fn(() => true),
       setLfsSkipEnabled: mocks.setLfsSkipEnabled,
       updateLogger: vi.fn(),
+      setStaleDirectoryTrasher: vi.fn(),
     };
   }),
 }));

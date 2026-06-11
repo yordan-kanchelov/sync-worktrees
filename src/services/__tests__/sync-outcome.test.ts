@@ -78,7 +78,7 @@ describe("SyncOutcomeAccumulator", () => {
       reason: "clone_branch_mismatch",
       branch: "main",
       path: "/repo/clone",
-      message: "clone is on 'feature', expected 'main'",
+      message: "clone is on 'feature', expected 'main' — update 'branch' in the config or switch the clone back",
     });
   });
 });

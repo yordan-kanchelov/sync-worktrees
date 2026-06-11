@@ -4,8 +4,8 @@ export function formatCloneSkipReason(reason: CloneSkipReason): string {
   switch (reason.kind) {
     case "branch_mismatch":
       return reason.phase === "init"
-        ? `clone is on '${reason.currentBranch}', expected '${reason.expectedBranch}' (since process start)`
-        : `clone is on '${reason.currentBranch}', expected '${reason.expectedBranch}'`;
+        ? `clone is on '${reason.currentBranch}', expected '${reason.expectedBranch}' (since process start) — update 'branch' in the config or switch the clone back`
+        : `clone is on '${reason.currentBranch}', expected '${reason.expectedBranch}' — update 'branch' in the config or switch the clone back`;
     case "head_unreadable":
       return `could not read HEAD: ${reason.error}`;
     case "dirty_tree":

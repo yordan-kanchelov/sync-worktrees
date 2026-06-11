@@ -3,11 +3,13 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
-import { WorktreeError } from "../errors";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
+import { probePathExists } from "../utils/file-exists";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
+import { quarantineDirectory } from "../utils/quarantine";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import { Logger } from "./logger.service";
@@ -537,9 +539,12 @@ export class GitService {
       } else {
         // Directory exists but is not a valid worktree - clean it up
         this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}'`);
-        await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
+        await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof GitOperationError || error instanceof WorktreeError) {
+        throw error;
+      }
       // Directory doesn't exist, which is expected - continue with creation
     }
 
@@ -599,12 +604,7 @@ export class GitService {
 
         this.logger.warn(`  - Worktree already registered but missing. Pruning and retrying...`);
         await bareGit.raw(["worktree", "prune"]);
-        // Clean up directory if it exists
-        try {
-          await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
-        } catch {
-          // Directory might not exist, ignore
-        }
+        await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
         let retryCreatedNewBranch = false;
         try {
           const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
@@ -664,9 +664,12 @@ export class GitService {
         } else {
           // Directory exists but is not a valid worktree - clean it up
           this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}' before fallback attempt`);
-          await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
+          await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof GitOperationError || error instanceof WorktreeError) {
+          throw error;
+        }
         // Directory doesn't exist, which is expected - continue with fallback
       }
 
@@ -797,10 +800,25 @@ export class GitService {
     return wrapped;
   }
 
-  async removeWorktree(worktreePath: string): Promise<void> {
+  async removeWorktree(worktreePath: string, options?: { force?: boolean }): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
 
-    await bareGit.raw(["worktree", "remove", worktreePath, "--force"]);
+    // Non-forced by default: git's own refusal to delete a dirty worktree is
+    // the last line of defense when our status checks were wrong. --force is
+    // reserved for callers that already preserved the data (diverged flow) or
+    // explicit user override.
+    const args = ["worktree", "remove", worktreePath];
+    if (options?.force) args.push("--force");
+
+    try {
+      await bareGit.raw(args);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (!options?.force && /contains modified or untracked files|use --force/i.test(message)) {
+        throw new WorktreeNotCleanError(worktreePath, [`git refused removal: ${message}`]);
+      }
+      throw error;
+    }
     this.logger.info(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
 
     // Clean up metadata using the worktree path
@@ -815,6 +833,133 @@ export class GitService {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     await bareGit.raw(["worktree", "prune"]);
     this.logger.info("Pruned worktree metadata.");
+  }
+
+  async updateRef(refName: string, sha: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["update-ref", refName, sha]);
+  }
+
+  async deleteRef(refName: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["update-ref", "-d", refName]);
+  }
+
+  async listRefs(prefix: string): Promise<string[]> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const raw = await bareGit.raw(["for-each-ref", "--format=%(refname)", prefix]);
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+
+  async localBranchExists(branchName: string): Promise<boolean> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    try {
+      await bareGit.raw(["show-ref", "--verify", "--quiet", `${GIT_CONSTANTS.REFS.HEADS}${branchName}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getLocalBranchCommit(branchName: string): Promise<string | null> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    try {
+      return (await bareGit.raw(["rev-parse", `${GIT_CONSTANTS.REFS.HEADS}${branchName}^{commit}`])).trim();
+    } catch {
+      return null;
+    }
+  }
+
+  async createBranchAt(branchName: string, sha: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["branch", branchName, sha]);
+  }
+
+  async deleteLocalBranch(branchName: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["branch", "-D", branchName]);
+  }
+
+  // Bundles only commits not reachable from any remote — for fully-pushed
+  // refs that set is empty and `bundle create` would fail. Emptiness is
+  // pre-checked with rev-list (locale-independent) instead of parsing git's
+  // localized "empty bundle" stderr; after the pre-check, any bundle-create
+  // error is a real failure the caller must treat as fail-closed.
+  async createBundleFromRef(bundlePath: string, refName: string): Promise<boolean> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const count = (await bareGit.raw(["rev-list", "--count", refName, "--not", "--remotes"])).trim();
+    if (count === "0") {
+      return false;
+    }
+    await bareGit.raw(["bundle", "create", bundlePath, refName, "--not", "--remotes"]);
+    return true;
+  }
+
+  // Registers the worktree and writes its .git link without populating files —
+  // restore overlays the preserved payload instead of a fresh checkout.
+  async addWorktreeNoCheckout(branchName: string, worktreePath: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const absoluteWorktreePath = path.resolve(worktreePath);
+    await fs.mkdir(path.dirname(absoluteWorktreePath), { recursive: true });
+    await bareGit.raw(["worktree", "add", "--no-checkout", absoluteWorktreePath, branchName]);
+  }
+
+  // Mixed reset: points the index at HEAD without touching working files, so
+  // overlaid payload content shows up as ordinary uncommitted changes.
+  async resetWorktreeIndex(worktreePath: string): Promise<void> {
+    const worktreeGit = this.getCachedGit(worktreePath);
+    await worktreeGit.raw(["reset"]);
+  }
+
+  // Injected by WorktreeSyncService when trash is enabled, so stale-directory
+  // cleanup follows the same reversible-removal pipeline as everything else.
+  // GitService cannot own a TrashService directly (TrashService depends on it).
+  private staleDirectoryTrasher: ((dirPath: string) => Promise<string>) | null = null;
+
+  setStaleDirectoryTrasher(trasher: (dirPath: string) => Promise<string>): void {
+    this.staleDirectoryTrasher = trasher;
+  }
+
+  // A stale directory that contains a .git may be a live checkout that git
+  // failed to report; quarantine it instead of deleting.
+  private async clearStaleWorktreeDirectory(absoluteWorktreePath: string): Promise<void> {
+    const gitProbe = await probePathExists(path.join(absoluteWorktreePath, PATH_CONSTANTS.GIT_DIR));
+
+    if (gitProbe === "unknown") {
+      throw new GitOperationError(
+        "clear-stale-directory",
+        `Cannot verify whether '${absoluteWorktreePath}' is a live checkout; refusing to clear it`,
+      );
+    }
+
+    if (this.staleDirectoryTrasher) {
+      try {
+        const trashPath = await this.staleDirectoryTrasher(absoluteWorktreePath);
+        this.logger.info(`  - Moved stale directory at '${absoluteWorktreePath}' to trash ('${trashPath}')`);
+        return;
+      } catch (error) {
+        // Cannot preserve it -> refuse to clear it (the caller's worktree
+        // creation fails rather than silently deleting unknown content).
+        throw new GitOperationError(
+          "clear-stale-directory",
+          `Cannot move stale directory '${absoluteWorktreePath}' to trash: ${getErrorMessage(error)}`,
+          error instanceof Error ? error : undefined,
+        );
+      }
+    }
+
+    if (gitProbe === "exists") {
+      const quarantinePath = await quarantineDirectory(absoluteWorktreePath);
+      this.logger.warn(
+        `  - ⚠️ Directory at '${absoluteWorktreePath}' contains a .git; quarantined to '${quarantinePath}' instead of deleting.`,
+      );
+      return;
+    }
+
+    await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
   }
 
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {
@@ -836,7 +981,39 @@ export class GitService {
 
   async getFullWorktreeStatus(worktreePath: string, includeDetails = false): Promise<WorktreeStatusResult> {
     const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
-    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails, metadata?.lastSyncCommit);
+    return this.statusService.getFullWorktreeStatus(
+      worktreePath,
+      includeDetails,
+      metadata?.lastSyncCommit,
+      metadata?.lastKnownRemoteTip,
+    );
+  }
+
+  /** Map of remote branch name (without "origin/") → tip oid, from the bare repo. */
+  async getRemoteBranchTips(): Promise<Map<string, string>> {
+    const git = this.getGit();
+    const raw = await git.raw(["for-each-ref", "--format=%(refname:short) %(objectname)", GIT_CONSTANTS.REFS.REMOTES]);
+    const tips = new Map<string, string>();
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const spaceIdx = trimmed.lastIndexOf(" ");
+      if (spaceIdx <= 0) continue;
+      const ref = trimmed.slice(0, spaceIdx);
+      const oid = trimmed.slice(spaceIdx + 1);
+      if (!ref.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) || ref === `${GIT_CONSTANTS.REMOTE_PREFIX}HEAD`) continue;
+      tips.set(ref.slice(GIT_CONSTANTS.REMOTE_PREFIX.length), oid);
+    }
+    return tips;
+  }
+
+  async recordRemoteTip(worktreePath: string, branchName: string, oid: string): Promise<void> {
+    await this.metadataService.recordRemoteTip(
+      this.bareRepoPath,
+      worktreePath,
+      `${GIT_CONSTANTS.REMOTE_PREFIX}${branchName}`,
+      oid,
+    );
   }
 
   async hasModifiedSubmodules(worktreePath: string): Promise<boolean> {
