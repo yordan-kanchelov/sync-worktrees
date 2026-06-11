@@ -16,6 +16,7 @@ vi.mock("../git.service", () => ({
       initialize: vi.fn(),
       isInitialized: vi.fn(() => true),
       updateLogger: vi.fn(),
+      setStaleDirectoryTrasher: vi.fn(),
     };
   }),
 }));

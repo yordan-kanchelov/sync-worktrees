@@ -9,7 +9,6 @@ import {
   handleInitialize,
   handleListWorktrees,
   handleLoadConfig,
-  handleRemoveWorktree,
   handleSetCurrentRepository,
   handleSync,
   handleUpdateWorktree,
@@ -111,7 +110,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
           .boolean()
           .optional()
           .describe(
-            "Enrich entries with label, divergence, staleHint. Adds 1 git status + rev-list per worktree. Default: false.",
+            "Enrich entries with label, divergence, staleHint. Adds 1 git status + rev-list per worktree. Labels here are metadata-blind (no sync metadata is loaded), so a fully-pushed branch whose remote was deleted shows 'dirty'; list_worktrees gives the authoritative label/safeToRemove. Default: false.",
           ),
       },
       annotations: {
@@ -199,30 +198,6 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
   );
 
   server.registerTool(
-    "remove_worktree",
-    {
-      description:
-        "Remove worktree. Safety checks reject if dirty, unpushed commits, stashes, or op in progress (merge/rebase/cherry-pick/revert/bisect). force=true: `git worktree remove --force` DELETES uncommitted/untracked files in dir; branch ref + stashes + remote preserved. Returns: {success, removedPath}.",
-      inputSchema: {
-        path: z.string().describe(`Worktree path to remove. ${PATH_DESCRIBE_SUFFIX}`),
-        force: z
-          .boolean()
-          .optional()
-          .describe("Skip safety checks; deletes uncommitted/untracked files. Branch ref preserved. Default: false."),
-        repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
-      },
-      annotations: {
-        title: "Remove worktree",
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
-    },
-    wrapHandler((params, extra) => handleRemoveWorktree(context, params, extra)),
-  );
-
-  server.registerTool(
     "sync",
     {
       description:
@@ -284,12 +259,14 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "load_config",
     {
       description:
-        "Load/reload sync-worktrees JS config into session. Replaces previously loaded repos. Call before sync/initialize/create_worktree in config-driven workflow. Returns: {configPath, currentRepository, repositories: [{name, repoUrl, worktreeDir, source}]}.",
+        "Load/reload sync-worktrees JS config into session. Replaces previously loaded repos. Uses configPath, SYNC_WORKTREES_CONFIG, an already detected config, or a launch-CWD auto-detect fallback. For first discovery from an arbitrary project path, call detect_context with path. Returns: {configPath, currentRepository, repositories: [{name, repoUrl, worktreeDir, source}]}.",
       inputSchema: {
         configPath: z
           .string()
           .optional()
-          .describe("Config file path. Falls back to SYNC_WORKTREES_CONFIG env var. Errors if neither set."),
+          .describe(
+            "Config file path. Falls back to SYNC_WORKTREES_CONFIG, an already detected config, or launch-CWD auto-detect.",
+          ),
       },
       annotations: {
         title: "Load sync-worktrees config",

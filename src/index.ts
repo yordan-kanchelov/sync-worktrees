@@ -33,6 +33,7 @@ export type {
   SyncWorktreesRetryConfig,
   SyncWorktreesSparseCheckoutConfig,
   SyncWorktreesSparseCheckoutMode,
+  SyncWorktreesTrashConfig,
 } from "./types";
 
 const signalHandle = setupSignalHandlers();

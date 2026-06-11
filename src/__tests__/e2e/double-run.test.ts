@@ -161,12 +161,18 @@ describe("Double run E2E test", () => {
     expect(secondRun).toContain("Synchronization finished");
     expect(secondRun).not.toContain("Error during worktree synchronization");
 
-    // The orphaned HEAD directory should be cleaned up
+    // The orphaned HEAD directory should be preserved in trash instead of blocking the run.
     expect(secondRun).toContain("orphaned directories");
-    expect(secondRun).toContain("Removed orphaned directory: HEAD");
+    expect(secondRun).toContain("Moved orphaned directory 'HEAD' to trash");
 
-    // Verify HEAD directory was removed
     const worktrees = await fs.readdir(worktreeDir);
     expect(worktrees).not.toContain("HEAD");
+
+    const trashEntries = await fs.readdir(path.join(worktreeDir, ".trash"));
+    const headTrashEntry = trashEntries.find((entry) => entry.includes("-HEAD-"));
+    expect(headTrashEntry).toBeDefined();
+    await expect(
+      fs.readFile(path.join(worktreeDir, ".trash", headTrashEntry!, "payload", "dummy.txt"), "utf8"),
+    ).resolves.toBe("This simulates a mistakenly created HEAD worktree");
   }, 30000);
 });

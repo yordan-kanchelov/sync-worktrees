@@ -46,6 +46,10 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
       isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
+      // The trash-disabled diverged flow pins a keep ref and deletes the stale
+      // local branch before recreating the worktree.
+      updateRef: vi.fn<any>().mockResolvedValue(undefined),
+      deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
       getGit: vi.fn<any>(),
     } as any,
   };
@@ -67,6 +71,15 @@ describe("Rebased Branch Handling", () => {
     vi.clearAllMocks();
     mockLogger = createMockLogger();
 
+    // Removal audit records gate destructive operations and are written via
+    // fs.open + appendFile + sync (durable append), not fs.appendFile.
+    (fs.open as Mock<any>).mockImplementation(async () => ({
+      writeFile: vi.fn<any>().mockResolvedValue(undefined),
+      appendFile: vi.fn<any>().mockResolvedValue(undefined),
+      sync: vi.fn<any>().mockResolvedValue(undefined),
+      close: vi.fn<any>().mockResolvedValue(undefined),
+    }));
+
     mockConfig = {
       repoUrl: "https://github.com/test/repo.git",
       worktreeDir: "/test/worktrees",
@@ -74,6 +87,9 @@ describe("Rebased Branch Handling", () => {
       runOnce: true,
       updateExistingWorktrees: true,
       logger: mockLogger,
+      // These suites assert the direct .diverged/ mechanism; the trash
+      // pipeline has its own suites.
+      trash: { enabled: false },
     };
 
     mockGitService = mockGitServiceInstance;
@@ -183,7 +199,9 @@ describe("Rebased Branch Handling", () => {
           /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-with-local-changes-[a-z0-9]{8}-[a-z0-9]+$/,
         ),
       );
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-with-local-changes");
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-with-local-changes", {
+        force: true,
+      });
       expect(mockGitService.addWorktree).toHaveBeenCalledWith(
         "feature-with-local-changes",
         "/test/worktrees/feature-with-local-changes",
@@ -221,7 +239,9 @@ describe("Rebased Branch Handling", () => {
           /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-no-metadata-[a-z0-9]{8}-[a-z0-9]+$/,
         ),
       );
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-no-metadata");
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-no-metadata", {
+        force: true,
+      });
       expect(mockGitService.addWorktree).toHaveBeenCalledWith(
         "feature-no-metadata",
         "/test/worktrees/feature-no-metadata",
@@ -287,7 +307,7 @@ describe("Rebased Branch Handling", () => {
         expect.stringContaining("diverged-history-with-changes"),
       );
 
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged");
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged", { force: true });
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-diverged", "/test/worktrees/feature-diverged");
     });
   });
@@ -313,7 +333,12 @@ describe("Rebased Branch Handling", () => {
     it("should ignore .diverged directory during cleanup", async () => {
       await service.initialize();
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+        if ((target as string).endsWith("/.git")) {
+          throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+        }
+        return undefined;
+      });
 
       (fs.readdir as Mock<any>).mockImplementation(async (path) => {
         if (path === "/test/worktrees") {
@@ -474,7 +499,9 @@ describe("Rebased Branch Handling", () => {
         ),
       );
 
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind", {
+        force: true,
+      });
       expect(mockGitService.addWorktree).toHaveBeenCalledWith(
         "feature-diverged-behind",
         "/test/worktrees/feature-diverged-behind",
@@ -525,7 +552,9 @@ describe("Rebased Branch Handling", () => {
         ),
       );
 
-      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind", {
+        force: true,
+      });
       expect(mockGitService.addWorktree).toHaveBeenCalledWith(
         "feature-diverged-behind",
         "/test/worktrees/feature-diverged-behind",

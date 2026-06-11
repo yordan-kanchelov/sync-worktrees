@@ -12,6 +12,7 @@ function makeStatus(overrides: Partial<WorktreeStatusResult> = {}): WorktreeStat
     hasOperationInProgress: false,
     hasModifiedSubmodules: false,
     upstreamGone: false,
+    fullyPushedUpstreamDeleted: false,
     canRemove: true,
     reasons: [],
     ...overrides,
@@ -37,6 +38,17 @@ describe("deriveLabel", () => {
 
   it("returns 'clean' when all good", () => {
     expect(deriveLabel(makeStatus(), false)).toBe("clean");
+  });
+
+  // Squash-merge case: commits absent from every remote, but proven fully
+  // pushed before the remote branch was deleted — unpushed must not block.
+  it("returns 'stale', not 'dirty', when unpushed commits are fully-pushed-before-upstream-deletion", () => {
+    expect(
+      deriveLabel(
+        makeStatus({ hasUnpushedCommits: true, upstreamGone: true, fullyPushedUpstreamDeleted: true }),
+        false,
+      ),
+    ).toBe("stale");
   });
 });
 
@@ -71,5 +83,13 @@ describe("deriveSafeToRemove", () => {
     const result = deriveSafeToRemove(makeStatus({ canRemove: false }));
     expect(result.safe).toBe(false);
     expect(result.reason).toBe("not safe to remove");
+  });
+
+  it("safe when fully pushed before upstream deletion — overrides the upstream-gone caution", () => {
+    const result = deriveSafeToRemove(
+      makeStatus({ hasUnpushedCommits: true, upstreamGone: true, fullyPushedUpstreamDeleted: true, canRemove: true }),
+    );
+    expect(result.safe).toBe(true);
+    expect(result.reason).toContain("fully pushed");
   });
 });

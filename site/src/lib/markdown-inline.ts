@@ -10,7 +10,7 @@ function escapeHtml(s: string): string {
 export function inlineCodeToHtml(s: string): string {
   return escapeHtml(s).replace(
     /`([^`]+)`/g,
-    '<code class="font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded">$1</code>',
+    '<code class="whitespace-nowrap font-mono text-sm bg-ink-50 px-1.5 py-0.5 rounded">$1</code>',
   );
 }
 

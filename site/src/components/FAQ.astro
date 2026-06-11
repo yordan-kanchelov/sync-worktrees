@@ -1,11 +1,13 @@
 ---
 import { getCollection, render } from "astro:content";
 import Icon from "./Icon.astro";
+import { faqUrl } from "../lib/faq";
 
 const entries = (await getCollection("faq")).sort((a, b) => a.data.order - b.data.order);
 const faqs = await Promise.all(
   entries.map(async (entry) => ({
     question: entry.data.question,
+    url: faqUrl(entry.id),
     Content: (await render(entry)).Content,
   })),
 );
@@ -22,7 +24,7 @@ const faqs = await Promise.all(
     </div>
 
     <div class="mt-12 divide-y divide-ink-200 rounded-2xl border border-ink-200 bg-white shadow-sm">
-      {faqs.map(({ question, Content }) => (
+      {faqs.map(({ question, url, Content }) => (
         <details class="group p-6 first:rounded-t-2xl last:rounded-b-2xl">
           <summary class="flex cursor-pointer items-start justify-between gap-4 text-left">
             <span class="text-base font-semibold text-ink-900">{question}</span>
@@ -32,6 +34,9 @@ const faqs = await Promise.all(
           </summary>
           <div class="mt-3 text-sm leading-relaxed text-ink-600 [&_p]:m-0 [&_code]:rounded [&_code]:bg-ink-50 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.85em]">
             <Content />
+            <p class="!mt-3">
+              <a href={url} class="font-medium text-ink-800 underline-offset-4 hover:underline">Permalink to this answer →</a>
+            </p>
           </div>
         </details>
       ))}

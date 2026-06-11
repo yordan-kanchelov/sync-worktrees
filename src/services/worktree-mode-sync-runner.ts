@@ -3,12 +3,18 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
+import { probePathExists } from "../utils/file-exists";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
+import { getRemovalAuditLogPath } from "../utils/lock-path";
+import { quarantineDirectory } from "../utils/quarantine";
 
 import { PathResolutionService } from "./path-resolution.service";
+import { RemovalAuditService } from "./removal-audit.service";
+import { TrashService } from "./trash.service";
 import { createWorktreeSyncPlan } from "./worktree-sync-planner";
 
 import type { GitService } from "./git.service";
@@ -16,23 +22,31 @@ import type { Logger } from "./logger.service";
 import type { ProgressEmitter } from "./progress-emitter";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
 import type { SyncRetryContext } from "./sync-retry-policy";
-import type { WorktreeStatusDetails } from "./worktree-status.service";
+import type { TrashManifest } from "./trash.service";
+import type { WorktreeStatusDetails, WorktreeStatusResult } from "./worktree-status.service";
 import type { CreateAction, PruneAction, SparseAction, SyncPlan, UpdateAction } from "./worktree-sync-planner";
 import type { Config } from "../types";
 import type { PhaseTimer } from "../utils/timing";
 
 export class WorktreeModeSyncRunner {
   private pathResolution = new PathResolutionService();
+  private removalAudit: RemovalAuditService;
+  private trashService: TrashService;
 
   constructor(
     private config: Config,
     private gitService: GitService,
     private logger: Logger,
     private progressEmitter: ProgressEmitter,
-  ) {}
+    services?: { trashService: TrashService; removalAudit: RemovalAuditService },
+  ) {
+    this.removalAudit = services?.removalAudit ?? new RemovalAuditService(getRemovalAuditLogPath(config));
+    this.trashService = services?.trashService ?? new TrashService(config, gitService, logger, this.removalAudit);
+  }
 
   updateLogger(logger: Logger): void {
     this.logger = logger;
+    this.trashService.updateLogger(logger);
   }
 
   async runSyncAttempt(
@@ -66,6 +80,7 @@ export class WorktreeModeSyncRunner {
     );
 
     await this.createNewWorktreesWithTiming(syncPlan, phaseTimer, outcome);
+    await this.recordRemoteBranchTips([...worktrees, ...syncPlan.create.filter((action) => action.kind === "create")]);
     await this.pruneOldWorktreesWithTiming(syncPlan.prune, phaseTimer, outcome);
 
     if (this.config.updateExistingWorktrees !== false) {
@@ -303,6 +318,43 @@ export class WorktreeModeSyncRunner {
     this.logger.info(`  Created ${successCount}/${plan.length} worktrees successfully`);
   }
 
+  // Persist each worktree's upstream tip while the remote ref still exists.
+  // This is the proof consulted after a squash-merge deletes the branch:
+  // "HEAD was on the remote before the deletion" — without it every such
+  // worktree reads as having unpushed commits forever. Best-effort: a failed
+  // recording only means that worktree stays conservatively preserved.
+  private async recordRemoteBranchTips(worktrees: Array<{ path: string; branch: string }>): Promise<void> {
+    try {
+      const tips = await this.gitService.getRemoteBranchTips();
+      if (tips.size === 0) return;
+
+      const limit = pLimit(this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+
+      await Promise.all(
+        worktrees.map((wt) =>
+          limit(async () => {
+            const oid = tips.get(wt.branch);
+            if (!oid) return;
+            await this.gitService
+              .recordRemoteTip(wt.path, wt.branch, oid)
+              .catch((error: unknown) =>
+                this.logger.warn(`  - ⚠️ Could not record remote tip for '${wt.branch}': ${getErrorMessage(error)}`),
+              );
+          }),
+        ),
+      );
+    } catch (error) {
+      this.logger.warn(`⚠️ Could not record remote branch tips: ${getErrorMessage(error)}`);
+    }
+  }
+
+  // A removal authorized only by the fully-pushed proof must stay reversible:
+  // without trash it would be a permanent delete of commits whose remote
+  // branch may have been deleted unmerged.
+  private blockedByDisabledTrash(status: WorktreeStatusResult): boolean {
+    return status.fullyPushedUpstreamDeleted && !this.trashService.isEnabled();
+  }
+
   private async pruneOldWorktreesWithTiming(
     actions: PruneAction[],
     phaseTimer: PhaseTimer,
@@ -349,7 +401,18 @@ export class WorktreeModeSyncRunner {
         if (result.status === "fulfilled") {
           const { branchName, worktreePath, status } = result.value;
           if (status.canRemove) {
-            toRemove.push({ branchName, worktreePath });
+            if (this.blockedByDisabledTrash(status)) {
+              this.logger.warn(
+                `  - ⚠️ '${branchName}' was fully pushed before its remote branch was deleted, but trash is disabled — keeping worktree. Enable trash for reversible auto-removal, or remove manually.`,
+              );
+              outcome.recordSkipped("worktree", "fully_pushed_trash_disabled", {
+                branch: branchName,
+                path: worktreePath,
+                message: "fully pushed before upstream deletion; trash disabled",
+              });
+            } else {
+              toRemove.push({ branchName, worktreePath });
+            }
           } else {
             toSkip.push({ branchName, worktreePath, status });
           }
@@ -375,7 +438,7 @@ export class WorktreeModeSyncRunner {
               try {
                 // Re-validate status immediately before removal to close TOCTOU window.
                 const recheck = await this.gitService.getFullWorktreeStatus(worktreePath, false);
-                if (!recheck.canRemove) {
+                if (!recheck.canRemove || this.blockedByDisabledTrash(recheck)) {
                   this.logger.warn(
                     `  ⚠️ Skipping removal of '${branchName}' - status changed since initial check: ${recheck.reasons.join(", ")}`,
                   );
@@ -386,10 +449,92 @@ export class WorktreeModeSyncRunner {
                   });
                   return;
                 }
-                await this.gitService.removeWorktree(worktreePath);
-                this.logger.info(`  ✅ Removed worktree for '${branchName}'`);
-                outcome.recordRemoved(branchName, worktreePath);
+                // The audit record must exist before the data is gone; an
+                // unwritable audit log blocks removal (fail-closed).
+                try {
+                  await this.removalAudit.record({
+                    action: "prune_remove",
+                    result: "attempt",
+                    path: worktreePath,
+                    branch: branchName,
+                    status: recheck,
+                  });
+                } catch (auditError) {
+                  this.logger.warn(
+                    `  ⚠️ Skipping removal of '${branchName}' - cannot write removal audit log: ${getErrorMessage(auditError)}`,
+                  );
+                  outcome.recordSkipped("worktree", "audit_log_unavailable", {
+                    branch: branchName,
+                    path: worktreePath,
+                    message: getErrorMessage(auditError),
+                  });
+                  return;
+                }
+                // A previous removal may have moved the directory away and then
+                // failed to clear the registration — re-trashing a missing path
+                // would fail with ENOENT on every tick forever. There is nothing
+                // left to preserve, so clear that one registration. Targeted
+                // `worktree remove --force` (NOT global `worktree prune`): prune
+                // would also drop unrelated unlocked registrations whose dirs sit
+                // on a temporarily unavailable mount. A locked registration makes
+                // single --force fail, which correctly preserves it.
+                if ((await probePathExists(worktreePath)) === "missing") {
+                  await this.gitService.removeWorktree(worktreePath, { force: true });
+                  this.logger.info(`  ✅ Cleared dangling registration for '${branchName}' (directory already gone)`);
+                  outcome.recordRemoved(branchName, worktreePath);
+                  await this.removalAudit
+                    .record({ action: "prune_remove", result: "success", path: worktreePath, branch: branchName })
+                    .catch((auditError: unknown) =>
+                      this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
+                    );
+                  return;
+                }
+                let refWarning: string | undefined;
+                if (this.trashService.isEnabled()) {
+                  const { entry, branchRefError } = await this.trashService.trashAndUnregisterWorktree({
+                    dirPath: worktreePath,
+                    branch: branchName,
+                    reason: "prune",
+                    keepPinOnReap: recheck.fullyPushedUpstreamDeleted,
+                  });
+                  if (branchRefError !== undefined) {
+                    refWarning = `leftover_branch_ref: could not delete branch ref '${branchName}': ${branchRefError}`;
+                  }
+                  const pushedNote = recheck.fullyPushedUpstreamDeleted
+                    ? " — was fully pushed before its remote branch was deleted"
+                    : "";
+                  this.logger.info(
+                    `  ✅ Moved worktree for '${branchName}' to trash (id: ${entry.manifest.id})${pushedNote}`,
+                  );
+                } else {
+                  await this.gitService.removeWorktree(worktreePath);
+                  this.logger.info(`  ✅ Removed worktree for '${branchName}'`);
+                }
+                outcome.recordRemoved(branchName, worktreePath, refWarning);
+                await this.removalAudit
+                  .record({ action: "prune_remove", result: "success", path: worktreePath, branch: branchName })
+                  .catch((auditError: unknown) =>
+                    this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
+                  );
               } catch (error) {
+                if (error instanceof WorktreeNotCleanError) {
+                  this.logger.warn(`  ⚠️ Skipping removal of '${branchName}' - git refused: ${getErrorMessage(error)}`);
+                  outcome.recordSkipped("worktree", "git_refused_removal", {
+                    branch: branchName,
+                    path: worktreePath,
+                    message: getErrorMessage(error),
+                  });
+                  return;
+                }
+                if (error instanceof TrashOperationError) {
+                  this.logger.warn(`  ⚠️ Skipping removal of '${branchName}' - ${getErrorMessage(error)}`);
+                  outcome.recordSkipped("worktree", "trash_failed", {
+                    branch: branchName,
+                    path: worktreePath,
+                    message: getErrorMessage(error),
+                  });
+                  return;
+                }
                 this.logger.error(`  ❌ Failed to remove worktree for '${branchName}':`, getErrorMessage(error));
                 outcome.recordFailed("worktree", getErrorMessage(error), {
                   reason: "remove_failed",
@@ -756,10 +901,52 @@ export class WorktreeModeSyncRunner {
           const dirPath = path.join(this.config.worktreeDir, dir);
           try {
             const stat = await fs.stat(dirPath);
-            if (stat.isDirectory()) {
-              await fs.rm(dirPath, { recursive: true, force: true });
-              this.logger.info(`  - Removed orphaned directory: ${dir}`);
+            if (!stat.isDirectory()) {
+              continue;
             }
+
+            // An "orphan" containing a .git may be a live checkout that git
+            // failed to report (corrupt admin dir, transient list error) —
+            // quarantine it instead of deleting.
+            const gitProbe = await probePathExists(path.join(dirPath, PATH_CONSTANTS.GIT_DIR));
+            if (gitProbe === "unknown") {
+              this.logger.warn(`  - ⚠️ Skipping orphaned directory ${dir}: cannot verify it is not a live checkout`);
+              continue;
+            }
+
+            if (this.trashService.isEnabled()) {
+              try {
+                const entry = await this.trashService.trashDirectory({ dirPath, reason: "orphan" });
+                this.logger.info(`  - Moved orphaned directory '${dir}' to trash (id: ${entry.manifest.id})`);
+              } catch (trashError) {
+                this.logger.warn(`  - ⚠️ Skipping orphaned directory ${dir} - ${getErrorMessage(trashError)}`);
+              }
+              continue;
+            }
+
+            if (gitProbe === "exists") {
+              const quarantinePath = await quarantineDirectory(dirPath);
+              this.logger.warn(
+                `  - ⚠️ Orphaned directory ${dir} contains a .git; quarantined to '${quarantinePath}' instead of deleting.`,
+              );
+              await this.removalAudit
+                .record({ action: "orphan_quarantine", result: "success", path: dirPath, quarantinePath })
+                .catch((auditError: unknown) =>
+                  this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
+                );
+              continue;
+            }
+
+            try {
+              await this.removalAudit.record({ action: "orphan_delete", result: "attempt", path: dirPath });
+            } catch (auditError) {
+              this.logger.warn(
+                `  - ⚠️ Skipping orphaned directory ${dir} - cannot write removal audit log: ${getErrorMessage(auditError)}`,
+              );
+              continue;
+            }
+            await fs.rm(dirPath, { recursive: true, force: true });
+            this.logger.info(`  - Removed orphaned directory: ${dir}`);
           } catch (error) {
             this.logger.error(`  - Failed to remove orphaned directory ${dir}:`, error);
           }
@@ -796,7 +983,19 @@ export class WorktreeModeSyncRunner {
       } else {
         this.logger.info(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
 
-        const divergedPath = await this.divergeWorktree(worktree.path, worktree.branch);
+        // With trash disabled there is no pin ref, yet the local branch ref
+        // must still be deleted below (or addWorktree would recreate the
+        // worktree from the stale branch instead of upstream). A permanent
+        // keep ref preserves the never-pushed commits first; failure aborts
+        // while the worktree is still intact.
+        let keepRef: string | null = null;
+        if (!this.trashService.isEnabled()) {
+          const localCommit = (await this.gitService.getCurrentCommit(worktree.path)).trim();
+          keepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}diverged-${Date.now().toString(36)}-${this.pathResolution.sanitizeBranchName(worktree.branch)}`;
+          await this.gitService.updateRef(keepRef, localCommit);
+        }
+
+        const { divergedPath, manifest } = await this.divergeWorktree(worktree.path, worktree.branch);
         const relativePath = path.relative(process.cwd(), divergedPath);
         outcome.recordPreservedDiverged(worktree.branch, worktree.path, divergedPath);
 
@@ -805,7 +1004,31 @@ export class WorktreeModeSyncRunner {
         this.logger.info(`     cd ${relativePath}`);
         this.logger.info(`     git diff origin/${worktree.branch}`);
 
-        await this.gitService.removeWorktree(worktree.path);
+        // force is safe here: the directory was already moved to .diverged/,
+        // so only the stale registration is being cleared.
+        await this.gitService.removeWorktree(worktree.path, { force: true });
+        // Deliberately fatal on failure (unlike prune): addWorktree below
+        // would silently recreate the worktree from the stale local branch
+        // instead of upstream if the ref survived.
+        if (manifest !== null) {
+          await this.trashService.deleteTrashedBranchRef(manifest);
+        } else {
+          await this.gitService.deleteLocalBranch(worktree.branch);
+          this.logger.info(
+            `   Never-pushed commits remain recoverable at '${keepRef}' — recover with: git branch <name> ${keepRef}`,
+          );
+        }
+        await this.removalAudit
+          .record({
+            action: "diverged_replace",
+            result: "success",
+            path: worktree.path,
+            branch: worktree.branch,
+            quarantinePath: divergedPath,
+          })
+          .catch((auditError: unknown) =>
+            this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
+          );
         await this.gitService.addWorktree(worktree.branch, worktree.path);
         this.logger.info(`   Created fresh worktree from upstream at: ${worktree.path}`);
       }
@@ -826,7 +1049,23 @@ export class WorktreeModeSyncRunner {
     }
   }
 
-  private async divergeWorktree(worktreePath: string, branchName: string): Promise<string> {
+  private async divergeWorktree(
+    worktreePath: string,
+    branchName: string,
+  ): Promise<{ divergedPath: string; manifest: TrashManifest | null }> {
+    if (this.trashService.isEnabled()) {
+      // keepPinOnReap: diverged-replace trashes the only copy of never-pushed
+      // commits, so pin/bundle failure must abort while the worktree is intact.
+      const entry = await this.trashService.trashDirectory({
+        dirPath: worktreePath,
+        branch: branchName,
+        reason: "diverged-replace",
+        keepPinOnReap: true,
+      });
+      await this.writeDivergedInfoFile(entry.payloadPath, worktreePath, branchName, entry.manifest.headOid);
+      return { divergedPath: entry.payloadPath, manifest: entry.manifest };
+    }
+
     const divergedBaseDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
 
     const timestamp = new Date().toISOString().split("T")[0];
@@ -848,26 +1087,35 @@ export class WorktreeModeSyncRunner {
       }
     }
 
+    await this.writeDivergedInfoFile(divergedPath, worktreePath, branchName, null);
+
+    return { divergedPath, manifest: null };
+  }
+
+  private async writeDivergedInfoFile(
+    preservedPath: string,
+    originalPath: string,
+    branchName: string,
+    knownLocalCommit: string | null,
+  ): Promise<void> {
     const metadata = {
       originalBranch: branchName,
       divergedAt: new Date().toISOString(),
       reason: METADATA_CONSTANTS.DIVERGED_REASON,
-      originalPath: worktreePath,
-      localCommit: await this.gitService.getCurrentCommit(divergedPath),
+      originalPath,
+      localCommit: knownLocalCommit ?? (await this.gitService.getCurrentCommit(preservedPath)),
       remoteCommit: await this.gitService.getRemoteCommit(`origin/${branchName}`),
       instruction: `To preserve your changes:
   1. Review: git diff origin/${branchName}
   2. Keep changes: git push --force-with-lease origin ${branchName}
   3. Discard changes: rm -rf this directory
 
-  Original worktree location: ${worktreePath}`,
+  Original worktree location: ${originalPath}`,
     };
 
     await fs.writeFile(
-      path.join(divergedPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE),
+      path.join(preservedPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE),
       JSON.stringify(metadata, null, 2),
     );
-
-    return divergedPath;
   }
 }
