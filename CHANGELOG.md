@@ -1,5 +1,65 @@
 # sync-worktrees
 
+## 5.0.0
+
+### Major Changes
+
+- 6bf58b5: Remove all deletion capabilities from the MCP server.
+
+  The agent-facing MCP surface no longer exposes any destructive or trash operations: the `remove_worktree` tool is removed (breaking — it shipped in earlier releases), and the unreleased `list_trash` / `restore_trash` tools and the per-repo trash summary on `list_worktrees` are dropped before ever shipping. The `removeWorktree` capability key disappears from `detect_context` responses.
+
+  Rationale: the MCP server is consumed by AI agents, and an agent-facing API should not carry irreversible affordances — a hallucinated call or prompt-injected instruction must not be able to destroy work. Escalation may bypass preconditions, never recoverability. Worktree removal remains available through sync's safety-gated pruning (trash-backed, restorable) and manual git commands; trash inspection and restore are human operations driven by each entry's `manifest.json`.
+
+### Minor Changes
+
+- 6bf58b5: Support branch switching for clone-mode repositories in the interactive TUI.
+
+  Previously a clone-mode repository tracked one fixed branch with no way to change it from the UI. Now the branch picker (`createWorktreeForBranch`) checks out the selected branch in place when the repository is in clone mode.
+  - **`checkoutBranch(branch)`** on clone-mode repos reconfigures the single-branch fetch refspec, fetches the target branch, switches to it, and prunes stale `origin/*` remote-tracking refs left by the previous branch.
+  - **`getRemoteBranches()`** now lists remote branches via `git ls-remote --heads` so the picker can show every branch without downloading object closure for each one.
+  - **Legacy refspec narrowing:** existing single-branch clones get their refspec narrowed on sync so a fetch no longer pulls unrelated remote branches; shallow clones stay materialized to the tracked branch only.
+
+- 6bf58b5: Add optional periodic Git object-store maintenance (`git gc`).
+
+  Over time a repository accumulates unreachable Git objects — clone mode leaves them behind when single-branch fetches narrow refs, and both modes churn objects as branches come and go. The new `maintenance` config block reclaims that storage and consolidates pack files on a schedule.
+  - **New config (both modes):** `maintenance?: { enabled?: boolean; interval?: string; aggressive?: boolean }`, settable per repository or in `defaults`.
+  - **Defaults:** `enabled: true`, `interval: "7d"`. With no config, repositories get a safe weekly `git gc`.
+  - **When it runs:** at the tail of a _successful_ sync, inside the existing repository operation lock — so it never races a fetch, merge, branch checkout, or worktree add/remove. Throttled by `interval` via a timestamp persisted in the object store (`<bare-repo>/sync-worktrees-maintenance.json`, or `<worktreeDir>/.git/…` in clone mode), so throttling survives daemon restarts and repeated `runOnce` runs.
+  - **Targets:** worktree mode runs `git gc` against the shared bare repo; clone mode runs it against the checkout.
+  - **Safety:** the default runs plain `git gc`, honoring Git's two-week prune grace — reachable objects (branches, tags, stashes, reflog) are always preserved. `aggressive: true` runs `git gc --prune=now` for explicit immediate reclamation.
+  - **Isolation:** a maintenance failure is logged as a warning and never fails the sync; the attempt is still timestamped, so a broken `gc` is throttled instead of retried every tick.
+
+- 6bf58b5: Fail-closed worktree removal pipeline.
+
+  Worktree removal previously had paths where an error or ambiguous probe result could read as "safe to remove". Every check in the removal path now follows one rule: cannot verify → cannot remove.
+  - **Status probes fail closed:** a filesystem error (EMFILE/EINTR/EACCES) while checking the worktree path or operation files (`MERGE_HEAD`, rebase state, …) now blocks removal instead of reporting a clean state. Only a genuine `ENOENT` counts as "directory gone".
+  - **Unpushed detection checks both conditions:** removal requires `rev-list <branch> --not --remotes` = 0 **and** (when sync metadata exists) `rev-list <lastSyncCommit>..HEAD` = 0. Previously the metadata path silently replaced the any-remote check. Note: a worktree where you ever committed after the last sync stays un-prunable until removed manually — deliberate conservatism.
+  - **Detached HEAD is never auto-removed:** it may sit on commits unreachable from any ref.
+  - **Non-forced `git worktree remove` by default:** git's own refusal to delete a dirty worktree is kept as the last line of defense and surfaces as a skip, not an error. `--force` is reserved for the diverged-replacement flow (directory already preserved under `.diverged/`).
+  - **Orphan-directory cleanup can no longer destroy a live checkout:** a directory containing a `.git` is quarantined to `<worktreeDir>/.removed/<timestamp>-<name>/` (never auto-emptied) instead of deleted; an unverifiable probe skips the directory. The same guard applies when `addWorktree` clears a stale target directory.
+  - **Append-only removal audit log:** every prune removal, orphan deletion/quarantine, and diverged replacement writes a JSONL record (timestamp, path, branch, status snapshot, code path) to `<configDir>/.sync-worktrees-state/<name>-<hash>-removals.jsonl` (or `$XDG_STATE_HOME`/`~/.cache/sync-worktrees/removals/` without a config file). For destructive automatic removals the record is written _before_ deletion; if it cannot be written, the removal is skipped.
+
+- 6bf58b5: Reversible removals via a per-workspace trash folder.
+
+  Every removal — age-based prune, orphan cleanup, and diverged-branch replacement — now moves the directory into `<worktreeDir>/.trash/<id>/payload/` instead of deleting it, with a JSON manifest recording the branch, reason, original path, size, and expiry. Each entry is retained 30 days on its own clock (`trash.retentionDays`), then deleted by a reaper that runs at the tail of a successful sync inside the repo lock. The reaper only touches manifested entries whose real path stays under the trash root, and each delete is gated on a durable audit-log record.
+  - `trash` config (worktree mode only): `{ enabled: true, retentionDays: 30, warnSizeBytes?, migrateLegacy: true }`. Disabling restores direct deletion and leaves existing trash untouched.
+  - A pin ref (`refs/sync-worktrees/trash/<id>`) keeps the trashed HEAD's objects alive through `git gc` for the retention window, so restore can recreate the branch at the exact commit even after the local and remote-tracking refs are gone.
+  - Trash is deliberately not exposed over MCP: the agent-facing surface has no removal, listing, restore, or purge tools (the `remove_worktree` MCP tool is removed in the same release). Restore is a manual operation driven by the entry's `manifest.json` — see the README's "Trash and restore" section.
+  - Existing `.removed/` quarantines and `.diverged/` backups in their exact shipped formats are adopted into the trash on the next sync (`trash.migrateLegacy`), so they age out under the same retention policy; unrecognized content is warned about and left alone.
+  - Failure to move a directory into trash (e.g. a cross-device rename) skips the removal entirely — the worktree stays in place.
+  - A leftover local branch ref after a successful trash move is reported as a structured warning (`leftover_branch_ref`) instead of failing the removal — the payload and pin ref already capture everything restore needs. The reaper also sweeps orphaned pin refs whose trash entry no longer exists, so nothing stays pinned through `git gc` forever.
+
+### Patch Changes
+
+- 6bf58b5: Harden trash/removal pipeline and clone-mode checkout against data loss:
+  - Legacy `.removed`/`.diverged` adoption now resets `deletedAt` to adoption time (original quarantine time preserved as `legacyQuarantinedAt`), so migrated backups can no longer be reaped in the same tick.
+  - Never-pushed commits are pinned: `diverged-replace` trashing and `.diverged` adoptions set `keepPinOnReap`, branch-bearing entries get an objects bundle before the branch ref is deleted, and pin/bundle failure aborts the removal (fail closed).
+  - Reaper no longer mass-sweeps `refs/sync-worktrees/trash/*` when the trash root is missing (e.g. unmounted volume); sweep requires a sentinel written at trash-root creation.
+  - Clone-mode `checkoutBranch` refuses to run from a detached HEAD and no longer double-reports the missing-ref skip; the TUI branch wizard opts out of the config-drift guard explicitly and warns to update `branch` in the config.
+  - Diverged recovery with trash disabled now deletes the stale local branch ref so the worktree is recreated from upstream, not from the stale local branch.
+  - Registered-but-missing worktree wedge heals via targeted `git worktree remove --force` plus metadata cleanup and an audit record.
+  - `restoreFromTrash()` is lock-coordinated (wait-queue) and reapplies sparse-checkout on restore; `getTrashService()` removed from the public surface.
+
 ## 4.2.0
 
 ### Minor Changes
