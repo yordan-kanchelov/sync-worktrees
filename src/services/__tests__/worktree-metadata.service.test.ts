@@ -15,13 +15,20 @@ vi.mock("simple-git");
 
 describe("WorktreeMetadataService", () => {
   let service: WorktreeMetadataService;
+  let mockFileHandle: { writeFile: Mock<any>; sync: Mock<any>; close: Mock<any> };
   const mockBareRepoPath = "/test/bare/repo";
   const mockWorktreeName = "feature-branch";
 
   beforeEach(() => {
     vi.clearAllMocks();
     service = new WorktreeMetadataService();
-    // saveMetadata uses atomic write (write to .tmp then rename)
+    // saveMetadata uses atomic write (open .tmp, write + fsync via handle, then rename)
+    mockFileHandle = {
+      writeFile: vi.fn().mockResolvedValue(undefined),
+      sync: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
     (fs.rename as Mock<any>).mockResolvedValue(undefined);
   });
 
@@ -58,7 +65,6 @@ describe("WorktreeMetadataService", () => {
       };
 
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       await service.saveMetadata(mockBareRepoPath, mockWorktreeName, mockMetadata);
 
@@ -66,13 +72,14 @@ describe("WorktreeMetadataService", () => {
         path.dirname("/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json"),
         { recursive: true },
       );
-      expect(fs.writeFile).toHaveBeenCalledWith(
+      expect(fs.open).toHaveBeenCalledWith(
         expect.stringMatching(
           /^\/test\/bare\/repo\/\.git\/worktrees\/feature-branch\/sync-metadata\.json\.\d+\.\d+\.tmp$/,
         ),
-        JSON.stringify(mockMetadata, null, 2),
-        "utf-8",
+        "w",
       );
+      expect(mockFileHandle.writeFile).toHaveBeenCalledWith(JSON.stringify(mockMetadata, null, 2), "utf-8");
+      expect(mockFileHandle.sync).toHaveBeenCalled();
       expect(fs.rename).toHaveBeenCalledWith(
         expect.stringMatching(
           /^\/test\/bare\/repo\/\.git\/worktrees\/feature-branch\/sync-metadata\.json\.\d+\.\d+\.tmp$/,
@@ -135,7 +142,6 @@ describe("WorktreeMetadataService", () => {
 
     beforeEach(() => {
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
     });
 
     it("records the tip into existing metadata", async () => {
@@ -143,8 +149,8 @@ describe("WorktreeMetadataService", () => {
 
       await service.recordRemoteTip(mockBareRepoPath, mockWorktreePath, "origin/feature-branch", "tip123");
 
-      expect(fs.writeFile).toHaveBeenCalledTimes(1);
-      const written = JSON.parse((fs.writeFile as Mock<any>).mock.calls[0][1] as string) as SyncMetadata;
+      expect(mockFileHandle.writeFile).toHaveBeenCalledTimes(1);
+      const written = JSON.parse(mockFileHandle.writeFile.mock.calls[0][0] as string) as SyncMetadata;
       expect(written.lastKnownRemoteTip).toMatchObject({ ref: "origin/feature-branch", oid: "tip123" });
       expect(written.lastKnownRemoteTip?.recordedAt).toBeTruthy();
       expect(written.lastSyncCommit).toBe("abc123");
@@ -160,7 +166,7 @@ describe("WorktreeMetadataService", () => {
 
       await service.recordRemoteTip(mockBareRepoPath, mockWorktreePath, "origin/feature-branch", "tip123");
 
-      expect(fs.writeFile).not.toHaveBeenCalled();
+      expect(mockFileHandle.writeFile).not.toHaveBeenCalled();
     });
 
     it("overwrites a stale tip when the remote moved", async () => {
@@ -173,7 +179,7 @@ describe("WorktreeMetadataService", () => {
 
       await service.recordRemoteTip(mockBareRepoPath, mockWorktreePath, "origin/feature-branch", "newtip");
 
-      const written = JSON.parse((fs.writeFile as Mock<any>).mock.calls[0][1] as string) as SyncMetadata;
+      const written = JSON.parse(mockFileHandle.writeFile.mock.calls[0][0] as string) as SyncMetadata;
       expect(written.lastKnownRemoteTip?.oid).toBe("newtip");
     });
 
@@ -182,7 +188,7 @@ describe("WorktreeMetadataService", () => {
 
       await service.recordRemoteTip(mockBareRepoPath, mockWorktreePath, "origin/feature-branch", "tip123");
 
-      expect(fs.writeFile).not.toHaveBeenCalled();
+      expect(mockFileHandle.writeFile).not.toHaveBeenCalled();
     });
   });
 
@@ -232,7 +238,6 @@ describe("WorktreeMetadataService", () => {
 
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       // Mock Date to have consistent timestamps
       vi.useFakeTimers();
@@ -240,15 +245,13 @@ describe("WorktreeMetadataService", () => {
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456", "updated");
 
-      expect(fs.writeFile).toHaveBeenCalledWith(
-        expect.any(String),
+      expect(mockFileHandle.writeFile).toHaveBeenCalledWith(
         expect.stringContaining('"lastSyncCommit": "new456"'),
         "utf-8",
       );
 
       vi.useRealTimers();
-      expect(fs.writeFile).toHaveBeenCalledWith(
-        expect.any(String),
+      expect(mockFileHandle.writeFile).toHaveBeenCalledWith(
         expect.stringContaining('"lastSyncDate": "2024-01-15T12:00:00.000Z"'),
         "utf-8",
       );
@@ -272,12 +275,11 @@ describe("WorktreeMetadataService", () => {
 
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456", "updated");
 
       // Check that the saved metadata has exactly 10 entries
-      const savedData = JSON.parse((fs.writeFile as Mock<any>).mock.calls[0][1] as string);
+      const savedData = JSON.parse(mockFileHandle.writeFile.mock.calls[0][0] as string);
       expect(savedData.syncHistory).toHaveLength(10);
       expect(savedData.syncHistory[9].commit).toBe("new456");
     });
@@ -285,13 +287,12 @@ describe("WorktreeMetadataService", () => {
     it("should skip writing metadata when none exists and upstream context is unavailable", async () => {
       (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456");
 
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("upstream/parent context is unavailable"));
-      expect(fs.writeFile).not.toHaveBeenCalled();
+      expect(mockFileHandle.writeFile).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
@@ -300,7 +301,6 @@ describe("WorktreeMetadataService", () => {
   describe("createInitialMetadata", () => {
     it("should create initial metadata for new worktree", async () => {
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2024-01-15T12:00:00Z"));
@@ -333,13 +333,13 @@ describe("WorktreeMetadataService", () => {
         ],
       };
 
-      expect(fs.writeFile).toHaveBeenCalledWith(
+      expect(fs.open).toHaveBeenCalledWith(
         expect.stringMatching(
           /^\/test\/bare\/repo\/\.git\/worktrees\/feature-branch\/sync-metadata\.json\.\d+\.\d+\.tmp$/,
         ),
-        JSON.stringify(expectedMetadata, null, 2),
-        "utf-8",
+        "w",
       );
+      expect(mockFileHandle.writeFile).toHaveBeenCalledWith(JSON.stringify(expectedMetadata, null, 2), "utf-8");
       expect(fs.rename).toHaveBeenCalledWith(
         expect.stringMatching(
           /^\/test\/bare\/repo\/\.git\/worktrees\/feature-branch\/sync-metadata\.json\.\d+\.\d+\.tmp$/,
@@ -480,7 +480,6 @@ describe("WorktreeMetadataService", () => {
 
       (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGit.branch = vi.fn<any>().mockResolvedValue({
         current: "feature-branch",
@@ -499,7 +498,7 @@ describe("WorktreeMetadataService", () => {
       expect(logSpy).toHaveBeenCalledWith("  ✅ Created metadata for feature-branch");
       expect(mockGit.revparse).toHaveBeenCalledWith(["HEAD"]);
       expect(mockGit.branch).toHaveBeenCalled();
-      expect(fs.writeFile).toHaveBeenCalled();
+      expect(mockFileHandle.writeFile).toHaveBeenCalled();
 
       consoleSpy.mockRestore();
       logSpy.mockRestore();
@@ -533,7 +532,6 @@ describe("WorktreeMetadataService", () => {
 
       (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGit.revparse.mockResolvedValue(currentCommit);
       mockGit.branch = vi.fn<any>().mockResolvedValue({
@@ -548,7 +546,7 @@ describe("WorktreeMetadataService", () => {
 
       await service.updateLastSyncFromPath(mockBareRepoPath, worktreePath, currentCommit);
 
-      const writeCallArg = (fs.writeFile as Mock<any>).mock.calls[0][1] as string;
+      const writeCallArg = mockFileHandle.writeFile.mock.calls[0][0] as string;
       const savedMetadata = JSON.parse(writeCallArg);
 
       // Now fixed: uses actual branch name from git branch command
@@ -566,7 +564,6 @@ describe("WorktreeMetadataService", () => {
 
       (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       mockGit.revparse.mockResolvedValue(currentCommit);
       mockGit.branch = vi.fn<any>().mockResolvedValue({
@@ -582,7 +579,7 @@ describe("WorktreeMetadataService", () => {
       // Test with a non-"main" default branch
       await service.updateLastSyncFromPath(mockBareRepoPath, worktreePath, currentCommit, "updated", "develop");
 
-      const writeCallArg = (fs.writeFile as Mock<any>).mock.calls[0][1] as string;
+      const writeCallArg = mockFileHandle.writeFile.mock.calls[0][0] as string;
       const savedMetadata = JSON.parse(writeCallArg);
 
       // Now fixed: uses passed default branch instead of hard-coded "main"
@@ -605,12 +602,10 @@ describe("WorktreeMetadataService", () => {
 
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
 
       await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new123", "updated");
 
-      expect(fs.writeFile).toHaveBeenCalledWith(
-        expect.any(String),
+      expect(mockFileHandle.writeFile).toHaveBeenCalledWith(
         expect.stringContaining('"lastSyncCommit": "new123"'),
         "utf-8",
       );

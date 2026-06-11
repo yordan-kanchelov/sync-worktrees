@@ -38,9 +38,10 @@ export class WorktreeModeSyncRunner {
     private gitService: GitService,
     private logger: Logger,
     private progressEmitter: ProgressEmitter,
+    services?: { trashService: TrashService; removalAudit: RemovalAuditService },
   ) {
-    this.removalAudit = new RemovalAuditService(getRemovalAuditLogPath(config));
-    this.trashService = new TrashService(config, gitService, logger, this.removalAudit);
+    this.removalAudit = services?.removalAudit ?? new RemovalAuditService(getRemovalAuditLogPath(config));
+    this.trashService = services?.trashService ?? new TrashService(config, gitService, logger, this.removalAudit);
   }
 
   updateLogger(logger: Logger): void {
@@ -467,6 +468,25 @@ export class WorktreeModeSyncRunner {
                     path: worktreePath,
                     message: getErrorMessage(auditError),
                   });
+                  return;
+                }
+                // A previous removal may have moved the directory away and then
+                // failed to clear the registration — re-trashing a missing path
+                // would fail with ENOENT on every tick forever. There is nothing
+                // left to preserve, so clear that one registration. Targeted
+                // `worktree remove --force` (NOT global `worktree prune`): prune
+                // would also drop unrelated unlocked registrations whose dirs sit
+                // on a temporarily unavailable mount. A locked registration makes
+                // single --force fail, which correctly preserves it.
+                if ((await probePathExists(worktreePath)) === "missing") {
+                  await this.gitService.removeWorktree(worktreePath, { force: true });
+                  this.logger.info(`  ✅ Cleared dangling registration for '${branchName}' (directory already gone)`);
+                  outcome.recordRemoved(branchName, worktreePath);
+                  await this.removalAudit
+                    .record({ action: "prune_remove", result: "success", path: worktreePath, branch: branchName })
+                    .catch((auditError: unknown) =>
+                      this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
+                    );
                   return;
                 }
                 let refWarning: string | undefined;
@@ -963,6 +983,18 @@ export class WorktreeModeSyncRunner {
       } else {
         this.logger.info(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
 
+        // With trash disabled there is no pin ref, yet the local branch ref
+        // must still be deleted below (or addWorktree would recreate the
+        // worktree from the stale branch instead of upstream). A permanent
+        // keep ref preserves the never-pushed commits first; failure aborts
+        // while the worktree is still intact.
+        let keepRef: string | null = null;
+        if (!this.trashService.isEnabled()) {
+          const localCommit = (await this.gitService.getCurrentCommit(worktree.path)).trim();
+          keepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}diverged-${Date.now().toString(36)}-${this.pathResolution.sanitizeBranchName(worktree.branch)}`;
+          await this.gitService.updateRef(keepRef, localCommit);
+        }
+
         const { divergedPath, manifest } = await this.divergeWorktree(worktree.path, worktree.branch);
         const relativePath = path.relative(process.cwd(), divergedPath);
         outcome.recordPreservedDiverged(worktree.branch, worktree.path, divergedPath);
@@ -980,6 +1012,11 @@ export class WorktreeModeSyncRunner {
         // instead of upstream if the ref survived.
         if (manifest !== null) {
           await this.trashService.deleteTrashedBranchRef(manifest);
+        } else {
+          await this.gitService.deleteLocalBranch(worktree.branch);
+          this.logger.info(
+            `   Never-pushed commits remain recoverable at '${keepRef}' — recover with: git branch <name> ${keepRef}`,
+          );
         }
         await this.removalAudit
           .record({
@@ -1017,10 +1054,13 @@ export class WorktreeModeSyncRunner {
     branchName: string,
   ): Promise<{ divergedPath: string; manifest: TrashManifest | null }> {
     if (this.trashService.isEnabled()) {
+      // keepPinOnReap: diverged-replace trashes the only copy of never-pushed
+      // commits, so pin/bundle failure must abort while the worktree is intact.
       const entry = await this.trashService.trashDirectory({
         dirPath: worktreePath,
         branch: branchName,
         reason: "diverged-replace",
+        keepPinOnReap: true,
       });
       await this.writeDivergedInfoFile(entry.payloadPath, worktreePath, branchName, entry.manifest.headOid);
       return { divergedPath: entry.payloadPath, manifest: entry.manifest };

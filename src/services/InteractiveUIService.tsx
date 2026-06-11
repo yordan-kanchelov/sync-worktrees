@@ -492,12 +492,12 @@ export class InteractiveUIService {
     }
 
     const service = this.syncServices[repoIndex];
-    if (service.isInitialized()) {
-      return service.getRemoteBranches();
-    }
-    if (!service.isCloneMode()) {
+    if (!service.isInitialized() && !service.isCloneMode()) {
       return [];
     }
+    // Clone-mode branch listing hits the network (ls-remote) whether or not
+    // the clone is initialized — fail to an empty list in both cases so the
+    // wizard's fetch-and-retry path handles it uniformly.
     try {
       return await service.getRemoteBranches();
     } catch {
@@ -722,7 +722,9 @@ export class InteractiveUIService {
 
     const result = await service.runQueuedRepoOperation(async () => {
       if (service.isCloneMode()) {
-        await service.checkoutBranch(branchName);
+        // The wizard just created and pushed this branch — switching to it is
+        // intentional config drift; checkoutBranch warns to update config.branch.
+        await service.checkoutBranch(branchName, { allowConfigDrift: true });
         return;
       }
       await gitService.addWorktree(branchName, worktreePath);

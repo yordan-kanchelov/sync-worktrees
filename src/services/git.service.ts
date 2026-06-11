@@ -883,6 +883,21 @@ export class GitService {
     await bareGit.raw(["branch", "-D", branchName]);
   }
 
+  // Bundles only commits not reachable from any remote — for fully-pushed
+  // refs that set is empty and `bundle create` would fail. Emptiness is
+  // pre-checked with rev-list (locale-independent) instead of parsing git's
+  // localized "empty bundle" stderr; after the pre-check, any bundle-create
+  // error is a real failure the caller must treat as fail-closed.
+  async createBundleFromRef(bundlePath: string, refName: string): Promise<boolean> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const count = (await bareGit.raw(["rev-list", "--count", refName, "--not", "--remotes"])).trim();
+    if (count === "0") {
+      return false;
+    }
+    await bareGit.raw(["bundle", "create", bundlePath, refName, "--not", "--remotes"]);
+    return true;
+  }
+
   // Registers the worktree and writes its .git link without populating files —
   // restore overlays the preserved payload instead of a fresh checkout.
   async addWorktreeNoCheckout(branchName: string, worktreePath: string): Promise<void> {

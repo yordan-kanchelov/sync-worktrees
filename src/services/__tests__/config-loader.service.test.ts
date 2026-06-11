@@ -459,7 +459,13 @@ describe("ConfigLoaderService", () => {
 
     it("rejects an invalid maintenance.interval duration", async () => {
       await expect(loadWith('{ interval: "soon" }')).rejects.toThrow(
-        "'maintenance.interval' in Repository 'r' must be a duration string",
+        "'maintenance.interval' in Repository 'r' must be a positive duration string like '7d', '24h', or '2w'",
+      );
+    });
+
+    it("rejects a zero maintenance.interval, which would disable gc throttling entirely", async () => {
+      await expect(loadWith('{ interval: "0d" }')).rejects.toThrow(
+        "'maintenance.interval' in Repository 'r' must be a positive duration string like '7d', '24h', or '2w'",
       );
     });
 

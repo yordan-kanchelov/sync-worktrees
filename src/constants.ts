@@ -118,6 +118,7 @@ export const MAINTENANCE_CONSTANTS = {
 export const TRASH_CONSTANTS = {
   MANIFEST_FILENAME: "manifest.json",
   PAYLOAD_DIRNAME: "payload",
+  BUNDLE_FILENAME: "commits.bundle",
   SCHEMA_VERSION: 1,
 } as const;
 

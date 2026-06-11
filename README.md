@@ -310,6 +310,7 @@ Running `sync-worktrees` without `runOnce` drops you into an interactive termina
   | `✓`  | Clean                                                          |
   | `M`  | Modified / uncommitted changes                                 |
   | `↑`  | Unpushed commits                                               |
+  | `⇡`  | Commits absent from every remote but fully pushed before the remote branch was deleted (likely squash-merged) |
   | `S`  | Stashed changes                                                |
   | `⚠`  | Operation in progress (merge/rebase/cherry-pick/revert/bisect) |
   | `⊞`  | Modified submodules                                            |

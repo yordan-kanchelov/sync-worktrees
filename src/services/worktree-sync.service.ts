@@ -1,7 +1,7 @@
 import pLimit from "p-limit";
 
 import { ENV_CONSTANTS } from "../constants";
-import { ConfigError } from "../errors";
+import { ConfigError, TrashOperationError } from "../errors";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
@@ -24,6 +24,7 @@ import { WorktreeModeSyncRunner } from "./worktree-mode-sync-runner";
 
 import type { ProgressEvent, ProgressListener } from "./progress-emitter";
 import type { RepoLockRelease } from "./repo-operation-lock";
+import type { TrashEntry, TrashManifest } from "./trash.service";
 import type { Config, SyncOutcome, SyncResult } from "../types";
 import type { LfsErrorContext } from "../utils/retry";
 
@@ -74,6 +75,10 @@ export class WorktreeSyncService {
       this.gitService,
       this.logger,
       this.progressEmitter,
+      {
+        trashService: this.trashService,
+        removalAudit,
+      },
     );
     if (resolveMode(config) === REPOSITORY_MODES.CLONE) {
       this.cloneSyncService = new CloneSyncService(config, this.gitService, this.logger, {
@@ -119,11 +124,11 @@ export class WorktreeSyncService {
     return this.gitService.getRemoteBranches();
   }
 
-  async checkoutBranch(branchName: string): Promise<void> {
+  async checkoutBranch(branchName: string, options: { allowConfigDrift?: boolean } = {}): Promise<void> {
     if (!this.cloneSyncService) {
       throw new ConfigError("checkoutBranch is only available for clone-mode repositories", "CLONE_MODE_REQUIRED");
     }
-    await this.cloneSyncService.checkoutBranch(branchName);
+    await this.cloneSyncService.checkoutBranch(branchName, options);
   }
 
   async initialize(): Promise<void> {
@@ -160,8 +165,23 @@ export class WorktreeSyncService {
     return this.gitService;
   }
 
-  getTrashService(): TrashService {
-    return this.trashService;
+  // Restore must hold the repo lock: the reaper, prune, and gc all mutate the
+  // same trash entries and refs at the tail of a sync. wait:true queues behind
+  // an in-flight sync instead of failing fast — restores are explicit user
+  // actions, not periodic work.
+  async restoreFromTrash(id: string): Promise<TrashManifest> {
+    const result = await this.runExclusiveRepoOperation(() => this.trashService.restore(id), { wait: true });
+    if (!result.started) {
+      throw new TrashOperationError(
+        "restore",
+        `cannot restore trash entry '${id}': another process holds the repo lock`,
+      );
+    }
+    return result.value;
+  }
+
+  async listTrashEntries(): Promise<{ entries: TrashEntry[]; invalid: string[] }> {
+    return this.trashService.listEntries();
   }
 
   updateLogger(logger: Logger): void {
@@ -254,6 +274,10 @@ export class WorktreeSyncService {
 
   async sync(): Promise<SyncResult> {
     const result = await this.runExclusiveRepoOperation<SyncOutcome>(async () => {
+      // Cleared here — once the sync actually starts — rather than by callers:
+      // a losing concurrent caller clearing the shared accumulator would
+      // silently truncate the winner's skips payload.
+      this.clearRecordedSkips();
       const totalTimer = new Timer();
       const phaseTimer = new PhaseTimer();
       const outcome = new SyncOutcomeAccumulator({
@@ -306,9 +330,13 @@ export class WorktreeSyncService {
           const repoName = (this.config as { name?: string }).name;
           this.logger.table(formatTimingTable(durationMs, phaseResults, repoName));
         }
+
+        // Trash maintenance runs even when the sync failed: it only acts on
+        // local expiry state, and a persistently failing fetch must not let
+        // .trash/ grow without bound. gc stays success-only below.
+        await this.runTrashMaintenanceUnlocked();
       }
 
-      await this.runTrashMaintenanceUnlocked();
       await this.runMaintenanceIfDueUnlocked();
 
       return this.lastOutcome ?? outcome.toOutcome(durationMs);

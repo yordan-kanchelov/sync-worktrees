@@ -40,9 +40,12 @@ export class TrashReaperService {
       realRoot = await fs.realpath(this.trashService.getTrashRoot());
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        // No trash root means every pin ref is orphaned (manually emptied
-        // trash) — still sweep them so objects don't stay pinned forever.
-        await this.reapOrphanedPinRefs(new Set());
+        // A missing trash root is NOT proof the trash is empty — worktreeDir
+        // may be an unmounted volume that sync just recreated empty. Sweeping
+        // pins here would let gc collect objects whose manifests reappear on
+        // remount. Pins from a manually deleted trash root linger only until
+        // the next trashDirectory recreates the root and the sweep resumes.
+        this.logger.debug(`Trash reaper: no trash root; skipping pin-ref sweep`);
         return;
       }
       this.logger.warn(`⚠️ Trash reaper skipped: cannot resolve trash root: ${getErrorMessage(error)}`);

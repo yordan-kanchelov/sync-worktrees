@@ -1834,7 +1834,9 @@ describe("InteractiveUIService", () => {
 
         await service.createWorktreeForBranch(0, "feature/new");
 
-        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new");
+        // allowConfigDrift: the wizard just created+pushed this branch, so the
+        // switch is intentional drift from config.branch (warned downstream).
+        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new", { allowConfigDrift: true });
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
         service.destroy();

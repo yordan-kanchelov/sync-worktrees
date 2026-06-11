@@ -11,7 +11,7 @@ import type { Config } from "../../types";
 import type { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
-import type { TrashEntry } from "../trash.service";
+import type { TrashEntry, TrashReason } from "../trash.service";
 
 const DAY_MS = 86_400_000;
 
@@ -21,6 +21,7 @@ function makeGitStub() {
     updateRef: vi.fn<any>().mockResolvedValue(undefined),
     deleteRef: vi.fn<any>().mockResolvedValue(undefined),
     listRefs: vi.fn<any>().mockResolvedValue([]),
+    createBundleFromRef: vi.fn<any>().mockResolvedValue(true),
   };
 }
 
@@ -65,19 +66,25 @@ describe("TrashReaperService", () => {
 
   async function makeEntry(
     name: string,
-    options: { ageDays: number; branch?: string; keepPinOnReap?: boolean },
+    options: { ageDays: number; branch?: string; keepPinOnReap?: boolean; reason?: TrashReason },
   ): Promise<TrashEntry> {
     const dir = path.join(worktreeDir, name);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, "file.txt"), "data");
-    return trashService.trashDirectory({
+    const entry = await trashService.trashDirectory({
       dirPath: dir,
       branch: options.branch ?? null,
       headOid: options.branch ? "abc123" : null,
-      reason: "prune",
-      deletedAt: new Date(Date.now() - options.ageDays * DAY_MS),
+      reason: options.reason ?? "prune",
       keepPinOnReap: options.keepPinOnReap,
     });
+    // trashDirectory always stamps "now"; backdate the manifest on disk to
+    // simulate an entry trashed ageDays ago.
+    const deletedAt = new Date(Date.now() - options.ageDays * DAY_MS);
+    entry.manifest.deletedAt = deletedAt.toISOString();
+    entry.manifest.expiresAt = new Date(deletedAt.getTime() + trashService.getRetentionDays() * DAY_MS).toISOString();
+    await fs.writeFile(path.join(entry.containerPath, "manifest.json"), JSON.stringify(entry.manifest, null, 2));
+    return entry;
   }
 
   it("deletes only expired entries, each on its own clock, and removes their pin refs", async () => {
@@ -173,12 +180,15 @@ describe("TrashReaperService", () => {
     expect(gitStub.deleteRef).not.toHaveBeenCalled();
   });
 
-  it("sweeps all pin refs when the trash root is gone entirely — nothing left to protect", async () => {
+  it("leaves all pin refs alone when the trash root is missing — absence is not proof the trash is empty", async () => {
+    // worktreeDir may be an unmounted volume that sync recreated empty;
+    // sweeping pins here would let gc collect objects whose manifests
+    // reappear on remount.
     gitStub.listRefs.mockResolvedValue(["refs/sync-worktrees/trash/orphan-1"]);
 
-    await reaper.reapExpiredUnlocked();
+    await expect(reaper.reapExpiredUnlocked()).resolves.toBeUndefined();
 
-    expect(gitStub.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/trash/orphan-1");
+    expect(gitStub.deleteRef).not.toHaveBeenCalled();
   });
 
   it("warns when retained trash exceeds warnSizeBytes so disk pressure is visible", async () => {
@@ -211,17 +221,28 @@ describe("TrashReaperService", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("deferring reap"));
   });
 
-  it("does not keep-ref ordinary entries — only fully-pushed removals survive past expiry", async () => {
-    const expired = await makeEntry("ordinary", { ageDays: 31, branch: "ordinary" });
+  it("keep-refs any keepPinOnReap entry regardless of reason, but never ordinary entries", async () => {
+    const ordinary = await makeEntry("ordinary", { ageDays: 31, branch: "ordinary" });
+    // Diverged removals set keepPinOnReap too — the trashed commits may exist
+    // nowhere else, so they must never become gc-eligible silently.
+    const diverged = await makeEntry("diverged", {
+      ageDays: 31,
+      branch: "diverged",
+      reason: "diverged-replace",
+      keepPinOnReap: true,
+    });
 
     await reaper.reapExpiredUnlocked();
 
-    await expect(fs.access(expired.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(ordinary.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(diverged.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(gitStub.updateRef).not.toHaveBeenCalledWith(
-      expect.stringContaining("refs/sync-worktrees/keep/"),
+      `refs/sync-worktrees/keep/${ordinary.manifest.id}`,
       expect.anything(),
     );
-    expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
+    expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${diverged.manifest.id}`, "abc123");
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(ordinary.manifest.pinRef);
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(diverged.manifest.pinRef);
   });
 
   it("orphan pin-ref sweep never touches keep refs", async () => {

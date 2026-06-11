@@ -58,6 +58,14 @@ describe("Integration Tests", () => {
     (fs.access as Mock<any>).mockResolvedValue(undefined);
     (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
     (fs.readdir as Mock<any>).mockResolvedValue(["main"]);
+    // Removal audit records gate destructive operations and are written via
+    // fs.open + appendFile + sync (durable append), not fs.appendFile.
+    (fs.open as Mock<any>).mockResolvedValue({
+      writeFile: vi.fn<any>().mockResolvedValue(undefined),
+      appendFile: vi.fn<any>().mockResolvedValue(undefined),
+      sync: vi.fn<any>().mockResolvedValue(undefined),
+      close: vi.fn<any>().mockResolvedValue(undefined),
+    });
   });
 
   describe("Full sync workflow", () => {

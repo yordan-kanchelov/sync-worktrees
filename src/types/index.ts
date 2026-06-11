@@ -81,6 +81,10 @@ export interface MaintenanceConfig {
    * When true, run `git gc --prune=now` instead of plain `git gc`. This prunes
    * recently-unreachable objects immediately, bypassing Git's default 2-week
    * grace period. Off by default — only enable for explicit aggressive cleanup.
+   *
+   * Hazard: the repo lock only serializes sync-worktrees processes. Plain git
+   * commands run concurrently by you or your IDE can have objects written but
+   * not yet ref-anchored; `--prune=now` deletes those with no grace window.
    */
   aggressive?: boolean;
 }

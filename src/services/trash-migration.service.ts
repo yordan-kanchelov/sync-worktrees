@@ -49,8 +49,8 @@ export class TrashMigrationService {
 
     for (const name of names) {
       const match = REMOVED_ENTRY_RE.exec(name);
-      const deletedAt = match ? this.parseQuarantineTimestamp(match[1]) : null;
-      if (!match || !deletedAt) {
+      const quarantinedAt = match ? this.parseQuarantineTimestamp(match[1]) : null;
+      if (!match || !quarantinedAt) {
         this.logger.warn(`⚠️ Leaving unrecognized entry '${name}' in ${GIT_CONSTANTS.REMOVED_DIR_NAME}/ alone`);
         continue;
       }
@@ -61,7 +61,7 @@ export class TrashMigrationService {
           reason: "legacy-adopt",
           source: ".removed",
           legacyOriginalName: name,
-          deletedAt,
+          legacyQuarantinedAt: quarantinedAt,
           headOid: null,
           originalPath: path.join(this.config.worktreeDir, match[2]),
           auditAction: "trash_adopt",
@@ -84,9 +84,15 @@ export class TrashMigrationService {
     for (const name of names) {
       const dirPath = path.join(divergedDir, name);
       const info = await this.readDivergedInfo(dirPath);
-      const deletedAt = info?.divergedAt ? new Date(info.divergedAt) : null;
+      const quarantinedAt = info?.divergedAt ? new Date(info.divergedAt) : null;
       const hasOriginalPath = typeof info?.originalPath === "string" && info.originalPath.length > 0;
-      if (!info || !info.originalBranch || !hasOriginalPath || !deletedAt || Number.isNaN(deletedAt.getTime())) {
+      if (
+        !info ||
+        !info.originalBranch ||
+        !hasOriginalPath ||
+        !quarantinedAt ||
+        Number.isNaN(quarantinedAt.getTime())
+      ) {
         this.logger.warn(
           `⚠️ Leaving entry '${name}' in ${GIT_CONSTANTS.DIVERGED_DIR_NAME}/ alone (no parseable ${METADATA_CONSTANTS.DIVERGED_INFO_FILE})`,
         );
@@ -94,16 +100,22 @@ export class TrashMigrationService {
       }
 
       try {
+        // keepPinOnReap: a .diverged backup exists precisely because its
+        // commits were never pushed — adoption must not weaken that to a
+        // 30-day files-only entry. Entries whose commit can't be pinned
+        // (missing localCommit, gc'd oid) fail adoption and stay in
+        // .diverged/ forever, the pre-trash behavior.
         const entry = await this.trashService.trashDirectory({
           dirPath,
           reason: "legacy-adopt",
           source: ".diverged",
           branch: info.originalBranch,
           legacyOriginalName: name,
-          deletedAt,
+          legacyQuarantinedAt: quarantinedAt,
           headOid: info.localCommit ?? null,
           originalPath: info.originalPath,
           auditAction: "trash_adopt",
+          keepPinOnReap: true,
         });
         this.logger.info(
           `♻️ Adopted '${name}' from ${GIT_CONSTANTS.DIVERGED_DIR_NAME}/ as trash entry '${entry.manifest.id}'`,

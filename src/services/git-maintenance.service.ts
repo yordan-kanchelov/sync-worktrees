@@ -69,7 +69,8 @@ export class GitMaintenanceService {
       return fallback;
     }
     const parsed = parseDuration(raw);
-    if (parsed === null) {
+    // Zero would disable throttling entirely — treat it like any other invalid value.
+    if (parsed === null || parsed <= 0) {
       this.logger.warn(`Invalid maintenance.interval '${raw}', using default ${DEFAULT_CONFIG.MAINTENANCE.INTERVAL}.`);
       return fallback;
     }

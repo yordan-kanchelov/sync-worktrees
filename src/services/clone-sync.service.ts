@@ -220,7 +220,13 @@ export class CloneSyncService {
     fetchArgs: string[],
     worktreeDir: string,
     branch: string,
+    // checkoutBranch reports its own hard error — recording a "Skipping sync"
+    // skip there would double-report a user-initiated action as a sync skip.
+    recordSkip = true,
   ): Promise<{ skipped: boolean }> {
+    const recordMissing = (): void => {
+      if (recordSkip) this.recordMissingRemoteRefSkip(branch);
+    };
     try {
       await git.fetch(fetchArgs);
       return { skipped: false };
@@ -240,7 +246,7 @@ export class CloneSyncService {
           // classify it as a soft skip too, instead of letting it escape as a
           // hard failure.
           if (isMissingRemoteRefError(getErrorMessage(retryError))) {
-            this.recordMissingRemoteRefSkip(branch);
+            recordMissing();
             return { skipped: true };
           }
           // Otherwise propagate the retry error unchanged so the outer retry
@@ -249,7 +255,7 @@ export class CloneSyncService {
         }
       }
       if (isMissingRemoteRefError(message)) {
-        this.recordMissingRemoteRefSkip(branch);
+        recordMissing();
         return { skipped: true };
       }
       throw fetchError;
@@ -427,9 +433,25 @@ export class CloneSyncService {
     }
   }
 
-  async checkoutBranch(branch: string): Promise<void> {
+  async checkoutBranch(branch: string, options: { allowConfigDrift?: boolean } = {}): Promise<void> {
     if (!this.initialized) {
       await this.initialize();
+    }
+
+    // Checkout is a convergence action by default: it brings an existing clone
+    // in line with the configured branch. Arbitrary targets would leave
+    // config.branch stale, so every later sync (and every restart) soft-skips
+    // with branch_mismatch after the refspec was already narrowed.
+    // allowConfigDrift is the TUI's explicit opt-out for branches it just
+    // created and pushed — the drift is then intentional and warned about.
+    const targetBranch = await this.resolveBranch();
+    if (branch !== targetBranch && !options.allowConfigDrift) {
+      throw new ConfigError(
+        this.config.branch
+          ? `Cannot switch '${this.repoName}' to '${branch}': clone mode tracks the configured branch '${targetBranch}'. Update 'branch' in the config file first, then run checkout to converge.`
+          : `Cannot switch '${this.repoName}' to '${branch}': no 'branch' is configured, so this clone tracks the remote default branch '${targetBranch}'. Set branch: "${branch}" in the config file first.`,
+        "CLONE_BRANCH_MISMATCH",
+      );
     }
 
     const worktreeDir = this.config.worktreeDir;
@@ -443,10 +465,20 @@ export class CloneSyncService {
     }
 
     const currentBranch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    // On a detached HEAD `git switch` only warns about leaving commits behind,
+    // and the restore path below cannot return to "HEAD" — refuse instead of
+    // stranding commits in the reflog.
+    if (currentBranch === "HEAD") {
+      throw new GitOperationError(
+        "checkout",
+        `'${this.repoName}' is on a detached HEAD; check out a branch manually (preserving any local commits) before switching the tracked branch`,
+      );
+    }
     if (currentBranch === branch) {
       await this.configureSingleBranchRemote(git, branch);
       this.resolvedBranch = branch;
       this.pendingInitSkip = null;
+      this.warnConfigDriftAfterCheckout(branch, targetBranch);
       return;
     }
 
@@ -461,8 +493,17 @@ export class CloneSyncService {
     await this.unshallowIfDepthRemoved(git);
 
     const fetchArgs = await this.buildFetchArgs(git, branch);
-    if ((await this.fetchWithRecovery(git, fetchArgs, worktreeDir, branch)).skipped) {
+    if ((await this.fetchWithRecovery(git, fetchArgs, worktreeDir, branch, false)).skipped) {
       throw new GitOperationError("checkout", `origin/${branch} is missing for '${this.repoName}'`);
+    }
+    // Same post-fetch verify as runSyncAttempt: a fetch can succeed without
+    // materializing the ref, which would otherwise surface downstream as a
+    // misleading FastForwardError.
+    if (!(await this.hasRemoteBranch(git, branch))) {
+      throw new GitOperationError(
+        "checkout",
+        `origin/${branch} did not materialize after fetch for '${this.repoName}'`,
+      );
     }
 
     if (await this.localBranchExists(git, branch)) {
@@ -488,6 +529,19 @@ export class CloneSyncService {
     await this.configureSingleBranchRemote(git, branch);
     this.resolvedBranch = branch;
     this.pendingInitSkip = null;
+    this.warnConfigDriftAfterCheckout(branch, targetBranch);
+  }
+
+  // resolvedBranch keeps in-session syncs on the new branch, but the config
+  // file still names the old one: the next process start will soft-skip with
+  // branch_mismatch on every tick until the config is updated.
+  private warnConfigDriftAfterCheckout(branch: string, targetBranch: string): void {
+    if (branch === targetBranch) return;
+    this.logger.warn(
+      `⚠️ '${this.repoName}' now tracks '${branch}', but the config ${
+        this.config.branch ? `still says branch '${targetBranch}'` : `resolves the remote default '${targetBranch}'`
+      }. Set branch: "${branch}" in the config file — after a restart every sync will soft-skip with branch_mismatch until it matches.`,
+    );
   }
 
   async initialize(outcome?: SyncOutcomeAccumulator): Promise<void> {
@@ -751,7 +805,8 @@ export class CloneSyncService {
     if (currentBranch !== branch) {
       this.recordSkip(
         { kind: "branch_mismatch", phase: "sync", currentBranch, expectedBranch: branch },
-        `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge.`,
+        `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge. ` +
+          `Update 'branch' in the config or switch the clone back.`,
         `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
       );
       return;

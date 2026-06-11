@@ -261,8 +261,12 @@ export class ConfigLoaderService {
       throw new Error(`'maintenance.aggressive' in ${context} must be a boolean`);
     }
     if (maintenance.interval !== undefined) {
-      if (typeof maintenance.interval !== "string" || parseDuration(maintenance.interval) === null) {
-        throw new Error(`'maintenance.interval' in ${context} must be a duration string like '7d', '24h', or '2w'`);
+      const parsed = typeof maintenance.interval === "string" ? parseDuration(maintenance.interval) : null;
+      // Zero parses fine but would disable throttling entirely (gc every tick).
+      if (parsed === null || parsed <= 0) {
+        throw new Error(
+          `'maintenance.interval' in ${context} must be a positive duration string like '7d', '24h', or '2w'`,
+        );
       }
     }
   }

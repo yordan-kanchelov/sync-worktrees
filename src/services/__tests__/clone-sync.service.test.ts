@@ -500,9 +500,81 @@ describe("CloneSyncService", () => {
   });
 
   describe("checkoutBranch", () => {
+    it("rejects checkout to a branch other than the configured one", async () => {
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+
+      await expect(service.checkoutBranch("feature/new")).rejects.toMatchObject({
+        constructor: ConfigError,
+        code: "CONFIG_CLONE_BRANCH_MISMATCH",
+        message: expect.stringContaining("clone mode tracks the configured branch 'main'"),
+      });
+
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/new"]);
+    });
+
+    it("rejects checkout away from the remote default branch when no branch is configured", async () => {
+      const service = new CloneSyncService(makeConfig({ branch: undefined }), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+
+      await expect(service.checkoutBranch("feature/new")).rejects.toMatchObject({
+        constructor: ConfigError,
+        code: "CONFIG_CLONE_BRANCH_MISMATCH",
+        message: expect.stringContaining(
+          "no 'branch' is configured, so this clone tracks the remote default branch 'main'",
+        ),
+      });
+
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it("refuses to switch branches from a detached HEAD before any fetch", async () => {
+      const service = new CloneSyncService(makeConfig({ branch: "feature/new" }), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "HEAD";
+        return "";
+      });
+
+      await expect(service.checkoutBranch("feature/new")).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("detached HEAD"),
+      });
+
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/new"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+    });
+
+    it("allows intentional drift with allowConfigDrift and warns to update the config", async () => {
+      // The TUI branch wizard creates+pushes a new branch and then switches to
+      // it — that drift is deliberate, but config.branch is now stale, so the
+      // user must be told or every sync after a restart soft-skips silently.
+      const warnSpy = vi.spyOn(logger, "warn");
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
+        return "";
+      });
+
+      await service.checkoutBranch("feature/new", { allowConfigDrift: true });
+
+      expect(gitMock.raw).toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`Set branch: "feature/new" in the config file`));
+    });
+
     it("does not fetch from a clone whose origin mismatches config during initialization", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
-      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger);
+      const service = new CloneSyncService(makeConfig({ branch: "feature/new" }), buildGitService(), logger);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === "remote get-url origin") return "https://github.com/example/other.git";
@@ -524,7 +596,7 @@ describe("CloneSyncService", () => {
     });
 
     it("fetches only the requested branch and creates a safe tracking branch", async () => {
-      const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+      const service = new CloneSyncService(makeConfig({ depth: 1, branch: "feature/new" }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
@@ -568,7 +640,7 @@ describe("CloneSyncService", () => {
     });
 
     it("does not switch to an existing local branch that cannot fast-forward to origin", async () => {
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      const service = new CloneSyncService(makeConfig({ branch: "feature/existing" }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
@@ -592,7 +664,7 @@ describe("CloneSyncService", () => {
     });
 
     it("restores the previous branch when merge fails after switching to an existing local branch", async () => {
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      const service = new CloneSyncService(makeConfig({ branch: "feature/existing" }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
@@ -621,7 +693,7 @@ describe("CloneSyncService", () => {
 
     it("throws WorktreeNotCleanError without fetching when the working tree is dirty", async () => {
       const service = new CloneSyncService(
-        makeConfig(),
+        makeConfig({ branch: "feature/new" }),
         buildGitService({ checkWorktreeStatus: vi.fn().mockResolvedValue(false) }),
         logger,
       );
@@ -635,8 +707,11 @@ describe("CloneSyncService", () => {
       expect(gitMock.fetch).not.toHaveBeenCalled();
     });
 
-    it("throws GitOperationError when origin no longer has the requested branch", async () => {
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+    it("throws GitOperationError when origin no longer has the requested branch without recording a skip", async () => {
+      const onSkip = vi.fn();
+      const service = new CloneSyncService(makeConfig({ branch: "feature/new" }), buildGitService(), logger, {
+        onSkip,
+      });
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/feature/new"));
 
@@ -645,11 +720,33 @@ describe("CloneSyncService", () => {
         message: expect.stringContaining("origin/feature/new is missing"),
       });
 
+      // checkout reports the hard error itself; recording a missing_remote_ref
+      // skip on top would double-report a user-initiated action as a sync skip
+      expect(onSkip).not.toHaveBeenCalled();
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+    });
+
+    it("throws GitOperationError when the remote ref does not materialize after a successful fetch", async () => {
+      const service = new CloneSyncService(makeConfig({ branch: "feature/new" }), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "show-ref --verify refs/remotes/origin/feature/new") throw new Error("missing remote ref");
+        return "";
+      });
+
+      await expect(service.checkoutBranch("feature/new")).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("did not materialize after fetch"),
+      });
+
       expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
     });
 
     it("unshallows a shallow clone before the branch fetch when no depth is configured", async () => {
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      const service = new CloneSyncService(makeConfig({ branch: "feature/new" }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");

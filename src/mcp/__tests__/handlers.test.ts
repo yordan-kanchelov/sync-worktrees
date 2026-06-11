@@ -105,7 +105,6 @@ type MockGit = {
   createBranch: ReturnType<typeof vi.fn>;
   pushBranch: ReturnType<typeof vi.fn>;
   addWorktree: ReturnType<typeof vi.fn>;
-  removeWorktree: ReturnType<typeof vi.fn>;
   updateWorktree: ReturnType<typeof vi.fn>;
   getDefaultBranch: ReturnType<typeof vi.fn>;
   getWorktreeMetadata: ReturnType<typeof vi.fn>;
@@ -117,6 +116,8 @@ function makeCtx(opts: {
   syncInProgress?: boolean;
   loadConfigImpl?: (configPath: string) => Promise<unknown>;
   currentRepo?: string;
+  configPath?: string | null;
+  launchCwd?: string;
   configuredRepoNames?: string[];
   configuredRepositorySummaries?: unknown[];
   allConfiguredWorktrees?: Record<string, Array<{ path: string; branch: string; isCurrent: boolean }>>;
@@ -130,7 +131,6 @@ function makeCtx(opts: {
     createBranch: vi.fn<any>(),
     pushBranch: vi.fn<any>(),
     addWorktree: vi.fn<any>(),
-    removeWorktree: vi.fn<any>(),
     updateWorktree: vi.fn<any>(),
     getDefaultBranch: vi.fn<any>().mockReturnValue("main"),
     getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
@@ -175,6 +175,9 @@ function makeCtx(opts: {
     getService: vi.fn<any>().mockResolvedValue(service),
     loadConfig: vi.fn<any>().mockImplementation((opts.loadConfigImpl ?? (async () => [])) as any),
     getCurrentRepo: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
+    getConfigPath: vi.fn<any>().mockReturnValue(opts.configPath ?? null),
+    findConfigUpward: vi.fn<any>().mockResolvedValue(null),
+    getLaunchCwd: vi.fn<any>().mockReturnValue(opts.launchCwd ?? "/repo/main"),
     autoSelectCurrentRepoIfSingleConfig: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
     getRepositoryList: vi.fn<any>().mockReturnValue([]),
     getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(opts.configuredRepoNames ?? []),
@@ -583,7 +586,6 @@ describe("handleSync", () => {
     expect(body.success).toBe(true);
     expect(typeof body.duration).toBe("number");
     expect(service.sync).toHaveBeenCalled();
-    expect(service.clearRecordedSkips).toHaveBeenCalledTimes(1);
     expect(body.outcome).toMatchObject({
       mode: "worktree",
       started: true,
@@ -621,9 +623,45 @@ describe("handleSync", () => {
         phase: "sync",
         currentBranch: "feature",
         expectedBranch: "main",
-        message: "clone is on 'feature', expected 'main'",
+        message: "clone is on 'feature', expected 'main' — update 'branch' in the config or switch the clone back",
       },
       { kind: "dirty_tree", message: "working tree has local changes" },
+    ]);
+  });
+
+  it("returns only skips recorded by the current run, not stale ones from a previous run", async () => {
+    const { ctx, service } = makeCtx({});
+    // The real service clears recorded skips at the start of sync() (inside
+    // the lock); the handler no longer clears them itself. Simulate that:
+    // stale skips exist before sync, sync replaces them with the new run's.
+    service.getRecordedSkips.mockReturnValue([{ kind: "dirty_tree" }]);
+    service.sync.mockImplementation(async () => {
+      service.getRecordedSkips.mockReturnValue([
+        { kind: "branch_mismatch", phase: "sync", currentBranch: "feature", expectedBranch: "main" },
+      ]);
+      return {
+        started: true,
+        outcome: {
+          mode: "clone",
+          started: true,
+          counts: { created: 0, removed: 0, updated: 0, skipped: 1, preserved: 0, failed: 0, noop: 0 },
+          actions: [],
+        },
+      };
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.skips).toEqual([
+      {
+        kind: "branch_mismatch",
+        phase: "sync",
+        currentBranch: "feature",
+        expectedBranch: "main",
+        message: "clone is on 'feature', expected 'main' — update 'branch' in the config or switch the clone back",
+      },
     ]);
   });
 
@@ -851,16 +889,85 @@ describe("handleGetWorktreeStatus", () => {
 });
 
 describe("handleLoadConfig", () => {
-  it("returns error when no configPath and no env var", async () => {
+  it("returns error when no configPath, env var, or discoverable config exists", async () => {
     const oldEnv = process.env.SYNC_WORKTREES_CONFIG;
     delete process.env.SYNC_WORKTREES_CONFIG;
 
-    const { ctx } = makeCtx({});
-    const result = await invoke(handleLoadConfig, ctx, {});
-    const body = parseResponse(result);
-    expect(body.error).toBe(true);
+    try {
+      const { ctx } = makeCtx({});
+      const result = await invoke(handleLoadConfig, ctx, {});
+      const body = parseResponse(result);
+      expect(body.error).toBe(true);
+      expect(body.message).toContain("detect_context");
+    } finally {
+      if (oldEnv !== undefined) process.env.SYNC_WORKTREES_CONFIG = oldEnv;
+    }
+  });
 
-    if (oldEnv !== undefined) process.env.SYNC_WORKTREES_CONFIG = oldEnv;
+  it("reuses an already detected config path", async () => {
+    const oldEnv = process.env.SYNC_WORKTREES_CONFIG;
+    delete process.env.SYNC_WORKTREES_CONFIG;
+
+    try {
+      const { ctx } = makeCtx({ configPath: "/workspace/sync-worktrees.config.js" });
+      const result = await invoke(handleLoadConfig, ctx, {});
+      const body = parseResponse(result);
+
+      expect(body.error).toBeUndefined();
+      expect(ctx.loadConfig).toHaveBeenCalledWith("/workspace/sync-worktrees.config.js");
+      expect(ctx.detectFromPath).not.toHaveBeenCalled();
+    } finally {
+      if (oldEnv !== undefined) process.env.SYNC_WORKTREES_CONFIG = oldEnv;
+    }
+  });
+
+  it("auto-detects config from launch CWD when no config is already known", async () => {
+    const oldEnv = process.env.SYNC_WORKTREES_CONFIG;
+    delete process.env.SYNC_WORKTREES_CONFIG;
+
+    try {
+      const { ctx } = makeCtx({
+        discovered: makeDiscovered({ configPath: "/workspace/sync-worktrees.config.js" }),
+        launchCwd: "/workspace/repo/main",
+      });
+      const result = await invoke(handleLoadConfig, ctx, {});
+      const body = parseResponse(result);
+
+      expect(body.error).toBeUndefined();
+      expect(ctx.detectFromPath).toHaveBeenCalledWith("/workspace/repo/main");
+      expect(ctx.loadConfig).toHaveBeenCalledWith("/workspace/sync-worktrees.config.js");
+    } finally {
+      if (oldEnv !== undefined) process.env.SYNC_WORKTREES_CONFIG = oldEnv;
+    }
+  });
+
+  it("surfaces the real parse error when detection finds a config that fails to load", async () => {
+    const oldEnv = process.env.SYNC_WORKTREES_CONFIG;
+    delete process.env.SYNC_WORKTREES_CONFIG;
+
+    try {
+      // detectFromPath only records configs that loaded successfully, so a
+      // found-but-broken config is only reachable via the findConfigUpward
+      // fallback — without it the user would get the unhelpful generic
+      // "configPath required" message instead of the parse error.
+      const { ctx } = makeCtx({
+        launchCwd: "/workspace/repo/main",
+        loadConfigImpl: async () => {
+          throw new Error("Unexpected token '}' in sync-worktrees.config.js");
+        },
+      });
+      (ctx as any).findConfigUpward.mockResolvedValue("/workspace/sync-worktrees.config.js");
+
+      const result = await invoke(handleLoadConfig, ctx, {});
+      const body = parseResponse(result);
+
+      expect(body.error).toBe(true);
+      expect(body.message).toContain("Unexpected token");
+      expect(body.message).not.toContain("configPath required");
+      expect(ctx.loadConfig).toHaveBeenCalledWith("/workspace/sync-worktrees.config.js");
+    } finally {
+      if (oldEnv !== undefined) process.env.SYNC_WORKTREES_CONFIG = oldEnv;
+    }
   });
 
   it("loads from explicit path", async () => {

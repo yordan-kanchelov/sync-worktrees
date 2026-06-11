@@ -12,7 +12,9 @@ describe("formatCloneSkipReason", () => {
       currentBranch: "sidebranch",
       expectedBranch: "master",
     };
-    expect(formatCloneSkipReason(reason)).toBe("clone is on 'sidebranch', expected 'master' (since process start)");
+    expect(formatCloneSkipReason(reason)).toBe(
+      "clone is on 'sidebranch', expected 'master' (since process start) — update 'branch' in the config or switch the clone back",
+    );
   });
 
   it("formats branch_mismatch at sync phase without suffix", () => {
@@ -22,7 +24,9 @@ describe("formatCloneSkipReason", () => {
       currentBranch: "sidebranch",
       expectedBranch: "master",
     };
-    expect(formatCloneSkipReason(reason)).toBe("clone is on 'sidebranch', expected 'master'");
+    expect(formatCloneSkipReason(reason)).toBe(
+      "clone is on 'sidebranch', expected 'master' — update 'branch' in the config or switch the clone back",
+    );
   });
 
   it("formats head_unreadable with the underlying error", () => {

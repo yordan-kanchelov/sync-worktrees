@@ -413,7 +413,6 @@ export async function handleSync(
   const dispose = attachProgressReporter(service, extra);
   try {
     const start = Date.now();
-    service.clearRecordedSkips();
     const result = await service.sync();
     if (!result.started) {
       throw new SyncInProgressError(ctx.getEntry(params.repoName)?.name ?? params.repoName ?? "unknown");
@@ -507,9 +506,15 @@ export async function handleLoadConfig(
   params: { configPath?: string },
   _extra?: HandlerExtra,
 ): Promise<CallToolResult> {
-  const configPath = params.configPath ?? process.env.SYNC_WORKTREES_CONFIG;
+  const configPath =
+    params.configPath ??
+    process.env.SYNC_WORKTREES_CONFIG ??
+    ctx.getConfigPath() ??
+    (await detectConfigFromLaunchCwd(ctx));
   if (!configPath) {
-    throw new Error("configPath required (or set SYNC_WORKTREES_CONFIG env var)");
+    throw new Error(
+      "configPath required (or set SYNC_WORKTREES_CONFIG env var, call detect_context with a path, or launch from a sync-worktrees workspace)",
+    );
   }
   await ctx.loadConfig(configPath);
   return formatToolResponse({
@@ -517,6 +522,20 @@ export async function handleLoadConfig(
     currentRepository: ctx.getCurrentRepo(),
     repositories: ctx.getRepositoryList(),
   });
+}
+
+async function detectConfigFromLaunchCwd(ctx: RepositoryContext): Promise<string | null> {
+  try {
+    const discovered = await ctx.detectFromPath(ctx.getLaunchCwd());
+    if (discovered.configPath) return discovered.configPath;
+    // detectFromPath only records configs that loaded successfully; a found
+    // but broken config would otherwise be invisible here. Return it so the
+    // loadConfig call surfaces the real parse error instead of the generic
+    // "configPath required" message.
+    return await ctx.findConfigUpward(ctx.getLaunchCwd());
+  } catch {
+    return null;
+  }
 }
 
 export async function handleSetCurrentRepository(

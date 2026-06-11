@@ -34,6 +34,14 @@ export class RemovalAuditService {
   async record(entry: RemovalAuditEntry): Promise<void> {
     await fs.mkdir(path.dirname(this.logFilePath), { recursive: true });
     const line = JSON.stringify({ timestamp: new Date().toISOString(), ...entry });
-    await fs.appendFile(this.logFilePath, `${line}\n`, "utf-8");
+    // The audit line gates destructive operations ("attempt" must survive a
+    // crash that happens mid-delete), so flush it to disk before returning.
+    const handle = await fs.open(this.logFilePath, "a");
+    try {
+      await handle.appendFile(`${line}\n`, "utf-8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   }
 }

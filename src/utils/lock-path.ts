@@ -13,18 +13,12 @@ export interface RepoLockTarget {
   file: string;
 }
 
+// The lock is keyed ONLY by the canonical worktreeDir: two different config
+// files (or a config-mode daemon and a programmatic run) pointing at the same
+// checkout must contend for the same lock file, so it cannot live under a
+// per-config state dir the way the audit log does.
 export function getCloneModeLockTarget(config: Config): RepoLockTarget {
-  const name = (config as RepositoryConfig).name;
-  const configDir = config.__configFileDir;
-
   const hash = createHash("sha256").update(path.resolve(config.worktreeDir)).digest("hex").slice(0, 16);
-
-  if (configDir) {
-    return {
-      dir: path.join(configDir, ".sync-worktrees-state"),
-      file: `${sanitizeNameForPath(name ?? "repo", "clone-mode lock name")}-${hash}.lock`,
-    };
-  }
 
   const stateBase =
     process.env.XDG_STATE_HOME && process.env.XDG_STATE_HOME.length > 0

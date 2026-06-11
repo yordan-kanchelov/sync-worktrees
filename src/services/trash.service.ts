@@ -27,8 +27,12 @@ export interface TrashManifest {
   sizeBytes: number | null;
   headOid: string | null;
   pinRef: string | null;
+  /** Bundle of the pinned commits not on any remote, relative to the container; null when nothing to bundle. */
+  bundleFile?: string | null;
   source: "worktree" | ".removed" | ".diverged";
   legacyOriginalName: string | null;
+  /** When the legacy quarantine flow originally preserved this entry; retention still counts from adoption. */
+  legacyQuarantinedAt?: string | null;
   // When true the reaper moves the pin to a permanent keep ref instead of
   // unpinning. Set for removals authorized only by "fully pushed before
   // upstream deletion" proof — the remote may have deleted an unmerged
@@ -78,8 +82,10 @@ export interface TrashDirectoryOptions {
   branch?: string | null;
   source?: TrashManifest["source"];
   legacyOriginalName?: string | null;
-  /** Backdate for legacy adoption; defaults to now. */
-  deletedAt?: Date;
+  /** When the legacy flow originally quarantined the directory. Forensic only —
+   * retention always counts from adoption time so a just-adopted entry can
+   * never be reaped in the same tick. */
+  legacyQuarantinedAt?: Date;
   /** Explicit HEAD oid (legacy adoption); `undefined` resolves from dirPath when branch is set. */
   headOid?: string | null;
   /** Where restore should put the payload back; defaults to dirPath. */
@@ -116,7 +122,7 @@ export class TrashService {
   }
 
   async trashDirectory(options: TrashDirectoryOptions): Promise<TrashEntry> {
-    const deletedAt = options.deletedAt ?? new Date();
+    const deletedAt = new Date();
     const expiresAt = new Date(deletedAt.getTime() + this.getRetentionDays() * 86_400_000);
     const keepPinOnReap = options.keepPinOnReap ?? false;
 
@@ -133,15 +139,6 @@ export class TrashService {
     // rm -rf the container, so it must never adopt one it didn't create.
     await fs.mkdir(this.getTrashRoot(), { recursive: true });
     const { id, containerPath } = await this.createContainer(deletedAt, path.basename(options.dirPath));
-    const pinRef = headOid ? await this.createPinRef(id, headOid) : null;
-    if (keepPinOnReap && !pinRef) {
-      await this.undoPartialTrash(containerPath, pinRef);
-      throw new TrashOperationError(
-        "trash-directory",
-        `cannot create keep-on-reap trash entry '${id}' for '${options.dirPath}': pin ref could not be created`,
-      );
-    }
-    const payloadPath = path.join(containerPath, TRASH_CONSTANTS.PAYLOAD_DIRNAME);
 
     const manifest: TrashManifest = {
       schemaVersion: TRASH_CONSTANTS.SCHEMA_VERSION,
@@ -153,11 +150,60 @@ export class TrashService {
       reason: options.reason,
       sizeBytes,
       headOid,
-      pinRef,
+      pinRef: null,
+      bundleFile: null,
       source: options.source ?? "worktree",
       legacyOriginalName: options.legacyOriginalName ?? null,
+      legacyQuarantinedAt: options.legacyQuarantinedAt?.toISOString() ?? null,
       keepPinOnReap,
     };
+
+    // Manifest goes down BEFORE the pin ref: a crash in between leaves a
+    // valid (payload-less) entry that ages out normally, instead of an
+    // unrecognized container the reaper warns about forever while its pin
+    // keeps objects alive indefinitely.
+    try {
+      await this.writeManifest(containerPath, manifest);
+    } catch (error) {
+      await this.undoPartialTrash(containerPath, null);
+      throw new TrashOperationError(
+        "trash-directory",
+        `cannot write trash manifest for '${options.dirPath}': ${getErrorMessage(error)}`,
+        error instanceof Error ? error : undefined,
+      );
+    }
+
+    const pinRef = headOid ? await this.createPinRef(id, headOid) : null;
+    if (keepPinOnReap && !pinRef) {
+      await this.undoPartialTrash(containerPath, pinRef);
+      throw new TrashOperationError(
+        "trash-directory",
+        `cannot create keep-on-reap trash entry '${id}' for '${options.dirPath}': pin ref could not be created`,
+      );
+    }
+    // Keep-on-reap entries may hold the only copy of their commits anywhere,
+    // so a self-contained bundle backs up the pin ref; failure aborts the
+    // removal (fail-closed) while the source directory is still untouched.
+    let bundleFile: string | null = null;
+    if (keepPinOnReap && pinRef) {
+      try {
+        const created = await this.gitService.createBundleFromRef(
+          path.join(containerPath, TRASH_CONSTANTS.BUNDLE_FILENAME),
+          pinRef,
+        );
+        bundleFile = created ? TRASH_CONSTANTS.BUNDLE_FILENAME : null;
+      } catch (error) {
+        await this.undoPartialTrash(containerPath, pinRef);
+        throw new TrashOperationError(
+          "trash-directory",
+          `cannot bundle commits for keep-on-reap trash entry '${id}': ${getErrorMessage(error)}`,
+          error instanceof Error ? error : undefined,
+        );
+      }
+    }
+    const payloadPath = path.join(containerPath, TRASH_CONSTANTS.PAYLOAD_DIRNAME);
+    manifest.pinRef = pinRef;
+    manifest.bundleFile = bundleFile;
 
     try {
       await this.writeManifest(containerPath, manifest);
@@ -322,8 +368,16 @@ export class TrashService {
     return manifest;
   }
 
-  async deleteTrashedBranchRef(manifest: Pick<TrashManifest, "branch" | "id">): Promise<void> {
+  async deleteTrashedBranchRef(manifest: Pick<TrashManifest, "branch" | "id" | "pinRef">): Promise<void> {
     if (!manifest.branch) return;
+    // Without a pin the branch ref may be the last thing keeping the trashed
+    // commits out of gc — leave it as a hygiene problem rather than risk them.
+    if (!manifest.pinRef) {
+      this.logger.warn(
+        `⚠️ Keeping branch ref '${manifest.branch}' after trashing '${manifest.id}': entry has no pin ref, so the ref is the only gc protection left`,
+      );
+      return;
+    }
 
     try {
       await this.gitService.deleteLocalBranch(manifest.branch);
@@ -358,6 +412,14 @@ export class TrashService {
       await this.gitService.addWorktreeNoCheckout(branch, manifest.originalPath);
       await this.copyPayloadOver(payloadPath, manifest.originalPath);
       await this.gitService.resetWorktreeIndex(manifest.originalPath);
+      // The payload was checked out under the sparse profile when it was
+      // trashed; the fresh registration must carry the same sparse config or
+      // git status would report every out-of-cone file as deleted.
+      if (this.config.sparseCheckout) {
+        await this.gitService
+          .getSparseCheckoutService()
+          .applyToWorktree(manifest.originalPath, this.config.sparseCheckout);
+      }
     } catch (error) {
       await this.gitService
         .removeWorktree(manifest.originalPath, { force: true })
@@ -465,9 +527,13 @@ export class TrashService {
     );
   }
 
+  // The id doubles as a refname component (refs/sync-worktrees/trash/<id>).
+  // The timestamp prefix and hex suffix rule out leading dots and ".lock"
+  // endings, but ".." inside the name would still make the ref invalid and
+  // silently degrade the entry to files-only.
   private generateId(deletedAt: Date, baseName: string): string {
     const timestamp = deletedAt.toISOString().replace(/[:.]/g, "-");
-    const safeName = baseName.replace(/[^A-Za-z0-9._-]/g, "_");
+    const safeName = baseName.replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.{2,}/g, "_");
     return `${timestamp}-${safeName}-${randomBytes(3).toString("hex")}`;
   }
 }

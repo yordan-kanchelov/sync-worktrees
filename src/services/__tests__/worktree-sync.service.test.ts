@@ -74,6 +74,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       deleteRef: vi.fn<any>().mockResolvedValue(undefined),
       listRefs: vi.fn<any>().mockResolvedValue([]),
       deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
+      createBundleFromRef: vi.fn<any>().mockResolvedValue(true),
       setStaleDirectoryTrasher: vi.fn(),
     } as any,
   };
@@ -93,9 +94,28 @@ describe("WorktreeSyncService", () => {
   let mockConfig: Config;
   let mockGitService: Mocked<GitService>;
   let mockLogger: Logger;
+  // Audit records and trash manifests now go through fs.open + handle.writeFile/
+  // appendFile + sync (durable writes), not fs.writeFile/appendFile. Recorded
+  // here so tests can assert on what was written and where.
+  let handleWrites: Array<{ path: string; content: string }>;
+
+  const findLastManifestWrite = (): { path: string; content: string } | undefined =>
+    [...handleWrites].reverse().find((write) => write.path.includes("manifest.json"));
 
   beforeEach(() => {
     vi.clearAllMocks();
+
+    handleWrites = [];
+    (fs.open as Mock<any>).mockImplementation(async (filePath: unknown) => ({
+      writeFile: vi.fn(async (content: string) => {
+        handleWrites.push({ path: String(filePath), content });
+      }),
+      appendFile: vi.fn(async (content: string) => {
+        handleWrites.push({ path: String(filePath), content });
+      }),
+      sync: vi.fn<any>().mockResolvedValue(undefined),
+      close: vi.fn<any>().mockResolvedValue(undefined),
+    }));
 
     mockLogger = createMockLogger();
 
@@ -796,7 +816,6 @@ describe("WorktreeSyncService", () => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
         mockGitService.getWorktrees.mockResolvedValue([]);
         mockGitService.removeWorktree.mockResolvedValue(undefined);
-        (fs.appendFile as Mock<any>).mockReset();
       });
 
       const setupStaleWorktree = (): void => {
@@ -812,7 +831,6 @@ describe("WorktreeSyncService", () => {
           { path: path.join("/test/worktrees", "old-branch"), branch: "old-branch" },
         ]);
         mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
-        (fs.appendFile as Mock<any>).mockResolvedValue(undefined);
       };
 
       it("appends an audit record before removing a pruned worktree", async () => {
@@ -821,19 +839,19 @@ describe("WorktreeSyncService", () => {
         await service.sync();
 
         expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
-        expect(fs.appendFile).toHaveBeenCalledWith(
-          expect.stringContaining("removals"),
-          expect.stringContaining("old-branch"),
-          expect.anything(),
-        );
-        const auditOrder = (fs.appendFile as Mock<any>).mock.invocationCallOrder[0];
+        // The "attempt" record must be opened and flushed before the data is gone.
+        expect(fs.open).toHaveBeenCalledWith(expect.stringContaining("removals"), "a");
+        expect(
+          handleWrites.find((write) => write.path.includes("removals") && write.content.includes("old-branch")),
+        ).toBeDefined();
+        const auditOrder = (fs.open as Mock<any>).mock.invocationCallOrder[0];
         const removeOrder = (mockGitService.removeWorktree as Mock<any>).mock.invocationCallOrder[0];
         expect(auditOrder).toBeLessThan(removeOrder);
       });
 
       it("does not remove the worktree when the audit record cannot be written", async () => {
         setupStaleWorktree();
-        (fs.appendFile as Mock<any>).mockRejectedValue(Object.assign(new Error("EACCES"), { code: "EACCES" }));
+        (fs.open as Mock<any>).mockRejectedValue(Object.assign(new Error("EACCES"), { code: "EACCES" }));
 
         await service.sync();
 
@@ -1142,7 +1160,7 @@ describe("WorktreeSyncService", () => {
       });
 
       it("records the prune as removed with a warning when the branch ref cannot be deleted — payload already safe", async () => {
-        mockGitService.deleteLocalBranch.mockRejectedValue(new Error("ref locked"));
+        mockGitService.deleteLocalBranch.mockRejectedValueOnce(new Error("ref locked"));
 
         const result = await service.sync();
 
@@ -1199,24 +1217,60 @@ describe("WorktreeSyncService", () => {
         await service.sync();
 
         expect(fs.rename).toHaveBeenCalledWith(oldBranchPath, expect.stringContaining(".trash"));
-        const manifestWrite = (fs.writeFile as Mock<any>).mock.calls.find((call) =>
-          (call[0] as string).includes("manifest.json"),
-        );
+        // The final manifest (the placeholder is written first with pinRef/bundleFile
+        // null) must carry the pin and the self-contained bundle backup.
+        const manifestWrite = findLastManifestWrite();
         expect(manifestWrite).toBeDefined();
-        expect(JSON.parse(manifestWrite![1] as string)).toMatchObject({
+        expect(JSON.parse(manifestWrite!.content)).toMatchObject({
           branch: "old-branch",
           keepPinOnReap: true,
+          pinRef: expect.stringContaining("refs/sync-worktrees/trash/"),
+          bundleFile: "commits.bundle",
         });
+        expect(mockGitService.createBundleFromRef).toHaveBeenCalledWith(
+          expect.stringContaining("commits.bundle"),
+          expect.stringContaining("refs/sync-worktrees/trash/"),
+        );
       });
 
       it("ordinary prunes do not set keepPinOnReap", async () => {
         await service.sync();
 
-        const manifestWrite = (fs.writeFile as Mock<any>).mock.calls.find((call) =>
-          (call[0] as string).includes("manifest.json"),
-        );
+        const manifestWrite = findLastManifestWrite();
         expect(manifestWrite).toBeDefined();
-        expect(JSON.parse(manifestWrite![1] as string)).toMatchObject({ keepPinOnReap: false });
+        expect(JSON.parse(manifestWrite!.content)).toMatchObject({ keepPinOnReap: false });
+        expect(mockGitService.createBundleFromRef).not.toHaveBeenCalled();
+      });
+
+      it("clears a dangling registration with a targeted remove when the directory is already gone — no trash attempt", async () => {
+        // A previous removal moved the directory away but failed to clear the
+        // registration; re-trashing the missing path would ENOENT into a
+        // trash_failed skip on every tick forever. Must be a targeted
+        // `worktree remove --force`, not a global prune — prune would also drop
+        // unrelated registrations whose dirs sit on an unavailable mount.
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (target === oldBranchPath) {
+            throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+          }
+          return undefined;
+        });
+
+        const result = await service.sync();
+
+        expect(fs.rename).not.toHaveBeenCalledWith(oldBranchPath, expect.anything());
+        expect(mockGitService.removeWorktree).toHaveBeenCalledWith(oldBranchPath, { force: true });
+        expect(result).toMatchObject({
+          started: true,
+          outcome: {
+            counts: expect.objectContaining({ removed: 1, failed: 0 }),
+            actions: expect.arrayContaining([
+              expect.objectContaining({ kind: "removed", branch: "old-branch", path: oldBranchPath }),
+            ]),
+          },
+        });
+        expect((result as { outcome: { actions: unknown[] } }).outcome.actions).not.toContainEqual(
+          expect.objectContaining({ kind: "skipped", reason: "trash_failed" }),
+        );
       });
 
       it("moves orphaned directories to trash instead of rm -rf", async () => {
@@ -1272,12 +1326,14 @@ describe("WorktreeSyncService", () => {
       expect(reaperSpy).toHaveBeenCalledTimes(1);
     });
 
-    it("does not run trash maintenance when the sync fails", async () => {
+    it("runs trash maintenance even when the sync fails", async () => {
+      // Migration and reaping only act on local expiry state: a persistently
+      // failing fetch must not let .trash/ grow without bound.
       mockGitService.fetchAll.mockRejectedValue(new Error("Fetch failed"));
       const svc = new WorktreeSyncService(mockConfig);
       await expect(svc.sync()).rejects.toThrow("Fetch failed");
-      expect(migrationSpy).not.toHaveBeenCalled();
-      expect(reaperSpy).not.toHaveBeenCalled();
+      expect(migrationSpy).toHaveBeenCalledTimes(1);
+      expect(reaperSpy).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1300,6 +1356,10 @@ describe("WorktreeSyncService", () => {
       mockGitService.fetchAll.mockResolvedValue(undefined);
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
+      // The diverged-replace flow depends on these succeeding; re-stub them so
+      // rejections configured by earlier suites cannot leak in.
+      mockGitService.updateRef.mockResolvedValue(undefined);
+      mockGitService.deleteLocalBranch.mockResolvedValue(undefined);
     });
 
     it("should reset to upstream when trees are identical (rebase with same content)", async () => {
@@ -1393,6 +1453,84 @@ describe("WorktreeSyncService", () => {
       });
       expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-1", { force: true });
+      expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
+    });
+
+    it("with trash disabled, pins a keep ref before the move and deletes the local branch before recreating", async () => {
+      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasOperationInProgress.mockResolvedValue(false);
+      mockGitService.getWorktreeMetadata.mockResolvedValue({
+        lastSyncCommit: "old-commit",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature-1",
+        createdFrom: { branch: "main", commit: "old-commit" },
+        syncHistory: [],
+      });
+      mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
+      mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
+
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+
+      await service.sync();
+
+      // Without trash there is no pin ref, so the keep ref is the only thing
+      // preserving the never-pushed commits once the local branch is deleted.
+      // It must exist before the worktree leaves its original location.
+      const keepRefIndex = mockGitService.updateRef.mock.calls.findIndex(([ref]) =>
+        (ref as string).startsWith("refs/sync-worktrees/keep/diverged-"),
+      );
+      expect(keepRefIndex).toBeGreaterThanOrEqual(0);
+      expect(mockGitService.updateRef.mock.calls[keepRefIndex][1]).toBe("new-local-commit");
+      const keepRefOrder = mockGitService.updateRef.mock.invocationCallOrder[keepRefIndex];
+      const renameOrder = (fs.rename as Mock<any>).mock.invocationCallOrder[0];
+      expect(keepRefOrder).toBeLessThan(renameOrder);
+
+      // The stale local branch must be gone before addWorktree, or the fresh
+      // worktree would be created from it instead of from upstream.
+      expect(mockGitService.deleteLocalBranch).toHaveBeenCalledWith("feature-1");
+      const deleteBranchOrder = mockGitService.deleteLocalBranch.mock.invocationCallOrder[0];
+      const addOrder = mockGitService.addWorktree.mock.invocationCallOrder[0];
+      expect(deleteBranchOrder).toBeLessThan(addOrder);
+    });
+
+    it("with trash enabled, trashes the diverged worktree with keepPinOnReap so its commits survive trash expiry", async () => {
+      service = new WorktreeSyncService({ ...mockConfig, trash: undefined });
+
+      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasOperationInProgress.mockResolvedValue(false);
+      mockGitService.getWorktreeMetadata.mockResolvedValue({
+        lastSyncCommit: "old-commit",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature-1",
+        createdFrom: { branch: "main", commit: "old-commit" },
+        syncHistory: [],
+      });
+      mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
+      mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
+
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+
+      await service.sync();
+
+      // diverged-replace trashes the only copy of never-pushed commits, so the
+      // pin must outlive trash expiry and be backed by a bundle.
+      const manifestWrite = findLastManifestWrite();
+      expect(manifestWrite).toBeDefined();
+      expect(JSON.parse(manifestWrite!.content)).toMatchObject({
+        branch: "feature-1",
+        reason: "diverged-replace",
+        keepPinOnReap: true,
+      });
+      expect(mockGitService.createBundleFromRef).toHaveBeenCalledWith(
+        expect.stringContaining("commits.bundle"),
+        expect.stringContaining("refs/sync-worktrees/trash/"),
+      );
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
     });
 
@@ -1836,9 +1974,19 @@ describe("WorktreeSyncService", () => {
     });
 
     it("runs maintenance once after a successful sync, inside the lock", async () => {
+      // gc must complete before the cross-process lock is released — after
+      // release another process may already be mutating the repo.
+      const release = vi.fn(async () => {});
+      vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue(
+        release as Awaited<ReturnType<RepoOperationLock["acquire"]>>,
+      );
+
       const svc = new WorktreeSyncService(mockConfig);
       await svc.sync();
+
       expect(maintenanceSpy).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(maintenanceSpy.mock.invocationCallOrder[0]).toBeLessThan(release.mock.invocationCallOrder[0]);
     });
 
     it("does not run maintenance when the sync fails", async () => {

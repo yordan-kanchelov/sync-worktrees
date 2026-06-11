@@ -2091,4 +2091,48 @@ prunable
       expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "feat-new"]);
     });
   });
+
+  describe("createBundleFromRef", () => {
+    it("skips bundling when no commits are missing from remotes — emptiness pre-checked via rev-list, never localized stderr", async () => {
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        if (Array.isArray(args) && args[0] === "rev-list") return "0\n";
+        throw new Error(`unexpected git call: ${(args as string[]).join(" ")}`);
+      });
+
+      await expect(gitService.createBundleFromRef("/tmp/c.bundle", "refs/sync-worktrees/trash/id")).resolves.toBe(
+        false,
+      );
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "rev-list",
+        "--count",
+        "refs/sync-worktrees/trash/id",
+        "--not",
+        "--remotes",
+      ]);
+    });
+
+    it("bundles when commits exist and lets bundle-create failures escape (fail-closed for keep-on-reap callers)", async () => {
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        if (Array.isArray(args) && args[0] === "rev-list") return "3\n";
+        return "";
+      });
+      await expect(gitService.createBundleFromRef("/tmp/c.bundle", "refs/sync-worktrees/trash/id")).resolves.toBe(true);
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "bundle",
+        "create",
+        "/tmp/c.bundle",
+        "refs/sync-worktrees/trash/id",
+        "--not",
+        "--remotes",
+      ]);
+
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        if (Array.isArray(args) && args[0] === "rev-list") return "3\n";
+        throw new Error("disk full");
+      });
+      await expect(gitService.createBundleFromRef("/tmp/c.bundle", "refs/sync-worktrees/trash/id")).rejects.toThrow(
+        "disk full",
+      );
+    });
+  });
 });

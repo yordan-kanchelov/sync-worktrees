@@ -8,7 +8,15 @@ export async function atomicWriteFile(filePath: string, content: string): Promis
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   let renamed = false;
   try {
-    await fs.writeFile(tmpPath, content, "utf-8");
+    // fsync before rename: without it a crash can leave the rename durable
+    // but the content not, yielding a valid-looking empty/truncated file.
+    const handle = await fs.open(tmpPath, "w");
+    try {
+      await handle.writeFile(content, "utf-8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     try {
       await fs.rename(tmpPath, filePath);
       renamed = true;

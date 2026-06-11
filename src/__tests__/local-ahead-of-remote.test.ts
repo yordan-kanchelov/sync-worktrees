@@ -45,6 +45,10 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
       isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
+      // The trash-disabled diverged flow pins a keep ref and deletes the stale
+      // local branch before recreating the worktree.
+      updateRef: vi.fn<any>().mockResolvedValue(undefined),
+      deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
       getGit: vi.fn<any>(),
     } as any,
   };

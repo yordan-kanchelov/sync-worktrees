@@ -62,6 +62,15 @@ type PublicCommonShape = { [K in CommonConfigKeys]-?: Exclude<SyncWorktreesWorkt
 type InternalCommonShape = { [K in CommonConfigKeys]-?: Exclude<Config[K], undefined> };
 type _CommonFieldTypesMatch = Expect<Equal<PublicCommonShape, InternalCommonShape>>;
 
+// Same guard for worktree-only fields: dropping `trash` (or any of these) from
+// the public worktree repository type, or letting its type diverge from the
+// internal `Config`, must fail typecheck rather than slip through.
+type PublicWorktreeOnlyShape = {
+  [K in WorktreeOnlyConfigKeys]-?: Exclude<SyncWorktreesWorktreeRepository[K], undefined>;
+};
+type InternalWorktreeOnlyShape = { [K in WorktreeOnlyConfigKeys]-?: Exclude<Config[K], undefined> };
+type _WorktreeOnlyFieldTypesMatch = Expect<Equal<PublicWorktreeOnlyShape, InternalWorktreeOnlyShape>>;
+
 const minimalConfig = {
   repositories: [
     {

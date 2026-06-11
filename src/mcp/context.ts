@@ -174,6 +174,10 @@ export class RepositoryContext {
     return this.launchCwd;
   }
 
+  async findConfigUpward(startDir: string): Promise<string | null> {
+    return this.configLoader.findConfigUpward(startDir);
+  }
+
   async loadConfig(configPath: string, options: { setDefaultCurrent?: boolean } = {}): Promise<RepositoryConfig[]> {
     const setDefaultCurrent = options.setDefaultCurrent ?? true;
     const absolutePath = path.resolve(configPath);
