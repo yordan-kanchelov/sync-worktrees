@@ -2,8 +2,7 @@
 import "../styles/globals.css";
 import packageMetadata from "../../../package.json";
 import PostHogAnalytics from "../components/PostHogAnalytics.astro";
-import { getCollection, getEntry } from "astro:content";
-import { mdToPlainText } from "../lib/markdown-inline";
+import { getEntry } from "astro:content";
 
 const positioning = (await getEntry("positioning", "main"))!.data;
 
@@ -12,6 +11,7 @@ export interface Props {
   description?: string;
   canonical?: string;
   ogImage?: string;
+  extraJsonLd?: Record<string, unknown>[];
 }
 
 const {
@@ -19,14 +19,13 @@ const {
   description = positioning.metaDescription,
   canonical,
   ogImage = "/og-image.png",
+  extraJsonLd = [],
 } = Astro.props;
 
 const siteUrl = Astro.site?.toString().replace(/\/$/, "") ?? "https://sync-worktrees.com";
 const canonicalUrl = canonical ?? new URL(Astro.url.pathname, siteUrl).toString();
 const ogImageUrl = new URL(ogImage, siteUrl).toString();
 const packageVersion = packageMetadata.version;
-
-const faqs = (await getCollection("faq")).sort((a, b) => a.data.order - b.data.order);
 
 const softwareJsonLd = {
   "@context": "https://schema.org",
@@ -37,8 +36,18 @@ const softwareJsonLd = {
   operatingSystem: "macOS, Linux",
   url: siteUrl,
   downloadUrl: "https://www.npmjs.com/package/sync-worktrees",
+  installUrl: "https://www.npmjs.com/package/sync-worktrees",
   softwareVersion: packageVersion,
   license: "https://opensource.org/licenses/MIT",
+  softwareHelp: {
+    "@type": "CreativeWork",
+    url: "https://github.com/yordan-kanchelov/sync-worktrees/blob/main/README.md",
+  },
+  releaseNotes: "https://github.com/yordan-kanchelov/sync-worktrees/blob/main/CHANGELOG.md",
+  sameAs: [
+    "https://github.com/yordan-kanchelov/sync-worktrees",
+    "https://www.npmjs.com/package/sync-worktrees",
+  ],
   offers: {
     "@type": "Offer",
     price: "0",
@@ -51,16 +60,6 @@ const softwareJsonLd = {
   },
   codeRepository: "https://github.com/yordan-kanchelov/sync-worktrees",
   programmingLanguage: "TypeScript",
-};
-
-const faqJsonLd = {
-  "@context": "https://schema.org",
-  "@type": "FAQPage",
-  mainEntity: faqs.map((entry) => ({
-    "@type": "Question",
-    name: entry.data.question,
-    acceptedAnswer: { "@type": "Answer", text: mdToPlainText(entry.body ?? "") },
-  })),
 };
 ---
 <!doctype html>
@@ -83,7 +82,10 @@ const faqJsonLd = {
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:image" content={ogImageUrl} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content={positioning.ogImageAlt} />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:site_name" content="sync-worktrees" />
 
     <!-- Twitter -->
@@ -98,7 +100,9 @@ const faqJsonLd = {
     <link rel="alternate" type="text/plain" href="/llms-full.txt" title="Full text for LLM training" />
 
     <script is:inline type="application/ld+json" set:html={JSON.stringify(softwareJsonLd)} />
-    <script is:inline type="application/ld+json" set:html={JSON.stringify(faqJsonLd)} />
+    {extraJsonLd.map((block) => (
+      <script is:inline type="application/ld+json" set:html={JSON.stringify(block)} />
+    ))}
     <PostHogAnalytics />
   </head>
   <body class="bg-white text-ink-900 font-sans antialiased">
