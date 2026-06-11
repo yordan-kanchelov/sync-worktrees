@@ -1925,11 +1925,44 @@ describe("InteractiveUIService", () => {
     });
 
     describe("openEditorInWorktree", () => {
+      const originalEditor = process.env.EDITOR;
+      const originalVisual = process.env.VISUAL;
+
+      afterEach(() => {
+        if (originalEditor === undefined) {
+          delete process.env.EDITOR;
+        } else {
+          process.env.EDITOR = originalEditor;
+        }
+        if (originalVisual === undefined) {
+          delete process.env.VISUAL;
+        } else {
+          process.env.VISUAL = originalVisual;
+        }
+      });
+
       it("should return success when opening editor", () => {
         const service = new InteractiveUIService([mockSyncService]);
         const result = service.openEditorInWorktree("/test/worktrees/main");
 
         expect(result.success).toBe(true);
+
+        service.destroy();
+      });
+
+      it("should split EDITOR values that include flags so spawn gets a real binary name", () => {
+        process.env.EDITOR = "code -w";
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/test/worktrees/main");
+
+        expect(result.success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith(
+          "code",
+          ["-w", "/test/worktrees/main"],
+          expect.objectContaining({ detached: true }),
+        );
 
         service.destroy();
       });

@@ -736,9 +736,12 @@ export class InteractiveUIService {
 
   public openEditorInWorktree(worktreePath: string): { success: boolean; error?: string } {
     const editor = process.env.EDITOR || process.env.VISUAL || "code";
+    // EDITOR may include flags (e.g. "code -w"); spawn without a shell treats
+    // the whole string as the binary name, so split command and args ourselves.
+    const [command, ...editorArgs] = editor.trim().split(/\s+/);
 
     try {
-      const child = spawn(editor, [worktreePath], {
+      const child = spawn(command, [...editorArgs, worktreePath], {
         detached: true,
         stdio: "ignore",
       });
