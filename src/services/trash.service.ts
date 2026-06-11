@@ -7,6 +7,7 @@ import { TrashOperationError } from "../errors";
 import { atomicWriteFile } from "../utils/atomic-write";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
+import { filenameTimestamp } from "../utils/filename-timestamp";
 import { getErrorMessage } from "../utils/lfs-error";
 
 import type { GitService } from "./git.service";
@@ -532,7 +533,7 @@ export class TrashService {
   // endings, but ".." inside the name would still make the ref invalid and
   // silently degrade the entry to files-only.
   private generateId(deletedAt: Date, baseName: string): string {
-    const timestamp = deletedAt.toISOString().replace(/[:.]/g, "-");
+    const timestamp = filenameTimestamp(deletedAt);
     const safeName = baseName.replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.{2,}/g, "_");
     return `${timestamp}-${safeName}-${randomBytes(3).toString("hex")}`;
   }

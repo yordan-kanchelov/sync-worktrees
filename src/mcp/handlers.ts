@@ -237,7 +237,7 @@ export async function handleListWorktrees(
       configuredRepoNames.map((repoName) =>
         limit(async () => {
           try {
-            const { worktrees } = await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit);
+            const worktrees = await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit);
             return [repoName, { worktrees }] as const;
           } catch (err) {
             return [
@@ -255,7 +255,7 @@ export async function handleListWorktrees(
     return formatToolResponse({ repositories: Object.fromEntries(repositories) });
   }
 
-  const { worktrees } = await listWorktreesForRepo(ctx, params.repoName, params.includeSize);
+  const worktrees = await listWorktreesForRepo(ctx, params.repoName, params.includeSize);
   return formatToolResponse({ worktrees });
 }
 
@@ -264,7 +264,7 @@ async function listWorktreesForRepo(
   repoName: string | undefined,
   includeSize: boolean | undefined,
   limit: Limit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
-): Promise<{ worktrees: ListedWorktree[] }> {
+): Promise<ListedWorktree[]> {
   const { discovered, service, git } = await getReadyService(ctx, repoName, {
     capability: "listWorktrees",
     toolName: "list_worktrees",
@@ -311,7 +311,7 @@ async function listWorktreesForRepo(
     ),
   );
 
-  return { worktrees: results };
+  return results;
 }
 
 export async function handleGetWorktreeStatus(
