@@ -1,5 +1,17 @@
 # sync-worktrees
 
+## 5.0.1
+
+### Patch Changes
+
+- 134a41f: Fix "open in editor" failing with ENOENT when `EDITOR`/`VISUAL` contains flags (e.g. `code -w`).
+
+  The TUI passed the whole `EDITOR` string as the binary name to `spawn`, so values like `code -w` were treated as a single executable that does not exist. The editor command is now split into command and arguments before spawning.
+
+- 5cb748f: Document the clone vs worktree repo-mode distinction in the MCP server instructions.
+
+  The two modes previously surfaced only as an output discriminator in `detect_context`'s schema, so agents had to guess what the modes meant and whether tool behavior differed. The server `instructions` string now defines both modes and notes that `create_worktree`/`update_worktree` are worktree-mode only. Those two tool descriptions gain a matching clause, and `sync`'s cross-references are qualified to worktree mode (they pointed at tools that error in clone mode).
+
 ## 5.0.0
 
 ### Major Changes
