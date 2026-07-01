@@ -171,7 +171,7 @@ describe("createServer", () => {
 
 describe("buildInstructions", () => {
   const baseInstructions =
-    "Call `detect_context` for the project map and live worktree state; `configuredRepositories` in its response is the server-wide loaded-config inventory. Use `set_current_repository` to switch repos. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up.";
+    "Call `detect_context` for the project map and live worktree state; `configuredRepositories` in its response is the server-wide loaded-config inventory. Use `set_current_repository` to switch repos. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up. Repos run in one of two modes. worktree (default): a bare repo plus branch worktrees, with new worktrees created under worktreeDir. clone: one standalone checkout where worktreeDir is the repo root. create_worktree and update_worktree are worktree-mode only; in clone mode, use sync to update the checkout.";
 
   function makeDiscovered(overrides: Partial<DiscoveredRepoContext> = {}): DiscoveredRepoContext {
     return {
