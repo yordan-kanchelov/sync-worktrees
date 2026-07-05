@@ -91,6 +91,19 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
       },
     )
     .demandCommand(0, 0)
+    .fail((msg, err) => {
+      if (err) throw err;
+      const subcommandFlag = argv.find((arg) => arg === "--init" || arg === "--list");
+      if (subcommandFlag) {
+        const subcommand = subcommandFlag.slice(2);
+        console.error(`\n❌ '${subcommandFlag}' is not a flag. '${subcommand}' is a subcommand.`);
+        console.error(`💡 Run: sync-worktrees ${subcommand}`);
+      } else {
+        console.error(msg);
+      }
+      console.error(`\nRun 'sync-worktrees --help' to see available commands.`);
+      process.exit(1);
+    })
     .help()
     .alias("help", "h")
     .version()

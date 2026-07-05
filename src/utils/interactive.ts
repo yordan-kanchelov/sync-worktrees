@@ -4,11 +4,17 @@ import { confirm, input, select } from "@inquirer/prompts";
 
 import { extractRepoNameFromUrl } from "./git-url";
 
-import type { InitConfigInput } from "../types";
+import type { InitConfigInput, InitRepositoryInput, RepositoryMode } from "../types";
 
-export async function promptForInitConfig(): Promise<InitConfigInput> {
-  console.log("🔧 Welcome to sync-worktrees interactive setup!\n");
+function safeRepoName(repoUrl: string): string {
+  try {
+    return extractRepoNameFromUrl(repoUrl);
+  } catch {
+    return "";
+  }
+}
 
+async function promptForRepository(): Promise<InitRepositoryInput> {
   const repoUrl = await input({
     message: "Enter the Git repository URL (e.g., https://github.com/user/repo.git):",
     validate: (value: string) => {
@@ -18,19 +24,36 @@ export async function promptForInitConfig(): Promise<InitConfigInput> {
       if (!value.match(/^(https?:\/\/|ssh:\/\/|git@|file:\/\/).*$/)) {
         return "Please enter a valid Git URL (https://, ssh://, git@, or file://)";
       }
+      if (!safeRepoName(value)) {
+        return "Couldn't derive a repository name from that URL — include the full path (e.g., https://github.com/user/repo.git)";
+      }
       return true;
     },
   });
 
-  const repoName = extractRepoNameFromUrl(repoUrl);
+  const mode = (await select({
+    message: "How should this repository be managed?",
+    choices: [
+      {
+        name: "worktree — bare repo + one worktree per remote branch (default)",
+        value: "worktree",
+      },
+      {
+        name: "clone — a single standalone checkout (for fixed-path monorepo siblings)",
+        value: "clone",
+      },
+    ],
+  })) as RepositoryMode;
+
+  const repoName = safeRepoName(repoUrl);
   const defaultWorktreeDir = repoName ? `./${repoName}` : "";
 
   let worktreeDir = await input({
-    message: "Enter the directory for storing worktrees:",
+    message: mode === "clone" ? "Enter the directory to clone into:" : "Enter the directory for storing worktrees:",
     default: defaultWorktreeDir,
     validate: (value: string) => {
       if (!value.trim() && !defaultWorktreeDir) {
-        return "Worktree directory is required";
+        return "Directory is required";
       }
       return true;
     },
@@ -39,65 +62,81 @@ export async function promptForInitConfig(): Promise<InitConfigInput> {
   if (!worktreeDir.trim() && defaultWorktreeDir) {
     worktreeDir = defaultWorktreeDir;
   }
-
   if (!path.isAbsolute(worktreeDir)) {
     worktreeDir = path.resolve(worktreeDir);
   }
 
-  let bareRepoDir: string | undefined;
-  const askForBareDir = await confirm({
-    message: "Would you like to specify a custom location for the bare repository?",
-    default: false,
-  });
+  const repo: InitRepositoryInput = { repoUrl, worktreeDir, mode };
 
-  if (askForBareDir) {
-    bareRepoDir = await input({
-      message: "Enter the directory for the bare repository:",
+  if (mode === "worktree") {
+    const askForBareDir = await confirm({
+      message: "Would you like to specify a custom location for the bare repository?",
+      default: false,
+    });
+    if (askForBareDir) {
+      let bareRepoDir = await input({
+        message: "Enter the directory for the bare repository:",
+        validate: (value: string) => (value.trim() ? true : "Bare repository directory is required"),
+      });
+      if (!path.isAbsolute(bareRepoDir)) {
+        bareRepoDir = path.resolve(bareRepoDir);
+      }
+      repo.bareRepoDir = bareRepoDir;
+    }
+  } else {
+    const branch = await input({
+      message: "Branch to clone (leave blank to track the remote default branch):",
+      default: "",
+    });
+    if (branch.trim()) {
+      repo.branch = branch.trim();
+    }
+
+    const depthAnswer = await input({
+      message: "Shallow clone depth (leave blank for full history):",
       default: "",
       validate: (value: string) => {
         if (!value.trim()) {
-          return "Bare repository directory is required";
+          return true;
         }
-        return true;
+        const parsed = Number(value);
+        return Number.isInteger(parsed) && parsed > 0 ? true : "Depth must be a positive integer";
       },
     });
-    if (!path.isAbsolute(bareRepoDir)) {
-      bareRepoDir = path.resolve(bareRepoDir);
+    if (depthAnswer.trim()) {
+      repo.depth = Number(depthAnswer);
     }
   }
 
-  const runMode = await select({
-    message: "How would you like to run the sync?",
-    choices: [
-      { name: "Run once", value: "once" },
-      { name: "Schedule with cron", value: "scheduled" },
-    ],
-  });
-  const runOnce = runMode === "once";
+  return repo;
+}
 
-  let cronSchedule = "0 * * * *";
-  if (!runOnce) {
-    cronSchedule = await input({
-      message: "Enter the cron schedule (or press enter for default):",
-      default: "0 * * * *",
-      validate: (value: string) => {
-        if (!value.trim()) {
-          return "Cron schedule is required";
-        }
-        const parts = value.trim().split(" ");
-        if (parts.length < 5) {
-          return "Invalid cron pattern. Expected format: '* * * * *'";
-        }
-        return true;
-      },
+export async function promptForInitConfig(): Promise<InitConfigInput> {
+  console.log("🔧 Welcome to sync-worktrees interactive setup!\n");
+
+  const repositories: InitRepositoryInput[] = [];
+  let addMore = true;
+  while (addMore) {
+    repositories.push(await promptForRepository());
+    addMore = await confirm({
+      message: "Add another repository?",
+      default: false,
     });
   }
 
-  return {
-    repoUrl,
-    worktreeDir,
-    bareRepoDir,
-    cronSchedule,
-    runOnce,
-  };
+  const cronSchedule = await input({
+    message: "Enter the cron schedule for syncing (or press enter for default):",
+    default: "0 * * * *",
+    validate: (value: string) => {
+      if (!value.trim()) {
+        return "Cron schedule is required";
+      }
+      if (value.trim().split(/\s+/).length < 5) {
+        return "Invalid cron pattern. Expected format: '* * * * *'";
+      }
+      return true;
+    },
+  });
+
+  return { repositories, cronSchedule };
 }
