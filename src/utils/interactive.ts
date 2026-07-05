@@ -24,6 +24,9 @@ async function promptForRepository(): Promise<InitRepositoryInput> {
       if (!value.match(/^(https?:\/\/|ssh:\/\/|git@|file:\/\/).*$/)) {
         return "Please enter a valid Git URL (https://, ssh://, git@, or file://)";
       }
+      if (!safeRepoName(value)) {
+        return "Couldn't derive a repository name from that URL — include the full path (e.g., https://github.com/user/repo.git)";
+      }
       return true;
     },
   });

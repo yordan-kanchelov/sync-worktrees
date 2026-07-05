@@ -198,6 +198,9 @@ describe("promptForInitConfig", () => {
     if (validateFn) {
       expect(validateFn("")).toBe("Repository URL is required");
       expect(validateFn("not-a-url")).toBe("Please enter a valid Git URL (https://, ssh://, git@, or file://)");
+      expect(validateFn("https://x")).toContain("Couldn't derive a repository name");
+      expect(validateFn("git@host")).toContain("Couldn't derive a repository name");
+      expect(validateFn("ssh://host")).toContain("Couldn't derive a repository name");
       expect(validateFn("https://github.com/user/repo.git")).toBe(true);
       expect(validateFn("git@github.com:user/repo.git")).toBe(true);
       expect(validateFn("file:///local/repo.git")).toBe(true);

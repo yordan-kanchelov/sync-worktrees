@@ -154,20 +154,21 @@ describe("Config Generator", () => {
     });
 
     it("uses absolute paths for deeply nested relative paths", async () => {
+      const worktreeDir = path.join(tempDir, "worktrees");
       const input = makeInput([
         {
           repoUrl: "https://github.com/user/deeprepo.git",
-          worktreeDir: path.join(tempDir, "worktrees"),
+          worktreeDir,
           mode: "worktree",
         },
       ]);
 
-      const configPath = path.join(tempDir, "sub/dir/config.js");
+      const configPath = path.join(tempDir, "a/b/c/config.js");
       await fs.mkdir(path.dirname(configPath), { recursive: true });
       await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
-      expect(content).toContain('name: "deeprepo"');
+      expect(content).toContain(`worktreeDir: ${JSON.stringify(worktreeDir)}`);
     });
 
     it("creates parent directories if missing", async () => {

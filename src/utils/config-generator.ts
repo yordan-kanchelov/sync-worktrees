@@ -73,7 +73,12 @@ export interface GenerateConfigFileOptions {
 
 function toConfigRelativePath(configDir: string, target: string): string {
   const relative = path.relative(configDir, target);
-  return relative.startsWith("../../../") ? target : `./${relative}`;
+  const segments = relative.split(path.sep);
+  const upLevels = segments.filter((segment) => segment === "..").length;
+  if (upLevels > 2) {
+    return target;
+  }
+  return segments[0] === ".." ? relative : `./${relative}`;
 }
 
 function buildRepository(repo: InitRepositoryInput, configDir: string): SerializableObject {
