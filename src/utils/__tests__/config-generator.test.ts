@@ -3,9 +3,14 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { ConfigLoaderService } from "../../services/config-loader.service";
 import { ConfigFileExistsError, findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "../config-generator";
 
-import type { InitConfigInput } from "../../types";
+import type { InitConfigInput, InitRepositoryInput } from "../../types";
+
+function makeInput(repositories: InitRepositoryInput[], cronSchedule = "0 * * * *"): InitConfigInput {
+  return { repositories, cronSchedule };
+}
 
 describe("Config Generator", () => {
   let tempDir: string;
@@ -19,13 +24,14 @@ describe("Config Generator", () => {
   });
 
   describe("generateConfigFile", () => {
-    it("generates a basic config file and omits default-valued runOnce", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: "/absolute/path/to/worktrees",
-        cronSchedule: "0 * * * *",
-        runOnce: false,
-      };
+    it("generates a basic worktree config and never emits runOnce", async () => {
+      const input = makeInput([
+        {
+          repoUrl: "https://github.com/user/repo.git",
+          worktreeDir: "/absolute/path/to/worktrees",
+          mode: "worktree",
+        },
+      ]);
 
       const configPath = path.join(tempDir, "test.config.js");
       await generateConfigFile(input, configPath);
@@ -40,50 +46,121 @@ describe("Config Generator", () => {
       expect(content).toContain('worktreeDir: "/absolute/path/to/worktrees"');
       expect(content).toContain('cronSchedule: "0 * * * *"');
 
-      // runOnce: false is the default and must not be serialized.
+      // runOnce is no longer part of the wizard/generated config.
       expect(content).not.toContain("runOnce");
+      // worktree is the default mode, so it should not be serialized.
+      expect(content).not.toContain('mode: "worktree"');
     });
 
-    it("emits runOnce: true and custom cronSchedule", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: "/path/to/worktrees",
-        cronSchedule: "*/30 * * * *",
-        runOnce: true,
-      };
+    it("emits a custom cronSchedule", async () => {
+      const input = makeInput(
+        [{ repoUrl: "https://github.com/user/repo.git", worktreeDir: "/path/to/worktrees", mode: "worktree" }],
+        "*/30 * * * *",
+      );
 
       const configPath = path.join(tempDir, "test.config.js");
       await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('cronSchedule: "*/30 * * * *"');
-      expect(content).toContain("runOnce: true");
+    });
+
+    it("emits clone-mode repositories with mode, branch, and depth", async () => {
+      const input = makeInput([
+        {
+          repoUrl: "https://github.com/user/game-platform.git",
+          worktreeDir: "/slots/game-platform",
+          mode: "clone",
+          branch: "develop",
+          depth: 10,
+        },
+      ]);
+
+      const configPath = path.join(tempDir, "test.config.js");
+      await generateConfigFile(input, configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain('mode: "clone"');
+      expect(content).toContain('branch: "develop"');
+      expect(content).toContain("depth: 10");
+      expect(content).not.toContain("bareRepoDir");
+    });
+
+    it("omits branch/depth for clone mode when not provided", async () => {
+      const input = makeInput([
+        {
+          repoUrl: "https://github.com/user/game-ui.git",
+          worktreeDir: "/slots/game-ui",
+          mode: "clone",
+        },
+      ]);
+
+      const configPath = path.join(tempDir, "test.config.js");
+      await generateConfigFile(input, configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      // Inspect only the config object, not the commented cheatsheet that follows it.
+      const configBody = content.split("export default config;")[0];
+      expect(configBody).toContain('mode: "clone"');
+      expect(configBody).not.toContain("branch:");
+      expect(configBody).not.toContain("depth:");
+    });
+
+    it("emits multiple repositories", async () => {
+      const input = makeInput([
+        { repoUrl: "https://github.com/user/first.git", worktreeDir: "/path/first", mode: "worktree" },
+        { repoUrl: "https://github.com/user/second.git", worktreeDir: "/path/second", mode: "clone" },
+      ]);
+
+      const configPath = path.join(tempDir, "test.config.js");
+      await generateConfigFile(input, configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain('name: "first"');
+      expect(content).toContain('name: "second"');
+      expect(content).toContain('mode: "clone"');
+    });
+
+    it("appends a commented cheatsheet of advanced options", async () => {
+      const input = makeInput([
+        { repoUrl: "https://github.com/user/repo.git", worktreeDir: "/path/to/worktrees", mode: "worktree" },
+      ]);
+
+      const configPath = path.join(tempDir, "test.config.js");
+      await generateConfigFile(input, configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain("More options");
+      expect(content).toContain("branchMaxAge");
+      expect(content).toContain("sparseCheckout");
+      expect(content).toContain("github.com/yordan-kanchelov/sync-worktrees#configuration");
     });
 
     it("uses relative worktreeDir when target sits in config dir", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/myproject.git",
-        worktreeDir: path.join(tempDir, "worktrees"),
-        cronSchedule: "0 * * * *",
-        runOnce: false,
-      };
+      const input = makeInput([
+        {
+          repoUrl: "https://github.com/user/myproject.git",
+          worktreeDir: path.join(tempDir, "worktrees"),
+          mode: "worktree",
+        },
+      ]);
 
       const configPath = path.join(tempDir, "config.js");
       await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('name: "myproject"');
-      expect(content).toContain('repoUrl: "https://github.com/user/myproject.git"');
       expect(content).toContain('worktreeDir: "./worktrees"');
     });
 
     it("uses absolute paths for deeply nested relative paths", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/deeprepo.git",
-        worktreeDir: path.join(tempDir, "worktrees"),
-        cronSchedule: "0 * * * *",
-        runOnce: false,
-      };
+      const input = makeInput([
+        {
+          repoUrl: "https://github.com/user/deeprepo.git",
+          worktreeDir: path.join(tempDir, "worktrees"),
+          mode: "worktree",
+        },
+      ]);
 
       const configPath = path.join(tempDir, "sub/dir/config.js");
       await fs.mkdir(path.dirname(configPath), { recursive: true });
@@ -91,16 +168,12 @@ describe("Config Generator", () => {
 
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('name: "deeprepo"');
-      expect(content).toContain('repoUrl: "https://github.com/user/deeprepo.git"');
     });
 
     it("creates parent directories if missing", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: "/path/to/worktrees",
-        cronSchedule: "0 * * * *",
-        runOnce: false,
-      };
+      const input = makeInput([
+        { repoUrl: "https://github.com/user/repo.git", worktreeDir: "/path/to/worktrees", mode: "worktree" },
+      ]);
 
       const configPath = path.join(tempDir, "nested/dir/config.js");
       await generateConfigFile(input, configPath);
@@ -113,12 +186,9 @@ describe("Config Generator", () => {
     });
 
     it("includes a timestamp in the generated file", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: "/path/to/worktrees",
-        cronSchedule: "0 * * * *",
-        runOnce: false,
-      };
+      const input = makeInput([
+        { repoUrl: "https://github.com/user/repo.git", worktreeDir: "/path/to/worktrees", mode: "worktree" },
+      ]);
 
       const configPath = path.join(tempDir, "test.config.js");
       await generateConfigFile(input, configPath);
@@ -128,13 +198,14 @@ describe("Config Generator", () => {
     });
 
     it("includes bareRepoDir as relative path when nested under config dir", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: path.join(tempDir, "worktrees"),
-        bareRepoDir: path.join(tempDir, ".bare/repo"),
-        cronSchedule: "0 * * * *",
-        runOnce: false,
-      };
+      const input = makeInput([
+        {
+          repoUrl: "https://github.com/user/repo.git",
+          worktreeDir: path.join(tempDir, "worktrees"),
+          bareRepoDir: path.join(tempDir, ".bare/repo"),
+          mode: "worktree",
+        },
+      ]);
 
       const configPath = path.join(tempDir, "config.js");
       await generateConfigFile(input, configPath);
@@ -144,13 +215,14 @@ describe("Config Generator", () => {
     });
 
     it("includes bareRepoDir as absolute path for deeply nested config", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: "/absolute/path/to/worktrees",
-        bareRepoDir: "/absolute/path/to/bare",
-        cronSchedule: "0 * * * *",
-        runOnce: false,
-      };
+      const input = makeInput([
+        {
+          repoUrl: "https://github.com/user/repo.git",
+          worktreeDir: "/absolute/path/to/worktrees",
+          bareRepoDir: "/absolute/path/to/bare",
+          mode: "worktree",
+        },
+      ]);
 
       const configPath = path.join(tempDir, "deep/nested/dir/config.js");
       await fs.mkdir(path.dirname(configPath), { recursive: true });
@@ -161,12 +233,9 @@ describe("Config Generator", () => {
     });
 
     it("throws ConfigFileExistsError when target exists and overwrite is false", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: "/path/to/worktrees",
-        cronSchedule: "0 * * * *",
-        runOnce: false,
-      };
+      const input = makeInput([
+        { repoUrl: "https://github.com/user/repo.git", worktreeDir: "/path/to/worktrees", mode: "worktree" },
+      ]);
 
       const configPath = path.join(tempDir, "existing.config.js");
       await fs.writeFile(configPath, "// pre-existing");
@@ -175,12 +244,9 @@ describe("Config Generator", () => {
     });
 
     it("overwrites existing target when overwrite: true", async () => {
-      const input: InitConfigInput = {
-        repoUrl: "https://github.com/user/repo.git",
-        worktreeDir: "/path/to/worktrees",
-        cronSchedule: "0 * * * *",
-        runOnce: false,
-      };
+      const input = makeInput([
+        { repoUrl: "https://github.com/user/repo.git", worktreeDir: "/path/to/worktrees", mode: "worktree" },
+      ]);
 
       const configPath = path.join(tempDir, "existing.config.js");
       await fs.writeFile(configPath, "// pre-existing");
@@ -190,6 +256,32 @@ describe("Config Generator", () => {
       const content = await fs.readFile(configPath, "utf-8");
       expect(content).toContain('repoUrl: "https://github.com/user/repo.git"');
       expect(content).not.toContain("pre-existing");
+    });
+  });
+
+  describe("generated config round-trips through the loader", () => {
+    it("loads a generated worktree + clone config without validation errors", async () => {
+      const input = makeInput([
+        { repoUrl: "https://github.com/user/app.git", worktreeDir: path.join(tempDir, "app"), mode: "worktree" },
+        {
+          repoUrl: "https://github.com/user/lib.git",
+          worktreeDir: path.join(tempDir, "lib"),
+          mode: "clone",
+          branch: "main",
+          depth: 5,
+        },
+      ]);
+
+      const configPath = path.join(tempDir, "sync-worktrees.config.js");
+      await generateConfigFile(input, configPath);
+
+      const loaded = await new ConfigLoaderService().loadConfigFile(configPath);
+
+      expect(loaded.repositories).toHaveLength(2);
+      expect(loaded.repositories[1].mode).toBe("clone");
+      expect(loaded.repositories[1].branch).toBe("main");
+      expect(loaded.repositories[1].depth).toBe(5);
+      expect(loaded.defaults?.cronSchedule).toBe("0 * * * *");
     });
   });
 

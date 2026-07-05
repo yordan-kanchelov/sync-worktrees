@@ -221,10 +221,22 @@ export interface RepositoryConfig extends Config {
   name: string;
 }
 
-export type InitConfigInput = Pick<
-  RepositoryConfig,
-  "repoUrl" | "worktreeDir" | "bareRepoDir" | "cronSchedule" | "runOnce"
->;
+export interface InitRepositoryInput {
+  repoUrl: string;
+  worktreeDir: string;
+  mode: RepositoryMode;
+  /** worktree mode only */
+  bareRepoDir?: string;
+  /** clone mode only; omit to track remote HEAD */
+  branch?: string;
+  /** clone mode only; omit for full history */
+  depth?: number;
+}
+
+export interface InitConfigInput {
+  repositories: InitRepositoryInput[];
+  cronSchedule: string;
+}
 
 export interface ConfigFile {
   defaults?: Partial<Config>;
