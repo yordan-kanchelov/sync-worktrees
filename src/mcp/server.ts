@@ -23,7 +23,7 @@ const REPO_NAME_DESCRIBE =
 const PATH_DESCRIBE_SUFFIX = "Absolute preferred; relative resolves from server CWD.";
 
 const SERVER_INSTRUCTIONS =
-  "Call `detect_context` for the project map and live worktree state; `configuredRepositories` in its response is the server-wide loaded-config inventory. Use `set_current_repository` to switch repos. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up.";
+  "Call `detect_context` for the project map and live worktree state; `configuredRepositories` in its response is the server-wide loaded-config inventory. Use `set_current_repository` to switch repos. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up. Repos run in one of two modes. worktree (default): a bare repo plus branch worktrees, with new worktrees created under worktreeDir. clone: one standalone checkout where worktreeDir is the repo root. create_worktree and update_worktree are worktree-mode only; in clone mode, use sync to update the checkout.";
 
 export interface ServerSnapshot {
   discovered: DiscoveredRepoContext | null;
@@ -174,7 +174,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "create_worktree",
     {
       description:
-        "Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Returns: {success, branchName, worktreePath, created, pushed}.",
+        "Worktree-mode only; clone-mode repos error here. Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Returns: {success, branchName, worktreePath, created, pushed}.",
       inputSchema: {
         branchName: z.string().describe("Branch name. Slashes/special chars sanitized for dir name."),
         baseBranch: z
@@ -201,7 +201,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "sync",
     {
       description:
-        "Repo-wide sync: fetch, create worktrees for new remote branches, remove pruned (clean only), fast-forward existing. Emits progress. Single worktree? Use update_worktree. Single create? Use create_worktree. Preconditions: config loaded + repo initialized (auto-runs). Returns: {success, duration, skips}.",
+        "Repo-wide sync: fetch, create worktrees for new remote branches, remove pruned (clean only), fast-forward existing. Emits progress. In worktree mode: single worktree? Use update_worktree. Single create? Use create_worktree. Preconditions: config loaded + repo initialized (auto-runs). Returns: {success, duration, skips}.",
       inputSchema: {
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       },
@@ -220,7 +220,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "update_worktree",
     {
       description:
-        "Fast-forward one worktree to upstream. No merge, no rebase, aborts if not fast-forwardable. Whole repo? Use sync.",
+        "Worktree-mode only; clone-mode repos error here; use sync to update the checkout. Fast-forward one worktree to upstream. No merge, no rebase, aborts if not fast-forwardable. Whole repo? Use sync.",
       inputSchema: {
         path: z.string().describe(`Worktree path to fast-forward. ${PATH_DESCRIBE_SUFFIX}`),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),

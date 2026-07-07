@@ -17,6 +17,7 @@ import { formatCloneSkipReason } from "./utils/clone-skip-format";
 import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
 import { fileExists } from "./utils/file-exists";
 import { promptForInitConfig } from "./utils/interactive";
+import { maybeRegisterMcpClients } from "./utils/mcp-registration";
 import { setupSignalHandlers } from "./utils/signal-handlers";
 
 import type { CloneSkipReason } from "./services/clone-sync.service";
@@ -285,6 +286,9 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
 
   const displayPath = path.relative(process.cwd(), targetPath) || targetPath;
   console.log(`\n✅ Configuration saved to: ${targetPath}`);
+
+  await maybeRegisterMcpClients();
+
   console.log(`\n💡 Next: sync-worktrees --config ${displayPath}`);
 }
 

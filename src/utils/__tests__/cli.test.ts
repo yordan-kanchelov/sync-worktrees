@@ -71,4 +71,16 @@ describe("parseArguments", () => {
   it("rejects --runOnce on subcommands", () => {
     expect(() => parseArguments(["list", "--runOnce"])).toThrow(/process\.exit/);
   });
+
+  it("nudges --init toward the init subcommand", () => {
+    expect(() => parseArguments(["--init"])).toThrow(/process\.exit/);
+    const output = (console.error as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join(" ");
+    expect(output).toContain("sync-worktrees init");
+  });
+
+  it("nudges --list toward the list subcommand", () => {
+    expect(() => parseArguments(["--list"])).toThrow(/process\.exit/);
+    const output = (console.error as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join(" ");
+    expect(output).toContain("sync-worktrees list");
+  });
 });

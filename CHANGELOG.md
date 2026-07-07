@@ -1,5 +1,29 @@
 # sync-worktrees
 
+## 5.1.0
+
+### Minor Changes
+
+- c3ca559: Rework the `init` wizard: multi-repository setup, mode-aware prompts, and a self-documenting generated config.
+  - **Multiple repositories in one run.** The wizard now loops with an "Add another repository?" prompt, so a monorepo-sibling setup (the common multi-repo case) can be scaffolded in a single `init` instead of hand-editing the file afterwards.
+  - **Mode-first prompts.** Each repository asks `worktree` vs `clone` up front, then only the fields that apply to that mode: `bareRepoDir` for worktree mode; optional `branch` and shallow `depth` for clone mode. Clone-mode entries are emitted with `mode: "clone"` and never leak worktree-only fields.
+  - **Removed the run-once question.** The wizard always generates a scheduled config; `runOnce` stays available as a CLI flag / manual config field for one-shot runs.
+  - **Self-documenting output.** The generated file appends a commented cheatsheet of the most common advanced options (`branchMaxAge`, `branchInclude`/`branchExclude`, `sparseCheckout`, `updateExistingWorktrees`, clone `branch`/`depth`, `parallelism`, `hooks`, `debug`) with a link to the full reference.
+  - **CLI discoverability.** `sync-worktrees --init` / `--list` (flag forms of the subcommands) now fail with a hint pointing to `sync-worktrees init` / `list` instead of a bare "unknown argument" error.
+  - **MCP auto-registration.** After writing the config, `init` detects installed AI CLIs (Claude Code, Codex) and, for any that don't already have the server, offers to register it via `<tool> mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp` (auto-detect mode — no config path is bound). Best-effort: it's TTY-gated, only prompts when it can confirm the server is missing (skips tools that are absent, already registered, or whose state can't be determined), and never fails `init`.
+
+## 5.0.1
+
+### Patch Changes
+
+- 134a41f: Fix "open in editor" failing with ENOENT when `EDITOR`/`VISUAL` contains flags (e.g. `code -w`).
+
+  The TUI passed the whole `EDITOR` string as the binary name to `spawn`, so values like `code -w` were treated as a single executable that does not exist. The editor command is now split into command and arguments before spawning.
+
+- 5cb748f: Document the clone vs worktree repo-mode distinction in the MCP server instructions.
+
+  The two modes previously surfaced only as an output discriminator in `detect_context`'s schema, so agents had to guess what the modes meant and whether tool behavior differed. The server `instructions` string now defines both modes and notes that `create_worktree`/`update_worktree` are worktree-mode only. Those two tool descriptions gain a matching clause, and `sync`'s cross-references are qualified to worktree mode (they pointed at tools that error in clone mode).
+
 ## 5.0.0
 
 ### Major Changes
