@@ -104,13 +104,18 @@ function buildRepository(repo: InitRepositoryInput, configDir: string, name: str
 }
 
 function uniqueRepositoryNames(repositories: InitRepositoryInput[]): string[] {
-  const counts = new Map<string, number>();
+  const usedNames = new Set<string>();
 
   return repositories.map((repo) => {
     const baseName = extractRepoNameFromUrl(repo.repoUrl);
-    const count = (counts.get(baseName) ?? 0) + 1;
-    counts.set(baseName, count);
-    return count === 1 ? baseName : `${baseName}-${count}`;
+    let candidate = baseName;
+    let suffix = 2;
+    while (usedNames.has(candidate)) {
+      candidate = `${baseName}-${suffix}`;
+      suffix++;
+    }
+    usedNames.add(candidate);
+    return candidate;
   });
 }
 

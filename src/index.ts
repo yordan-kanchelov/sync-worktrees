@@ -110,13 +110,12 @@ export async function runMultipleRepositories(
     const partialSkipNames = new Set<string>();
     for (let i = 0; i < servicesToSync.length; i++) {
       const { name, service } = servicesToSync[i];
+      const result = syncResults[i];
       const reasons = service.getRecordedSkips();
       if (reasons.length > 0) {
         skipsByRepo.push({ repo: name, reasons });
-        skippedNames.add(name);
       }
 
-      const result = syncResults[i];
       if (result.status === "fulfilled") {
         if (!result.value.started) {
           skippedNames.add(name);
@@ -124,6 +123,10 @@ export async function runMultipleRepositories(
         }
 
         const counts = result.value.outcome?.counts;
+        const hasFailedOutcome = Boolean(counts && counts.failed > 0);
+        if (reasons.length > 0 && !hasFailedOutcome) {
+          skippedNames.add(name);
+        }
         if (counts) {
           if (counts.failed > 0) {
             outcomeFailedNames.add(name);

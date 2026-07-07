@@ -476,7 +476,7 @@ export async function handleUpdateWorktree(
     const worktree = await ensureRepoWorktree(ctx, params, service, git);
 
     await git.fetchBranch(worktree.branch);
-    await git.updateWorktree(params.path);
+    await git.updateWorktree(worktree.path);
     ctx.invalidateDiscovered();
 
     return formatToolResponse({

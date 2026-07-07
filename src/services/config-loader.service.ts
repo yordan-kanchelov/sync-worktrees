@@ -142,7 +142,7 @@ export class ConfigLoaderService {
       }
 
       if (repoObj.runOnce !== undefined) {
-        throw new Error(`Repository '${repoObj.name}' cannot set 'runOnce'; use defaults.runOnce`);
+        throw new ConfigValidationError(`Repository '${repoObj.name}' runOnce`, "cannot be set; use defaults.runOnce");
       }
 
       if (repoObj.debug !== undefined && typeof repoObj.debug !== "boolean") {

@@ -233,8 +233,9 @@ describe("ConfigLoaderService", () => {
       `;
       await fs.writeFile(configPath, configContent);
 
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigError);
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Repository 'test' cannot set 'runOnce'; use defaults.runOnce",
+        /Repository 'test' runOnce.*defaults\.runOnce/,
       );
     });
 

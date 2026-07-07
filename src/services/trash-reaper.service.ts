@@ -1,10 +1,10 @@
-import { createHash } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
 
 import { GIT_CONSTANTS } from "../constants";
 import { formatBytes } from "../utils/disk-space";
 import { getErrorMessage } from "../utils/lfs-error";
+import { computeTrashRootHash } from "../utils/trash-root-hash";
 
 import { summarizeTrashEntries } from "./trash.service";
 
@@ -219,7 +219,7 @@ export class TrashReaperService {
   }
 
   private getTrashRootHash(): string {
-    return createHash("sha256").update(path.resolve(this.trashService.getTrashRoot())).digest("hex").slice(0, 16);
+    return computeTrashRootHash(this.trashService.getTrashRoot());
   }
 
   private warnIfOverThreshold(remaining: TrashEntry[]): void {

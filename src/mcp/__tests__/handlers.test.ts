@@ -839,7 +839,7 @@ describe("case-insensitive path handling in handlers", () => {
     const result = await invoke(handleUpdateWorktree, ctx, { path: "/users/foo/repo/feature" });
     const body = parseResponse(result);
     expect(body.success).toBe(true);
-    expect(git.updateWorktree).toHaveBeenCalledWith("/users/foo/repo/feature");
+    expect(git.updateWorktree).toHaveBeenCalledWith("/Users/foo/Repo/Feature");
   });
 
   it("rejects mixed-case worktree path on linux (case-sensitive)", async () => {

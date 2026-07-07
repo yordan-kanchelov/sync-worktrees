@@ -68,8 +68,9 @@ describe("WorktreeMetadataService", () => {
 
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
-      await service.saveMetadata(mockBareRepoPath, mockWorktreeName, mockMetadata);
+      const saved = await service.saveMetadata(mockBareRepoPath, mockWorktreeName, mockMetadata);
 
+      expect(saved).toBe(true);
       expect(fs.mkdir).toHaveBeenCalledWith(
         path.dirname("/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json"),
         { recursive: true },
@@ -106,10 +107,34 @@ describe("WorktreeMetadataService", () => {
       };
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existing));
 
-      await service.saveMetadata(mockBareRepoPath, mockWorktreeName, incoming);
+      const saved = await service.saveMetadata(mockBareRepoPath, mockWorktreeName, incoming);
 
+      expect(saved).toBe(false);
       expect(mockFileHandle.writeFile).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Refusing to overwrite metadata"));
+    });
+
+    it("allows invalid existing metadata to be recreated with a different upstream branch", async () => {
+      const existing = {
+        lastSyncCommit: "not a sha",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature-a",
+        syncHistory: [],
+      };
+      const incoming: SyncMetadata = {
+        lastSyncCommit: "abc123",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature-b",
+        createdFrom: { branch: "main", commit: "def456" },
+        syncHistory: [],
+      };
+      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existing));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+
+      const saved = await service.saveMetadata(mockBareRepoPath, mockWorktreeName, incoming);
+
+      expect(saved).toBe(true);
+      expect(mockFileHandle.writeFile).toHaveBeenCalledWith(JSON.stringify(incoming, null, 2), "utf-8");
     });
   });
 

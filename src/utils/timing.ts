@@ -26,15 +26,15 @@ export class Timer {
 }
 
 export class PhaseTimer {
-  private phases: Map<string, { timer: Timer; count?: number; parallelism?: number }> = new Map();
+  private phases: Map<string, { timer: Timer; count?: number }> = new Map();
   private currentPhase?: string;
 
-  startPhase(name: string, parallelism?: number): void {
+  startPhase(name: string): void {
     if (this.currentPhase) {
       this.endPhase();
     }
     this.currentPhase = name;
-    this.phases.set(name, { timer: new Timer(), parallelism });
+    this.phases.set(name, { timer: new Timer() });
   }
 
   endPhase(): void {

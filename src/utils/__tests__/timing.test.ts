@@ -93,7 +93,7 @@ describe("PhaseTimer", () => {
   it("should not calculate efficiency for parallel operations without per-item timings", () => {
     const phaseTimer = new PhaseTimer();
 
-    phaseTimer.startPhase("Create", 3);
+    phaseTimer.startPhase("Create");
     vi.advanceTimersByTime(3000);
     phaseTimer.setPhaseCount("Create", 9);
     phaseTimer.endPhase();
@@ -106,7 +106,7 @@ describe("PhaseTimer", () => {
   it("should not calculate efficiency for sequential operations", () => {
     const phaseTimer = new PhaseTimer();
 
-    phaseTimer.startPhase("Fetch", 1);
+    phaseTimer.startPhase("Fetch");
     vi.advanceTimersByTime(1000);
     phaseTimer.setPhaseCount("Fetch", 1);
     phaseTimer.endPhase();

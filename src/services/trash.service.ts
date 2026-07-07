@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "crypto";
+import { randomBytes } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
 
@@ -9,6 +9,7 @@ import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { filenameTimestamp } from "../utils/filename-timestamp";
 import { getErrorMessage } from "../utils/lfs-error";
+import { computeTrashRootHash } from "../utils/trash-root-hash";
 
 import type { GitService } from "./git.service";
 import type { Logger } from "./logger.service";
@@ -539,6 +540,6 @@ export class TrashService {
   }
 
   private getTrashRootHash(): string {
-    return createHash("sha256").update(path.resolve(this.getTrashRoot())).digest("hex").slice(0, 16);
+    return computeTrashRootHash(this.getTrashRoot());
   }
 }

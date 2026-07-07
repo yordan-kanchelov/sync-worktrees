@@ -52,17 +52,9 @@ export class HookExecutionService {
     this.killTimers.clear();
 
     for (const child of this.activeProcesses) {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // Process may have already exited
-      }
+      this.terminateChild(child, "SIGTERM");
       const killTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // Process may have already exited
-        }
+        this.terminateChild(child, "SIGKILL");
         this.killTimers.delete(killTimer);
       }, 5000);
       this.killTimers.add(killTimer);
@@ -98,7 +90,7 @@ export class HookExecutionService {
   ): void {
     const child = spawn(command, {
       shell: true,
-      detached: false,
+      detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
       env,
       cwd,
@@ -111,18 +103,9 @@ export class HookExecutionService {
     const timer = setTimeout(() => {
       timedOut = true;
       this.timeoutTimers.delete(timer);
-      this.activeProcesses.delete(child);
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // Process may have already exited
-      }
+      this.terminateChild(child, "SIGTERM");
       const scheduledKillTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // Process may have already exited
-        }
+        this.terminateChild(child, "SIGKILL");
         this.killTimers.delete(scheduledKillTimer);
       }, 5000);
       killTimer = scheduledKillTimer;
@@ -167,9 +150,21 @@ export class HookExecutionService {
         clearTimeout(killTimer);
         this.killTimers.delete(killTimer);
       }
-      if (timedOut) return;
       this.activeProcesses.delete(child);
+      if (timedOut) return;
       callbacks.onComplete?.(command, code);
     });
+  }
+
+  private terminateChild(child: ChildProcess, signal: NodeJS.Signals): void {
+    try {
+      if (process.platform !== "win32" && child.pid) {
+        process.kill(-child.pid, signal);
+        return;
+      }
+      child.kill(signal);
+    } catch {
+      // Process may have already exited.
+    }
   }
 }

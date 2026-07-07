@@ -168,6 +168,7 @@ describe("runMultipleRepositories", () => {
     await runMultipleRepositories(configFile, [repo]);
 
     expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("1 failed"));
+    expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("0 skipped"));
     expect(process.exitCode).toBe(1);
   });
 });

@@ -251,9 +251,7 @@ export class WorktreeModeSyncRunner {
     phaseTimer: PhaseTimer,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
-    const maxConcurrent =
-      this.config.parallelism?.maxWorktreeCreation ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
-    phaseTimer.startPhase("Phase 2: Create", maxConcurrent);
+    phaseTimer.startPhase("Phase 2: Create");
     this.progressEmitter.emit({ phase: "create", message: "Creating worktrees for new branches" });
 
     await this.createNewWorktrees(syncPlan.create, outcome);
@@ -361,8 +359,7 @@ export class WorktreeModeSyncRunner {
     phaseTimer: PhaseTimer,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
-    const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
-    phaseTimer.startPhase("Phase 3: Prune", maxConcurrent);
+    phaseTimer.startPhase("Phase 3: Prune");
     this.progressEmitter.emit({ phase: "prune", message: "Pruning stale worktrees" });
 
     await this.pruneOldWorktrees(actions, outcome);
@@ -671,9 +668,7 @@ export class WorktreeModeSyncRunner {
     phaseTimer: PhaseTimer,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
-    const maxConcurrent =
-      this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES;
-    phaseTimer.startPhase("Phase 4: Update", maxConcurrent);
+    phaseTimer.startPhase("Phase 4: Update");
     this.progressEmitter.emit({ phase: "update", message: "Updating existing worktrees" });
 
     await this.updateExistingWorktrees(actions, outcome);
