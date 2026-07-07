@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
 
@@ -87,6 +88,8 @@ describe("TrashReaperService", () => {
     return entry;
   }
 
+  const rootHash = (root: string): string => createHash("sha256").update(path.resolve(root)).digest("hex").slice(0, 16);
+
   it("deletes only expired entries, each on its own clock, and removes their pin refs", async () => {
     const expired = await makeEntry("expired", { ageDays: 31, branch: "expired" });
     const fresh = await makeEntry("fresh", { ageDays: 5, branch: "fresh" });
@@ -150,24 +153,28 @@ describe("TrashReaperService", () => {
     expect(gitStub.listRefs).not.toHaveBeenCalled();
   });
 
-  it("sweeps pin refs whose container is gone, keeping refs for existing containers — even invalid-manifest ones", async () => {
+  it("sweeps only own-namespace orphan pin refs, leaving foreign and legacy refs alone", async () => {
     const kept = await makeEntry("kept", { ageDays: 1, branch: "kept" });
     const invalidManifest = await makeEntry("invalid-manifest", { ageDays: 1, branch: "inv" });
     await fs.writeFile(path.join(invalidManifest.containerPath, "manifest.json"), "{not json");
+    const ownPrefix = `refs/sync-worktrees/trash/${rootHash(trashService.getTrashRoot())}/`;
+    const foreignPrefix = "refs/sync-worktrees/trash/0123456789abcdef/";
     gitStub.listRefs.mockResolvedValue([
-      `refs/sync-worktrees/trash/${kept.manifest.id}`,
-      `refs/sync-worktrees/trash/${invalidManifest.manifest.id}`,
-      "refs/sync-worktrees/trash/gone-entry-id",
-      "refs/sync-worktrees/trash/nested/odd",
+      `${ownPrefix}${kept.manifest.id}`,
+      `${ownPrefix}${invalidManifest.manifest.id}`,
+      `${ownPrefix}gone-entry-id`,
+      `${foreignPrefix}foreign-entry-id`,
+      "refs/sync-worktrees/trash/legacy-flat-id",
     ]);
 
     await reaper.reapExpiredUnlocked();
 
-    expect(gitStub.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/trash/gone-entry-id");
-    expect(gitStub.deleteRef).not.toHaveBeenCalledWith(`refs/sync-worktrees/trash/${kept.manifest.id}`);
-    expect(gitStub.deleteRef).not.toHaveBeenCalledWith(`refs/sync-worktrees/trash/${invalidManifest.manifest.id}`);
-    expect(gitStub.deleteRef).not.toHaveBeenCalledWith("refs/sync-worktrees/trash/nested/odd");
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("unexpected ref"));
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(`${ownPrefix}gone-entry-id`);
+    expect(gitStub.deleteRef).not.toHaveBeenCalledWith(`${ownPrefix}${kept.manifest.id}`);
+    expect(gitStub.deleteRef).not.toHaveBeenCalledWith(`${ownPrefix}${invalidManifest.manifest.id}`);
+    expect(gitStub.deleteRef).not.toHaveBeenCalledWith(`${foreignPrefix}foreign-entry-id`);
+    expect(gitStub.deleteRef).not.toHaveBeenCalledWith("refs/sync-worktrees/trash/legacy-flat-id");
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("legacy flat trash pin refs"));
   });
 
   it("protects a pin ref behind any dirent name, even a non-directory — unpinning is irreversible, a ref is cheap", async () => {

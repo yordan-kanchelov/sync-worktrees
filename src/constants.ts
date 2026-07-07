@@ -58,6 +58,7 @@ export const DEFAULT_CONFIG = {
   CLONE_TIMEOUT_MS: 900_000,
   LOCK_STALE_MS: 600_000,
   LOCK_UPDATE_MS: 30_000,
+  LFS_VERIFICATION_MAX_RETRIES: 30,
   MAINTENANCE: {
     ENABLED: true,
     INTERVAL: "7d",
@@ -84,7 +85,6 @@ export const ERROR_MESSAGES = {
     "fatal: ambiguous argument",
     "unknown revision or path",
   ],
-  LFS_ERROR: ["smudge filter lfs failed", "git-lfs", "LFS"],
   EXDEV: "EXDEV",
 } as const;
 

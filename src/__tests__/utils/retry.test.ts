@@ -63,6 +63,15 @@ describe("retry", () => {
       expect(mockFn).toHaveBeenCalledTimes(3);
     });
 
+    it("should reject NaN maxAttempts", async () => {
+      const mockFn = vi.fn().mockResolvedValue("success");
+
+      await expect(retry(mockFn, { maxAttempts: Number.NaN })).rejects.toThrow(
+        "maxAttempts must be 'unlimited' or a finite positive number",
+      );
+      expect(mockFn).not.toHaveBeenCalled();
+    });
+
     it("should retry unlimited times when maxAttempts is 'unlimited'", async () => {
       let attempts = 0;
       const mockFn = vi.fn().mockImplementation(() => {
@@ -209,6 +218,18 @@ describe("retry", () => {
       expect(result).toBe("success");
       expect(mockFn).toHaveBeenCalledTimes(2);
     });
+
+    it.each(["EACCES", "EPERM", "EROFS", "ENOSPC", "ENOENT"])(
+      "should not retry permanent filesystem error %s by default",
+      async (code) => {
+        const error = new Error(code);
+        (error as any).code = code;
+        const mockFn = vi.fn().mockRejectedValue(error);
+
+        await expect(retry(mockFn)).rejects.toThrow(code);
+        expect(mockFn).toHaveBeenCalledTimes(1);
+      },
+    );
   });
 
   describe("onRetry callback", () => {

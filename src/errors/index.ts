@@ -124,10 +124,7 @@ export class LfsError extends GitError {
   }
 }
 
-export function isLfsError(error: Error | string): boolean {
-  const message = typeof error === "string" ? error : error.message;
-  return ERROR_MESSAGES.LFS_ERROR.some((pattern) => message.includes(pattern));
-}
+export { isLfsErrorFromError as isLfsError } from "../utils/lfs-error";
 
 export function isFastForwardError(error: Error | string): boolean {
   const message = typeof error === "string" ? error : error.message;

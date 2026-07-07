@@ -83,7 +83,7 @@ describe("TrashService", () => {
       expect(manifest.branch).toBe("feature-x");
       expect(manifest.reason).toBe("prune");
       expect(manifest.headOid).toBe("abc123");
-      expect(manifest.pinRef).toBe(`${GIT_CONSTANTS.TRASH_REF_PREFIX}${manifest.id}`);
+      expect(manifest.pinRef).toMatch(new RegExp(`^${GIT_CONSTANTS.TRASH_REF_PREFIX}[0-9a-f]{16}/${manifest.id}$`));
       expect(manifest.originalPath).toBe(source);
       expect(gitStub.updateRef).toHaveBeenCalledWith(manifest.pinRef, "abc123");
 

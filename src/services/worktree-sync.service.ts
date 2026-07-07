@@ -165,6 +165,13 @@ export class WorktreeSyncService {
     return this.gitService;
   }
 
+  async getDefaultBranch(): Promise<string> {
+    if (this.cloneSyncService) {
+      return this.cloneSyncService.resolveBranch();
+    }
+    return this.gitService.getDefaultBranch();
+  }
+
   // Restore must hold the repo lock: the reaper, prune, and gc all mutate the
   // same trash entries and refs at the tail of a sync. wait:true queues behind
   // an in-flight sync instead of failing fast — restores are explicit user

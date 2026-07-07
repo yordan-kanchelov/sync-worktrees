@@ -23,6 +23,10 @@ const MCP_CLIENTS: McpClient[] = [
 
 type ClientStatus = "absent" | "registered" | "unregistered" | "unknown";
 
+function isMissingServerOutput(output: string): boolean {
+  return /(not found|not registered|does not exist|unknown server|no MCP server)/i.test(output);
+}
+
 async function probeClient(tool: string): Promise<ClientStatus> {
   try {
     await execFileAsync(tool, ["mcp", "get", MCP_SERVER_NAME], { timeout: 15_000 });
@@ -34,7 +38,10 @@ async function probeClient(tool: string): Promise<ClientStatus> {
       return "absent"; // CLI not installed
     }
     if (code === 1) {
-      return "unregistered"; // `mcp get` exits 1 only when the server isn't there
+      const output = `${(error as { stdout?: string }).stdout ?? ""}\n${(error as { stderr?: string }).stderr ?? ""}`;
+      if (isMissingServerOutput(output)) {
+        return "unregistered";
+      }
     }
     // Timeout, unexpected exit code, or an older CLI without `mcp get` — we don't
     // actually know it's missing, so don't offer to add it.

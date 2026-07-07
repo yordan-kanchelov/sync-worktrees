@@ -44,6 +44,18 @@ describe("setupSignalHandlers", () => {
     expect(exitMock).toHaveBeenCalledWith(0);
   });
 
+  it("uses the configured cleanup exit code after first signal cleanup", async () => {
+    const handle = setupSignalHandlers({ process: proc, exit, log, exitAfterCleanupCode: 130 });
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    handle.register(cleanup);
+
+    proc.emit("SIGINT");
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(cleanup).toHaveBeenCalledWith(true);
+    expect(exitMock).toHaveBeenCalledWith(130);
+  });
+
   it("force-exits 130 if cleanup exceeds watchdog window", async () => {
     const handle = setupSignalHandlers({ process: proc, exit, log, forceExitMs: 3000 });
     handle.register(() => new Promise(() => {}));

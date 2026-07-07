@@ -90,30 +90,30 @@ describe("PhaseTimer", () => {
     expect(results[0].count).toBe(15);
   });
 
-  it("should calculate efficiency for parallel operations", () => {
+  it("should not calculate efficiency for parallel operations without per-item timings", () => {
     const phaseTimer = new PhaseTimer();
 
-    phaseTimer.startPhase("Create", 3);
+    phaseTimer.startPhase("Create");
     vi.advanceTimersByTime(3000);
     phaseTimer.setPhaseCount("Create", 9);
     phaseTimer.endPhase();
 
     const results = phaseTimer.getResults();
 
-    expect(results[0].efficiency).toBe(300);
+    expect(results[0]).not.toHaveProperty("efficiency");
   });
 
   it("should not calculate efficiency for sequential operations", () => {
     const phaseTimer = new PhaseTimer();
 
-    phaseTimer.startPhase("Fetch", 1);
+    phaseTimer.startPhase("Fetch");
     vi.advanceTimersByTime(1000);
     phaseTimer.setPhaseCount("Fetch", 1);
     phaseTimer.endPhase();
 
     const results = phaseTimer.getResults();
 
-    expect(results[0].efficiency).toBeUndefined();
+    expect(results[0]).not.toHaveProperty("efficiency");
   });
 
   it("should handle zero count", () => {
@@ -127,7 +127,7 @@ describe("PhaseTimer", () => {
     const results = phaseTimer.getResults();
 
     expect(results[0].count).toBe(0);
-    expect(results[0].efficiency).toBeUndefined();
+    expect(results[0]).not.toHaveProperty("efficiency");
   });
 });
 
@@ -154,9 +154,9 @@ describe("formatTimingTable", () => {
   it("should format timing table with all phases", () => {
     const phaseResults = [
       { name: "Phase 1: Fetch", duration: 45000 },
-      { name: "Phase 2: Create", duration: 30000, count: 15, efficiency: 100 },
-      { name: "Phase 3: Prune", duration: 20000, count: 3, efficiency: 300 },
-      { name: "Phase 4: Update", duration: 50000, count: 12, efficiency: 240 },
+      { name: "Phase 2: Create", duration: 30000, count: 15 },
+      { name: "Phase 3: Prune", duration: 20000, count: 3 },
+      { name: "Phase 4: Update", duration: 50000, count: 12 },
       { name: "Phase 5: Cleanup", duration: 5000 },
     ];
 
@@ -168,9 +168,9 @@ describe("formatTimingTable", () => {
     expect(table).toContain("Phase 1: Fetch");
     expect(table).toContain("45.0s");
     expect(table).toContain("Phase 2: Create (15)");
-    expect(table).toContain("100%");
     expect(table).toContain("Phase 3: Prune (3)");
-    expect(table).toContain("300%");
+    expect(table).not.toContain("Efficiency");
+    expect(table).not.toContain("%");
   });
 
   it("should handle phases without count or efficiency", () => {

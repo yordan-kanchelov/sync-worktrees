@@ -24,9 +24,10 @@ function enoent(): NodeJS.ErrnoException {
   return err;
 }
 
-function exitFailure(): NodeJS.ErrnoException {
+function exitFailure(stderr = "sync-worktrees MCP server not found"): NodeJS.ErrnoException {
   const err = new Error("command failed") as NodeJS.ErrnoException;
-  err.code = 1 as unknown as string; // `mcp get` exits 1 = definitely not registered
+  err.code = 1 as unknown as string;
+  (err as NodeJS.ErrnoException & { stderr: string }).stderr = stderr;
   return err;
 }
 
@@ -40,7 +41,7 @@ function ambiguousFailure(): NodeJS.ErrnoException {
 function routeExecFile(handler: (tool: string, verb: string) => NodeJS.ErrnoException | null): void {
   mockExecFile.mockImplementation((tool, args, _opts, cb) => {
     const result = handler(tool, args[1]);
-    cb(result, "", "");
+    cb(result, "", result ? ((result as NodeJS.ErrnoException & { stderr?: string }).stderr ?? "") : "");
   });
 }
 
@@ -92,6 +93,16 @@ describe("maybeRegisterMcpClients", () => {
 
   it("does not prompt when the probe fails ambiguously (only ask when we know it's missing)", async () => {
     routeExecFile(() => ambiguousFailure()); // e.g. timeout / unexpected exit / no `mcp get`
+
+    await maybeRegisterMcpClients();
+
+    expect(mockConfirm).not.toHaveBeenCalled();
+    const addCalls = mockExecFile.mock.calls.filter((call) => call[1][1] === "add");
+    expect(addCalls).toHaveLength(0);
+  });
+
+  it("does not prompt or register on unrelated exit-1 probe errors", async () => {
+    routeExecFile(() => exitFailure("failed to read corrupt config"));
 
     await maybeRegisterMcpClients();
 

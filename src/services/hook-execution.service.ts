@@ -52,17 +52,9 @@ export class HookExecutionService {
     this.killTimers.clear();
 
     for (const child of this.activeProcesses) {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // Process may have already exited
-      }
+      this.terminateChild(child, "SIGTERM");
       const killTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // Process may have already exited
-        }
+        this.terminateChild(child, "SIGKILL");
         this.killTimers.delete(killTimer);
       }, 5000);
       this.killTimers.add(killTimer);
@@ -98,7 +90,7 @@ export class HookExecutionService {
   ): void {
     const child = spawn(command, {
       shell: true,
-      detached: false,
+      detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
       env,
       cwd,
@@ -106,24 +98,17 @@ export class HookExecutionService {
 
     this.activeProcesses.add(child);
     let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     const timer = setTimeout(() => {
       timedOut = true;
       this.timeoutTimers.delete(timer);
-      this.activeProcesses.delete(child);
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // Process may have already exited
-      }
-      const killTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // Process may have already exited
-        }
-        this.killTimers.delete(killTimer);
+      this.terminateChild(child, "SIGTERM");
+      const scheduledKillTimer = setTimeout(() => {
+        this.terminateChild(child, "SIGKILL");
+        this.killTimers.delete(scheduledKillTimer);
       }, 5000);
+      killTimer = scheduledKillTimer;
       this.killTimers.add(killTimer);
       callbacks.onError?.(command, new Error(`Hook timed out after ${this.timeoutMs}ms`));
     }, this.timeoutMs);
@@ -150,6 +135,10 @@ export class HookExecutionService {
     child.on("error", (error) => {
       clearTimeout(timer);
       this.timeoutTimers.delete(timer);
+      if (killTimer) {
+        clearTimeout(killTimer);
+        this.killTimers.delete(killTimer);
+      }
       this.activeProcesses.delete(child);
       callbacks.onError?.(command, error);
     });
@@ -157,9 +146,25 @@ export class HookExecutionService {
     child.on("close", (code) => {
       clearTimeout(timer);
       this.timeoutTimers.delete(timer);
-      if (timedOut) return;
+      if (killTimer) {
+        clearTimeout(killTimer);
+        this.killTimers.delete(killTimer);
+      }
       this.activeProcesses.delete(child);
+      if (timedOut) return;
       callbacks.onComplete?.(command, code);
     });
+  }
+
+  private terminateChild(child: ChildProcess, signal: NodeJS.Signals): void {
+    try {
+      if (process.platform !== "win32" && child.pid) {
+        process.kill(-child.pid, signal);
+        return;
+      }
+      child.kill(signal);
+    } catch {
+      // Process may have already exited.
+    }
   }
 }

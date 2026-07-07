@@ -16,7 +16,6 @@ type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ?
  */
 type CommonConfigKeys =
   | "cronSchedule"
-  | "runOnce"
   | "retry"
   | "parallelism"
   | "skipLfs"
@@ -33,6 +32,7 @@ type WorktreeOnlyConfigKeys =
   | "updateExistingWorktrees"
   | "trash";
 type CloneOnlyConfigKeys = "branch" | "depth";
+type DefaultsOnlyConfigKeys = "runOnce";
 type DiscriminantConfigKeys = "mode";
 type BaseIdentityConfigKeys = "repoUrl" | "worktreeDir";
 // Set internally or read only at runtime — intentionally absent from the public input surface.
@@ -42,6 +42,7 @@ type ClassifiedConfigKeys =
   | CommonConfigKeys
   | WorktreeOnlyConfigKeys
   | CloneOnlyConfigKeys
+  | DefaultsOnlyConfigKeys
   | DiscriminantConfigKeys
   | BaseIdentityConfigKeys
   | InternalOnlyConfigKeys;

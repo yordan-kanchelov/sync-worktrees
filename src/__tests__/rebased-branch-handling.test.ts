@@ -51,6 +51,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       updateRef: vi.fn<any>().mockResolvedValue(undefined),
       deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
       getGit: vi.fn<any>(),
+      getBareRepoPath: vi.fn(() => "/test/.bare/repo.git"),
     } as any,
   };
 });

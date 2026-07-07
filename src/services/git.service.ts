@@ -401,14 +401,15 @@ export class GitService {
       }
 
       const sampleSize = Math.min(5, lfsFileList.length);
-      const samplesToCheck = [];
+      const shuffled = [...lfsFileList];
       for (let i = 0; i < sampleSize; i++) {
-        const randomIndex = Math.floor(Math.random() * lfsFileList.length);
-        samplesToCheck.push(lfsFileList[randomIndex]);
+        const randomIndex = i + Math.floor(Math.random() * (shuffled.length - i));
+        [shuffled[i], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[i]];
       }
+      const samplesToCheck = shuffled.slice(0, sampleSize);
 
       let retries = 0;
-      const maxRetries = 30;
+      const maxRetries = DEFAULT_CONFIG.LFS_VERIFICATION_MAX_RETRIES;
       const retryDelay = 1000;
 
       while (retries < maxRetries) {
@@ -1031,11 +1032,13 @@ export class GitService {
   }
 
   private async detectDefaultBranch(bareGit: SimpleGit): Promise<string> {
+    const originHeadPrefix = "refs/remotes/origin/";
     try {
       // Try to get the symbolic ref for origin/HEAD
       const headRef = await bareGit.raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
       // Extract branch name from refs/remotes/origin/main or refs/remotes/origin/master
-      const branch = headRef.trim().split("/").pop();
+      const ref = headRef.trim();
+      const branch = ref.startsWith(originHeadPrefix) ? ref.slice(originHeadPrefix.length) : "";
       if (branch) {
         return branch;
       }
@@ -1044,7 +1047,8 @@ export class GitService {
       try {
         await bareGit.raw(["remote", "set-head", "origin", "-a"]);
         const headRef = await bareGit.raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
-        const branch = headRef.trim().split("/").pop();
+        const ref = headRef.trim();
+        const branch = ref.startsWith(originHeadPrefix) ? ref.slice(originHeadPrefix.length) : "";
         if (branch) {
           return branch;
         }

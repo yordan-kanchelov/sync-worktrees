@@ -214,15 +214,17 @@ export class RepositoryContext {
       });
     }
 
+    this.reselectDetectedCurrentRepoIfConfigured();
+
     if (this.currentRepo && !this.repos.has(this.currentRepo)) {
       this.currentRepo = null;
     }
 
-    if (setDefaultCurrent && !this.currentRepo && configFile.repositories.length > 0) {
-      this.currentRepo = configFile.repositories[0].name;
+    if (setDefaultCurrent && !this.currentRepo && resolvedAll.length === 1) {
+      this.currentRepo = resolvedAll[0].name;
     }
 
-    this.discoveryCache.clear();
+    this.invalidateDiscovered();
 
     return configFile.repositories;
   }
@@ -267,6 +269,9 @@ export class RepositoryContext {
 
   invalidateDiscovered(): void {
     this.discoveryCache.clear();
+    for (const entry of this.repos.values()) {
+      entry.discovered = undefined;
+    }
   }
 
   /** @internal Test-only helper — registers a repo entry without going through config loading. */
@@ -365,10 +370,48 @@ export class RepositoryContext {
   }
 
   private bootstrapCurrentRepo(candidate: string, force = false): void {
-    if (this.currentRepo !== null) return;
+    if (this.currentRepo !== null) {
+      if (!force || this.repos.get(this.currentRepo)?.source !== "detected") return;
+    }
     if (!this.repos.has(candidate)) return;
     if (!force && this.repos.size !== 1) return;
     this.currentRepo = candidate;
+  }
+
+  private reselectDetectedCurrentRepoIfConfigured(): void {
+    if (!this.currentRepo) return;
+    const current = this.repos.get(this.currentRepo);
+    if (current?.source !== "detected") return;
+    const match = this.findConfiguredEntryForDetected(current);
+    if (match) {
+      this.currentRepo = match.name;
+    }
+  }
+
+  private findConfiguredEntryForDetected(detected: RepoEntry): RepoEntry | null {
+    const discovered = detected.discovered;
+    const detectedBare = discovered?.bareRepoPath ?? detected.config.bareRepoDir ?? null;
+    const detectedWorktree = discovered?.currentWorktreePath ?? detected.config.worktreeDir;
+
+    for (const entry of this.repos.values()) {
+      if (entry.source !== "config") continue;
+      if (
+        detectedBare &&
+        entry.config.bareRepoDir &&
+        normalizePathForCompare(path.resolve(entry.config.bareRepoDir)) ===
+          normalizePathForCompare(path.resolve(detectedBare))
+      ) {
+        return entry;
+      }
+      if (
+        resolveMode(entry.config) === REPOSITORY_MODES.CLONE &&
+        normalizePathForCompare(path.resolve(entry.config.worktreeDir)) ===
+          normalizePathForCompare(path.resolve(detectedWorktree))
+      ) {
+        return entry;
+      }
+    }
+    return null;
   }
 
   private async isCacheFresh(cached: CachedDiscovery): Promise<boolean> {

@@ -293,7 +293,6 @@ export type SyncWorktreesTrashConfig = TrashConfig;
 
 interface SyncWorktreesCommonConfigFields {
   cronSchedule?: string;
-  runOnce?: boolean;
   retry?: SyncWorktreesRetryConfig;
   parallelism?: SyncWorktreesParallelismConfig;
   skipLfs?: boolean;
@@ -336,7 +335,9 @@ export interface SyncWorktreesWorktreeRepository extends SyncWorktreesRepository
 
 export type SyncWorktreesRepository = SyncWorktreesCloneRepository | SyncWorktreesWorktreeRepository;
 
-type SyncWorktreesDefaultsBase = SyncWorktreesCommonConfigFields;
+interface SyncWorktreesDefaultsBase extends SyncWorktreesCommonConfigFields {
+  runOnce?: boolean;
+}
 
 export interface SyncWorktreesCloneDefaults extends SyncWorktreesDefaultsBase {
   mode: "clone";

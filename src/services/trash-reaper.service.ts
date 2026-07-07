@@ -4,6 +4,7 @@ import * as path from "path";
 import { GIT_CONSTANTS } from "../constants";
 import { formatBytes } from "../utils/disk-space";
 import { getErrorMessage } from "../utils/lfs-error";
+import { computeTrashRootHash } from "../utils/trash-root-hash";
 
 import { summarizeTrashEntries } from "./trash.service";
 
@@ -187,9 +188,21 @@ export class TrashReaperService {
       return;
     }
 
+    const ownPrefix = `${GIT_CONSTANTS.TRASH_REF_PREFIX}${this.getTrashRootHash()}/`;
+    let warnedLegacy = false;
+
     for (const ref of refs) {
       if (!ref.startsWith(GIT_CONSTANTS.TRASH_REF_PREFIX)) continue;
-      const id = ref.slice(GIT_CONSTANTS.TRASH_REF_PREFIX.length);
+      if (!ref.startsWith(ownPrefix)) {
+        const suffix = ref.slice(GIT_CONSTANTS.TRASH_REF_PREFIX.length);
+        if (suffix.length > 0 && !suffix.includes("/") && !warnedLegacy) {
+          this.logger.warn("⚠️ Trash reaper: leaving legacy flat trash pin refs alone");
+          warnedLegacy = true;
+        }
+        continue;
+      }
+
+      const id = ref.slice(ownPrefix.length);
       if (id.length === 0 || id.includes("/")) {
         this.logger.warn(`⚠️ Trash reaper: leaving unexpected ref '${ref}' alone`);
         continue;
@@ -203,6 +216,10 @@ export class TrashReaperService {
         this.logger.warn(`⚠️ Trash reaper: failed to delete orphaned pin ref '${ref}': ${getErrorMessage(error)}`);
       }
     }
+  }
+
+  private getTrashRootHash(): string {
+    return computeTrashRootHash(this.trashService.getTrashRoot());
   }
 
   private warnIfOverThreshold(remaining: TrashEntry[]): void {

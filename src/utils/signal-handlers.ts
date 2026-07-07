@@ -2,6 +2,7 @@ export type CleanupFn = (fast: boolean) => void | Promise<void>;
 
 export interface SignalHandlerOptions {
   forceExitMs?: number;
+  exitAfterCleanupCode?: number;
   log?: (message: string) => void;
   exit?: (code: number) => void;
   process?: NodeJS.EventEmitter;
@@ -16,6 +17,7 @@ export const DEFAULT_FORCE_EXIT_MS = 3000;
 
 export function setupSignalHandlers(options: SignalHandlerOptions = {}): SignalHandlerHandle {
   const forceExitMs = options.forceExitMs ?? DEFAULT_FORCE_EXIT_MS;
+  const exitAfterCleanupCode = options.exitAfterCleanupCode ?? 0;
   const log = options.log ?? ((msg: string): void => console.log(msg));
   const exit = options.exit ?? ((code: number): void => process.exit(code));
   const target = options.process ?? process;
@@ -42,7 +44,7 @@ export function setupSignalHandlers(options: SignalHandlerOptions = {}): SignalH
 
     void Promise.allSettled(cleanupFns.map((fn) => Promise.resolve().then(() => fn(true)))).then(() => {
       clearTimeout(watchdog);
-      exit(0);
+      exit(exitAfterCleanupCode);
     });
   };
 

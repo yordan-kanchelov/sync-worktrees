@@ -26,6 +26,7 @@ type WorktreePathParams = RepoScopedParams & { path: string };
 type RepoService = Awaited<ReturnType<RepositoryContext["getService"]>>;
 type RepoGitService = ReturnType<RepoService["getGitService"]>;
 type Limit = ReturnType<typeof pLimit>;
+type RepoWorktree = { path: string; branch: string };
 type ListedWorktree = {
   path: string;
   branch: string;
@@ -100,28 +101,29 @@ async function ensureRepoWorktreePath(
   service: RepoService,
   git: RepoGitService,
 ): Promise<string> {
-  await ensurePathBelongsToRepo(ctx, params.path, params.repoName, service, git);
-  return path.resolve(params.path);
+  return (await ensureRepoWorktree(ctx, params, service, git)).path;
 }
 
-async function ensurePathBelongsToRepo(
+async function ensureRepoWorktree(
   ctx: RepositoryContext,
-  targetPath: string,
-  repoName: string | undefined,
+  params: WorktreePathParams,
   service: RepoService,
   git: RepoGitService,
-): Promise<void> {
-  const discovered = ctx.getDiscoveredContext(repoName);
+): Promise<RepoWorktree> {
+  const targetPath = params.path;
+  const discovered = ctx.getDiscoveredContext(params.repoName);
   if (discovered?.allWorktrees.length) {
-    const match = discovered.allWorktrees.some((w) => pathsEqual(w.path, targetPath));
-    if (match) return;
+    const match = discovered.allWorktrees.find((w) => pathsEqual(w.path, targetPath));
+    if (match) return { path: path.resolve(match.path), branch: match.branch };
   }
 
   try {
     const worktrees = await getWorktreesFromService(service, git);
-    if (worktrees.some((w) => pathsEqual(w.path, targetPath))) return;
-  } catch {
-    // fall through to rejection
+    const match = worktrees.find((w) => pathsEqual(w.path, targetPath));
+    if (match) return { path: path.resolve(match.path), branch: match.branch };
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(`Could not verify worktree membership: ${cause}`);
   }
 
   throw new Error(`Path '${targetPath}' is not a registered worktree of the current repository`);
@@ -360,6 +362,7 @@ export async function handleCreateWorktree(
       await service.initializeUnlocked();
     }
 
+    await git.fetchAll();
     const existence = await git.branchExists(branchName);
 
     let created = false;
@@ -386,8 +389,19 @@ export async function handleCreateWorktree(
     ctx.invalidateDiscovered();
 
     if (created && push) {
-      await git.pushBranch(branchName);
-      pushed = true;
+      try {
+        await git.pushBranch(branchName);
+        pushed = true;
+      } catch (err) {
+        return formatToolResponse({
+          success: false,
+          branchName,
+          worktreePath: path.resolve(worktreePath),
+          created: true,
+          pushed: false,
+          pushError: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     return formatToolResponse({
@@ -459,14 +473,15 @@ export async function handleUpdateWorktree(
     if (!service.isInitialized()) {
       await service.initializeUnlocked();
     }
-    const worktreePath = await ensureRepoWorktreePath(ctx, params, service, git);
+    const worktree = await ensureRepoWorktree(ctx, params, service, git);
 
-    await git.updateWorktree(params.path);
+    await git.fetchBranch(worktree.branch);
+    await git.updateWorktree(worktree.path);
     ctx.invalidateDiscovered();
 
     return formatToolResponse({
       success: true,
-      worktreePath,
+      worktreePath: worktree.path,
     });
   });
 }
@@ -488,11 +503,10 @@ export async function handleInitialize(
       // one-shot suppression token so a later independent `sync` re-detects and
       // reports a wrong-branch / unreadable-HEAD clone instead of swallowing it.
       service.clearPendingInitSkip();
-      const git = service.getGitService();
       ctx.invalidateDiscovered();
       return formatToolResponse({
         success: true,
-        defaultBranch: git.getDefaultBranch(),
+        defaultBranch: await service.getDefaultBranch(),
         worktreeDir: service.config.worktreeDir,
       });
     });

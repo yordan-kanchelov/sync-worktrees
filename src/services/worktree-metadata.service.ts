@@ -18,9 +18,8 @@ export class WorktreeMetadataService {
   }
 
   /**
-   * Gets the internal worktree directory name from a worktree path.
-   * Git uses the basename of the worktree path as the internal directory name.
-   * For example: /worktrees/fix/test-branch -> test-branch (not fix/test-branch)
+   * Metadata is keyed by worktree path basename. Branch names are sanitized
+   * into unique basenames before worktrees are created.
    */
   private getWorktreeDirectoryName(worktreePath: string): string {
     return path.basename(worktreePath);
@@ -46,10 +45,18 @@ export class WorktreeMetadataService {
     return this.getMetadataPath(bareRepoPath, worktreeDirName);
   }
 
-  async saveMetadata(bareRepoPath: string, worktreeName: string, metadata: SyncMetadata): Promise<void> {
+  async saveMetadata(bareRepoPath: string, worktreeName: string, metadata: SyncMetadata): Promise<boolean> {
     const metadataPath = await this.getMetadataPath(bareRepoPath, worktreeName);
+    const existing = await this.loadMetadata(bareRepoPath, worktreeName);
+    if (existing && (await this.validateMetadata(existing)) && existing.upstreamBranch !== metadata.upstreamBranch) {
+      this.logger.warn(
+        `Refusing to overwrite metadata for ${worktreeName}: existing upstream ${existing.upstreamBranch} differs from ${metadata.upstreamBranch}`,
+      );
+      return false;
+    }
     await fs.mkdir(path.dirname(metadataPath), { recursive: true });
     await atomicWriteFile(metadataPath, JSON.stringify(metadata, null, 2));
+    return true;
   }
 
   async loadMetadata(bareRepoPath: string, worktreeName: string): Promise<SyncMetadata | null> {
@@ -180,7 +187,7 @@ export class WorktreeMetadataService {
 
         const parentBranch = defaultBranch || GIT_CONSTANTS.DEFAULT_BRANCH;
 
-        await this.createInitialMetadataFromPath(
+        const created = await this.createInitialMetadataFromPath(
           bareRepoPath,
           worktreePath,
           currentCommit.trim(),
@@ -188,7 +195,11 @@ export class WorktreeMetadataService {
           parentBranch,
           currentCommit.trim(),
         );
-        this.logger.info(`  ✅ Created metadata for ${worktreeDirName}`);
+        if (created) {
+          this.logger.info(`  ✅ Created metadata for ${worktreeDirName}`);
+        } else {
+          this.logger.warn(`  ⚠️ Metadata for ${worktreeDirName} was not overwritten`);
+        }
         return;
       } catch (error) {
         this.logger.error(`  ❌ Failed to create metadata`, error);
@@ -246,7 +257,7 @@ export class WorktreeMetadataService {
     upstreamBranch: string,
     parentBranch: string,
     parentCommit: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const metadata: SyncMetadata = {
       lastSyncCommit: commit,
       lastSyncDate: new Date().toISOString(),
@@ -264,7 +275,7 @@ export class WorktreeMetadataService {
       ],
     };
 
-    await this.saveMetadata(bareRepoPath, worktreeName, metadata);
+    return this.saveMetadata(bareRepoPath, worktreeName, metadata);
   }
 
   async createInitialMetadataFromPath(
@@ -274,7 +285,7 @@ export class WorktreeMetadataService {
     upstreamBranch: string,
     parentBranch: string,
     parentCommit: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
     const metadata: SyncMetadata = {
       lastSyncCommit: commit,
@@ -293,7 +304,7 @@ export class WorktreeMetadataService {
       ],
     };
 
-    await this.saveMetadata(bareRepoPath, worktreeDirName, metadata);
+    return this.saveMetadata(bareRepoPath, worktreeDirName, metadata);
   }
 
   async validateMetadata(metadata: SyncMetadata): Promise<boolean> {

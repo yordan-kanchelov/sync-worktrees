@@ -4,6 +4,7 @@ import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
+import { ConfigError } from "../../errors";
 import { ConfigLoaderService } from "../config-loader.service";
 
 describe("ConfigLoaderService", () => {
@@ -221,19 +222,20 @@ describe("ConfigLoaderService", () => {
       );
     });
 
-    it("should throw error for invalid runOnce type", async () => {
+    it("should reject repository runOnce with a defaults.runOnce pointer", async () => {
       const configPath = path.join(tempDir, "invalid-runonce.config.js");
       const configContent = `
         export default {
           repositories: [
-            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", runOnce: "yes" }
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", runOnce: true }
           ]
         };
       `;
       await fs.writeFile(configPath, configContent);
 
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigError);
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Repository 'test' has invalid 'runOnce' property",
+        /Repository 'test' runOnce.*defaults\.runOnce/,
       );
     });
 
@@ -250,6 +252,34 @@ describe("ConfigLoaderService", () => {
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
         "Repository 'test' has invalid 'debug' property",
+      );
+    });
+
+    it.each([
+      ["branchInclude", `branchInclude: "main"`],
+      ["branchExclude", `branchExclude: [123]`],
+      ["branchMaxAge", `branchMaxAge: "14 days"`],
+      ["skipLfs", `skipLfs: "yes"`],
+      ["updateExistingWorktrees", `updateExistingWorktrees: 1`],
+    ])("rejects invalid repository %s at load time", async (field, line) => {
+      const configPath = path.join(tempDir, `invalid-${field}.config.js`);
+      const configContent = `
+        export default {
+          repositories: [
+            {
+              name: "test-repo",
+              repoUrl: "${TEST_URLS.github}",
+              worktreeDir: "/path",
+              ${line}
+            }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigError);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        new RegExp(`Repository 'test-repo'.*${field}`),
       );
     });
 
@@ -365,7 +395,7 @@ describe("ConfigLoaderService", () => {
       expect(resolved.runOnce).toBe(true);
     });
 
-    it("should override defaults with repo config", () => {
+    it("should not let repository runOnce override defaults", () => {
       const repo = {
         name: "test",
         repoUrl: "https://github.com/test/repo.git",
@@ -382,7 +412,7 @@ describe("ConfigLoaderService", () => {
       const resolved = configLoader.resolveRepositoryConfig(repo, defaults);
 
       expect(resolved.cronSchedule).toBe("0 0 * * *");
-      expect(resolved.runOnce).toBe(false);
+      expect(resolved.runOnce).toBe(true);
     });
 
     it("should preserve debug from defaults for config-only runs", () => {
@@ -963,6 +993,33 @@ describe("ConfigLoaderService", () => {
       expect(repo2.skipLfs).toBe(false);
     });
 
+    it("reloads .cjs configs and their required child modules", async () => {
+      const childPath = path.join(tempDir, "repo-name.cjs");
+      const configPath = path.join(tempDir, "sync-worktrees.config.cjs");
+      await fs.writeFile(childPath, `module.exports = { name: "first" };`);
+      await fs.writeFile(
+        configPath,
+        `
+          const child = require("./repo-name.cjs");
+          module.exports = {
+            repositories: [{
+              name: child.name,
+              repoUrl: "${TEST_URLS.github}",
+              worktreeDir: "./worktrees"
+            }]
+          };
+        `,
+      );
+
+      const first = await configLoader.loadConfigFile(configPath);
+      expect(first.repositories[0].name).toBe("first");
+
+      await fs.writeFile(childPath, `module.exports = { name: "second" };`);
+
+      const second = await configLoader.loadConfigFile(configPath);
+      expect(second.repositories[0].name).toBe("second");
+    });
+
     it("should default skipLfs to false when not specified", () => {
       const repo = {
         name: "test",
@@ -1107,6 +1164,7 @@ describe("ConfigLoaderService", () => {
       { field: "maxWorktreeUpdates", invalidValue: 0 },
       { field: "maxWorktreeRemoval", invalidValue: 0 },
       { field: "maxStatusChecks", invalidValue: 0 },
+      { field: "maxBranchFetches", invalidValue: 1.5 },
     ])("should reject invalid $field", async ({ field, invalidValue }) => {
       const configPath = path.join(tempDir, `invalid-${field}.config.js`);
       const configContent = `
@@ -1124,7 +1182,7 @@ describe("ConfigLoaderService", () => {
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        `Invalid '${field}' in global parallelism config. Must be a positive number`,
+        `Invalid configuration for 'global parallelism.${field}': must be a positive integer`,
       );
     });
 
@@ -1215,7 +1273,7 @@ describe("ConfigLoaderService", () => {
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid 'maxRepositories' in defaults parallelism config",
+        "Invalid configuration for 'defaults parallelism.maxRepositories': must be a positive integer",
       );
     });
   });
@@ -1534,7 +1592,7 @@ describe("ConfigLoaderService", () => {
       expect(resolved.hooks?.onBranchCreated).toEqual(["repo-command"]);
     });
 
-    it("should resolve filesToCopyOnBranchCreate paths relative to config dir", () => {
+    it("should keep filesToCopyOnBranchCreate patterns relative", () => {
       const repo = {
         name: "test",
         repoUrl: "https://github.com/test/repo.git",
@@ -1546,10 +1604,10 @@ describe("ConfigLoaderService", () => {
 
       const resolved = configLoader.resolveRepositoryConfig(repo, {}, "/base/dir");
 
-      expect(resolved.filesToCopyOnBranchCreate).toEqual(["/base/dir/.env.local", "/base/dir/configs/settings.json"]);
+      expect(resolved.filesToCopyOnBranchCreate).toEqual([".env.local", "./configs/settings.json"]);
     });
 
-    it("should preserve absolute filesToCopyOnBranchCreate paths", () => {
+    it("should leave unsafe filesToCopyOnBranchCreate patterns for copy-time rejection", () => {
       const repo = {
         name: "test",
         repoUrl: "https://github.com/test/repo.git",
@@ -1562,6 +1620,52 @@ describe("ConfigLoaderService", () => {
       const resolved = configLoader.resolveRepositoryConfig(repo, {}, "/base/dir");
 
       expect(resolved.filesToCopyOnBranchCreate).toEqual(["/absolute/.env.local"]);
+    });
+
+    it("rejects worktree-mode bareRepoDir inside worktreeDir", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        bareRepoDir: "./worktrees/repo-bare",
+      };
+
+      expect(() => configLoader.resolveRepositoryConfig(repo, {}, "/base/dir")).toThrow(/bareRepoDir\/worktreeDir/);
+    });
+
+    it("rejects worktree-mode worktreeDir inside bareRepoDir", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./repo-bare/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        bareRepoDir: "./repo-bare",
+      };
+
+      expect(() => configLoader.resolveRepositoryConfig(repo, {}, "/base/dir")).toThrow(/bareRepoDir\/worktreeDir/);
+    });
+
+    it("derives bareRepoDir from an absolute local repoUrl", async () => {
+      const configPath = path.join(tempDir, "local-path.config.js");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            repositories: [{
+              name: "local",
+              repoUrl: "/srv/git/repo.git",
+              worktreeDir: "./worktrees"
+            }]
+          };
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories[0].bareRepoDir).toBe(path.join(tempDir, ".bare", "repo"));
     });
 
     it("should not set hooks when neither repo nor defaults have hooks", () => {

@@ -37,8 +37,6 @@ export type {
   SyncWorktreesTrashConfig,
 } from "./types";
 
-const signalHandle = setupSignalHandlers();
-
 export async function runMultipleRepositories(
   configFile: ConfigFile,
   repositories: RepositoryConfig[],
@@ -56,6 +54,7 @@ export async function runMultipleRepositories(
   const limit = pLimit(maxParallel);
 
   if (runOnce) {
+    const runOnceSignalHandle = setupSignalHandlers({ exitAfterCleanupCode: 130 });
     globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
 
     const initResults = await Promise.allSettled(
@@ -111,13 +110,12 @@ export async function runMultipleRepositories(
     const partialSkipNames = new Set<string>();
     for (let i = 0; i < servicesToSync.length; i++) {
       const { name, service } = servicesToSync[i];
+      const result = syncResults[i];
       const reasons = service.getRecordedSkips();
       if (reasons.length > 0) {
         skipsByRepo.push({ repo: name, reasons });
-        skippedNames.add(name);
       }
 
-      const result = syncResults[i];
       if (result.status === "fulfilled") {
         if (!result.value.started) {
           skippedNames.add(name);
@@ -125,6 +123,10 @@ export async function runMultipleRepositories(
         }
 
         const counts = result.value.outcome?.counts;
+        const hasFailedOutcome = Boolean(counts && counts.failed > 0);
+        if (reasons.length > 0 && !hasFailedOutcome) {
+          skippedNames.add(name);
+        }
         if (counts) {
           if (counts.failed > 0) {
             outcomeFailedNames.add(name);
@@ -149,12 +151,8 @@ export async function runMultipleRepositories(
       }
     }
 
-    const initFailures = initResults.filter(
-      (result, index) => result.status === "rejected" && !skippedNames.has(repositories[index].name),
-    ).length;
-    const syncFailures = syncResults.filter(
-      (result, index) => result.status === "rejected" && !skippedNames.has(servicesToSync[index].name),
-    ).length;
+    const initFailures = initResults.filter((result) => result.status === "rejected").length;
+    const syncFailures = syncResults.filter((result) => result.status === "rejected").length;
     const failedCount = initFailures + syncFailures + outcomeFailedNames.size;
     const skippedCount = skippedNames.size;
     const successCount = syncResults.filter((result, index) => {
@@ -176,7 +174,9 @@ export async function runMultipleRepositories(
     if (failedCount > 0) {
       process.exitCode = 1;
     }
+    runOnceSignalHandle.dispose();
   } else {
+    const signalHandle = setupSignalHandlers();
     for (const repoConfig of repositories) {
       const syncService = new WorktreeSyncService(repoConfig);
       services.set(repoConfig.name, syncService);
