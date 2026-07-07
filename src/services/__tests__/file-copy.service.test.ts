@@ -145,6 +145,31 @@ describe("FileCopyService", () => {
       expect(result.copied.sort()).toEqual(["a/b/file2.md", "a/file1.md"].sort());
     });
 
+    it("should copy relative config files into the same target paths", async () => {
+      await fs.mkdir(path.join(sourceDir, "config"), { recursive: true });
+      await fs.writeFile(path.join(sourceDir, ".env"), "SECRET=value");
+      await fs.writeFile(path.join(sourceDir, "config", "local.json"), "{}");
+
+      const result = await service.copyFiles(sourceDir, destDir, [".env", "config/*.json"]);
+
+      expect(result.copied.sort()).toEqual([".env", "config/local.json"].sort());
+      await expect(fs.readFile(path.join(destDir, ".env"), "utf-8")).resolves.toBe("SECRET=value");
+      await expect(fs.readFile(path.join(destDir, "config", "local.json"), "utf-8")).resolves.toBe("{}");
+    });
+
+    it("should reject absolute and escaping patterns", async () => {
+      await fs.writeFile(path.join(sourceDir, ".env"), "SECRET=value");
+
+      const result = await service.copyFiles(sourceDir, destDir, [path.join(sourceDir, ".env"), "../escape"]);
+
+      expect(result.copied).toEqual([]);
+      expect(result.errors).toEqual([
+        { file: path.join(sourceDir, ".env"), error: "Pattern must be relative and stay inside source directory" },
+        { file: "../escape", error: "Pattern must be relative and stay inside source directory" },
+      ]);
+      await expect(fs.stat(path.join(destDir, ".env"))).rejects.toThrow();
+    });
+
     it("should preserve file content exactly", async () => {
       const binaryContent = Buffer.from([0x00, 0x01, 0x02, 0xff, 0xfe]);
       await fs.writeFile(path.join(sourceDir, "binary.bin"), binaryContent);

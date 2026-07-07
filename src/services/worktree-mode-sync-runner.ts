@@ -10,6 +10,7 @@ import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { probePathExists } from "../utils/file-exists";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
+import { normalizePathForCompare } from "../utils/path-compare";
 import { quarantineDirectory } from "../utils/quarantine";
 
 import { PathResolutionService } from "./path-resolution.service";
@@ -900,6 +901,11 @@ export class WorktreeModeSyncRunner {
         for (const dir of orphanedDirs) {
           const dirPath = path.join(this.config.worktreeDir, dir);
           try {
+            if (normalizePathForCompare(dirPath) === normalizePathForCompare(this.gitService.getBareRepoPath())) {
+              this.logger.warn(`  - ⚠️ Skipping orphaned directory ${dir}: matches configured bareRepoDir`);
+              continue;
+            }
+
             const stat = await fs.stat(dirPath);
             if (!stat.isDirectory()) {
               continue;
@@ -962,6 +968,18 @@ export class WorktreeModeSyncRunner {
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
     this.logger.info(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
+
+    if (await this.gitService.hasStashedChanges(worktree.path)) {
+      this.logger.warn(
+        `⚠️  Skipping diverged replace for '${worktree.branch}' because it has stashed changes. Pop/apply or drop the stash first.`,
+      );
+      outcome.recordSkipped("worktree", "stash_present", {
+        branch: worktree.branch,
+        path: worktree.path,
+        message: "stashed changes present",
+      });
+      return;
+    }
 
     const treesIdentical = await this.gitService.compareTreeContent(worktree.path, worktree.branch);
 

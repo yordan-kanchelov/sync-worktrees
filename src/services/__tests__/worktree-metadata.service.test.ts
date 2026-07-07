@@ -4,6 +4,7 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createMockLogger } from "../../__tests__/test-utils";
 import { WorktreeMetadataService } from "../worktree-metadata.service";
 
 import type { SyncMetadata } from "../../types/sync-metadata";
@@ -30,6 +31,7 @@ describe("WorktreeMetadataService", () => {
     };
     (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
     (fs.rename as Mock<any>).mockResolvedValue(undefined);
+    (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
   });
 
   describe("getMetadataPath", () => {
@@ -86,6 +88,28 @@ describe("WorktreeMetadataService", () => {
         ),
         "/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json",
       );
+    });
+
+    it("refuses to overwrite metadata for a different upstream branch", async () => {
+      const logger = createMockLogger();
+      service = new WorktreeMetadataService(logger);
+      const existing: SyncMetadata = {
+        lastSyncCommit: "abc123",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature-a",
+        createdFrom: { branch: "main", commit: "def456" },
+        syncHistory: [],
+      };
+      const incoming: SyncMetadata = {
+        ...existing,
+        upstreamBranch: "origin/feature-b",
+      };
+      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existing));
+
+      await service.saveMetadata(mockBareRepoPath, mockWorktreeName, incoming);
+
+      expect(mockFileHandle.writeFile).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Refusing to overwrite metadata"));
     });
   });
 

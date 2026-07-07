@@ -76,6 +76,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
       createBundleFromRef: vi.fn<any>().mockResolvedValue(true),
       setStaleDirectoryTrasher: vi.fn(),
+      getBareRepoPath: vi.fn(() => "/test/.bare/repo.git"),
     } as any,
   };
 });
@@ -760,6 +761,7 @@ describe("WorktreeSyncService", () => {
       afterEach(() => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
         mockGitService.getWorktrees.mockResolvedValue([]);
+        mockGitService.getBareRepoPath.mockReturnValue("/test/.bare/repo.git");
         (fs.access as Mock<any>).mockReset();
       });
 
@@ -808,6 +810,26 @@ describe("WorktreeSyncService", () => {
         await service.sync();
 
         expect(fs.rm).toHaveBeenCalledWith(orphanPath, { recursive: true, force: true });
+      });
+
+      it("skips an orphaned directory that matches bareRepoDir", async () => {
+        const bareRepoPath = path.join("/test/worktrees", "repo-bare");
+        mockGitService.getBareRepoPath.mockReturnValue(bareRepoPath);
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if ((dirPath as string).endsWith(".diverged")) {
+            throw errnoError("ENOENT");
+          }
+          return ["repo-bare"];
+        });
+        mockGitService.getWorktrees.mockResolvedValue([]);
+        mockGitService.getRemoteBranches.mockResolvedValue([]);
+        (fs.stat as Mock<any>).mockResolvedValue({ isDirectory: vi.fn().mockReturnValue(true) });
+
+        await service.sync();
+
+        expect(fs.rm).not.toHaveBeenCalledWith(bareRepoPath, expect.anything());
+        expect(fs.rename).not.toHaveBeenCalledWith(bareRepoPath, expect.anything());
+        expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("matches configured bareRepoDir"));
       });
     });
 
@@ -1358,6 +1380,7 @@ describe("WorktreeSyncService", () => {
       mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
       // The diverged-replace flow depends on these succeeding; re-stub them so
       // rejections configured by earlier suites cannot leak in.
+      mockGitService.hasStashedChanges.mockResolvedValue(false);
       mockGitService.updateRef.mockResolvedValue(undefined);
       mockGitService.deleteLocalBranch.mockResolvedValue(undefined);
     });
@@ -1422,6 +1445,24 @@ describe("WorktreeSyncService", () => {
       // force is safe: the directory was already moved to .diverged/
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-1", { force: true });
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
+    });
+
+    it("skips diverged replace when the worktree has stashed changes", async () => {
+      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasOperationInProgress.mockResolvedValue(false);
+      mockGitService.hasStashedChanges.mockResolvedValue(true);
+
+      await service.sync();
+
+      expect(mockGitService.compareTreeContent).not.toHaveBeenCalled();
+      expect(fs.rename).not.toHaveBeenCalled();
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
+      expect(service.getLastOutcome()?.actions).toContainEqual(
+        expect.objectContaining({ kind: "skipped", reason: "stash_present", branch: "feature-1" }),
+      );
     });
 
     it("should use copy+remove fallback when rename fails with EXDEV", async () => {

@@ -106,6 +106,7 @@ export class HookExecutionService {
 
     this.activeProcesses.add(child);
     let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -116,14 +117,15 @@ export class HookExecutionService {
       } catch {
         // Process may have already exited
       }
-      const killTimer = setTimeout(() => {
+      const scheduledKillTimer = setTimeout(() => {
         try {
           child.kill("SIGKILL");
         } catch {
           // Process may have already exited
         }
-        this.killTimers.delete(killTimer);
+        this.killTimers.delete(scheduledKillTimer);
       }, 5000);
+      killTimer = scheduledKillTimer;
       this.killTimers.add(killTimer);
       callbacks.onError?.(command, new Error(`Hook timed out after ${this.timeoutMs}ms`));
     }, this.timeoutMs);
@@ -150,6 +152,10 @@ export class HookExecutionService {
     child.on("error", (error) => {
       clearTimeout(timer);
       this.timeoutTimers.delete(timer);
+      if (killTimer) {
+        clearTimeout(killTimer);
+        this.killTimers.delete(killTimer);
+      }
       this.activeProcesses.delete(child);
       callbacks.onError?.(command, error);
     });
@@ -157,6 +163,10 @@ export class HookExecutionService {
     child.on("close", (code) => {
       clearTimeout(timer);
       this.timeoutTimers.delete(timer);
+      if (killTimer) {
+        clearTimeout(killTimer);
+        this.killTimers.delete(killTimer);
+      }
       if (timedOut) return;
       this.activeProcesses.delete(child);
       callbacks.onComplete?.(command, code);

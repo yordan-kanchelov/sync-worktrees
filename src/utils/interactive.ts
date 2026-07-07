@@ -1,6 +1,7 @@
 import * as path from "path";
 
 import { confirm, input, select } from "@inquirer/prompts";
+import * as cron from "node-cron";
 
 import { extractRepoNameFromUrl } from "./git-url";
 
@@ -131,7 +132,7 @@ export async function promptForInitConfig(): Promise<InitConfigInput> {
       if (!value.trim()) {
         return "Cron schedule is required";
       }
-      if (value.trim().split(/\s+/).length < 5) {
+      if (!cron.validate(value.trim())) {
         return "Invalid cron pattern. Expected format: '* * * * *'";
       }
       return true;

@@ -1,3 +1,4 @@
+import { createRequire } from "module";
 import * as path from "path";
 import { pathToFileURL } from "url";
 
@@ -14,6 +15,8 @@ import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 
 import type { Config, ConfigFile, RepositoryConfig, RepositoryMode } from "../types";
+
+const require = createRequire(import.meta.url);
 
 const CLONE_MODE_CONFLICTING_FIELDS = [
   "branchInclude",
@@ -51,10 +54,17 @@ export class ConfigLoaderService {
     }
 
     try {
-      const fileUrl = pathToFileURL(absolutePath);
-      fileUrl.searchParams.set("t", Date.now().toString());
-      const configModule = await import(fileUrl.href);
-      const config = configModule.default;
+      let config: unknown;
+      if (absolutePath.endsWith(".cjs")) {
+        this.clearRequireCacheSubtree(absolutePath);
+        const configModule = require(absolutePath) as { default?: unknown };
+        config = configModule.default ?? configModule;
+      } else {
+        const fileUrl = pathToFileURL(absolutePath);
+        fileUrl.searchParams.set("t", Date.now().toString());
+        const configModule = await import(fileUrl.href);
+        config = configModule.default;
+      }
 
       if (!config) {
         throw new Error("Config file must use 'export default' syntax");
@@ -131,13 +141,19 @@ export class ConfigLoaderService {
         throw new Error(`Repository '${repoObj.name}' has invalid cron expression: '${repoObj.cronSchedule}'`);
       }
 
-      if (repoObj.runOnce !== undefined && typeof repoObj.runOnce !== "boolean") {
-        throw new Error(`Repository '${repoObj.name}' has invalid 'runOnce' property`);
+      if (repoObj.runOnce !== undefined) {
+        throw new Error(`Repository '${repoObj.name}' cannot set 'runOnce'; use defaults.runOnce`);
       }
 
       if (repoObj.debug !== undefined && typeof repoObj.debug !== "boolean") {
         throw new Error(`Repository '${repoObj.name}' has invalid 'debug' property`);
       }
+
+      this.validateBranchPatternList(repoObj.branchInclude, `Repository '${repoObj.name}' branchInclude`);
+      this.validateBranchPatternList(repoObj.branchExclude, `Repository '${repoObj.name}' branchExclude`);
+      this.validateBranchMaxAge(repoObj.branchMaxAge, `Repository '${repoObj.name}' branchMaxAge`);
+      this.validateBoolean(repoObj.skipLfs, `Repository '${repoObj.name}' skipLfs`);
+      this.validateBoolean(repoObj.updateExistingWorktrees, `Repository '${repoObj.name}' updateExistingWorktrees`);
 
       if (repoObj.retry !== undefined) {
         this.validateRetryConfig(repoObj.retry, `Repository '${repoObj.name}' retry config`);
@@ -188,6 +204,11 @@ export class ConfigLoaderService {
       if (defaults.debug !== undefined && typeof defaults.debug !== "boolean") {
         throw new Error("Invalid 'debug' in defaults");
       }
+      this.validateBranchPatternList(defaults.branchInclude, "defaults.branchInclude");
+      this.validateBranchPatternList(defaults.branchExclude, "defaults.branchExclude");
+      this.validateBranchMaxAge(defaults.branchMaxAge, "defaults.branchMaxAge");
+      this.validateBoolean(defaults.skipLfs, "defaults.skipLfs");
+      this.validateBoolean(defaults.updateExistingWorktrees, "defaults.updateExistingWorktrees");
       if (defaults.retry !== undefined && typeof defaults.retry !== "object") {
         throw new Error("Invalid 'retry' in defaults");
       }
@@ -241,10 +262,55 @@ export class ConfigLoaderService {
     }
   }
 
+  private clearRequireCacheSubtree(configPath: string): void {
+    let resolved: string;
+    try {
+      resolved = require.resolve(configPath);
+    } catch {
+      resolved = configPath;
+    }
+
+    const seen = new Set<string>();
+    const visit = (modulePath: string): void => {
+      if (seen.has(modulePath)) return;
+      seen.add(modulePath);
+
+      const cached = require.cache[modulePath];
+      if (!cached) return;
+
+      for (const child of cached.children) {
+        visit(child.id);
+      }
+      delete require.cache[modulePath];
+    };
+
+    visit(resolved);
+  }
+
   private validateDepth(value: unknown, field: string): void {
     if (value === undefined) return;
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
       throw new ConfigValidationError(field, "must be a positive safe integer");
+    }
+  }
+
+  private validateBoolean(value: unknown, field: string): void {
+    if (value !== undefined && typeof value !== "boolean") {
+      throw new ConfigValidationError(field, "must be a boolean");
+    }
+  }
+
+  private validateBranchPatternList(value: unknown, field: string): void {
+    if (value === undefined) return;
+    if (!Array.isArray(value) || value.some((pattern) => typeof pattern !== "string")) {
+      throw new ConfigValidationError(field, "must be an array of strings");
+    }
+  }
+
+  private validateBranchMaxAge(value: unknown, field: string): void {
+    if (value === undefined) return;
+    if (typeof value !== "string" || parseDuration(value) === null) {
+      throw new ConfigValidationError(field, "must be a duration string like '14d', '12h', or '2w'");
     }
   }
 
@@ -362,8 +428,8 @@ export class ConfigLoaderService {
 
     for (const field of positiveIntFields) {
       const value = config[field];
-      if (value !== undefined && (typeof value !== "number" || value < 1)) {
-        throw new Error(`Invalid '${field}' in ${context} parallelism config. Must be a positive number`);
+      if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)) {
+        throw new ConfigValidationError(`${context} parallelism.${field}`, "must be a positive integer");
       }
     }
 
@@ -557,7 +623,7 @@ export class ConfigLoaderService {
       repoUrl: repo.repoUrl,
       worktreeDir: this.resolvePath(repo.worktreeDir, configDir),
       cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? DEFAULT_CONFIG.CRON_SCHEDULE,
-      runOnce: repo.runOnce ?? defaults?.runOnce ?? false,
+      runOnce: defaults?.runOnce ?? false,
       debug: repo.debug ?? defaults?.debug,
       mode,
     };
@@ -620,8 +686,9 @@ export class ConfigLoaderService {
     }
 
     if (repo.filesToCopyOnBranchCreate || defaults?.filesToCopyOnBranchCreate) {
-      const files = repo.filesToCopyOnBranchCreate ?? defaults?.filesToCopyOnBranchCreate;
-      resolved.filesToCopyOnBranchCreate = files?.map((f) => this.resolvePath(f, configDir));
+      resolved.filesToCopyOnBranchCreate = [
+        ...(repo.filesToCopyOnBranchCreate ?? defaults?.filesToCopyOnBranchCreate ?? []),
+      ];
     }
 
     if (repo.hooks || defaults?.hooks) {
@@ -650,7 +717,25 @@ export class ConfigLoaderService {
       };
     }
 
+    this.validateWorktreeBareRepoSeparation(resolved);
+
     return resolved;
+  }
+
+  private validateWorktreeBareRepoSeparation(repo: RepositoryConfig): void {
+    if (repo.mode === REPOSITORY_MODES.CLONE || !repo.bareRepoDir) return;
+
+    const worktreeDir = normalizePathForCompare(repo.worktreeDir);
+    const bareRepoDir = normalizePathForCompare(repo.bareRepoDir);
+    const worktreeContainsBare = bareRepoDir === worktreeDir || bareRepoDir.startsWith(worktreeDir + path.sep);
+    const bareContainsWorktree = worktreeDir.startsWith(bareRepoDir + path.sep);
+
+    if (worktreeContainsBare || bareContainsWorktree) {
+      throw new ConfigValidationError(
+        `Repository '${repo.name}' bareRepoDir/worktreeDir`,
+        `must not overlap (bareRepoDir: ${repo.bareRepoDir}, worktreeDir: ${repo.worktreeDir})`,
+      );
+    }
   }
 
   private isDuplicateRepoUrl(repo: RepositoryConfig, all: RepositoryConfig[], defaults?: Partial<Config>): boolean {

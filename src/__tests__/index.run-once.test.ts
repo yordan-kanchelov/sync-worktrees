@@ -49,6 +49,7 @@ vi.mock("../services/worktree-sync.service", () => ({
 vi.mock("../utils/signal-handlers", () => ({
   setupSignalHandlers: vi.fn(() => ({
     register: mocks.registerSignalHandler,
+    dispose: vi.fn(),
   })),
 }));
 
@@ -157,6 +158,16 @@ describe("runMultipleRepositories", () => {
     expect(summary).toMatch(/0 (skipped|with clone-mode skips|with skips)/);
     expect(summary).toContain("1 failed");
     expect(summary).not.toContain("with partial skips");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("counts a rejected sync as failed even when the repo recorded a soft skip first", async () => {
+    mocks.getRecordedSkips.mockReturnValue([{ kind: "dirty_tree", worktreePath: "/tmp/repo-a" }]);
+    mocks.sync.mockRejectedValue(new Error("network failed"));
+
+    await runMultipleRepositories(configFile, [repo]);
+
+    expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("1 failed"));
     expect(process.exitCode).toBe(1);
   });
 });

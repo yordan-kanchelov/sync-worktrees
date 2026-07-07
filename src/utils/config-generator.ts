@@ -81,9 +81,9 @@ function toConfigRelativePath(configDir: string, target: string): string {
   return segments[0] === ".." ? relative : `./${relative}`;
 }
 
-function buildRepository(repo: InitRepositoryInput, configDir: string): SerializableObject {
+function buildRepository(repo: InitRepositoryInput, configDir: string, name: string): SerializableObject {
   const result: SerializableObject = {
-    name: extractRepoNameFromUrl(repo.repoUrl),
+    name,
     repoUrl: repo.repoUrl,
     worktreeDir: toConfigRelativePath(configDir, repo.worktreeDir),
   };
@@ -103,6 +103,17 @@ function buildRepository(repo: InitRepositoryInput, configDir: string): Serializ
   return result;
 }
 
+function uniqueRepositoryNames(repositories: InitRepositoryInput[]): string[] {
+  const counts = new Map<string, number>();
+
+  return repositories.map((repo) => {
+    const baseName = extractRepoNameFromUrl(repo.repoUrl);
+    const count = (counts.get(baseName) ?? 0) + 1;
+    counts.set(baseName, count);
+    return count === 1 ? baseName : `${baseName}-${count}`;
+  });
+}
+
 export async function generateConfigFile(
   input: InitConfigInput,
   configPath: string,
@@ -111,11 +122,12 @@ export async function generateConfigFile(
   const configDir = path.dirname(configPath);
   await fs.mkdir(configDir, { recursive: true });
 
+  const names = uniqueRepositoryNames(input.repositories);
   const configObject: SerializableObject = {
     defaults: {
       cronSchedule: input.cronSchedule,
     },
-    repositories: input.repositories.map((repo) => buildRepository(repo, configDir)),
+    repositories: input.repositories.map((repo, index) => buildRepository(repo, configDir, names[index])),
   };
 
   const configContent = `// @ts-check

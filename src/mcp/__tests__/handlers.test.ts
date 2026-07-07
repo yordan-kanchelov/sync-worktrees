@@ -99,6 +99,8 @@ function makeDiscovered(overrides: Partial<DiscoveredRepoContext> = {}): Discove
 }
 
 type MockGit = {
+  fetchAll: ReturnType<typeof vi.fn>;
+  fetchBranch: ReturnType<typeof vi.fn>;
   getWorktrees: ReturnType<typeof vi.fn>;
   getFullWorktreeStatus: ReturnType<typeof vi.fn>;
   branchExists: ReturnType<typeof vi.fn>;
@@ -125,6 +127,8 @@ function makeCtx(opts: {
   service?: Record<string, unknown>;
 }): { ctx: RepositoryContext; git: MockGit; service: any } {
   const git: MockGit = {
+    fetchAll: vi.fn<any>().mockResolvedValue(undefined),
+    fetchBranch: vi.fn<any>().mockResolvedValue(undefined),
     getWorktrees: vi.fn<any>().mockResolvedValue([]),
     getFullWorktreeStatus: vi.fn<any>(),
     branchExists: vi.fn<any>(),
@@ -157,6 +161,7 @@ function makeCtx(opts: {
       },
     }),
     getGitService: () => git,
+    getDefaultBranch: vi.fn<any>().mockResolvedValue("main"),
     getWorktrees: vi.fn<any>().mockImplementation(() => (git.getWorktrees as any)()),
     isCloneMode: vi.fn<any>().mockReturnValue(false),
     getRecordedSkips: vi.fn<any>().mockReturnValue([]),
@@ -401,6 +406,29 @@ describe("handleCreateWorktree", () => {
     expect(git.addWorktree).toHaveBeenCalledWith("feature/x", expect.stringContaining("feature-x"));
   });
 
+  it("fetches before checking the branch matrix", async () => {
+    const callOrder: string[] = [];
+    let remoteExists = false;
+    const { ctx } = makeCtx({
+      git: {
+        fetchAll: vi.fn<any>().mockImplementation(async () => {
+          callOrder.push("fetchAll");
+          remoteExists = true;
+        }),
+        branchExists: vi.fn<any>().mockImplementation(async () => {
+          callOrder.push("branchExists");
+          return { local: false, remote: remoteExists };
+        }),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/fresh" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(callOrder).toEqual(["fetchAll", "branchExists"]);
+  });
+
   it("creates and pushes a missing branch by default when baseBranch is provided", async () => {
     const { ctx, git } = makeCtx({
       git: {
@@ -550,6 +578,30 @@ describe("handleCreateWorktree", () => {
     expect(callOrder).toEqual(["createBranch", "addWorktree", "pushBranch"]);
     expect(git.addWorktree).toHaveBeenCalled();
     expect(git.pushBranch).toHaveBeenCalledWith("new-branch");
+  });
+
+  it("returns partial success details when push fails after worktree creation", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+        pushBranch: vi.fn<any>().mockRejectedValue(new Error("non-fast-forward")),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, {
+      branchName: "new-branch",
+      baseBranch: "main",
+    });
+    const body = parseResponse(result);
+
+    expect(body).toMatchObject({
+      success: false,
+      branchName: "new-branch",
+      created: true,
+      pushed: false,
+      pushError: "non-fast-forward",
+    });
+    expect(git.addWorktree).toHaveBeenCalled();
   });
 
   it("is unavailable for clone-mode repositories", async () => {
@@ -726,6 +778,21 @@ describe("handleSync", () => {
 });
 
 describe("handleInitialize", () => {
+  it("reports clone-mode configured branch as defaultBranch", async () => {
+    const { ctx, service } = makeCtx({
+      service: {
+        isCloneMode: vi.fn<any>().mockReturnValue(true),
+        getDefaultBranch: vi.fn<any>().mockResolvedValue("develop"),
+      },
+    });
+
+    const result = await invoke(handleInitialize, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.defaultBranch).toBe("develop");
+    expect(service.getDefaultBranch).toHaveBeenCalled();
+  });
+
   it("sends progress notifications when service emits events", async () => {
     const { ctx, service } = makeCtx({});
     service.isInitialized.mockReturnValue(false);
@@ -797,7 +864,29 @@ describe("handleUpdateWorktree", () => {
     const body = parseResponse(result);
     expect(body.success).toBe(true);
     expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
+    expect(git.fetchBranch).toHaveBeenCalledWith("feature");
     expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature");
+  });
+
+  it("fetches the target branch before updating the worktree", async () => {
+    const callOrder: string[] = [];
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature" }]),
+        fetchBranch: vi.fn<any>().mockImplementation(async () => {
+          callOrder.push("fetchBranch");
+        }),
+        updateWorktree: vi.fn<any>().mockImplementation(async () => {
+          callOrder.push("updateWorktree");
+        }),
+      },
+    });
+
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(callOrder).toEqual(["fetchBranch", "updateWorktree"]);
   });
 
   it("rejects path outside repository", async () => {
@@ -808,6 +897,20 @@ describe("handleUpdateWorktree", () => {
     const body = parseResponse(result);
     expect(body.error).toBe(true);
     expect(body.message).toContain("not a registered worktree");
+  });
+
+  it("surfaces worktree listing failures as verification errors", async () => {
+    const { ctx } = makeCtx({
+      discovered: makeDiscovered({ allWorktrees: [] }),
+      git: { getWorktrees: vi.fn<any>().mockRejectedValue(new Error("bare repo corrupt")) },
+    });
+
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" });
+    const body = parseResponse(result);
+
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("Could not verify worktree membership: bare repo corrupt");
+    expect(body.message).not.toContain("not a registered worktree");
   });
 
   it("is unavailable for clone-mode repositories", async () => {

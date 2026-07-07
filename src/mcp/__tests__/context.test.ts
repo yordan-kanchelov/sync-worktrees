@@ -20,13 +20,15 @@ vi.mock("simple-git", () => {
 
 vi.mock("../../services/worktree-sync.service", () => {
   return {
-    WorktreeSyncService: vi.fn().mockImplementation((config) => ({
-      config,
-      initialize: vi.fn(),
-      isInitialized: () => false,
-      isSyncInProgress: () => false,
-      getGitService: vi.fn(),
-    })),
+    WorktreeSyncService: vi.fn().mockImplementation(function (config) {
+      return {
+        config,
+        initialize: vi.fn(),
+        isInitialized: () => false,
+        isSyncInProgress: () => false,
+        getGitService: vi.fn(),
+      };
+    }),
   };
 });
 
@@ -304,9 +306,9 @@ describe("RepositoryContext.detectFromPath sibling discovery", () => {
       const rouletteBare = path.join(workspace, ".bare", "roulette-frontend");
       const rouletteWorktreeDir = path.join(workspace, "frontend", "roulette-frontend");
       const configPath = path.join(workspace, "sync-worktrees.config.js");
-      const cfgBody = `export default { repositories: [
-        { name: "amusnet-react-ui", repoUrl: "https://github.com/test/amusnet-react-ui.git", bareRepoDir: "./.bare/amusnet-react-ui", worktreeDir: "./amusnet-react-ui", cronSchedule: "0 * * * *", runOnce: true },
-        { name: "roulette-frontend", repoUrl: "https://github.com/test/roulette-frontend.git", bareRepoDir: "./.bare/roulette-frontend", worktreeDir: "./frontend/roulette-frontend", cronSchedule: "0 * * * *", runOnce: true }
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "amusnet-react-ui", repoUrl: "https://github.com/test/amusnet-react-ui.git", bareRepoDir: "./.bare/amusnet-react-ui", worktreeDir: "./amusnet-react-ui", cronSchedule: "0 * * * *" },
+        { name: "roulette-frontend", repoUrl: "https://github.com/test/roulette-frontend.git", bareRepoDir: "./.bare/roulette-frontend", worktreeDir: "./frontend/roulette-frontend", cronSchedule: "0 * * * *" }
       ] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 
@@ -347,7 +349,7 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
       await fs.writeFile(path.join(currentWt, ".git"), `gitdir: ${adminDir}\n`, "utf-8");
 
       const configPath = path.join(workspace, "sync-worktrees.config.js");
-      const cfgBody = `export default { repositories: [{ name: "auto-loaded", repoUrl: "https://github.com/test/repo.git", bareRepoDir: ${JSON.stringify(currentBare)}, worktreeDir: ${JSON.stringify(path.join(currentRepo, "worktrees"))}, cronSchedule: "0 * * * *", runOnce: true }] };`;
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [{ name: "auto-loaded", repoUrl: "https://github.com/test/repo.git", bareRepoDir: ${JSON.stringify(currentBare)}, worktreeDir: ${JSON.stringify(path.join(currentRepo, "worktrees"))}, cronSchedule: "0 * * * *" }] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 
       mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
@@ -373,8 +375,8 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
       await fs.mkdir(nestedPath, { recursive: true });
 
       const configPath = path.join(workspace, "sync-worktrees.config.js");
-      const cfgBody = `export default { repositories: [
-        { name: "game-platform-slots", repoUrl: "https://github.com/test/game-platform.git", worktreeDir: "./slots/game-platform", mode: "clone", cronSchedule: "0 * * * *", runOnce: true }
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "game-platform-slots", repoUrl: "https://github.com/test/game-platform.git", worktreeDir: "./slots/game-platform", mode: "clone", cronSchedule: "0 * * * *" }
       ] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 
@@ -415,8 +417,8 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
       await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
 
       const configPath = path.join(workspace, "sync-worktrees.config.js");
-      const cfgBody = `export default { repositories: [
-        { name: "game-platform-slots", repoUrl: "https://github.com/test/game-platform.git", worktreeDir: "./slots/game-platform", mode: "clone", branch: "configured-main", cronSchedule: "0 * * * *", runOnce: true }
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "game-platform-slots", repoUrl: "https://github.com/test/game-platform.git", worktreeDir: "./slots/game-platform", mode: "clone", branch: "configured-main", cronSchedule: "0 * * * *" }
       ] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 
@@ -440,6 +442,91 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
   });
 });
 
+describe("RepositoryContext.loadConfig selection state", () => {
+  beforeEach(() => {
+    mockRemoteUrl.mockReset();
+    mockWorktreeList.mockReset();
+  });
+
+  it("reselects a detected repo when the loaded config covers it", async () => {
+    const fixture = await makeWorktreeFixture();
+    try {
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+      mockWorktreeList.mockResolvedValue(
+        [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+      );
+
+      const ctx = new RepositoryContext();
+      await ctx.detectFromPath(fixture.currentWorktree);
+      expect(ctx.getCurrentRepo()).toMatch(/^__auto_detected__:/);
+
+      const configPath = path.join(fixture.root, "sync-worktrees.config.js");
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "configured", repoUrl: "https://github.com/test/repo.git", bareRepoDir: ${JSON.stringify(fixture.bareRepo)}, worktreeDir: ${JSON.stringify(fixture.worktreesDir)}, cronSchedule: "0 * * * *" }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      await ctx.loadConfig(configPath);
+
+      expect(ctx.getCurrentRepo()).toBe("configured");
+      await expect(ctx.getService()).resolves.toBeDefined();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("does not pin the first repo when a multi-repo config has no current match", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-load-multi-"));
+    try {
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "alpha", repoUrl: "https://github.com/test/alpha.git", bareRepoDir: "./.bare/alpha", worktreeDir: "./alpha", cronSchedule: "0 * * * *" },
+        { name: "beta", repoUrl: "https://github.com/test/beta.git", bareRepoDir: "./.bare/beta", worktreeDir: "./beta", cronSchedule: "0 * * * *" }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      const ctx = new RepositoryContext();
+      await ctx.loadConfig(configPath);
+
+      expect(ctx.getCurrentRepo()).toBeNull();
+      await expect(ctx.getService()).rejects.toThrow(/repository selection is ambiguous|No repository specified/);
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("clears stale discovered state when discovery is invalidated", async () => {
+    const fixture = await makeWorktreeFixture();
+    try {
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+      mockWorktreeList.mockResolvedValue(
+        [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+      );
+
+      const ctx = new RepositoryContext();
+      ctx.__registerForTest("configured", {
+        config: {
+          repoUrl: "https://github.com/test/repo.git",
+          bareRepoDir: path.resolve(fixture.bareRepo),
+          worktreeDir: fixture.worktreesDir,
+          cronSchedule: "0 * * * *",
+          runOnce: true,
+        },
+        source: "config" as const,
+      });
+
+      await ctx.detectFromPath(fixture.currentWorktree);
+      expect(ctx.getDiscoveredContext("configured")).not.toBeNull();
+
+      ctx.invalidateDiscovered();
+
+      expect(ctx.getDiscoveredContext("configured")).toBeNull();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+});
+
 describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
   beforeEach(() => {
     mockRemoteUrl.mockReset();
@@ -450,9 +537,9 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-"));
     try {
       const configPath = path.join(workspace, "sync-worktrees.config.js");
-      const cfgBody = `export default { repositories: [
-        { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", cronSchedule: "0 * * * *", runOnce: true },
-        { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *", runOnce: true }
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", cronSchedule: "0 * * * *" },
+        { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *" }
       ] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 
@@ -460,7 +547,7 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
       await ctx.loadConfig(configPath);
 
       await expect(ctx.getConfiguredRepositorySummaries()).resolves.toEqual([
-        { name: "ui", mode: "clone", checkoutPath: path.join(workspace, "ui"), isCurrent: true },
+        { name: "ui", mode: "clone", checkoutPath: path.join(workspace, "ui"), isCurrent: false },
         { name: "frontend", mode: "worktree", worktreeDir: path.join(workspace, "frontend"), isCurrent: false },
       ]);
     } finally {
@@ -477,10 +564,10 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
       await fs.mkdir(bareDir, { recursive: true });
 
       const configPath = path.join(workspace, "sync-worktrees.config.js");
-      const cfgBody = `export default { repositories: [
-        { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", branch: "main", cronSchedule: "0 * * * *", runOnce: true },
-        { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *", runOnce: true },
-        { name: "missing", repoUrl: "https://github.com/test/missing.git", bareRepoDir: "./.bare/missing", worktreeDir: "./missing", cronSchedule: "0 * * * *", runOnce: true }
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", branch: "main", cronSchedule: "0 * * * *" },
+        { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *" },
+        { name: "missing", repoUrl: "https://github.com/test/missing.git", bareRepoDir: "./.bare/missing", worktreeDir: "./missing", cronSchedule: "0 * * * *" }
       ] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 
@@ -497,7 +584,7 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
           checkoutPath: cloneDir,
           repoUrl: "https://github.com/test/ui.git",
           branch: "main",
-          isCurrent: true,
+          isCurrent: false,
           localReady: true,
         },
         {
@@ -528,9 +615,9 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-scope-"));
     try {
       const configPath = path.join(workspace, "sync-worktrees.config.js");
-      const cfgBody = `export default { repositories: [
-        { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", cronSchedule: "0 * * * *", runOnce: true },
-        { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *", runOnce: true }
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", cronSchedule: "0 * * * *" },
+        { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *" }
       ] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 
@@ -567,9 +654,9 @@ describe("RepositoryContext.getAllConfiguredWorktreeDetails", () => {
       const siblingWt = path.join(workspace, "frontend", "repo-b", "feature-b");
 
       const configPath = path.join(workspace, "sync-worktrees.config.js");
-      const cfgBody = `export default { repositories: [
-        { name: "repo-a", repoUrl: "https://github.com/test/repo-a.git", bareRepoDir: "./.bare/repo-a", worktreeDir: "./repo-a", cronSchedule: "0 * * * *", runOnce: true },
-        { name: "repo-b", repoUrl: "https://github.com/test/repo-b.git", bareRepoDir: "./.bare/repo-b", worktreeDir: "./frontend/repo-b", cronSchedule: "0 * * * *", runOnce: true }
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "repo-a", repoUrl: "https://github.com/test/repo-a.git", bareRepoDir: "./.bare/repo-a", worktreeDir: "./repo-a", cronSchedule: "0 * * * *" },
+        { name: "repo-b", repoUrl: "https://github.com/test/repo-b.git", bareRepoDir: "./.bare/repo-b", worktreeDir: "./frontend/repo-b", cronSchedule: "0 * * * *" }
       ] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 
@@ -608,9 +695,9 @@ describe("RepositoryContext.getAllConfiguredWorktreeDetails", () => {
       await fs.mkdir(siblingBare, { recursive: true });
 
       const configPath = path.join(workspace, "sync-worktrees.config.js");
-      const cfgBody = `export default { repositories: [
-        { name: "repo-a", repoUrl: "https://github.com/test/repo-a.git", bareRepoDir: "./.bare/repo-a", worktreeDir: "./repo-a", cronSchedule: "0 * * * *", runOnce: true },
-        { name: "repo-b", repoUrl: "https://github.com/test/repo-b.git", bareRepoDir: "./.bare/repo-b", worktreeDir: "./repo-b", cronSchedule: "0 * * * *", runOnce: true }
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "repo-a", repoUrl: "https://github.com/test/repo-a.git", bareRepoDir: "./.bare/repo-a", worktreeDir: "./repo-a", cronSchedule: "0 * * * *" },
+        { name: "repo-b", repoUrl: "https://github.com/test/repo-b.git", bareRepoDir: "./.bare/repo-b", worktreeDir: "./repo-b", cronSchedule: "0 * * * *" }
       ] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 

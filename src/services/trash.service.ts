@@ -1,4 +1,4 @@
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
 
@@ -467,7 +467,7 @@ export class TrashService {
   // Pin failure degrades to a files-only trash entry rather than blocking the
   // removal — the payload itself is still fully preserved either way.
   private async createPinRef(id: string, headOid: string): Promise<string | null> {
-    const refName = `${GIT_CONSTANTS.TRASH_REF_PREFIX}${id}`;
+    const refName = `${GIT_CONSTANTS.TRASH_REF_PREFIX}${this.getTrashRootHash()}/${id}`;
     try {
       await this.gitService.updateRef(refName, headOid);
       return refName;
@@ -528,7 +528,7 @@ export class TrashService {
     );
   }
 
-  // The id doubles as a refname component (refs/sync-worktrees/trash/<id>).
+  // The id becomes a refname component under the trash-root namespace.
   // The timestamp prefix and hex suffix rule out leading dots and ".lock"
   // endings, but ".." inside the name would still make the ref invalid and
   // silently degrade the entry to files-only.
@@ -536,5 +536,9 @@ export class TrashService {
     const timestamp = filenameTimestamp(deletedAt);
     const safeName = baseName.replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.{2,}/g, "_");
     return `${timestamp}-${safeName}-${randomBytes(3).toString("hex")}`;
+  }
+
+  private getTrashRootHash(): string {
+    return createHash("sha256").update(path.resolve(this.getTrashRoot())).digest("hex").slice(0, 16);
   }
 }

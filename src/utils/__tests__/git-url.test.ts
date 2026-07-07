@@ -30,6 +30,12 @@ describe("git-url utilities", () => {
       expect(extractRepoNameFromUrl("file:///home/user/repos/my-project")).toBe("my-project");
     });
 
+    it("should handle absolute local paths", () => {
+      expect(extractRepoNameFromUrl("/srv/git/repo.git")).toBe("repo");
+      expect(extractRepoNameFromUrl("/srv/git/repo.git/")).toBe("repo");
+      expect(extractRepoNameFromUrl("C:\\srv\\git\\repo.git\\")).toBe("repo");
+    });
+
     it("should handle URLs with different domains", () => {
       expect(extractRepoNameFromUrl("https://bitbucket.org/user/repo.git")).toBe("repo");
       expect(extractRepoNameFromUrl("git@bitbucket.org:user/repo.git")).toBe("repo");
@@ -51,7 +57,7 @@ describe("git-url utilities", () => {
     it("should throw error for invalid URLs", () => {
       expect(() => extractRepoNameFromUrl("not-a-url")).toThrow("Invalid Git URL format");
       expect(() => extractRepoNameFromUrl("")).toThrow("Invalid Git URL format");
-      expect(() => extractRepoNameFromUrl("/local/path")).toThrow("Invalid Git URL format");
+      expect(() => extractRepoNameFromUrl("relative/path")).toThrow("Invalid Git URL format");
     });
   });
 

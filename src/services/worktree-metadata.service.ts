@@ -18,9 +18,8 @@ export class WorktreeMetadataService {
   }
 
   /**
-   * Gets the internal worktree directory name from a worktree path.
-   * Git uses the basename of the worktree path as the internal directory name.
-   * For example: /worktrees/fix/test-branch -> test-branch (not fix/test-branch)
+   * Metadata is keyed by worktree path basename. Branch names are sanitized
+   * into unique basenames before worktrees are created.
    */
   private getWorktreeDirectoryName(worktreePath: string): string {
     return path.basename(worktreePath);
@@ -48,6 +47,13 @@ export class WorktreeMetadataService {
 
   async saveMetadata(bareRepoPath: string, worktreeName: string, metadata: SyncMetadata): Promise<void> {
     const metadataPath = await this.getMetadataPath(bareRepoPath, worktreeName);
+    const existing = await this.loadMetadata(bareRepoPath, worktreeName);
+    if (existing && existing.upstreamBranch !== metadata.upstreamBranch) {
+      this.logger.warn(
+        `Refusing to overwrite metadata for ${worktreeName}: existing upstream ${existing.upstreamBranch} differs from ${metadata.upstreamBranch}`,
+      );
+      return;
+    }
     await fs.mkdir(path.dirname(metadataPath), { recursive: true });
     await atomicWriteFile(metadataPath, JSON.stringify(metadata, null, 2));
   }

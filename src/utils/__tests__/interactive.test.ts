@@ -232,4 +232,24 @@ describe("promptForInitConfig", () => {
       expect(depthValidate("1.5")).toBe("Depth must be a positive integer");
     }
   });
+
+  it("validates cron schedules with node-cron", async () => {
+    mockInput
+      .mockResolvedValueOnce("https://github.com/user/repo.git")
+      .mockResolvedValueOnce("/path/to/worktrees")
+      .mockResolvedValueOnce("0 * * * *");
+    mockSelect.mockResolvedValueOnce("worktree");
+    mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+    await promptForInitConfig();
+
+    const cronValidate = mockInput.mock.calls.find((call) => call[0].message?.includes("cron schedule"))?.[0].validate;
+
+    expect(cronValidate).toBeDefined();
+    if (cronValidate) {
+      expect(cronValidate("a b c d e")).toBe("Invalid cron pattern. Expected format: '* * * * *'");
+      expect(cronValidate("")).toBe("Cron schedule is required");
+      expect(cronValidate("0 * * * *")).toBe(true);
+    }
+  });
 });

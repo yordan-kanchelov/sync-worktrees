@@ -304,5 +304,22 @@ describe("HookExecutionService", () => {
         service.cleanup();
       }
     });
+
+    it("should clear the SIGKILL timer after a timed-out hook exits", async () => {
+      const command = nodeScript("setInterval(() => {}, 1000)");
+
+      service.setTimeoutMs(100);
+
+      try {
+        service.executeOnBranchCreated({ onBranchCreated: [command] }, mockContext);
+
+        await vi.waitFor(() => {
+          expect((service as any).killTimers.size).toBe(0);
+          expect((service as any).activeProcesses.size).toBe(0);
+        });
+      } finally {
+        service.cleanup();
+      }
+    });
   });
 });

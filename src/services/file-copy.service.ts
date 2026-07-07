@@ -37,9 +37,22 @@ export class FileCopyService {
       return result;
     }
 
-    const filesToCopy = await this.expandPatterns(sourceDir, patterns);
+    const safePatterns = patterns.filter((pattern) => {
+      if (!this.isSafeRelativePath(pattern)) {
+        result.errors.push({ file: pattern, error: "Pattern must be relative and stay inside source directory" });
+        return false;
+      }
+      return true;
+    });
+
+    const filesToCopy = await this.expandPatterns(sourceDir, safePatterns);
 
     for (const relativePath of filesToCopy) {
+      if (!this.isSafeRelativePath(relativePath)) {
+        result.errors.push({ file: relativePath, error: "Matched file must stay inside source directory" });
+        continue;
+      }
+
       const sourcePath = path.join(sourceDir, relativePath);
       const destPath = path.join(destDir, relativePath);
 
@@ -82,6 +95,10 @@ export class FileCopyService {
     }
 
     return Array.from(allFiles);
+  }
+
+  private isSafeRelativePath(filePath: string): boolean {
+    return !path.isAbsolute(filePath) && !filePath.split(/[\\/]+/).includes("..");
   }
 
   private async copyFile(sourcePath: string, destPath: string): Promise<boolean> {

@@ -82,8 +82,8 @@ describe("Error Detection Functions", () => {
 
     it("should detect LFS errors from string messages", () => {
       expect(isLfsError("smudge filter lfs failed")).toBe(true);
-      expect(isLfsError("git-lfs pull failed")).toBe(true);
-      expect(isLfsError("LFS: error downloading")).toBe(true);
+      expect(isLfsError("Object does not exist on the server")).toBe(true);
+      expect(isLfsError("external filter 'git-lfs filter-process' failed")).toBe(true);
     });
 
     it("should return false for non-LFS errors", () => {
@@ -91,10 +91,9 @@ describe("Error Detection Functions", () => {
       expect(isLfsError("regular git error")).toBe(false);
     });
 
-    it("should detect all LFS error patterns", () => {
-      ERROR_MESSAGES.LFS_ERROR.forEach((pattern) => {
-        expect(isLfsError(pattern)).toBe(true);
-      });
+    it("should use the stricter shared LFS classifier", () => {
+      expect(isLfsError("git-lfs pull failed")).toBe(false);
+      expect(isLfsError("LFS: error downloading")).toBe(false);
     });
   });
 

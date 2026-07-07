@@ -1092,6 +1092,37 @@ describe("GitService", () => {
       bufferSpy.mockRestore();
     });
 
+    it("samples distinct LFS files when at least five are available", async () => {
+      mockShowRef({ local: false, remote: true });
+
+      const worktreeGitMock = {
+        raw: vi.fn<any>().mockResolvedValue("file1.png\nfile2.png\nfile3.png\nfile4.png\nfile5.png\nfile6.png\n"),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+      };
+
+      (simpleGit as unknown as Mock).mockImplementation((gitPath?: any) => {
+        if (gitPath && gitPath.includes("feature-1")) {
+          return worktreeGitMock;
+        }
+        return mockGit;
+      });
+
+      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+      const mockFileHandle = {
+        read: vi.fn<any>().mockResolvedValue({ bytesRead: 18 }),
+        close: vi.fn<any>().mockResolvedValue(undefined),
+      };
+      (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      const openedFiles = (fs.open as Mock<any>).mock.calls.map(([filePath]) => path.basename(String(filePath)));
+      expect(openedFiles).toHaveLength(5);
+      expect(new Set(openedFiles).size).toBe(5);
+
+      randomSpy.mockRestore();
+    });
+
     it("should skip LFS verification when skipLfs is enabled", async () => {
       const configWithSkipLfs = createMockConfig({ skipLfs: true });
 
@@ -1928,6 +1959,12 @@ prunable
   });
 
   describe("initialize - failure scenarios", () => {
+    it("detects default branches whose names contain slashes", async () => {
+      mockGit.raw.mockResolvedValueOnce("refs/remotes/origin/release/2024\n" as any);
+
+      await expect((gitService as any).detectDefaultBranch(mockGit)).resolves.toBe("release/2024");
+    });
+
     it("should throw when fetch fails during initialization", async () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       mockGit.raw.mockRejectedValueOnce(new Error("config not found"));

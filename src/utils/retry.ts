@@ -51,7 +51,11 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
       return true;
     }
 
-    if (err.code === "EBUSY" || err.code === "ENOENT" || err.code === "EACCES") {
+    if (err.code === "EACCES" || err.code === "EPERM" || err.code === "EROFS" || err.code === "ENOSPC") {
+      return false;
+    }
+
+    if (err.code === "EBUSY") {
       return true;
     }
 
@@ -71,6 +75,10 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
 
 export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
+  if (opts.maxAttempts !== "unlimited" && (!Number.isFinite(opts.maxAttempts) || opts.maxAttempts < 1)) {
+    throw new Error("maxAttempts must be 'unlimited' or a finite positive number");
+  }
+
   let attempt = 1;
   let lfsAttempt = 0;
   const lfsContext: LfsErrorContext = { isLfsError: false };

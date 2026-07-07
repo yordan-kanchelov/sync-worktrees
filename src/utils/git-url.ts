@@ -1,3 +1,5 @@
+import * as path from "path";
+
 /**
  * Extracts the repository name from a Git URL
  * @param gitUrl - The Git URL (HTTPS or SSH format)
@@ -7,6 +9,12 @@
 export function extractRepoNameFromUrl(gitUrl: string): string {
   // Remove trailing spaces
   const url = gitUrl.trim();
+
+  if (/^(\/|[A-Za-z]:\\)/.test(url)) {
+    const trimmedPath = url.replace(/[\\/]+$/, "");
+    const repoName = /^[A-Za-z]:\\/.test(trimmedPath) ? path.win32.basename(trimmedPath) : path.basename(trimmedPath);
+    if (repoName) return repoName.replace(/\.git$/, "");
+  }
 
   // Handle SSH format: git@github.com:user/repo.git or ssh://git@domain/path/repo.git
   const sshMatch = url.match(/^git@[^:]+:(?:.+\/)?([^/]+?)(?:\.git)?$/);

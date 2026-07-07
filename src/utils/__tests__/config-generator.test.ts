@@ -121,6 +121,22 @@ describe("Config Generator", () => {
       expect(content).toContain('mode: "clone"');
     });
 
+    it("deduplicates generated repository names", async () => {
+      const input = makeInput([
+        { repoUrl: "https://github.com/one/app.git", worktreeDir: "/path/one", mode: "worktree" },
+        { repoUrl: "https://github.com/two/app.git", worktreeDir: "/path/two", mode: "worktree" },
+        { repoUrl: "https://github.com/three/app.git", worktreeDir: "/path/three", mode: "clone" },
+      ]);
+
+      const configPath = path.join(tempDir, "test.config.js");
+      await generateConfigFile(input, configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain('name: "app"');
+      expect(content).toContain('name: "app-2"');
+      expect(content).toContain('name: "app-3"');
+    });
+
     it("appends a commented cheatsheet of advanced options", async () => {
       const input = makeInput([
         { repoUrl: "https://github.com/user/repo.git", worktreeDir: "/path/to/worktrees", mode: "worktree" },
