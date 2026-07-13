@@ -24,7 +24,7 @@ describe("Config Generator", () => {
   });
 
   describe("generateConfigFile", () => {
-    it("generates a basic worktree config and never emits runOnce", async () => {
+    it("generates a basic worktree config with safe parallel defaults and never emits runOnce", async () => {
       const input = makeInput([
         {
           repoUrl: "https://github.com/user/repo.git",
@@ -45,6 +45,16 @@ describe("Config Generator", () => {
       expect(content).toContain('repoUrl: "https://github.com/user/repo.git"');
       expect(content).toContain('worktreeDir: "/absolute/path/to/worktrees"');
       expect(content).toContain('cronSchedule: "0 * * * *"');
+
+      const config = await new ConfigLoaderService().loadConfigFile(configPath);
+      expect(config.defaults?.parallelism).toEqual({
+        maxRepositories: 2,
+        maxWorktreeCreation: 1,
+        maxWorktreeUpdates: 3,
+        maxWorktreeRemoval: 3,
+        maxStatusChecks: 20,
+        maxBranchFetches: 3,
+      });
 
       // runOnce is no longer part of the wizard/generated config.
       expect(content).not.toContain("runOnce");

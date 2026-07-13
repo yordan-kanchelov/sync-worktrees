@@ -1,7 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { CONFIG_FILE_NAMES } from "../constants";
+import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
 import { ConfigFileExistsError } from "../errors";
 
 import { fileExists } from "./file-exists";
@@ -24,7 +24,6 @@ const CONFIG_CHEATSHEET = `
 //   depth: 10,                              // shallow clone; omit for full history
 // any repo, or under "defaults":
 //   debug: true,
-//   parallelism: { maxRepositories: 3, maxWorktreeUpdates: 3 },
 //   hooks: { onBranchCreated: ["<command>"] },  // see README for placeholders
 // Full reference: https://github.com/yordan-kanchelov/sync-worktrees#configuration
 `;
@@ -131,6 +130,14 @@ export async function generateConfigFile(
   const configObject: SerializableObject = {
     defaults: {
       cronSchedule: input.cronSchedule,
+      parallelism: {
+        maxRepositories: DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES,
+        maxWorktreeCreation: DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION,
+        maxWorktreeUpdates: DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES,
+        maxWorktreeRemoval: DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL,
+        maxStatusChecks: DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS,
+        maxBranchFetches: DEFAULT_CONFIG.PARALLELISM.MAX_BRANCH_FETCHES,
+      },
     },
     repositories: input.repositories.map((repo, index) => buildRepository(repo, configDir, names[index])),
   };
