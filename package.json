@@ -6,12 +6,12 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "sync-worktrees": "dist/index.js",
+    "sync-worktrees": "bin/sync-worktrees.js",
     "sync-worktrees-mcp": "dist/mcp-server.js"
   },
   "scripts": {
     "build": "node esbuild.config.js && tsc --emitDeclarationOnly",
-    "start": "node dist/index.js",
+    "start": "node bin/sync-worktrees.js",
     "watch": "tsc --watch",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -46,6 +46,7 @@
     "linux"
   ],
   "files": [
+    "bin",
     "dist",
     "README.md",
     "LICENSE"
