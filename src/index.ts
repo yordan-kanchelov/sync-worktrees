@@ -310,7 +310,7 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
   }
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const options = parseArguments();
 
   switch (options.command) {
