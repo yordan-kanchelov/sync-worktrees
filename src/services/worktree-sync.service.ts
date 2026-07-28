@@ -33,7 +33,10 @@ export type { SyncOutcome, SyncOutcomeAction, SyncOutcomeCounts, SyncResult } fr
 
 export type ExclusiveRepoOperationResult<T> =
   | { started: true; value: T }
-  | { started: false; reason: "in_progress" | "locked" };
+  | {
+      started: false;
+      reason: "in_progress" | "locked";
+    };
 
 export class WorktreeSyncService {
   private gitService: GitService;

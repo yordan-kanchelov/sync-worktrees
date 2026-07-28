@@ -25,12 +25,7 @@ type CommonConfigKeys =
   | "sparseCheckout"
   | "maintenance";
 type WorktreeOnlyConfigKeys =
-  | "bareRepoDir"
-  | "branchMaxAge"
-  | "branchInclude"
-  | "branchExclude"
-  | "updateExistingWorktrees"
-  | "trash";
+  "bareRepoDir" | "branchMaxAge" | "branchInclude" | "branchExclude" | "updateExistingWorktrees" | "trash";
 type CloneOnlyConfigKeys = "branch" | "depth";
 type DefaultsOnlyConfigKeys = "runOnce";
 type DiscriminantConfigKeys = "mode";
