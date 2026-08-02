@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
+import { isMouseSequence } from "../utils/mouse";
 
 type WizardStep = "SELECT_PROJECT" | "SELECT_WORKTREE" | "OPENING" | "ERROR";
 
@@ -89,6 +90,10 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   };
 
   useInput((input, key) => {
+    // Mouse reports arrive as a single `input` string; ignore them here so a
+    // scroll never registers as a keystroke.
+    if (isMouseSequence(input)) return;
+
     if (step === "OPENING") return;
 
     if (key.escape) {

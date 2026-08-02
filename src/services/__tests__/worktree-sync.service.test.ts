@@ -291,6 +291,33 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.deleteRef).not.toHaveBeenCalledWith(`refs/sync-worktrees/keep/${divergedName}`);
       expect(result).toMatchObject({ keepRefsDeleted: 1, keepRefsRetained: 1 });
     });
+
+    // Before this branch the diverge flow minted `keep/diverged-<ts>-<branch>`
+    // and never recorded it in the directory's metadata, so the ref name does
+    // not match the directory name. Matching only on the name would purge the
+    // commits behind a `.diverged/` copy that is still sitting on disk.
+    it("keeps a pre-upgrade keep ref whose .diverged directory is still on disk", async () => {
+      const sanitized = pathResolution.sanitizeBranchName("feature-1");
+      const divergedName = `2026-01-01-${sanitized}-msc2zyit`;
+      const legacyRef = `refs/sync-worktrees/keep/diverged-m9x1a2b3-${sanitized}`;
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [], invalid: [] });
+      vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
+        deleted: 0,
+        orphanedRefsDeleted: 0,
+        errors: [],
+      });
+      vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
+      mockGitService.listRefs.mockResolvedValue([legacyRef, "refs/sync-worktrees/keep/diverged-m9x1a2b3-gone-00000000"]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) =>
+        String(dirPath).endsWith(".diverged") ? [divergedName] : [],
+      );
+
+      const result = await service.forceClean();
+
+      expect(mockGitService.deleteRef).not.toHaveBeenCalledWith(legacyRef);
+      expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/diverged-m9x1a2b3-gone-00000000");
+      expect(result).toMatchObject({ keepRefsDeleted: 1, keepRefsRetained: 1 });
+    });
   });
 
   describe("sync", () => {

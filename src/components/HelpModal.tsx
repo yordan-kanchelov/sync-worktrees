@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text, useInput } from "ink";
+import { isMouseSequence } from "../utils/mouse";
 
 export interface HelpModalProps {
   onClose: () => void;
@@ -7,6 +8,10 @@ export interface HelpModalProps {
 
 const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
   useInput((input, key) => {
+    // Mouse reports arrive as a single `input` string; ignore them here so a
+    // scroll never registers as a keystroke.
+    if (isMouseSequence(input)) return;
+
     if (input === "?" || input === "h" || key.escape) {
       onClose();
     }
@@ -48,6 +53,15 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
               </Text>
             </Box>
             <Text>Scroll up one line</Text>
+          </Box>
+
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
+                wheel
+              </Text>
+            </Box>
+            <Text>Scroll the log (hold Shift to select text)</Text>
           </Box>
 
           <Box>
