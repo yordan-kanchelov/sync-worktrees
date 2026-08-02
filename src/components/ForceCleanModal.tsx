@@ -7,7 +7,7 @@ import type { ForceCleanRepositoryPreview, ForceCleanRepositoryResult } from "..
 
 export interface ForceCleanModalProps {
   getPreview: () => Promise<ForceCleanRepositoryPreview[]>;
-  forceClean: () => Promise<ForceCleanRepositoryResult[]>;
+  forceClean: (repoIndexes: number[]) => Promise<ForceCleanRepositoryResult[]>;
   onClose: () => void;
 }
 
@@ -59,7 +59,9 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
       onClose();
     } else if ((input === "y" || input === "Y") && !loading && !error) {
       setCleaning(true);
-      forceClean()
+      // Only the repos whose counts are on screen — a repo whose preview failed
+      // was never shown a number, so it must not be purged on this confirmation.
+      forceClean(previews.filter((row) => row.preview).map((row) => row.repoIndex))
         .then(setResults)
         .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
         .finally(() => setCleaning(false));
@@ -106,6 +108,9 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
               <Text key={row.repoIndex} color={row.result.errors.length > 0 ? "yellow" : "green"}>
                 {row.repoName}: deleted {row.result.trashDeleted} trash and {row.result.keepRefsDeleted} refs; GC{" "}
                 {row.result.gcSucceeded ? "complete" : "failed"}
+                {row.result.keepRefsRetained > 0
+                  ? `; kept ${row.result.keepRefsRetained} ref(s) still backing a .diverged copy`
+                  : ""}
                 {row.result.errors.length > 0 ? ` (${row.result.errors.join("; ")})` : ""}
               </Text>
             ) : (

@@ -227,15 +227,25 @@ export class WorktreeSyncService {
     await this.requireForceCleanTarget();
     const result = await this.runExclusiveRepoOperation(
       async () => {
-        const before = await this.getForceCleanPreview();
         const reap = this.cloneSyncService
           ? { deleted: 0, orphanedRefsDeleted: 0, errors: [] }
           : await this.trashReaper.purgeAllUnlocked();
         const errors = [...reap.errors];
         const keepRefs = this.cloneSyncService ? [] : await this.listKeepRefs();
+        // A `.diverged/<name>` directory and `keep/<name>` are the two halves of
+        // one preserved worktree — the files, and the commits they were made on.
+        // Dropping the ref and then running `gc --prune=now` would leave the
+        // directory intact but its own recovery instructions dead, so refs whose
+        // directory is still there are retained and reported instead.
+        const reservedNames = this.cloneSyncService ? new Set<string>() : await this.getDivergedDirectoryNames();
         let keepRefsDeleted = 0;
+        let keepRefsRetained = 0;
 
         for (const ref of keepRefs) {
+          if (reservedNames.has(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length))) {
+            keepRefsRetained++;
+            continue;
+          }
           try {
             await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
             await this.gitService.deleteRef(ref);
@@ -255,8 +265,11 @@ export class WorktreeSyncService {
         const after = await this.getForceCleanPreview();
         return {
           ...after,
-          trashDeleted: before.trashEntries - after.trashEntries,
+          // The reaper's own count, not a before/after difference: a re-scan
+          // cannot tell a deletion from an entry that failed and stayed put.
+          trashDeleted: reap.deleted,
           keepRefsDeleted,
+          keepRefsRetained,
           gcSucceeded,
           errors,
         };
@@ -265,6 +278,23 @@ export class WorktreeSyncService {
     );
     if (!result.started) throw new Error("Cannot force clean while another process holds the repository lock");
     return result.value;
+  }
+
+  // Entry names under `.diverged/`, which are exactly the keep-ref names the
+  // non-trash diverge flow mints. Any name counts, files and symlinks included
+  // (same reasoning as the reaper's pin sweep): retaining a ref costs disk,
+  // dropping one can cost commits. An unreadable directory means the same —
+  // refuse to delete rather than guess.
+  private async getDivergedDirectoryNames(): Promise<Set<string>> {
+    const divergedRoot = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
+    try {
+      return new Set((await fs.readdir(divergedRoot)) ?? []);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
+      throw new Error(
+        `cannot scan '${divergedRoot}' to protect preserved commits; refusing to delete recovery refs: ${getErrorMessage(error)}`,
+      );
+    }
   }
 
   private async requireForceCleanTarget(): Promise<void> {

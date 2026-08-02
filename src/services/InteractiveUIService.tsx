@@ -223,7 +223,7 @@ export class InteractiveUIService {
         getDivergedDirectoriesForRepo={(index: number) => this.getDivergedDirectoriesForRepo(index)}
         deleteDivergedDirectory={(repoIndex: number, name: string) => this.deleteDivergedDirectory(repoIndex, name)}
         getForceCleanPreview={() => this.getForceCleanPreview()}
-        forceClean={() => this.forceClean()}
+        forceClean={(repoIndexes?: number[]) => this.forceClean(repoIndexes)}
         openEditorInWorktree={(path: string) => this.openEditorInWorktree(path)}
         openTerminalInWorktree={(repoIndex: number, path: string, branchName: string) =>
           this.openTerminalInWorktree(repoIndex, path, branchName)
@@ -740,11 +740,18 @@ export class InteractiveUIService {
     );
   }
 
-  public async forceClean(): Promise<ForceCleanRepositoryResult[]> {
+  // `repoIndexes` is what the confirmation actually showed. A repo whose preview
+  // failed is not in that list and is skipped: purging it would destroy content
+  // the user was never shown a count for.
+  public async forceClean(repoIndexes?: number[]): Promise<ForceCleanRepositoryResult[]> {
+    const selected = repoIndexes ? new Set(repoIndexes) : null;
     const results = await Promise.all(
       this.syncServices.map((service, repoIndex) =>
         this.limit(async () => {
           const repoName = this.getRepoName(repoIndex);
+          if (selected && !selected.has(repoIndex)) {
+            return { repoIndex, repoName, error: "skipped: cleanup preview was unavailable" };
+          }
           try {
             const result = await service.forceClean();
             const level = result.errors.length > 0 ? "warn" : "info";

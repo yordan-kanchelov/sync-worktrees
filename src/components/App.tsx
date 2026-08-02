@@ -53,7 +53,7 @@ export interface AppProps {
   getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
   deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
   getForceCleanPreview?: () => Promise<ForceCleanRepositoryPreview[]>;
-  forceClean?: () => Promise<ForceCleanRepositoryResult[]>;
+  forceClean?: (repoIndexes: number[]) => Promise<ForceCleanRepositoryResult[]>;
 }
 
 export interface LogEntry {

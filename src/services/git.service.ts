@@ -933,6 +933,20 @@ export class GitService {
   // A stale directory that contains a .git may be a live checkout that git
   // failed to report; quarantine it instead of deleting.
   private async clearStaleWorktreeDirectory(absoluteWorktreePath: string): Promise<void> {
+    // Nothing at the path means nothing to clear. Falling through would hand a
+    // missing directory to the trasher, which fails with ENOENT and turns a
+    // recoverable stale registration into a permanent creation failure.
+    const dirProbe = await probePathExists(absoluteWorktreePath);
+    if (dirProbe === "missing") {
+      return;
+    }
+    if (dirProbe === "unknown") {
+      throw new GitOperationError(
+        "clear-stale-directory",
+        `Cannot verify whether '${absoluteWorktreePath}' still exists; refusing to clear it`,
+      );
+    }
+
     const gitProbe = await probePathExists(path.join(absoluteWorktreePath, PATH_CONSTANTS.GIT_DIR));
 
     if (gitProbe === "unknown") {
@@ -1271,26 +1285,60 @@ export class GitService {
     }
   }
 
+  // Would checking out `origin/<branch>` write over something git is currently
+  // ignoring? Comparing every ignored path against every upstream path is
+  // O(ignored x upstream) and runs synchronously with the repo lock held, which
+  // is minutes of a blocked event loop on a monorepo. Index the upstream tree
+  // once instead, then answer each ignored path in constant time per segment.
+  private wouldOverwriteIgnoredPaths(ignoredRaw: string, upstreamRaw: string): boolean {
+    const upstreamFiles = new Set<string>();
+    // Files plus every ancestor directory: membership then means "upstream has
+    // content at this path or somewhere beneath it".
+    const upstreamPaths = new Set<string>();
+    for (const upstreamPath of upstreamRaw.split("\0")) {
+      if (!upstreamPath) continue;
+      upstreamFiles.add(upstreamPath);
+      upstreamPaths.add(upstreamPath);
+      for (let slash = upstreamPath.indexOf("/"); slash !== -1; slash = upstreamPath.indexOf("/", slash + 1)) {
+        upstreamPaths.add(upstreamPath.slice(0, slash));
+      }
+    }
+
+    for (const entry of ignoredRaw.split("\0")) {
+      if (!entry) continue;
+      // `--directory` reports collapsed directories with a trailing slash.
+      const localPath = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+      if (upstreamPaths.has(localPath)) return true;
+      // The reverse shadowing case: upstream has a file (or submodule) exactly
+      // where this ignored path sits inside a directory.
+      for (let slash = localPath.indexOf("/"); slash !== -1; slash = localPath.indexOf("/", slash + 1)) {
+        if (upstreamFiles.has(localPath.slice(0, slash))) return true;
+      }
+    }
+    return false;
+  }
+
   async resetToUpstream(worktreePath: string, branch: string, expectedHead?: string): Promise<boolean> {
     const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
     const status = await worktreeGit.status(["--ignore-submodules=none"]);
     if (!status.isClean()) return false;
 
+    // `--directory` collapses a wholly-ignored directory to one entry, so a
+    // node_modules with 150k files costs one path instead of 150k. Directories
+    // that also hold tracked files are still expanded, so nothing is missed.
     const [ignoredRaw, upstreamRaw] = await Promise.all([
-      worktreeGit.raw(["ls-files", "-z", "--others", "--ignored", "--exclude-standard"]),
+      worktreeGit.raw([
+        "ls-files",
+        "-z",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "--no-empty-directory",
+      ]),
       worktreeGit.raw(["ls-tree", "-rz", "--name-only", `origin/${branch}`]),
     ]);
-    const ignored = ignoredRaw.split("\0").filter(Boolean);
-    const upstreamPaths = upstreamRaw.split("\0").filter(Boolean);
-    const wouldOverwriteIgnored = ignored.some((localPath) =>
-      upstreamPaths.some(
-        (upstreamPath) =>
-          localPath === upstreamPath ||
-          localPath.startsWith(`${upstreamPath}/`) ||
-          upstreamPath.startsWith(`${localPath}/`),
-      ),
-    );
-    if (wouldOverwriteIgnored) return false;
+    if (this.wouldOverwriteIgnoredPaths(ignoredRaw, upstreamRaw)) return false;
 
     if (expectedHead) {
       const currentHead = (await worktreeGit.revparse(["HEAD"])).trim();
