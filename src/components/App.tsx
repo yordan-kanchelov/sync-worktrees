@@ -178,12 +178,6 @@ const App: React.FC<AppProps> = ({
     }
   });
 
-  const updateLastSyncTime = useCallback(() => {
-    setLastSyncTime(new Date());
-    setStatus("idle");
-    setSyncProgressEntries([]);
-  }, []);
-
   useEffect(() => {
     const unsubscribers = [
       events.on("updateLastSyncTime", () => {
