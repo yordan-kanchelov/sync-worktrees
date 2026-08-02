@@ -112,6 +112,15 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
           <Box>
             <Box width={15}>
               <Text bold color="yellow">
+                x
+              </Text>
+            </Box>
+            <Text>Force clean trash, recovery refs, and Git objects</Text>
+          </Box>
+
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
                 r
               </Text>
             </Box>

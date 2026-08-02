@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG } from "./constants";
+import { DEFAULT_CONFIG, GIT_CONSTANTS } from "./constants";
 import { ConfigFileExistsError, ConfigFileNotFoundError } from "./errors";
 import { ConfigLoaderService } from "./services/config-loader.service";
 import { InteractiveUIService } from "./services/InteractiveUIService";
@@ -237,6 +237,35 @@ async function runList(configPath: string, filter?: string): Promise<void> {
   }
 }
 
+async function runTrash(configPath: string, filter?: string, restoreId?: string, dropKeepRef?: string): Promise<void> {
+  const configLoader = new ConfigLoaderService();
+  const { repositories } = await configLoader.buildRepositories(configPath, { filter });
+  if (repositories.length !== 1) {
+    throw new Error(`Trash operations require exactly one repository; matched ${repositories.length}. Use --filter.`);
+  }
+
+  const service = new WorktreeSyncService(repositories[0]);
+  if (service.isCloneMode()) throw new Error("Trash operations are only available for worktree-mode repositories");
+  if (restoreId) {
+    const manifest = await service.restoreFromTrash(restoreId);
+    console.log(`✅ Restored ${manifest.id} to ${manifest.originalPath}`);
+    return;
+  }
+  if (dropKeepRef) {
+    await service.deleteKeepRef(dropKeepRef);
+    console.log(`✅ Deleted ${dropKeepRef}`);
+    return;
+  }
+
+  const { entries, invalid } = await service.listTrashEntries();
+  for (const { manifest } of entries) {
+    console.log(`${manifest.id}\t${manifest.reason}\t${manifest.expiresAt}\t${manifest.originalPath}`);
+  }
+  for (const invalidPath of invalid) console.warn(`⚠️ Invalid trash entry left untouched: ${invalidPath}`);
+  const keepRefs = await service.listKeepRefs();
+  for (const ref of keepRefs) console.log(`KEEP\t${ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length)}`);
+}
+
 async function runFromConfigFile(configPath: string, runOnceOverride = false): Promise<void> {
   const configLoader = new ConfigLoaderService();
   const { repositories, configFile } = await configLoader.buildRepositories(configPath);
@@ -319,6 +348,10 @@ export async function main(): Promise<void> {
     case CLI_COMMANDS.LIST: {
       const configPath = await resolveConfigOrExit(options.config);
       return runList(configPath, options.filter);
+    }
+    case CLI_COMMANDS.TRASH: {
+      const configPath = await resolveConfigOrExit(options.config);
+      return runTrash(configPath, options.filter, options.restore, options.dropKeepRef);
     }
     case CLI_COMMANDS.RUN:
       return runSync(options);

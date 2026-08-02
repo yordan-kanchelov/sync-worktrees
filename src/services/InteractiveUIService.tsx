@@ -14,6 +14,7 @@ import { HookExecutionService } from "./hook-execution.service";
 import { PathResolutionService } from "./path-resolution.service";
 import { Logger, LogOutputFn, LogLevel } from "./logger.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
+import { getErrorMessage } from "../utils/lfs-error";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
@@ -30,6 +31,8 @@ import type {
   DivergedDirectoryInfo,
   RepositoryListEntry,
   RepositoryDiskUsage,
+  ForceCleanRepositoryPreview,
+  ForceCleanRepositoryResult,
 } from "../types";
 
 const WAIT_SYNC_FAST_TIMEOUT_MS = 2000;
@@ -218,9 +221,9 @@ export class InteractiveUIService {
         getWorktreeStatusForRepo={(index: number) => this.getWorktreeStatusForRepo(index)}
         getRepositoryDiskUsage={(index: number) => this.getRepositoryDiskUsage(index)}
         getDivergedDirectoriesForRepo={(index: number) => this.getDivergedDirectoriesForRepo(index)}
-        deleteDivergedDirectory={(repoIndex: number, name: string) =>
-          this.deleteDivergedDirectory(repoIndex, name)
-        }
+        deleteDivergedDirectory={(repoIndex: number, name: string) => this.deleteDivergedDirectory(repoIndex, name)}
+        getForceCleanPreview={() => this.getForceCleanPreview()}
+        forceClean={() => this.forceClean()}
         openEditorInWorktree={(path: string) => this.openEditorInWorktree(path)}
         openTerminalInWorktree={(repoIndex: number, path: string, branchName: string) =>
           this.openTerminalInWorktree(repoIndex, path, branchName)
@@ -617,7 +620,9 @@ export class InteractiveUIService {
       .map((r) => r.value);
   }
 
-  private async getWorktreesFromService(service: WorktreeSyncService): Promise<Array<{ path: string; branch: string }>> {
+  private async getWorktreesFromService(
+    service: WorktreeSyncService,
+  ): Promise<Array<{ path: string; branch: string }>> {
     const worktreeProvider = service as WorktreeSyncService & {
       getWorktrees?: () => Promise<Array<{ path: string; branch: string }>>;
     };
@@ -646,18 +651,20 @@ export class InteractiveUIService {
     const subdirs = dirEntries.filter((e) => e.isDirectory());
 
     const results = await Promise.allSettled(
-      subdirs.map(async (entry) => {
+      subdirs.map(async (entry): Promise<DivergedDirectoryInfo> => {
         const fullPath = path.join(divergedDir, entry.name);
         const infoFilePath = path.join(fullPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE);
 
         let originalBranch = entry.name;
         let divergedAt = "";
+        let keepRef: string | undefined;
 
         try {
           const infoContent = await fs.readFile(infoFilePath, "utf-8");
           const info = JSON.parse(infoContent);
           if (typeof info.originalBranch === "string") originalBranch = info.originalBranch;
           if (typeof info.divergedAt === "string") divergedAt = info.divergedAt;
+          if (typeof info.keepRef === "string") keepRef = info.keepRef;
         } catch {
           // Extract date and branch from directory name pattern: YYYY-MM-DD-branch-suffix
           const match = entry.name.match(/^(\d{4}-\d{2}-\d{2})-(.+?)(?:-[a-f0-9]+)?$/);
@@ -677,6 +684,7 @@ export class InteractiveUIService {
           divergedAt,
           sizeBytes,
           sizeFormatted,
+          keepRef,
         };
       }),
     );
@@ -706,8 +714,53 @@ export class InteractiveUIService {
       throw new Error(`Path traversal rejected: "${name}" resolves outside the diverged directory`);
     }
 
-    await fs.rm(targetPath, { recursive: true, force: true });
+    let keepRef: string | undefined;
+    try {
+      const info = JSON.parse(await fs.readFile(path.join(targetPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE), "utf-8"));
+      if (typeof info.keepRef === "string") keepRef = info.keepRef;
+    } catch {
+      // Legacy entries have no keep ref metadata.
+    }
+    await service.discardDivergedDirectory(targetPath, keepRef);
     this.addLog(`🗑️ Deleted diverged directory: ${name}`, "info");
+  }
+
+  public async getForceCleanPreview(): Promise<ForceCleanRepositoryPreview[]> {
+    return Promise.all(
+      this.syncServices.map(async (service, repoIndex) => {
+        const repoName = this.getRepoName(repoIndex);
+        try {
+          return { repoIndex, repoName, preview: await service.getForceCleanPreview() };
+        } catch (error) {
+          return { repoIndex, repoName, error: getErrorMessage(error) };
+        }
+      }),
+    );
+  }
+
+  public async forceClean(): Promise<ForceCleanRepositoryResult[]> {
+    const results = await Promise.all(
+      this.syncServices.map((service, repoIndex) =>
+        this.limit(async () => {
+          const repoName = this.getRepoName(repoIndex);
+          try {
+            const result = await service.forceClean();
+            const level = result.errors.length > 0 ? "warn" : "info";
+            this.addLog(
+              `🧹 Force clean ${repoName}: deleted ${result.trashDeleted} trash entries and ${result.keepRefsDeleted} recovery refs; GC ${result.gcSucceeded ? "complete" : "failed"}`,
+              level,
+            );
+            return { repoIndex, repoName, result };
+          } catch (error) {
+            const message = getErrorMessage(error);
+            this.addLog(`Force clean ${repoName} failed: ${message}`, "error");
+            return { repoIndex, repoName, error: message };
+          }
+        }),
+      ),
+    );
+    await this.calculateAndUpdateDiskSpace();
+    return results;
   }
 
   public async createWorktreeForBranch(repoIndex: number, branchName: string): Promise<void> {
@@ -906,9 +959,7 @@ export class InteractiveUIService {
     attempted: number;
   }): Promise<void> {
     const allSkipped =
-      outcome.attempted > 0 &&
-      outcome.skipped.length === outcome.attempted &&
-      outcome.failures.length === 0;
+      outcome.attempted > 0 && outcome.skipped.length === outcome.attempted && outcome.failures.length === 0;
     if (allSkipped) return;
     this.updateLastSyncTime();
     await this.calculateAndUpdateDiskSpace();
@@ -982,8 +1033,7 @@ export class InteractiveUIService {
   private buildUiLogger(): Logger {
     return new Logger({
       outputFn: (msg: string, level: LogLevel): void => {
-        const uiLevel: "info" | "warn" | "error" =
-          level === "warn" ? "warn" : level === "error" ? "error" : "info";
+        const uiLevel: "info" | "warn" | "error" = level === "warn" ? "warn" : level === "error" ? "error" : "info";
         this.addLog(msg, uiLevel);
       },
     });

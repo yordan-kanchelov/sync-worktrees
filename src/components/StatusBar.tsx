@@ -119,6 +119,7 @@ const StatusBar: React.FC<StatusBarProps> = ({
             <Text color="yellow">c</Text>reate{" "}
             <Text color="yellow">o</Text>pen{" "}
             <Text color="yellow">w</Text>tree{" "}
+            <Text color="yellow">x</Text>clean{" "}
             <Text color="yellow">r</Text>eload{" "}
             <Text color="yellow">?</Text>help{" "}
             <Text color="yellow">q</Text>uit

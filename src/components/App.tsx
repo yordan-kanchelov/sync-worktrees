@@ -5,6 +5,7 @@ import HelpModal from "./HelpModal";
 import BranchCreationWizard from "./BranchCreationWizard";
 import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
+import ForceCleanModal from "./ForceCleanModal";
 import LogPanel from "./LogPanel";
 import type { AppEventEmitter } from "../utils/app-events";
 import type { AppSyncProgress } from "../utils/app-events";
@@ -14,6 +15,8 @@ import type {
   DivergedDirectoryInfo,
   RepositoryListEntry,
   RepositoryDiskUsage,
+  ForceCleanRepositoryPreview,
+  ForceCleanRepositoryResult,
 } from "../types";
 
 export type { HookContext, WorktreeStatusEntry };
@@ -49,6 +52,8 @@ export interface AppProps {
   getWorktreeStatusForRepo?: (index: number) => Promise<WorktreeStatusEntry[]>;
   getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
   deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
+  getForceCleanPreview?: () => Promise<ForceCleanRepositoryPreview[]>;
+  forceClean?: () => Promise<ForceCleanRepositoryResult[]>;
 }
 
 export interface LogEntry {
@@ -83,11 +88,14 @@ const App: React.FC<AppProps> = ({
   getWorktreeStatusForRepo,
   getDivergedDirectoriesForRepo,
   deleteDivergedDirectory,
+  getForceCleanPreview,
+  forceClean,
 }) => {
   const [showHelp, setShowHelp] = useState(false);
   const [showBranchWizard, setShowBranchWizard] = useState(false);
   const [showOpenEditorWizard, setShowOpenEditorWizard] = useState(false);
   const [showWorktreeStatus, setShowWorktreeStatus] = useState(false);
+  const [showForceClean, setShowForceClean] = useState(false);
   const [status, setStatus] = useState<"idle" | "syncing">("idle");
   // Interactive operations (branch/worktree creation) run independently of sync and
   // queue behind it. Tracked separately so they don't drive the sync `status` spinner.
@@ -131,7 +139,7 @@ const App: React.FC<AppProps> = ({
       return;
     }
 
-    if (showBranchWizard || showOpenEditorWizard || showWorktreeStatus) {
+    if (showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean) {
       return;
     }
 
@@ -145,6 +153,8 @@ const App: React.FC<AppProps> = ({
       setShowOpenEditorWizard(true);
     } else if (input === "w" && getWorktreeStatusForRepo) {
       setShowWorktreeStatus(true);
+    } else if (input === "x" && getForceCleanPreview && forceClean && status !== "syncing") {
+      setShowForceClean(true);
     } else if (input === "s" && status !== "syncing") {
       setStatus("syncing");
       (async () => {
@@ -231,7 +241,7 @@ const App: React.FC<AppProps> = ({
   const statusBarHeight = 5 + progressLineCount + activeOps.length;
   const terminalRows = rows ?? 24;
   const logPanelHeight = Math.max(5, terminalRows - statusBarHeight);
-  const showModal = showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus;
+  const showModal = showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean;
 
   return (
     <Box flexDirection="column" minHeight={terminalRows}>
@@ -307,6 +317,14 @@ const App: React.FC<AppProps> = ({
           getDivergedDirectoriesForRepo={getDivergedDirectoriesForRepo}
           deleteDivergedDirectory={deleteDivergedDirectory}
           onClose={() => setShowWorktreeStatus(false)}
+        />
+      )}
+
+      {showForceClean && getForceCleanPreview && forceClean && (
+        <ForceCleanModal
+          getPreview={getForceCleanPreview}
+          forceClean={forceClean}
+          onClose={() => setShowForceClean(false)}
         />
       )}
 

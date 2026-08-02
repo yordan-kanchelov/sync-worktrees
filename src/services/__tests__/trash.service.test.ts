@@ -221,6 +221,18 @@ describe("TrashService", () => {
       await expect(fs.access(entry.payloadPath)).resolves.toBeUndefined();
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Leftover branch ref"));
     });
+
+    it("restores the source when unregistering fails, so a partial removal never hides the worktree", async () => {
+      const source = await makeSourceDir("feature-rollback");
+      gitStub.removeWorktree.mockRejectedValue(new Error("registration locked"));
+
+      await expect(
+        service.trashAndUnregisterWorktree({ dirPath: source, branch: "feature-rollback", reason: "prune" }),
+      ).rejects.toThrow("restored the directory to its original path");
+
+      await expect(fs.readFile(path.join(source, "file.txt"), "utf-8")).resolves.toBe("data");
+      await expect(fs.readdir(service.getTrashRoot())).resolves.toEqual([]);
+    });
   });
 
   describe("listEntries / summarizeTrashEntries", () => {
@@ -244,6 +256,45 @@ describe("TrashService", () => {
       expect(summary.soonestExpiresAt).toBe(
         entries.map((entry) => entry.manifest.expiresAt).sort((a, b) => a.localeCompare(b))[0],
       );
+    });
+
+    it("rejects a manifest whose pin ref escapes this entry's namespace", async () => {
+      const source = await makeSourceDir("bad-pin");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "bad-pin", reason: "manual" });
+      const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
+      await fs.writeFile(manifestPath, JSON.stringify({ ...entry.manifest, pinRef: "refs/heads/main" }));
+
+      const listed = await service.listEntries();
+
+      expect(listed.entries).toEqual([]);
+      expect(listed.invalid).toEqual([entry.containerPath]);
+    });
+
+    it("rejects keep-on-reap manifests without a pinned HEAD", async () => {
+      const source = await makeSourceDir("missing-keep-pin");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "missing-keep-pin", reason: "manual" });
+      const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
+      await fs.writeFile(
+        manifestPath,
+        JSON.stringify({ ...entry.manifest, keepPinOnReap: true, headOid: null, pinRef: null }),
+      );
+
+      await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [entry.containerPath] });
+    });
+
+    it("rejects restore destinations that escape worktreeDir through a symlinked parent", async () => {
+      const source = await makeSourceDir("escaped-restore");
+      const entry = await service.trashDirectory({ dirPath: source, reason: "manual" });
+      const outsideDir = await createTempDirectory();
+      const linkedParent = path.join(worktreeDir, "outside-link");
+      await fs.symlink(outsideDir, linkedParent);
+      const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
+      await fs.writeFile(
+        manifestPath,
+        JSON.stringify({ ...entry.manifest, originalPath: path.join(linkedParent, "restored") }),
+      );
+
+      await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [entry.containerPath] });
     });
 
     it("returns empty results when no trash root exists yet", async () => {

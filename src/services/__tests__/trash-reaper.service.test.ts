@@ -108,6 +108,26 @@ describe("TrashReaperService", () => {
     );
   });
 
+  it("force-purges fresh entries without creating replacement keep refs", async () => {
+    const fresh = await makeEntry("fresh-force-clean", {
+      ageDays: 1,
+      branch: "fresh-force-clean",
+      keepPinOnReap: true,
+    });
+    const junkDir = path.join(trashService.getTrashRoot(), "not-owned");
+    await fs.mkdir(junkDir, { recursive: true });
+    await fs.writeFile(path.join(junkDir, "precious.txt"), "keep");
+    gitStub.updateRef.mockClear();
+
+    const result = await reaper.purgeAllUnlocked();
+
+    expect(result.deleted).toBe(1);
+    await expect(fs.access(fresh.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(path.join(junkDir, "precious.txt"), "utf-8")).resolves.toBe("keep");
+    expect(gitStub.updateRef).not.toHaveBeenCalled();
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(fresh.manifest.pinRef);
+  });
+
   it("blocks the delete when the audit attempt cannot be recorded — same gate as the prune flow", async () => {
     const expired = await makeEntry("audit-gated", { ageDays: 31 });
     audit.record.mockRejectedValue(new Error("disk full"));
@@ -193,7 +213,7 @@ describe("TrashReaperService", () => {
     // reappear on remount.
     gitStub.listRefs.mockResolvedValue(["refs/sync-worktrees/trash/orphan-1"]);
 
-    await expect(reaper.reapExpiredUnlocked()).resolves.toBeUndefined();
+    await expect(reaper.reapExpiredUnlocked()).resolves.toMatchObject({ deleted: 0 });
 
     expect(gitStub.deleteRef).not.toHaveBeenCalled();
   });
@@ -270,6 +290,6 @@ describe("TrashReaperService", () => {
     await reaper.reapExpiredUnlocked();
 
     await expect(fs.access(entry.containerPath)).resolves.toBeUndefined();
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("unparseable expiry"));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("no valid manifest"));
   });
 });

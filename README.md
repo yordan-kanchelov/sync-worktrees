@@ -305,16 +305,16 @@ Running `sync-worktrees` without `runOnce` drops you into an interactive termina
 - **Branch creation wizard (`c`)** — pick a repo, pick a base branch from a live-filtered list, type the new branch name. Names are validated against Git's rules; if the desired name already exists, a numeric suffix (`-2`, `-3`, …) is suggested automatically.
 - **Worktree status view (`w`)** — flat list of every worktree across every configured repo, each tagged with status flags:
 
-  | Flag | Meaning                                                        |
-  | ---- | -------------------------------------------------------------- |
-  | `✓`  | Clean                                                          |
-  | `M`  | Modified / uncommitted changes                                 |
-  | `↑`  | Unpushed commits                                               |
+  | Flag | Meaning                                                                                                       |
+  | ---- | ------------------------------------------------------------------------------------------------------------- |
+  | `✓`  | Clean                                                                                                         |
+  | `M`  | Modified / uncommitted changes                                                                                |
+  | `↑`  | Unpushed commits                                                                                              |
   | `⇡`  | Commits absent from every remote but fully pushed before the remote branch was deleted (likely squash-merged) |
-  | `S`  | Stashed changes                                                |
-  | `⚠`  | Operation in progress (merge/rebase/cherry-pick/revert/bisect) |
-  | `⊞`  | Modified submodules                                            |
-  | `✗`  | Upstream branch is gone                                        |
+  | `S`  | Stashed changes                                                                                               |
+  | `⚠` | Operation in progress (merge/rebase/cherry-pick/revert/bisect)                                                |
+  | `⊞`  | Modified submodules                                                                                           |
+  | `✗`  | Upstream branch is gone                                                                                       |
 
   Press `Enter` on an entry to expand file/commit/stash counts. The view also surfaces `.diverged/` directories preserved from past force-pushes; press `d` (with `y`/`n` confirmation) to delete one after reviewing.
 
@@ -498,6 +498,7 @@ defaults: {
 - **`branchInclude`** keeps only matching branches; **`branchExclude`** removes matching branches. When both are set, include runs first, then exclude.
 - **`branchMaxAge`** drops branches whose latest commit is older than the duration (`h`/`d`/`w`/`m`/`y` — e.g. `24h`, `30d`, `6m`, `1y`). Applied after name filtering.
 - The default branch is always retained regardless of filters.
+- Filters define the managed branch set. An existing managed worktree that no longer matches a filter is handled like a removed remote branch and is safety-checked, then moved to trash when removable.
 
 ### Diverged branches
 
@@ -520,7 +521,7 @@ cd my-repo-worktrees/.diverged/2024-01-15-feature-x
 git diff origin/feature-x
 
 # keep local: git push --force-with-lease
-# discard:   cd ../.. && rm -rf .diverged/2024-01-15-feature-x
+# discard: use `d` on the entry in the TUI worktree status view
 ```
 
 The TUI's worktree status view (`w`) lists diverged directories and offers a guided delete (`d` with `y`/`n` confirmation) once you've decided.
@@ -531,7 +532,7 @@ With trash enabled (the default), the preserved copy lands in `.trash/` instead 
 
 ### Trash and restore
 
-Every removal — age-based prune, orphan cleanup, and diverged-branch replacement — is reversible by default. Instead of deleting, sync-worktrees moves the directory into a per-workspace trash with a manifest describing how to put it back:
+Every managed-worktree removal — including age/filter pruning, exact stale-target replacement, and diverged-branch replacement — is reversible by default. Unknown top-level directories are never inferred to be owned by sync-worktrees and are left untouched.
 
 ```
 my-repo-worktrees/
@@ -543,7 +544,7 @@ my-repo-worktrees/
         └── payload/          # the directory exactly as it was, including uncommitted work
 ```
 
-When the removed directory was a branch worktree, a pin ref (`refs/sync-worktrees/trash/<id>`) keeps the trashed HEAD's objects alive through `git gc` for the whole retention window — even though the local branch ref itself is deleted after trashing. Each entry expires on its own clock; a reaper deletes expired entries at the tail of a successful sync.
+When the removed directory was a branch worktree, a pin ref (`refs/sync-worktrees/trash/<workspace-hash>/<id>`) keeps the trashed HEAD's objects alive through `git gc` for the whole retention window — even though the local branch ref itself is deleted after trashing. Each entry expires on its own clock; maintenance runs the reaper after every sync attempt, including failed attempts.
 
 ```javascript
 defaults: {
@@ -558,6 +559,14 @@ defaults: {
 
 Trash entries are deliberately not exposed through the MCP server — listing, restoring, and purging are human operations.
 
+In the TUI, press `x` to preview a force clean across every configured repository. Confirming with `y` immediately deletes every valid trash entry and all permanent `refs/sync-worktrees/keep/*` recovery refs, then runs `git gc --prune=now`. This is irreversible; active worktrees and unrecognized trash content are left untouched.
+
+```bash
+sync-worktrees trash --filter <repository-name>
+sync-worktrees trash --filter <repository-name> --restore <id>
+sync-worktrees trash --filter <repository-name> --dropKeepRef <listed-keep-name>
+```
+
 **Restoring**: read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
 
 ```bash
@@ -569,7 +578,7 @@ cp -R payload/. <originalPath>/   # then restore the .git link git wrote:
 git -C <bare-repo> worktree repair <originalPath>
 git -C <originalPath> reset       # index at HEAD, payload shows as unstaged changes
 cd .. && rm -rf <id>              # discard the trash entry when done
-git -C <bare-repo> update-ref -d refs/sync-worktrees/trash/<id>   # drop the pin
+git -C <bare-repo> update-ref -d refs/sync-worktrees/trash/<workspace-hash>/<id>   # drop the pin
 ```
 
 Notes:

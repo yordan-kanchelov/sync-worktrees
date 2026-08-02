@@ -147,6 +147,25 @@ describe("InteractiveUIService", () => {
       runQueuedRepoOperation: vi
         .fn<any>()
         .mockImplementation(async (op: any) => ({ started: true, value: await op() })),
+      discardDivergedDirectory: vi.fn<any>().mockResolvedValue(undefined),
+      getForceCleanPreview: vi.fn<any>().mockResolvedValue({
+        trashEntries: 1,
+        trashBytes: 1024,
+        unknownTrashSizes: 0,
+        invalidTrashEntries: 0,
+        keepRefs: 1,
+      }),
+      forceClean: vi.fn<any>().mockResolvedValue({
+        trashEntries: 0,
+        trashBytes: 0,
+        unknownTrashSizes: 0,
+        invalidTrashEntries: 0,
+        keepRefs: 0,
+        trashDeleted: 1,
+        keepRefsDeleted: 1,
+        gcSucceeded: true,
+        errors: [],
+      }),
       updateLogger: vi.fn<any>(),
       onProgress: vi.fn<any>().mockReturnValue(vi.fn()),
       getRecordedSkips: vi.fn<any>().mockReturnValue([]),
@@ -2135,11 +2154,26 @@ describe("InteractiveUIService", () => {
 
         await service.deleteDivergedDirectory(0, "2024-01-15-feature-x-abc123");
 
-        expect(fs.rm).toHaveBeenCalledWith(path.join("/test/worktrees", ".diverged", "2024-01-15-feature-x-abc123"), {
-          recursive: true,
-          force: true,
-        });
+        expect(mockSyncService.discardDivergedDirectory).toHaveBeenCalledWith(
+          path.join("/test/worktrees", ".diverged", "2024-01-15-feature-x-abc123"),
+          undefined,
+        );
 
+        service.destroy();
+      });
+
+      it("releases the recorded keep ref through the locked discard operation", async () => {
+        (fs.readFile as Mock<any>).mockResolvedValue(
+          JSON.stringify({ keepRef: "refs/sync-worktrees/keep/2024-01-15-feature-x-abc123" }),
+        );
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await service.deleteDivergedDirectory(0, "2024-01-15-feature-x-abc123");
+
+        expect(mockSyncService.discardDivergedDirectory).toHaveBeenCalledWith(
+          path.join("/test/worktrees", ".diverged", "2024-01-15-feature-x-abc123"),
+          "refs/sync-worktrees/keep/2024-01-15-feature-x-abc123",
+        );
         service.destroy();
       });
 
@@ -2282,6 +2316,32 @@ describe("InteractiveUIService", () => {
         expect(result[1].divergedAt).toBe("2024-01-01");
 
         service.destroy();
+      });
+    });
+
+    describe("force clean", () => {
+      it("previews and cleans every configured repository while preserving partial failures", async () => {
+        const failingService = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: "repo-2" },
+          getForceCleanPreview: vi.fn<any>().mockRejectedValue(new Error("not initialized")),
+          forceClean: vi.fn<any>().mockRejectedValue(new Error("locked")),
+        } as any;
+        const ui = new InteractiveUIService([mockSyncService, failingService]);
+
+        const preview = await ui.getForceCleanPreview();
+        const result = await ui.forceClean();
+
+        expect(preview).toEqual([
+          expect.objectContaining({ repoIndex: 0, preview: expect.objectContaining({ trashEntries: 1 }) }),
+          expect.objectContaining({ repoIndex: 1, repoName: "repo-2", error: "not initialized" }),
+        ]);
+        expect(result).toEqual([
+          expect.objectContaining({ repoIndex: 0, result: expect.objectContaining({ trashDeleted: 1 }) }),
+          expect.objectContaining({ repoIndex: 1, repoName: "repo-2", error: "locked" }),
+        ]);
+
+        ui.destroy();
       });
     });
   });

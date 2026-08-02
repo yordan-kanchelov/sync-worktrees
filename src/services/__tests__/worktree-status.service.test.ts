@@ -54,6 +54,7 @@ describe("WorktreeStatusService", () => {
 
       expect(result).toBe(true);
       expect(simpleGit).toHaveBeenCalledWith("/test/worktree");
+      expect(mockGit.status).toHaveBeenCalledWith(["--ignore-submodules=none"]);
     });
 
     it.each([

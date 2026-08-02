@@ -92,7 +92,7 @@ export class WorktreeStatusService {
 
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {
     const worktreeGit = this.createGitInstance(worktreePath);
-    const status = await worktreeGit.status();
+    const status = await worktreeGit.status(["--ignore-submodules=none"]);
 
     const hasTrackedChanges =
       status.modified.length > 0 ||
@@ -220,7 +220,7 @@ export class WorktreeStatusService {
     const git = this.createGitInstance(worktreePath);
 
     const [status, branchResult, remoteBranchesResult, stashResult, submoduleResult, gitDirResult] = await Promise.all([
-      git.status().catch((e: unknown) => {
+      git.status(["--ignore-submodules=none"]).catch((e: unknown) => {
         this.logger.error(`Error reading status for ${worktreePath}`, e);
         return null;
       }),

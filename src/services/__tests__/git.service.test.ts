@@ -95,6 +95,7 @@ describe("GitService", () => {
       }) as any,
       raw: vi.fn<any>().mockResolvedValue("") as any,
       status: vi.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })) as any,
+      reset: vi.fn<any>().mockResolvedValue(undefined) as any,
       clone: vi.fn<any>().mockResolvedValue(undefined) as any,
       addConfig: vi.fn<any>().mockResolvedValue(undefined) as any,
       push: vi.fn<any>().mockResolvedValue(undefined) as any,
@@ -771,7 +772,7 @@ describe("GitService", () => {
       expect(mockMetadataService.createInitialMetadataFromPath).toHaveBeenCalled();
     });
 
-    it("should handle stale worktree registration (registered but prunable)", async () => {
+    it("clears only the stale target registration, never unrelated worktrees", async () => {
       const worktreePath = "/test/worktrees/feature-1";
 
       (fs.access as Mock<any>)
@@ -793,7 +794,8 @@ describe("GitService", () => {
       await gitService.addWorktree("feature-1", worktreePath);
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "prune"]);
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "prune"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", worktreePath]);
       expect(fs.rm).toHaveBeenCalledWith(worktreePath, { recursive: true, force: true });
       expect(mockGit.raw).toHaveBeenCalledWith([
         "worktree",
@@ -823,6 +825,26 @@ describe("GitService", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
       expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "prune"]);
       expect(fs.rm).not.toHaveBeenCalled();
+    });
+
+    it("treats a detached registration at the target path as occupied", async () => {
+      const worktreePath = "/test/worktrees/feature-1";
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        const command = args as string[];
+        if (command[0] === "worktree" && command[1] === "list") {
+          return `worktree ${worktreePath}\nHEAD abc123\ndetached\n\n`;
+        }
+        return "";
+      });
+      mockGit.raw.mockClear();
+      (fs.rename as Mock<any>).mockClear();
+
+      await gitService.addWorktree("feature-1", worktreePath);
+
+      expect(fs.rm).not.toHaveBeenCalledWith(worktreePath, { recursive: true, force: true });
+      expect(fs.rename).not.toHaveBeenCalled();
+      expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["worktree", "add"]));
     });
 
     describe("addWorktree - ref existence matrix", () => {
@@ -2126,6 +2148,67 @@ prunable
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feat-new"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "feat-new"]);
+    });
+  });
+
+  describe("resetToUpstream", () => {
+    it("refuses reset when HEAD moved after the caller's divergence check", async () => {
+      mockGit.revparse.mockResolvedValue("new-local-commit");
+
+      await expect(
+        (gitService.resetToUpstream as (...args: string[]) => Promise<boolean>)(
+          "/test/worktrees/feature-1",
+          "feature-1",
+          "previously-observed-commit",
+        ),
+      ).resolves.toBe(false);
+
+      expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["checkout", "-B"]));
+    });
+
+    it("refuses reset when an ignored path would be replaced by an upstream tracked file", async () => {
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        const command = args as string[];
+        if (command[0] === "ls-files") return "generated/config.json\0";
+        if (command[0] === "ls-tree") return "generated/config.json\0src/index.ts\0";
+        return "";
+      });
+
+      await expect(gitService.resetToUpstream("/test/worktrees/feature-1", "feature-1")).resolves.toBe(false);
+
+      expect(mockGit.reset).not.toHaveBeenCalled();
+    });
+
+    it("rechecks cleanliness immediately before a destructive reset", async () => {
+      mockGit.status.mockResolvedValue(buildGitStatusResponse({ isClean: false }) as any);
+
+      await expect(gitService.resetToUpstream("/test/worktrees/feature-1", "feature-1")).resolves.toBe(false);
+
+      expect(mockGit.status).toHaveBeenCalledWith(["--ignore-submodules=none"]);
+      expect(mockGit.reset).not.toHaveBeenCalled();
+    });
+
+    it("uses Git's native no-overwrite-ignore guard for the final checkout", async () => {
+      await expect(gitService.resetToUpstream("/test/worktrees/feature-1", "feature-1")).resolves.toBe(true);
+
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "checkout",
+        "-B",
+        "feature-1",
+        "origin/feature-1",
+        "--no-overwrite-ignore",
+      ]);
+    });
+
+    it("returns to preservation when Git catches a collision created after the preflight", async () => {
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        if ((args as string[])[0] === "checkout") {
+          throw new Error("untracked working tree files would be overwritten by checkout");
+        }
+        return "";
+      });
+
+      await expect(gitService.resetToUpstream("/test/worktrees/feature-1", "feature-1")).resolves.toBe(false);
     });
   });
 

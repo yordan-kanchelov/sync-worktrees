@@ -30,6 +30,36 @@ describe("App", () => {
       openTerminalInWorktree: vi.fn().mockReturnValue({ success: true }),
       createWorktreeForBranch: vi.fn().mockResolvedValue(undefined),
       getWorktreeStatusForRepo: vi.fn().mockResolvedValue([]),
+      getForceCleanPreview: vi.fn().mockResolvedValue([
+        {
+          repoIndex: 0,
+          repoName: "test-repo",
+          preview: {
+            trashEntries: 2,
+            trashBytes: 1024,
+            unknownTrashSizes: 0,
+            invalidTrashEntries: 1,
+            keepRefs: 1,
+          },
+        },
+      ]),
+      forceClean: vi.fn().mockResolvedValue([
+        {
+          repoIndex: 0,
+          repoName: "test-repo",
+          result: {
+            trashEntries: 0,
+            trashBytes: 0,
+            unknownTrashSizes: 0,
+            invalidTrashEntries: 1,
+            keepRefs: 0,
+            trashDeleted: 2,
+            keepRefsDeleted: 1,
+            gcSucceeded: true,
+            errors: [],
+          },
+        },
+      ]),
     };
   });
 
@@ -320,6 +350,35 @@ describe("App", () => {
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Worktree Status");
+    });
+
+    it("previews and confirms force clean with x then y", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+
+      stdin.write("x");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Force Clean");
+      expect(lastFrame()).toContain("2 trash");
+      expect(lastFrame()).toContain("1 skipped invalid");
+
+      stdin.write("y");
+      await waitForStateUpdate();
+
+      expect(defaultProps.forceClean).toHaveBeenCalledTimes(1);
+      expect(lastFrame()).toContain("deleted 2 trash and 1 refs");
+    });
+
+    it("cancels force clean with n", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+
+      stdin.write("x");
+      await waitForStateUpdate();
+      stdin.write("n");
+      await waitForStateUpdate();
+
+      expect(defaultProps.forceClean).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("Force Clean");
     });
 
     it("should not call onReload when syncing is in progress", async () => {

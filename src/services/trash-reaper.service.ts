@@ -14,6 +14,12 @@ import type { RemovalAuditService } from "./removal-audit.service";
 import type { TrashEntry, TrashService } from "./trash.service";
 import type { Config } from "../types";
 
+export interface TrashReapResult {
+  deleted: number;
+  orphanedRefsDeleted: number;
+  errors: string[];
+}
+
 // Deletes expired trash entries at the tail of a successful sync, inside the
 // already-held repo lock. Same fail-closed discipline as the removal pipeline:
 // only manifested entries whose realpath stays under the trash root, and only
@@ -33,8 +39,17 @@ export class TrashReaperService {
 
   // Disabled trash means "don't touch my trash" — existing entries are left
   // alone rather than aged out behind the user's back.
-  async reapExpiredUnlocked(now: Date = new Date()): Promise<void> {
-    if (!this.trashService.isEnabled()) return;
+  async reapExpiredUnlocked(now: Date = new Date()): Promise<TrashReapResult> {
+    return this.reapUnlocked(now, false);
+  }
+
+  async purgeAllUnlocked(): Promise<TrashReapResult> {
+    return this.reapUnlocked(new Date(), true);
+  }
+
+  private async reapUnlocked(now: Date, purgeAll: boolean): Promise<TrashReapResult> {
+    const result: TrashReapResult = { deleted: 0, orphanedRefsDeleted: 0, errors: [] };
+    if (!purgeAll && !this.trashService.isEnabled()) return result;
 
     let realRoot: string;
     try {
@@ -47,10 +62,11 @@ export class TrashReaperService {
         // remount. Pins from a manually deleted trash root linger only until
         // the next trashDirectory recreates the root and the sweep resumes.
         this.logger.debug(`Trash reaper: no trash root; skipping pin-ref sweep`);
-        return;
+        return result;
       }
       this.logger.warn(`⚠️ Trash reaper skipped: cannot resolve trash root: ${getErrorMessage(error)}`);
-      return;
+      result.errors.push(getErrorMessage(error));
+      return result;
     }
 
     const { entries, invalid } = await this.trashService.listEntries();
@@ -65,7 +81,7 @@ export class TrashReaperService {
         this.logger.warn(`⚠️ Trash reaper: entry '${entry.manifest.id}' has an unparseable expiry; skipping`);
         continue;
       }
-      if (expiresAt.getTime() > now.getTime()) continue;
+      if (!purgeAll && expiresAt.getTime() > now.getTime()) continue;
 
       try {
         const realEntry = await fs.realpath(entry.containerPath);
@@ -85,7 +101,7 @@ export class TrashReaperService {
       // deleting anything. On failure defer the whole reap to the next run —
       // these commits may be the only copy left anywhere.
       let keepRef: string | null = null;
-      if (entry.manifest.keepPinOnReap && entry.manifest.headOid) {
+      if (!purgeAll && entry.manifest.keepPinOnReap && entry.manifest.headOid) {
         keepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${entry.manifest.id}`;
         try {
           await this.gitService.updateRef(keepRef, entry.manifest.headOid);
@@ -93,6 +109,7 @@ export class TrashReaperService {
           this.logger.warn(
             `⚠️ Trash reaper: cannot create keep ref '${keepRef}' for '${entry.manifest.id}'; deferring reap: ${getErrorMessage(error)}`,
           );
+          result.errors.push(`${entry.manifest.id}: ${getErrorMessage(error)}`);
           continue;
         }
       }
@@ -110,6 +127,7 @@ export class TrashReaperService {
         this.logger.warn(
           `⚠️ Trash reaper: cannot write audit log; skipping '${entry.manifest.id}': ${getErrorMessage(auditError)}`,
         );
+        result.errors.push(`${entry.manifest.id}: ${getErrorMessage(auditError)}`);
         continue;
       }
 
@@ -117,6 +135,7 @@ export class TrashReaperService {
         await fs.rm(entry.containerPath, { recursive: true, force: true });
       } catch (error) {
         this.logger.warn(`⚠️ Trash reaper: failed to delete '${entry.manifest.id}': ${getErrorMessage(error)}`);
+        result.errors.push(`${entry.manifest.id}: ${getErrorMessage(error)}`);
         await this.removalAudit
           .record({
             action: "trash_reap",
@@ -132,16 +151,18 @@ export class TrashReaperService {
       if (entry.manifest.pinRef) {
         await this.gitService
           .deleteRef(entry.manifest.pinRef)
-          .catch((error: unknown) =>
+          .catch((error: unknown) => {
+            result.errors.push(`${entry.manifest.pinRef}: ${getErrorMessage(error)}`);
             this.logger.warn(
               `⚠️ Trash reaper: failed to delete pin ref '${entry.manifest.pinRef}': ${getErrorMessage(error)}`,
-            ),
-          );
+            );
+          });
       }
 
       reapedIds.add(entry.manifest.id);
+      result.deleted++;
       this.logger.info(
-        `🗑️ Trash reaper: deleted expired entry '${entry.manifest.id}' (trashed ${entry.manifest.deletedAt})`,
+        `🗑️ Trash reaper: deleted ${purgeAll ? "trash" : "expired"} entry '${entry.manifest.id}' (trashed ${entry.manifest.deletedAt})`,
       );
       if (keepRef) {
         this.logger.info(
@@ -167,10 +188,13 @@ export class TrashReaperService {
       this.logger.warn(`⚠️ Trash reaper: cannot scan trash root for pin-ref sweep: ${getErrorMessage(error)}`);
     }
     if (containerNames !== null) {
-      await this.reapOrphanedPinRefs(containerNames);
+      const orphaned = await this.reapOrphanedPinRefs(containerNames);
+      result.orphanedRefsDeleted = orphaned.deleted;
+      result.errors.push(...orphaned.errors);
     }
 
     this.warnIfOverThreshold(entries.filter((entry) => !reapedIds.has(entry.manifest.id)));
+    return result;
   }
 
   // Pin refs whose trash container is gone would pin objects forever (failed
@@ -179,13 +203,15 @@ export class TrashReaperService {
   // its pin because the reaper refuses to delete its payload. Deliberately
   // any dirent name counts (files, symlinks): deleting a pin is irreversible
   // once gc runs, while a stray name collision merely keeps one ref alive.
-  private async reapOrphanedPinRefs(containerNames: Set<string>): Promise<void> {
+  private async reapOrphanedPinRefs(containerNames: Set<string>): Promise<{ deleted: number; errors: string[] }> {
+    const result = { deleted: 0, errors: [] as string[] };
     let refs: string[];
     try {
       refs = await this.gitService.listRefs(GIT_CONSTANTS.TRASH_REF_PREFIX.replace(/\/$/, ""));
     } catch (error) {
       this.logger.warn(`⚠️ Trash reaper: cannot list pin refs: ${getErrorMessage(error)}`);
-      return;
+      result.errors.push(getErrorMessage(error));
+      return result;
     }
 
     const ownPrefix = `${GIT_CONSTANTS.TRASH_REF_PREFIX}${this.getTrashRootHash()}/`;
@@ -211,11 +237,14 @@ export class TrashReaperService {
 
       try {
         await this.gitService.deleteRef(ref);
+        result.deleted++;
         this.logger.info(`🗑️ Trash reaper: deleted orphaned pin ref '${ref}'`);
       } catch (error) {
         this.logger.warn(`⚠️ Trash reaper: failed to delete orphaned pin ref '${ref}': ${getErrorMessage(error)}`);
+        result.errors.push(`${ref}: ${getErrorMessage(error)}`);
       }
     }
+    return result;
   }
 
   private getTrashRootHash(): string {

@@ -168,7 +168,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(3);
 
       // Service should not throw even if one update fails
-      expect(mockGitService.pruneWorktrees).toHaveBeenCalled();
+      expect(mockGitService.pruneWorktrees).not.toHaveBeenCalled();
     });
 
     it("should handle errors when checking worktree status", async () => {

@@ -10,8 +10,6 @@ import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { probePathExists } from "../utils/file-exists";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
-import { normalizePathForCompare } from "../utils/path-compare";
-import { quarantineDirectory } from "../utils/quarantine";
 
 import { PathResolutionService } from "./path-resolution.service";
 import { RemovalAuditService } from "./removal-audit.service";
@@ -23,7 +21,6 @@ import type { Logger } from "./logger.service";
 import type { ProgressEmitter } from "./progress-emitter";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
 import type { SyncRetryContext } from "./sync-retry-policy";
-import type { TrashManifest } from "./trash.service";
 import type { WorktreeStatusDetails, WorktreeStatusResult } from "./worktree-status.service";
 import type { CreateAction, PruneAction, SparseAction, SyncPlan, UpdateAction } from "./worktree-sync-planner";
 import type { Config } from "../types";
@@ -55,20 +52,32 @@ export class WorktreeModeSyncRunner {
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
-    await this.gitService.pruneWorktrees();
     await this.fetchLatestRemoteData(phaseTimer, syncContext);
 
     const { remoteBranches, defaultBranch } = await this.resolveSyncBranches();
+    const pendingDivergedBranches = await this.getPendingDivergedBranches();
 
     await fs.mkdir(this.config.worktreeDir, { recursive: true });
 
-    const worktrees = await this.gitService.getWorktrees();
-    this.logger.info(`Found ${worktrees.length} existing Git worktrees.`);
+    const registeredWorktrees = await this.gitService.getWorktrees();
+    const worktrees = registeredWorktrees.filter((worktree) =>
+      this.pathResolution.isPathInsideBaseDir(worktree.path, this.config.worktreeDir),
+    );
+    const externalBranches = new Set(
+      registeredWorktrees.filter((worktree) => !worktrees.includes(worktree)).map((worktree) => worktree.branch),
+    );
+    this.logger.info(`Found ${worktrees.length} managed Git worktrees.`);
+    for (const worktree of registeredWorktrees) {
+      if (!worktrees.includes(worktree)) {
+        this.logger.warn(`  - Skipping external worktree outside worktreeDir: ${worktree.path}`);
+      }
+    }
 
-    await this.cleanupOrphanedDirectories(worktrees);
     const syncPlan = createWorktreeSyncPlan(
       {
-        remoteBranches,
+        remoteBranches: remoteBranches.filter(
+          (branch) => !externalBranches.has(branch) && !pendingDivergedBranches.has(branch),
+        ),
         defaultBranch,
         existingWorktrees: worktrees,
         worktreeDir: this.config.worktreeDir,
@@ -152,6 +161,40 @@ export class WorktreeModeSyncRunner {
         }),
       ),
     );
+  }
+
+  private async getPendingDivergedBranches(): Promise<Set<string>> {
+    const pending = new Set<string>();
+
+    const { entries } = await this.trashService.listEntries().catch(() => ({ entries: [], invalid: [] }));
+    for (const { manifest } of entries) {
+      if (manifest.reason === "diverged-replace" && (await probePathExists(manifest.originalPath)) === "missing") {
+        if (manifest.branch) pending.add(manifest.branch);
+      }
+    }
+
+    const divergedDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
+    let names: string[] = [];
+    try {
+      names = (await fs.readdir(divergedDir)) ?? [];
+    } catch {}
+    for (const name of names) {
+      try {
+        const raw = await fs.readFile(path.join(divergedDir, name, METADATA_CONSTANTS.DIVERGED_INFO_FILE), "utf-8");
+        const info = JSON.parse(raw) as { originalBranch?: unknown; originalPath?: unknown };
+        if (
+          typeof info.originalBranch === "string" &&
+          typeof info.originalPath === "string" &&
+          (await probePathExists(info.originalPath)) === "missing"
+        ) {
+          pending.add(info.originalBranch);
+        }
+      } catch {
+        // Invalid legacy entries stay preserved but cannot safely reserve a branch.
+      }
+    }
+
+    return pending;
   }
 
   private async fetchLatestRemoteData(phaseTimer: PhaseTimer, syncContext: SyncRetryContext): Promise<void> {
@@ -240,9 +283,7 @@ export class WorktreeModeSyncRunner {
 
   private async finalizeSyncAttempt(phaseTimer: PhaseTimer): Promise<void> {
     phaseTimer.startPhase("Phase 5: Cleanup");
-    this.progressEmitter.emit({ phase: "cleanup", message: "Pruning worktree metadata" });
-    await this.gitService.pruneWorktrees();
-    this.logger.info("Step 5: Pruned worktree metadata.");
+    this.progressEmitter.emit({ phase: "cleanup", message: "Cleanup complete" });
     phaseTimer.endPhase();
   }
 
@@ -445,7 +486,7 @@ export class WorktreeModeSyncRunner {
                     path: worktreePath,
                     message: recheck.reasons.join(", "),
                   });
-                  return;
+                  return false;
                 }
                 // The audit record must exist before the data is gone; an
                 // unwritable audit log blocks removal (fail-closed).
@@ -466,7 +507,7 @@ export class WorktreeModeSyncRunner {
                     path: worktreePath,
                     message: getErrorMessage(auditError),
                   });
-                  return;
+                  return false;
                 }
                 // A previous removal may have moved the directory away and then
                 // failed to clear the registration — re-trashing a missing path
@@ -485,7 +526,7 @@ export class WorktreeModeSyncRunner {
                     .catch((auditError: unknown) =>
                       this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
                     );
-                  return;
+                  return true;
                 }
                 let refWarning: string | undefined;
                 if (this.trashService.isEnabled()) {
@@ -514,6 +555,7 @@ export class WorktreeModeSyncRunner {
                   .catch((auditError: unknown) =>
                     this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
                   );
+                return true;
               } catch (error) {
                 if (error instanceof WorktreeNotCleanError) {
                   this.logger.warn(`  ⚠️ Skipping removal of '${branchName}' - git refused: ${getErrorMessage(error)}`);
@@ -522,7 +564,7 @@ export class WorktreeModeSyncRunner {
                     path: worktreePath,
                     message: getErrorMessage(error),
                   });
-                  return;
+                  return false;
                 }
                 if (error instanceof TrashOperationError) {
                   this.logger.warn(`  ⚠️ Skipping removal of '${branchName}' - ${getErrorMessage(error)}`);
@@ -531,7 +573,7 @@ export class WorktreeModeSyncRunner {
                     path: worktreePath,
                     message: getErrorMessage(error),
                   });
-                  return;
+                  return false;
                 }
                 this.logger.error(`  ❌ Failed to remove worktree for '${branchName}':`, getErrorMessage(error));
                 outcome.recordFailed("worktree", getErrorMessage(error), {
@@ -545,7 +587,7 @@ export class WorktreeModeSyncRunner {
           ),
         );
 
-        const removedCount = removeResults.filter((r) => r.status === "fulfilled").length;
+        const removedCount = removeResults.filter((r) => r.status === "fulfilled" && r.value).length;
         this.logger.info(`  Removed ${removedCount}/${toRemove.length} worktrees successfully`);
       }
 
@@ -792,11 +834,12 @@ export class WorktreeModeSyncRunner {
       this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES,
     );
 
-    const mutationTasks: Promise<{ type: "update" | "diverged"; branch: string }>[] = [];
+    const mutationTasks: Promise<{ type: "update" | "diverged"; branch: string; changed: boolean }>[] = [];
 
     for (const worktree of worktreesToUpdate) {
       mutationTasks.push(
         updateLimit(async () => {
+          let changed = true;
           try {
             this.logger.info(`  - Updating worktree '${worktree.branch}'...`);
             await this.gitService.updateWorktree(worktree.path);
@@ -810,7 +853,7 @@ export class WorktreeModeSyncRunner {
                 `    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`,
               );
               try {
-                await this.handleDivergedBranch(worktree, outcome);
+                changed = await this.handleDivergedBranch(worktree, outcome);
               } catch (divergedError) {
                 this.logger.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
                 outcome.recordFailed("worktree", getErrorMessage(divergedError), {
@@ -830,7 +873,7 @@ export class WorktreeModeSyncRunner {
               throw error;
             }
           }
-          return { type: "update" as const, branch: worktree.branch };
+          return { type: "update" as const, branch: worktree.branch, changed };
         }),
       );
     }
@@ -838,8 +881,9 @@ export class WorktreeModeSyncRunner {
     for (const worktree of divergedWorktrees) {
       mutationTasks.push(
         updateLimit(async () => {
+          let changed: boolean;
           try {
-            await this.handleDivergedBranch(worktree, outcome);
+            changed = await this.handleDivergedBranch(worktree, outcome);
           } catch (error) {
             this.logger.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, error);
             outcome.recordFailed("worktree", getErrorMessage(error), {
@@ -849,7 +893,7 @@ export class WorktreeModeSyncRunner {
             });
             throw error;
           }
-          return { type: "diverged" as const, branch: worktree.branch };
+          return { type: "diverged" as const, branch: worktree.branch, changed };
         }),
       );
     }
@@ -864,104 +908,17 @@ export class WorktreeModeSyncRunner {
 
       const mutationResults = await Promise.allSettled(mutationTasks);
 
-      const successCount = mutationResults.filter((r) => r.status === "fulfilled").length;
+      const successCount = mutationResults.filter((r) => r.status === "fulfilled" && r.value.changed).length;
       this.logger.info(`  Processed ${successCount}/${mutationTasks.length} worktrees successfully`);
     } else {
       this.logger.info("  - All worktrees are up to date.");
     }
   }
 
-  private async cleanupOrphanedDirectories(worktrees: { path: string; branch: string }[]): Promise<void> {
-    try {
-      const worktreeRelativePaths = worktrees.map((w) => path.relative(this.config.worktreeDir, w.path));
-      const allDirs = await fs.readdir(this.config.worktreeDir);
-
-      // Filter out special directories like .diverged.
-      const regularDirs = allDirs.filter((dir) => !dir.startsWith("."));
-
-      const orphanedDirs: string[] = [];
-      for (const dir of regularDirs) {
-        const isPartOfWorktree = worktreeRelativePaths.some((worktreePath) => {
-          return worktreePath === dir || worktreePath.startsWith(dir + path.sep);
-        });
-
-        if (!isPartOfWorktree) {
-          orphanedDirs.push(dir);
-        }
-      }
-
-      if (orphanedDirs.length > 0) {
-        this.logger.info(`Found ${orphanedDirs.length} orphaned directories: ${orphanedDirs.join(", ")}`);
-
-        for (const dir of orphanedDirs) {
-          const dirPath = path.join(this.config.worktreeDir, dir);
-          try {
-            if (normalizePathForCompare(dirPath) === normalizePathForCompare(this.gitService.getBareRepoPath())) {
-              this.logger.warn(`  - ⚠️ Skipping orphaned directory ${dir}: matches configured bareRepoDir`);
-              continue;
-            }
-
-            const stat = await fs.stat(dirPath);
-            if (!stat.isDirectory()) {
-              continue;
-            }
-
-            // An "orphan" containing a .git may be a live checkout that git
-            // failed to report (corrupt admin dir, transient list error) —
-            // quarantine it instead of deleting.
-            const gitProbe = await probePathExists(path.join(dirPath, PATH_CONSTANTS.GIT_DIR));
-            if (gitProbe === "unknown") {
-              this.logger.warn(`  - ⚠️ Skipping orphaned directory ${dir}: cannot verify it is not a live checkout`);
-              continue;
-            }
-
-            if (this.trashService.isEnabled()) {
-              try {
-                const entry = await this.trashService.trashDirectory({ dirPath, reason: "orphan" });
-                this.logger.info(`  - Moved orphaned directory '${dir}' to trash (id: ${entry.manifest.id})`);
-              } catch (trashError) {
-                this.logger.warn(`  - ⚠️ Skipping orphaned directory ${dir} - ${getErrorMessage(trashError)}`);
-              }
-              continue;
-            }
-
-            if (gitProbe === "exists") {
-              const quarantinePath = await quarantineDirectory(dirPath);
-              this.logger.warn(
-                `  - ⚠️ Orphaned directory ${dir} contains a .git; quarantined to '${quarantinePath}' instead of deleting.`,
-              );
-              await this.removalAudit
-                .record({ action: "orphan_quarantine", result: "success", path: dirPath, quarantinePath })
-                .catch((auditError: unknown) =>
-                  this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
-                );
-              continue;
-            }
-
-            try {
-              await this.removalAudit.record({ action: "orphan_delete", result: "attempt", path: dirPath });
-            } catch (auditError) {
-              this.logger.warn(
-                `  - ⚠️ Skipping orphaned directory ${dir} - cannot write removal audit log: ${getErrorMessage(auditError)}`,
-              );
-              continue;
-            }
-            await fs.rm(dirPath, { recursive: true, force: true });
-            this.logger.info(`  - Removed orphaned directory: ${dir}`);
-          } catch (error) {
-            this.logger.error(`  - Failed to remove orphaned directory ${dir}:`, error);
-          }
-        }
-      }
-    } catch (error) {
-      this.logger.error("Error during orphaned directory cleanup:", error);
-    }
-  }
-
   private async handleDivergedBranch(
     worktree: { path: string; branch: string },
     outcome: SyncOutcomeAccumulator,
-  ): Promise<void> {
+  ): Promise<boolean> {
     this.logger.info(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
 
     if (await this.gitService.hasStashedChanges(worktree.path)) {
@@ -973,90 +930,78 @@ export class WorktreeModeSyncRunner {
         path: worktree.path,
         message: "stashed changes present",
       });
-      return;
+      return false;
     }
 
+    const observedHead = (await this.gitService.getCurrentCommit(worktree.path)).trim();
     const treesIdentical = await this.gitService.compareTreeContent(worktree.path, worktree.branch);
 
-    if (treesIdentical) {
-      this.logger.info(`✅ Branch '${worktree.branch}' was rebased but files are identical. Resetting to upstream...`);
-      await this.gitService.resetToUpstream(worktree.path, worktree.branch);
+    const hasLocalChanges = treesIdentical ? false : await this.hasLocalChangesSinceLastSync(worktree.path, observedHead);
+    if (
+      (treesIdentical || !hasLocalChanges) &&
+      (await this.gitService.resetToUpstream(worktree.path, worktree.branch, observedHead))
+    ) {
       this.logger.info(`   Successfully updated '${worktree.branch}' to match upstream.`);
-      outcome.recordUpdated(worktree.branch, worktree.path, "reset_identical_tree");
-    } else {
-      const hasLocalChanges = await this.hasLocalChangesSinceLastSync(worktree.path);
-
-      if (!hasLocalChanges) {
-        this.logger.info(
-          `✅ Branch '${worktree.branch}' has diverged but you made no local changes. Resetting to upstream...`,
-        );
-        await this.gitService.resetToUpstream(worktree.path, worktree.branch);
-        this.logger.info(`   Successfully updated '${worktree.branch}' to match upstream.`);
-        outcome.recordUpdated(worktree.branch, worktree.path, "reset_no_local_changes");
-      } else {
-        this.logger.info(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
-
-        // With trash disabled there is no pin ref, yet the local branch ref
-        // must still be deleted below (or addWorktree would recreate the
-        // worktree from the stale branch instead of upstream). A permanent
-        // keep ref preserves the never-pushed commits first; failure aborts
-        // while the worktree is still intact.
-        let keepRef: string | null = null;
-        if (!this.trashService.isEnabled()) {
-          const localCommit = (await this.gitService.getCurrentCommit(worktree.path)).trim();
-          keepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}diverged-${Date.now().toString(36)}-${this.pathResolution.sanitizeBranchName(worktree.branch)}`;
-          await this.gitService.updateRef(keepRef, localCommit);
-        }
-
-        const { divergedPath, manifest } = await this.divergeWorktree(worktree.path, worktree.branch);
-        const relativePath = path.relative(process.cwd(), divergedPath);
-        outcome.recordPreservedDiverged(worktree.branch, worktree.path, divergedPath);
-
-        this.logger.info(`   Moved to: ${relativePath}`);
-        this.logger.info(`   Your local changes are preserved. To review:`);
-        this.logger.info(`     cd ${relativePath}`);
-        this.logger.info(`     git diff origin/${worktree.branch}`);
-
-        // force is safe here: the directory was already moved to .diverged/,
-        // so only the stale registration is being cleared.
-        await this.gitService.removeWorktree(worktree.path, { force: true });
-        // Deliberately fatal on failure (unlike prune): addWorktree below
-        // would silently recreate the worktree from the stale local branch
-        // instead of upstream if the ref survived.
-        if (manifest !== null) {
-          await this.trashService.deleteTrashedBranchRef(manifest);
-        } else {
-          await this.gitService.deleteLocalBranch(worktree.branch);
-          this.logger.info(
-            `   Never-pushed commits remain recoverable at '${keepRef}' — recover with: git branch <name> ${keepRef}`,
-          );
-        }
-        await this.removalAudit
-          .record({
-            action: "diverged_replace",
-            result: "success",
-            path: worktree.path,
-            branch: worktree.branch,
-            quarantinePath: divergedPath,
-          })
-          .catch((auditError: unknown) =>
-            this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
-          );
-        await this.gitService.addWorktree(worktree.branch, worktree.path);
-        this.logger.info(`   Created fresh worktree from upstream at: ${worktree.path}`);
-      }
+      outcome.recordUpdated(
+        worktree.branch,
+        worktree.path,
+        treesIdentical ? "reset_identical_tree" : "reset_no_local_changes",
+      );
+      return true;
     }
+
+    if (!hasLocalChanges) {
+      this.logger.warn(
+        `⚠️  Refusing to reset '${worktree.branch}' because the final safety check found local or ignored files that upstream would overwrite.`,
+      );
+    }
+    this.logger.info(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
+
+    const { divergedPath, keepRef, unregistered } = await this.divergeWorktree(worktree.path, worktree.branch);
+    const relativePath = path.relative(process.cwd(), divergedPath);
+    outcome.recordPreservedDiverged(worktree.branch, worktree.path, divergedPath);
+
+    this.logger.info(`   Moved to: ${relativePath}`);
+    this.logger.info(`   Your local changes are preserved. To review:`);
+    this.logger.info(`     cd ${relativePath}`);
+    this.logger.info(`     git diff origin/${worktree.branch}`);
+
+    if (!unregistered) {
+      // force is safe here: the directory was already moved to .diverged/,
+      // so only the stale registration is being cleared.
+      await this.gitService.removeWorktree(worktree.path, { force: true });
+      // Deliberately fatal on failure: addWorktree below would silently
+      // recreate from the stale local branch instead of upstream.
+      await this.gitService.deleteLocalBranch(worktree.branch);
+      this.logger.info(
+        `   Never-pushed commits remain recoverable at '${keepRef}' — recover with: git branch <name> ${keepRef}`,
+      );
+    }
+    await this.removalAudit
+      .record({
+        action: "diverged_replace",
+        result: "success",
+        path: worktree.path,
+        branch: worktree.branch,
+        quarantinePath: divergedPath,
+      })
+      .catch((auditError: unknown) =>
+        this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
+      );
+    await this.gitService.addWorktree(worktree.branch, worktree.path);
+    this.logger.info(`   Created fresh worktree from upstream at: ${worktree.path}`);
+    return true;
   }
 
-  private async hasLocalChangesSinceLastSync(worktreePath: string): Promise<boolean> {
+  private async hasLocalChangesSinceLastSync(worktreePath: string, currentCommit?: string): Promise<boolean> {
     try {
       const metadata = await this.gitService.getWorktreeMetadata(worktreePath);
       if (!metadata || !metadata.lastSyncCommit) {
         return true;
       }
 
-      const currentCommit = await this.gitService.getCurrentCommit(worktreePath);
-      return currentCommit !== metadata.lastSyncCommit;
+      const head = currentCommit ?? (await this.gitService.getCurrentCommit(worktreePath));
+      return head !== metadata.lastSyncCommit;
     } catch {
       return true;
     }
@@ -1065,18 +1010,33 @@ export class WorktreeModeSyncRunner {
   private async divergeWorktree(
     worktreePath: string,
     branchName: string,
-  ): Promise<{ divergedPath: string; manifest: TrashManifest | null }> {
+  ): Promise<{
+    divergedPath: string;
+    keepRef: string | null;
+    unregistered: boolean;
+  }> {
     if (this.trashService.isEnabled()) {
       // keepPinOnReap: diverged-replace trashes the only copy of never-pushed
       // commits, so pin/bundle failure must abort while the worktree is intact.
-      const entry = await this.trashService.trashDirectory({
+      const { entry, branchRefError } = await this.trashService.trashAndUnregisterWorktree({
         dirPath: worktreePath,
         branch: branchName,
         reason: "diverged-replace",
         keepPinOnReap: true,
       });
-      await this.writeDivergedInfoFile(entry.payloadPath, worktreePath, branchName, entry.manifest.headOid);
-      return { divergedPath: entry.payloadPath, manifest: entry.manifest };
+      if (branchRefError) {
+        throw new TrashOperationError(
+          "diverged-replace",
+          `cannot delete stale branch '${branchName}' after trashing: ${branchRefError}`,
+        );
+      }
+      await this.writeDivergedInfoFile(entry.payloadPath, worktreePath, branchName, entry.manifest.headOid).catch(
+        (error: unknown) =>
+          this.logger.warn(
+            `⚠️ Could not write diverged metadata for trash entry '${entry.manifest.id}': ${getErrorMessage(error)}`,
+          ),
+      );
+      return { divergedPath: entry.payloadPath, keepRef: null, unregistered: true };
     }
 
     const divergedBaseDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
@@ -1086,23 +1046,54 @@ export class WorktreeModeSyncRunner {
     const safeBranchName = this.pathResolution.sanitizeBranchName(branchName);
     const divergedName = `${timestamp}-${safeBranchName}-${uniqueSuffix}`;
     const divergedPath = path.join(divergedBaseDir, divergedName);
+    const keepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${divergedName}`;
+    const localCommit = (await this.gitService.getCurrentCommit(worktreePath)).trim();
+    await this.gitService.updateRef(keepRef, localCommit);
 
-    await fs.mkdir(divergedBaseDir, { recursive: true });
-
+    let moved = false;
+    let crossDeviceCopyStarted = false;
     try {
-      await fs.rename(worktreePath, divergedPath);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === ERROR_MESSAGES.EXDEV) {
+      await fs.mkdir(divergedBaseDir, { recursive: true });
+      try {
+        await fs.rename(worktreePath, divergedPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== ERROR_MESSAGES.EXDEV) throw error;
+        crossDeviceCopyStarted = true;
         await fs.cp(worktreePath, divergedPath, { recursive: true });
         await fs.rm(worktreePath, { recursive: true, force: true });
-      } else {
-        throw err;
       }
+      moved = true;
+
+      await this.writeDivergedInfoFile(divergedPath, worktreePath, branchName, null, keepRef);
+    } catch (error) {
+      if (moved) {
+        try {
+          await fs.rename(divergedPath, worktreePath);
+        } catch (rollbackError) {
+          throw new TrashOperationError(
+            "diverged-replace",
+            `preserved files at '${divergedPath}' and commit at '${keepRef}' after rollback failed: ${getErrorMessage(rollbackError)}`,
+            error instanceof Error ? error : undefined,
+          );
+        }
+        await this.gitService
+          .deleteRef(keepRef)
+          .catch((refError: unknown) =>
+            this.logger.warn(`⚠️ Failed to remove rollback keep ref '${keepRef}': ${getErrorMessage(refError)}`),
+          );
+      } else if (crossDeviceCopyStarted) {
+        throw new TrashOperationError(
+          "diverged-replace",
+          `cross-device preservation failed; inspect '${worktreePath}' and '${divergedPath}'. Commit remains at '${keepRef}'`,
+          error instanceof Error ? error : undefined,
+        );
+      } else {
+        await this.gitService.deleteRef(keepRef).catch(() => undefined);
+      }
+      throw error;
     }
 
-    await this.writeDivergedInfoFile(divergedPath, worktreePath, branchName, null);
-
-    return { divergedPath, manifest: null };
+    return { divergedPath, keepRef, unregistered: false };
   }
 
   private async writeDivergedInfoFile(
@@ -1110,6 +1101,7 @@ export class WorktreeModeSyncRunner {
     originalPath: string,
     branchName: string,
     knownLocalCommit: string | null,
+    keepRef: string | null = null,
   ): Promise<void> {
     const metadata = {
       originalBranch: branchName,
@@ -1118,10 +1110,11 @@ export class WorktreeModeSyncRunner {
       originalPath,
       localCommit: knownLocalCommit ?? (await this.gitService.getCurrentCommit(preservedPath)),
       remoteCommit: await this.gitService.getRemoteCommit(`origin/${branchName}`),
+      keepRef,
       instruction: `To preserve your changes:
   1. Review: git diff origin/${branchName}
   2. Keep changes: git push --force-with-lease origin ${branchName}
-  3. Discard changes: rm -rf this directory
+  3. Discard changes: use the TUI worktree status view so the keep ref is released safely
 
   Original worktree location: ${originalPath}`,
     };

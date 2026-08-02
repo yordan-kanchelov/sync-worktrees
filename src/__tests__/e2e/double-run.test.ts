@@ -144,7 +144,7 @@ describe("Double run E2E test", () => {
     expect(worktrees).not.toContain("HEAD");
   }, 60000);
 
-  it("should recover gracefully if a HEAD worktree was manually created", async () => {
+  it("should leave an unowned HEAD directory untouched", async () => {
     const command = `node "${binaryPath}" --config "${configPath}"`;
 
     // First run to set up worktrees
@@ -161,18 +161,10 @@ describe("Double run E2E test", () => {
     expect(secondRun).toContain("Synchronization finished");
     expect(secondRun).not.toContain("Error during worktree synchronization");
 
-    // The orphaned HEAD directory should be preserved in trash instead of blocking the run.
-    expect(secondRun).toContain("orphaned directories");
-    expect(secondRun).toContain("Moved orphaned directory 'HEAD' to trash");
-
     const worktrees = await fs.readdir(worktreeDir);
-    expect(worktrees).not.toContain("HEAD");
-
-    const trashEntries = await fs.readdir(path.join(worktreeDir, ".trash"));
-    const headTrashEntry = trashEntries.find((entry) => entry.includes("-HEAD-"));
-    expect(headTrashEntry).toBeDefined();
-    await expect(
-      fs.readFile(path.join(worktreeDir, ".trash", headTrashEntry!, "payload", "dummy.txt"), "utf8"),
-    ).resolves.toBe("This simulates a mistakenly created HEAD worktree");
+    expect(worktrees).toContain("HEAD");
+    await expect(fs.readFile(path.join(headPath, "dummy.txt"), "utf8")).resolves.toBe(
+      "This simulates a mistakenly created HEAD worktree",
+    );
   }, 30000);
 });

@@ -1,6 +1,9 @@
+import * as fs from "fs/promises";
+import * as path from "path";
+
 import pLimit from "p-limit";
 
-import { ENV_CONSTANTS } from "../constants";
+import { ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, TrashOperationError } from "../errors";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
@@ -25,7 +28,7 @@ import { WorktreeModeSyncRunner } from "./worktree-mode-sync-runner";
 import type { ProgressEvent, ProgressListener } from "./progress-emitter";
 import type { RepoLockRelease } from "./repo-operation-lock";
 import type { TrashEntry, TrashManifest } from "./trash.service";
-import type { Config, SyncOutcome, SyncResult } from "../types";
+import type { Config, ForceCleanPreview, ForceCleanResult, SyncOutcome, SyncResult } from "../types";
 import type { LfsErrorContext } from "../utils/retry";
 
 export type { ProgressEvent, ProgressListener } from "./progress-emitter";
@@ -52,6 +55,7 @@ export class WorktreeSyncService {
   private maintenanceService: GitMaintenanceService;
   private retryPolicy: SyncRetryPolicy;
   private worktreeModeSyncRunner: WorktreeModeSyncRunner;
+  private removalAudit: RemovalAuditService;
   private trashService: TrashService;
   private trashReaper: TrashReaperService;
   private trashMigration: TrashMigrationService;
@@ -64,9 +68,15 @@ export class WorktreeSyncService {
     this.repoOperationLock = new RepoOperationLock(config, this.gitService, this.logger);
     this.maintenanceService = new GitMaintenanceService(config, this.gitService, this.logger);
     this.retryPolicy = new SyncRetryPolicy(config, this.gitService, this.logger);
-    const removalAudit = new RemovalAuditService(getRemovalAuditLogPath(config));
-    this.trashService = new TrashService(config, this.gitService, this.logger, removalAudit);
-    this.trashReaper = new TrashReaperService(config, this.trashService, this.logger, removalAudit, this.gitService);
+    this.removalAudit = new RemovalAuditService(getRemovalAuditLogPath(config));
+    this.trashService = new TrashService(config, this.gitService, this.logger, this.removalAudit);
+    this.trashReaper = new TrashReaperService(
+      config,
+      this.trashService,
+      this.logger,
+      this.removalAudit,
+      this.gitService,
+    );
     this.trashMigration = new TrashMigrationService(config, this.trashService, this.logger);
     if (this.trashService.isEnabled()) {
       this.gitService.setStaleDirectoryTrasher(
@@ -80,7 +90,7 @@ export class WorktreeSyncService {
       this.progressEmitter,
       {
         trashService: this.trashService,
-        removalAudit,
+        removalAudit: this.removalAudit,
       },
     );
     if (resolveMode(config) === REPOSITORY_MODES.CLONE) {
@@ -192,6 +202,128 @@ export class WorktreeSyncService {
 
   async listTrashEntries(): Promise<{ entries: TrashEntry[]; invalid: string[] }> {
     return this.trashService.listEntries();
+  }
+
+  async listKeepRefs(): Promise<string[]> {
+    return this.gitService.listRefs(GIT_CONSTANTS.KEEP_REF_PREFIX);
+  }
+
+  async getForceCleanPreview(): Promise<ForceCleanPreview> {
+    await this.requireForceCleanTarget();
+    if (this.cloneSyncService) {
+      return { trashEntries: 0, trashBytes: 0, unknownTrashSizes: 0, invalidTrashEntries: 0, keepRefs: 0 };
+    }
+    const [{ entries, invalid }, keepRefs] = await Promise.all([this.trashService.listEntries(), this.listKeepRefs()]);
+    return {
+      trashEntries: entries.length,
+      trashBytes: entries.reduce((total, entry) => total + (entry.manifest.sizeBytes ?? 0), 0),
+      unknownTrashSizes: entries.filter((entry) => entry.manifest.sizeBytes === null).length,
+      invalidTrashEntries: invalid.length,
+      keepRefs: keepRefs.length,
+    };
+  }
+
+  async forceClean(): Promise<ForceCleanResult> {
+    await this.requireForceCleanTarget();
+    const result = await this.runExclusiveRepoOperation(
+      async () => {
+        const before = await this.getForceCleanPreview();
+        const reap = this.cloneSyncService
+          ? { deleted: 0, orphanedRefsDeleted: 0, errors: [] }
+          : await this.trashReaper.purgeAllUnlocked();
+        const errors = [...reap.errors];
+        const keepRefs = this.cloneSyncService ? [] : await this.listKeepRefs();
+        let keepRefsDeleted = 0;
+
+        for (const ref of keepRefs) {
+          try {
+            await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
+            await this.gitService.deleteRef(ref);
+            keepRefsDeleted++;
+            await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
+          } catch (error) {
+            const message = getErrorMessage(error);
+            errors.push(`${ref}: ${message}`);
+            await this.removalAudit
+              .record({ action: "keep_ref_delete", result: "failure", path: ref, error: message })
+              .catch(() => undefined);
+          }
+        }
+
+        const gcSucceeded = await this.maintenanceService.runNowUnlocked();
+        if (!gcSucceeded) errors.push("git gc --prune=now failed");
+        const after = await this.getForceCleanPreview();
+        return {
+          ...after,
+          trashDeleted: before.trashEntries - after.trashEntries,
+          keepRefsDeleted,
+          gcSucceeded,
+          errors,
+        };
+      },
+      { wait: true },
+    );
+    if (!result.started) throw new Error("Cannot force clean while another process holds the repository lock");
+    return result.value;
+  }
+
+  private async requireForceCleanTarget(): Promise<void> {
+    const target = this.cloneSyncService
+      ? path.join(this.config.worktreeDir, PATH_CONSTANTS.GIT_DIR)
+      : path.join(this.gitService.getBareRepoPath(), "HEAD");
+    try {
+      await fs.access(target);
+    } catch {
+      throw new Error(`Repository storage is unavailable at '${target}'; refusing force clean`);
+    }
+  }
+
+  async deleteKeepRef(name: string): Promise<void> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error(`Invalid keep ref name '${name}'`);
+    const ref = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`;
+    const result = await this.runExclusiveRepoOperation(
+      async () => {
+        await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
+        await this.gitService.deleteRef(ref);
+        await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
+      },
+      { wait: true },
+    );
+    if (!result.started) throw new Error("Cannot delete keep ref while another process holds the lock");
+  }
+
+  async discardDivergedDirectory(targetPath: string, keepRef?: string): Promise<void> {
+    const divergedRoot = path.resolve(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
+    const resolvedTarget = path.resolve(targetPath);
+    if (path.dirname(resolvedTarget) !== divergedRoot) {
+      throw new Error(`Refusing to discard path outside '${divergedRoot}'`);
+    }
+    const expectedKeepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${path.basename(resolvedTarget)}`;
+    if (keepRef && keepRef !== expectedKeepRef) {
+      throw new Error(`Refusing to delete invalid diverged keep ref '${keepRef}'`);
+    }
+    const result = await this.runExclusiveRepoOperation(
+      async () => {
+        await this.removalAudit.record({ action: "diverged_discard", result: "attempt", path: resolvedTarget });
+        try {
+          await fs.rm(resolvedTarget, { recursive: true, force: true });
+          if (keepRef) await this.gitService.deleteRef(keepRef);
+          await this.removalAudit.record({ action: "diverged_discard", result: "success", path: resolvedTarget });
+        } catch (error) {
+          await this.removalAudit
+            .record({
+              action: "diverged_discard",
+              result: "failure",
+              path: resolvedTarget,
+              error: getErrorMessage(error),
+            })
+            .catch(() => undefined);
+          throw error;
+        }
+      },
+      { wait: true },
+    );
+    if (!result.started) throw new Error("Cannot discard diverged directory while another process holds the lock");
   }
 
   updateLogger(logger: Logger): void {
