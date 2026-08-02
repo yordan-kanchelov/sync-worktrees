@@ -102,6 +102,87 @@ describe("LogPanel", () => {
     });
   });
 
+  describe("mouse wheel", () => {
+    const ESC = String.fromCharCode(27);
+    const wheelUp = `${ESC}[<64;10;5M`;
+    const wheelDown = `${ESC}[<65;10;5M`;
+    // 40 entries in a 7-line viewport: deep enough that a notch of 3 lines is
+    // visible in which entries are on screen.
+    const manyLogs = (): LogEntry[] => Array.from({ length: 40 }, (_, i) => createLog(`${i}`, `Log ${i}`));
+
+    it("scrolls back through history on wheel up", async () => {
+      const { stdin, lastFrame } = render(<LogPanel {...defaultProps} logs={manyLogs()} height={10} />);
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Log 39");
+
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("Log 39");
+      // Parking above the tail must stop new entries yanking the view back down.
+      expect(lastFrame()).not.toContain("(auto)");
+    });
+
+    // A notch moves several lines, so one wheel up then one wheel down has to
+    // land exactly back at the bottom and re-arm auto-scroll.
+    it("returns to the bottom and re-enables auto-scroll on wheel down", async () => {
+      const { stdin, lastFrame } = render(<LogPanel {...defaultProps} logs={manyLogs()} height={10} />);
+      await waitForStateUpdate();
+
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("(auto)");
+
+      stdin.write(wheelDown);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Log 39");
+      expect(lastFrame()).not.toContain("more below");
+      expect(lastFrame()).toContain("(auto)");
+    });
+
+    it("does not scroll past the top or the bottom", async () => {
+      const { stdin, lastFrame } = render(<LogPanel {...defaultProps} logs={manyLogs()} height={10} />);
+      await waitForStateUpdate();
+
+      for (let i = 0; i < 30; i++) stdin.write(wheelUp);
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Log 0");
+      expect(lastFrame()).not.toContain("more above");
+
+      for (let i = 0; i < 30; i++) stdin.write(wheelDown);
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Log 39");
+      expect(lastFrame()).not.toContain("more below");
+    });
+
+    // Clicks share the same escape-sequence shape as the wheel and must not be
+    // mistaken for scrolling.
+    it("ignores button clicks", async () => {
+      const { stdin, lastFrame } = render(<LogPanel {...defaultProps} logs={manyLogs()} height={10} />);
+      await waitForStateUpdate();
+
+      stdin.write(`${ESC}[<0;10;5M`);
+      stdin.write(`${ESC}[<0;10;5m`);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Log 39");
+      expect(lastFrame()).toContain("(auto)");
+    });
+
+    it("stays inert while the panel is not active", async () => {
+      const { stdin, lastFrame } = render(
+        <LogPanel {...defaultProps} logs={manyLogs()} height={10} isActive={false} />,
+      );
+      await waitForStateUpdate();
+
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Log 39");
+    });
+  });
+
   describe("keyboard navigation", () => {
     it("should scroll up with up arrow key", async () => {
       const logs = Array.from({ length: 20 }, (_, i) => createLog(`${i}`, `Log ${i}`));

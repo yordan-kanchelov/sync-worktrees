@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { isMouseSequence } from "../utils/mouse";
 
 import { formatBytes } from "../utils/disk-space";
 
@@ -50,6 +51,10 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
   );
 
   useInput((input, key) => {
+    // Mouse reports arrive as a single `input` string; ignore them here so a
+    // scroll never registers as a keystroke.
+    if (isMouseSequence(input)) return;
+
     if (cleaning) return;
     if (results !== null) {
       if (key.escape || key.return || input === "q") onClose();

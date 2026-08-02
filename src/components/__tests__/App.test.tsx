@@ -606,4 +606,55 @@ describe("App", () => {
       expect(frame).toContain("Third log");
     });
   });
+  describe("mouse wheel", () => {
+    const ESC = String.fromCharCode(27);
+    const wheelUp = `${ESC}[<64;10;5M`;
+
+    const fillLogs = async (): Promise<void> => {
+      for (let i = 0; i < 40; i++) {
+        appEvents.emit("addLog", { message: `Log line ${i}`, level: "info" });
+      }
+      await waitForStateUpdate();
+    };
+
+    it("scrolls the log panel with the wheel", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      await fillLogs();
+      expect(lastFrame()).toContain("Log line 39");
+
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("Log line 39");
+    });
+
+    // The whole point of the guard: a mouse report is one `input` string, and
+    // anything that echoes input would otherwise paint the escape sequence.
+    it("never renders a mouse report as text", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      await fillLogs();
+
+      stdin.write(wheelUp);
+      stdin.write(`${ESC}[<0;10;5M`);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("[<");
+      expect(lastFrame()).not.toContain("64;10;5");
+    });
+
+    // A stray click must not trip a single-key shortcut such as quit.
+    it("does not fire shortcuts on a click report", async () => {
+      const { stdin } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      stdin.write(`${ESC}[<0;10;5M`);
+      stdin.write(`${ESC}[<0;10;5m`);
+      await waitForStateUpdate();
+
+      expect(defaultProps.onQuit).not.toHaveBeenCalled();
+      expect(defaultProps.onManualSync).not.toHaveBeenCalled();
+    });
+  });
 });

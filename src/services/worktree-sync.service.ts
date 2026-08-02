@@ -242,7 +242,7 @@ export class WorktreeSyncService {
         let keepRefsRetained = 0;
 
         for (const ref of keepRefs) {
-          if (reservedNames.has(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length))) {
+          if (this.isKeepRefReserved(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length), reservedNames)) {
             keepRefsRetained++;
             continue;
           }
@@ -278,6 +278,27 @@ export class WorktreeSyncService {
     );
     if (!result.started) throw new Error("Cannot force clean while another process holds the repository lock");
     return result.value;
+  }
+
+  // Does a `.diverged/` directory still depend on this keep ref?
+  //
+  // Current entries name the ref after the directory, so a direct hit settles
+  // it. Entries written before this ref layout used
+  // `diverged-<timestamp>-<sanitized branch>` and recorded nothing in their
+  // metadata, so the only link left is the sanitized branch name that both the
+  // ref and the directory carry. Matching on that keeps an upgrade from
+  // purging the commits behind a copy still sitting on disk; the cost of a
+  // false positive is a retained ref, the cost of a miss is the commits.
+  private isKeepRefReserved(refName: string, divergedNames: Set<string>): boolean {
+    if (divergedNames.has(refName)) return true;
+
+    const legacy = /^diverged-[^-]+-(.+)$/.exec(refName);
+    if (!legacy) return false;
+    const branchSegment = legacy[1];
+    for (const divergedName of divergedNames) {
+      if (divergedName.includes(branchSegment)) return true;
+    }
+    return false;
   }
 
   // Entry names under `.diverged/`, which are exactly the keep-ref names the
