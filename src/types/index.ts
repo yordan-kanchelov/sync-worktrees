@@ -294,6 +294,8 @@ export interface ForceCleanPreview {
 export interface ForceCleanResult extends ForceCleanPreview {
   trashDeleted: number;
   keepRefsDeleted: number;
+  /** Recovery refs left alone because a `.diverged/` directory still relies on them. */
+  keepRefsRetained: number;
   gcSucceeded: boolean;
   errors: string[];
 }

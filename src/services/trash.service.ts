@@ -42,6 +42,10 @@ export interface TrashManifest {
   // upstream deletion" proof — the remote may have deleted an unmerged
   // branch, so the commits must never become gc-eligible silently.
   keepPinOnReap?: boolean;
+  /** When a diverged-replace entry's replacement worktree was successfully
+   * created. Until then the entry reserves `originalPath` so restore can put
+   * the payload back; afterwards the branch syncs normally again. */
+  replacedAt?: string | null;
 }
 
 export interface TrashEntry {
@@ -301,6 +305,21 @@ export class TrashService {
       try {
         await fs.rename(entry.payloadPath, options.dirPath);
         await this.undoPartialTrash(entry.containerPath, entry.manifest.pinRef);
+        // trashDirectory already logged a `trash_create: success` for a
+        // container that no longer exists; without this the audit trail claims
+        // the directory is in trash when it is back at its original path.
+        await this.removalAudit
+          .record({
+            action: "trash_create",
+            result: "failure",
+            path: entry.manifest.originalPath,
+            branch: entry.manifest.branch ?? undefined,
+            trashId: entry.manifest.id,
+            error: `rolled back: ${getErrorMessage(error)}`,
+          })
+          .catch((auditError: unknown) =>
+            this.logger.warn(`⚠️ Failed to write trash rollback audit record: ${getErrorMessage(auditError)}`),
+          );
       } catch (rollbackError) {
         throw new TrashOperationError(
           "unregister-worktree",
@@ -326,6 +345,16 @@ export class TrashService {
     return { entry, branchRefError };
   }
 
+  // A diverged-replace entry holds `originalPath` in reserve so restore can put
+  // the payload back there. Once the replacement worktree exists that reserve is
+  // spent — restore would collide with it anyway — so record it and let the
+  // branch sync normally again instead of staying blocked until expiry.
+  async markReplacementCreated(entry: TrashEntry, now: Date = new Date()): Promise<void> {
+    const manifest: TrashManifest = { ...entry.manifest, replacedAt: now.toISOString() };
+    await this.writeManifest(entry.containerPath, manifest);
+    entry.manifest.replacedAt = manifest.replacedAt;
+  }
+
   async restore(id: string): Promise<TrashManifest> {
     const { entries } = await this.listEntries();
     const entry = entries.find((candidate) => candidate.manifest.id === id);
@@ -334,6 +363,17 @@ export class TrashService {
     }
 
     const { manifest, containerPath, payloadPath } = entry;
+
+    // Restore is the only operation that writes to originalPath, so this is
+    // where a manifest pointing outside the workspace has to be refused — and
+    // it is checked against the CURRENT worktreeDir, which is what a relocated
+    // workspace needs. Listing and reaping deliberately stay unaffected.
+    if (!this.pathResolution.isPathInsideBaseDir(manifest.originalPath, this.config.worktreeDir)) {
+      throw new TrashOperationError(
+        "restore",
+        `destination '${manifest.originalPath}' is outside worktreeDir '${this.config.worktreeDir}'; copy the files you need out of '${payloadPath}' manually`,
+      );
+    }
 
     if ((await probePathExists(payloadPath)) !== "exists") {
       throw new TrashOperationError("restore", `payload missing or unverifiable for '${id}' at '${payloadPath}'`);
@@ -511,7 +551,6 @@ export class TrashService {
       const raw = await fs.readFile(path.join(containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME), "utf-8");
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       const id = path.basename(containerPath);
-      const expectedPinRef = `${GIT_CONSTANTS.TRASH_REF_PREFIX}${this.getTrashRootHash()}/${id}`;
       if (
         parsed.schemaVersion !== TRASH_CONSTANTS.SCHEMA_VERSION ||
         parsed.id !== id ||
@@ -521,13 +560,12 @@ export class TrashService {
         !Number.isFinite(Date.parse(parsed.expiresAt)) ||
         typeof parsed.originalPath !== "string" ||
         !path.isAbsolute(parsed.originalPath) ||
-        !this.pathResolution.isPathInsideBaseDir(parsed.originalPath, this.config.worktreeDir) ||
         !(typeof parsed.branch === "string" || parsed.branch === null) ||
         !["prune", "orphan", "diverged-replace", "manual", "legacy-adopt"].includes(parsed.reason as string) ||
         !(typeof parsed.sizeBytes === "number" || parsed.sizeBytes === null) ||
         (typeof parsed.sizeBytes === "number" && (!Number.isFinite(parsed.sizeBytes) || parsed.sizeBytes < 0)) ||
         !(typeof parsed.headOid === "string" || parsed.headOid === null) ||
-        !(parsed.pinRef === null || parsed.pinRef === expectedPinRef) ||
+        !this.isOwnPinRef(parsed.pinRef, id) ||
         (parsed.pinRef !== null && parsed.headOid === null) ||
         !(
           parsed.bundleFile === undefined ||
@@ -542,7 +580,12 @@ export class TrashService {
           (typeof parsed.legacyQuarantinedAt === "string" && Number.isFinite(Date.parse(parsed.legacyQuarantinedAt)))
         ) ||
         !(parsed.keepPinOnReap === undefined || typeof parsed.keepPinOnReap === "boolean") ||
-        (parsed.keepPinOnReap === true && (parsed.headOid === null || parsed.pinRef === null))
+        (parsed.keepPinOnReap === true && (parsed.headOid === null || parsed.pinRef === null)) ||
+        !(
+          parsed.replacedAt === undefined ||
+          parsed.replacedAt === null ||
+          (typeof parsed.replacedAt === "string" && Number.isFinite(Date.parse(parsed.replacedAt)))
+        )
       ) {
         return null;
       }
@@ -550,6 +593,20 @@ export class TrashService {
     } catch {
       return null;
     }
+  }
+
+  // A pin ref must belong to this entry, so a hand-edited manifest can never
+  // aim the reaper's deleteRef at something like refs/heads/main. The root-hash
+  // segment is checked for shape only, not for equality with the current trash
+  // root: relocating worktreeDir must not turn every existing entry into
+  // unrecognized content that is never reaped and never releases its pin.
+  private isOwnPinRef(pinRef: unknown, id: string): boolean {
+    if (pinRef === null) return true;
+    if (typeof pinRef !== "string") return false;
+    const suffix = `/${id}`;
+    if (!pinRef.startsWith(GIT_CONSTANTS.TRASH_REF_PREFIX) || !pinRef.endsWith(suffix)) return false;
+    const rootHash = pinRef.slice(GIT_CONSTANTS.TRASH_REF_PREFIX.length, pinRef.length - suffix.length);
+    return /^[0-9a-f]{16}$/.test(rootHash);
   }
 
   private async undoPartialTrash(containerPath: string, pinRef: string | null): Promise<void> {

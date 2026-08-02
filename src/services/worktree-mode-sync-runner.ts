@@ -21,6 +21,7 @@ import type { Logger } from "./logger.service";
 import type { ProgressEmitter } from "./progress-emitter";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
 import type { SyncRetryContext } from "./sync-retry-policy";
+import type { TrashEntry } from "./trash.service";
 import type { WorktreeStatusDetails, WorktreeStatusResult } from "./worktree-status.service";
 import type { CreateAction, PruneAction, SparseAction, SyncPlan, UpdateAction } from "./worktree-sync-planner";
 import type { Config } from "../types";
@@ -70,6 +71,10 @@ export class WorktreeModeSyncRunner {
       }
     }
     const externalBranches = new Set(externalWorktrees.map((worktree) => worktree.branch));
+    const plannedBranches = remoteBranches.filter(
+      (branch) => !externalBranches.has(branch) && !pendingDivergedBranches.has(branch),
+    );
+    await this.dropStaleRegistrations(worktrees, new Set(plannedBranches));
     this.logger.info(`Found ${worktrees.length} managed Git worktrees.`);
     for (const worktree of externalWorktrees) {
       this.logger.warn(`  - Skipping external worktree outside worktreeDir: ${worktree.path}`);
@@ -77,9 +82,7 @@ export class WorktreeModeSyncRunner {
 
     const syncPlan = createWorktreeSyncPlan(
       {
-        remoteBranches: remoteBranches.filter(
-          (branch) => !externalBranches.has(branch) && !pendingDivergedBranches.has(branch),
-        ),
+        remoteBranches: plannedBranches,
         defaultBranch,
         existingWorktrees: worktrees,
         worktreeDir: this.config.worktreeDir,
@@ -165,38 +168,72 @@ export class WorktreeModeSyncRunner {
     );
   }
 
+  // A registration whose directory is definitively gone (rm -rf, a wiped volume)
+  // still makes the planner believe the branch is checked out: no create action,
+  // and an update action against a path that no longer exists, so the worktree is
+  // never rebuilt. Dropping it from the inventory turns it back into a create.
+  //
+  // Deliberately only bookkeeping — nothing is removed here. `addWorktree`'s
+  // "already registered worktree" recovery clears the registration, and it asks
+  // git whether the entry is still prunable first, so a directory that came back
+  // between this probe and that moment is left alone instead of force-removed.
+  //
+  // Two narrowings: only branches the plan still wants (a branch gone upstream
+  // stays with the prune pipeline, which owns removals and their audit records),
+  // and only a definitive "missing" (an unverifiable path keeps its registration
+  // so no second worktree is ever built over one that still exists).
+  private async dropStaleRegistrations(
+    worktrees: { path: string; branch: string }[],
+    plannedBranches: Set<string>,
+  ): Promise<void> {
+    const stale: { path: string; branch: string }[] = [];
+    for (const worktree of worktrees) {
+      if (plannedBranches.has(worktree.branch) && (await probePathExists(worktree.path)) === "missing") {
+        stale.push(worktree);
+      }
+    }
+
+    for (const worktree of stale) {
+      this.logger.info(
+        `  - Registration for '${worktree.branch}' points at a missing directory (${worktree.path}); rebuilding it.`,
+      );
+      worktrees.splice(worktrees.indexOf(worktree), 1);
+    }
+  }
+
+  // A diverged replace whose replacement worktree was never created leaves the
+  // trashed payload as the only copy of that branch's work. Reserving the branch
+  // keeps sync from taking `originalPath` before the user can `trash --restore`.
+  //
+  // Three deliberate narrowings, each of which was a way to strand a branch:
+  //  - `replacedAt` set means the replacement exists, so the reserve is spent.
+  //    Without this, any later removal of the replacement (branch deleted then
+  //    re-pushed, worktree removed by hand) re-arms the reservation and the
+  //    branch stops syncing until the entry expires.
+  //  - only a definitive "missing" reserves; an unverifiable probe lets the
+  //    branch keep syncing, because a silently unsynced branch is worse than a
+  //    restore that fails with a clear message.
+  //  - `.diverged/` copies never reserve: nothing restores from them, and those
+  //    directories are never cleaned up, so the block would be permanent.
   private async getPendingDivergedBranches(): Promise<Set<string>> {
     const pending = new Set<string>();
+    // With trash off the reaper leaves existing entries alone, so nothing would
+    // ever release the reserve. An expiring reservation is a delay; one that
+    // cannot expire is a branch that stops syncing for good.
+    if (!this.trashService.isEnabled()) return pending;
 
     const { entries } = await this.trashService.listEntries().catch(() => ({ entries: [], invalid: [] }));
     for (const { manifest } of entries) {
       if (
         manifest.reason === "diverged-replace" &&
         manifest.branch &&
-        (await probePathExists(manifest.originalPath)) !== "exists"
+        !manifest.replacedAt &&
+        (await probePathExists(manifest.originalPath)) === "missing"
       ) {
         pending.add(manifest.branch);
-      }
-    }
-
-    const divergedDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
-    let names: string[] = [];
-    try {
-      names = (await fs.readdir(divergedDir)) ?? [];
-    } catch {}
-    for (const name of names) {
-      try {
-        const raw = await fs.readFile(path.join(divergedDir, name, METADATA_CONSTANTS.DIVERGED_INFO_FILE), "utf-8");
-        const info = JSON.parse(raw) as { originalBranch?: unknown; originalPath?: unknown };
-        if (
-          typeof info.originalBranch === "string" &&
-          typeof info.originalPath === "string" &&
-          (await probePathExists(info.originalPath)) !== "exists"
-        ) {
-          pending.add(info.originalBranch);
-        }
-      } catch {
-        // Invalid legacy entries stay preserved but cannot safely reserve a branch.
+        this.logger.info(
+          `  - Reserving '${manifest.originalPath}' for trash entry '${manifest.id}'; '${manifest.branch}' stays unsynced until it is restored or expires (${manifest.expiresAt}).`,
+        );
       }
     }
 
@@ -963,7 +1000,10 @@ export class WorktreeModeSyncRunner {
     }
     this.logger.info(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
 
-    const { divergedPath, keepRef, unregistered } = await this.divergeWorktree(worktree.path, worktree.branch);
+    const { divergedPath, keepRef, unregistered, trashEntry } = await this.divergeWorktree(
+      worktree.path,
+      worktree.branch,
+    );
     const relativePath = path.relative(process.cwd(), divergedPath);
     outcome.recordPreservedDiverged(worktree.branch, worktree.path, divergedPath);
 
@@ -996,6 +1036,17 @@ export class WorktreeModeSyncRunner {
       );
     await this.gitService.addWorktree(worktree.branch, worktree.path);
     this.logger.info(`   Created fresh worktree from upstream at: ${worktree.path}`);
+    if (trashEntry) {
+      // Best effort: if this does not land, the entry keeps reserving the branch
+      // until it expires, which is visible in the reservation log line.
+      await this.trashService
+        .markReplacementCreated(trashEntry)
+        .catch((error: unknown) =>
+          this.logger.warn(
+            `⚠️ Could not record the replacement for trash entry '${trashEntry.manifest.id}'; '${worktree.branch}' stays reserved until the entry expires: ${getErrorMessage(error)}`,
+          ),
+        );
+    }
     return true;
   }
 
@@ -1020,6 +1071,7 @@ export class WorktreeModeSyncRunner {
     divergedPath: string;
     keepRef: string | null;
     unregistered: boolean;
+    trashEntry: TrashEntry | null;
   }> {
     if (this.trashService.isEnabled()) {
       // keepPinOnReap: diverged-replace trashes the only copy of never-pushed
@@ -1042,7 +1094,7 @@ export class WorktreeModeSyncRunner {
             `⚠️ Could not write diverged metadata for trash entry '${entry.manifest.id}': ${getErrorMessage(error)}`,
           ),
       );
-      return { divergedPath: entry.payloadPath, keepRef: null, unregistered: true };
+      return { divergedPath: entry.payloadPath, keepRef: null, unregistered: true, trashEntry: entry };
     }
 
     const divergedBaseDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
@@ -1099,7 +1151,7 @@ export class WorktreeModeSyncRunner {
       throw error;
     }
 
-    return { divergedPath, keepRef, unregistered: false };
+    return { divergedPath, keepRef, unregistered: false, trashEntry: null };
   }
 
   private async writeDivergedInfoFile(
