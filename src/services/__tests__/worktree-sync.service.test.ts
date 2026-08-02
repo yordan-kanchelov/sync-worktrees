@@ -382,7 +382,7 @@ describe("WorktreeSyncService", () => {
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping external worktree"));
     });
 
-    it("does not recreate a branch while a failed diverged replacement remains preserved", async () => {
+    it("does not recreate a branch while a preserved replacement path cannot be verified", async () => {
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
       mockGitService.getWorktrees.mockResolvedValue([]);
       (fs.readdir as Mock<any>).mockImplementation(async (dirPath) =>
@@ -391,11 +391,36 @@ describe("WorktreeSyncService", () => {
       (fs.readFile as Mock<any>).mockResolvedValue(
         JSON.stringify({ originalBranch: "feature-1", originalPath: "/test/worktrees/feature-1" }),
       );
-      (fs.access as Mock<any>).mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+      (fs.access as Mock<any>).mockRejectedValueOnce(Object.assign(new Error("unavailable"), { code: "EACCES" }));
 
       await service.sync();
 
       expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
+    });
+
+    it("does not recreate a trashed replacement when its original path cannot be verified", async () => {
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
+      mockGitService.getWorktrees.mockResolvedValue([]);
+      const listSpy = vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValueOnce({
+        entries: [
+          {
+            manifest: {
+              reason: "diverged-replace",
+              branch: "feature-1",
+              originalPath: "/test/worktrees/feature-1",
+            },
+          } as any,
+        ],
+        invalid: [],
+      });
+      (fs.access as Mock<any>).mockRejectedValueOnce(Object.assign(new Error("unavailable"), { code: "EACCES" }));
+
+      try {
+        await service.sync();
+        expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
+      } finally {
+        listSpy.mockRestore();
+      }
     });
 
     it.each([
@@ -1769,6 +1794,7 @@ describe("WorktreeSyncService", () => {
       expect(parsed.remoteCommit).toBe("remote-commit");
       expect(typeof parsed.divergedAt).toBe("string");
       expect(Number.isNaN(Date.parse(parsed.divergedAt))).toBe(false);
+      expect(mockGitService.getCurrentCommit).not.toHaveBeenCalledWith(expect.stringContaining(".diverged"));
     });
   });
 

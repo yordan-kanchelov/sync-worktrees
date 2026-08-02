@@ -14,6 +14,7 @@ export type RemovalAuditAction =
   | "trash_create"
   | "trash_adopt"
   | "trash_restore"
+  | "trash_purge"
   | "trash_reap";
 
 export interface RemovalAuditEntry {

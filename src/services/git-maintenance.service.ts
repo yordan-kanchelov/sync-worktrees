@@ -139,6 +139,10 @@ export class GitMaintenanceService {
     await this.runUnlocked(now, false);
   }
 
+  /**
+   * Callers must hold the repository operation lock. This intentionally bypasses
+   * isEnabled() and isDue() so an explicit request always attempts maintenance.
+   */
   async runNowUnlocked(now: number = Date.now()): Promise<boolean> {
     return this.runUnlocked(now, true);
   }

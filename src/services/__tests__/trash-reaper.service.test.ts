@@ -126,6 +126,12 @@ describe("TrashReaperService", () => {
     await expect(fs.readFile(path.join(junkDir, "precious.txt"), "utf-8")).resolves.toBe("keep");
     expect(gitStub.updateRef).not.toHaveBeenCalled();
     expect(gitStub.deleteRef).toHaveBeenCalledWith(fresh.manifest.pinRef);
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "trash_purge", result: "attempt", trashId: fresh.manifest.id }),
+    );
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "trash_purge", result: "success", trashId: fresh.manifest.id }),
+    );
   });
 
   it("blocks the delete when the audit attempt cannot be recorded — same gate as the prune flow", async () => {

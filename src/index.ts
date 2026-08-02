@@ -4,6 +4,7 @@ import { realpathSync } from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
+import { input } from "@inquirer/prompts";
 import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG, GIT_CONSTANTS } from "./constants";
@@ -252,6 +253,13 @@ async function runTrash(configPath: string, filter?: string, restoreId?: string,
     return;
   }
   if (dropKeepRef) {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      throw new Error("--dropKeepRef requires an interactive TTY");
+    }
+    const confirmation = await input({ message: `Type '${dropKeepRef}' to confirm deleting this keep ref:` });
+    if (confirmation !== dropKeepRef) {
+      throw new Error("Keep ref deletion was not confirmed");
+    }
     await service.deleteKeepRef(dropKeepRef);
     console.log(`✅ Deleted ${dropKeepRef}`);
     return;

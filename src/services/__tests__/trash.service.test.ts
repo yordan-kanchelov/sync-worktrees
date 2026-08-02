@@ -233,6 +233,22 @@ describe("TrashService", () => {
       await expect(fs.readFile(path.join(source, "file.txt"), "utf-8")).resolves.toBe("data");
       await expect(fs.readdir(service.getTrashRoot())).resolves.toEqual([]);
     });
+
+    it("reports both unregister and rollback failures in the top-level error message", async () => {
+      const source = await makeSourceDir("feature-rollback-fail");
+      gitStub.removeWorktree.mockImplementation(async () => {
+        await fs.rm(worktreeDir, { recursive: true, force: true });
+        throw new Error("registration locked");
+      });
+
+      const error = await service
+        .trashAndUnregisterWorktree({ dirPath: source, branch: "feature-rollback-fail", reason: "prune" })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(TrashOperationError);
+      expect((error as Error).message).toContain("registration locked");
+      expect((error as Error).message).toContain("ENOENT");
+    });
   });
 
   describe("listEntries / summarizeTrashEntries", () => {

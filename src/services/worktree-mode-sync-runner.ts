@@ -60,17 +60,19 @@ export class WorktreeModeSyncRunner {
     await fs.mkdir(this.config.worktreeDir, { recursive: true });
 
     const registeredWorktrees = await this.gitService.getWorktrees();
-    const worktrees = registeredWorktrees.filter((worktree) =>
-      this.pathResolution.isPathInsideBaseDir(worktree.path, this.config.worktreeDir),
-    );
-    const externalBranches = new Set(
-      registeredWorktrees.filter((worktree) => !worktrees.includes(worktree)).map((worktree) => worktree.branch),
-    );
-    this.logger.info(`Found ${worktrees.length} managed Git worktrees.`);
+    const worktrees: typeof registeredWorktrees = [];
+    const externalWorktrees: typeof registeredWorktrees = [];
     for (const worktree of registeredWorktrees) {
-      if (!worktrees.includes(worktree)) {
-        this.logger.warn(`  - Skipping external worktree outside worktreeDir: ${worktree.path}`);
+      if (this.pathResolution.isPathInsideBaseDir(worktree.path, this.config.worktreeDir)) {
+        worktrees.push(worktree);
+      } else {
+        externalWorktrees.push(worktree);
       }
+    }
+    const externalBranches = new Set(externalWorktrees.map((worktree) => worktree.branch));
+    this.logger.info(`Found ${worktrees.length} managed Git worktrees.`);
+    for (const worktree of externalWorktrees) {
+      this.logger.warn(`  - Skipping external worktree outside worktreeDir: ${worktree.path}`);
     }
 
     const syncPlan = createWorktreeSyncPlan(
@@ -168,8 +170,12 @@ export class WorktreeModeSyncRunner {
 
     const { entries } = await this.trashService.listEntries().catch(() => ({ entries: [], invalid: [] }));
     for (const { manifest } of entries) {
-      if (manifest.reason === "diverged-replace" && (await probePathExists(manifest.originalPath)) === "missing") {
-        if (manifest.branch) pending.add(manifest.branch);
+      if (
+        manifest.reason === "diverged-replace" &&
+        manifest.branch &&
+        (await probePathExists(manifest.originalPath)) !== "exists"
+      ) {
+        pending.add(manifest.branch);
       }
     }
 
@@ -185,7 +191,7 @@ export class WorktreeModeSyncRunner {
         if (
           typeof info.originalBranch === "string" &&
           typeof info.originalPath === "string" &&
-          (await probePathExists(info.originalPath)) === "missing"
+          (await probePathExists(info.originalPath)) !== "exists"
         ) {
           pending.add(info.originalBranch);
         }
@@ -1064,7 +1070,7 @@ export class WorktreeModeSyncRunner {
       }
       moved = true;
 
-      await this.writeDivergedInfoFile(divergedPath, worktreePath, branchName, null, keepRef);
+      await this.writeDivergedInfoFile(divergedPath, worktreePath, branchName, localCommit, keepRef);
     } catch (error) {
       if (moved) {
         try {

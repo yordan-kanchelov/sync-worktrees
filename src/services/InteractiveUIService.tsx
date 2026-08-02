@@ -727,14 +727,16 @@ export class InteractiveUIService {
 
   public async getForceCleanPreview(): Promise<ForceCleanRepositoryPreview[]> {
     return Promise.all(
-      this.syncServices.map(async (service, repoIndex) => {
-        const repoName = this.getRepoName(repoIndex);
-        try {
-          return { repoIndex, repoName, preview: await service.getForceCleanPreview() };
-        } catch (error) {
-          return { repoIndex, repoName, error: getErrorMessage(error) };
-        }
-      }),
+      this.syncServices.map((service, repoIndex) =>
+        this.limit(async () => {
+          const repoName = this.getRepoName(repoIndex);
+          try {
+            return { repoIndex, repoName, preview: await service.getForceCleanPreview() };
+          } catch (error) {
+            return { repoIndex, repoName, error: getErrorMessage(error) };
+          }
+        }),
+      ),
     );
   }
 

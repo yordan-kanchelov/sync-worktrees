@@ -772,7 +772,7 @@ describe("GitService", () => {
       expect(mockMetadataService.createInitialMetadataFromPath).toHaveBeenCalled();
     });
 
-    it("clears only the stale target registration, never unrelated worktrees", async () => {
+    it("clears the stale target directory and retries when targeted registration removal fails", async () => {
       const worktreePath = "/test/worktrees/feature-1";
 
       (fs.access as Mock<any>)
@@ -785,7 +785,7 @@ describe("GitService", () => {
         .mockResolvedValueOnce("") // refs/remotes/origin exists
         .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree")) // Initial add fails
         .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\nprunable\n\n`) // Worktree list shows registered but prunable
-        .mockResolvedValueOnce("") // Prune succeeds
+        .mockRejectedValueOnce(new Error("registration locked")) // Targeted removal fails
         .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing on retry
         .mockResolvedValueOnce("") // refs/remotes/origin exists on retry
         .mockResolvedValueOnce("") // Retry add succeeds
@@ -796,6 +796,7 @@ describe("GitService", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
       expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "prune"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", worktreePath]);
+      expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("registration locked"));
       expect(fs.rm).toHaveBeenCalledWith(worktreePath, { recursive: true, force: true });
       expect(mockGit.raw).toHaveBeenCalledWith([
         "worktree",
@@ -806,6 +807,7 @@ describe("GitService", () => {
         worktreePath,
         "origin/feature-1",
       ]);
+      expect(mockLogger.info).toHaveBeenCalledWith("  - Created worktree for 'feature-1' on retry");
     });
 
     it("should handle concurrent creation when worktree is registered AND not prunable", async () => {

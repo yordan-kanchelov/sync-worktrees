@@ -114,9 +114,10 @@ export class TrashReaperService {
         }
       }
 
+      const auditAction = purgeAll ? "trash_purge" : "trash_reap";
       try {
         await this.removalAudit.record({
-          action: "trash_reap",
+          action: auditAction,
           result: "attempt",
           path: entry.manifest.originalPath,
           branch: entry.manifest.branch ?? undefined,
@@ -138,7 +139,7 @@ export class TrashReaperService {
         result.errors.push(`${entry.manifest.id}: ${getErrorMessage(error)}`);
         await this.removalAudit
           .record({
-            action: "trash_reap",
+            action: auditAction,
             result: "failure",
             path: entry.manifest.originalPath,
             trashId: entry.manifest.id,
@@ -171,7 +172,7 @@ export class TrashReaperService {
       }
       await this.removalAudit
         .record({
-          action: "trash_reap",
+          action: auditAction,
           result: "success",
           path: entry.manifest.originalPath,
           trashId: entry.manifest.id,

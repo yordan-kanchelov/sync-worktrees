@@ -604,7 +604,13 @@ export class GitService {
         }
 
         this.logger.warn(`  - Worktree already registered but missing. Removing that registration and retrying...`);
-        await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
+        try {
+          await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
+        } catch (removalError) {
+          this.logger.warn(
+            `  - Failed to remove stale registration for '${absoluteWorktreePath}': ${getErrorMessage(removalError)}. Continuing with directory cleanup and retry.`,
+          );
+        }
         await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
         let retryCreatedNewBranch = false;
         try {
@@ -616,7 +622,7 @@ export class GitService {
             localBranchExists,
             remoteBranchExists,
           );
-          this.logger.info(`  - Created worktree for '${branchName}' after pruning`);
+          this.logger.info(`  - Created worktree for '${branchName}' on retry`);
 
           if (!this.isLfsSkipEnabled()) {
             await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
@@ -631,7 +637,7 @@ export class GitService {
           }
           return;
         } catch (retryError) {
-          this.logger.error(`  - Failed to create worktree after pruning: ${retryError}`);
+          this.logger.error(`  - Failed to create worktree on retry: ${retryError}`);
           throw retryError;
         }
       }

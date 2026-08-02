@@ -304,7 +304,7 @@ export class TrashService {
       } catch (rollbackError) {
         throw new TrashOperationError(
           "unregister-worktree",
-          `cannot unregister '${options.dirPath}' and rollback also failed: ${getErrorMessage(rollbackError)}`,
+          `cannot unregister '${options.dirPath}': ${getErrorMessage(error)}; rollback also failed: ${getErrorMessage(rollbackError)}`,
           error instanceof Error ? error : undefined,
         );
       }

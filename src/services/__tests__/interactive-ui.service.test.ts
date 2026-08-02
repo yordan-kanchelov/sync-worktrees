@@ -2320,6 +2320,28 @@ describe("InteractiveUIService", () => {
     });
 
     describe("force clean", () => {
+      it("limits preview work across repositories", async () => {
+        let concurrent = 0;
+        let maxConcurrent = 0;
+        const services = [1, 2, 3].map((id) => ({
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: `repo-${id}` },
+          getForceCleanPreview: vi.fn<any>().mockImplementation(async () => {
+            concurrent++;
+            maxConcurrent = Math.max(maxConcurrent, concurrent);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            concurrent--;
+            return { trashEntries: 0, trashBytes: 0, unknownTrashSizes: 0, invalidTrashEntries: 0, keepRefs: 0 };
+          }),
+        }));
+        const ui = new InteractiveUIService(services as any, undefined, undefined, 1);
+
+        await ui.getForceCleanPreview();
+
+        expect(maxConcurrent).toBe(1);
+        ui.destroy();
+      });
+
       it("previews and cleans every configured repository while preserving partial failures", async () => {
         const failingService = {
           ...mockSyncService,
