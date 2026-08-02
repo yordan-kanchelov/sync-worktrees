@@ -694,6 +694,57 @@ describe("WorktreeStatusView", () => {
       expect(deleteMock).toHaveBeenCalledWith(0, "2024-01-15-feature-x-abc123");
     });
 
+    // The confirmation stays on screen until the delete resolves, so without a
+    // guard every extra keypress fires another delete for the same directory —
+    // each one queuing on the repository lock behind the first.
+    it("ignores further keys while a delete is in flight", async () => {
+      let resolveDelete: () => void = () => undefined;
+      const deleteMock = vi.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveDelete = resolve;
+          }),
+      );
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        getWorktreeStatusForRepo: vi.fn().mockResolvedValue([makeEntry("main")]),
+        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
+        deleteDivergedDirectory: deleteMock,
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      stdin.write("[B");
+      await waitForStateUpdate();
+      stdin.write("[B");
+      await waitForStateUpdate();
+
+      stdin.write("d");
+      await waitForStateUpdate();
+
+      stdin.write("y");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Deleting");
+
+      stdin.write("y");
+      await waitForStateUpdate();
+      stdin.write("y");
+      await waitForStateUpdate();
+      expect(deleteMock).toHaveBeenCalledTimes(1);
+
+      // Escape must not drop the confirmation out from under a running delete
+      // either, or the next `d` would show "Deleting..." on an unrelated entry.
+      stdin.write("");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Deleting");
+
+      resolveDelete();
+      await waitForStateUpdate();
+    });
+
     it("should cancel delete on n key", async () => {
       const deleteMock = vi.fn().mockResolvedValue(undefined);
       const singleRepoProps: WorktreeStatusViewProps = {

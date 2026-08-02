@@ -283,6 +283,13 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const isDivergedSelected = selectedItem?.type === "diverged";
 
   useInput((input, key) => {
+    // The confirmation stays up until the delete resolves, so without this the
+    // repeat of an impatient `y` fires another removal for the same directory
+    // (each queuing on the repo lock), and `n`/ESC hands the list back while a
+    // delete is still running — leaving the next confirmation showing
+    // "Deleting..." for an entry nothing is deleting.
+    if (deleting) return;
+
     if (confirmDelete !== null) {
       if (input === "y" || input === "Y") {
         const item = combinedList[confirmDelete];
