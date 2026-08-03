@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Box, useInput, useWindowSize } from "ink";
+import { Box, useInput, useStdout, useWindowSize } from "ink";
 import StatusBar from "./StatusBar";
 import HelpModal from "./HelpModal";
 import BranchCreationWizard from "./BranchCreationWizard";
@@ -7,6 +7,7 @@ import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
 import ForceCleanModal from "./ForceCleanModal";
 import LogPanel from "./LogPanel";
+import { MOUSE_TRACKING_DISABLE, MOUSE_TRACKING_ENABLE, isMouseSequence } from "../utils/mouse";
 import type { AppEventEmitter } from "../utils/app-events";
 import type { AppSyncProgress } from "../utils/app-events";
 import type {
@@ -53,7 +54,7 @@ export interface AppProps {
   getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
   deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
   getForceCleanPreview?: () => Promise<ForceCleanRepositoryPreview[]>;
-  forceClean?: () => Promise<ForceCleanRepositoryResult[]>;
+  forceClean?: (repoIndexes: number[]) => Promise<ForceCleanRepositoryResult[]>;
 }
 
 export interface LogEntry {
@@ -109,6 +110,16 @@ const App: React.FC<AppProps> = ({
   const [schedule, setSchedule] = useState(cronSchedule);
 
   const { rows } = useWindowSize();
+  const { write } = useStdout();
+
+  // Terminals only report the wheel while tracking is on, and it must be turned
+  // back off on exit or the shell inherits a terminal that swallows clicks.
+  useEffect(() => {
+    write(MOUSE_TRACKING_ENABLE);
+    return () => {
+      write(MOUSE_TRACKING_DISABLE);
+    };
+  }, [write]);
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     setLogs((prev) => {
@@ -132,6 +143,10 @@ const App: React.FC<AppProps> = ({
   addLogRef.current = addLog;
 
   useInput((input, key) => {
+    // Mouse reports reach every useInput; only the scrollable panel acts on
+    // them, and no shortcut here should fire off a stray click.
+    if (isMouseSequence(input)) return;
+
     if (showHelp) {
       if (input === "?" || input === "h" || key.escape) {
         setShowHelp(false);
@@ -177,12 +192,6 @@ const App: React.FC<AppProps> = ({
       })().catch((err) => console.error("Reload unhandled error:", err));
     }
   });
-
-  const updateLastSyncTime = useCallback(() => {
-    setLastSyncTime(new Date());
-    setStatus("idle");
-    setSyncProgressEntries([]);
-  }, []);
 
   useEffect(() => {
     const unsubscribers = [

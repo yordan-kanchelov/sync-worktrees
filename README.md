@@ -291,11 +291,13 @@ Running `sync-worktrees` without `runOnce` drops you into an interactive termina
 | `c`         | Create a new branch (wizard)                   |
 | `o`         | Open a worktree in terminal or editor (wizard) |
 | `w`         | View worktree status across repos              |
+| `x`         | Force clean trash, recovery refs, and objects  |
 | `r`         | Reload configuration and re-sync               |
 | `?` / `h`   | Toggle help screen                             |
 | `q` / `Esc` | Gracefully quit                                |
 | `j` / `↓`   | Scroll log down one line                       |
 | `k` / `↑`   | Scroll log up one line                         |
+| wheel       | Scroll the log (hold `Shift` to select text)   |
 | `gg`        | Jump to top of log                             |
 | `G`         | Jump to bottom (re-enables auto-scroll)        |
 

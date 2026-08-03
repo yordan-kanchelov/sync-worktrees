@@ -1,6 +1,11 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
+import { parseWheelEvent } from "../utils/mouse";
 import type { LogEntry } from "./App";
+
+// One notch of the wheel moves this many lines. Matches what most terminals
+// send per detent, so a flick covers ground without overshooting.
+const WHEEL_LINES = 3;
 
 export interface LogPanelProps {
   logs: LogEntry[];
@@ -33,9 +38,38 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
     };
   }, []);
 
+  // Scrolling to the bottom re-arms auto-scroll, anywhere above it parks there
+  // until the reader chooses to come back.
+  const scrollBy = useCallback(
+    (delta: number) => {
+      if (delta < 0) setAutoScroll(false);
+      setScrollOffset((prev) => {
+        const next = Math.min(maxOffset, Math.max(0, prev + delta));
+        if (next >= maxOffset) setAutoScroll(true);
+        return next;
+      });
+    },
+    [maxOffset],
+  );
+
   useInput(
     (input, key) => {
       if (!isActive) return;
+
+      // Vim motions and arrows suit some people; the wheel is for everyone
+      // else. Ink delivers the whole mouse report as one `input` string, so it
+      // is parsed here rather than through a separate stdin listener.
+      const wheel = parseWheelEvent(input);
+      if (wheel === "up") {
+        scrollBy(-WHEEL_LINES);
+        setPendingG(false);
+        return;
+      }
+      if (wheel === "down") {
+        scrollBy(WHEEL_LINES);
+        setPendingG(false);
+        return;
+      }
 
       if (key.upArrow || input === "k") {
         setScrollOffset((prev) => Math.max(0, prev - 1));

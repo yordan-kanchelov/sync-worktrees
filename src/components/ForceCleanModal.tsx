@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { isMouseSequence } from "../utils/mouse";
 
 import { formatBytes } from "../utils/disk-space";
 
@@ -7,7 +8,7 @@ import type { ForceCleanRepositoryPreview, ForceCleanRepositoryResult } from "..
 
 export interface ForceCleanModalProps {
   getPreview: () => Promise<ForceCleanRepositoryPreview[]>;
-  forceClean: () => Promise<ForceCleanRepositoryResult[]>;
+  forceClean: (repoIndexes: number[]) => Promise<ForceCleanRepositoryResult[]>;
   onClose: () => void;
 }
 
@@ -50,6 +51,10 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
   );
 
   useInput((input, key) => {
+    // Mouse reports arrive as a single `input` string; ignore them here so a
+    // scroll never registers as a keystroke.
+    if (isMouseSequence(input)) return;
+
     if (cleaning) return;
     if (results !== null) {
       if (key.escape || key.return || input === "q") onClose();
@@ -59,7 +64,9 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
       onClose();
     } else if ((input === "y" || input === "Y") && !loading && !error) {
       setCleaning(true);
-      forceClean()
+      // Only the repos whose counts are on screen — a repo whose preview failed
+      // was never shown a number, so it must not be purged on this confirmation.
+      forceClean(previews.filter((row) => row.preview).map((row) => row.repoIndex))
         .then(setResults)
         .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
         .finally(() => setCleaning(false));
@@ -106,6 +113,9 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
               <Text key={row.repoIndex} color={row.result.errors.length > 0 ? "yellow" : "green"}>
                 {row.repoName}: deleted {row.result.trashDeleted} trash and {row.result.keepRefsDeleted} refs; GC{" "}
                 {row.result.gcSucceeded ? "complete" : "failed"}
+                {row.result.keepRefsRetained > 0
+                  ? `; kept ${row.result.keepRefsRetained} ref(s) still backing a .diverged copy`
+                  : ""}
                 {row.result.errors.length > 0 ? ` (${row.result.errors.join("; ")})` : ""}
               </Text>
             ) : (

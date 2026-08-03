@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
+import { isMouseSequence } from "../utils/mouse";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
 import type {
@@ -283,6 +284,17 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const isDivergedSelected = selectedItem?.type === "diverged";
 
   useInput((input, key) => {
+    // Filters here append any printable `input`, and Ink hands mouse reports
+    // through as one. Without this a scroll lands in the filter box as garbage.
+    if (isMouseSequence(input)) return;
+
+    // The confirmation stays up until the delete resolves, so without this the
+    // repeat of an impatient `y` fires another removal for the same directory
+    // (each queuing on the repo lock), and `n`/ESC hands the list back while a
+    // delete is still running — leaving the next confirmation showing
+    // "Deleting..." for an entry nothing is deleting.
+    if (deleting) return;
+
     if (confirmDelete !== null) {
       if (input === "y" || input === "Y") {
         const item = combinedList[confirmDelete];

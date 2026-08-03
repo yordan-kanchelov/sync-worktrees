@@ -298,19 +298,49 @@ describe("TrashService", () => {
       await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [entry.containerPath] });
     });
 
+    // Restore is the only writer of originalPath, so that is where an escaping
+    // destination has to be refused. The entry itself stays listable and
+    // reapable — marking it invalid would leak its payload and pin forever.
     it("rejects restore destinations that escape worktreeDir through a symlinked parent", async () => {
       const source = await makeSourceDir("escaped-restore");
       const entry = await service.trashDirectory({ dirPath: source, reason: "manual" });
       const outsideDir = await createTempDirectory();
       const linkedParent = path.join(worktreeDir, "outside-link");
       await fs.symlink(outsideDir, linkedParent);
+      const escapedPath = path.join(linkedParent, "restored");
       const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
-      await fs.writeFile(
-        manifestPath,
-        JSON.stringify({ ...entry.manifest, originalPath: path.join(linkedParent, "restored") }),
+      await fs.writeFile(manifestPath, JSON.stringify({ ...entry.manifest, originalPath: escapedPath }));
+
+      await expect(service.restore(entry.manifest.id)).rejects.toThrow(/outside worktreeDir/);
+      await expect(fs.access(escapedPath)).rejects.toThrow();
+
+      const listed = await service.listEntries();
+      expect(listed.invalid).toEqual([]);
+      expect(listed.entries.map((e) => e.manifest.id)).toEqual([entry.manifest.id]);
+    });
+
+    // Relocating worktreeDir moves .trash with it. The entries inside are still
+    // ours and must keep ageing out — an entry that reads as "invalid" is never
+    // reaped and its pin ref is never released, so the disk and the object store
+    // both leak permanently.
+    it("keeps recognizing its own entries after worktreeDir is relocated", async () => {
+      const source = await makeSourceDir("relocated");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "relocated", reason: "prune" });
+
+      const movedDir = `${worktreeDir}-moved`;
+      await fs.rename(worktreeDir, movedDir);
+      const movedService = new TrashService(
+        { ...config, worktreeDir: movedDir },
+        gitStub as unknown as GitService,
+        logger,
+        audit as unknown as RemovalAuditService,
       );
 
-      await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [entry.containerPath] });
+      const listed = await movedService.listEntries();
+
+      expect(listed.invalid).toEqual([]);
+      expect(listed.entries.map((e) => e.manifest.id)).toEqual([entry.manifest.id]);
+      await fs.rename(movedDir, worktreeDir);
     });
 
     it("returns empty results when no trash root exists yet", async () => {
