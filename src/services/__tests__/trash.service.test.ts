@@ -329,18 +329,23 @@ describe("TrashService", () => {
 
       const movedDir = `${worktreeDir}-moved`;
       await fs.rename(worktreeDir, movedDir);
-      const movedService = new TrashService(
-        { ...config, worktreeDir: movedDir },
-        gitStub as unknown as GitService,
-        logger,
-        audit as unknown as RemovalAuditService,
-      );
+      // Restore in `finally`: a failed assertion here would otherwise leave the
+      // fixture relocated and take the rest of the suite down with it.
+      try {
+        const movedService = new TrashService(
+          { ...config, worktreeDir: movedDir },
+          gitStub as unknown as GitService,
+          logger,
+          audit as unknown as RemovalAuditService,
+        );
 
-      const listed = await movedService.listEntries();
+        const listed = await movedService.listEntries();
 
-      expect(listed.invalid).toEqual([]);
-      expect(listed.entries.map((e) => e.manifest.id)).toEqual([entry.manifest.id]);
-      await fs.rename(movedDir, worktreeDir);
+        expect(listed.invalid).toEqual([]);
+        expect(listed.entries.map((e) => e.manifest.id)).toEqual([entry.manifest.id]);
+      } finally {
+        await fs.rename(movedDir, worktreeDir);
+      }
     });
 
     it("returns empty results when no trash root exists yet", async () => {

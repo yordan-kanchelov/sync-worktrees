@@ -27,6 +27,11 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    // `readdir` resolves to an array or throws; it never resolves to undefined.
+    // These suites reach it through the trash listing even when they only care
+    // about update behaviour.
+    (fs.readdir as Mock<any>).mockResolvedValue([]);
+
     mockLogger = createMockLogger();
 
     mockConfig = {
@@ -216,8 +221,11 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       // Simulate that age filtering removed all but (intentionally) not returning main
       (mockGitService.getRemoteBranches as Mock).mockResolvedValue(["feature", "develop"]);
 
-      // Pretend worktreeDir contains main only
-      (fs.readdir as Mock<any>).mockResolvedValue(["main"]);
+      // Pretend worktreeDir contains main only. The trash root is read with
+      // `withFileTypes` and must not be handed these plain names.
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) =>
+        String(dirPath).endsWith(".trash") ? [] : ["main"],
+      );
 
       await service.sync();
 
