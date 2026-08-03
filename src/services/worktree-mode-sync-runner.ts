@@ -222,7 +222,11 @@ export class WorktreeModeSyncRunner {
     // cannot expire is a branch that stops syncing for good.
     if (!this.trashService.isEnabled()) return pending;
 
-    const { entries } = await this.trashService.listEntries().catch(() => ({ entries: [], invalid: [] }));
+    // Deliberately unguarded: `listEntries` already returns an empty list for an
+    // absent trash root, so anything thrown here means the root exists and could
+    // not be read. Swallowing that reads as "nothing reserved" and lets sync take
+    // a path a payload is still waiting on, so the sync fails loudly instead.
+    const { entries } = await this.trashService.listEntries();
     for (const { manifest } of entries) {
       if (
         manifest.reason === "diverged-replace" &&
@@ -1169,10 +1173,17 @@ export class WorktreeModeSyncRunner {
       localCommit: knownLocalCommit ?? (await this.gitService.getCurrentCommit(preservedPath)),
       remoteCommit: await this.gitService.getRemoteCommit(`origin/${branchName}`),
       keepRef,
+      // Two preservation mechanisms, two different ways back. A trashed copy is
+      // restored through the trash CLI and has no keep ref to release; a
+      // `.diverged/` copy is held only by its keep ref.
       instruction: `To preserve your changes:
   1. Review: git diff origin/${branchName}
   2. Keep changes: git push --force-with-lease origin ${branchName}
-  3. Discard changes: use the TUI worktree status view so the keep ref is released safely
+  3. Discard changes: ${
+    keepRef
+      ? "use the TUI worktree status view so the keep ref is released safely"
+      : `restore it first with 'sync-worktrees trash --restore' if you want it back, then delete the entry`
+  }
 
   Original worktree location: ${originalPath}`,
     };

@@ -107,6 +107,11 @@ describe("WorktreeSyncService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    // `readdir` resolves to an array or throws; it never resolves to undefined.
+    // Suites that don't care about directory contents still reach it through the
+    // trash listing, and an undefined default made that read as a hard failure.
+    (fs.readdir as Mock<any>).mockResolvedValue([]);
+
     handleWrites = [];
     (fs.open as Mock<any>).mockImplementation(async (filePath: unknown) => ({
       writeFile: vi.fn(async (content: string) => {
@@ -499,6 +504,30 @@ describe("WorktreeSyncService", () => {
       try {
         await service.sync();
         expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", wtPath("/test/worktrees", "feature-1"));
+      } finally {
+        listSpy.mockRestore();
+      }
+    });
+
+    // `listEntries` already returns an empty list when the trash root is absent,
+    // so a rejection means the root exists and could not be read. Reading that
+    // as "nothing is reserved" lets sync take a path whose payload is still
+    // waiting to be restored there, and the restore later fails with
+    // "destination already exists" — with the only copy of the work inside.
+    it("aborts the sync when the trash listing fails", async () => {
+      await useTrashEnabledService();
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
+      mockGitService.getWorktrees.mockResolvedValue([]);
+      const listSpy = vi
+        .spyOn(TrashService.prototype, "listEntries")
+        .mockRejectedValue(Object.assign(new Error("permission denied"), { code: "EACCES" }));
+
+      try {
+        await expect(service.sync()).rejects.toThrow("permission denied");
+        expect(mockGitService.addWorktree).not.toHaveBeenCalledWith(
+          "feature-1",
+          wtPath("/test/worktrees", "feature-1"),
+        );
       } finally {
         listSpy.mockRestore();
       }
@@ -1658,6 +1687,9 @@ describe("WorktreeSyncService", () => {
           error.code = "ENOENT";
           throw error;
         }
+        // The trash root is read with `withFileTypes`, so returning names here
+        // would hand the listing strings where it expects Dirents.
+        if ((dirPath as string).endsWith(".trash")) return [];
         return ["feature-1"];
       });
 
@@ -1899,6 +1931,52 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
       // The replacement exists now, so the entry must stop reserving the branch.
       expect(JSON.parse(manifestWrite!.content).replacedAt).toEqual(expect.any(String));
+    });
+
+    function findDivergedInfoWrite(): { path: string; info: any } | undefined {
+      const calls = (fs.writeFile as Mock<any>).mock.calls as unknown[][];
+      const call = calls.filter((args) => String(args[0]).endsWith(".diverged-info.json")).pop();
+      return call ? { path: String(call[0]), info: JSON.parse(String(call[1])) } : undefined;
+    }
+
+    // The metadata file is what a user reads to get their work back. With trash
+    // on there is no keep ref to release, so pointing them at the keep-ref flow
+    // sends them looking for something that was never created.
+    it("points a trashed diverged copy at the trash restore flow, not the keep ref", async () => {
+      service = new WorktreeSyncService({ ...mockConfig, trash: undefined });
+
+      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+      mockGitService.getWorktreeMetadata.mockResolvedValue({ lastSyncCommit: "old-commit" } as any);
+      mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+
+      await service.sync();
+
+      const written = findDivergedInfoWrite();
+      expect(written).toBeDefined();
+      expect(written!.info.keepRef).toBeNull();
+      expect(written!.info.instruction).toContain("trash --restore");
+      expect(written!.info.instruction).not.toContain("keep ref");
+    });
+
+    // With trash off the keep ref really is the only thing holding the commits,
+    // and releasing it by hand is what loses them.
+    it("points a .diverged copy at the keep-ref release flow", async () => {
+      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+      mockGitService.getWorktreeMetadata.mockResolvedValue({ lastSyncCommit: "old-commit" } as any);
+      mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+
+      await service.sync();
+
+      const written = findDivergedInfoWrite();
+      expect(written).toBeDefined();
+      expect(written!.info.keepRef).toEqual(expect.stringContaining("refs/sync-worktrees/keep/"));
+      expect(written!.info.instruction).toContain("keep ref");
     });
 
     it("should skip diverged branch handling when local is ahead of remote", async () => {
