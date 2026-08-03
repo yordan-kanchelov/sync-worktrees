@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useReducer } from "react";
 import { Box, Text, useInput } from "ink";
 import { parseWheelEvent } from "../utils/mouse";
 import type { LogEntry } from "./App";
@@ -7,6 +7,37 @@ import type { LogEntry } from "./App";
 // send per detent, so a flick covers ground without overshooting.
 const WHEEL_LINES = 3;
 
+// Following the tail and sitting at a chosen offset are one piece of state, not
+// two: every position implies whether new entries should pull the view along.
+// Keeping them separate meant writing both from one keystroke, and computing the
+// second from inside the first's updater — updaters have to be pure, and React
+// is free to re-run them.
+//
+// `offset` is only meaningful while parked. In follow mode the render derives the
+// offset from the current maxOffset, so a resize or a burst of new entries can
+// never leave the view pointing past the end.
+type ScrollState = { follow: boolean; offset: number };
+
+type ScrollAction =
+  | { type: "by"; delta: number; maxOffset: number }
+  | { type: "top" }
+  | { type: "bottom"; maxOffset: number };
+
+function scrollReducer(state: ScrollState, action: ScrollAction): ScrollState {
+  switch (action.type) {
+    case "top":
+      return { follow: false, offset: 0 };
+    case "bottom":
+      return { follow: true, offset: action.maxOffset };
+    case "by": {
+      const from = state.follow ? action.maxOffset : Math.min(state.offset, action.maxOffset);
+      const next = Math.min(action.maxOffset, Math.max(0, from + action.delta));
+      // Landing on the last line re-arms following: the reader chose to come back.
+      return { follow: next >= action.maxOffset, offset: next };
+    }
+  }
+}
+
 export interface LogPanelProps {
   logs: LogEntry[];
   height: number;
@@ -14,8 +45,7 @@ export interface LogPanelProps {
 }
 
 const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
-  const [scrollOffset, setScrollOffset] = useState(0);
-  const [autoScroll, setAutoScroll] = useState(true);
+  const [scroll, dispatch] = useReducer(scrollReducer, { follow: true, offset: 0 });
   const [pendingG, setPendingG] = useState(false);
   const gTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -24,11 +54,10 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
   const visibleLines = Math.max(1, height - borderLines - headerLine);
   const maxOffset = Math.max(0, logs.length - visibleLines);
 
-  useEffect(() => {
-    if (autoScroll) {
-      setScrollOffset(maxOffset);
-    }
-  }, [logs.length, maxOffset, autoScroll]);
+  // Derived, never stored: following always renders the tail, and a parked
+  // offset is clamped to whatever the panel can currently show.
+  const scrollOffset = scroll.follow ? maxOffset : Math.min(scroll.offset, maxOffset);
+  const autoScroll = scroll.follow;
 
   useEffect(() => {
     return () => {
@@ -38,19 +67,7 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
     };
   }, []);
 
-  // Scrolling to the bottom re-arms auto-scroll, anywhere above it parks there
-  // until the reader chooses to come back.
-  const scrollBy = useCallback(
-    (delta: number) => {
-      if (delta < 0) setAutoScroll(false);
-      setScrollOffset((prev) => {
-        const next = Math.min(maxOffset, Math.max(0, prev + delta));
-        if (next >= maxOffset) setAutoScroll(true);
-        return next;
-      });
-    },
-    [maxOffset],
-  );
+  const scrollBy = (delta: number): void => dispatch({ type: "by", delta, maxOffset });
 
   useInput(
     (input, key) => {
@@ -72,36 +89,21 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
       }
 
       if (key.upArrow || input === "k") {
-        setScrollOffset((prev) => Math.max(0, prev - 1));
-        setAutoScroll(false);
+        scrollBy(-1);
         setPendingG(false);
       } else if (key.downArrow || input === "j") {
-        setScrollOffset((prev) => {
-          const newOffset = Math.min(maxOffset, prev + 1);
-          if (newOffset >= maxOffset) {
-            setAutoScroll(true);
-          }
-          return newOffset;
-        });
+        scrollBy(1);
         setPendingG(false);
       } else if (key.pageUp) {
-        setScrollOffset((prev) => Math.max(0, prev - visibleLines));
-        setAutoScroll(false);
+        scrollBy(-visibleLines);
         setPendingG(false);
       } else if (key.pageDown) {
-        setScrollOffset((prev) => {
-          const newOffset = Math.min(maxOffset, prev + visibleLines);
-          if (newOffset >= maxOffset) {
-            setAutoScroll(true);
-          }
-          return newOffset;
-        });
+        scrollBy(visibleLines);
         setPendingG(false);
       } else if (input === "g") {
         if (pendingG) {
           // gg - go to top
-          setScrollOffset(0);
-          setAutoScroll(false);
+          dispatch({ type: "top" });
           setPendingG(false);
           if (gTimeoutRef.current) {
             clearTimeout(gTimeoutRef.current);
@@ -114,8 +116,7 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
           }, 500);
         }
       } else if (input === "G") {
-        setScrollOffset(maxOffset);
-        setAutoScroll(true);
+        dispatch({ type: "bottom", maxOffset });
         setPendingG(false);
       }
     },

@@ -170,6 +170,27 @@ describe("LogPanel", () => {
       expect(lastFrame()).toContain("(auto)");
     });
 
+    // Growing the terminal shrinks maxOffset. A parked offset left above the new
+    // maximum shows a part-empty panel the reader cannot scroll further down
+    // from, in a window that is now tall enough to show everything below it.
+    it("keeps a parked offset within range when the panel grows", async () => {
+      const { stdin, lastFrame, rerender } = render(
+        <LogPanel {...defaultProps} logs={manyLogs()} height={10} />,
+      );
+      await waitForStateUpdate();
+
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("(auto)");
+
+      // 7 visible lines -> 27, so the last 27 entries now fit on screen.
+      rerender(<LogPanel {...defaultProps} logs={manyLogs()} height={30} />);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Log 13");
+      expect(lastFrame()).toContain("Log 39");
+    });
+
     it("stays inert while the panel is not active", async () => {
       const { stdin, lastFrame } = render(
         <LogPanel {...defaultProps} logs={manyLogs()} height={10} isActive={false} />,
