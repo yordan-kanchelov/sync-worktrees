@@ -205,6 +205,23 @@ describe("LogPanel", () => {
   });
 
   describe("keyboard navigation", () => {
+    it("cancels an old g timer before starting a new gg sequence", async () => {
+      const logs = Array.from({ length: 40 }, (_, i) => createLog(`${i}`, `Log ${i}`));
+      const { stdin, lastFrame } = render(<LogPanel {...defaultProps} logs={logs} height={10} />);
+
+      stdin.write("g");
+      await waitForStateUpdate();
+      stdin.write("\u001B[A");
+      await waitForStateUpdate();
+      stdin.write("g");
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      stdin.write("g");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Log 0");
+      expect(lastFrame()).not.toContain("more above");
+    });
+
     it("should scroll up with up arrow key", async () => {
       const logs = Array.from({ length: 20 }, (_, i) => createLog(`${i}`, `Log ${i}`));
       const props = {

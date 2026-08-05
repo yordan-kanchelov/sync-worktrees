@@ -68,6 +68,13 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
   }, []);
 
   const scrollBy = (delta: number): void => dispatch({ type: "by", delta, maxOffset });
+  const cancelPendingG = (): void => {
+    setPendingG(false);
+    if (gTimeoutRef.current) {
+      clearTimeout(gTimeoutRef.current);
+      gTimeoutRef.current = null;
+    }
+  };
 
   useInput(
     (input, key) => {
@@ -79,45 +86,42 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
       const wheel = parseWheelEvent(input);
       if (wheel === "up") {
         scrollBy(-WHEEL_LINES);
-        setPendingG(false);
+        cancelPendingG();
         return;
       }
       if (wheel === "down") {
         scrollBy(WHEEL_LINES);
-        setPendingG(false);
+        cancelPendingG();
         return;
       }
 
       if (key.upArrow || input === "k") {
         scrollBy(-1);
-        setPendingG(false);
+        cancelPendingG();
       } else if (key.downArrow || input === "j") {
         scrollBy(1);
-        setPendingG(false);
+        cancelPendingG();
       } else if (key.pageUp) {
         scrollBy(-visibleLines);
-        setPendingG(false);
+        cancelPendingG();
       } else if (key.pageDown) {
         scrollBy(visibleLines);
-        setPendingG(false);
+        cancelPendingG();
       } else if (input === "g") {
         if (pendingG) {
           // gg - go to top
           dispatch({ type: "top" });
-          setPendingG(false);
-          if (gTimeoutRef.current) {
-            clearTimeout(gTimeoutRef.current);
-            gTimeoutRef.current = null;
-          }
+          cancelPendingG();
         } else {
           setPendingG(true);
           gTimeoutRef.current = setTimeout(() => {
             setPendingG(false);
+            gTimeoutRef.current = null;
           }, 500);
         }
       } else if (input === "G") {
         dispatch({ type: "bottom", maxOffset });
-        setPendingG(false);
+        cancelPendingG();
       }
     },
     { isActive },
