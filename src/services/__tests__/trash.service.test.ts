@@ -221,6 +221,34 @@ describe("TrashService", () => {
       await expect(fs.access(entry.payloadPath)).resolves.toBeUndefined();
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Leftover branch ref"));
     });
+
+    it("restores the source when unregistering fails, so a partial removal never hides the worktree", async () => {
+      const source = await makeSourceDir("feature-rollback");
+      gitStub.removeWorktree.mockRejectedValue(new Error("registration locked"));
+
+      await expect(
+        service.trashAndUnregisterWorktree({ dirPath: source, branch: "feature-rollback", reason: "prune" }),
+      ).rejects.toThrow("restored the directory to its original path");
+
+      await expect(fs.readFile(path.join(source, "file.txt"), "utf-8")).resolves.toBe("data");
+      await expect(fs.readdir(service.getTrashRoot())).resolves.toEqual([]);
+    });
+
+    it("reports both unregister and rollback failures in the top-level error message", async () => {
+      const source = await makeSourceDir("feature-rollback-fail");
+      gitStub.removeWorktree.mockImplementation(async () => {
+        await fs.rm(worktreeDir, { recursive: true, force: true });
+        throw new Error("registration locked");
+      });
+
+      const error = await service
+        .trashAndUnregisterWorktree({ dirPath: source, branch: "feature-rollback-fail", reason: "prune" })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(TrashOperationError);
+      expect((error as Error).message).toContain("registration locked");
+      expect((error as Error).message).toContain("ENOENT");
+    });
   });
 
   describe("listEntries / summarizeTrashEntries", () => {
@@ -244,6 +272,80 @@ describe("TrashService", () => {
       expect(summary.soonestExpiresAt).toBe(
         entries.map((entry) => entry.manifest.expiresAt).sort((a, b) => a.localeCompare(b))[0],
       );
+    });
+
+    it("rejects a manifest whose pin ref escapes this entry's namespace", async () => {
+      const source = await makeSourceDir("bad-pin");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "bad-pin", reason: "manual" });
+      const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
+      await fs.writeFile(manifestPath, JSON.stringify({ ...entry.manifest, pinRef: "refs/heads/main" }));
+
+      const listed = await service.listEntries();
+
+      expect(listed.entries).toEqual([]);
+      expect(listed.invalid).toEqual([entry.containerPath]);
+    });
+
+    it("rejects keep-on-reap manifests without a pinned HEAD", async () => {
+      const source = await makeSourceDir("missing-keep-pin");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "missing-keep-pin", reason: "manual" });
+      const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
+      await fs.writeFile(
+        manifestPath,
+        JSON.stringify({ ...entry.manifest, keepPinOnReap: true, headOid: null, pinRef: null }),
+      );
+
+      await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [entry.containerPath] });
+    });
+
+    // Restore is the only writer of originalPath, so that is where an escaping
+    // destination has to be refused. The entry itself stays listable and
+    // reapable — marking it invalid would leak its payload and pin forever.
+    it("rejects restore destinations that escape worktreeDir through a symlinked parent", async () => {
+      const source = await makeSourceDir("escaped-restore");
+      const entry = await service.trashDirectory({ dirPath: source, reason: "manual" });
+      const outsideDir = await createTempDirectory();
+      const linkedParent = path.join(worktreeDir, "outside-link");
+      await fs.symlink(outsideDir, linkedParent);
+      const escapedPath = path.join(linkedParent, "restored");
+      const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
+      await fs.writeFile(manifestPath, JSON.stringify({ ...entry.manifest, originalPath: escapedPath }));
+
+      await expect(service.restore(entry.manifest.id)).rejects.toThrow(/outside worktreeDir/);
+      await expect(fs.access(escapedPath)).rejects.toThrow();
+
+      const listed = await service.listEntries();
+      expect(listed.invalid).toEqual([]);
+      expect(listed.entries.map((e) => e.manifest.id)).toEqual([entry.manifest.id]);
+    });
+
+    // Relocating worktreeDir moves .trash with it. The entries inside are still
+    // ours and must keep ageing out — an entry that reads as "invalid" is never
+    // reaped and its pin ref is never released, so the disk and the object store
+    // both leak permanently.
+    it("keeps recognizing its own entries after worktreeDir is relocated", async () => {
+      const source = await makeSourceDir("relocated");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "relocated", reason: "prune" });
+
+      const movedDir = `${worktreeDir}-moved`;
+      await fs.rename(worktreeDir, movedDir);
+      // Restore in `finally`: a failed assertion here would otherwise leave the
+      // fixture relocated and take the rest of the suite down with it.
+      try {
+        const movedService = new TrashService(
+          { ...config, worktreeDir: movedDir },
+          gitStub as unknown as GitService,
+          logger,
+          audit as unknown as RemovalAuditService,
+        );
+
+        const listed = await movedService.listEntries();
+
+        expect(listed.invalid).toEqual([]);
+        expect(listed.entries.map((e) => e.manifest.id)).toEqual([entry.manifest.id]);
+      } finally {
+        await fs.rename(movedDir, worktreeDir);
+      }
     });
 
     it("returns empty results when no trash root exists yet", async () => {

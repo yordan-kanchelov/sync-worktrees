@@ -90,6 +90,16 @@ describe("GitMaintenanceService", () => {
       await expect(readState(statePath)).resolves.toMatchObject({ lastSuccessAt: new Date(NOW).toISOString() });
     });
 
+    it("runs forced aggressive cleanup in the clone working directory", async () => {
+      const { factory, raw, factoryMock } = createGitFactory();
+      const svc = new GitMaintenanceService(config({ enabled: false }), gitService, logger, factory);
+
+      await expect(svc.runNowUnlocked(NOW)).resolves.toBe(true);
+
+      expect(factoryMock).toHaveBeenCalledWith(tmpDir);
+      expect(raw).toHaveBeenCalledWith(["gc", "--prune=now"]);
+    });
+
     it("skips when the repo is not initialized (no .git dir)", async () => {
       await fs.rm(path.join(tmpDir, ".git"), { recursive: true, force: true });
       const { factory, raw } = createGitFactory();
@@ -105,6 +115,15 @@ describe("GitMaintenanceService", () => {
       const svc = new GitMaintenanceService(config({ aggressive: true }), gitService, logger, factory);
 
       await svc.runIfDueUnlocked(NOW);
+
+      expect(raw).toHaveBeenCalledWith(["gc", "--prune=now"]);
+    });
+
+    it("runs aggressive cleanup immediately even when maintenance is disabled", async () => {
+      const { factory, raw } = createGitFactory();
+      const svc = new GitMaintenanceService(config({ enabled: false }), gitService, logger, factory);
+
+      await expect(svc.runNowUnlocked(NOW)).resolves.toBe(true);
 
       expect(raw).toHaveBeenCalledWith(["gc", "--prune=now"]);
     });

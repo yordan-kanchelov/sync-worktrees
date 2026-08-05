@@ -5,6 +5,7 @@ export const CLI_COMMANDS = {
   RUN: "run",
   INIT: "init",
   LIST: "list",
+  TRASH: "trash",
 } as const;
 
 export type CliCommand = (typeof CLI_COMMANDS)[keyof typeof CLI_COMMANDS];
@@ -12,7 +13,14 @@ export type CliCommand = (typeof CLI_COMMANDS)[keyof typeof CLI_COMMANDS];
 export type CliOptions =
   | { command: typeof CLI_COMMANDS.RUN; config?: string; runOnce: boolean }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
-  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string };
+  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string }
+  | {
+      command: typeof CLI_COMMANDS.TRASH;
+      config?: string;
+      filter?: string;
+      restore?: string;
+      dropKeepRef?: string;
+    };
 
 export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptions {
   let parsed: CliOptions | undefined;
@@ -87,6 +95,40 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           command: CLI_COMMANDS.LIST,
           config: args.config,
           filter: args.filter,
+        };
+      },
+    )
+    .command(
+      CLI_COMMANDS.TRASH,
+      "List trash entries or restore one for a single repository",
+      (y) =>
+        y
+          .option("config", {
+            alias: "c",
+            type: "string",
+            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+          })
+          .option("filter", {
+            alias: "f",
+            type: "string",
+            description: "Select exactly one repository by name.",
+          })
+          .option("restore", {
+            type: "string",
+            description: "Restore the trash entry with this id.",
+          })
+          .option("dropKeepRef", {
+            type: "string",
+            description: "Delete a permanent keep ref by its listed name.",
+          })
+          .conflicts("restore", "dropKeepRef"),
+      (args) => {
+        parsed = {
+          command: CLI_COMMANDS.TRASH,
+          config: args.config,
+          filter: args.filter,
+          restore: args.restore,
+          dropKeepRef: args.dropKeepRef,
         };
       },
     )

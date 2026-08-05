@@ -40,7 +40,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       hasDivergedHistory: vi.fn<any>().mockResolvedValue(false),
       canFastForward: vi.fn<any>().mockResolvedValue(true),
       compareTreeContent: vi.fn<any>().mockResolvedValue(false),
-      resetToUpstream: vi.fn<any>().mockResolvedValue(undefined),
+      resetToUpstream: vi.fn<any>().mockResolvedValue(true),
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),

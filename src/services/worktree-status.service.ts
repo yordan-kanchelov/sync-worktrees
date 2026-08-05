@@ -90,6 +90,12 @@ export class WorktreeStatusService {
     this.logger = logger ?? Logger.createDefault();
   }
 
+  // Only gates fast-forwards, which never touch a submodule's working tree, so
+  // the repository's own `submodule.<name>.ignore` is respected here. Forcing
+  // `--ignore-submodules=none` would override the standard way repos keep
+  // vendored build output from dirtying the superproject, and a worktree that
+  // reads as permanently dirty silently stops updating. Removal is the decision
+  // that must not be fooled by a quiet submodule — see getFullWorktreeStatus.
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {
     const worktreeGit = this.createGitInstance(worktreePath);
     const status = await worktreeGit.status();
@@ -220,7 +226,7 @@ export class WorktreeStatusService {
     const git = this.createGitInstance(worktreePath);
 
     const [status, branchResult, remoteBranchesResult, stashResult, submoduleResult, gitDirResult] = await Promise.all([
-      git.status().catch((e: unknown) => {
+      git.status(["--ignore-submodules=none"]).catch((e: unknown) => {
         this.logger.error(`Error reading status for ${worktreePath}`, e);
         return null;
       }),

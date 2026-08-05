@@ -8,10 +8,13 @@ export type RemovalAuditAction =
   | "orphan_delete"
   | "orphan_quarantine"
   | "diverged_replace"
+  | "diverged_discard"
+  | "keep_ref_delete"
   | "manual_remove"
   | "trash_create"
   | "trash_adopt"
   | "trash_restore"
+  | "trash_purge"
   | "trash_reap";
 
 export interface RemovalAuditEntry {

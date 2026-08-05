@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
+import { isMouseSequence } from "../utils/mouse";
 
 import { isValidGitBranchName } from "../utils/git-validation";
 
@@ -182,6 +183,10 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   };
 
   useInput((input, key) => {
+    // Mouse reports arrive as a single `input` string; ignore them here so a
+    // scroll never registers as a keystroke.
+    if (isMouseSequence(input)) return;
+
     if (step === "CREATING") return;
 
     if (key.escape) {
