@@ -6,10 +6,9 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-// A diverged worktree leaves a preserved copy behind. That copy reserves the
-// branch so a later restore can put it back at its original path — but the
-// reservation must lift once the original path is genuinely free again,
-// otherwise the branch can never be synced anymore.
+// An interrupted diverged replacement reserves its original path for restore.
+// Once replacement creation is recorded, removing that replacement later must
+// not re-arm the reservation and leave the branch permanently unsynced.
 describe("Diverged branch reservation E2E test", () => {
   let tempDir: string;
   let bareRepo: string;
@@ -61,7 +60,7 @@ describe("Diverged branch reservation E2E test", () => {
       repoUrl: "file://${bareRepo}",
       worktreeDir: "${worktreeDir}",
       bareRepoDir: "${bareRepoDir}",
-      trash: { enabled: false },
+      trash: { enabled: true },
     }
   ]
 };
@@ -73,7 +72,7 @@ describe("Diverged branch reservation E2E test", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("re-creates a branch worktree after its diverged copy stops occupying the path", async () => {
+  it("reserves a diverged branch only until its replacement is recorded", async () => {
     run();
 
     const featureDir = (await fs.readdir(worktreeDir)).find((d) => d.startsWith("feature-1-"));
@@ -97,8 +96,20 @@ describe("Diverged branch reservation E2E test", () => {
 
     const divergeRun = run();
     expect(divergeRun).toContain("Moving to diverged");
-    const divergedEntries = await fs.readdir(path.join(worktreeDir, ".diverged"));
-    expect(divergedEntries).toHaveLength(1);
+    const trashRoot = path.join(worktreeDir, ".trash");
+    const trashEntries = await Promise.all(
+      (await fs.readdir(trashRoot)).map(async (name) => {
+        const manifestPath = path.join(trashRoot, name, "manifest.json");
+        const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
+          reason: string;
+          replacedAt?: string | null;
+        };
+        return { manifest, manifestPath };
+      }),
+    );
+    const divergedEntry = trashEntries.find(({ manifest }) => manifest.reason === "diverged-replace");
+    expect(divergedEntry).toBeDefined();
+    expect(divergedEntry!.manifest.replacedAt).toEqual(expect.any(String));
     // A fresh worktree took the original path back.
     await expect(fs.readFile(path.join(featurePath, "feature-1.txt"), "utf8")).resolves.toBe("upstream v2");
 
@@ -107,7 +118,14 @@ describe("Diverged branch reservation E2E test", () => {
     await simpleGit(bareRepoDir).raw(["worktree", "remove", "--force", featurePath]);
     await expect(fs.access(featurePath)).rejects.toThrow();
 
-    // feature-1 is still a remote branch, so sync must rebuild its worktree.
+    divergedEntry!.manifest.replacedAt = null;
+    await fs.writeFile(divergedEntry!.manifestPath, JSON.stringify(divergedEntry!.manifest, null, 2));
+    const reservedRun = run();
+    expect(reservedRun).toContain("'feature-1' stays unsynced");
+    await expect(fs.access(featurePath)).rejects.toThrow();
+
+    divergedEntry!.manifest.replacedAt = new Date().toISOString();
+    await fs.writeFile(divergedEntry!.manifestPath, JSON.stringify(divergedEntry!.manifest, null, 2));
     const finalRun = run();
     expect(finalRun).toContain("Synchronization finished");
 
