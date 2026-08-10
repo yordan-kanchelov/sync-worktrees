@@ -1,9 +1,18 @@
+import { spawn } from "node:child_process";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
+import * as readline from "node:readline";
 
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
+  SERVER_INFO_META_KEY,
+} from "@modelcontextprotocol/server";
+import { build } from "esbuild";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import packageJson from "../../../package.json" with { type: "json" };
 import { RepositoryContext } from "../context";
 import { buildInstructions, createServer } from "../server";
 
@@ -166,6 +175,166 @@ describe("createServer", () => {
       { name: "ui", mode: "clone", checkoutPath: "/ws/ui", isCurrent: false },
       { name: "frontend", mode: "worktree", worktreeDir: "/ws/frontend", isCurrent: true },
     ]);
+  });
+});
+
+describe("stdio protocol", () => {
+  it("serves MCP 2026-07-28 and rejects a legacy handshake", async () => {
+    const buildDir = await fs.mkdtemp(path.join(process.cwd(), ".mcp-stdio-test-"));
+    const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-stdio-runtime-"));
+    const entry = path.join(buildDir, "mcp-server.mjs");
+    const children: ReturnType<typeof spawn>[] = [];
+
+    try {
+      await build({
+        entryPoints: [path.join(process.cwd(), "src/mcp/index.ts")],
+        outfile: entry,
+        bundle: true,
+        platform: "node",
+        format: "esm",
+        target: "node22",
+        packages: "external",
+        // Mirrors esbuild.config.js — the bundled entry reads the version from
+        // this define, not from an import of package.json.
+        define: { __SYNC_WORKTREES_VERSION__: JSON.stringify(packageJson.version) },
+      });
+
+      const startServer = () => {
+        const child = spawn(process.execPath, [entry], {
+          cwd: runtimeDir,
+          env: { ...process.env, SYNC_WORKTREES_CONFIG: "" },
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        children.push(child);
+        const lines = readline.createInterface({ input: child.stdout });
+        let stderr = "";
+        child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
+
+        const request = (message: Record<string, unknown>): Promise<any> =>
+          new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              cleanup();
+              reject(new Error(`MCP response timed out. stderr: ${stderr}`));
+            }, 5_000);
+            const onLine = (line: string) => {
+              const response = JSON.parse(line);
+              if (response.id !== message.id) return;
+              cleanup();
+              resolve(response);
+            };
+            const onExit = () => {
+              cleanup();
+              reject(new Error(`MCP server exited before responding. stderr: ${stderr}`));
+            };
+            const cleanup = () => {
+              clearTimeout(timeout);
+              lines.off("line", onLine);
+              child.off("exit", onExit);
+            };
+
+            lines.on("line", onLine);
+            child.once("exit", onExit);
+            child.stdin.write(`${JSON.stringify(message)}\n`);
+          });
+
+        return { child, request };
+      };
+
+      const modern = startServer();
+      const envelope = {
+        [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+        [CLIENT_CAPABILITIES_META_KEY]: {},
+      };
+      const discover = await modern.request({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "server/discover",
+        params: { _meta: envelope },
+      });
+      expect(discover.result).toMatchObject({
+        supportedVersions: ["2026-07-28"],
+        // Cacheable, but private: the instructions embed connect-time workspace paths.
+        ttlMs: 3_600_000,
+        cacheScope: "private",
+      });
+      expect(discover.result._meta[SERVER_INFO_META_KEY]).toEqual({
+        name: "sync-worktrees",
+        version: packageJson.version,
+      });
+
+      const tools = await modern.request({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/list",
+        params: { _meta: envelope },
+      });
+      // The registry is fixed at construction, so it is publicly cacheable.
+      expect(tools.result).toMatchObject({ ttlMs: 3_600_000, cacheScope: "public" });
+      expect(tools.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+        "detect_context",
+        "list_worktrees",
+        "get_worktree_status",
+        "create_worktree",
+        "sync",
+        "update_worktree",
+        "initialize",
+        "load_config",
+        "set_current_repository",
+      ]);
+      // Every tool advertises an output schema (SEP-2106).
+      for (const tool of tools.result.tools) {
+        expect(tool.outputSchema, `${tool.name} outputSchema`).toMatchObject({ type: "object" });
+      }
+
+      const toolCall = await modern.request({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "detect_context", arguments: { path: runtimeDir }, _meta: envelope },
+      });
+      expect(toolCall.error).toBeUndefined();
+      expect(toolCall.result.isError).not.toBe(true);
+      expect(JSON.parse(toolCall.result.content[0].text)).toMatchObject({ isWorktree: false });
+      // Results validate against the advertised schema and ship structuredContent.
+      expect(toolCall.result.structuredContent).toMatchObject({ isWorktree: false });
+
+      const legacy = startServer();
+      const initialize = await legacy.request({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "legacy-test", version: "1.0.0" },
+        },
+      });
+      // 2025-era clients are still served, from the same tool registry.
+      expect(initialize.error).toBeUndefined();
+      expect(initialize.result).toMatchObject({
+        protocolVersion: "2025-11-25",
+        serverInfo: { name: "sync-worktrees", version: packageJson.version },
+      });
+
+      const legacyTools = await legacy.request({ jsonrpc: "2.0", id: 5, method: "tools/list", params: {} });
+      expect(legacyTools.result.tools.map((tool: { name: string }) => tool.name)).toEqual(
+        tools.result.tools.map((tool: { name: string }) => tool.name),
+      );
+
+      const legacyCall = await legacy.request({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: { name: "detect_context", arguments: { path: runtimeDir } },
+      });
+      expect(legacyCall.error).toBeUndefined();
+      expect(legacyCall.result.isError).not.toBe(true);
+      expect(legacyCall.result.structuredContent).toMatchObject({ isWorktree: false });
+    } finally {
+      for (const child of children) child.kill();
+      await fs.rm(buildDir, { recursive: true, force: true });
+      await fs.rm(runtimeDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -15,10 +15,10 @@ import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } f
 import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summary";
 
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
-import type { HandlerExtra } from "./utils";
+import type { HandlerContext } from "./utils";
 import type { WorktreeLabel } from "./worktree-summary";
 import type { ProgressEvent } from "../services/worktree-sync.service";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 
 type CapabilityKey = keyof Capabilities;
 type RepoScopedParams = { repoName?: string };
@@ -156,7 +156,7 @@ async function getWorktreesFromService(
 export async function handleDetectContext(
   ctx: RepositoryContext,
   params: { path?: string; includeStatus?: boolean; includeAllWorktrees?: boolean; detailed?: boolean },
-  _extra?: HandlerExtra,
+  _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const target = params.path ?? process.cwd();
   const discovered = await ctx.detectFromPath(target);
@@ -229,7 +229,7 @@ async function enrichDetectedWorktrees(
 export async function handleListWorktrees(
   ctx: RepositoryContext,
   params: { repoName?: string; includeSize?: boolean },
-  _extra?: HandlerExtra,
+  _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const configuredRepoNames = params.repoName ? [] : ctx.getConfiguredRepositoryNames();
   if (configuredRepoNames.length > 0) {
@@ -319,7 +319,7 @@ async function listWorktreesForRepo(
 export async function handleGetWorktreeStatus(
   ctx: RepositoryContext,
   params: { path: string; repoName?: string; includeDetails?: boolean },
-  _extra?: HandlerExtra,
+  _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const { service, git } = await getReadyService(ctx, params.repoName, {
     capability: "getStatus",
@@ -341,7 +341,7 @@ export async function handleGetWorktreeStatus(
 export async function handleCreateWorktree(
   ctx: RepositoryContext,
   params: { branchName: string; baseBranch?: string; push?: boolean; repoName?: string },
-  _extra?: HandlerExtra,
+  _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const { branchName, baseBranch } = params;
   const push = params.push ?? true;
@@ -417,14 +417,14 @@ export async function handleCreateWorktree(
 export async function handleSync(
   ctx: RepositoryContext,
   params: { repoName?: string },
-  extra?: HandlerExtra,
+  handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const { service } = await getReadyService(ctx, params.repoName, {
     capability: "sync",
     toolName: "sync",
   });
 
-  const dispose = attachProgressReporter(service, extra);
+  const dispose = attachProgressReporter(service, handlerContext);
   try {
     const start = Date.now();
     const result = await service.sync();
@@ -461,7 +461,7 @@ export async function handleSync(
 export async function handleUpdateWorktree(
   ctx: RepositoryContext,
   params: { path: string; repoName?: string },
-  _extra?: HandlerExtra,
+  _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const { service, git } = await getReadyService(ctx, params.repoName, {
     capability: "updateWorktree",
@@ -489,13 +489,13 @@ export async function handleUpdateWorktree(
 export async function handleInitialize(
   ctx: RepositoryContext,
   params: { repoName?: string },
-  extra?: HandlerExtra,
+  handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const { service } = await getReadyService(ctx, params.repoName, {
     capability: "initialize",
     toolName: "initialize",
   });
-  const dispose = attachProgressReporter(service, extra);
+  const dispose = attachProgressReporter(service, handlerContext);
   try {
     return await runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
       await service.initializeUnlocked();
@@ -518,7 +518,7 @@ export async function handleInitialize(
 export async function handleLoadConfig(
   ctx: RepositoryContext,
   params: { configPath?: string },
-  _extra?: HandlerExtra,
+  _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const configPath =
     params.configPath ??
@@ -555,7 +555,7 @@ async function detectConfigFromLaunchCwd(ctx: RepositoryContext): Promise<string
 export async function handleSetCurrentRepository(
   ctx: RepositoryContext,
   params: { repoName: string },
-  _extra?: HandlerExtra,
+  _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   ctx.setCurrentRepo(params.repoName);
   return formatToolResponse({
@@ -568,17 +568,17 @@ function attachProgressReporter(
   service: {
     onProgress?: (listener: (event: ProgressEvent) => void) => () => void;
   },
-  extra: HandlerExtra | undefined,
+  handlerContext: HandlerContext | undefined,
 ): () => void {
-  const token = extra?._meta?.progressToken;
-  if (token === undefined || !extra) return () => {};
+  const token = handlerContext?.mcpReq._meta?.progressToken;
+  if (token === undefined || !handlerContext) return () => {};
   if (!service.onProgress) return () => {};
 
   let progressCounter = 0;
   const unsubscribe = service.onProgress((event) => {
     progressCounter++;
-    void extra
-      .sendNotification({
+    void handlerContext.mcpReq
+      .notify({
         method: "notifications/progress",
         params: {
           progressToken: token,

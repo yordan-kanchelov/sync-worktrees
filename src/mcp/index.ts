@@ -1,4 +1,4 @@
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import { RepositoryContext } from "./context";
 import { createServer } from "./server";
@@ -30,12 +30,29 @@ async function main(): Promise<void> {
     process.stderr.write(`[sync-worktrees-mcp] Auto-detect failed: ${(err as Error).message}\n`);
   }
 
-  const server = createServer(context, {
-    discovered,
-    configuredRepoCount: context.getConfiguredRepositoryNames().length,
-  });
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const handle = serveStdio(
+    () =>
+      createServer(context, {
+        discovered,
+        configuredRepoCount: context.getConfiguredRepositoryNames().length,
+      }),
+    {
+      // 2025-era clients are served from the same factory, with the same tools
+      // and instructions. The 2026-07-28 revision keeps older revisions alive
+      // for at least twelve months, and most MCP clients have not shipped
+      // 2026-07-28 support yet, so rejecting them would strand every install.
+      legacy: "serve",
+      onerror: (err) => {
+        process.stderr.write(`[sync-worktrees-mcp] Transport error: ${err.message}\n`);
+      },
+    },
+  );
+
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      void handle.close().finally(() => process.exit(0));
+    });
+  }
 }
 
 main().catch((err) => {
