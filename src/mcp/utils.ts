@@ -1,9 +1,8 @@
 import { SyncWorktreesError } from "../errors";
 
-import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, ServerContext } from "@modelcontextprotocol/server";
 
-export type HandlerExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+export type HandlerContext = ServerContext;
 
 export function formatToolResponse(data: unknown): CallToolResult {
   return {
@@ -62,11 +61,11 @@ export class SyncInProgressError extends SyncWorktreesError {
 }
 
 export function wrapHandler<P>(
-  fn: (params: P, extra: HandlerExtra) => Promise<CallToolResult>,
-): (params: P, extra: HandlerExtra) => Promise<CallToolResult> {
-  return async (params, extra) => {
+  fn: (params: P, ctx: HandlerContext) => Promise<CallToolResult>,
+): (params: P, ctx: HandlerContext) => Promise<CallToolResult> {
+  return async (params, ctx) => {
     try {
-      return await fn(params, extra);
+      return await fn(params, ctx);
     } catch (error) {
       return formatErrorResponse(error);
     }

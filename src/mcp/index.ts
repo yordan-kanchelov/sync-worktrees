@@ -1,4 +1,4 @@
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import { RepositoryContext } from "./context";
 import { createServer } from "./server";
@@ -30,12 +30,14 @@ async function main(): Promise<void> {
     process.stderr.write(`[sync-worktrees-mcp] Auto-detect failed: ${(err as Error).message}\n`);
   }
 
-  const server = createServer(context, {
-    discovered,
-    configuredRepoCount: context.getConfiguredRepositoryNames().length,
-  });
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  serveStdio(
+    () =>
+      createServer(context, {
+        discovered,
+        configuredRepoCount: context.getConfiguredRepositoryNames().length,
+      }),
+    { legacy: "reject" },
+  );
 }
 
 main().catch((err) => {
