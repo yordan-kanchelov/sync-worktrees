@@ -6,6 +6,7 @@
     "jsx": "react"
   },
   "include": [
+    "src/types/globals.d.ts",
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
     "src/**/*.spec.ts",

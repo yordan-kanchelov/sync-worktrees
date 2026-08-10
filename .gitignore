@@ -31,3 +31,7 @@ demo-recording/*.gif
 # Astro site build artifacts
 site/.astro/
 site/public/demo.gif
+
+# MCP stdio integration-test build dirs (bundled inside the repo so the spawned
+# server resolves node_modules; removed in the test's finally block)
+.mcp-stdio-test-*

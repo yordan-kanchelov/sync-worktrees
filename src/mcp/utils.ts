@@ -4,7 +4,13 @@ import type { CallToolResult, ServerContext } from "@modelcontextprotocol/server
 
 export type HandlerContext = ServerContext;
 
-export function formatToolResponse(data: unknown): CallToolResult {
+/**
+ * Every tool advertises an `outputSchema`, so each result must carry a
+ * `structuredContent` matching it (SEP-2106) — the SDK rejects a result that
+ * omits it. The JSON text block is kept alongside for clients that only read
+ * `content`.
+ */
+export function formatToolResponse(data: object): CallToolResult {
   return {
     content: [
       {
@@ -12,6 +18,7 @@ export function formatToolResponse(data: unknown): CallToolResult {
         text: JSON.stringify(data),
       },
     ],
+    structuredContent: data as Record<string, unknown>,
   };
 }
 

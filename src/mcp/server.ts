@@ -1,8 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
-import packageJson from "../../package.json" with { type: "json" };
-
 import { buildUnsupportedContext } from "./context";
 import {
   handleCreateWorktree,
@@ -15,6 +13,17 @@ import {
   handleSync,
   handleUpdateWorktree,
 } from "./handlers";
+import {
+  createWorktreeOutputSchema,
+  detectContextOutputSchema,
+  getWorktreeStatusOutputSchema,
+  initializeOutputSchema,
+  listWorktreesOutputSchema,
+  loadConfigOutputSchema,
+  setCurrentRepositoryOutputSchema,
+  syncOutputSchema,
+  updateWorktreeOutputSchema,
+} from "./output-schemas";
 import { wrapHandler } from "./utils";
 
 import type { DiscoveredRepoContext, RepositoryContext } from "./context";
@@ -23,6 +32,9 @@ const REPO_NAME_DESCRIBE =
   "Repo name from loaded config. Omit to use current (set via set_current_repository) or the only loaded repo.";
 
 const PATH_DESCRIBE_SUFFIX = "Absolute preferred; relative resolves from server CWD.";
+
+/** The tool/resource registry is fixed at construction, so clients may cache the listings for an hour. */
+const TOOL_REGISTRY_TTL_MS = 3_600_000;
 
 const SERVER_INSTRUCTIONS =
   "Call `detect_context` for the project map and live worktree state; `configuredRepositories` in its response is the server-wide loaded-config inventory. Use `set_current_repository` to switch repos. Auto-loads sync-worktrees.config.{js,mjs,cjs,ts} via walk-up. Repos run in one of two modes. worktree (default): a bare repo plus branch worktrees, with new worktrees created under worktreeDir. clone: one standalone checkout where worktreeDir is the repo root. create_worktree and update_worktree are worktree-mode only; in clone mode, use sync to update the checkout.";
@@ -55,10 +67,19 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
   const server = new McpServer(
     {
       name: "sync-worktrees",
-      version: packageJson.version,
+      version: __SYNC_WORKTREES_VERSION__,
     },
     {
       instructions: buildInstructions(snapshot),
+      // The tool and resource registries are built once at construction and
+      // never mutated, so they are safe to cache for a long time and carry no
+      // user-specific data. `server/discover` is kept private because its
+      // instructions embed connect-time workspace and config paths.
+      cacheHints: {
+        "tools/list": { ttlMs: TOOL_REGISTRY_TTL_MS, cacheScope: "public" },
+        "resources/list": { ttlMs: TOOL_REGISTRY_TTL_MS, cacheScope: "public" },
+        "server/discover": { ttlMs: TOOL_REGISTRY_TTL_MS, cacheScope: "private" },
+      },
     },
   );
 
@@ -70,6 +91,9 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
       description:
         "Workspace context: isWorktree, kind, currentWorktreePath, currentBranch, allWorktrees, siblingRepositories, configPath, capabilities {available,reason}, configuredRepositories (server-wide loaded-config inventory). {isWorktree:false} when outside any workspace.",
       mimeType: "application/json",
+      // Live git state, re-probed on every read: never cache, and never share
+      // between clients (the payload carries local filesystem paths).
+      cacheHint: { ttlMs: 0, cacheScope: "private" },
     },
     async (uri) => {
       let payload: unknown;
@@ -115,6 +139,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
             "Enrich entries with label, divergence, staleHint. Adds 1 git status + rev-list per worktree. Labels here are metadata-blind (no sync metadata is loaded), so a fully-pushed branch whose remote was deleted shows 'dirty'; list_worktrees gives the authoritative label/safeToRemove. Default: false.",
           ),
       }),
+      outputSchema: detectContextOutputSchema,
       annotations: {
         title: "Detect sync-worktrees context",
         readOnlyHint: true,
@@ -139,6 +164,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
             "Compute on-disk size per worktree (bytes). Slow on large worktrees. Default: false (sizeBytes=null).",
           ),
       }),
+      outputSchema: listWorktreesOutputSchema,
       annotations: {
         title: "List worktrees with status",
         readOnlyHint: true,
@@ -162,6 +188,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
           .optional()
           .describe("Include file-level lists (modified, untracked, staged). Default: false (counts only)."),
       }),
+      outputSchema: getWorktreeStatusOutputSchema,
       annotations: {
         title: "Get worktree status",
         readOnlyHint: true,
@@ -188,6 +215,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
         push: z.boolean().optional().describe("Push new branch to origin. Default: true. Ignored if branch existed."),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
+      outputSchema: createWorktreeOutputSchema,
       annotations: {
         title: "Create worktree",
         readOnlyHint: false,
@@ -207,6 +235,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
       inputSchema: z.object({
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
+      outputSchema: syncOutputSchema,
       annotations: {
         title: "Sync repository worktrees",
         readOnlyHint: false,
@@ -227,6 +256,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
         path: z.string().describe(`Worktree path to fast-forward. ${PATH_DESCRIBE_SUFFIX}`),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
+      outputSchema: updateWorktreeOutputSchema,
       annotations: {
         title: "Fast-forward one worktree",
         readOnlyHint: false,
@@ -246,6 +276,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
       inputSchema: z.object({
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
+      outputSchema: initializeOutputSchema,
       annotations: {
         title: "Initialize repository",
         readOnlyHint: false,
@@ -270,6 +301,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
             "Config file path. Falls back to SYNC_WORKTREES_CONFIG, an already detected config, or launch-CWD auto-detect.",
           ),
       }),
+      outputSchema: loadConfigOutputSchema,
       annotations: {
         title: "Load sync-worktrees config",
         readOnlyHint: false,
@@ -289,6 +321,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
       inputSchema: z.object({
         repoName: z.string().describe("Repo name from loaded config repositories[].name."),
       }),
+      outputSchema: setCurrentRepositoryOutputSchema,
       annotations: {
         title: "Set current repository",
         readOnlyHint: false,

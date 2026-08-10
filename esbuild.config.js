@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
+
 import * as esbuild from "esbuild";
+
+const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 const commonConfig = {
   bundle: true,
@@ -7,6 +11,9 @@ const commonConfig = {
   target: "node22",
   sourcemap: true,
   packages: "external",
+  define: {
+    __SYNC_WORKTREES_VERSION__: JSON.stringify(version),
+  },
 };
 
 try {

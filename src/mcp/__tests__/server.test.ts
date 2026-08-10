@@ -194,6 +194,9 @@ describe("stdio protocol", () => {
         format: "esm",
         target: "node22",
         packages: "external",
+        // Mirrors esbuild.config.js — the bundled entry reads the version from
+        // this define, not from an import of package.json.
+        define: { __SYNC_WORKTREES_VERSION__: JSON.stringify(packageJson.version) },
       });
 
       const startServer = () => {
@@ -250,7 +253,8 @@ describe("stdio protocol", () => {
       });
       expect(discover.result).toMatchObject({
         supportedVersions: ["2026-07-28"],
-        ttlMs: 0,
+        // Cacheable, but private: the instructions embed connect-time workspace paths.
+        ttlMs: 3_600_000,
         cacheScope: "private",
       });
       expect(discover.result._meta[SERVER_INFO_META_KEY]).toEqual({
@@ -264,7 +268,8 @@ describe("stdio protocol", () => {
         method: "tools/list",
         params: { _meta: envelope },
       });
-      expect(tools.result).toMatchObject({ ttlMs: 0, cacheScope: "private" });
+      // The registry is fixed at construction, so it is publicly cacheable.
+      expect(tools.result).toMatchObject({ ttlMs: 3_600_000, cacheScope: "public" });
       expect(tools.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
         "detect_context",
         "list_worktrees",
@@ -276,6 +281,10 @@ describe("stdio protocol", () => {
         "load_config",
         "set_current_repository",
       ]);
+      // Every tool advertises an output schema (SEP-2106).
+      for (const tool of tools.result.tools) {
+        expect(tool.outputSchema, `${tool.name} outputSchema`).toMatchObject({ type: "object" });
+      }
 
       const toolCall = await modern.request({
         jsonrpc: "2.0",
@@ -286,6 +295,8 @@ describe("stdio protocol", () => {
       expect(toolCall.error).toBeUndefined();
       expect(toolCall.result.isError).not.toBe(true);
       expect(JSON.parse(toolCall.result.content[0].text)).toMatchObject({ isWorktree: false });
+      // Results validate against the advertised schema and ship structuredContent.
+      expect(toolCall.result.structuredContent).toMatchObject({ isWorktree: false });
 
       const legacy = startServer();
       const initialize = await legacy.request({
@@ -298,7 +309,27 @@ describe("stdio protocol", () => {
           clientInfo: { name: "legacy-test", version: "1.0.0" },
         },
       });
-      expect(initialize.error.code).toBe(-32022);
+      // 2025-era clients are still served, from the same tool registry.
+      expect(initialize.error).toBeUndefined();
+      expect(initialize.result).toMatchObject({
+        protocolVersion: "2025-11-25",
+        serverInfo: { name: "sync-worktrees", version: packageJson.version },
+      });
+
+      const legacyTools = await legacy.request({ jsonrpc: "2.0", id: 5, method: "tools/list", params: {} });
+      expect(legacyTools.result.tools.map((tool: { name: string }) => tool.name)).toEqual(
+        tools.result.tools.map((tool: { name: string }) => tool.name),
+      );
+
+      const legacyCall = await legacy.request({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: { name: "detect_context", arguments: { path: runtimeDir } },
+      });
+      expect(legacyCall.error).toBeUndefined();
+      expect(legacyCall.result.isError).not.toBe(true);
+      expect(legacyCall.result.structuredContent).toMatchObject({ isWorktree: false });
     } finally {
       for (const child of children) child.kill();
       await fs.rm(buildDir, { recursive: true, force: true });

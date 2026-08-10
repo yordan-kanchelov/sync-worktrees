@@ -199,7 +199,13 @@ function makeCtx(opts: {
 }
 
 function parseResponse(result: any): any {
-  return JSON.parse(result.content[0].text);
+  const parsed = JSON.parse(result.content[0].text);
+  // Every tool advertises an outputSchema, so a success result must also carry
+  // structuredContent — the SDK turns a result that omits it into an error.
+  if (result.isError !== true) {
+    expect(result.structuredContent).toEqual(parsed);
+  }
+  return parsed;
 }
 
 describe("handleListWorktrees", () => {

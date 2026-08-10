@@ -1,8 +1,14 @@
+import { readFileSync } from "node:fs";
 import path from "path";
 
 import { defineConfig } from "vitest/config";
 
+const { version } = JSON.parse(readFileSync(path.resolve(__dirname, "./package.json"), "utf8"));
+
 export default defineConfig({
+  define: {
+    __SYNC_WORKTREES_VERSION__: JSON.stringify(version),
+  },
   test: {
     globals: false,
     environment: "node",
