@@ -57,7 +57,12 @@ describe("Integration Tests", () => {
     // Setup mock fs
     (fs.access as Mock<any>).mockResolvedValue(undefined);
     (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-    (fs.readdir as Mock<any>).mockResolvedValue(["main"]);
+    // The trash root is read with `withFileTypes`, so it has to yield Dirents.
+    // Handing it the plain names the worktree-dir listing returns makes the
+    // trash listing throw, which now aborts the sync instead of being swallowed.
+    (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) =>
+      String(dirPath).endsWith(".trash") ? [] : ["main"],
+    );
     // Removal audit records gate destructive operations and are written via
     // fs.open + appendFile + sync (durable append), not fs.appendFile.
     (fs.open as Mock<any>).mockResolvedValue({
@@ -199,12 +204,16 @@ describe("Integration Tests", () => {
       const config = createMockConfig({ runOnce: true, logger: mockLogger, trash: { enabled: false } });
 
       // Setup: existing worktrees include some to keep, some to remove
-      (fs.readdir as Mock<any>).mockResolvedValue([
-        "main", // Keep (exists in remote)
-        "feature-1", // Keep (exists in remote)
-        "old-feature", // Remove (not in remote)
-        "dirty-branch", // Skip removal (has changes)
-      ]);
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) =>
+        String(dirPath).endsWith(".trash")
+          ? []
+          : [
+              "main", // Keep (exists in remote)
+              "feature-1", // Keep (exists in remote)
+              "old-feature", // Remove (not in remote)
+              "dirty-branch", // Skip removal (has changes)
+            ],
+      );
 
       // Mock git worktree list --porcelain
       const mockRawCalls: string[][] = [];

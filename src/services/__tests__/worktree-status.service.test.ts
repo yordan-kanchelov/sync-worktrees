@@ -56,6 +56,18 @@ describe("WorktreeStatusService", () => {
       expect(simpleGit).toHaveBeenCalledWith("/test/worktree");
     });
 
+    // This gate only decides whether to fast-forward, which never touches a
+    // submodule's working tree. Forcing --ignore-submodules=none here would
+    // override a repo's own `submodule.<name>.ignore` — the standard way to keep
+    // vendored build output from dirtying the superproject — and silently stop
+    // that branch from ever updating again. Removal gating is where the
+    // override belongs, and getFullWorktreeStatus keeps it.
+    it("honours the repository's own submodule ignore settings", async () => {
+      await service.checkWorktreeStatus("/test/worktree");
+
+      expect(mockGit.status).toHaveBeenCalledWith();
+    });
+
     it.each([
       { field: "modified", value: ["file.ts"] },
       { field: "deleted", value: ["old-file.ts"] },

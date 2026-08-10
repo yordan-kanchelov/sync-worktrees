@@ -1,6 +1,9 @@
+import * as fs from "fs/promises";
+import * as path from "path";
+
 import pLimit from "p-limit";
 
-import { ENV_CONSTANTS } from "../constants";
+import { ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, TrashOperationError } from "../errors";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
@@ -25,7 +28,7 @@ import { WorktreeModeSyncRunner } from "./worktree-mode-sync-runner";
 import type { ProgressEvent, ProgressListener } from "./progress-emitter";
 import type { RepoLockRelease } from "./repo-operation-lock";
 import type { TrashEntry, TrashManifest } from "./trash.service";
-import type { Config, SyncOutcome, SyncResult } from "../types";
+import type { Config, ForceCleanPreview, ForceCleanResult, SyncOutcome, SyncResult } from "../types";
 import type { LfsErrorContext } from "../utils/retry";
 
 export type { ProgressEvent, ProgressListener } from "./progress-emitter";
@@ -33,7 +36,10 @@ export type { SyncOutcome, SyncOutcomeAction, SyncOutcomeCounts, SyncResult } fr
 
 export type ExclusiveRepoOperationResult<T> =
   | { started: true; value: T }
-  | { started: false; reason: "in_progress" | "locked" };
+  | {
+      started: false;
+      reason: "in_progress" | "locked";
+    };
 
 export class WorktreeSyncService {
   private gitService: GitService;
@@ -49,6 +55,7 @@ export class WorktreeSyncService {
   private maintenanceService: GitMaintenanceService;
   private retryPolicy: SyncRetryPolicy;
   private worktreeModeSyncRunner: WorktreeModeSyncRunner;
+  private removalAudit: RemovalAuditService;
   private trashService: TrashService;
   private trashReaper: TrashReaperService;
   private trashMigration: TrashMigrationService;
@@ -61,9 +68,15 @@ export class WorktreeSyncService {
     this.repoOperationLock = new RepoOperationLock(config, this.gitService, this.logger);
     this.maintenanceService = new GitMaintenanceService(config, this.gitService, this.logger);
     this.retryPolicy = new SyncRetryPolicy(config, this.gitService, this.logger);
-    const removalAudit = new RemovalAuditService(getRemovalAuditLogPath(config));
-    this.trashService = new TrashService(config, this.gitService, this.logger, removalAudit);
-    this.trashReaper = new TrashReaperService(config, this.trashService, this.logger, removalAudit, this.gitService);
+    this.removalAudit = new RemovalAuditService(getRemovalAuditLogPath(config));
+    this.trashService = new TrashService(config, this.gitService, this.logger, this.removalAudit);
+    this.trashReaper = new TrashReaperService(
+      config,
+      this.trashService,
+      this.logger,
+      this.removalAudit,
+      this.gitService,
+    );
     this.trashMigration = new TrashMigrationService(config, this.trashService, this.logger);
     if (this.trashService.isEnabled()) {
       this.gitService.setStaleDirectoryTrasher(
@@ -77,7 +90,7 @@ export class WorktreeSyncService {
       this.progressEmitter,
       {
         trashService: this.trashService,
-        removalAudit,
+        removalAudit: this.removalAudit,
       },
     );
     if (resolveMode(config) === REPOSITORY_MODES.CLONE) {
@@ -189,6 +202,179 @@ export class WorktreeSyncService {
 
   async listTrashEntries(): Promise<{ entries: TrashEntry[]; invalid: string[] }> {
     return this.trashService.listEntries();
+  }
+
+  async listKeepRefs(): Promise<string[]> {
+    return this.gitService.listRefs(GIT_CONSTANTS.KEEP_REF_PREFIX);
+  }
+
+  async getForceCleanPreview(): Promise<ForceCleanPreview> {
+    await this.requireForceCleanTarget();
+    if (this.cloneSyncService) {
+      return { trashEntries: 0, trashBytes: 0, unknownTrashSizes: 0, invalidTrashEntries: 0, keepRefs: 0 };
+    }
+    const [{ entries, invalid }, keepRefs] = await Promise.all([this.trashService.listEntries(), this.listKeepRefs()]);
+    return {
+      trashEntries: entries.length,
+      trashBytes: entries.reduce((total, entry) => total + (entry.manifest.sizeBytes ?? 0), 0),
+      unknownTrashSizes: entries.filter((entry) => entry.manifest.sizeBytes === null).length,
+      invalidTrashEntries: invalid.length,
+      keepRefs: keepRefs.length,
+    };
+  }
+
+  async forceClean(): Promise<ForceCleanResult> {
+    await this.requireForceCleanTarget();
+    const result = await this.runExclusiveRepoOperation(
+      async () => {
+        const reap = this.cloneSyncService
+          ? { deleted: 0, orphanedRefsDeleted: 0, errors: [] }
+          : await this.trashReaper.purgeAllUnlocked();
+        const errors = [...reap.errors];
+        const keepRefs = this.cloneSyncService ? [] : await this.listKeepRefs();
+        // A `.diverged/<name>` directory and `keep/<name>` are the two halves of
+        // one preserved worktree — the files, and the commits they were made on.
+        // Dropping the ref and then running `gc --prune=now` would leave the
+        // directory intact but its own recovery instructions dead, so refs whose
+        // directory is still there are retained and reported instead.
+        const reservedNames = this.cloneSyncService ? new Set<string>() : await this.getDivergedDirectoryNames();
+        let keepRefsDeleted = 0;
+        let keepRefsRetained = 0;
+
+        for (const ref of keepRefs) {
+          if (this.isKeepRefReserved(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length), reservedNames)) {
+            keepRefsRetained++;
+            continue;
+          }
+          try {
+            await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
+            await this.gitService.deleteRef(ref);
+            keepRefsDeleted++;
+            await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
+          } catch (error) {
+            const message = getErrorMessage(error);
+            errors.push(`${ref}: ${message}`);
+            await this.removalAudit
+              .record({ action: "keep_ref_delete", result: "failure", path: ref, error: message })
+              .catch(() => undefined);
+          }
+        }
+
+        const gcSucceeded = await this.maintenanceService.runNowUnlocked();
+        if (!gcSucceeded) errors.push("git gc --prune=now failed");
+        const after = await this.getForceCleanPreview();
+        return {
+          ...after,
+          // The reaper's own count, not a before/after difference: a re-scan
+          // cannot tell a deletion from an entry that failed and stayed put.
+          trashDeleted: reap.deleted,
+          keepRefsDeleted,
+          keepRefsRetained,
+          gcSucceeded,
+          errors,
+        };
+      },
+      { wait: true },
+    );
+    if (!result.started) throw new Error("Cannot force clean while another process holds the repository lock");
+    return result.value;
+  }
+
+  // Does a `.diverged/` directory still depend on this keep ref?
+  //
+  // Current entries name the ref after the directory, so a direct hit settles
+  // it. Entries written before this ref layout used
+  // `diverged-<timestamp>-<sanitized branch>` and recorded nothing in their
+  // metadata, so the only link left is the sanitized branch name that both the
+  // ref and the directory carry. Matching on that keeps an upgrade from
+  // purging the commits behind a copy still sitting on disk; the cost of a
+  // false positive is a retained ref, the cost of a miss is the commits.
+  private isKeepRefReserved(refName: string, divergedNames: Set<string>): boolean {
+    if (divergedNames.has(refName)) return true;
+
+    const legacy = /^diverged-[^-]+-(.+)$/.exec(refName);
+    if (!legacy) return false;
+    const branchSegment = legacy[1];
+    for (const divergedName of divergedNames) {
+      if (divergedName.includes(branchSegment)) return true;
+    }
+    return false;
+  }
+
+  // Entry names under `.diverged/`, which are exactly the keep-ref names the
+  // non-trash diverge flow mints. Any name counts, files and symlinks included
+  // (same reasoning as the reaper's pin sweep): retaining a ref costs disk,
+  // dropping one can cost commits. An unreadable directory means the same —
+  // refuse to delete rather than guess.
+  private async getDivergedDirectoryNames(): Promise<Set<string>> {
+    const divergedRoot = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
+    try {
+      return new Set((await fs.readdir(divergedRoot)) ?? []);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
+      throw new Error(
+        `cannot scan '${divergedRoot}' to protect preserved commits; refusing to delete recovery refs: ${getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private async requireForceCleanTarget(): Promise<void> {
+    const target = this.cloneSyncService
+      ? path.join(this.config.worktreeDir, PATH_CONSTANTS.GIT_DIR)
+      : path.join(this.gitService.getBareRepoPath(), "HEAD");
+    try {
+      await fs.access(target);
+    } catch {
+      throw new Error(`Repository storage is unavailable at '${target}'; refusing force clean`);
+    }
+  }
+
+  async deleteKeepRef(name: string): Promise<void> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error(`Invalid keep ref name '${name}'`);
+    const ref = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`;
+    const result = await this.runExclusiveRepoOperation(
+      async () => {
+        await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
+        await this.gitService.deleteRef(ref);
+        await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
+      },
+      { wait: true },
+    );
+    if (!result.started) throw new Error("Cannot delete keep ref while another process holds the lock");
+  }
+
+  async discardDivergedDirectory(targetPath: string, keepRef?: string): Promise<void> {
+    const divergedRoot = path.resolve(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
+    const resolvedTarget = path.resolve(targetPath);
+    if (path.dirname(resolvedTarget) !== divergedRoot) {
+      throw new Error(`Refusing to discard path outside '${divergedRoot}'`);
+    }
+    const expectedKeepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${path.basename(resolvedTarget)}`;
+    if (keepRef && keepRef !== expectedKeepRef) {
+      throw new Error(`Refusing to delete invalid diverged keep ref '${keepRef}'`);
+    }
+    const result = await this.runExclusiveRepoOperation(
+      async () => {
+        await this.removalAudit.record({ action: "diverged_discard", result: "attempt", path: resolvedTarget });
+        try {
+          await fs.rm(resolvedTarget, { recursive: true, force: true });
+          if (keepRef) await this.gitService.deleteRef(keepRef);
+          await this.removalAudit.record({ action: "diverged_discard", result: "success", path: resolvedTarget });
+        } catch (error) {
+          await this.removalAudit
+            .record({
+              action: "diverged_discard",
+              result: "failure",
+              path: resolvedTarget,
+              error: getErrorMessage(error),
+            })
+            .catch(() => undefined);
+          throw error;
+        }
+      },
+      { wait: true },
+    );
+    if (!result.started) throw new Error("Cannot discard diverged directory while another process holds the lock");
   }
 
   updateLogger(logger: Logger): void {

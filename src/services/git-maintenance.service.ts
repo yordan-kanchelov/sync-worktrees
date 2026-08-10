@@ -136,6 +136,18 @@ export class GitMaintenanceService {
       return;
     }
 
+    await this.runUnlocked(now, false);
+  }
+
+  /**
+   * Callers must hold the repository operation lock. This intentionally bypasses
+   * isEnabled() and isDue() so an explicit request always attempts maintenance.
+   */
+  async runNowUnlocked(now: number = Date.now()): Promise<boolean> {
+    return this.runUnlocked(now, true);
+  }
+
+  private async runUnlocked(now: number, forceAggressive: boolean): Promise<boolean> {
     // Outer guard: maintenance is best-effort and runs at the tail of sync(). Any
     // failure here — target resolution, state IO, the gc itself — must be swallowed
     // so it can never fail an otherwise-successful sync.
@@ -146,16 +158,16 @@ export class GitMaintenanceService {
         await fs.access(gitDir);
       } catch {
         // Repo not initialized yet — nothing to maintain.
-        return;
+        return false;
       }
 
       const statePath = this.getStatePath(gitDir);
       const state = await this.readState(statePath);
-      if (!this.isDue(state, now)) {
-        return;
+      if (!forceAggressive && !this.isDue(state, now)) {
+        return false;
       }
 
-      const aggressive = this.config.maintenance?.aggressive ?? false;
+      const aggressive = forceAggressive || (this.config.maintenance?.aggressive ?? false);
       const args = aggressive ? ["gc", "--prune=now"] : ["gc"];
       const nowIso = new Date(now).toISOString();
       state.lastAttemptAt = nowIso;
@@ -166,15 +178,18 @@ export class GitMaintenanceService {
         state.lastSuccessAt = nowIso;
         delete state.lastError;
         this.logger.info("🧹 Maintenance complete.");
+        return true;
       } catch (error) {
         state.lastFailureAt = nowIso;
         state.lastError = getErrorMessage(error);
         this.logger.warn(`⚠️  Maintenance (git ${args.join(" ")}) failed: ${state.lastError}`);
+        return false;
       } finally {
         await this.writeState(statePath, state);
       }
     } catch (error) {
       this.logger.warn(`⚠️  Maintenance skipped due to an unexpected error: ${getErrorMessage(error)}`);
+      return false;
     }
   }
 }

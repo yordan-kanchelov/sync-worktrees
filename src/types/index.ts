@@ -280,6 +280,38 @@ export interface DivergedDirectoryInfo {
   divergedAt: string;
   sizeBytes: number;
   sizeFormatted: string;
+  keepRef?: string;
+}
+
+export interface ForceCleanPreview {
+  trashEntries: number;
+  trashBytes: number;
+  unknownTrashSizes: number;
+  invalidTrashEntries: number;
+  keepRefs: number;
+}
+
+export interface ForceCleanResult extends ForceCleanPreview {
+  trashDeleted: number;
+  keepRefsDeleted: number;
+  /** Recovery refs left alone because a `.diverged/` directory still relies on them. */
+  keepRefsRetained: number;
+  gcSucceeded: boolean;
+  errors: string[];
+}
+
+export interface ForceCleanRepositoryPreview {
+  repoIndex: number;
+  repoName: string;
+  preview?: ForceCleanPreview;
+  error?: string;
+}
+
+export interface ForceCleanRepositoryResult {
+  repoIndex: number;
+  repoName: string;
+  result?: ForceCleanResult;
+  error?: string;
 }
 
 export type SyncWorktreesRetryConfig = RetryConfig;

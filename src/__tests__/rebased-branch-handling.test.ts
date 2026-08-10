@@ -41,7 +41,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       hasDivergedHistory: vi.fn<any>().mockResolvedValue(false),
       canFastForward: vi.fn<any>().mockResolvedValue(true),
       compareTreeContent: vi.fn<any>().mockResolvedValue(false),
-      resetToUpstream: vi.fn<any>().mockResolvedValue(undefined),
+      resetToUpstream: vi.fn<any>().mockResolvedValue(true),
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
@@ -115,7 +115,11 @@ describe("Rebased Branch Handling", () => {
 
       await service.sync();
 
-      expect(mockGitService.resetToUpstream).toHaveBeenCalledWith("/test/worktrees/feature-rebased", "feature-rebased");
+      expect(mockGitService.resetToUpstream).toHaveBeenCalledWith(
+        "/test/worktrees/feature-rebased",
+        "feature-rebased",
+        expect.any(String),
+      );
 
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       expect(fs.rename).not.toHaveBeenCalled();
@@ -156,6 +160,7 @@ describe("Rebased Branch Handling", () => {
       expect(mockGitService.resetToUpstream).toHaveBeenCalledWith(
         "/test/worktrees/feature-no-local-changes",
         "feature-no-local-changes",
+        "abc123",
       );
       expect(fs.rename).not.toHaveBeenCalled();
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
@@ -331,7 +336,7 @@ describe("Rebased Branch Handling", () => {
       expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("📦 Note: 2 diverged worktree(s)"));
     });
 
-    it("should ignore .diverged directory during cleanup", async () => {
+    it("should leave both .diverged and unknown directories untouched", async () => {
       await service.initialize();
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
@@ -359,8 +364,7 @@ describe("Rebased Branch Handling", () => {
 
       await service.sync();
 
-      expect(fs.rm).toHaveBeenCalledTimes(1);
-      expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/orphaned-dir", { recursive: true, force: true });
+      expect(fs.rm).not.toHaveBeenCalled();
       expect(fs.rm).not.toHaveBeenCalledWith(expect.stringContaining(".diverged"), expect.any(Object));
     });
   });
@@ -389,7 +393,11 @@ describe("Rebased Branch Handling", () => {
 
       await service.sync();
 
-      expect(mockGitService.resetToUpstream).toHaveBeenCalledWith("/test/worktrees/branch1", "branch1");
+      expect(mockGitService.resetToUpstream).toHaveBeenCalledWith(
+        "/test/worktrees/branch1",
+        "branch1",
+        expect.any(String),
+      );
 
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/branch2",

@@ -578,6 +578,50 @@ describe("WorktreeStatusView", () => {
     });
   });
 
+  // The filter appends any printable input, and Ink hands a mouse report over
+  // as one string. Without the guard a scroll over this view types the escape
+  // sequence into the filter box and hides every entry.
+  describe("mouse reports", () => {
+    const ESC = String.fromCharCode(27);
+
+    it("does not type a wheel report into the filter", async () => {
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      stdin.write(`${ESC}[<64;10;5M`);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("[<");
+      expect(lastFrame()).toContain("Filter: _");
+      expect(lastFrame()).toContain("main");
+    });
+
+    it("does not treat a click report as a delete request", async () => {
+      const deleteMock = vi.fn().mockResolvedValue(undefined);
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        getWorktreeStatusForRepo: vi.fn().mockResolvedValue([makeEntry("main")]),
+        deleteDivergedDirectory: deleteMock,
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      stdin.write(`${ESC}[<0;10;5M`);
+      stdin.write(`${ESC}[<0;10;5m`);
+      await waitForStateUpdate();
+
+      expect(deleteMock).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("[<");
+    });
+  });
+
   describe("diverged directories", () => {
     const makeDiverged = (overrides: Partial<DivergedDirectoryInfo> = {}): DivergedDirectoryInfo => ({
       name: "2024-01-15-feature-x-abc123",
@@ -692,6 +736,57 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
 
       expect(deleteMock).toHaveBeenCalledWith(0, "2024-01-15-feature-x-abc123");
+    });
+
+    // The confirmation stays on screen until the delete resolves, so without a
+    // guard every extra keypress fires another delete for the same directory —
+    // each one queuing on the repository lock behind the first.
+    it("ignores further keys while a delete is in flight", async () => {
+      let resolveDelete: () => void = () => undefined;
+      const deleteMock = vi.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveDelete = resolve;
+          }),
+      );
+      const singleRepoProps: WorktreeStatusViewProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+        getWorktreeStatusForRepo: vi.fn().mockResolvedValue([makeEntry("main")]),
+        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
+        deleteDivergedDirectory: deleteMock,
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      stdin.write("[B");
+      await waitForStateUpdate();
+      stdin.write("[B");
+      await waitForStateUpdate();
+
+      stdin.write("d");
+      await waitForStateUpdate();
+
+      stdin.write("y");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Deleting");
+
+      stdin.write("y");
+      await waitForStateUpdate();
+      stdin.write("y");
+      await waitForStateUpdate();
+      expect(deleteMock).toHaveBeenCalledTimes(1);
+
+      // Escape must not drop the confirmation out from under a running delete
+      // either, or the next `d` would show "Deleting..." on an unrelated entry.
+      stdin.write("");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Deleting");
+
+      resolveDelete();
+      await waitForStateUpdate();
     });
 
     it("should cancel delete on n key", async () => {

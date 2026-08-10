@@ -1,5 +1,29 @@
 # sync-worktrees
 
+## 5.2.0
+
+### Minor Changes
+
+- 4610094: Add reversible worktree trash and restore workflows, an explicit TUI force-clean action, and hardened cleanup for detached or external worktrees, stale registrations, unsafe manifests, and interrupted diverged-branch replacement. Removal safety checks now use `--ignore-submodules=none`, recursively inspecting every submodule and overriding `submodule.<name>.ignore` and `diff.ignoreSubmodules`; this may increase pruning costs. The fast-forward gate still honours the repository's own submodule ignore settings.
+- 4610094: Scroll the log panel with the mouse wheel. `j`/`k`, the arrows, `gg` and `G` all still work — the wheel is for people who don't reach for vim motions. Mouse tracking is enabled while the TUI is running and turned back off on exit; hold `Shift` to select text with the mouse as usual. Mouse reports are ignored everywhere else in the UI, so scrolling over a filter box no longer types an escape sequence into it.
+
+### Patch Changes
+
+- 4610094: Fix sync, removal and trash regressions found reviewing the cleanup-hardening work:
+
+  - Rebuild worktrees whose registration points at a directory that was deleted out-of-band. Without the start-of-sync `worktree prune`, git still reported the branch as checked out, so sync silently stopped restoring it.
+  - Recreating a worktree for a stale registration no longer fails permanently: the recovery path handed the already-missing directory to the trasher, which failed with `ENOENT`.
+  - A diverged branch is only held back from syncing while its trashed replacement was genuinely never created. Previously any later removal of the replacement re-armed the reservation, and `.diverged/` copies (which nothing restores from) or an unverifiable path check could hold a branch back for good.
+  - `resetToUpstream` indexes the upstream tree instead of comparing every ignored path against every tracked path, and lets git collapse wholly-ignored directories. The old scan blocked the event loop for minutes on a large ignored tree while holding the repo lock.
+  - Relocating `worktreeDir` no longer strands every existing trash entry as unrecognized content that is never reaped and never releases its pin ref. The restore destination is still confined to `worktreeDir`, checked where it is used.
+  - Force clean keeps recovery refs that a `.diverged/` directory still depends on, so it can no longer leave preserved files whose commits `git gc --prune=now` has already collected. It reports trash deletions from the reaper's own count and only purges repositories whose preview was shown in the confirmation.
+  - The fast-forward gate honours the repository's own `submodule.<name>.ignore` settings again. Overriding them there marked worktrees with vendored build output permanently dirty, so those branches silently stopped updating. Removal checks keep the stricter view: they still pass `--ignore-submodules=none`, which overrides `submodule.<name>.ignore` and `diff.ignoreSubmodules` and recurses into every submodule working tree. A worktree whose submodule is dirty therefore counts as unsafe to remove and is never auto-pruned, and repositories with many or large submodules pay that recursion on each removal check.
+  - A sync no longer proceeds when the trash listing fails outright. An unreadable trash root used to read as "nothing is reserved", so sync could create a worktree on a path a trashed payload was still waiting to be restored to, and the later restore failed with the only copy of that work inside the trash entry.
+  - The log panel keeps a scrolled-back position in range when the panel grows. Enlarging the terminal lowers the maximum offset, and a position left above it showed a part-empty panel in a window that was now tall enough to show everything below it. Following the tail and sitting at a chosen offset are one piece of state now, so no keystroke can write half of it.
+  - `.diverged-info.json` points at the recovery flow that actually applies to it. A trashed copy has no keep ref to release, so sending the reader to the keep-ref flow had them looking for something that was never created.
+  - The diverged-directory delete prompt in the TUI ignores further keys while a delete is running. Repeating `y` fired one removal per keypress, and `n`/ESC handed the list back mid-delete so the next confirmation showed "Deleting..." for an entry nothing was deleting.
+  - Force clean also keeps `keep/diverged-<timestamp>-<branch>` refs minted before this ref layout, matching them to their `.diverged/` directory by the sanitized branch name both carry. Those refs are the only thing holding the commits behind a preserved copy, and nothing else links them to it.
+
 ## 5.1.1
 
 ### Patch Changes
@@ -45,6 +69,7 @@
 - 6bf58b5: Support branch switching for clone-mode repositories in the interactive TUI.
 
   Previously a clone-mode repository tracked one fixed branch with no way to change it from the UI. Now the branch picker (`createWorktreeForBranch`) checks out the selected branch in place when the repository is in clone mode.
+
   - **`checkoutBranch(branch)`** on clone-mode repos reconfigures the single-branch fetch refspec, fetches the target branch, switches to it, and prunes stale `origin/*` remote-tracking refs left by the previous branch.
   - **`getRemoteBranches()`** now lists remote branches via `git ls-remote --heads` so the picker can show every branch without downloading object closure for each one.
   - **Legacy refspec narrowing:** existing single-branch clones get their refspec narrowed on sync so a fetch no longer pulls unrelated remote branches; shallow clones stay materialized to the tracked branch only.
@@ -52,6 +77,7 @@
 - 6bf58b5: Add optional periodic Git object-store maintenance (`git gc`).
 
   Over time a repository accumulates unreachable Git objects — clone mode leaves them behind when single-branch fetches narrow refs, and both modes churn objects as branches come and go. The new `maintenance` config block reclaims that storage and consolidates pack files on a schedule.
+
   - **New config (both modes):** `maintenance?: { enabled?: boolean; interval?: string; aggressive?: boolean }`, settable per repository or in `defaults`.
   - **Defaults:** `enabled: true`, `interval: "7d"`. With no config, repositories get a safe weekly `git gc`.
   - **When it runs:** at the tail of a _successful_ sync, inside the existing repository operation lock — so it never races a fetch, merge, branch checkout, or worktree add/remove. Throttled by `interval` via a timestamp persisted in the object store (`<bare-repo>/sync-worktrees-maintenance.json`, or `<worktreeDir>/.git/…` in clone mode), so throttling survives daemon restarts and repeated `runOnce` runs.
@@ -62,6 +88,7 @@
 - 6bf58b5: Fail-closed worktree removal pipeline.
 
   Worktree removal previously had paths where an error or ambiguous probe result could read as "safe to remove". Every check in the removal path now follows one rule: cannot verify → cannot remove.
+
   - **Status probes fail closed:** a filesystem error (EMFILE/EINTR/EACCES) while checking the worktree path or operation files (`MERGE_HEAD`, rebase state, …) now blocks removal instead of reporting a clean state. Only a genuine `ENOENT` counts as "directory gone".
   - **Unpushed detection checks both conditions:** removal requires `rev-list <branch> --not --remotes` = 0 **and** (when sync metadata exists) `rev-list <lastSyncCommit>..HEAD` = 0. Previously the metadata path silently replaced the any-remote check. Note: a worktree where you ever committed after the last sync stays un-prunable until removed manually — deliberate conservatism.
   - **Detached HEAD is never auto-removed:** it may sit on commits unreachable from any ref.
@@ -72,6 +99,7 @@
 - 6bf58b5: Reversible removals via a per-workspace trash folder.
 
   Every removal — age-based prune, orphan cleanup, and diverged-branch replacement — now moves the directory into `<worktreeDir>/.trash/<id>/payload/` instead of deleting it, with a JSON manifest recording the branch, reason, original path, size, and expiry. Each entry is retained 30 days on its own clock (`trash.retentionDays`), then deleted by a reaper that runs at the tail of a successful sync inside the repo lock. The reaper only touches manifested entries whose real path stays under the trash root, and each delete is gated on a durable audit-log record.
+
   - `trash` config (worktree mode only): `{ enabled: true, retentionDays: 30, warnSizeBytes?, migrateLegacy: true }`. Disabling restores direct deletion and leaves existing trash untouched.
   - A pin ref (`refs/sync-worktrees/trash/<id>`) keeps the trashed HEAD's objects alive through `git gc` for the retention window, so restore can recreate the branch at the exact commit even after the local and remote-tracking refs are gone.
   - Trash is deliberately not exposed over MCP: the agent-facing surface has no removal, listing, restore, or purge tools (the `remove_worktree` MCP tool is removed in the same release). Restore is a manual operation driven by the entry's `manifest.json` — see the README's "Trash and restore" section.
@@ -140,6 +168,7 @@
   - yargs is configured with `camel-case-expansion: false` and `strict()` — typos and removed flags fail loudly.
 
   ### Migration
+
   - Replace any single-repo CLI invocation with a config file (run `sync-worktrees init` to generate one).
   - Replace `sync-worktrees --list ...` with `sync-worktrees list ...`.
   - Move `--runOnce` to `defaults.runOnce: true` in the config file. (Per-repo `runOnce` only suppresses TUI cron scheduling for that one repo — to run the whole CLI as one-shot, set it under `defaults`.)
@@ -148,6 +177,7 @@
   - Move `--filter` (sync-run shard targeting) into the config file by maintaining narrower per-environment configs.
 
   ### Internals
+
   - New `ConfigFileNotFoundError` typed error in `src/errors`; `loadConfigFile` throws it instead of a stringly-typed `Error`.
   - `runSingleRepository`, `reconstructCliCommand`, `isInteractiveMode`, `CliOptions` extras removed.
   - `InteractiveUIService.ReloadOptions` removed (the TUI no longer carries CLI overrides).
@@ -164,6 +194,7 @@
 ### Patch Changes
 
 - 497c18e: Internal polish follow-up to the CLI collapse refactor:
+
   - Extract `fileExists()` helper, dedupe 8 inline `fs.access` existence checks across config + status paths.
   - Replace `InitConfigInput` interface with `Pick<RepositoryConfig, ...>` so init wizard input type auto-tracks `RepositoryConfig`.
   - Add `CLI_COMMANDS` const + discriminated `CliOptions` union; `main()` now uses `switch` with exhaustive `never` guard so future commands fail at compile time.
@@ -206,6 +237,7 @@
   Long bitbucket clones and fetches felt like a hang because the TUI showed `Cloning from "..."` and then went silent for minutes while git negotiated the pack and resolved deltas. Output was being captured by simple-git but never surfaced.
 
   Changes:
+
   - `GitService` now wires simple-git's `progress` plugin and passes `--progress` to `git clone` and `git fetch`. Per-stage events (`receiving`, `resolving`, `compressing`, `writing`) are throttled to one log line every 25% so the TUI keeps a live "↳ clone receiving: 50% (12345/24690)" trail without flooding the log.
   - Applies to bare clone (`initialize`), the post-init `--all` refresh, `fetchAll`, and `fetchBranch`.
   - Per-call `progressState` reset between fetches so the same stage reports fresh buckets each run.
@@ -219,6 +251,7 @@
   Sparse-checkout users in cone mode now avoid pointless `git merge --ff-only` work when the incoming commits only touch files outside the materialized include set — the working tree wouldn't have changed anyway. Saves LFS smudge, post-checkout hooks, and disk churn in monorepos that fan out one upstream into multiple sparse slices.
 
   Changes:
+
   - `SparseCheckoutConfig` gains `skipUpdateWhenOutsideSparse?: boolean` (default `true`). Set to `false` to keep HEAD strictly tracking remote even when no sparse files change.
   - New `SparseCheckoutService.pathsTouchSparse()` mirrors git's cone-mode materialization rules, including direct files in every ancestor of an included directory (e.g. include `tools/build` keeps `tools/foo.txt` checked out, so a change to that file still triggers an update).
   - New `GitService.getChangedPathsInRange()` runs `git -c core.quotePath=false diff --name-only --no-renames` between two refs. Returns `null` on git failure so the caller forces a safe update rather than silently skipping a behind worktree.
@@ -237,6 +270,7 @@
   Fetch operations (`git fetch`, `git clone`) had no timeout. A stalled SSH connection to the remote would leave the underlying `git`/`ssh` child processes sleeping forever; `pLimit` slots were held, `Promise.allSettled` never resolved, and the TUI status stayed on "Syncing..." indefinitely. If the parent process was killed, those child processes survived (reparented to PID 1) and a fresh process happily started overlapping fetches against the same bare repo.
 
   Changes:
+
   - `GitService` now constructs `simple-git` with `timeout: { block: ms }`. Inactivity beyond the window terminates the underlying `git` child via SIGINT (which propagates to its `ssh` transport via git's `cleanup_children_on_signal`).
   - New config knobs `fetchTimeoutMs` (default 5 min) and `cloneTimeoutMs` (default 15 min — clone can be silent longer during server-side pack resolution). Set to `0` to disable.
   - `WorktreeSyncService.sync()` now acquires a `proper-lockfile` lock on the bare repo's `HEAD` file. Concurrent runs from another process return `{ started: false, reason: "locked" }` and surface as a skipped repo in the orchestrator log instead of stomping on each other.
@@ -277,6 +311,7 @@
   `GitService.addWorktree` previously always attempted upstream tracking against `origin/<branch>`, even when the remote ref didn't exist (e.g. MCP `create_worktree` with `push: false` for a brand-new branch). Tracking failed and the code fell back to a non-tracking worktree add with a noisy warning.
 
   Now `addWorktree` probes both refs explicitly via `git show-ref --verify` and branches on `(localExists, remoteExists)`:
+
   - both exist → `worktree add` + `--set-upstream-to`
   - local-only → `worktree add` without upstream (push later via `pushBranch -u` to set tracking)
   - remote-only → `worktree add --track -b`
@@ -344,22 +379,27 @@
 - 345a430: Add interactive UI commands and improvements
 
   ### New UI Commands
+
   - Press `c` to open the **Branch Creation Wizard** - create and push new branches with validation
   - Press `o` to open the **Editor Wizard** - quickly open your editor in any worktree
   - Arrow keys to scroll through logs in the new **Log Panel**
 
   ### New Configuration Option
+
   - `filesToCopyOnBranchCreate` - specify files to automatically copy from the base branch when creating new branches (e.g., `.env.local`, config files)
 
   ### CLI Changes
+
   - Add `--sync-on-start` flag for config mode - UI now starts immediately without initial sync by default
   - Use `--sync-on-start` to restore previous behavior (sync on startup)
 
   ### New Services
+
   - `FileCopyService` - handles copying configured files to new branches
   - `triggerInitialSync()` public method on `InteractiveUIService`
 
   ### Internal Improvements
+
   - Event-based UI communication via `appEvents` utility
   - Enhanced logger with UI output function support
   - Git service additions: `branchExists`, `createBranch`, `pushBranch`
@@ -389,18 +429,21 @@
   ## Breaking Changes
 
   ### Test Framework: Jest → Vitest
+
   - Migrated all 31 test files to Vitest for native ESM support
   - Enables React component testing with ink-testing-library
   - **Impact**: CI/CD pipelines must update test commands
   - **Migration**: Replace `jest` with `vitest run`, `jest --watch` with `vitest`
 
   ### Build System: TypeScript Compiler → esbuild
+
   - Switched to esbuild for ESM bundling with better performance
   - Output is now single bundled file instead of transpiled modules
 
   ## New Features
 
   ### Interactive Terminal UI (ink-based)
+
   - **Real-time sync status display** with live updates showing idle/syncing state
   - **Keyboard controls**:
     - `?` or `h` - Toggle help modal
@@ -417,6 +460,7 @@
   Enhanced divergence handling to avoid unnecessary `.diverged` moves. Previously, when someone force-pushed a branch (e.g., after a rebase), sync-worktrees would move your worktree to `.diverged` even if you hadn't made any local changes - it was just a stale snapshot of the old remote state.
 
   **Changes:**
+
   - Checks if you've made local commits since last sync using metadata
   - If HEAD == lastSyncCommit: Just resets to new upstream (no local changes)
   - If HEAD != lastSyncCommit: Moves to `.diverged` (preserve your work)
@@ -434,11 +478,13 @@
   Fixed a critical bug where branches with slashes in their names (e.g., `fix/test-branch`, `feature/new-feature`) would incorrectly report "unpushed commits" even when they were cleanly synced and merged.
 
   **Root Cause:**
+
   - Git stores worktree metadata using the basename of the worktree path (e.g., `.git/worktrees/test-branch/`)
   - sync-worktrees was using the full branch name with slashes (e.g., `.git/worktrees/fix/test-branch/`)
   - This path mismatch caused metadata loading to fail, triggering false positives
 
   **Changes:**
+
   - Added path-based metadata methods that correctly derive the worktree directory name from the worktree path
   - All metadata operations now use `path.basename()` to match Git's internal structure
   - Added automatic migration from old incorrect paths to new correct paths
@@ -473,6 +519,7 @@
 ### Patch Changes
 
 - 19f4b8b: Improve core sync robustness and add targeted tests:
+
   - Fix branch-by-branch fetch to update remote refs (refs/remotes/origin/\*) instead of local branches; respect LFS skip.
   - Resolve actual gitdir in worktrees for operation-in-progress detection (handles .git file case).
   - Fallback to copy+remove when moving diverged worktrees across devices (EXDEV).
@@ -481,6 +528,7 @@
   - Always retain default branch even when branchMaxAge filtering is applied.
 
   Tests added:
+
   - fetchBranch remote ref behavior and LFS env usage.
   - hasOperationInProgress via .git file gitdir resolution.
   - getRemoteCommit uses bare repo for stability during divergence.
@@ -493,6 +541,7 @@
 ### Patch Changes
 
 - 7086452: Fix diverged branch detection and recovery mechanism
+
   - Improve `canFastForward` detection using merge-base comparison for more reliable divergence detection
   - Add recovery mechanism for fast-forward failures during updates
 
@@ -503,6 +552,7 @@
 ### Minor Changes
 
 - 22d406d: Add smart handling for rebased and force-pushed branches
+
   - Automatically detect when branches have been rebased or force-pushed
   - Reset branches to upstream when file content is identical (clean rebase)
   - Move branches with diverged content to `.diverged` directory
@@ -518,6 +568,7 @@
 ### Patch Changes
 
 - 5479f0b: fix: handle detached HEAD worktrees and skip metadata for main worktree
+
   - Add detached HEAD detection to prevent ambiguous argument errors
   - Skip metadata operations for the main worktree (not in worktrees dir)
   - Update worktree parsing to exclude detached HEAD worktrees
@@ -565,11 +616,13 @@
   Sync-worktrees now tracks synchronization metadata for each worktree, storing information about the last synced commit. This enables accurate detection of truly unpushed commits when a branch's upstream has been deleted (e.g., after squash merge).
 
   **Benefits:**
+
   - Accurately detects new commits made after the upstream was deleted
   - Allows safe cleanup of worktrees whose changes were already integrated via squash merge
   - Prevents false positives where all commits appeared as "unpushed" after upstream deletion
 
   **Technical details:**
+
   - Metadata is stored in Git's worktree directory: `.git/worktrees/[worktree-name]/sync-metadata.json`
   - Automatically created when adding worktrees and updated during sync operations
   - Backward compatible - works seamlessly with existing setups
@@ -609,6 +662,7 @@
 - d9b1690: Fix: Filter out origin/HEAD from branch synchronization
 
   Previously, the tool would attempt to create a worktree for the special `origin/HEAD` reference, which would fail with the error "'HEAD' is not a valid branch name". This fix ensures that:
+
   - `origin/HEAD` is filtered out when listing remote branches
   - No worktree creation is attempted for HEAD references
   - The tool can be run multiple times without errors
@@ -659,6 +713,7 @@
 - 95690df: Fix worktrees to properly track remote branches
 
   Worktrees created by sync-worktrees now have proper upstream tracking configured, allowing `git pull` to work without specifying the remote and branch. This was the expected behavior and improves the Git workflow experience when working with synced worktrees.
+
   - Worktrees are now created with `--track` flag to automatically set up tracking
   - If a local branch already exists, upstream tracking is configured after worktree creation
   - Fallback to non-tracking worktree creation if remote branch doesn't exist yet
@@ -668,6 +723,7 @@
 ### Minor Changes
 
 - 2db3401: feat: add comprehensive safety checks to prevent accidental worktree deletion
+
   - Added stash detection to preserve worktrees with stashed changes
   - Added submodule modification detection to protect worktrees with dirty submodules
   - Added Git operation detection (merge, rebase, cherry-pick, bisect, revert) to prevent deletion during ongoing operations
@@ -756,6 +812,7 @@
 ### Minor Changes
 
 - 8e9ad44: Add config file support for managing multiple repositories
+
   - Added support for JavaScript configuration files to manage multiple repositories with different settings
   - New CLI options: `--config` to specify config file, `--filter` to select specific repositories, and `--list` to show configured repositories
   - Interactive mode now prompts users to save their configuration to a file for future use
@@ -786,6 +843,7 @@
 ### Patch Changes
 
 - 8e9ad44: Fix worktree sync failing on restart due to orphaned directories
+
   - Changed worktree detection to use Git's actual worktree list (`git worktree list`) instead of filesystem directories
   - Added automatic cleanup of orphaned directories that exist on disk but aren't registered Git worktrees
   - Fixed the error "fatal: '/path/to/worktree' already exists" that occurred when restarting after directories were left behind

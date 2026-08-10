@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Box, useInput, useWindowSize } from "ink";
+import { Box, useInput, useStdout, useWindowSize } from "ink";
 import StatusBar from "./StatusBar";
 import HelpModal from "./HelpModal";
 import BranchCreationWizard from "./BranchCreationWizard";
 import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
+import ForceCleanModal from "./ForceCleanModal";
 import LogPanel from "./LogPanel";
+import { MOUSE_TRACKING_DISABLE, MOUSE_TRACKING_ENABLE, isMouseSequence } from "../utils/mouse";
 import type { AppEventEmitter } from "../utils/app-events";
 import type { AppSyncProgress } from "../utils/app-events";
 import type {
@@ -14,6 +16,8 @@ import type {
   DivergedDirectoryInfo,
   RepositoryListEntry,
   RepositoryDiskUsage,
+  ForceCleanRepositoryPreview,
+  ForceCleanRepositoryResult,
 } from "../types";
 
 export type { HookContext, WorktreeStatusEntry };
@@ -49,6 +53,8 @@ export interface AppProps {
   getWorktreeStatusForRepo?: (index: number) => Promise<WorktreeStatusEntry[]>;
   getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
   deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
+  getForceCleanPreview?: () => Promise<ForceCleanRepositoryPreview[]>;
+  forceClean?: (repoIndexes: number[]) => Promise<ForceCleanRepositoryResult[]>;
 }
 
 export interface LogEntry {
@@ -83,11 +89,14 @@ const App: React.FC<AppProps> = ({
   getWorktreeStatusForRepo,
   getDivergedDirectoriesForRepo,
   deleteDivergedDirectory,
+  getForceCleanPreview,
+  forceClean,
 }) => {
   const [showHelp, setShowHelp] = useState(false);
   const [showBranchWizard, setShowBranchWizard] = useState(false);
   const [showOpenEditorWizard, setShowOpenEditorWizard] = useState(false);
   const [showWorktreeStatus, setShowWorktreeStatus] = useState(false);
+  const [showForceClean, setShowForceClean] = useState(false);
   const [status, setStatus] = useState<"idle" | "syncing">("idle");
   // Interactive operations (branch/worktree creation) run independently of sync and
   // queue behind it. Tracked separately so they don't drive the sync `status` spinner.
@@ -101,6 +110,16 @@ const App: React.FC<AppProps> = ({
   const [schedule, setSchedule] = useState(cronSchedule);
 
   const { rows } = useWindowSize();
+  const { write } = useStdout();
+
+  // Terminals only report the wheel while tracking is on, and it must be turned
+  // back off on exit or the shell inherits a terminal that swallows clicks.
+  useEffect(() => {
+    write(MOUSE_TRACKING_ENABLE);
+    return () => {
+      write(MOUSE_TRACKING_DISABLE);
+    };
+  }, [write]);
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     setLogs((prev) => {
@@ -124,6 +143,10 @@ const App: React.FC<AppProps> = ({
   addLogRef.current = addLog;
 
   useInput((input, key) => {
+    // Mouse reports reach every useInput; only the scrollable panel acts on
+    // them, and no shortcut here should fire off a stray click.
+    if (isMouseSequence(input)) return;
+
     if (showHelp) {
       if (input === "?" || input === "h" || key.escape) {
         setShowHelp(false);
@@ -131,7 +154,7 @@ const App: React.FC<AppProps> = ({
       return;
     }
 
-    if (showBranchWizard || showOpenEditorWizard || showWorktreeStatus) {
+    if (showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean) {
       return;
     }
 
@@ -145,6 +168,8 @@ const App: React.FC<AppProps> = ({
       setShowOpenEditorWizard(true);
     } else if (input === "w" && getWorktreeStatusForRepo) {
       setShowWorktreeStatus(true);
+    } else if (input === "x" && getForceCleanPreview && forceClean && status !== "syncing") {
+      setShowForceClean(true);
     } else if (input === "s" && status !== "syncing") {
       setStatus("syncing");
       (async () => {
@@ -167,12 +192,6 @@ const App: React.FC<AppProps> = ({
       })().catch((err) => console.error("Reload unhandled error:", err));
     }
   });
-
-  const updateLastSyncTime = useCallback(() => {
-    setLastSyncTime(new Date());
-    setStatus("idle");
-    setSyncProgressEntries([]);
-  }, []);
 
   useEffect(() => {
     const unsubscribers = [
@@ -231,7 +250,7 @@ const App: React.FC<AppProps> = ({
   const statusBarHeight = 5 + progressLineCount + activeOps.length;
   const terminalRows = rows ?? 24;
   const logPanelHeight = Math.max(5, terminalRows - statusBarHeight);
-  const showModal = showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus;
+  const showModal = showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean;
 
   return (
     <Box flexDirection="column" minHeight={terminalRows}>
@@ -307,6 +326,14 @@ const App: React.FC<AppProps> = ({
           getDivergedDirectoriesForRepo={getDivergedDirectoriesForRepo}
           deleteDivergedDirectory={deleteDivergedDirectory}
           onClose={() => setShowWorktreeStatus(false)}
+        />
+      )}
+
+      {showForceClean && getForceCleanPreview && forceClean && (
+        <ForceCleanModal
+          getPreview={getForceCleanPreview}
+          forceClean={forceClean}
+          onClose={() => setShowForceClean(false)}
         />
       )}
 

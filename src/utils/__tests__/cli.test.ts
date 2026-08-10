@@ -56,6 +56,24 @@ describe("parseArguments", () => {
     expect(opts.filter).toBe("backend-*");
   });
 
+  it("parses trash listing and restore options", () => {
+    const list = parseArguments(["trash", "--filter", "backend"]);
+    if (list.command !== "trash") throw new Error("expected trash command");
+    expect(list).toMatchObject({ filter: "backend", restore: undefined });
+
+    const restore = parseArguments(["trash", "--filter", "backend", "--restore", "entry-id"]);
+    if (restore.command !== "trash") throw new Error("expected trash command");
+    expect(restore.restore).toBe("entry-id");
+
+    const drop = parseArguments(["trash", "--filter", "backend", "--dropKeepRef", "keep-id"]);
+    if (drop.command !== "trash") throw new Error("expected trash command");
+    expect(drop.dropKeepRef).toBe("keep-id");
+  });
+
+  it("rejects conflicting trash mutations", () => {
+    expect(() => parseArguments(["trash", "--restore", "entry", "--dropKeepRef", "keep"])).toThrow(/process\.exit/);
+  });
+
   it("rejects removed flag --repoUrl under strict()", () => {
     expect(() => parseArguments(["--repoUrl", "https://example.com/repo.git"])).toThrow(/process\.exit/);
   });

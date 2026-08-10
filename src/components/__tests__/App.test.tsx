@@ -30,6 +30,36 @@ describe("App", () => {
       openTerminalInWorktree: vi.fn().mockReturnValue({ success: true }),
       createWorktreeForBranch: vi.fn().mockResolvedValue(undefined),
       getWorktreeStatusForRepo: vi.fn().mockResolvedValue([]),
+      getForceCleanPreview: vi.fn().mockResolvedValue([
+        {
+          repoIndex: 0,
+          repoName: "test-repo",
+          preview: {
+            trashEntries: 2,
+            trashBytes: 1024,
+            unknownTrashSizes: 0,
+            invalidTrashEntries: 1,
+            keepRefs: 1,
+          },
+        },
+      ]),
+      forceClean: vi.fn().mockResolvedValue([
+        {
+          repoIndex: 0,
+          repoName: "test-repo",
+          result: {
+            trashEntries: 0,
+            trashBytes: 0,
+            unknownTrashSizes: 0,
+            invalidTrashEntries: 1,
+            keepRefs: 0,
+            trashDeleted: 2,
+            keepRefsDeleted: 1,
+            gcSucceeded: true,
+            errors: [],
+          },
+        },
+      ]),
     };
   });
 
@@ -322,6 +352,35 @@ describe("App", () => {
       expect(lastFrame()).toContain("Worktree Status");
     });
 
+    it("previews and confirms force clean with x then y", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+
+      stdin.write("x");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Force Clean");
+      expect(lastFrame()).toContain("2 trash");
+      expect(lastFrame()).toContain("1 skipped invalid");
+
+      stdin.write("y");
+      await waitForStateUpdate();
+
+      expect(defaultProps.forceClean).toHaveBeenCalledTimes(1);
+      expect(lastFrame()).toContain("deleted 2 trash and 1 refs");
+    });
+
+    it("cancels force clean with n", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+
+      stdin.write("x");
+      await waitForStateUpdate();
+      stdin.write("n");
+      await waitForStateUpdate();
+
+      expect(defaultProps.forceClean).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("Force Clean");
+    });
+
     it("should not call onReload when syncing is in progress", async () => {
       const onReload = vi.fn();
       const { stdin } = render(<App {...defaultProps} onReload={onReload} />);
@@ -545,6 +604,57 @@ describe("App", () => {
       expect(frame).toContain("First log");
       expect(frame).toContain("Second log");
       expect(frame).toContain("Third log");
+    });
+  });
+  describe("mouse wheel", () => {
+    const ESC = String.fromCharCode(27);
+    const wheelUp = `${ESC}[<64;10;5M`;
+
+    const fillLogs = async (): Promise<void> => {
+      for (let i = 0; i < 40; i++) {
+        appEvents.emit("addLog", { message: `Log line ${i}`, level: "info" });
+      }
+      await waitForStateUpdate();
+    };
+
+    it("scrolls the log panel with the wheel", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      await fillLogs();
+      expect(lastFrame()).toContain("Log line 39");
+
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("Log line 39");
+    });
+
+    // The whole point of the guard: a mouse report is one `input` string, and
+    // anything that echoes input would otherwise paint the escape sequence.
+    it("never renders a mouse report as text", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      await fillLogs();
+
+      stdin.write(wheelUp);
+      stdin.write(`${ESC}[<0;10;5M`);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("[<");
+      expect(lastFrame()).not.toContain("64;10;5");
+    });
+
+    // A stray click must not trip a single-key shortcut such as quit.
+    it("does not fire shortcuts on a click report", async () => {
+      const { stdin } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      stdin.write(`${ESC}[<0;10;5M`);
+      stdin.write(`${ESC}[<0;10;5m`);
+      await waitForStateUpdate();
+
+      expect(defaultProps.onQuit).not.toHaveBeenCalled();
+      expect(defaultProps.onManualSync).not.toHaveBeenCalled();
     });
   });
 });

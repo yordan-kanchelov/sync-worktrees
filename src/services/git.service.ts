@@ -156,7 +156,7 @@ export class GitService {
     // Check if main worktree exists
     let needsMainWorktree = true;
     try {
-      const worktrees = await this.getWorktreesFromBare(bareGit);
+      const worktrees = await this.getWorktreesFromBare(bareGit, true);
       needsMainWorktree = !worktrees.some((w) => path.resolve(w.path) === path.resolve(this.mainWorktreePath));
     } catch {
       // If worktree list fails, assume we need main worktree
@@ -207,7 +207,7 @@ export class GitService {
       }
 
       // Ensure the worktree is registered by checking it exists in the list
-      const updatedWorktrees = await this.getWorktreesFromBare(bareGit);
+      const updatedWorktrees = await this.getWorktreesFromBare(bareGit, true);
       const mainWorktreeRegistered = updatedWorktrees.some(
         (w) => path.resolve(w.path) === path.resolve(this.mainWorktreePath),
       );
@@ -531,7 +531,7 @@ export class GitService {
     try {
       await fs.access(absoluteWorktreePath);
       // Directory exists - check if it's already a valid worktree
-      const worktrees = await this.getWorktreesFromBare(bareGit);
+      const worktrees = await this.getWorktreesFromBare(bareGit, true);
       const isValidWorktree = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
 
       if (isValidWorktree) {
@@ -595,7 +595,7 @@ export class GitService {
       // Check if this is an "already registered" error
       if (errorMessage.includes("already registered worktree")) {
         // Check if worktree was actually created by a concurrent operation
-        const worktrees = await this.getWorktreesFromBare(bareGit);
+        const worktrees = await this.getWorktreesFromBare(bareGit, true);
         const existingWorktree = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
 
         if (existingWorktree && !existingWorktree.isPrunable) {
@@ -603,8 +603,14 @@ export class GitService {
           return;
         }
 
-        this.logger.warn(`  - Worktree already registered but missing. Pruning and retrying...`);
-        await bareGit.raw(["worktree", "prune"]);
+        this.logger.warn(`  - Worktree already registered but missing. Removing that registration and retrying...`);
+        try {
+          await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
+        } catch (removalError) {
+          this.logger.warn(
+            `  - Failed to remove stale registration for '${absoluteWorktreePath}': ${getErrorMessage(removalError)}. Continuing with directory cleanup and retry.`,
+          );
+        }
         await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
         let retryCreatedNewBranch = false;
         try {
@@ -616,7 +622,7 @@ export class GitService {
             localBranchExists,
             remoteBranchExists,
           );
-          this.logger.info(`  - Created worktree for '${branchName}' after pruning`);
+          this.logger.info(`  - Created worktree for '${branchName}' on retry`);
 
           if (!this.isLfsSkipEnabled()) {
             await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
@@ -631,7 +637,7 @@ export class GitService {
           }
           return;
         } catch (retryError) {
-          this.logger.error(`  - Failed to create worktree after pruning: ${retryError}`);
+          this.logger.error(`  - Failed to create worktree on retry: ${retryError}`);
           throw retryError;
         }
       }
@@ -656,7 +662,7 @@ export class GitService {
       try {
         await fs.access(absoluteWorktreePath);
         // Directory exists - check if it's already a valid worktree
-        const worktrees = await this.getWorktreesFromBare(bareGit);
+        const worktrees = await this.getWorktreesFromBare(bareGit, true);
         const isValidWorktree = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
 
         if (isValidWorktree) {
@@ -699,7 +705,7 @@ export class GitService {
 
         // If fallback also fails with "already registered", check if created by concurrent op
         if (fallbackErrorMessage.includes("already registered worktree")) {
-          const worktrees = await this.getWorktreesFromBare(bareGit);
+          const worktrees = await this.getWorktreesFromBare(bareGit, true);
           const existingWorktree = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
 
           if (existingWorktree && !existingWorktree.isPrunable) {
@@ -927,6 +933,20 @@ export class GitService {
   // A stale directory that contains a .git may be a live checkout that git
   // failed to report; quarantine it instead of deleting.
   private async clearStaleWorktreeDirectory(absoluteWorktreePath: string): Promise<void> {
+    // Nothing at the path means nothing to clear. Falling through would hand a
+    // missing directory to the trasher, which fails with ENOENT and turns a
+    // recoverable stale registration into a permanent creation failure.
+    const dirProbe = await probePathExists(absoluteWorktreePath);
+    if (dirProbe === "missing") {
+      return;
+    }
+    if (dirProbe === "unknown") {
+      throw new GitOperationError(
+        "clear-stale-directory",
+        `Cannot verify whether '${absoluteWorktreePath}' still exists; refusing to clear it`,
+      );
+    }
+
     const gitProbe = await probePathExists(path.join(absoluteWorktreePath, PATH_CONSTANTS.GIT_DIR));
 
     if (gitProbe === "unknown") {
@@ -1265,10 +1285,72 @@ export class GitService {
     }
   }
 
-  async resetToUpstream(worktreePath: string, branch: string): Promise<void> {
-    const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
+  // Would checking out `origin/<branch>` write over something git is currently
+  // ignoring? Comparing every ignored path against every upstream path is
+  // O(ignored x upstream) and runs synchronously with the repo lock held, which
+  // is minutes of a blocked event loop on a monorepo. Index the upstream tree
+  // once instead, then answer each ignored path in constant time per segment.
+  private wouldOverwriteIgnoredPaths(ignoredRaw: string, upstreamRaw: string): boolean {
+    const upstreamFiles = new Set<string>();
+    // Files plus every ancestor directory: membership then means "upstream has
+    // content at this path or somewhere beneath it".
+    const upstreamPaths = new Set<string>();
+    for (const upstreamPath of upstreamRaw.split("\0")) {
+      if (!upstreamPath) continue;
+      upstreamFiles.add(upstreamPath);
+      upstreamPaths.add(upstreamPath);
+      for (let slash = upstreamPath.indexOf("/"); slash !== -1; slash = upstreamPath.indexOf("/", slash + 1)) {
+        upstreamPaths.add(upstreamPath.slice(0, slash));
+      }
+    }
 
-    await worktreeGit.reset(["--hard", `origin/${branch}`]);
+    for (const entry of ignoredRaw.split("\0")) {
+      if (!entry) continue;
+      // `--directory` reports collapsed directories with a trailing slash.
+      const localPath = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+      if (upstreamPaths.has(localPath)) return true;
+      // The reverse shadowing case: upstream has a file (or submodule) exactly
+      // where this ignored path sits inside a directory.
+      for (let slash = localPath.indexOf("/"); slash !== -1; slash = localPath.indexOf("/", slash + 1)) {
+        if (upstreamFiles.has(localPath.slice(0, slash))) return true;
+      }
+    }
+    return false;
+  }
+
+  async resetToUpstream(worktreePath: string, branch: string, expectedHead?: string): Promise<boolean> {
+    const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
+    const status = await worktreeGit.status(["--ignore-submodules=none"]);
+    if (!status.isClean()) return false;
+
+    // `--directory` collapses a wholly-ignored directory to one entry, so a
+    // node_modules with 150k files costs one path instead of 150k. Directories
+    // that also hold tracked files are still expanded, so nothing is missed.
+    const [ignoredRaw, upstreamRaw] = await Promise.all([
+      worktreeGit.raw([
+        "ls-files",
+        "-z",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "--no-empty-directory",
+      ]),
+      worktreeGit.raw(["ls-tree", "-rz", "--name-only", `origin/${branch}`]),
+    ]);
+    if (this.wouldOverwriteIgnoredPaths(ignoredRaw, upstreamRaw)) return false;
+
+    if (expectedHead) {
+      const currentHead = (await worktreeGit.revparse(["HEAD"])).trim();
+      if (currentHead !== expectedHead) return false;
+    }
+
+    try {
+      await worktreeGit.raw(["checkout", "-B", branch, `origin/${branch}`, "--no-overwrite-ignore"]);
+    } catch (error) {
+      if (/would be overwritten by checkout/i.test(getErrorMessage(error))) return false;
+      throw error;
+    }
 
     // Update metadata after reset (use path-based method)
     try {
@@ -1283,6 +1365,7 @@ export class GitService {
     } catch (metadataError) {
       this.logger.warn(`Failed to update metadata after reset: ${metadataError}`);
     }
+    return true;
   }
 
   async getCurrentCommit(worktreePath: string): Promise<string> {
@@ -1363,13 +1446,14 @@ export class GitService {
 
   private async getWorktreesFromBare(
     bareGit: SimpleGit,
+    includeDetached = false,
   ): Promise<{ path: string; branch: string; isPrunable?: boolean }[]> {
     const result = await bareGit.raw(["worktree", "list", "--porcelain"]);
     return parseWorktreeListPorcelain(result)
-      .filter((w) => !w.detached && w.branch !== null)
+      .filter((w) => includeDetached || (!w.detached && w.branch !== null))
       .map((w) => ({
         path: w.path,
-        branch: w.branch as string,
+        branch: w.branch ?? "",
         isPrunable: w.prunable,
       }));
   }
