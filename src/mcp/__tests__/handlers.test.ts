@@ -14,10 +14,10 @@ import {
 import { formatErrorResponse } from "../utils";
 
 import type { Capabilities, DiscoveredRepoContext, RepositoryContext } from "../context";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 
 async function invoke<T>(
-  handler: (ctx: RepositoryContext, params: T, extra?: any) => Promise<CallToolResult>,
+  handler: (ctx: RepositoryContext, params: T, handlerContext?: any) => Promise<CallToolResult>,
   ctx: RepositoryContext,
   params: T,
 ): Promise<CallToolResult> {
@@ -199,7 +199,13 @@ function makeCtx(opts: {
 }
 
 function parseResponse(result: any): any {
-  return JSON.parse(result.content[0].text);
+  const parsed = JSON.parse(result.content[0].text);
+  // Every tool advertises an outputSchema, so a success result must also carry
+  // structuredContent — the SDK turns a result that omits it into an error.
+  if (result.isError !== true) {
+    expect(result.structuredContent).toEqual(parsed);
+  }
+  return parsed;
 }
 
 describe("handleListWorktrees", () => {
@@ -753,15 +759,19 @@ describe("handleSync", () => {
       return { started: true };
     });
 
-    const sendNotification = vi.fn<any>().mockResolvedValue(undefined);
-    const extra = { _meta: { progressToken: "tok-1" }, sendNotification };
-    await handleSync(ctx, {}, extra as any);
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    const handlerContext = { mcpReq: { _meta: { progressToken: "tok-1" }, notify } };
+    await handleSync(ctx, {}, handlerContext as any);
 
-    expect(sendNotification).toHaveBeenCalledTimes(2);
-    const firstCall = sendNotification.mock.calls[0][0] as { params: { message: string } };
-    const secondCall = sendNotification.mock.calls[1][0] as { params: { message: string } };
-    expect(firstCall.params.message).toContain("[fetch]");
-    expect(secondCall.params.message).toContain("[create]");
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(notify).toHaveBeenNthCalledWith(1, {
+      method: "notifications/progress",
+      params: { progressToken: "tok-1", progress: 1, message: "[fetch] Fetching" },
+    });
+    expect(notify).toHaveBeenNthCalledWith(2, {
+      method: "notifications/progress",
+      params: { progressToken: "tok-1", progress: 2, message: "[create] Creating" },
+    });
   });
 
   it("unsubscribes progress listener even when sync throws", async () => {
@@ -770,9 +780,10 @@ describe("handleSync", () => {
     service.onProgress = vi.fn<any>().mockReturnValue(unsubscribe);
     service.sync.mockRejectedValue(new Error("boom"));
 
-    const sendNotification = vi.fn<any>().mockResolvedValue(undefined);
-    const extra = { _meta: { progressToken: "tok-1" }, sendNotification };
-    await expect(handleSync(ctx, {}, extra as any)).rejects.toThrow("boom");
+    const handlerContext = {
+      mcpReq: { _meta: { progressToken: "tok-1" }, notify: vi.fn<any>().mockResolvedValue(undefined) },
+    };
+    await expect(handleSync(ctx, {}, handlerContext as any)).rejects.toThrow("boom");
     expect(unsubscribe).toHaveBeenCalled();
   });
 });
@@ -808,13 +819,14 @@ describe("handleInitialize", () => {
       for (const l of progressListeners) l({ phase: "initialize", message: "Initializing repository" });
     });
 
-    const sendNotification = vi.fn<any>().mockResolvedValue(undefined);
-    const extra = { _meta: { progressToken: "init-1" }, sendNotification };
-    await handleInitialize(ctx, {}, extra as any);
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    const handlerContext = { mcpReq: { _meta: { progressToken: "init-1" }, notify } };
+    await handleInitialize(ctx, {}, handlerContext as any);
 
-    expect(sendNotification).toHaveBeenCalled();
-    const call = sendNotification.mock.calls[0][0] as { params: { message: string } };
-    expect(call.params.message).toContain("[initialize]");
+    expect(notify).toHaveBeenCalledWith({
+      method: "notifications/progress",
+      params: { progressToken: "init-1", progress: 1, message: "[initialize] Initializing repository" },
+    });
   });
 });
 
