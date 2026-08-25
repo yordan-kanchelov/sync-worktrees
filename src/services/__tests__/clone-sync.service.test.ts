@@ -455,6 +455,49 @@ describe("CloneSyncService", () => {
 
       expect(copyFilesSpy).not.toHaveBeenCalled();
     });
+
+    it("refuses to proceed when the pre-clone directory probe fails for a non-ENOENT reason (#review)", async () => {
+      const eacces = new Error("permission denied") as NodeJS.ErrnoException;
+      eacces.code = "EACCES";
+      (fs.readdir as unknown as Mock).mockRejectedValueOnce(eacces);
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      // A transient probe failure must never be read as "directory did not
+      // exist" — that authorization later lets a failed clone rm -rf a
+      // pre-existing directory.
+      await expect(service.initialize()).rejects.toBeInstanceOf(GitOperationError);
+      expect(gitMock.clone).not.toHaveBeenCalled();
+      expect(fs.rm).not.toHaveBeenCalled();
+    });
+
+    it("completes an interrupted init's pending file copy when adopting the existing clone (#review)", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+      (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+      // Pending marker present (init was interrupted after the clone), final
+      // marker absent (the copy never ran).
+      (fs.access as unknown as Mock).mockImplementation(async (p: unknown) => {
+        if (String(p).endsWith(".pending")) return;
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      });
+
+      const branchCreatedActions = new BranchCreatedActionsService();
+      const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+
+      const service = new CloneSyncService(
+        makeConfig({ filesToCopyOnBranchCreate: ["CLAUDE.md"] }),
+        buildGitService(),
+        logger,
+        { branchCreatedActions },
+      );
+
+      await service.initialize();
+
+      expect(copyFilesSpy).toHaveBeenCalledTimes(1);
+      expect(fs.rm).toHaveBeenCalledWith(expect.stringContaining(".pending"), { force: true });
+    });
   });
 
   describe("getWorktrees", () => {
@@ -849,6 +892,31 @@ describe("CloneSyncService", () => {
         "--progress",
         "+refs/heads/main:refs/remotes/origin/main",
       ]);
+    });
+
+    it("soft-skips with missing_remote_ref when the unshallow fetch hits a deleted tracked branch (#review)", async () => {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "true\n";
+        if (key.startsWith("remote get-url origin")) return "https://github.com/example/repo.git";
+        return "";
+      });
+      gitMock.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/main"));
+      const skips: CloneSkipReason[] = [];
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger, {
+        onSkip: (reason) => skips.push(reason),
+      });
+      setInitialized(service);
+
+      // The unshallow fetch uses the narrowed refspec, so a deleted tracked
+      // branch must become the same soft skip as the branch fetch — not a
+      // hard sync failure unique to shallow clones.
+      await expect(service.runSyncAttempt()).resolves.toBeUndefined();
+
+      expect(skips).toEqual([{ kind: "missing_remote_ref", branch: "main", source: "fetch_error" }]);
+      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+      expect(gitMock.merge).not.toHaveBeenCalled();
     });
 
     it("does not unshallow when depth is configured", async () => {

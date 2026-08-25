@@ -210,6 +210,30 @@ export class TrashService {
         );
       }
     }
+    // headOid was resolved before the (potentially slow) size scan and bundle
+    // above. A commit made in that window would lose every protection at once
+    // — pin, bundle, worktree reflog, branch ref — the moment the removal
+    // pipeline runs `branch -D`, so re-verify HEAD and fail closed while the
+    // source directory is still untouched. Explicit-headOid callers (legacy
+    // adoption) are exempt: their source is not a live worktree.
+    if (headOid !== null && options.headOid === undefined) {
+      let currentHead: string | null;
+      try {
+        currentHead = (await this.gitService.getCurrentCommit(options.dirPath)).trim();
+      } catch {
+        currentHead = null;
+      }
+      if (currentHead !== headOid) {
+        await this.undoPartialTrash(containerPath, pinRef);
+        throw new TrashOperationError(
+          "trash-directory",
+          `HEAD of '${options.dirPath}' ${
+            currentHead === null ? "could no longer be resolved" : `moved from ${headOid} to ${currentHead}`
+          } during trash preparation; aborting removal`,
+        );
+      }
+    }
+
     const payloadPath = path.join(containerPath, TRASH_CONSTANTS.PAYLOAD_DIRNAME);
     manifest.pinRef = pinRef;
     manifest.bundleFile = bundleFile;

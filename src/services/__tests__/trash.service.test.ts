@@ -146,6 +146,34 @@ describe("TrashService", () => {
       expect(trashContents).toEqual([]);
       expect(gitStub.deleteRef).toHaveBeenCalledWith(expect.stringContaining(GIT_CONSTANTS.TRASH_REF_PREFIX));
     });
+
+    it("aborts and rolls back when HEAD moves between resolution and the payload move (commit made mid-trash)", async () => {
+      // First resolution pins abc123; the pre-rename re-check sees a new
+      // commit the user made during the (slow) size scan / bundle window.
+      gitStub.getCurrentCommit.mockResolvedValueOnce("abc123").mockResolvedValueOnce("def456");
+      const source = await makeSourceDir("racing-commit");
+
+      await expect(
+        service.trashDirectory({ dirPath: source, branch: "racing-commit", reason: "prune" }),
+      ).rejects.toBeInstanceOf(TrashOperationError);
+
+      // Source untouched, no trash container left behind, pin rolled back.
+      await expect(fs.access(source)).resolves.toBeUndefined();
+      const trashContents = await fs.readdir(service.getTrashRoot()).catch(() => []);
+      expect(trashContents).toEqual([]);
+      expect(gitStub.deleteRef).toHaveBeenCalledWith(expect.stringContaining(GIT_CONSTANTS.TRASH_REF_PREFIX));
+    });
+
+    it("aborts when HEAD can no longer be resolved at the pre-rename re-check", async () => {
+      gitStub.getCurrentCommit.mockResolvedValueOnce("abc123").mockRejectedValueOnce(new Error("gone"));
+      const source = await makeSourceDir("vanishing-head");
+
+      await expect(
+        service.trashDirectory({ dirPath: source, branch: "vanishing-head", reason: "prune" }),
+      ).rejects.toBeInstanceOf(TrashOperationError);
+
+      await expect(fs.access(source)).resolves.toBeUndefined();
+    });
   });
 
   describe("trashAndUnregisterWorktree", () => {

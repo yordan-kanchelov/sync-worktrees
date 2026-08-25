@@ -471,6 +471,12 @@ export class WorktreeSyncService {
       // a losing concurrent caller clearing the shared accumulator would
       // silently truncate the winner's skips payload.
       this.clearRecordedSkips();
+      // A pendingInitSkip minted by an earlier standalone initialize() must
+      // not leak into this operation: its skip record was just wiped above,
+      // and consuming the stale token would suppress the re-detection in
+      // runSyncAttempt — the sync would then report clean with zero actions.
+      // The in-operation init below re-arms the token when it still applies.
+      this.clearPendingInitSkip();
       const totalTimer = new Timer();
       const phaseTimer = new PhaseTimer();
       const outcome = new SyncOutcomeAccumulator({

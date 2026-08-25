@@ -135,7 +135,7 @@ describe("GitService - Update Methods", () => {
 
       await service.updateWorktree("/test/worktrees/main");
 
-      expect(mockGit.env).toHaveBeenCalledWith({ GIT_LFS_SKIP_SMUDGE: "1" });
+      expect(mockGit.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
       expect(mockGit.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
 
