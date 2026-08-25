@@ -27,6 +27,7 @@ function makeGitStub() {
     resetWorktreeIndex: vi.fn<any>().mockResolvedValue(undefined),
     removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
     deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
+    deleteLocalBranchIfAt: vi.fn<any>().mockResolvedValue(undefined),
   };
 }
 
@@ -189,10 +190,30 @@ describe("TrashService", () => {
       expect(branchRefError).toBeUndefined();
       await expect(fs.access(entry.payloadPath)).resolves.toBeUndefined();
       expect(gitStub.removeWorktree).toHaveBeenCalledWith(source, { force: true });
-      expect(gitStub.deleteLocalBranch).toHaveBeenCalledWith("feature-seq");
+      // Conditional delete: the ref goes only while it still points at the
+      // verified HEAD, so a commit racing the removal keeps its branch.
+      expect(gitStub.deleteLocalBranchIfAt).toHaveBeenCalledWith("feature-seq", "abc123");
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
       expect(gitStub.removeWorktree.mock.invocationCallOrder[0]).toBeLessThan(
-        gitStub.deleteLocalBranch.mock.invocationCallOrder[0],
+        gitStub.deleteLocalBranchIfAt.mock.invocationCallOrder[0],
       );
+    });
+
+    it("keeps the branch ref (leftover warning) when it moved between HEAD verification and deletion", async () => {
+      // The CAS delete refuses because the ref no longer points at the
+      // verified oid — the racing commit must keep its branch.
+      gitStub.deleteLocalBranchIfAt.mockRejectedValue(new Error("ref value mismatch"));
+      const source = await makeSourceDir("racing-ref");
+
+      const { entry, branchRefError } = await service.trashAndUnregisterWorktree({
+        dirPath: source,
+        branch: "racing-ref",
+        reason: "prune",
+      });
+
+      expect(branchRefError).toContain("ref value mismatch");
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
+      await expect(fs.access(entry.payloadPath)).resolves.toBeUndefined();
     });
 
     it("refuses keep-on-reap removal when HEAD cannot be resolved before unregistering the worktree", async () => {
@@ -237,7 +258,7 @@ describe("TrashService", () => {
 
     it("returns the ref-delete failure as a warning — the payload is already safe in trash", async () => {
       const source = await makeSourceDir("feature-leftover");
-      gitStub.deleteLocalBranch.mockRejectedValue(new Error("ref locked"));
+      gitStub.deleteLocalBranchIfAt.mockRejectedValue(new Error("ref locked"));
 
       const { entry, branchRefError } = await service.trashAndUnregisterWorktree({
         dirPath: source,

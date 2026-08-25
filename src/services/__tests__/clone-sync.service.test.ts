@@ -498,6 +498,39 @@ describe("CloneSyncService", () => {
       expect(copyFilesSpy).toHaveBeenCalledTimes(1);
       expect(fs.rm).toHaveBeenCalledWith(expect.stringContaining(".pending"), { force: true });
     });
+
+    it("re-runs sparse-checkout setup when resuming an interrupted init (#review)", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+      (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockImplementation(async (p: unknown) => {
+        if (String(p).endsWith(".pending")) return;
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      });
+
+      const branchCreatedActions = new BranchCreatedActionsService();
+      const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+      const gitService = buildGitService();
+
+      const service = new CloneSyncService(
+        makeConfig({
+          filesToCopyOnBranchCreate: ["CLAUDE.md"],
+          sparseCheckout: { include: ["src"] },
+        }),
+        gitService,
+        logger,
+        { branchCreatedActions },
+      );
+
+      await service.initialize();
+
+      // The init that wrote the pending marker may have died inside sparse
+      // setup, so resume must reapply it (idempotent) before the file copy.
+      const sparseService = gitService.getSparseCheckoutService();
+      expect(sparseService.applyToWorktree).toHaveBeenCalledTimes(1);
+      expect(copyFilesSpy).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("getWorktrees", () => {

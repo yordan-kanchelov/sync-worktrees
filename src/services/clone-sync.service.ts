@@ -602,11 +602,19 @@ export class CloneSyncService {
       const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
       await this.configureSingleBranchRemote(git, branch);
       // A pending marker means this clone was created by an init of ours that
-      // was interrupted after the clone but before the initial file copy —
-      // finish that copy now. Pre-existing user clones never carry the marker
-      // and are left alone.
+      // was interrupted after the clone — finish the post-clone steps now.
+      // Sparse setup is re-run too (idempotent), so an init that died inside
+      // it does not leave the clone permanently un-narrowed. The marker is
+      // deliberately written BEFORE the sparse step: written after it, a
+      // sparse failure would leave no marker and the file copy would be
+      // silently dropped forever. Pre-existing user clones never carry the
+      // marker and are left alone.
       if (await fileExists(this.getInitPendingMarkerPath(worktreeDir))) {
-        this.logger.info(`Completing interrupted initialization for '${this.repoName}' (initial file copy)...`);
+        this.logger.info(`Completing interrupted initialization for '${this.repoName}'...`);
+        if (this.config.sparseCheckout) {
+          await this.gitService.getSparseCheckoutService().applyToWorktree(worktreeDir, this.config.sparseCheckout);
+          await git.raw(["checkout", "HEAD"]);
+        }
         await this.runInitialFileCopy(worktreeDir, branch);
       }
       this.initialized = true;

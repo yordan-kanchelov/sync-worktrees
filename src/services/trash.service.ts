@@ -455,7 +455,9 @@ export class TrashService {
     return manifest;
   }
 
-  async deleteTrashedBranchRef(manifest: Pick<TrashManifest, "branch" | "id" | "pinRef">): Promise<void> {
+  async deleteTrashedBranchRef(
+    manifest: Pick<TrashManifest, "branch" | "id" | "pinRef" | "headOid">,
+  ): Promise<void> {
     if (!manifest.branch) return;
     // Without a pin the branch ref may be the last thing keeping the trashed
     // commits out of gc — leave it as a hygiene problem rather than risk them.
@@ -467,7 +469,17 @@ export class TrashService {
     }
 
     try {
-      await this.gitService.deleteLocalBranch(manifest.branch);
+      // The pre-rename HEAD verification is not atomic with this deletion: a
+      // commit can still land in the moved payload (its .git link stays valid
+      // until unregistration). Deleting with headOid as the expected old
+      // value makes the race lose safely — a moved ref is refused and lands
+      // in the caller's leftover-branch-ref hygiene path instead of orphaning
+      // the new commit.
+      if (manifest.headOid) {
+        await this.gitService.deleteLocalBranchIfAt(manifest.branch, manifest.headOid);
+      } else {
+        await this.gitService.deleteLocalBranch(manifest.branch);
+      }
     } catch (error) {
       throw new TrashOperationError(
         "trash-branch-ref",

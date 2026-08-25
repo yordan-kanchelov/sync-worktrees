@@ -16,20 +16,25 @@ export interface RepoLockTarget {
 
 // Best-effort symlink canonicalization for lock keys: two spellings of the
 // same directory (a symlinked $HOME, macOS /tmp -> /private/tmp) must hash to
-// the same lock file or both processes proceed. When the directory itself does
-// not exist yet, canonicalize its parent instead, so the key stays stable
-// between the first run (which creates the directory) and every later one.
+// the same lock file or both processes proceed. Missing trailing components
+// are walked up to the nearest EXISTING ancestor — several components may not
+// exist yet on a first run, and canonicalizing only the immediate parent
+// would leave /link/a/b and /real/a/b on different lock keys — so the key
+// stays stable between the first run (which creates the directory) and every
+// later one.
 function canonicalizeForLockKey(dir: string): string {
   const resolved = path.resolve(dir);
-  try {
-    return fs.realpathSync(resolved);
-  } catch {
-    /* directory missing or unreadable — try the parent */
-  }
-  try {
-    return path.join(fs.realpathSync(path.dirname(resolved)), path.basename(resolved));
-  } catch {
-    return resolved;
+  let candidate = resolved;
+  const missingSuffix: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(candidate), ...missingSuffix);
+    } catch {
+      const parent = path.dirname(candidate);
+      if (parent === candidate) return resolved;
+      missingSuffix.unshift(path.basename(candidate));
+      candidate = parent;
+    }
   }
 }
 

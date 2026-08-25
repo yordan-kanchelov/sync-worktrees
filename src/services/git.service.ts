@@ -925,6 +925,14 @@ export class GitService {
     await bareGit.raw(["branch", "-D", branchName]);
   }
 
+  // Compare-and-swap delete: removes the branch ref only while it still
+  // points at expectedOid, so a commit racing the removal pipeline keeps its
+  // ref instead of being orphaned by an unconditional `branch -D`.
+  async deleteLocalBranchIfAt(branchName: string, expectedOid: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["update-ref", "-d", `${GIT_CONSTANTS.REFS.HEADS}${branchName}`, expectedOid]);
+  }
+
   // Bundles only commits not reachable from any remote — for fully-pushed
   // refs that set is empty and `bundle create` would fail. Emptiness is
   // pre-checked with rev-list (locale-independent) instead of parsing git's
