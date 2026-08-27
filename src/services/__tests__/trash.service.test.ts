@@ -27,6 +27,7 @@ function makeGitStub() {
     resetWorktreeIndex: vi.fn<any>().mockResolvedValue(undefined),
     removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
     deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
+    deleteLocalBranchIfAt: vi.fn<any>().mockResolvedValue(undefined),
   };
 }
 
@@ -146,6 +147,34 @@ describe("TrashService", () => {
       expect(trashContents).toEqual([]);
       expect(gitStub.deleteRef).toHaveBeenCalledWith(expect.stringContaining(GIT_CONSTANTS.TRASH_REF_PREFIX));
     });
+
+    it("aborts and rolls back when HEAD moves between resolution and the payload move (commit made mid-trash)", async () => {
+      // First resolution pins abc123; the pre-rename re-check sees a new
+      // commit the user made during the (slow) size scan / bundle window.
+      gitStub.getCurrentCommit.mockResolvedValueOnce("abc123").mockResolvedValueOnce("def456");
+      const source = await makeSourceDir("racing-commit");
+
+      await expect(
+        service.trashDirectory({ dirPath: source, branch: "racing-commit", reason: "prune" }),
+      ).rejects.toBeInstanceOf(TrashOperationError);
+
+      // Source untouched, no trash container left behind, pin rolled back.
+      await expect(fs.access(source)).resolves.toBeUndefined();
+      const trashContents = await fs.readdir(service.getTrashRoot()).catch(() => []);
+      expect(trashContents).toEqual([]);
+      expect(gitStub.deleteRef).toHaveBeenCalledWith(expect.stringContaining(GIT_CONSTANTS.TRASH_REF_PREFIX));
+    });
+
+    it("aborts when HEAD can no longer be resolved at the pre-rename re-check", async () => {
+      gitStub.getCurrentCommit.mockResolvedValueOnce("abc123").mockRejectedValueOnce(new Error("gone"));
+      const source = await makeSourceDir("vanishing-head");
+
+      await expect(
+        service.trashDirectory({ dirPath: source, branch: "vanishing-head", reason: "prune" }),
+      ).rejects.toBeInstanceOf(TrashOperationError);
+
+      await expect(fs.access(source)).resolves.toBeUndefined();
+    });
   });
 
   describe("trashAndUnregisterWorktree", () => {
@@ -161,10 +190,30 @@ describe("TrashService", () => {
       expect(branchRefError).toBeUndefined();
       await expect(fs.access(entry.payloadPath)).resolves.toBeUndefined();
       expect(gitStub.removeWorktree).toHaveBeenCalledWith(source, { force: true });
-      expect(gitStub.deleteLocalBranch).toHaveBeenCalledWith("feature-seq");
+      // Conditional delete: the ref goes only while it still points at the
+      // verified HEAD, so a commit racing the removal keeps its branch.
+      expect(gitStub.deleteLocalBranchIfAt).toHaveBeenCalledWith("feature-seq", "abc123");
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
       expect(gitStub.removeWorktree.mock.invocationCallOrder[0]).toBeLessThan(
-        gitStub.deleteLocalBranch.mock.invocationCallOrder[0],
+        gitStub.deleteLocalBranchIfAt.mock.invocationCallOrder[0],
       );
+    });
+
+    it("keeps the branch ref (leftover warning) when it moved between HEAD verification and deletion", async () => {
+      // The CAS delete refuses because the ref no longer points at the
+      // verified oid — the racing commit must keep its branch.
+      gitStub.deleteLocalBranchIfAt.mockRejectedValue(new Error("ref value mismatch"));
+      const source = await makeSourceDir("racing-ref");
+
+      const { entry, branchRefError } = await service.trashAndUnregisterWorktree({
+        dirPath: source,
+        branch: "racing-ref",
+        reason: "prune",
+      });
+
+      expect(branchRefError).toContain("ref value mismatch");
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
+      await expect(fs.access(entry.payloadPath)).resolves.toBeUndefined();
     });
 
     it("refuses keep-on-reap removal when HEAD cannot be resolved before unregistering the worktree", async () => {
@@ -209,7 +258,7 @@ describe("TrashService", () => {
 
     it("returns the ref-delete failure as a warning — the payload is already safe in trash", async () => {
       const source = await makeSourceDir("feature-leftover");
-      gitStub.deleteLocalBranch.mockRejectedValue(new Error("ref locked"));
+      gitStub.deleteLocalBranchIfAt.mockRejectedValue(new Error("ref locked"));
 
       const { entry, branchRefError } = await service.trashAndUnregisterWorktree({
         dirPath: source,

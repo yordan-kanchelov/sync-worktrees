@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
@@ -13,12 +14,39 @@ export interface RepoLockTarget {
   file: string;
 }
 
+// Best-effort symlink canonicalization for lock keys: two spellings of the
+// same directory (a symlinked $HOME, macOS /tmp -> /private/tmp) must hash to
+// the same lock file or both processes proceed. Missing trailing components
+// are walked up to the nearest EXISTING ancestor — several components may not
+// exist yet on a first run, and canonicalizing only the immediate parent
+// would leave /link/a/b and /real/a/b on different lock keys — so the key
+// stays stable between the first run (which creates the directory) and every
+// later one.
+function canonicalizeForLockKey(dir: string): string {
+  const resolved = path.resolve(dir);
+  let candidate = resolved;
+  const missingSuffix: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(candidate), ...missingSuffix);
+    } catch {
+      const parent = path.dirname(candidate);
+      if (parent === candidate) return resolved;
+      missingSuffix.unshift(path.basename(candidate));
+      candidate = parent;
+    }
+  }
+}
+
 // The lock is keyed ONLY by the canonical worktreeDir: two different config
 // files (or a config-mode daemon and a programmatic run) pointing at the same
 // checkout must contend for the same lock file, so it cannot live under a
-// per-config state dir the way the audit log does.
-export function getCloneModeLockTarget(config: Config): RepoLockTarget {
-  const hash = createHash("sha256").update(path.resolve(config.worktreeDir)).digest("hex").slice(0, 16);
+// per-config state dir the way the audit log does. Clone mode holds this as
+// its only lock; worktree mode holds it in addition to the bare-repo lock,
+// because the default bare path is derived per config file and two configs
+// can point different bare repos at the same worktreeDir.
+export function getWorktreeDirLockTarget(config: Config): RepoLockTarget {
+  const hash = createHash("sha256").update(canonicalizeForLockKey(config.worktreeDir)).digest("hex").slice(0, 16);
 
   const stateBase =
     process.env.XDG_STATE_HOME && process.env.XDG_STATE_HOME.length > 0

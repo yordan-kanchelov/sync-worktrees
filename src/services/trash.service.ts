@@ -210,6 +210,30 @@ export class TrashService {
         );
       }
     }
+    // headOid was resolved before the (potentially slow) size scan and bundle
+    // above. A commit made in that window would lose every protection at once
+    // — pin, bundle, worktree reflog, branch ref — the moment the removal
+    // pipeline runs `branch -D`, so re-verify HEAD and fail closed while the
+    // source directory is still untouched. Explicit-headOid callers (legacy
+    // adoption) are exempt: their source is not a live worktree.
+    if (headOid !== null && options.headOid === undefined) {
+      let currentHead: string | null;
+      try {
+        currentHead = (await this.gitService.getCurrentCommit(options.dirPath)).trim();
+      } catch {
+        currentHead = null;
+      }
+      if (currentHead !== headOid) {
+        await this.undoPartialTrash(containerPath, pinRef);
+        throw new TrashOperationError(
+          "trash-directory",
+          `HEAD of '${options.dirPath}' ${
+            currentHead === null ? "could no longer be resolved" : `moved from ${headOid} to ${currentHead}`
+          } during trash preparation; aborting removal`,
+        );
+      }
+    }
+
     const payloadPath = path.join(containerPath, TRASH_CONSTANTS.PAYLOAD_DIRNAME);
     manifest.pinRef = pinRef;
     manifest.bundleFile = bundleFile;
@@ -431,7 +455,9 @@ export class TrashService {
     return manifest;
   }
 
-  async deleteTrashedBranchRef(manifest: Pick<TrashManifest, "branch" | "id" | "pinRef">): Promise<void> {
+  async deleteTrashedBranchRef(
+    manifest: Pick<TrashManifest, "branch" | "id" | "pinRef" | "headOid">,
+  ): Promise<void> {
     if (!manifest.branch) return;
     // Without a pin the branch ref may be the last thing keeping the trashed
     // commits out of gc — leave it as a hygiene problem rather than risk them.
@@ -443,7 +469,17 @@ export class TrashService {
     }
 
     try {
-      await this.gitService.deleteLocalBranch(manifest.branch);
+      // The pre-rename HEAD verification is not atomic with this deletion: a
+      // commit can still land in the moved payload (its .git link stays valid
+      // until unregistration). Deleting with headOid as the expected old
+      // value makes the race lose safely — a moved ref is refused and lands
+      // in the caller's leftover-branch-ref hygiene path instead of orphaning
+      // the new commit.
+      if (manifest.headOid) {
+        await this.gitService.deleteLocalBranchIfAt(manifest.branch, manifest.headOid);
+      } else {
+        await this.gitService.deleteLocalBranch(manifest.branch);
+      }
     } catch (error) {
       throw new TrashOperationError(
         "trash-branch-ref",

@@ -6,6 +6,7 @@ import simpleGit from "simple-git";
 import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../errors";
 import { fileExists } from "../utils/file-exists";
+import { sanitizeGitEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { normalizeRepoUrlForComparison } from "../utils/git-url";
 import { getErrorMessage, isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
@@ -111,6 +112,11 @@ export class CloneSyncService {
   private buildGitOptions(blockMs: number): Partial<SimpleGitOptions> {
     const options: Partial<SimpleGitOptions> = {
       progress: makeGitProgressHandler(this.logger, (event) => this.emitProgress(event)),
+      // Every clone-mode client passes an explicit env (buildGitEnv), which
+      // trips simple-git's unsafe-env validation on variables plain env
+      // inheritance passes freely (GIT_ASKPASS, GIT_CONFIG_COUNT). The env is
+      // the trusted parent environment, so keep parity with inheritance.
+      unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true },
     };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
@@ -171,9 +177,12 @@ export class CloneSyncService {
   // Force a stable C locale so git's stderr is deterministic English. The
   // missing-remote-ref and LFS error classification matches on those strings
   // and would otherwise misfire under a non-English LANG/LC_ALL. simple-git's
-  // .env() merges this object with process.env (PATH etc. preserved).
-  private buildGitEnv(opts: { forceLfsSkip?: boolean } = {}): Record<string, string> {
-    const env: Record<string, string> = { LC_ALL: "C", LANG: "C" };
+  // .env() REPLACES the child environment wholesale — it does NOT merge with
+  // process.env — so the full environment (PATH, HOME, SSH_AUTH_SOCK, proxy
+  // vars, ...) must be spread in explicitly or auth and non-default git
+  // installs break for every clone-mode subprocess.
+  private buildGitEnv(opts: { forceLfsSkip?: boolean } = {}): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...sanitizeGitEnv(process.env), LC_ALL: "C", LANG: "C" };
     if (opts.forceLfsSkip || this.isLfsSkipEnabled()) {
       env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     }
@@ -490,7 +499,16 @@ export class CloneSyncService {
     // Converge shallow state like runSyncAttempt does: with no configured depth an
     // existing shallow clone is unshallowed before the branch fetch, so switching
     // branches doesn't leave the new branch shallow while the rest is full.
-    await this.unshallowIfDepthRemoved(git);
+    try {
+      await this.unshallowIfDepthRemoved(git);
+    } catch (error) {
+      // Same classification as the branch fetch below: a deleted tracked
+      // branch fails the narrowed-refspec unshallow with the same error.
+      if (isMissingRemoteRefError(getErrorMessage(error))) {
+        throw new GitOperationError("checkout", `origin/${branch} is missing for '${this.repoName}'`);
+      }
+      throw error;
+    }
 
     const fetchArgs = await this.buildFetchArgs(git, branch);
     if ((await this.fetchWithRecovery(git, fetchArgs, worktreeDir, branch, false)).skipped) {
@@ -556,7 +574,19 @@ export class CloneSyncService {
     let entries: string[] | null = null;
     try {
       entries = await fs.readdir(worktreeDir);
-    } catch {
+    } catch (error) {
+      // Only a definitively missing directory may proceed as a fresh clone:
+      // cloneCreatedDir below authorizes maybeCleanupPartialClone to rm -rf
+      // the directory after a failed clone, so a transient probe failure
+      // (EMFILE, EACCES) must never read as "the directory did not exist" —
+      // that would delete a pre-existing directory the tool never created.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new GitOperationError(
+          "clone-init",
+          `Cannot inspect '${worktreeDir}' before cloning: ${getErrorMessage(error)}`,
+          error instanceof Error ? error : undefined,
+        );
+      }
       entries = null;
     }
 
@@ -571,6 +601,22 @@ export class CloneSyncService {
       }
       const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
       await this.configureSingleBranchRemote(git, branch);
+      // A pending marker means this clone was created by an init of ours that
+      // was interrupted after the clone — finish the post-clone steps now.
+      // Sparse setup is re-run too (idempotent), so an init that died inside
+      // it does not leave the clone permanently un-narrowed. The marker is
+      // deliberately written BEFORE the sparse step: written after it, a
+      // sparse failure would leave no marker and the file copy would be
+      // silently dropped forever. Pre-existing user clones never carry the
+      // marker and are left alone.
+      if (await fileExists(this.getInitPendingMarkerPath(worktreeDir))) {
+        this.logger.info(`Completing interrupted initialization for '${this.repoName}'...`);
+        if (this.config.sparseCheckout) {
+          await this.gitService.getSparseCheckoutService().applyToWorktree(worktreeDir, this.config.sparseCheckout);
+          await git.raw(["checkout", "HEAD"]);
+        }
+        await this.runInitialFileCopy(worktreeDir, branch);
+      }
       this.initialized = true;
       this.emitProgress({ phase: "clone", message: `Existing clone validated for '${this.repoName}'` });
       return;
@@ -609,6 +655,16 @@ export class CloneSyncService {
 
     this.logger.info(`✅ Clone successful.`);
     this.emitProgress({ phase: "clone", message: `Clone successful for '${this.repoName}'` });
+
+    // From here to the end of runInitialFileCopy any failure or kill leaves a
+    // valid-looking clone that the next init adopts via the existing-clone
+    // path, which never runs the file copy. The pending marker records the
+    // debt so that path can settle it.
+    try {
+      await fs.writeFile(this.getInitPendingMarkerPath(worktreeDir), new Date().toISOString());
+    } catch (error) {
+      this.logger.warn(`Could not write clone-init pending marker: ${getErrorMessage(error)}`);
+    }
 
     if (this.config.sparseCheckout) {
       this.logger.info(`Applying sparse-checkout patterns to '${worktreeDir}'...`);
@@ -742,9 +798,19 @@ export class CloneSyncService {
     return path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, PATH_CONSTANTS.CLONE_INIT_MARKER);
   }
 
+  private getInitPendingMarkerPath(worktreeDir: string): string {
+    return path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, PATH_CONSTANTS.CLONE_INIT_PENDING_MARKER);
+  }
+
   private async runInitialFileCopy(worktreeDir: string, branch: string): Promise<void> {
     const marker = this.getInitMarkerPath(worktreeDir);
+    const pendingMarker = this.getInitPendingMarkerPath(worktreeDir);
     if (await fileExists(marker)) {
+      try {
+        await fs.rm(pendingMarker, { force: true });
+      } catch {
+        // A stale pending marker is harmless; the final marker wins.
+      }
       return;
     }
 
@@ -760,6 +826,7 @@ export class CloneSyncService {
 
     try {
       await fs.writeFile(marker, new Date().toISOString());
+      await fs.rm(pendingMarker, { force: true });
     } catch (error) {
       this.logger.warn(`Could not write clone-init marker: ${getErrorMessage(error)}`);
     }
@@ -825,7 +892,19 @@ export class CloneSyncService {
       return;
     }
 
-    await this.unshallowIfDepthRemoved(git);
+    // The unshallow fetch uses the already-narrowed refspec, so a deleted
+    // tracked branch fails it exactly like the branch fetch below — classify
+    // it into the same soft skip instead of letting it escape as a hard
+    // failure that only shallow clones would hit.
+    try {
+      await this.unshallowIfDepthRemoved(git);
+    } catch (error) {
+      if (isMissingRemoteRefError(getErrorMessage(error))) {
+        this.recordMissingRemoteRefSkip(branch);
+        return;
+      }
+      throw error;
+    }
 
     await this.configureSingleBranchRemote(git, branch);
 

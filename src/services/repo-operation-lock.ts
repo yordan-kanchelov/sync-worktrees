@@ -5,7 +5,7 @@ import * as lockfile from "proper-lockfile";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../constants";
 import { getErrorMessage } from "../utils/lfs-error";
-import { getCloneModeLockTarget } from "../utils/lock-path";
+import { getWorktreeDirLockTarget } from "../utils/lock-path";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 
 import { Logger } from "./logger.service";
@@ -32,14 +32,14 @@ export class RepoOperationLock {
     }
 
     if (resolveMode(this.config) === REPOSITORY_MODES.CLONE) {
-      return this.acquireCloneModeLock();
+      return this.acquireWorktreeDirLock();
     }
 
     return this.acquireWorktreeModeLock();
   }
 
-  private async acquireCloneModeLock(): Promise<RepoLockRelease | null> {
-    const target = getCloneModeLockTarget(this.config);
+  private async acquireWorktreeDirLock(): Promise<RepoLockRelease | null> {
+    const target = getWorktreeDirLockTarget(this.config);
     const lockTarget = path.join(target.dir, target.file);
     try {
       await fs.mkdir(target.dir, { recursive: true });
@@ -60,7 +60,33 @@ export class RepoOperationLock {
     } catch {
       return null;
     }
-    return this.lockPath(barePath);
+    const releaseBare = await this.lockPath(barePath);
+    if (releaseBare === null) return null;
+
+    // The bare-repo lock alone does not serialize what this lock exists to
+    // protect: every destructive operation happens under worktreeDir, and the
+    // default bare path is derived per config file, so two configs can point
+    // different bare repos at the same worktreeDir and both hold "their" bare
+    // lock. Hold the worktreeDir-keyed lock as well.
+    const releaseWorktreeDir = await this.acquireWorktreeDirLock();
+    if (releaseWorktreeDir === null) {
+      try {
+        await releaseBare();
+      } catch (releaseError) {
+        this.logger.warn(
+          `Failed to release bare-repo lock after worktreeDir lock contention: ${getErrorMessage(releaseError)}`,
+        );
+      }
+      return null;
+    }
+
+    return async () => {
+      try {
+        await releaseWorktreeDir();
+      } finally {
+        await releaseBare();
+      }
+    };
   }
 
   private async lockPath(lockTarget: string): Promise<RepoLockRelease | null> {
@@ -70,6 +96,17 @@ export class RepoOperationLock {
         update: DEFAULT_CONFIG.LOCK_UPDATE_MS,
         retries: 0,
         realpath: false,
+        // proper-lockfile's default onCompromised throws from inside its
+        // refresh timer — uncatchable by any caller, so it would take down
+        // the whole multi-repo process mid-operation. Losing the lock only
+        // means another process may start concurrently, the lesser harm:
+        // finish the in-flight operation and say so.
+        onCompromised: (compromiseError: Error): void => {
+          this.logger.warn(
+            `Repo lock at '${lockTarget}' was compromised (${getErrorMessage(compromiseError)}); ` +
+              `continuing the in-flight operation — another process may acquire the lock until it finishes.`,
+          );
+        },
       });
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;

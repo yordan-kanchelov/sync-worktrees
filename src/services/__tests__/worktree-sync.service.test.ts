@@ -75,6 +75,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       deleteRef: vi.fn<any>().mockResolvedValue(undefined),
       listRefs: vi.fn<any>().mockResolvedValue([]),
       deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
+      deleteLocalBranchIfAt: vi.fn<any>().mockResolvedValue(undefined),
       createBundleFromRef: vi.fn<any>().mockResolvedValue(true),
       setStaleDirectoryTrasher: vi.fn(),
       getBareRepoPath: vi.fn(() => "/test/.bare/repo.git"),
@@ -1486,7 +1487,8 @@ describe("WorktreeSyncService", () => {
 
         expect(fs.rename).toHaveBeenCalledWith(oldBranchPath, expect.stringContaining(path.join(".trash", "")));
         expect(mockGitService.removeWorktree).toHaveBeenCalledWith(oldBranchPath, { force: true });
-        expect(mockGitService.deleteLocalBranch).toHaveBeenCalledWith("old-branch");
+        // Conditional on the verified HEAD: a commit racing the removal keeps its ref.
+        expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenCalledWith("old-branch", "abc123");
         expect(mockGitService.updateRef).toHaveBeenCalledWith(
           expect.stringContaining("refs/sync-worktrees/trash/"),
           "abc123",
@@ -1494,7 +1496,7 @@ describe("WorktreeSyncService", () => {
       });
 
       it("records the prune as removed with a warning when the branch ref cannot be deleted — payload already safe", async () => {
-        mockGitService.deleteLocalBranch.mockRejectedValueOnce(new Error("ref locked"));
+        mockGitService.deleteLocalBranchIfAt.mockRejectedValueOnce(new Error("ref locked"));
 
         const result = await service.sync();
 

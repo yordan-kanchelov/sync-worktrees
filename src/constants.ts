@@ -103,6 +103,10 @@ export const PATH_CONSTANTS = {
   GIT_DIR: ".git",
   README: "README",
   CLONE_INIT_MARKER: ".sync-worktrees-clone-init",
+  /** Written right after a successful clone, removed once the initial file
+   * copy lands — its presence marks a tool-created clone whose init was
+   * interrupted and still owes the copy. */
+  CLONE_INIT_PENDING_MARKER: ".sync-worktrees-clone-init.pending",
 } as const;
 
 export const CONFIG_FILE_NAMES = [
