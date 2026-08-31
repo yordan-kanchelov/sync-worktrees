@@ -353,7 +353,7 @@ describe("GitService", () => {
 
       await svc.initialize();
       await svc.fetchBranch("feature-2");
-      expect(mockGit.env).toHaveBeenCalledWith({ GIT_LFS_SKIP_SMUDGE: "1" });
+      expect(mockGit.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
       expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "feature-2", "--prune", "--progress"]);
     });
   });
@@ -490,9 +490,9 @@ describe("GitService", () => {
 
     it("should return branches with their last activity dates", async () => {
       const mockOutput = [
-        "origin/main|2024-01-15T10:30:00-05:00",
-        "origin/feature-1|2024-01-10T14:20:00-05:00",
-        "origin/feature-2|2023-12-25T08:15:00-05:00",
+        "origin/main 2024-01-15T10:30:00-05:00",
+        "origin/feature-1 2024-01-10T14:20:00-05:00",
+        "origin/feature-2 2023-12-25T08:15:00-05:00",
       ].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
@@ -501,7 +501,7 @@ describe("GitService", () => {
 
       expect(mockGit.raw).toHaveBeenCalledWith([
         "for-each-ref",
-        "--format=%(refname:short)|%(committerdate:iso8601)",
+        "--format=%(refname:short)%00%(committerdate:iso8601)",
         "refs/remotes/origin",
       ]);
 
@@ -530,10 +530,10 @@ describe("GitService", () => {
 
     it("should skip invalid lines", async () => {
       const mockOutput = [
-        "origin/main|2024-01-15T10:30:00-05:00",
+        "origin/main 2024-01-15T10:30:00-05:00",
         "invalid-line",
-        "origin/feature-1|invalid-date",
-        "origin/feature-2|2024-01-10T14:20:00-05:00",
+        "origin/feature-1 invalid-date",
+        "origin/feature-2 2024-01-10T14:20:00-05:00",
       ].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
@@ -547,9 +547,9 @@ describe("GitService", () => {
 
     it("should filter out origin/HEAD", async () => {
       const mockOutput = [
-        "origin/main|2024-01-15T10:30:00-05:00",
-        "origin/HEAD|2024-01-15T10:30:00-05:00",
-        "origin/feature-1|2024-01-14T09:15:00-05:00",
+        "origin/main 2024-01-15T10:30:00-05:00",
+        "origin/HEAD 2024-01-15T10:30:00-05:00",
+        "origin/feature-1 2024-01-14T09:15:00-05:00",
       ].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
@@ -560,6 +560,32 @@ describe("GitService", () => {
       expect(branches[0].branch).toBe("main");
       expect(branches[1].branch).toBe("feature-1");
       expect(branches.some((b) => b.branch === "HEAD")).toBe(false);
+    });
+
+    it("keeps branches whose names contain '|' (legal refname character) (#review)", async () => {
+      const mockOutput = [
+        "origin/feature|wip 2024-01-15T10:30:00-05:00",
+        "origin/main 2024-01-10T14:20:00-05:00",
+      ].join("\n");
+
+      mockGit.raw.mockResolvedValueOnce(mockOutput as any);
+
+      const branches = await gitService.getRemoteBranchesWithActivity();
+
+      expect(branches).toHaveLength(2);
+      expect(branches[0].branch).toBe("feature|wip");
+      expect(branches[0].lastActivity).toEqual(new Date("2024-01-15T10:30:00-05:00"));
+    });
+
+    it("keeps a remote branch literally named 'origin' (#review)", async () => {
+      const mockOutput = ["origin/origin 2024-01-15T10:30:00-05:00"].join("\n");
+
+      mockGit.raw.mockResolvedValueOnce(mockOutput as any);
+
+      const branches = await gitService.getRemoteBranchesWithActivity();
+
+      expect(branches).toHaveLength(1);
+      expect(branches[0].branch).toBe("origin");
     });
   });
 
@@ -1313,7 +1339,7 @@ describe("GitService", () => {
 
       await gitService.fetchAll();
 
-      expect(mockGit.env).toHaveBeenCalledWith({ GIT_LFS_SKIP_SMUDGE: "1" });
+      expect(mockGit.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
     });
 
     it("should not affect git operations when disabled", async () => {
@@ -1327,7 +1353,7 @@ describe("GitService", () => {
     it("should be togglable at runtime", async () => {
       gitService.setLfsSkipEnabled(true);
       await gitService.fetchAll();
-      expect(mockGit.env).toHaveBeenCalledWith({ GIT_LFS_SKIP_SMUDGE: "1" });
+      expect(mockGit.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
 
       vi.clearAllMocks();
       (simpleGit as unknown as Mock).mockReturnValue(mockGit);

@@ -4,7 +4,7 @@ import * as path from "path";
 import * as lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getCloneModeLockTarget } from "../../utils/lock-path";
+import { getWorktreeDirLockTarget } from "../../utils/lock-path";
 import { RepoOperationLock } from "../repo-operation-lock";
 
 import type { Config } from "../../types";
@@ -55,16 +55,36 @@ describe("RepoOperationLock", () => {
     expect(lockfile.lock).not.toHaveBeenCalled();
   });
 
-  it("locks the bare repository path in worktree mode", async () => {
-    const lock = new RepoOperationLock(makeConfig(), gitService as GitService);
+  it("locks both the bare repository path and the worktreeDir lock file in worktree mode", async () => {
+    const config = makeConfig();
+    const worktreeTarget = getWorktreeDirLockTarget(config);
+    const lock = new RepoOperationLock(config, gitService as GitService);
 
-    await expect(lock.acquire()).resolves.toBe(release);
+    const acquired = await lock.acquire();
+    expect(acquired).toBeTypeOf("function");
 
     expect(fs.mkdir).toHaveBeenCalledWith("/tmp/bare.git", { recursive: true });
     expect(lockfile.lock).toHaveBeenCalledWith(
       "/tmp/bare.git",
+      expect.objectContaining({ retries: 0, realpath: false, onCompromised: expect.any(Function) }),
+    );
+    expect(lockfile.lock).toHaveBeenCalledWith(
+      path.join(worktreeTarget.dir, worktreeTarget.file),
       expect.objectContaining({ retries: 0, realpath: false }),
     );
+
+    await acquired?.();
+    expect(release).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases the bare-repo lock and returns null when the worktreeDir lock is contended in worktree mode", async () => {
+    const contended = new Error("locked") as NodeJS.ErrnoException;
+    contended.code = "ELOCKED";
+    (lockfile.lock as Mock).mockResolvedValueOnce(release).mockRejectedValueOnce(contended);
+    const lock = new RepoOperationLock(makeConfig(), gitService as GitService);
+
+    await expect(lock.acquire()).resolves.toBeNull();
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("locks a stable clone-mode lock file", async () => {
@@ -73,7 +93,7 @@ describe("RepoOperationLock", () => {
       branch: "main",
       __configFileDir: "/tmp/config",
     });
-    const target = getCloneModeLockTarget(config);
+    const target = getWorktreeDirLockTarget(config);
     const lock = new RepoOperationLock(config, gitService as GitService);
 
     await expect(lock.acquire()).resolves.toBe(release);

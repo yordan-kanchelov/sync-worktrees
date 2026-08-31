@@ -1,5 +1,11 @@
 # sync-worktrees
 
+## 5.3.1
+
+### Patch Changes
+
+- dc0c39c: Fix sync/delete defects found in code review: forward the full (sanitized) process environment to every clone-mode and LFS-skip git subprocess so authenticated remotes work; stop a stale clone-mode init skip from being silently swallowed by the next sync; recreate the default-branch worktree when its directory was deleted out-of-band instead of failing every sync; keep branches containing `|` (and one literally named `origin`) in the sync inventory so their worktrees are no longer wrongly pruned; classify a deleted tracked branch during an unshallow fetch as the usual soft skip; re-verify HEAD before moving a worktree to trash so a commit made mid-removal is never left unreachable; abort clone init on a transient directory probe failure instead of risking cleanup of a pre-existing directory; resume an interrupted clone init's file copy via a pending marker; validate `.diverged` metadata types before trash adoption; serialize worktree-mode syncs on the worktreeDir (not just the bare repo), canonicalize lock keys through symlinks, and survive a compromised repo lock instead of crashing the whole multi-repo run.
+
 ## 5.3.0
 
 ### Minor Changes

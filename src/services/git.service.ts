@@ -6,6 +6,7 @@ import simpleGit from "simple-git";
 import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
+import { sanitizeGitEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
@@ -36,16 +37,6 @@ export type GitServiceOptions = Pick<
   | "fetchTimeoutMs"
   | "cloneTimeoutMs"
 >;
-
-// simple-git blocks EDITOR / GIT_EDITOR / GIT_SEQUENCE_EDITOR unless allowUnsafeEditor is set;
-// strip them when forwarding process.env so a user's shell EDITOR doesn't break read-only commands.
-function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const sanitized = { ...env };
-  delete sanitized.EDITOR;
-  delete sanitized.GIT_EDITOR;
-  delete sanitized.GIT_SEQUENCE_EDITOR;
-  return sanitized;
-}
 
 export class GitService {
   private git: SimpleGit | null = null;
@@ -91,7 +82,9 @@ export class GitService {
     let git = this.gitInstances.get(key);
     if (!git) {
       const base = simpleGit(dirPath, this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
-      git = useLfsSkip ? base.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : base;
+      git = useLfsSkip
+        ? base.env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
+        : base;
       this.gitInstances.set(key, git);
     }
     return git;
@@ -100,6 +93,12 @@ export class GitService {
   private buildSimpleGitOptions(blockMs: number): Partial<SimpleGitOptions> {
     const options: Partial<SimpleGitOptions> = {
       progress: makeGitProgressHandler(this.logger, (event) => this.progressEmitter?.(event)),
+      // Clients that pass an explicit env (sanitizeGitEnv spread) trip
+      // simple-git's unsafe-env validation on variables the default clients
+      // inherit freely (a VS Code GIT_ASKPASS bridge, CI GIT_CONFIG_COUNT).
+      // The env is the trusted parent environment, not untrusted input, so
+      // keep parity with plain inheritance.
+      unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true },
     };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
@@ -122,7 +121,7 @@ export class GitService {
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
       const cloneBase = simpleGit(this.buildSimpleGitOptions(this.getCloneTimeoutMs()));
       const cloneGit = this.isLfsSkipEnabled()
-        ? cloneBase.env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
+        ? cloneBase.env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
         : cloneBase;
       await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare", "--progress"]);
       this.logger.info("✅ Clone successful.");
@@ -157,7 +156,32 @@ export class GitService {
     let needsMainWorktree = true;
     try {
       const worktrees = await this.getWorktreesFromBare(bareGit, true);
-      needsMainWorktree = !worktrees.some((w) => path.resolve(w.path) === path.resolve(this.mainWorktreePath));
+      const registered = worktrees.some((w) => path.resolve(w.path) === path.resolve(this.mainWorktreePath));
+      if (registered) {
+        // A registration whose directory was destroyed out-of-band (rm -rf, a
+        // wiped volume) would otherwise satisfy this check forever: the planner
+        // never plans a create for the default branch, so nothing else rebuilds
+        // it and every sync fails at fetch. Only a definitive "missing" clears
+        // the registration — an unverifiable probe keeps it, same rule as
+        // dropStaleRegistrations.
+        if ((await probePathExists(this.mainWorktreePath)) === "missing") {
+          this.logger.info(
+            `${this.defaultBranch} worktree directory is missing at "${this.mainWorktreePath}"; clearing its stale registration and recreating it.`,
+          );
+          try {
+            await bareGit.raw(["worktree", "remove", "--force", path.resolve(this.mainWorktreePath)]);
+          } catch (removalError) {
+            // A locked registration makes single --force fail, which correctly
+            // preserves it; leave the old (broken) state rather than guess.
+            this.logger.warn(
+              `Could not clear stale registration for '${this.mainWorktreePath}': ${getErrorMessage(removalError)}`,
+            );
+            needsMainWorktree = false;
+          }
+        } else {
+          needsMainWorktree = false;
+        }
+      }
     } catch {
       // If worktree list fails, assume we need main worktree
     }
@@ -320,18 +344,25 @@ export class GitService {
   async getRemoteBranches(): Promise<string[]> {
     const git = this.getGit();
     const branches = await git.branch(["-r"]);
+    // Filter on the full ref BEFORE stripping the prefix: a remote branch
+    // literally named "origin" lists as "origin/origin" and is a real branch —
+    // filtering the stripped name would silently drop it (and its worktree
+    // would then read as stale and be pruned).
     return branches.all
-      .filter((b) => b.startsWith("origin/") && !b.endsWith("/HEAD"))
-      .map((b) => b.replace("origin/", ""))
-      .filter((b) => b !== "origin" && b.length > 0);
+      .filter((b) => b.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) && !b.endsWith("/HEAD"))
+      .map((b) => b.slice(GIT_CONSTANTS.REMOTE_PREFIX.length))
+      .filter((b) => b.length > 0);
   }
 
   async getRemoteBranchesWithActivity(): Promise<{ branch: string; lastActivity: Date }[]> {
     const git = this.getGit();
-    // Use for-each-ref to get branch names with their last commit dates
+    // NUL delimiter: "|" is a legal branch-name character, so a branch like
+    // "feature|wip" would corrupt a "|"-delimited line and be silently dropped
+    // from the inventory (and its worktree then pruned as stale). A refname can
+    // never contain NUL or newline.
     const result = await git.raw([
       "for-each-ref",
-      "--format=%(refname:short)|%(committerdate:iso8601)",
+      "--format=%(refname:short)%00%(committerdate:iso8601)",
       "refs/remotes/origin",
     ]);
 
@@ -342,11 +373,15 @@ export class GitService {
       .filter((line) => line);
 
     for (const line of lines) {
-      const [ref, dateStr] = line.split("|", 2);
+      const [ref, dateStr] = line.split("\0", 2);
       if (ref && dateStr && !ref.endsWith("/HEAD")) {
-        const branch = ref.replace("origin/", "");
-        // Skip invalid branch names
-        if (branch === "origin" || branch.length === 0) {
+        // Same rule as getRemoteBranches: strip the prefix, never filter the
+        // stripped name (a branch literally named "origin" is real).
+        if (!ref.startsWith(GIT_CONSTANTS.REMOTE_PREFIX)) {
+          continue;
+        }
+        const branch = ref.slice(GIT_CONSTANTS.REMOTE_PREFIX.length);
+        if (branch.length === 0) {
           continue;
         }
         const lastActivity = new Date(dateStr);
@@ -888,6 +923,14 @@ export class GitService {
   async deleteLocalBranch(branchName: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     await bareGit.raw(["branch", "-D", branchName]);
+  }
+
+  // Compare-and-swap delete: removes the branch ref only while it still
+  // points at expectedOid, so a commit racing the removal pipeline keeps its
+  // ref instead of being orphaned by an unconditional `branch -D`.
+  async deleteLocalBranchIfAt(branchName: string, expectedOid: string): Promise<void> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await bareGit.raw(["update-ref", "-d", `${GIT_CONSTANTS.REFS.HEADS}${branchName}`, expectedOid]);
   }
 
   // Bundles only commits not reachable from any remote — for fully-pushed

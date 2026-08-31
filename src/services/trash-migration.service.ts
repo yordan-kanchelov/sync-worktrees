@@ -86,13 +86,13 @@ export class TrashMigrationService {
       const info = await this.readDivergedInfo(dirPath);
       const quarantinedAt = info?.divergedAt ? new Date(info.divergedAt) : null;
       const hasOriginalPath = typeof info?.originalPath === "string" && info.originalPath.length > 0;
-      if (
-        !info ||
-        !info.originalBranch ||
-        !hasOriginalPath ||
-        !quarantinedAt ||
-        Number.isNaN(quarantinedAt.getTime())
-      ) {
+      // Type-check, not truthiness: readDivergedInfo is an unvalidated
+      // JSON.parse, and a truthy non-string branch would be serialized into a
+      // manifest that readManifest then rejects forever — an adopted entry
+      // that can never be listed, restored, or reaped.
+      const hasOriginalBranch = typeof info?.originalBranch === "string" && info.originalBranch.length > 0;
+      const hasValidLocalCommit = info?.localCommit == null || typeof info.localCommit === "string";
+      if (!info || !hasOriginalBranch || !hasOriginalPath || !hasValidLocalCommit || !quarantinedAt || Number.isNaN(quarantinedAt.getTime())) {
         this.logger.warn(
           `⚠️ Leaving entry '${name}' in ${GIT_CONSTANTS.DIVERGED_DIR_NAME}/ alone (no parseable ${METADATA_CONSTANTS.DIVERGED_INFO_FILE})`,
         );
