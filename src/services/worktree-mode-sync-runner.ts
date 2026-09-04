@@ -3,7 +3,7 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";

@@ -62,7 +62,7 @@ export class ConfigLoaderService {
       } else {
         const fileUrl = pathToFileURL(absolutePath);
         fileUrl.searchParams.set("t", Date.now().toString());
-        const configModule = await import(fileUrl.href);
+        const configModule = (await import(fileUrl.href)) as { default?: unknown };
         config = configModule.default;
       }
 
@@ -459,7 +459,7 @@ export class ConfigLoaderService {
     }
 
     for (let i = 0; i < filesToCopy.length; i++) {
-      const pattern = filesToCopy[i];
+      const pattern: unknown = filesToCopy[i];
       if (typeof pattern !== "string" || pattern.trim() === "") {
         throw new Error(
           `'filesToCopyOnBranchCreate' in ${context} must contain only non-empty strings (invalid at index ${i})`,
@@ -482,7 +482,7 @@ export class ConfigLoaderService {
       throw new Error(`'sparseCheckout.include' in ${context} must contain at least one pattern`);
     }
     for (let i = 0; i < cfg.include.length; i++) {
-      const p = cfg.include[i];
+      const p: unknown = cfg.include[i];
       if (typeof p !== "string" || p.trim() === "") {
         throw new Error(
           `'sparseCheckout.include' in ${context} must contain only non-empty strings (invalid at index ${i})`,
@@ -495,7 +495,7 @@ export class ConfigLoaderService {
         throw new Error(`'sparseCheckout.exclude' in ${context} must be an array`);
       }
       for (let i = 0; i < cfg.exclude.length; i++) {
-        const p = cfg.exclude[i];
+        const p: unknown = cfg.exclude[i];
         if (typeof p !== "string" || p.trim() === "") {
           throw new Error(
             `'sparseCheckout.exclude' in ${context} must contain only non-empty strings (invalid at index ${i})`,
@@ -542,12 +542,12 @@ export class ConfigLoaderService {
 
     if (
       repoObj.branch !== undefined &&
-      (typeof repoObj.branch !== "string" || (repoObj.branch as string).trim() === "")
+      (typeof repoObj.branch !== "string" || repoObj.branch.trim() === "")
     ) {
       throw new ConfigValidationError(`Repository '${repoName}' branch`, "must be a non-empty string");
     }
 
-    const effectiveMode = (repoMode as RepositoryMode | undefined) ?? (defaults?.mode as RepositoryMode | undefined);
+    const effectiveMode = repoMode ?? (defaults?.mode as RepositoryMode | undefined);
     if (effectiveMode !== REPOSITORY_MODES.CLONE) {
       const depthFromRepo = repoObj.depth;
       const depthFromDefaults = defaults?.depth;
@@ -599,7 +599,7 @@ export class ConfigLoaderService {
       }
 
       for (let i = 0; i < hooksObj.onBranchCreated.length; i++) {
-        const command = hooksObj.onBranchCreated[i];
+        const command: unknown = hooksObj.onBranchCreated[i];
         if (typeof command !== "string" || command.trim() === "") {
           throw new Error(
             `'hooks.onBranchCreated' in ${context} must contain only non-empty strings (invalid at index ${i})`,

@@ -139,7 +139,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   useEffect(() => {
     if (step === "SELECT_BRANCH" && !branchesLoadedRef.current && !loading && selectedRepoIndex >= 0) {
       branchesLoadedRef.current = true;
-      loadBranches(selectedRepoIndex);
+      void loadBranches(selectedRepoIndex);
     }
   }, [step, selectedRepoIndex, loading, loadBranches]);
 
@@ -225,7 +225,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
           setSelectedRepoIndex(selectedRepo.index);
           branchesLoadedRef.current = true;
           setIsFetching(false);
-          loadBranches(selectedRepo.index);
+          void loadBranches(selectedRepo.index);
           setStep("SELECT_BRANCH");
         }
       } else if (key.backspace || key.delete) {

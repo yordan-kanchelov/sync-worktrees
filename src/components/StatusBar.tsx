@@ -43,7 +43,7 @@ const StatusBar: React.FC<StatusBarProps> = ({
       }, 60000);
 
       return () => clearInterval(timer);
-    } catch (error) {
+    } catch {
       setNextSyncTime(null);
       return undefined;
     }

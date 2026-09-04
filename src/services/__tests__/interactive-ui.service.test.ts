@@ -193,13 +193,13 @@ describe("InteractiveUIService", () => {
     it("should initialize with single sync service", () => {
       const service = new InteractiveUIService([mockSyncService], undefined, "0 * * * *");
       expect(service).toBeDefined();
-      service.destroy();
+      void service.destroy();
     });
 
     it("should initialize with multiple sync services", () => {
       const service = new InteractiveUIService([mockSyncService, mockSyncService], undefined, "0 * * * *");
       expect(service).toBeDefined();
-      service.destroy();
+      void service.destroy();
     });
 
     it("should forward service progress events with the repository name", () => {
@@ -223,7 +223,7 @@ describe("InteractiveUIService", () => {
         processed: undefined,
         total: undefined,
       });
-      service.destroy();
+      void service.destroy();
     });
 
     it("should be able to emit events after initialization", () => {
@@ -240,7 +240,7 @@ describe("InteractiveUIService", () => {
       expect(statusSpy).toHaveBeenCalledWith("syncing");
       expect(updateSpy).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -250,7 +250,7 @@ describe("InteractiveUIService", () => {
 
       expect(mockSyncService.updateLogger).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should inject loggers into multiple sync services", () => {
@@ -267,7 +267,7 @@ describe("InteractiveUIService", () => {
       expect(mockSyncService.updateLogger).toHaveBeenCalled();
       expect(mockSyncService2.updateLogger).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -281,7 +281,7 @@ describe("InteractiveUIService", () => {
 
       expect(updateSpy).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should not throw when no listeners", () => {
@@ -289,7 +289,7 @@ describe("InteractiveUIService", () => {
 
       expect(() => service.updateLastSyncTime()).not.toThrow();
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -303,7 +303,7 @@ describe("InteractiveUIService", () => {
 
       expect(setStatusSpy).toHaveBeenCalledWith("syncing");
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should handle both idle and syncing statuses", () => {
@@ -317,7 +317,7 @@ describe("InteractiveUIService", () => {
       expect(setStatusSpy).toHaveBeenCalledWith("idle");
       expect(setStatusSpy).toHaveBeenCalledWith("syncing");
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -415,7 +415,7 @@ describe("InteractiveUIService", () => {
 
       expect(mockSyncService.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should sync multiple services", async () => {
@@ -434,7 +434,7 @@ describe("InteractiveUIService", () => {
       expect(mockSyncService.sync).toHaveBeenCalled();
       expect(mockService2.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should handle sync errors gracefully", async () => {
@@ -444,7 +444,7 @@ describe("InteractiveUIService", () => {
 
       await expect(onManualSync()).resolves.not.toThrow();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("clears, collects, and logs clone-mode skips per cycle", async () => {
@@ -485,7 +485,7 @@ describe("InteractiveUIService", () => {
         ]),
       );
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("updates last-sync timestamp even when only clone-mode phase skips occurred", async () => {
@@ -509,7 +509,7 @@ describe("InteractiveUIService", () => {
 
       expect(updateSpy).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("updates last-sync timestamp and logs at info when only per-action worktree skips occurred", async () => {
@@ -562,7 +562,7 @@ describe("InteractiveUIService", () => {
         expect(log.message).not.toMatch(/^Sync skipped for/);
       }
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -574,7 +574,7 @@ describe("InteractiveUIService", () => {
 
       expect(mockSyncService.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should set status to syncing then idle", async () => {
@@ -587,7 +587,7 @@ describe("InteractiveUIService", () => {
       expect(statusChanges).toContain("syncing");
       expect(statusChanges[statusChanges.length - 1]).toBe("idle");
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should update last sync time after sync", async () => {
@@ -599,7 +599,7 @@ describe("InteractiveUIService", () => {
 
       expect(updateSpy).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should run services in parallel respecting maxParallel limit", async () => {
@@ -639,7 +639,7 @@ describe("InteractiveUIService", () => {
       // Max concurrent should respect the limit
       expect(maxConcurrent).toBeLessThanOrEqual(2);
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should use default parallelism when maxParallel not specified", async () => {
@@ -674,7 +674,7 @@ describe("InteractiveUIService", () => {
       // Default is 2, so max concurrent should be at most 2
       expect(maxConcurrent).toBeLessThanOrEqual(2);
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should handle errors in parallel sync without affecting other services", async () => {
@@ -707,7 +707,7 @@ describe("InteractiveUIService", () => {
       expect(successService.sync).toHaveBeenCalled();
       expect(failingService.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should log per-repository sync failures", async () => {
@@ -729,7 +729,7 @@ describe("InteractiveUIService", () => {
         level: "error",
       });
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -745,7 +745,7 @@ describe("InteractiveUIService", () => {
 
       expect(setStatusSpy).toHaveBeenCalledWith("idle");
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should reload config and sync when config path provided", async () => {
@@ -770,7 +770,7 @@ describe("InteractiveUIService", () => {
       expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalled();
       expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("preserves clone-mode skips recorded during reload initialization", async () => {
@@ -805,7 +805,7 @@ describe("InteractiveUIService", () => {
         ]),
       );
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should handle reload errors gracefully", async () => {
@@ -816,7 +816,7 @@ describe("InteractiveUIService", () => {
 
       await expect(onReload()).resolves.not.toThrow();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should prevent concurrent reloads (re-entry guard)", async () => {
@@ -857,7 +857,7 @@ describe("InteractiveUIService", () => {
       // loadConfigFile should only be called once (second reload was skipped)
       expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalledTimes(1);
 
-      service.destroy();
+      void service.destroy();
     });
 
     describe("cron job management on reload", () => {
@@ -883,7 +883,7 @@ describe("InteractiveUIService", () => {
 
         expect(cronJobsSpy).toHaveBeenCalledTimes(2);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should not duplicate cron jobs when config load fails before cancel", async () => {
@@ -900,7 +900,7 @@ describe("InteractiveUIService", () => {
         expect(cronJobs).toHaveLength(1);
         expect(preExistingJob.stop).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should create new cron jobs after reload (grouped by schedule)", async () => {
@@ -932,7 +932,7 @@ describe("InteractiveUIService", () => {
         expect(cronJobs).toBeDefined();
         expect(cronJobs.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should handle reload with different number of repositories", async () => {
@@ -965,7 +965,7 @@ describe("InteractiveUIService", () => {
         cronJobs = (service as any).cronJobs;
         expect(cronJobs.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should not create cron jobs when runOnce is true", async () => {
@@ -989,7 +989,7 @@ describe("InteractiveUIService", () => {
         const cronJobs = (service as any).cronJobs;
         expect(cronJobs).toEqual([]);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should handle mixed runOnce configurations", async () => {
@@ -1028,7 +1028,7 @@ describe("InteractiveUIService", () => {
         // 2 non-runOnce repos with same schedule = 1 grouped cron job
         expect(cronJobs.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1065,7 +1065,7 @@ describe("InteractiveUIService", () => {
 
         expect((service as any).repositoryCount).toBe(2);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should update repository count after reload with more repos", async () => {
@@ -1104,7 +1104,7 @@ describe("InteractiveUIService", () => {
 
         expect((service as any).repositoryCount).toBe(3);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should emit updateRepositoryCount event after reload", async () => {
@@ -1131,7 +1131,7 @@ describe("InteractiveUIService", () => {
         expect(repoCountSpy).toHaveBeenCalledWith(1);
         expect(mockRender).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1165,7 +1165,7 @@ describe("InteractiveUIService", () => {
 
         expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should timeout after 30 seconds if sync never completes", async () => {
@@ -1196,7 +1196,7 @@ describe("InteractiveUIService", () => {
 
         expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
         vi.useRealTimers();
       });
 
@@ -1223,7 +1223,7 @@ describe("InteractiveUIService", () => {
         expect(newServices).not.toBe(oldServices);
         expect(newServices.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should initialize and sync all new services after reload", async () => {
@@ -1257,7 +1257,7 @@ describe("InteractiveUIService", () => {
         expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(4);
         expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalledTimes(2);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should handle multiple reload cycles", async () => {
@@ -1319,7 +1319,7 @@ describe("InteractiveUIService", () => {
         expect((service as any).repositoryCount).toBe(1);
         expect((service as any).cronJobs.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1352,7 +1352,7 @@ describe("InteractiveUIService", () => {
           expect.objectContaining({ maxAttempts: 5 }),
         );
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should re-inject loggers after reload", async () => {
@@ -1377,7 +1377,7 @@ describe("InteractiveUIService", () => {
 
         expect(mockWorktreeSyncServiceInstance.updateLogger).toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should emit updateCronSchedule event after reload", async () => {
@@ -1403,7 +1403,7 @@ describe("InteractiveUIService", () => {
 
         expect(cronScheduleSpy).toHaveBeenCalledWith("*/30 * * * *");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should not re-render UI on reload (uses events instead)", async () => {
@@ -1427,7 +1427,7 @@ describe("InteractiveUIService", () => {
         // render should only be called once (in constructor), not again on reload
         expect(mockRender).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
     });
   });
@@ -1517,7 +1517,7 @@ describe("InteractiveUIService", () => {
         expect(repos[0]).toEqual({ index: 0, name: "repo-1", repoUrl: "https://github.com/test/repo1.git" });
         expect(repos[1]).toEqual({ index: 1, name: "repo-2", repoUrl: "https://github.com/test/repo2.git" });
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should use fallback name when name is not set", () => {
@@ -1531,7 +1531,7 @@ describe("InteractiveUIService", () => {
 
         expect(repos[0].name).toBe("repo-0");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1554,7 +1554,7 @@ describe("InteractiveUIService", () => {
           error: undefined,
         });
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should calculate only checkout size for clone-mode repositories", async () => {
@@ -1571,7 +1571,7 @@ describe("InteractiveUIService", () => {
         expect(usage.bareSizeBytes).toBe(0);
         expect(usage.worktreeSizeBytes).toBe(1024);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return N/A when all repository size paths fail", async () => {
@@ -1586,7 +1586,7 @@ describe("InteractiveUIService", () => {
         expect(usage.sizeFormatted).toBe("N/A");
         expect(usage.error).toContain("ENOENT");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should mark the size as a lower bound when only some paths fail", async () => {
@@ -1601,7 +1601,7 @@ describe("InteractiveUIService", () => {
         expect(usage.sizeBytes).toBe(1024);
         expect(usage.error).toContain("ENOENT");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw for invalid repo index", async () => {
@@ -1609,7 +1609,7 @@ describe("InteractiveUIService", () => {
 
         await expect(service.getRepositoryDiskUsage(-1)).rejects.toThrow("Invalid repository index: -1");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1622,7 +1622,7 @@ describe("InteractiveUIService", () => {
         expect(branches).toEqual(["main", "develop", "feature/test"]);
         expect(mockSyncService.getRemoteBranches).toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return empty array if service not initialized", async () => {
@@ -1633,7 +1633,7 @@ describe("InteractiveUIService", () => {
         expect(branches).toEqual([]);
         expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should discover remote branches for uninitialized clone-mode repos", async () => {
@@ -1647,7 +1647,7 @@ describe("InteractiveUIService", () => {
         expect(branches).toEqual(["main", "feature/fresh-clone"]);
         expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return empty array if uninitialized clone-mode branch discovery fails", async () => {
@@ -1661,7 +1661,7 @@ describe("InteractiveUIService", () => {
         expect(branches).toEqual([]);
         expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw error for invalid repo index", async () => {
@@ -1670,7 +1670,7 @@ describe("InteractiveUIService", () => {
         await expect(service.getBranchesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
         await expect(service.getBranchesForRepo(5)).rejects.toThrow("Invalid repository index: 5");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1682,7 +1682,7 @@ describe("InteractiveUIService", () => {
         expect(branch).toBe("main");
         expect(mockGitService.getDefaultBranch).toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw error for invalid repo index", () => {
@@ -1691,7 +1691,7 @@ describe("InteractiveUIService", () => {
         expect(() => service.getDefaultBranchForRepo(-1)).toThrow("Invalid repository index: -1");
         expect(() => service.getDefaultBranchForRepo(5)).toThrow("Invalid repository index: 5");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1705,7 +1705,7 @@ describe("InteractiveUIService", () => {
         expect(mockGitService.createBranch).toHaveBeenCalledWith("feature/new", "main");
         expect(mockGitService.pushBranch).toHaveBeenCalledWith("feature/new");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should append suffix if branch already exists", async () => {
@@ -1721,7 +1721,7 @@ describe("InteractiveUIService", () => {
         expect(result.finalName).toBe("feature/test-2");
         expect(mockGitService.createBranch).toHaveBeenCalledTimes(3);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return error for invalid repo index", async () => {
@@ -1731,7 +1731,7 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("Invalid repository index");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should handle git errors gracefully", async () => {
@@ -1743,7 +1743,7 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toBe("Git error");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should serialize branch creation through the queued repo lock", async () => {
@@ -1753,7 +1753,7 @@ describe("InteractiveUIService", () => {
         // Branch+push must run behind any in-flight sync to avoid racing git's refs.
         expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return a failure (not throw) when another process holds the repo lock", async () => {
@@ -1766,7 +1766,7 @@ describe("InteractiveUIService", () => {
         expect(result.error).toMatch(/repository lock/i);
         expect(mockGitService.createBranch).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1778,7 +1778,7 @@ describe("InteractiveUIService", () => {
         expect(worktrees).toHaveLength(2);
         expect(worktrees[0]).toEqual({ path: "/test/worktrees/main", branch: "main" });
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw error for invalid repo index", async () => {
@@ -1786,7 +1786,7 @@ describe("InteractiveUIService", () => {
 
         await expect(service.getWorktreesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should use the service worktree provider for clone-mode repositories", async () => {
@@ -1804,7 +1804,7 @@ describe("InteractiveUIService", () => {
         expect(cloneService.getWorktrees).toHaveBeenCalled();
         expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1826,7 +1826,7 @@ describe("InteractiveUIService", () => {
         expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/clone", true);
         expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1840,7 +1840,7 @@ describe("InteractiveUIService", () => {
           expect.stringMatching(/^\/test\/worktrees\/feature-new-[a-f0-9]{8}$/),
         );
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should checkout the branch for clone-mode repositories", async () => {
@@ -1858,7 +1858,7 @@ describe("InteractiveUIService", () => {
         expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new", { allowConfigDrift: true });
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw error for invalid repo index", async () => {
@@ -1868,7 +1868,7 @@ describe("InteractiveUIService", () => {
           "Invalid repository index: -1",
         );
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should serialize worktree creation through the queued repo lock", async () => {
@@ -1877,7 +1877,7 @@ describe("InteractiveUIService", () => {
 
         expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw when another process holds the repo lock", async () => {
@@ -1887,7 +1887,7 @@ describe("InteractiveUIService", () => {
         await expect(service.createWorktreeForBranch(0, "feature/new")).rejects.toThrow(/repository lock/i);
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1905,7 +1905,7 @@ describe("InteractiveUIService", () => {
         expect(mockSyncService.initializeUnlocked).toHaveBeenCalledTimes(1);
         expect(mockSyncService.initialize).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should not re-initialize when already initialized", async () => {
@@ -1917,7 +1917,7 @@ describe("InteractiveUIService", () => {
         expect(mockSyncService.initializeUnlocked).not.toHaveBeenCalled();
         expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw when another process holds the repo lock", async () => {
@@ -1926,7 +1926,7 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
         await expect(service.fetchForRepo(0)).rejects.toThrow(/repository lock/i);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("is a no-op for clone-mode repos (branch discovery is live at picker open)", async () => {
@@ -1939,7 +1939,7 @@ describe("InteractiveUIService", () => {
         expect(mockGitService.fetchAll).not.toHaveBeenCalled();
         expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1966,7 +1966,7 @@ describe("InteractiveUIService", () => {
 
         expect(result.success).toBe(true);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should split EDITOR values that include flags so spawn gets a real binary name", () => {
@@ -1983,7 +1983,7 @@ describe("InteractiveUIService", () => {
           expect.objectContaining({ detached: true }),
         );
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -2036,7 +2036,7 @@ describe("InteractiveUIService", () => {
         expect(args[6]).toContain("my-repo-feat-x");
         expect(args[6]).toContain("/worktrees/feat-x");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should use osascript on darwin and include tmux session name of <repo>-<branch>", () => {
@@ -2058,7 +2058,7 @@ describe("InteractiveUIService", () => {
         expect(call[1][1]).toContain("my-repo-feat-x");
         expect(call[1][1]).toContain("/test/worktrees/feat-x");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should honour SYNC_WORKTREES_TERMINAL env override", () => {
@@ -2082,7 +2082,7 @@ describe("InteractiveUIService", () => {
         expect(tmuxCmd).toContain("repo-branch");
         expect(tmuxCmd).toContain("/path");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return error for invalid repository index", () => {
@@ -2092,7 +2092,7 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("Invalid repository index");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return error when spawn throws synchronously", () => {
@@ -2109,7 +2109,7 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("ENOENT");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -2120,14 +2120,14 @@ describe("InteractiveUIService", () => {
 
         expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should skip for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
         await expect(service.copyBranchFiles(-1, "main", "feature/new")).resolves.not.toThrow();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should skip if worktrees not found", async () => {
@@ -2143,7 +2143,7 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockServiceWithFiles as any]);
         await expect(service.copyBranchFiles(0, "main", "feature/new")).resolves.not.toThrow();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -2159,7 +2159,7 @@ describe("InteractiveUIService", () => {
           undefined,
         );
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("releases the recorded keep ref through the locked discard operation", async () => {
@@ -2174,7 +2174,7 @@ describe("InteractiveUIService", () => {
           path.join("/test/worktrees", ".diverged", "2024-01-15-feature-x-abc123"),
           "refs/sync-worktrees/keep/2024-01-15-feature-x-abc123",
         );
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw for invalid repo index", async () => {
@@ -2183,7 +2183,7 @@ describe("InteractiveUIService", () => {
         await expect(service.deleteDivergedDirectory(-1, "test")).rejects.toThrow("Invalid repository index: -1");
         await expect(service.deleteDivergedDirectory(5, "test")).rejects.toThrow("Invalid repository index: 5");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should reject path traversal attempts", async () => {
@@ -2195,7 +2195,7 @@ describe("InteractiveUIService", () => {
         );
         expect(fs.rm).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should reject deeply nested traversal attempts", async () => {
@@ -2207,7 +2207,7 @@ describe("InteractiveUIService", () => {
         );
         expect(fs.rm).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it.each([
@@ -2223,7 +2223,7 @@ describe("InteractiveUIService", () => {
         await expect(service.deleteDivergedDirectory(0, badName)).rejects.toThrow();
         expect(fs.rm).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -2237,7 +2237,7 @@ describe("InteractiveUIService", () => {
         const result2 = await service.getDivergedDirectoriesForRepo(5);
         expect(result2).toEqual([]);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return empty array when .diverged directory does not exist", async () => {
@@ -2247,7 +2247,7 @@ describe("InteractiveUIService", () => {
         const result = await service.getDivergedDirectoriesForRepo(0);
         expect(result).toEqual([]);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should parse entries from .diverged directory with metadata files", async () => {
@@ -2265,7 +2265,7 @@ describe("InteractiveUIService", () => {
         expect(result[0].divergedAt).toBe("2024-01-15T10:00:00Z");
         expect(result[0].sizeFormatted).toBe("1.0 KB");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should fallback to parsing directory name when metadata file is missing", async () => {
@@ -2280,7 +2280,7 @@ describe("InteractiveUIService", () => {
         expect(result[0].originalBranch).toBe("my-branch");
         expect(result[0].divergedAt).toBe("2024-03-20");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should filter out non-directory entries", async () => {
@@ -2297,7 +2297,7 @@ describe("InteractiveUIService", () => {
         expect(result).toHaveLength(1);
         expect(result[0].name).toBe("a-dir");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should sort entries by divergedAt descending", async () => {
@@ -2315,7 +2315,7 @@ describe("InteractiveUIService", () => {
         expect(result[0].divergedAt).toBe("2024-06-15");
         expect(result[1].divergedAt).toBe("2024-01-01");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -2339,7 +2339,7 @@ describe("InteractiveUIService", () => {
         await ui.getForceCleanPreview();
 
         expect(maxConcurrent).toBe(1);
-        ui.destroy();
+        void ui.destroy();
       });
 
       it("previews and cleans every configured repository while preserving partial failures", async () => {
@@ -2363,7 +2363,7 @@ describe("InteractiveUIService", () => {
           expect.objectContaining({ repoIndex: 1, repoName: "repo-2", error: "locked" }),
         ]);
 
-        ui.destroy();
+        void ui.destroy();
       });
     });
   });

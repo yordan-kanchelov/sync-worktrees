@@ -38,6 +38,7 @@ type ListedWorktree = {
   lastSyncAt: string | null;
   sizeBytes: number | null;
 };
+type RepoWorktreeListing = { worktrees: ListedWorktree[]; error?: string };
 
 const pathResolution = new PathResolutionService();
 const CLONE_MODE_WORKTREE_MUTATION_REASON =
@@ -186,10 +187,10 @@ export async function handleDetectContext(
 
   if (allWorktreesByRepo) {
     const entries = await Promise.all(
-      Object.entries(allWorktreesByRepo).map(async ([repoName, worktrees]) => [
-        repoName,
-        await enrichDetectedWorktrees(worktrees, statusService, statusLimit),
-      ]),
+      Object.entries(allWorktreesByRepo).map(
+        async ([repoName, worktrees]) =>
+          [repoName, await enrichDetectedWorktrees(worktrees, statusService, statusLimit)] as const,
+      ),
     );
     allWorktreesByRepo = Object.fromEntries(entries);
   }
@@ -237,10 +238,10 @@ export async function handleListWorktrees(
     const statusLimit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
     const repositories = await Promise.all(
       configuredRepoNames.map((repoName) =>
-        limit(async () => {
+        limit(async (): Promise<[string, RepoWorktreeListing]> => {
           try {
             const worktrees = await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit);
-            return [repoName, { worktrees }] as const;
+            return [repoName, { worktrees }];
           } catch (err) {
             return [
               repoName,
@@ -248,7 +249,7 @@ export async function handleListWorktrees(
                 worktrees: [],
                 error: err instanceof Error ? err.message : String(err),
               },
-            ] as const;
+            ];
           }
         }),
       ),

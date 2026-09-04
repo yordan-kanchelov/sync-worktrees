@@ -488,7 +488,7 @@ export class RepositoryContext {
     const adminDir = path.resolve(resolvedGitdir);
 
     let repoUrl: string | null = null;
-    let worktrees: DiscoveredWorktree[] = [];
+    let worktrees: DiscoveredWorktree[];
     let currentBranch: string | null = null;
 
     try {

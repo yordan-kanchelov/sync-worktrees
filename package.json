@@ -13,8 +13,8 @@
     "build": "node esbuild.config.js && tsc --emitDeclarationOnly",
     "start": "node bin/sync-worktrees.js",
     "watch": "tsc --watch",
-    "lint": "eslint '**/*.{js,cjs,mjs}'",
-    "lint:fix": "eslint '**/*.{js,cjs,mjs}' --fix",
+    "lint": "eslint '**/*.{js,cjs,mjs,ts,tsx}' --max-warnings 0",
+    "lint:fix": "eslint '**/*.{js,cjs,mjs,ts,tsx}' --fix",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.spec.json",
     "test": "vitest run",
     "test:e2e:local": "npm run build && vitest run src/__tests__/e2e",
@@ -99,12 +99,14 @@
     "@vitest/ui": "^4.1.10",
     "esbuild": "^0.28.1",
     "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.8.0",
     "happy-dom": "^20.11.1",
     "ink-testing-library": "^4.0.0",
     "react-devtools-core": "^7.0.1",
     "ts-node": "^10.9.2",
     "typescript": "^7.0.2",
+    "typescript-eslint": "^8.69.0",
     "vitest": "^4.1.10"
   }
 }

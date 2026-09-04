@@ -58,7 +58,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
         setWorktrees(wts);
         setSelectedWorktreeIndex(0);
       } catch (err) {
-        setError(`Failed to load worktrees: ${err}`);
+        setError(`Failed to load worktrees: ${String(err)}`);
         setStep("ERROR");
       }
       setLoading(false);
@@ -68,7 +68,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
 
   useEffect(() => {
     if (step === "SELECT_WORKTREE" && worktrees.length === 0 && !loading && selectedRepoIndexRef.current >= 0) {
-      loadWorktrees(selectedRepoIndexRef.current);
+      void loadWorktrees(selectedRepoIndexRef.current);
     }
   }, [step, worktrees.length, loading, loadWorktrees]);
 
@@ -124,7 +124,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
         if (selectedRepo) {
           selectedRepoIndexRef.current = selectedRepo.index;
           setStep("SELECT_WORKTREE");
-          loadWorktrees(selectedRepo.index);
+          void loadWorktrees(selectedRepo.index);
         }
       } else if (key.backspace || key.delete) {
         setProjectFilter((prev) => prev.slice(0, -1));

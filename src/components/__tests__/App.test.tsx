@@ -2,7 +2,8 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import App, { AppProps } from "../App";
+import type { AppProps } from "../App";
+import App from "../App";
 import { AppEventEmitter } from "../../utils/app-events";
 
 // Helper to wait for React state updates

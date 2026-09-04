@@ -26,8 +26,8 @@ export interface AppProps {
   events: AppEventEmitter;
   repositoryCount: number;
   cronSchedule?: string;
-  onManualSync: () => void;
-  onReload: () => void;
+  onManualSync: () => void | Promise<void>;
+  onReload: () => void | Promise<void>;
   onQuit: () => Promise<void>;
   maxProgressLines?: number;
   getRepositoryList: () => RepositoryListEntry[];

@@ -1,10 +1,12 @@
 import React from "react";
 import * as path from "path";
-import { render, Instance } from "ink";
+import type { Instance } from "ink";
+import { render } from "ink";
 import * as cron from "node-cron";
 import pLimit from "p-limit";
 import { spawn, spawnSync } from "child_process";
 import { existsSync } from "fs";
+import type { Dirent } from "fs";
 import App from "../components/App";
 import { DEFAULT_CONFIG } from "../constants";
 import { WorktreeSyncService } from "./worktree-sync.service";
@@ -12,7 +14,8 @@ import { ConfigLoaderService } from "./config-loader.service";
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { HookExecutionService } from "./hook-execution.service";
 import { PathResolutionService } from "./path-resolution.service";
-import { Logger, LogOutputFn, LogLevel } from "./logger.service";
+import type { LogOutputFn, LogLevel } from "./logger.service";
+import { Logger } from "./logger.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/lfs-error";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
@@ -187,7 +190,7 @@ export class InteractiveUIService {
 
   private cancelCronJobs(): void {
     for (const job of this.cronJobs) {
-      job.stop();
+      void job.stop();
     }
     this.cronJobs = [];
   }
@@ -641,7 +644,7 @@ export class InteractiveUIService {
     const worktreeDir = service.config.worktreeDir;
     const divergedDir = path.join(worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
 
-    let dirEntries: import("fs").Dirent[];
+    let dirEntries: Dirent[];
     try {
       dirEntries = await fs.readdir(divergedDir, { withFileTypes: true, encoding: "utf-8" });
     } catch {
@@ -661,7 +664,7 @@ export class InteractiveUIService {
 
         try {
           const infoContent = await fs.readFile(infoFilePath, "utf-8");
-          const info = JSON.parse(infoContent);
+          const info = JSON.parse(infoContent) as Record<string, unknown>;
           if (typeof info.originalBranch === "string") originalBranch = info.originalBranch;
           if (typeof info.divergedAt === "string") divergedAt = info.divergedAt;
           if (typeof info.keepRef === "string") keepRef = info.keepRef;
@@ -716,7 +719,9 @@ export class InteractiveUIService {
 
     let keepRef: string | undefined;
     try {
-      const info = JSON.parse(await fs.readFile(path.join(targetPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE), "utf-8"));
+      const info = JSON.parse(
+        await fs.readFile(path.join(targetPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE), "utf-8"),
+      ) as Record<string, unknown>;
       if (typeof info.keepRef === "string") keepRef = info.keepRef;
     } catch {
       // Legacy entries have no keep ref metadata.

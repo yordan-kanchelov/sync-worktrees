@@ -216,7 +216,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         setExpandedEntry(null);
         setConfirmDelete(null);
       } catch (err) {
-        setError(`Failed to load worktree status: ${err}`);
+        setError(`Failed to load worktree status: ${String(err)}`);
         setStep("ERROR");
       }
       setLoading(false);
@@ -259,7 +259,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   useEffect(() => {
     if (step === "VIEW_STATUS" && entries.length === 0 && !loading && selectedRepoIndexRef.current >= 0) {
-      loadStatus(selectedRepoIndexRef.current);
+      void loadStatus(selectedRepoIndexRef.current);
     }
   }, [step, entries.length, loading, loadStatus]);
 
@@ -353,7 +353,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         if (selectedRepo) {
           selectedRepoIndexRef.current = selectedRepo.index;
           setStep("VIEW_STATUS");
-          loadStatus(selectedRepo.index);
+          void loadStatus(selectedRepo.index);
         }
       } else if (key.backspace || key.delete) {
         setProjectFilter((prev) => prev.slice(0, -1));

@@ -2,7 +2,8 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-import LogPanel, { LogPanelProps } from "../LogPanel";
+import type { LogPanelProps } from "../LogPanel";
+import LogPanel from "../LogPanel";
 import type { LogEntry } from "../App";
 
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));

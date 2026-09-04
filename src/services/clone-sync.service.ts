@@ -571,7 +571,7 @@ export class CloneSyncService {
     const branch = await this.resolveBranch();
     const worktreeDir = this.config.worktreeDir;
 
-    let entries: string[] | null = null;
+    let entries: string[] | null;
     try {
       entries = await fs.readdir(worktreeDir);
     } catch (error) {

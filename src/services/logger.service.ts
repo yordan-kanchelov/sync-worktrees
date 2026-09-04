@@ -51,11 +51,12 @@ export class Logger {
     }
   }
 
-  error(message: string, error?: Error | unknown): void {
+  error(message: string, error?: unknown): void {
     let formattedMessage = this.prefix() + message;
     if (error instanceof Error) {
       formattedMessage += ` ${error.message}`;
     } else if (error) {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- non-Error values are logged in their default string form
       formattedMessage += ` ${String(error)}`;
     }
     if (this.outputFn) {

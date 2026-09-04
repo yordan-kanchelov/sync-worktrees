@@ -18,7 +18,7 @@ export function formatToolResponse(data: object): CallToolResult {
         text: JSON.stringify(data),
       },
     ],
-    structuredContent: data as Record<string, unknown>,
+    structuredContent: data,
   };
 }
 

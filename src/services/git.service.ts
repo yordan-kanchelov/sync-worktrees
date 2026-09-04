@@ -490,7 +490,7 @@ export class GitService {
           `This might cause issues if tools access the worktree immediately.`,
       );
     } catch (error) {
-      this.logger.warn(`  - ⚠️ Warning: Could not verify LFS files for '${branchName}': ${error}`);
+      this.logger.warn(`  - ⚠️ Warning: Could not verify LFS files for '${branchName}': ${String(error)}`);
     }
   }
 
@@ -550,7 +550,7 @@ export class GitService {
         parentCommit.trim(),
       );
     } catch (metadataError) {
-      this.logger.error(`  - ❌ Failed to create metadata for '${branchName}': ${metadataError}`);
+      this.logger.error(`  - ❌ Failed to create metadata for '${branchName}': ${String(metadataError)}`);
       throw new Error(`Metadata creation failed for ${branchName}. This worktree cannot be auto-managed.`);
     }
   }
@@ -584,7 +584,7 @@ export class GitService {
       // Directory doesn't exist, which is expected - continue with creation
     }
 
-    let createdNewBranch = false;
+    let createdNewBranch: boolean;
     try {
       const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
 
@@ -647,7 +647,7 @@ export class GitService {
           );
         }
         await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
-        let retryCreatedNewBranch = false;
+        let retryCreatedNewBranch: boolean;
         try {
           const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
           retryCreatedNewBranch = await this.runWorktreeAddByMatrix(
@@ -672,7 +672,7 @@ export class GitService {
           }
           return;
         } catch (retryError) {
-          this.logger.error(`  - Failed to create worktree on retry: ${retryError}`);
+          this.logger.error(`  - Failed to create worktree on retry: ${String(retryError)}`);
           throw retryError;
         }
       }
@@ -691,7 +691,7 @@ export class GitService {
         throw error;
       }
 
-      this.logger.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${error}`);
+      this.logger.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${String(error)}`);
 
       // Check again if directory exists before fallback attempt
       try {
@@ -867,7 +867,7 @@ export class GitService {
     try {
       await this.metadataService.deleteMetadataFromPath(this.bareRepoPath, worktreePath);
     } catch (metadataError) {
-      this.logger.warn(`Failed to delete metadata for worktree: ${metadataError}`);
+      this.logger.warn(`Failed to delete metadata for worktree: ${String(metadataError)}`);
     }
   }
 
@@ -1189,7 +1189,7 @@ export class GitService {
         this.defaultBranch,
       );
     } catch (metadataError) {
-      this.logger.warn(`Failed to update metadata for worktree: ${metadataError}`);
+      this.logger.warn(`Failed to update metadata for worktree: ${String(metadataError)}`);
     }
   }
 
@@ -1323,7 +1323,7 @@ export class GitService {
 
       return localTree.trim() === remoteTree.trim();
     } catch (error) {
-      this.logger.error(`Error comparing tree content: ${error}`);
+      this.logger.error(`Error comparing tree content: ${String(error)}`);
       return false; // Assume trees are different if we can't compare
     }
   }
@@ -1406,7 +1406,7 @@ export class GitService {
         this.defaultBranch,
       );
     } catch (metadataError) {
-      this.logger.warn(`Failed to update metadata after reset: ${metadataError}`);
+      this.logger.warn(`Failed to update metadata after reset: ${String(metadataError)}`);
     }
     return true;
   }

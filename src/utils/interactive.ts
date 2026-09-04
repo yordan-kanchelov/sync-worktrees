@@ -5,7 +5,7 @@ import * as cron from "node-cron";
 
 import { extractRepoNameFromUrl } from "./git-url";
 
-import type { InitConfigInput, InitRepositoryInput, RepositoryMode } from "../types";
+import type { InitConfigInput, InitRepositoryInput } from "../types";
 
 function safeRepoName(repoUrl: string): string {
   try {
@@ -32,7 +32,7 @@ async function promptForRepository(): Promise<InitRepositoryInput> {
     },
   });
 
-  const mode = (await select({
+  const mode = await select({
     message: "How should this repository be managed?",
     choices: [
       {
@@ -44,7 +44,7 @@ async function promptForRepository(): Promise<InitRepositoryInput> {
         value: "clone",
       },
     ],
-  })) as RepositoryMode;
+  });
 
   const repoName = safeRepoName(repoUrl);
   const defaultWorktreeDir = repoName ? `./${repoName}` : "";

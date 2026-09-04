@@ -2,7 +2,8 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import HelpModal, { HelpModalProps } from "../HelpModal";
+import type { HelpModalProps } from "../HelpModal";
+import HelpModal from "../HelpModal";
 
 describe("HelpModal", () => {
   let defaultProps: HelpModalProps;

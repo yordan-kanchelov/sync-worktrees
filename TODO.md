@@ -29,7 +29,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 ### Batch 8 — CI, tooling and packaging
 
-- [ ] **T51** — `pnpm lint` never lints TypeScript: the eslint glob covers 6 root JS files, so all
+- [x] **T51** — `pnpm lint` never lints TypeScript: the eslint glob covers 6 root JS files, so all
   75 source and 77 test `.ts`/`.tsx` files ship unlinted and the CI 'Run Linter' step is a no-op for
   the app
 - [ ] **T52** — PR workflow `paths` filter omits `**.tsx`, `**.cjs`, `**.mjs` and
@@ -2407,7 +2407,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Coordinator's own finding from a grep of every interpolation of `repoUrl` into
   logger/error strings and of the MCP response builders.
 
-### [ ] T51. `pnpm lint` never lints TypeScript: the eslint glob covers 6 root JS files, so all 75 source and 77 test `.ts`/`.tsx` files ship unlinted and the CI 'Run Linter' step is a no-op for the app
+### [x] T51. `pnpm lint` never lints TypeScript: the eslint glob covers 6 root JS files, so all 75 source and 77 test `.ts`/`.tsx` files ship unlinted and the CI 'Run Linter' step is a no-op for the app
 
 - **Category**: workflow · **Subsystem**: build-ci-tests
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
