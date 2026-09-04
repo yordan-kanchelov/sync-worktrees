@@ -41,7 +41,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   supported runtime (and the ESM module-detection behaviour that differs across 22.x) is never tested
 - [x] **T120** — No post-build smoke test: CI builds `dist/` but never executes the CLI or imports
   the MCP bundle, so a bundling regression is only caught after publish
-- [ ] **T121** — Published package ships 156 files / 2.6 MB unpacked, including `.d.ts.map` files
+- [x] **T121** — Published package ships 156 files / 2.6 MB unpacked, including `.d.ts.map` files
   and JS sourcemaps with the full TypeScript source embedded via `sourcesContent`
 
 ### Batch 1 — guardrails, small and isolated
@@ -4534,7 +4534,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: Checked pr.yml, release.yml, package.json scripts and vitest config
   (tests target `src/`).
 
-### [ ] T121. Published package ships 156 files / 2.6 MB unpacked, including `.d.ts.map` files and JS sourcemaps with the full TypeScript source embedded via `sourcesContent`
+### [x] T121. Published package ships 156 files / 2.6 MB unpacked, including `.d.ts.map` files and JS sourcemaps with the full TypeScript source embedded via `sourcesContent`
 
 - **Category**: workflow · **Subsystem**: build-ci-tests
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

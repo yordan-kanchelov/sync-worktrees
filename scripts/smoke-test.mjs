@@ -36,6 +36,19 @@ const MCP_PROTOCOL_VERSION = "2025-11-25";
 // prefixes that must not be (sources and tooling that `files` should exclude).
 const REQUIRED_TARBALL_PATHS = [packageJson.main, packageJson.types, ...Object.values(packageJson.bin)];
 const FORBIDDEN_TARBALL_PREFIXES = ["src/", "scripts/", ".pnpmfile.cjs"];
+// Source maps are deliberately not published: esbuild.config.js builds with
+// `sourcemap: false` and tsconfig.json has `declarationMap: false`. A map in
+// the tarball means one of those was switched back on, or dist/ still holds
+// output from an earlier build (tsc does not delete files it no longer emits).
+const FORBIDDEN_TARBALL_SUFFIXES = [".map"];
+// Ceilings so that tarball growth is noticed rather than shipped. At the time
+// of writing `npm pack` reports 80 files and ~0.95 MB unpacked: the two esbuild
+// bundles (~0.8 MB), one .d.ts per source module (~0.1 MB) and the README. The
+// limits leave room for ordinary growth (about 40 more modules, 300 kB more
+// bundle) but trip on a dependency that stops being `external` in esbuild, or
+// on maps coming back, both of which add hundreds of kB in one step.
+const MAX_TARBALL_FILES = 120;
+const MAX_TARBALL_UNPACKED_BYTES = 1_250_000;
 const STEP_TIMEOUT_MS = 10_000;
 
 class SmokeFailure extends Error {}
@@ -243,13 +256,17 @@ async function checkTarballContents() {
     fail(`npm pack --dry-run failed (${describeExit(result)})`, { stdout: result.stdout, stderr: result.stderr });
   }
   let files;
+  let unpackedSize;
   try {
-    [{ files }] = JSON.parse(result.stdout);
+    [{ files, unpackedSize }] = JSON.parse(result.stdout);
   } catch (error) {
     fail(`could not parse npm pack --dry-run --json output: ${error.message}`, { stdout: result.stdout });
   }
   if (!Array.isArray(files)) {
     fail("npm pack --dry-run --json output has no files array", { stdout: result.stdout });
+  }
+  if (!Number.isInteger(unpackedSize)) {
+    fail("npm pack --dry-run --json output has no unpackedSize", { stdout: result.stdout });
   }
   const shipped = files.map((file) => file.path);
 
@@ -261,6 +278,28 @@ async function checkTarballContents() {
   if (leaked.length > 0) {
     fail(`npm tarball ships files outside bin/ and dist/: ${leaked.join(", ")}`);
   }
+  const maps = shipped.filter((file) => FORBIDDEN_TARBALL_SUFFIXES.some((suffix) => file.endsWith(suffix)));
+  if (maps.length > 0) {
+    fail(
+      `npm tarball ships source maps (re-enabled in the build config, or stale dist/ output: delete dist/ and rebuild): ${maps.join(", ")}`,
+    );
+  }
+  if (shipped.length > MAX_TARBALL_FILES) {
+    fail(`npm tarball has ${shipped.length} files, above the MAX_TARBALL_FILES ceiling of ${MAX_TARBALL_FILES}`, {
+      "shipped files": shipped.join("\n"),
+    });
+  }
+  if (unpackedSize > MAX_TARBALL_UNPACKED_BYTES) {
+    const largest = [...files]
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 10)
+      .map((file) => `${String(file.size).padStart(9)} ${file.path}`);
+    fail(
+      `npm tarball unpacks to ${unpackedSize} bytes, above the MAX_TARBALL_UNPACKED_BYTES ceiling of ${MAX_TARBALL_UNPACKED_BYTES}`,
+      { "largest files": largest.join("\n") },
+    );
+  }
+  return `${shipped.length} files, ${unpackedSize} bytes unpacked`;
 }
 
 async function createSandbox() {
@@ -290,7 +329,7 @@ async function main() {
   const checks = [
     ["bin/sync-worktrees.js --version prints the package version", checkCliVersion],
     ["dist/mcp-server.js completes an MCP initialize handshake over stdio", checkMcpHandshake],
-    ["npm pack ships the entry points and nothing outside bin/ and dist/", checkTarballContents],
+    ["npm pack ships the entry points, no source maps, and stays under the size ceilings", checkTarballContents],
   ];
 
   const sandbox = await createSandbox();
@@ -299,8 +338,10 @@ async function main() {
     for (const [name, check] of checks) {
       const startedAt = performance.now();
       try {
-        await check(sandbox);
-        console.log(`ok   ${name} (${Math.round(performance.now() - startedAt)} ms)`);
+        // A check may return a short note (measurements worth seeing in CI logs).
+        const note = await check(sandbox);
+        const suffix = typeof note === "string" ? ` [${note}]` : "";
+        console.log(`ok   ${name}${suffix} (${Math.round(performance.now() - startedAt)} ms)`);
       } catch (error) {
         failures += 1;
         const reason = error instanceof SmokeFailure ? error.message : (error.stack ?? String(error));

@@ -9,7 +9,10 @@ const commonConfig = {
   platform: "node",
   format: "esm",
   target: "node22",
-  sourcemap: true,
+  // No source maps: Node only applies them with --enable-source-maps, src/ is
+  // not published, and they would add ~0.5 MB (mappings only) or ~1.5 MB (with
+  // sourcesContent) to a package that is otherwise under 1 MB unpacked.
+  sourcemap: false,
   packages: "external",
   define: {
     __SYNC_WORKTREES_VERSION__: JSON.stringify(version),
