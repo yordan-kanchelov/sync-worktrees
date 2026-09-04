@@ -76,7 +76,10 @@ const StatusBar: React.FC<StatusBarProps> = ({
             <Text color={getStatusColor()}>{status === "syncing" ? "Syncing..." : "Running"}</Text>
           </Text>
           <Text>
-            Repositories: <Text bold color="cyan">{repositoryCount}</Text>
+            Repositories:{" "}
+            <Text bold color="cyan">
+              {repositoryCount}
+            </Text>
           </Text>
         </Box>
         <Box justifyContent="space-between">
@@ -115,14 +118,9 @@ const StatusBar: React.FC<StatusBarProps> = ({
             Disk Space: <Text color="magenta">{diskSpaceUsed || "Calculating..."}</Text>
           </Text>
           <Text dimColor>
-            <Text color="yellow">s</Text>ync{" "}
-            <Text color="yellow">c</Text>reate{" "}
-            <Text color="yellow">o</Text>pen{" "}
-            <Text color="yellow">w</Text>tree{" "}
-            <Text color="yellow">x</Text>clean{" "}
-            <Text color="yellow">r</Text>eload{" "}
-            <Text color="yellow">?</Text>help{" "}
-            <Text color="yellow">q</Text>uit
+            <Text color="yellow">s</Text>ync <Text color="yellow">c</Text>reate <Text color="yellow">o</Text>pen{" "}
+            <Text color="yellow">w</Text>tree <Text color="yellow">x</Text>clean <Text color="yellow">r</Text>eload{" "}
+            <Text color="yellow">?</Text>help <Text color="yellow">q</Text>uit
           </Text>
         </Box>
       </Box>

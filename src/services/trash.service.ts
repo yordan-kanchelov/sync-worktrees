@@ -455,9 +455,7 @@ export class TrashService {
     return manifest;
   }
 
-  async deleteTrashedBranchRef(
-    manifest: Pick<TrashManifest, "branch" | "id" | "pinRef" | "headOid">,
-  ): Promise<void> {
+  async deleteTrashedBranchRef(manifest: Pick<TrashManifest, "branch" | "id" | "pinRef" | "headOid">): Promise<void> {
     if (!manifest.branch) return;
     // Without a pin the branch ref may be the last thing keeping the trashed
     // commits out of gc — leave it as a hygiene problem rather than risk them.

@@ -563,10 +563,9 @@ describe("GitService", () => {
     });
 
     it("keeps branches whose names contain '|' (legal refname character) (#review)", async () => {
-      const mockOutput = [
-        "origin/feature|wip 2024-01-15T10:30:00-05:00",
-        "origin/main 2024-01-10T14:20:00-05:00",
-      ].join("\n");
+      const mockOutput = ["origin/feature|wip 2024-01-15T10:30:00-05:00", "origin/main 2024-01-10T14:20:00-05:00"].join(
+        "\n",
+      );
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
 
@@ -808,9 +807,7 @@ describe("GitService", () => {
       const trasher = vi.fn<any>().mockRejectedValue(new Error("ENOENT: no such file or directory"));
       gitService.setStaleDirectoryTrasher(trasher as unknown as (dirPath: string) => Promise<string>);
 
-      (fs.access as Mock<any>).mockRejectedValue(
-        Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }),
-      );
+      (fs.access as Mock<any>).mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       mockGit.raw.mockReset();
       mockGit.raw

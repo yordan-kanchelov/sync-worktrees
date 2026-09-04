@@ -82,5 +82,4 @@ describe("HelpModal", () => {
       expect(onClose).toHaveBeenCalledTimes(1);
     });
   });
-
 });

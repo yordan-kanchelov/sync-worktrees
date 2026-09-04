@@ -82,9 +82,7 @@ export class GitService {
     let git = this.gitInstances.get(key);
     if (!git) {
       const base = simpleGit(dirPath, this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
-      git = useLfsSkip
-        ? base.env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
-        : base;
+      git = useLfsSkip ? base.env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : base;
       this.gitInstances.set(key, git);
     }
     return git;

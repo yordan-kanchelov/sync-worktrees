@@ -3,12 +3,7 @@ import { Box, Text, useInput, usePaste } from "ink";
 import { isMouseSequence } from "../utils/mouse";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
-import type {
-  WorktreeStatusEntry,
-  DivergedDirectoryInfo,
-  RepositoryListEntry,
-  RepositoryDiskUsage,
-} from "../types";
+import type { WorktreeStatusEntry, DivergedDirectoryInfo, RepositoryListEntry, RepositoryDiskUsage } from "../types";
 import { getErrorMessage } from "../utils/lfs-error";
 
 export type { WorktreeStatusEntry };
@@ -25,9 +20,7 @@ export interface WorktreeStatusViewProps {
 }
 
 type RepositoryDiskUsageState =
-  | { status: "loading" }
-  | { status: "ready"; usage: RepositoryDiskUsage }
-  | { status: "error" };
+  { status: "loading" } | { status: "ready"; usage: RepositoryDiskUsage } | { status: "error" };
 
 type ListItem =
   | { type: "worktree"; entry: WorktreeStatusEntry }
@@ -106,14 +99,17 @@ const getStatusSummary = (status: WorktreeStatusResult): string => {
 
   if (!status.isClean && details) {
     const fileCount =
-      details.modifiedFiles + details.deletedFiles + details.renamedFiles + details.createdFiles + details.conflictedFiles + details.untrackedFiles;
+      details.modifiedFiles +
+      details.deletedFiles +
+      details.renamedFiles +
+      details.createdFiles +
+      details.conflictedFiles +
+      details.untrackedFiles;
     if (fileCount > 0) parts.push(`${fileCount} changed`);
   }
   if (status.hasUnpushedCommits && details?.unpushedCommitCount) {
     parts.push(
-      status.fullyPushedUpstreamDeleted
-        ? "pushed, remote branch deleted"
-        : `${details.unpushedCommitCount} unpushed`,
+      status.fullyPushedUpstreamDeleted ? "pushed, remote branch deleted" : `${details.unpushedCommitCount} unpushed`,
     );
   }
   if (status.hasStashedChanges && details?.stashCount) {
@@ -487,9 +483,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
           </>
         )}
         {status.upstreamGone && <Text color="red"> Remote branch has been deleted</Text>}
-        {status.reasons.length > 0 && (
-          <Text dimColor> Reasons: {status.reasons.join(", ")}</Text>
-        )}
+        {status.reasons.length > 0 && <Text dimColor> Reasons: {status.reasons.join(", ")}</Text>}
       </Box>
     );
   };
@@ -577,17 +571,13 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                   return (
                     <Box key={item.entry.path} flexDirection="column">
                       <Box>
-                        <Text color={isSelected ? "cyan" : undefined}>
-                          {isSelected ? "> " : "  "}
-                        </Text>
+                        <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "> " : "  "}</Text>
                         <Box width={24}>
                           <Text color={isSelected ? "cyan" : undefined}>{item.entry.branch}</Text>
                         </Box>
                         <Text> </Text>
                         {getStatusFlags(item.entry.status)}
-                        {summary && (
-                          <Text dimColor> {summary}</Text>
-                        )}
+                        {summary && <Text dimColor> {summary}</Text>}
                       </Box>
                       {isExpanded && renderDetailPanel(item.entry)}
                     </Box>
@@ -602,16 +592,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                 return (
                   <Box key={item.entry.path} flexDirection="column">
                     <Box>
-                      <Text color={isSelected ? "cyan" : undefined}>
-                        {isSelected ? "> " : "  "}
-                      </Text>
+                      <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "> " : "  "}</Text>
                       {isConfirming ? (
                         deleting ? (
                           <Text color="yellow">Deleting...</Text>
                         ) : (
-                          <Text color="red">
-                            Delete {item.entry.name}? (y/n)
-                          </Text>
+                          <Text color="red">Delete {item.entry.name}? (y/n)</Text>
                         )
                       ) : (
                         <>
@@ -620,7 +606,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                             <Text color={isSelected ? "cyan" : undefined}>{item.entry.originalBranch}</Text>
                           </Box>
                           <Text dimColor> {item.entry.sizeFormatted.padStart(10)}</Text>
-                          <Text dimColor>  (diverged {dateStr})</Text>
+                          <Text dimColor> (diverged {dateStr})</Text>
                         </>
                       )}
                     </Box>
@@ -695,7 +681,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
             <Text>
               Repository: <Text color="cyan">{selectedRepo.name}</Text>
             </Text>
-            {getRepositoryDiskUsage && <Text dimColor>  </Text>}
+            {getRepositoryDiskUsage && <Text dimColor> </Text>}
             {renderRepositoryDiskUsage(selectedRepo.index)}
           </Box>
         )}

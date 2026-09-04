@@ -540,10 +540,7 @@ export class ConfigLoaderService {
       throw new ConfigValidationError(`Repository '${repoName}' mode`, "must be 'clone' or 'worktree'");
     }
 
-    if (
-      repoObj.branch !== undefined &&
-      (typeof repoObj.branch !== "string" || repoObj.branch.trim() === "")
-    ) {
+    if (repoObj.branch !== undefined && (typeof repoObj.branch !== "string" || repoObj.branch.trim() === "")) {
       throw new ConfigValidationError(`Repository '${repoName}' branch`, "must be a non-empty string");
     }
 

@@ -335,9 +335,7 @@ describe("BranchCreationWizard", () => {
       await waitForStateUpdate();
 
       expect(createAndPushBranch).toHaveBeenCalledWith(2, "main", "my-feature");
-      expect(onBranchCreated).toHaveBeenCalledWith(
-        expect.objectContaining({ repoIndex: 2 }),
-      );
+      expect(onBranchCreated).toHaveBeenCalledWith(expect.objectContaining({ repoIndex: 2 }));
     });
   });
 

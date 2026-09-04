@@ -313,7 +313,10 @@ describe("WorktreeSyncService", () => {
         errors: [],
       });
       vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
-      mockGitService.listRefs.mockResolvedValue([legacyRef, "refs/sync-worktrees/keep/diverged-m9x1a2b3-gone-00000000"]);
+      mockGitService.listRefs.mockResolvedValue([
+        legacyRef,
+        "refs/sync-worktrees/keep/diverged-m9x1a2b3-gone-00000000",
+      ]);
       (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) =>
         String(dirPath).endsWith(".diverged") ? [divergedName] : [],
       );
@@ -1755,11 +1758,7 @@ describe("WorktreeSyncService", () => {
 
       await service.sync();
 
-      expect(mockGitService.resetToUpstream).toHaveBeenCalledWith(
-        "/test/worktrees/feature-1",
-        "feature-1",
-        "abc123",
-      );
+      expect(mockGitService.resetToUpstream).toHaveBeenCalledWith("/test/worktrees/feature-1", "feature-1", "abc123");
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
     });
 

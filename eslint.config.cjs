@@ -13,15 +13,7 @@ const testFiles = [
 
 module.exports = defineConfig([
   {
-    ignores: [
-      "**/dist/",
-      "**/coverage/",
-      "**/node_modules/",
-      "**/.astro/",
-      "**/.git/",
-      "**/build/",
-      "site/",
-    ],
+    ignores: ["**/dist/", "**/coverage/", "**/node_modules/", "**/.astro/", "**/.git/", "**/build/", "site/"],
   },
   js.configs.recommended,
   {

@@ -7,11 +7,11 @@ on:
     # lockfile, workflows, composite actions, changesets) runs the checks, so a required
     # check is never left 'skipped' for a PR that touches code. site/ has its own workflow.
     paths-ignore:
-      - '*.md'
-      - 'LICENSE'
-      - 'CNAME'
-      - 'assets/**'
-      - 'site/**'
+      - "*.md"
+      - "LICENSE"
+      - "CNAME"
+      - "assets/**"
+      - "site/**"
 
 jobs:
   check-changeset:
@@ -40,7 +40,7 @@ jobs:
             echo "has-changeset=skip" >> $GITHUB_OUTPUT
             exit 0
           }
-          
+
           # Check if there's a changeset
           if pnpm changeset status --since=origin/${{ github.base_ref }}; then
             echo "has-changeset=true" >> $GITHUB_OUTPUT

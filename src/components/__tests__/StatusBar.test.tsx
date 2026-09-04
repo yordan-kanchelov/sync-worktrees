@@ -6,7 +6,7 @@ import type { StatusBarProps } from "../StatusBar";
 import StatusBar from "../StatusBar";
 
 // Helper to wait for React state updates and effects
-const waitForEffects = () => new Promise(resolve => setTimeout(resolve, 100));
+const waitForEffects = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 describe("StatusBar", () => {
   let defaultProps: StatusBarProps;
@@ -290,6 +290,5 @@ describe("StatusBar", () => {
       expect(lastFrame()).toContain("500 MB");
       expect(lastFrame()).not.toContain("Calculating...");
     });
-
   });
 });

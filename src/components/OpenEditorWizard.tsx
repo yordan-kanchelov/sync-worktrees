@@ -314,9 +314,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     if (step === "OPENING") return null;
     if (step === "ERROR") return null;
     if (step === "SELECT_WORKTREE") {
-      return (
-        <Text dimColor>↑/↓ navigate • Type to filter • Tab switch mode • Enter to select • ESC to cancel</Text>
-      );
+      return <Text dimColor>↑/↓ navigate • Type to filter • Tab switch mode • Enter to select • ESC to cancel</Text>;
     }
     return <Text dimColor>↑/↓ navigate • Type to filter • Enter to select • ESC to cancel</Text>;
   };
@@ -338,7 +336,8 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
         {repositories.length > 1 && step === "SELECT_WORKTREE" && !loading && selectedRepoIndexRef.current >= 0 && (
           <Box marginBottom={1}>
             <Text>
-              Repository: <Text color="cyan">{repositories.find((r) => r.index === selectedRepoIndexRef.current)?.name}</Text>
+              Repository:{" "}
+              <Text color="cyan">{repositories.find((r) => r.index === selectedRepoIndexRef.current)?.name}</Text>
             </Text>
           </Box>
         )}
