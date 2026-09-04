@@ -231,7 +231,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "sync",
     {
       description:
-        "Repo-wide sync: fetch, create worktrees for new remote branches, remove pruned (clean only), fast-forward existing. Emits progress. In worktree mode: single worktree? Use update_worktree. Single create? Use create_worktree. Preconditions: config loaded + repo initialized (auto-runs). Returns: {success, duration, skips}.",
+        "Repo-wide sync: fetch, create worktrees for new remote branches, remove pruned (clean only), fast-forward existing. Emits progress. In worktree mode: single worktree? Use update_worktree. Single create? Use create_worktree. Preconditions: config loaded + repo initialized (auto-runs). Returns: {success, duration, failed, failures, outcome, skips}. success=false when any action failed (failed>0; details in failures) — the call itself still completes, so check success rather than isError.",
       inputSchema: z.object({
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),

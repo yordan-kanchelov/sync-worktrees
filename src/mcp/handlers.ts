@@ -459,9 +459,18 @@ export async function handleSync(
       ...reason,
       message: formatCloneSkipReason(reason),
     }));
+    // Per-action failures (a worktree that could not be removed, a sparse
+    // checkout that could not be applied, ...) are recorded on the outcome
+    // instead of rejecting sync(). The CLI's --runOnce turns them into exit
+    // code 1; mirror that here so `success` is not a lie, while the call
+    // itself still completed, so isError stays false.
+    const failed = outcome.counts.failed;
+    const failures = outcome.actions.filter((action) => action.kind === "failed");
     return formatToolResponse({
-      success: true,
+      success: failed === 0,
       duration,
+      failed,
+      failures,
       outcome: {
         ...outcome,
         durationMs: outcome.durationMs ?? duration,

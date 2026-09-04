@@ -177,9 +177,40 @@ export const createWorktreeOutputSchema = z.looseObject({
   pushError: z.string().optional().describe("Present only when success=false."),
 });
 
+const syncOutcomeScopeSchema = z.enum(["repo", "branch", "worktree", "sparse-checkout"]);
+
+const syncOutcomeActionSchema = z.looseObject({
+  kind: z.enum(["created", "removed", "updated", "noop", "skipped", "preserved-diverged", "failed"]),
+  branch: z.string().optional(),
+  path: z.string().optional(),
+  scope: syncOutcomeScopeSchema.optional(),
+  reason: z.string().optional(),
+  message: z.string().optional(),
+  warning: z.string().optional(),
+  error: z.string().optional(),
+  preservedPath: z.string().optional(),
+});
+
+const syncFailedActionSchema = z.looseObject({
+  kind: z.literal("failed"),
+  scope: syncOutcomeScopeSchema,
+  error: z.string(),
+  reason: z.string().optional().describe("Machine-readable cause, e.g. remove_failed, sync_failed."),
+  branch: z.string().optional(),
+  path: z.string().optional(),
+});
+
 export const syncOutputSchema = z.looseObject({
-  success: z.boolean(),
+  success: z
+    .boolean()
+    .describe(
+      "false when any action failed (failed > 0), matching the CLI's non-zero exit. The call itself still completed, so isError stays false.",
+    ),
   duration: z.number().describe("Wall-clock milliseconds."),
+  failed: z.number().describe("Number of failed actions; equals outcome.counts.failed."),
+  failures: z
+    .array(syncFailedActionSchema)
+    .describe("The failed entries of outcome.actions, so callers need not filter them out."),
   outcome: z.looseObject({
     repoName: z.string().optional(),
     mode: z.enum(["clone", "worktree"]),
@@ -193,19 +224,7 @@ export const syncOutputSchema = z.looseObject({
       failed: z.number(),
       noop: z.number(),
     }),
-    actions: z.array(
-      z.looseObject({
-        kind: z.enum(["created", "removed", "updated", "noop", "skipped", "preserved-diverged", "failed"]),
-        branch: z.string().optional(),
-        path: z.string().optional(),
-        scope: z.enum(["repo", "branch", "worktree", "sparse-checkout"]).optional(),
-        reason: z.string().optional(),
-        message: z.string().optional(),
-        warning: z.string().optional(),
-        error: z.string().optional(),
-        preservedPath: z.string().optional(),
-      }),
-    ),
+    actions: z.array(syncOutcomeActionSchema),
     durationMs: z.number().optional(),
   }),
   skips: z.array(

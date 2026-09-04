@@ -49,7 +49,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T1** — Capability gate for sync/initialize (and create/update) is bypassed after any
   mutating tool: ensureCapability treats a null discovered context as 'allowed' and
   invalidateDiscovered() nulls it
-- [ ] **T38** — sync tool reports success:true when the sync outcome recorded failures
+- [x] **T38** — sync tool reports success:true when the sync outcome recorded failures
   (counts.failed > 0); the CLI treats the same outcome as exit code 1
 - [ ] **T40** — create_worktree can move an unregistered directory at the target path into .trash
   (or rm -rf it when trash is disabled) although it is annotated destructiveHint:false and the README
@@ -1912,7 +1912,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   never fast-forwarded, not that they are removed. README line 277 says removal only happens via
   sync's 'safety-gated pruning', which is exactly what triggers here.
 
-### [ ] T38. sync tool reports success:true when the sync outcome recorded failures (counts.failed > 0); the CLI treats the same outcome as exit code 1
+### [x] T38. sync tool reports success:true when the sync outcome recorded failures (counts.failed > 0); the CLI treats the same outcome as exit code 1
 
 - **Category**: correctness · **Subsystem**: mcp
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

@@ -11,6 +11,7 @@ import {
   handleSync,
   handleUpdateWorktree,
 } from "../handlers";
+import { syncOutputSchema } from "../output-schemas";
 import { formatErrorResponse } from "../utils";
 
 import type { Capabilities, DiscoveredRepoContext, RepositoryContext } from "../context";
@@ -690,6 +691,8 @@ describe("handleSync", () => {
     const result = await invoke(handleSync, ctx, {});
     const body = parseResponse(result);
     expect(body.success).toBe(true);
+    expect(body.failed).toBe(0);
+    expect(body.failures).toEqual([]);
     expect(typeof body.duration).toBe("number");
     expect(service.sync).toHaveBeenCalled();
     expect(body.outcome).toMatchObject({
@@ -700,6 +703,81 @@ describe("handleSync", () => {
     });
     expect(typeof body.outcome.durationMs).toBe("number");
     expect(body.skips).toEqual([]);
+    expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("reports success=false with the failed count and failures when the outcome recorded failures", async () => {
+    const { ctx, service } = makeCtx({});
+    const failure = {
+      kind: "failed",
+      scope: "worktree",
+      error: "EACCES: permission denied, rename '/repo/worktrees/b' -> '/repo/.trash/b'",
+      reason: "remove_failed",
+      branch: "b",
+      path: "/repo/worktrees/b",
+    };
+    // The runner collects per-worktree failures via Promise.allSettled and
+    // records them on the outcome instead of rejecting sync().
+    service.sync.mockResolvedValue({
+      started: true,
+      outcome: {
+        mode: "worktree",
+        started: true,
+        counts: { created: 1, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 1, noop: 0 },
+        actions: [{ kind: "created", branch: "a", path: "/repo/worktrees/a" }, failure],
+      },
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    // The call itself completed, so this is a structured result, not an error.
+    expect(result.isError).not.toBe(true);
+    expect(body.success).toBe(false);
+    expect(body.failed).toBe(1);
+    expect(body.failures).toEqual([failure]);
+    expect(body.outcome.counts.failed).toBe(1);
+    expect(body.outcome.actions).toHaveLength(2);
+    expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("reports success=false for a clone-mode outcome that recorded a repo-scoped failure", async () => {
+    const { ctx, service } = makeCtx({
+      service: { isCloneMode: vi.fn<any>().mockReturnValue(true) },
+    });
+    const failure = { kind: "failed", scope: "repo", error: "fetch failed", reason: "sync_failed" };
+    service.sync.mockResolvedValue({
+      started: true,
+      outcome: {
+        mode: "clone",
+        started: true,
+        counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 1, noop: 0 },
+        actions: [failure],
+      },
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(result.isError).not.toBe(true);
+    expect(body.success).toBe(false);
+    expect(body.failed).toBe(1);
+    expect(body.failures).toEqual([failure]);
+    expect(body.outcome.mode).toBe("clone");
+  });
+
+  it("treats a result without an outcome as a success with no failures", async () => {
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({ started: true });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.failed).toBe(0);
+    expect(body.failures).toEqual([]);
+    expect(body.outcome.counts.failed).toBe(0);
+    expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
   });
 
   it("invokes autoSelectCurrentRepoIfSingleConfig when repoName is omitted", async () => {
