@@ -114,6 +114,7 @@ type MockGit = {
 
 function makeCtx(opts: {
   discovered?: DiscoveredRepoContext | null;
+  baseCapabilities?: Capabilities | null;
   git?: Partial<MockGit>;
   syncInProgress?: boolean;
   loadConfigImpl?: (configPath: string) => Promise<unknown>;
@@ -173,6 +174,9 @@ function makeCtx(opts: {
   const ctx = {
     detectFromPath: vi.fn<any>().mockResolvedValue(opts.discovered ?? makeDiscovered()),
     getDiscoveredContext: vi.fn<any>().mockReturnValue(opts.discovered ?? makeDiscovered()),
+    getBaseCapabilities: vi
+      .fn<any>()
+      .mockReturnValue(opts.baseCapabilities === undefined ? makeCapabilities() : opts.baseCapabilities),
     getEntry: vi.fn<any>().mockReturnValue({
       name: opts.currentRepo ?? "test",
       service,
@@ -279,6 +283,7 @@ describe("handleListWorktrees", () => {
 
     const ctx = {
       getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getBaseCapabilities: vi.fn<any>().mockReturnValue(makeCapabilities()),
       getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
         makeDiscovered({
           repoName: String(repoName),
@@ -333,6 +338,7 @@ describe("handleListWorktrees", () => {
 
     const ctx = {
       getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getBaseCapabilities: vi.fn<any>().mockReturnValue(makeCapabilities()),
       getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
         makeDiscovered({
           repoName: String(repoName),
@@ -637,6 +643,48 @@ describe("handleSync", () => {
     expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
   });
 
+  it("allows sync for a config-source entry whose discovery cache is empty", async () => {
+    const { ctx, service } = makeCtx({});
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(service.sync).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies sync from durable capabilities when the discovery cache is empty", async () => {
+    const { ctx, service } = makeCtx({
+      baseCapabilities: makeCapabilities({
+        sync: { available: false, reason: "repository is not listed in the loaded config" },
+      }),
+    });
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(body.message).toContain("not listed in the loaded config");
+    expect(ctx.getService).not.toHaveBeenCalled();
+    expect(service.sync).not.toHaveBeenCalled();
+  });
+
+  it("lets a durable denial win over a discovered context that reports sync as available", async () => {
+    const { ctx, service } = makeCtx({
+      discovered: makeDiscovered({ capabilities: makeCapabilities({ sync: { available: true } }) }),
+      baseCapabilities: makeCapabilities({ sync: { available: false, reason: "no config file loaded" } }),
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(body.message).toContain("no config file loaded");
+    expect(service.sync).not.toHaveBeenCalled();
+  });
+
   it("calls service.sync and returns duration", async () => {
     const { ctx, service } = makeCtx({});
     const result = await invoke(handleSync, ctx, {});
@@ -802,6 +850,23 @@ describe("handleInitialize", () => {
 
     expect(body.defaultBranch).toBe("develop");
     expect(service.getDefaultBranch).toHaveBeenCalled();
+  });
+
+  it("denies initialize from durable capabilities when the discovery cache is empty", async () => {
+    const { ctx, service } = makeCtx({
+      baseCapabilities: makeCapabilities({
+        initialize: { available: false, reason: "no config file loaded (running in auto-detect mode)" },
+      }),
+    });
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+
+    const result = await invoke(handleInitialize, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(body.message).toContain("auto-detect mode");
+    expect(ctx.getService).not.toHaveBeenCalled();
+    expect(service.initializeUnlocked).not.toHaveBeenCalled();
   });
 
   it("sends progress notifications when service emits events", async () => {

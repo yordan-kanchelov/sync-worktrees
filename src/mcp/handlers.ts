@@ -44,7 +44,21 @@ const pathResolution = new PathResolutionService();
 const CLONE_MODE_WORKTREE_MUTATION_REASON =
   "clone-mode repositories have a single checkout; use sync for clone-mode updates";
 
-function ensureCapability(discovered: DiscoveredRepoContext | null, key: CapabilityKey, toolName: string): void {
+function ensureCapability(
+  ctx: RepositoryContext,
+  repoName: string | undefined,
+  discovered: DiscoveredRepoContext | null,
+  key: CapabilityKey,
+  toolName: string,
+): void {
+  // Gate on the entry's durable capabilities before consulting the discovery
+  // cache: every mutating tool clears that cache, so an empty `discovered`
+  // must never read as "allowed" (it used to let sync/initialize run against
+  // an auto-detected repo right after update_worktree or create_worktree).
+  const base = ctx.getBaseCapabilities(repoName)?.[key];
+  if (base && !base.available) {
+    throw new CapabilityUnavailableError(toolName, base.reason ? [base.reason] : (discovered?.notes ?? []));
+  }
   if (!discovered) return;
   const cap = discovered.capabilities[key];
   if (!cap.available) {
@@ -67,7 +81,7 @@ async function getReadyService(
   }
   const discovered = ctx.getDiscoveredContext(repoName);
   if (options.capability && options.toolName) {
-    ensureCapability(discovered, options.capability, options.toolName);
+    ensureCapability(ctx, repoName, discovered, options.capability, options.toolName);
   }
 
   const service = await ctx.getService(repoName);

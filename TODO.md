@@ -46,7 +46,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 ### Batch 1 — guardrails, small and isolated
 
-- [ ] **T1** — Capability gate for sync/initialize (and create/update) is bypassed after any
+- [x] **T1** — Capability gate for sync/initialize (and create/update) is bypassed after any
   mutating tool: ensureCapability treats a null discovered context as 'allowed' and
   invalidateDiscovered() nulls it
 - [ ] **T38** — sync tool reports success:true when the sync outcome recorded failures
@@ -414,7 +414,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 
 ## High severity
 
-### [ ] T1. Capability gate for sync/initialize (and create/update) is bypassed after any mutating tool: ensureCapability treats a null discovered context as 'allowed' and invalidateDiscovered() nulls it
+### [x] T1. Capability gate for sync/initialize (and create/update) is bypassed after any mutating tool: ensureCapability treats a null discovered context as 'allowed' and invalidateDiscovered() nulls it
 
 - **Category**: guardrail · **Subsystem**: mcp
 - **Severity**: High · **Verification**: code re-read by the coordinating reviewer

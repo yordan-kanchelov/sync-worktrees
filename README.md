@@ -127,7 +127,7 @@ Install the sync-worktrees MCP server with your client.
 }
 ```
 
-If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require a loaded config (or call `load_config` at runtime).
+If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require the repository to be listed in a loaded config (or call `load_config` at runtime); they stay unavailable for auto-detected repositories no matter which other tools have run.
 
 <details>
 <summary>Claude Code</summary>

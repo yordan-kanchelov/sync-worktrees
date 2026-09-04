@@ -118,6 +118,10 @@ interface CachedDiscovery {
 
 const AUTO_DETECT_PREFIX = "__auto_detected__:";
 const DISCOVERY_CACHE_TTL_MS = 5000;
+const NO_REMOTE_URL_REASON = "no remote origin URL detected";
+const NO_CONFIG_NO_URL_REASON = "no config and no remote URL";
+const CLONE_MODE_REASON = "clone-mode repositories have a single checkout; use sync for clone-mode updates";
+const CONFIG_RECOVERY_HINT = "call load_config or detect_context from a configured workspace";
 
 function emptyCapabilities(reason?: string): Capabilities {
   const state: CapabilityState = reason ? { available: false, reason } : { available: false };
@@ -533,16 +537,6 @@ export class RepositoryContext {
 
     const worktreeDir = path.dirname(worktreeRoot);
 
-    const noUrlReason = "no remote origin URL detected";
-    const capabilities: Capabilities = {
-      listWorktrees: { available: true },
-      getStatus: { available: true },
-      createWorktree: repoUrl !== null ? { available: true } : { available: false, reason: noUrlReason },
-      updateWorktree: { available: true },
-      sync: { available: false, reason: "no config and no remote URL" },
-      initialize: { available: false, reason: "no config and no remote URL" },
-    };
-
     const foldedBare = normalizePathForCompare(bareRepoPath);
     let matchedConfig: RepoEntry | null = null;
     for (const entry of this.repos.values()) {
@@ -554,38 +548,49 @@ export class RepositoryContext {
       }
     }
 
-    let repoName: string | null = null;
+    let entry: RepoEntry | null = null;
     let kind: DiscoveredRepoContext["kind"] = "unmanaged";
 
     if (matchedConfig) {
-      repoName = matchedConfig.name;
+      entry = matchedConfig;
       kind = "managed";
-      capabilities.sync = { available: true };
-      capabilities.initialize = { available: true };
     } else if (repoUrl) {
-      const syntheticConfig: Config = {
-        repoUrl,
-        worktreeDir,
-        bareRepoDir: bareRepoPath,
-        cronSchedule: DEFAULT_CONFIG.CRON_SCHEDULE,
-        runOnce: true,
-      };
       const detectedKey = `${AUTO_DETECT_PREFIX}${path.basename(bareRepoPath)}@${bareRepoPath}`;
-      if (!this.repos.has(detectedKey)) {
-        this.repos.set(detectedKey, {
-          name: detectedKey,
-          config: syntheticConfig,
-          source: "detected",
-        });
+      entry = this.repos.get(detectedKey) ?? null;
+      if (!entry) {
+        const syntheticConfig: Config = {
+          repoUrl,
+          worktreeDir,
+          bareRepoDir: bareRepoPath,
+          cronSchedule: DEFAULT_CONFIG.CRON_SCHEDULE,
+          runOnce: true,
+        };
+        entry = { name: detectedKey, config: syntheticConfig, source: "detected" };
+        this.repos.set(detectedKey, entry);
       }
-      repoName = detectedKey;
-      const autoReason = "no config file loaded (running in auto-detect mode)";
-      capabilities.sync = { available: false, reason: autoReason };
-      capabilities.initialize = { available: false, reason: autoReason };
     }
 
-    if (repoName) {
-      this.bootstrapCurrentRepo(repoName, matchedConfig !== null);
+    // Start from the entry's durable capabilities so that discovery can only
+    // narrow them, never widen them (see computeBaseCapabilities).
+    const capabilities: Capabilities = entry
+      ? this.computeBaseCapabilities(entry)
+      : {
+          listWorktrees: { available: true },
+          getStatus: { available: true },
+          createWorktree: { available: false, reason: NO_REMOTE_URL_REASON },
+          updateWorktree: { available: true },
+          sync: { available: false, reason: NO_CONFIG_NO_URL_REASON },
+          initialize: { available: false, reason: NO_CONFIG_NO_URL_REASON },
+        };
+    if (repoUrl === null) {
+      // A bare repo without an origin URL cannot create worktrees, even when a
+      // loaded config lists one for it.
+      capabilities.createWorktree = { available: false, reason: NO_REMOTE_URL_REASON };
+    }
+
+    const repoName = entry?.name ?? null;
+    if (entry) {
+      this.bootstrapCurrentRepo(entry.name, matchedConfig !== null);
     }
 
     const siblingRepositories = await this.discoverSiblingRepositories(bareRepoPath);
@@ -606,11 +611,8 @@ export class RepositoryContext {
       notes,
     };
 
-    if (repoName) {
-      const entry = this.repos.get(repoName);
-      if (entry) {
-        entry.discovered = discovered;
-      }
+    if (entry) {
+      entry.discovered = discovered;
     }
 
     return { result: discovered, adminDir };
@@ -757,6 +759,49 @@ export class RepositoryContext {
   getDiscoveredContext(repoName?: string): DiscoveredRepoContext | null {
     const entry = this.getEntry(repoName);
     return entry?.discovered ?? null;
+  }
+
+  /**
+   * Capabilities derived from the entry's durable state (source, mode, repoUrl
+   * and whether a loaded config lists it) rather than from the discovery
+   * cache. Handlers gate on these first: every mutating tool clears the cache,
+   * so an empty cache must never re-enable a tool that detection declared
+   * unavailable. Returns null when no entry is selected or found.
+   */
+  getBaseCapabilities(repoName?: string): Capabilities | null {
+    const entry = this.getEntry(repoName);
+    return entry ? this.computeBaseCapabilities(entry) : null;
+  }
+
+  /**
+   * Single source of truth for capability decisions. Discovery starts from
+   * this map and may only narrow it with facts read from git.
+   */
+  private computeBaseCapabilities(entry: RepoEntry): Capabilities {
+    const worktreeMutation = (): CapabilityState => {
+      if (resolveMode(entry.config) === REPOSITORY_MODES.CLONE) {
+        return { available: false, reason: CLONE_MODE_REASON };
+      }
+      return entry.config.repoUrl ? { available: true } : { available: false, reason: NO_REMOTE_URL_REASON };
+    };
+    const configDriven = (): CapabilityState =>
+      entry.source === "config" ? { available: true } : { available: false, reason: this.describeUnconfiguredReason() };
+
+    return {
+      listWorktrees: { available: true },
+      getStatus: { available: true },
+      createWorktree: worktreeMutation(),
+      updateWorktree: worktreeMutation(),
+      sync: configDriven(),
+      initialize: configDriven(),
+    };
+  }
+
+  private describeUnconfiguredReason(): string {
+    if (this.configPath === null) {
+      return `no config file loaded (running in auto-detect mode); ${CONFIG_RECOVERY_HINT}`;
+    }
+    return `repository is not listed in the loaded config ${this.configPath}; ${CONFIG_RECOVERY_HINT}`;
   }
 
   getCurrentRepo(): string | null {
@@ -918,15 +963,7 @@ export class RepositoryContext {
     }
 
     const branch = currentBranch ?? "unknown";
-    const cloneModeReason = "clone-mode repositories have a single checkout; use sync for clone-mode updates";
-    const capabilities: Capabilities = {
-      listWorktrees: { available: true },
-      getStatus: { available: true },
-      createWorktree: { available: false, reason: cloneModeReason },
-      updateWorktree: { available: false, reason: cloneModeReason },
-      sync: { available: true },
-      initialize: { available: true },
-    };
+    const capabilities = this.computeBaseCapabilities(entry);
 
     const discovered: DiscoveredRepoContext = {
       isWorktree: true,
