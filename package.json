@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "node esbuild.config.js && tsc --emitDeclarationOnly",
+    "smoke": "node scripts/smoke-test.mjs",
     "start": "node bin/sync-worktrees.js",
     "watch": "tsc --watch",
     "lint": "eslint '**/*.{js,cjs,mjs,ts,tsx}' --max-warnings 0",
@@ -24,7 +25,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
-    "prepublishOnly": "pnpm run build && pnpm run lint && pnpm run typecheck",
+    "prepublishOnly": "pnpm run build && pnpm run lint && pnpm run typecheck && pnpm run smoke",
     "changeset": "changeset",
     "version": "changeset version",
     "release": "pnpm run build && changeset publish"

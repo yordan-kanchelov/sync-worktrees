@@ -39,7 +39,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   never enforced in CI
 - [x] **T119** — CI only exercises Node 24 while `engines` promises `>=22.0.0`; the minimum
   supported runtime (and the ESM module-detection behaviour that differs across 22.x) is never tested
-- [ ] **T120** — No post-build smoke test: CI builds `dist/` but never executes the CLI or imports
+- [x] **T120** — No post-build smoke test: CI builds `dist/` but never executes the CLI or imports
   the MCP bundle, so a bundling regression is only caught after publish
 - [ ] **T121** — Published package ships 156 files / 2.6 MB unpacked, including `.d.ts.map` files
   and JS sourcemaps with the full TypeScript source embedded via `sourcesContent`
@@ -4511,7 +4511,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Acceptance**: pr.yml runs the test job on Node 22 and Node 24; both green on `main`.
 - **Notes**: Guards checked: No matrix in any workflow; the composite action defaults to 24.
 
-### [ ] T120. No post-build smoke test: CI builds `dist/` but never executes the CLI or imports the MCP bundle, so a bundling regression is only caught after publish
+### [x] T120. No post-build smoke test: CI builds `dist/` but never executes the CLI or imports the MCP bundle, so a bundling regression is only caught after publish
 
 - **Category**: testing · **Subsystem**: build-ci-tests
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

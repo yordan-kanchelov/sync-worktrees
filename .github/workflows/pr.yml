@@ -83,6 +83,11 @@ jobs:
       - name: Build Project
         run: pnpm build
 
+      # Tests import the TypeScript sources, so this is the only check that runs the built
+      # bin shim, the esbuild bundles and the npm tarball contents before publish.
+      - name: Smoke Test Build
+        run: pnpm smoke
+
       - name: Run Tests with Coverage
         run: pnpm test:coverage
 
