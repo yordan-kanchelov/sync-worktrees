@@ -19,6 +19,353 @@ Conventions used below:
 
 Status legend: `[ ]` open · `[x]` done · `[~]` needs product decision first.
 
+## Progress checklist
+
+Implementation order follows the batches at the end of this document, with Batch 8 first because T51
+(lint TypeScript) surfaces findings that every code batch would otherwise churn on. Each task is
+implemented by a worker agent, reviewed by an independent reviewer agent until approved, then
+squash-merged into this PR as one commit. An item is ticked here and in its heading when it lands.
+Items marked `[~]` wait on the product decisions listed near the end of the document.
+
+### Batch 8 — CI, tooling and packaging
+
+- [ ] **T51** — `pnpm lint` never lints TypeScript: the eslint glob covers 6 root JS files, so all
+  75 source and 77 test `.ts`/`.tsx` files ship unlinted and the CI 'Run Linter' step is a no-op for
+  the app
+- [ ] **T52** — PR workflow `paths` filter omits `**.tsx`, `**.cjs`, `**.mjs` and
+  `.github/actions/**`, so a PR that only changes Ink components (18 `.tsx` files) or the composite
+  setup action runs no lint, typecheck, build or tests
+- [ ] **T118** — Prettier is configured (`.prettierrc`) but not installed, has no script, and is
+  never enforced in CI
+- [ ] **T119** — CI only exercises Node 24 while `engines` promises `>=22.0.0`; the minimum
+  supported runtime (and the ESM module-detection behaviour that differs across 22.x) is never tested
+- [ ] **T120** — No post-build smoke test: CI builds `dist/` but never executes the CLI or imports
+  the MCP bundle, so a bundling regression is only caught after publish
+- [ ] **T121** — Published package ships 156 files / 2.6 MB unpacked, including `.d.ts.map` files
+  and JS sourcemaps with the full TypeScript source embedded via `sourcesContent`
+
+### Batch 1 — guardrails, small and isolated
+
+- [ ] **T1** — Capability gate for sync/initialize (and create/update) is bypassed after any
+  mutating tool: ensureCapability treats a null discovered context as 'allowed' and
+  invalidateDiscovered() nulls it
+- [ ] **T38** — sync tool reports success:true when the sync outcome recorded failures
+  (counts.failed > 0); the CLI treats the same outcome as exit code 1
+- [ ] **T40** — create_worktree can move an unregistered directory at the target path into .trash
+  (or rm -rf it when trash is disabled) although it is annotated destructiveHint:false and the README
+  says the MCP surface cannot remove or touch trash
+- [ ] **T30** — All cross-process locking, git inactivity timeouts, trash reaping and gc are
+  silently disabled whenever the inherited environment has NODE_ENV=test; the CLI only sets NODE_ENV
+  when it is unset
+- [ ] **T10** — Lock-directory preparation failure is misreported as 'another process holds the
+  lock', counted as a skip, and runOnce exits 0 having synced nothing
+- [ ] **T5** — With skipLfs:true every status probe runs git with an env of only
+  {GIT_LFS_SKIP_SMUDGE:1} — global gitignore/config ignored, PATH lookup broken (5.3.1 env fix missed
+  this site)
+- [ ] **T50** — Repository URLs are echoed verbatim in logs, the `list` command, error messages and
+  MCP responses, so a `https://user:TOKEN@host/repo.git` credential leaks into terminal scrollback,
+  TUI log buffers and agent transcripts
+- [ ] **T22** — Worktree mode never checks that an existing bare repo's origin URL matches
+  config.repoUrl (clone mode does), so a changed repoUrl silently keeps syncing the old remote
+- [ ] **T21** — initialize() creates the default-branch worktree with a raw `worktree add` and
+  treats git's 'already exists' as success; a pre-existing unregistered directory leaves the service
+  pointed at a non-repository and every later sync fails at fetch
+- [ ] **T49** — Git subprocesses never set GIT_TERMINAL_PROMPT=0 (or SSH BatchMode): in the TUI a
+  credential prompt is written into the alternate screen and the fetch blocks until the 300 s
+  inactivity timeout instead of failing immediately with an actionable message
+- [ ] **T47** — Cross-process repo lock is keyed on XDG_STATE_HOME/HOME, so a daemon and a
+  shell-launched run can hold different lock files for the same worktreeDir (clone mode then has no
+  lock at all); lock also lives under ~/.cache
+- [ ] **T29** — No validation that two repositories share (or overlap) a worktreeDir: the second
+  entry silently trashes the first entry's worktrees and adopts its default-branch checkout, while
+  both report 'synced'
+
+### Batch 2 — worktree-mode create/update correctness
+
+- [ ] **T17** — Bare clone leaves stale refs/heads/* copies of every remote branch; the 'local &&
+  remote' worktree-add path checks out that stale tip and the same sync never fast-forwards it
+- [ ] **T18** — Default-branch detection is frozen to a dangling `refs/remotes/origin/HEAD`; after
+  the remote renames its default branch every sync fails in the update phase and the old default is
+  never pruned
+- [ ] **T3** — Worktrees without an upstream (trash restore, MCP create_worktree push=false,
+  'without tracking' fallback) are never fast-forwarded and are reported as already_up_to_date forever
+- [ ] **T63** — isWorktreeBehind uses @{upstream} while canFastForward/updateWorktree use
+  origin/<branch>: a differing upstream yields a phantom 'updated/fast_forward' outcome every sync
+- [ ] **T6** — A transient probe failure in canFastForward/isLocalAheadOfRemote is interpreted as
+  'diverged' and can move a healthy, fully pushed worktree to trash and recreate it
+- [ ] **T9** — Long-lived process never recovers when the default-branch worktree is deleted
+  out-of-band: every later sync fails with 'spawn git ENOENT'
+- [ ] **T19** — Unpushed-commit probe uses the bare branch name as a revision; a tag with the same
+  name shadows the branch and reports 0 unpushed commits with exit 0
+- [ ] **T20** — Uninitialized submodules (`-` status) are classified as 'modified submodules', so
+  every worktree of a repo with submodules is permanently un-prunable, flagged ⊞, and blocked from
+  sparse narrowing
+- [ ] **T24** — removeWorktree only classifies git's 'dirty' refusal; locked worktrees and worktrees
+  with initialized submodules turn into hard `remove_failed` failures (exit 1) every tick, and the
+  `locked` flag parsed from `worktree list` is discarded
+- [ ] **T23** — `fetchTimeoutMs` is applied as an inactivity kill to every command on cached clients
+  (worktree add checkout, ff-merge, checkout HEAD, status); `worktree add` is silent during checkout,
+  so large-repo creation is SIGINT'd after 5 min and can never succeed
+- [ ] **T4** — LFS-skip retry is wired only to fetchAll, where LFS never fails; per-worktree
+  checkout LFS failures are swallowed by Promise.allSettled and repeat every tick
+- [ ] **T8** — LFS verification sleeps up to 30 s per created worktree, serialized, although nothing
+  can change the files after `worktree add` returns (F18 left the wait in place)
+- [ ] **T62** — Remote branches ending in '/HEAD' (and ambiguous refname:short cases) are dropped
+  from the sync inventory, so their worktrees are pruned as stale
+- [ ] **T77** — A detached-HEAD managed worktree is reported and counted as a freshly created
+  worktree on every sync
+- [ ] **T78** — Dead and silently broken git wrappers: `localBranchExists` always returns true and
+  `hasDivergedHistory` always returns false (simple-git swallows silent exit-1); several other exports
+  are unused
+- [ ] **T81** — An interrupted bare clone (SIGKILL/power loss) leaves a HEAD-less bareRepoDir that
+  makes every later initialize fail with git's 'destination path already exists' and no recovery path
+- [ ] **T64** — Sparse reconcile (Step 5) is not idempotent for includes with a trailing slash:
+  re-applies patterns and runs `git checkout HEAD` on every worktree every sync
+- [ ] **T2** — Update phase spawns ~6 git processes per worktree every tick (4 + 6W per sync)
+  including a full `git status` scan before the cheap tip comparison; one `for-each-ref` already
+  answers 'nothing changed'
+- [ ] **T53** — MAX_SAFE_TOTAL_CONCURRENT_OPS validation counts each status check as one process,
+  but every getFullWorktreeStatus spawns 6 git processes in parallel (240 at default settings)
+- [ ] **T54** — `update_check_failed` skip and its log line carry no branch or path, so the user
+  cannot tell which of N worktrees failed the probe
+- [ ] **T55** — GitService.updateLogger does not reach WorktreeStatusService/WorktreeMetadataService
+  or cached progress handlers, so in the TUI their log lines bypass the log panel and go to the raw
+  console
+- [ ] **T56** — Per-worktree simple-git client caches are never evicted (GitService ×2 variants +
+  WorktreeStatusService): ~20 KB retained per branch lifetime in daemon mode
+- [ ] **T57** — `git check-ignore` after `git status --porcelain -u` is a redundant spawn per dirty
+  worktree (status never lists ignored paths) and passes every untracked path as argv
+- [ ] **T58** — isPathInsideBaseDir uses synchronous existsSync/realpathSync per registered worktree
+  and re-resolves worktreeDir every call (≈41 ms of blocked event loop per sync at 400 worktrees)
+- [ ] **T60** — Phase progress emits exactly 5 events per attempt with no processed/total, so the
+  TUI and MCP progress show a static message during long create/prune/update phases
+
+### Batch 3 — clone mode
+
+- [ ] **T12** — Adopting a directory whose `.git` is a gitdir pointer (linked worktree / submodule)
+  rewrites the PARENT repository's fetch refspec and deletes its remote-tracking refs
+- [ ] **T13** — A clone that fails after fetch ("Clone succeeded, but checkout failed", e.g. LFS
+  smudge error) is left in place and silently adopted as a valid clone on the next run; sync then
+  reports `dirty_tree` forever
+- [ ] **T14** — LFS smudge failure during clone-mode ff-merge: retry policy's LFS-skip override is
+  never honored by clone-mode git clients, and the failed merge leaves stray files that turn every
+  later tick into a permanent `dirty_tree` skip
+- [ ] **T15** — `fetch --unshallow` is the only fetch without `--progress`; with stderr piped it is
+  silent until completion, so simple-git's 300 s inactivity timeout kills any unshallow that takes
+  longer — the repo can never unshallow and every tick hard-fails
+- [ ] **T16** — TUI branch-creation wizard cannot create branches for clone-mode repos:
+  createAndPushBranch targets a nonexistent bare repo path, so clone-mode branch switching (CHANGELOG
+  5.0.0) is unreachable
+- [ ] **T72** — TUI reports the worktree-mode constant 'main' as the default branch of clone-mode
+  repos (F10 fix incomplete: only the MCP handler was corrected)
+- [ ] **T73** — checkoutBranch on a shallow clone throws FastForwardError when merge-base is merely
+  indeterminate (duplicated, diverging fast-forward logic vs classifyRemoteRelationship)
+- [ ] **T67** — Clone-init pending marker is written after `configureSingleBranchRemote`, so a crash
+  in that window leaves a marker-less valid clone whose file copy is silently dropped forever
+  (contradicting the comment at 659-662)
+- [ ] **T68** — Clone-mode sparse re-apply skips the README's "narrowing safety" check and does not
+  record failures/skips in the sync outcome, unlike worktree mode
+- [ ] **T66** — With a small configured `depth`, every routine sync re-passes `--depth N` and
+  re-shortens the history the previous tick deepened; at `depth: 1` every remote advance (even +1
+  commit) is indeterminate and costs a 50-commit deepen fetch, then is thrown away
+- [ ] **T71** — Clone-mode sync runs a full `git status` scan every tick before learning the clone
+  is already up to date; a dirty but current clone is reported as a skip instead of up-to-date
+- [ ] **T74** — configureSingleBranchRemote rewrites .git/config twice and scans remote refs on
+  every sync tick although the fetch never uses the stored refspec
+- [ ] **T75** — Stale remote-tracking refs are deleted one `git update-ref -d` process per ref
+  instead of a single batched `update-ref --stdin`
+- [ ] **T76** — Clone-mode syncs produce no per-phase timing in --debug (PhaseTimer is only wired
+  into the worktree-mode runner)
+- [ ] **T65** — `sanitizeGitEnv` forwards repository-discovery variables (`GIT_DIR`,
+  `GIT_WORK_TREE`, `GIT_INDEX_FILE`, ...); when sync-worktrees is launched from a git hook,
+  clone-mode's config rewrites, ref deletions and merges target the hook's repository instead of
+  `worktreeDir`
+- [ ] **T69** — `filesToCopyOnBranchCreate` globs walk every sibling repository checkout under the
+  config directory and copy their files into the new clone
+- [ ] **T70** — The destructive `rm -rf` branch of `maybeCleanupPartialClone` has no test; only the
+  negative (EACCES) case asserts `fs.rm` is not called
+
+### Batch 4 — trash, diverged and removal safety
+
+- [ ] **T26** — F7 fix incomplete: trash entries written by 5.0.x/5.1.0 (flat pin refs) are rejected
+  as invalid manifests forever — never listed, never restorable, never reaped, pin refs never released
+- [ ] **T27** — A partially failed `fs.rm` of a trash container deletes manifest.json first and
+  leaves an unrecognized, unreapable container whose pin ref is then kept forever
+- [ ] **T28** — TUI force clean purges trash entries created after the confirmation preview: a cron
+  sync that starts while the modal is open can trash worktrees that are then destroyed with gc
+  --prune=now without ever being shown to the user
+- [ ] **T11** — fs.cp in the cross-device diverged path (and trash restore) rewrites relative
+  symlinks to absolute source paths that are then deleted, leaving dangling links in the
+  preserved/restored copy
+- [ ] **T7** — Trash moves run `du` over the whole worktree (node_modules included) under the repo
+  lock before the 8 ms rename; size is informational only
+- [ ] **T82** — Compare-and-swap branch deletion (`update-ref -d`) leaves the `[branch "<name>"]`
+  remote/merge section in the bare repo config for every trashed worktree, growing .bare/config
+  without bound
+- [ ] **T83** — Legacy `.diverged/` adoption ignores the entry's `keep/<name>` ref: the permanent
+  keep ref stays after the directory is moved into trash, and the payload's .diverged-info.json still
+  points at a recovery flow that no longer applies
+- [ ] **T84** — Force clean runs `git gc --prune=now` on a shared object store without checking for
+  in-flight git operations, while the modal text says active worktrees are untouched
+- [ ] **T85** — Manifest `branch` is not validated as a ref name; a hand-edited or corrupted
+  manifest with an option-like branch makes restore run `git branch -m <sha>` and rename the bare
+  repo's HEAD branch
+- [ ] **T86** — Permanent keep refs accumulate one per squash-merged branch with no expiry, no batch
+  removal, and O(N) fsync'd audit writes + git spawns in force clean
+- [ ] **T87** — Worktree restore copies the whole payload (fs.cp) and then rm's the container
+  instead of renaming it into place — O(size) I/O and 2x disk during restore
+- [ ] **T89** — `sync-worktrees trash` CLI ergonomics: no size/branch/restorable columns, silent on
+  empty trash, expected errors print as 'Unhandled error' stack traces, restore fails fast when the
+  daemon holds the lock, no single-entry purge, and a files-only restore is silently re-trashed by the
+  next sync
+- [ ] **T90** — No real-git coverage for trash restore or force clean: restoreAsWorktree,
+  legacy-manifest compatibility and purge are only exercised with stubbed GitService / mocked
+  purgeAllUnlocked
+
+### Batch 5 — config loading, CLI and init
+
+- [ ] **T31** — The shipped sync-worktrees.config.example.js fails validation
+  ('experimental-features' sets runOnce) — the README's reference for 'every knob' cannot be loaded
+- [ ] **T32** — Per-repository `parallelism` is never validated (F9 fix only covered
+  global/defaults): a non-positive-integer value passes load and makes every sync throw TypeError from
+  p-limit
+- [ ] **T33** — `fetchTimeoutMs` / `cloneTimeoutMs` are documented on Config and promised by README
+  but are silently dropped by resolveRepositoryConfig — no config-file user can change the 5/15-minute
+  inactivity timeouts
+- [ ] **T34** — `sync-worktrees init` reports success but writes configs that cannot be loaded: ESM
+  syntax into a `.cjs` target or into a `"type": "commonjs"` package, and `worktreeDir: "./"` when the
+  worktree dir equals the config dir
+- [ ] **T35** — Config hot-reload is stale for ESM configs that import sibling modules: only the
+  top-level module is cache-busted, so TUI `r` and MCP `load_config` keep the first-loaded values of
+  `./repos.js`-style imports
+- [~] **T36** — Daemon/TUI mode never syncs at startup and no CLI/config option restores it:
+  `--sync-on-start` was removed in 4.0.0 without a replacement, while README says the bare command
+  'starts syncing'
+- [ ] **T91** — Load-time validation gaps with runtime consequences: `branchInclude: [""]` prunes
+  every non-default worktree, NaN/Infinity retry numbers pass and make retry() throw,
+  `skipUpdateWhenOutsideSparse` accepts a string that inverts its meaning
+- [ ] **T92** — Unknown / misspelled config keys are silently ignored at runtime (typo'd
+  `updateExistingWorktree`, `branchIncludes`, `fetchTimeoutMs` load without a warning)
+- [ ] **T93** — CLI error reporting loses context: init failures omit the repository name, every
+  runtime error is labelled 'Error loading config file', `trash` errors dump a raw stack, and config
+  SyntaxErrors lack file/line
+- [ ] **T94** — Docs drift in shipped user-facing text: example config's lock-file location is
+  wrong, README's CLI section omits the `trash` subcommand
+- [ ] **T95** — Dead or duplicated constants in src/constants.ts: unused
+  GIT_CONSTANTS/DEFAULT_CONFIG/METADATA entries, FETCH_CONFIG duplicated as a literal in
+  git.service.ts, test-only TEST_TIMEOUT shipped in dist, unused CliCommand type
+- [ ] **T96** — Test coverage gaps in the config/CLI subsystem: example config never loaded, no
+  per-repo parallelism or ESM-split reload case, runOnce init-rejection and locked-skip accounting
+  untested, daemon branch of runMultipleRepositories untested, init round-trip only covers the happy
+  path
+- [ ] **T79** — F9(3) incomplete: `extractRepoNameFromUrl` still rejects URL shapes `isValidGitUrl`
+  accepts (`git://`, https with trailing slash), and the validator rejects legal scp URLs with a
+  non-`git` user
+- [ ] **T80** — Sparse-checkout patterns are not validated at load time; cone-mode includes with a
+  leading slash (or wildcards) are rejected by git, so every worktree creation fails and is rolled
+  back on every tick
+- [ ] **T61** — README states retry.maxAttempts defaults to 'unlimited' but the sync policy defaults
+  to 3; DEFAULT_CONFIG.RETRY constants are bypassed (jitter 500 vs 0)
+
+### Batch 6 — MCP server
+
+- [ ] **T37** — create_worktree silently creates worktrees the next sync will move to trash:
+  branches excluded by branchInclude/branchExclude/branchMaxAge, and push:false local-only branches
+  (whose local branch ref is deleted too)
+- [~] **T39** — Tool input schemas are non-strict: unknown/misspelled arguments (repo_name,
+  include_status, branch_name…) are silently stripped, so calls run against the wrong repo or with
+  defaults instead of failing
+- [ ] **T97** — Auto-detect derives worktreeDir as dirname(current worktree); from inside the
+  default-branch worktree of a repo whose default branch contains '/' this is wrong and
+  create_worktree/update_worktree fail in initialize() with a git 'already checked out' error
+- [ ] **T98** — update_worktree on a detached-HEAD worktree: membership passes or fails depending on
+  cache state, fetchBranch is called with the pseudo-branch '(detached abc1234)', and updateWorktree
+  would merge origin/<sha>
+- [ ] **T99** — A found-but-broken auto-discovered config is invisible to the agent: detectFromPath
+  logs to stderr, reports kind 'unmanaged'/configPath null, and re-imports the broken file on every
+  subsequent detect_context
+- [ ] **T100** — detect_context with includeStatus + includeAllWorktrees enriches the current repo's
+  worktrees twice (allWorktrees and allWorktreesByRepo[current]) — ~10 git spawns per worktree
+  duplicated; discovery/repo caches never evict
+- [ ] **T101** — list_worktrees per-worktree cost: getDivergence duplicates upstream/rev-list work
+  already done inside getFullWorktreeStatus (≈10-11 git spawns per worktree, ~4,400 processes for 400
+  worktrees per call)
+- [ ] **T102** — Nested regular repos / submodules inside a managed worktree make detect_context
+  return 'unsupported' instead of continuing to the enclosing worktree
+- [ ] **T103** — MCP tool/instruction text and README drift: '.ts' configs are advertised but never
+  discovered or loadable; README still says repo selection falls back to 'the first entry in the
+  config'; list_worktrees fallback error blames initialization when the bare repo is simply missing
+- [ ] **T104** — create_worktree cannot tell the agent that the worktree already existed, yet is
+  annotated idempotentHint:false; response shape hides the no-op
+- [ ] **T105** — MCP handler tests never exercise RepositoryContext and handlers together; the
+  ctx/service contract is fully mocked, so state-machine regressions (capability bypass, membership
+  cache drift) are invisible
+- [~] **T59** — No dry-run/plan surface: the planner is pure but there is no CLI or MCP way to
+  preview what a sync will create, prune or update before it mutates
+
+### Batch 7 — TUI and process lifecycle
+
+- [ ] **T41** — Concurrent sync cycles share one TUI status flag: the first cycle to finish (cron
+  group, overlapping tick, or a fail-fast skip) flips the UI to idle, wipes the running cycle's
+  progress rows and re-enables the `s`/`x`/`r` guards
+- [ ] **T42** — Ctrl+C in the TUI unmounts Ink (default `exitOnCtrlC`) but never runs `destroy()`:
+  the process keeps running headless with cron syncs, log events go nowhere, and a second Ctrl+C then
+  kills it mid-sync
+- [ ] **T43** — `MOUSE_TRACKING_DISABLE` is never written on any exit path (q, SIGTERM, Ctrl+C): Ink
+  marks itself unmounted before React effect cleanups run, so `useStdout().write` in App's cleanup is
+  a no-op and the shell inherits a terminal with mouse reporting on
+- [ ] **T44** — Branch wizard acts on stale refs and its collision check is decorative: it submits
+  the unsuffixed name, `createBranch` only detects local heads, `push -u` can silently fast-forward an
+  existing remote branch, and a failed push leaves an orphan local branch that makes the next attempt
+  create `<name>-1`
+- [ ] **T45** — OpenEditorWizard and WorktreeStatusView re-run their loader forever when it returns
+  an empty list (no `loaded` guard), spinning React renders and git/fs calls while the modal is open
+- [ ] **T46** — LogPanel exceeds its height budget by 1-2 rows in the steady state (plus one row per
+  embedded newline), so the App frame is taller than the terminal and Ink falls back to a
+  full-terminal clear on every render, scrolling the top row off
+- [ ] **T25** — TUI worktree status view fans out getFullWorktreeStatus over every worktree with no
+  concurrency limit (≥6 git processes each)
+- [ ] **T88** — TUI runs `du` over every bare repo and every worktreeDir after every sync cycle (and
+  on each status view open), a full-tree stat walk per tick that is never cached or throttled
+- [ ] **T106** — WorktreeStatusView repository sizes get stuck at `calculating...` when the App
+  re-renders while `du` is in flight (effect cleanup discards the result; `repositories` prop is a new
+  array on every App render)
+- [ ] **T107** — Pressing `q` during a long sync freezes the TUI for up to 30 s with no feedback,
+  then exits mid-sync anyway: `destroy()` sets `isDestroyed` before waiting, so its own 'Waiting for N
+  in-progress sync(s)' and timeout warning are dropped by `addLog`
+- [ ] **T108** — Reload (`r`) initializes the new services before injecting the UI logger, so
+  clone/fetch/init output and warnings of the reload go to the raw console instead of the log panel
+- [ ] **T109** — Docs/help drift: README and the help modal say `Esc` quits, but the main screen
+  ignores Esc; README quick start says the TUI 'starts syncing' while the daemon never syncs until the
+  first cron tick and no `syncOnStart` option remains
+- [ ] **T110** — Quitting the TUI SIGTERMs (then SIGKILLs) the whole process group of every
+  in-flight `onBranchCreated` hook (e.g. `npm install` in the new worktree) — undocumented,
+  contradicts 'fire-and-forget'
+- [ ] **T111** — Editor mode spawns `$EDITOR` detached with stdio ignored, so terminal editors
+  (vim/nvim/nano/emacs -nw — the most common `$EDITOR` values) silently do nothing while the wizard
+  reports success and closes
+- [ ] **T112** — `$TERMINAL=gnome-terminal` (and other `$TERMINAL`/`SYNC_WORKTREES_TERMINAL` values
+  needing `--`) is launched with `-e sh -c <cmd>`, which the probe path already knows is wrong for
+  gnome-terminal; command strings are split on whitespace so paths with spaces break
+- [ ] **T113** — NODE_ENV=test silently disables the cross-process lock, and the e2e double-run test
+  (spawning dist under the inherited NODE_ENV=test) therefore never exercises locking; no test
+  anywhere runs two real processes against one repo
+- [ ] **T114** — onBranchCreated hooks are killed at a hard-coded, undocumented 60 s timeout (the
+  example config's own `pnpm install` hook routinely exceeds it); `setTimeoutMs` is never wired to
+  config, and completion logs omit which hook finished
+- [ ] **T115** — Repository initialization failures are logged without the repository name in both
+  runOnce and reload paths, so with parallel init the user cannot tell which repo failed
+- [ ] **T116** — FileCopyService silently applies a hard-coded ignore list (dist/, build/, .next/,
+  coverage/, …) even to explicit file patterns, swallows glob errors, and a zero-match copy produces
+  no log line at all
+- [ ] **T117** — Reload/cancel stops cron tasks with `stop()` but never `destroy()`s them; node-cron
+  v4's module-level registry retains every stopped task (and, through its closure, every previous
+  generation of WorktreeSyncService instances) for the life of the daemon
+- [~] **T48** — Docs drift: README says hooks/file copy run for every newly created worktree and
+  that copy globs resolve relative to the config directory; in code both fire only from the TUI branch
+  wizard, and the TUI copies from the base-branch worktree (clone mode: config dir) — sync- and
+  MCP-created worktrees never get either
+
 ## Summary
 
 **Headline.** 121 open items (1 high, 51 medium, 69 low) across every subsystem, on a codebase whose
