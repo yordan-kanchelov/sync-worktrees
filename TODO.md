@@ -37,7 +37,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   setup action runs no lint, typecheck, build or tests
 - [x] **T118** — Prettier is configured (`.prettierrc`) but not installed, has no script, and is
   never enforced in CI
-- [ ] **T119** — CI only exercises Node 24 while `engines` promises `>=22.0.0`; the minimum
+- [x] **T119** — CI only exercises Node 24 while `engines` promises `>=22.0.0`; the minimum
   supported runtime (and the ESM module-detection behaviour that differs across 22.x) is never tested
 - [ ] **T120** — No post-build smoke test: CI builds `dist/` but never executes the CLI or imports
   the MCP bundle, so a bundling regression is only caught after publish
@@ -4493,7 +4493,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Acceptance**: `pnpm format:check` exists and passes on `main`; CI fails on an unformatted file.
 - **Notes**: Guards checked: Checked devDependencies, scripts, node_modules/.bin and both workflows.
 
-### [ ] T119. CI only exercises Node 24 while `engines` promises `>=22.0.0`; the minimum supported runtime (and the ESM module-detection behaviour that differs across 22.x) is never tested
+### [x] T119. CI only exercises Node 24 while `engines` promises `>=22.0.0`; the minimum supported runtime (and the ESM module-detection behaviour that differs across 22.x) is never tested
 
 - **Category**: workflow · **Subsystem**: build-ci-tests
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
