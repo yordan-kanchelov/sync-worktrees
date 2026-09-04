@@ -18,6 +18,7 @@ import type { LogOutputFn, LogLevel } from "./logger.service";
 import { Logger } from "./logger.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/lfs-error";
+import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
@@ -29,6 +30,7 @@ import { formatDuration } from "../utils/timing";
 import { GIT_CONSTANTS, METADATA_CONSTANTS, TERMINAL_CONSTANTS } from "../constants";
 import type {
   RepositoryConfig,
+  RepoOperationNotStarted,
   HookContext,
   WorktreeStatusEntry,
   DivergedDirectoryInfo,
@@ -541,8 +543,18 @@ export class InteractiveUIService {
       await service.getGitService().fetchAll();
     });
     if (!result.started) {
-      throw new Error("Another process holds the repository lock; fetch skipped. Try again.");
+      throw new Error(this.describeNotStarted(result, "fetch skipped"));
     }
+  }
+
+  // Interactive operations queue behind in-flight work, so a result that did
+  // not start means the cross-process lock: contention is worth retrying, an
+  // unavailable lock is not and must name its cause instead.
+  private describeNotStarted(result: RepoOperationNotStarted, consequence: string): string {
+    if (result.reason === "lock_unavailable") {
+      return `${formatRepoLockUnavailable(result)}; ${consequence}.`;
+    }
+    return `Another process holds the repository lock; ${consequence}. Try again.`;
   }
 
   public async createAndPushBranch(
@@ -587,7 +599,7 @@ export class InteractiveUIService {
       return {
         success: false,
         finalName: branchName,
-        error: "Another process holds the repository lock; branch not created. Try again.",
+        error: this.describeNotStarted(result, "branch not created"),
       };
     }
     return result.value;
@@ -797,7 +809,7 @@ export class InteractiveUIService {
       await gitService.addWorktree(branchName, worktreePath);
     });
     if (!result.started) {
-      throw new Error("Another process holds the repository lock; worktree not created. Try again.");
+      throw new Error(this.describeNotStarted(result, "worktree not created"));
     }
   }
 
@@ -1023,7 +1035,13 @@ export class InteractiveUIService {
         const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
         failures.push({ repo: fallbackName, error: errorMessage });
       } else if (result.value.result && result.value.result.started === false) {
-        skipped.push({ repo: repoName, reason: `sync skipped: ${result.value.result.reason}` });
+        const notStarted = result.value.result;
+        if (notStarted.reason === "lock_unavailable") {
+          // Not a skip: nothing synced this repo and no other process will.
+          failures.push({ repo: repoName, error: formatRepoLockUnavailable(notStarted) });
+        } else {
+          skipped.push({ repo: repoName, reason: `sync skipped: ${notStarted.reason}` });
+        }
       } else if (result.status === "fulfilled" && result.value.result?.started === true) {
         const outcome = result.value.result.outcome;
         if (outcome?.counts.failed) {

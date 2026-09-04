@@ -4,6 +4,7 @@ import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { Config } from "../../types";
 import type { Logger } from "../logger.service";
+import type { Mock } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   acquire: vi.fn(),
@@ -57,7 +58,7 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.release.mockResolvedValue(undefined);
-    mocks.acquire.mockResolvedValue(mocks.release);
+    mocks.acquire.mockResolvedValue({ acquired: true, release: mocks.release });
     service = new WorktreeSyncService(makeConfig());
   });
 
@@ -134,9 +135,35 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
   });
 
   it("returns locked when another process holds the file lock", async () => {
-    mocks.acquire.mockResolvedValueOnce(null);
+    mocks.acquire.mockResolvedValueOnce({ acquired: false, reason: "locked" });
     const result = await service.runQueuedRepoOperation(async () => "value");
     expect(result).toEqual({ started: false, reason: "locked" });
+  });
+
+  it("returns lock_unavailable with its cause, logged as an error, when the lock cannot be prepared", async () => {
+    // An unwritable state dir is not contention: no other process holds the
+    // lock, the operation simply cannot run. The result must carry the path
+    // and errno and the log must not blame another process.
+    mocks.acquire.mockResolvedValueOnce({
+      acquired: false,
+      reason: "lock_unavailable",
+      path: "/state/sync-worktrees/locks",
+      code: "ENOTDIR",
+      error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+    });
+    const result = await service.runQueuedRepoOperation(async () => "value");
+
+    expect(result).toEqual({
+      started: false,
+      reason: "lock_unavailable",
+      path: "/state/sync-worktrees/locks",
+      code: "ENOTDIR",
+      error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+    });
+    const logger = service.config.logger as unknown as { error: Mock; warn: Mock };
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("/state/sync-worktrees/locks"));
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("ENOTDIR"));
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("Another process holds"));
   });
 
   it("releases the file lock even when the operation throws", async () => {

@@ -447,6 +447,47 @@ describe("InteractiveUIService", () => {
       void service.destroy();
     });
 
+    it("logs a repo whose lock could not be taken as a failure, not a skip", async () => {
+      // An unwritable state dir is not contention: the daemon must surface it
+      // at error level with the path and errno, never as "Sync skipped".
+      const lockService = {
+        sync: vi.fn<any>().mockResolvedValue({
+          started: false,
+          reason: "lock_unavailable",
+          path: "/state/sync-worktrees/locks",
+          code: "ENOTDIR",
+          error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+        }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        clearRecordedSkips: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+        config: { name: "alpha", worktreeDir: "/repo/alpha", repoUrl: "u" },
+      };
+
+      const service = new InteractiveUIService([lockService as any]);
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry));
+      service.getEvents().emit("uiReady");
+
+      const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
+      await onManualSync();
+
+      const failureLogs = logs.filter((l) => l.message.includes("/state/sync-worktrees/locks"));
+      expect(failureLogs.length).toBeGreaterThan(0);
+      for (const log of failureLogs) {
+        expect(log.level).toBe("error");
+        expect(log.message).toMatch(/^Failed to sync repository 'alpha'/);
+        expect(log.message).toContain("ENOTDIR");
+      }
+      expect(logs.some((l) => /^Sync skipped for/.test(l.message))).toBe(false);
+      expect(logs.some((l) => /another process/i.test(l.message))).toBe(false);
+
+      void service.destroy();
+    });
+
     it("clears, collects, and logs clone-mode skips per cycle", async () => {
       const skipService = {
         sync: vi.fn<any>().mockResolvedValue({ started: true }),
@@ -1764,6 +1805,27 @@ describe("InteractiveUIService", () => {
 
         expect(result.success).toBe(false);
         expect(result.error).toMatch(/repository lock/i);
+        expect(mockGitService.createBranch).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it("names the cause instead of blaming another process when the repo lock is unavailable", async () => {
+        (mockSyncService.runQueuedRepoOperation as any).mockResolvedValueOnce({
+          started: false,
+          reason: "lock_unavailable",
+          path: "/state/sync-worktrees/locks",
+          code: "EACCES",
+          error: "EACCES: permission denied, mkdir '/state/sync-worktrees/locks'",
+        });
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/new");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("/state/sync-worktrees/locks");
+        expect(result.error).toContain("EACCES");
+        expect(result.error).not.toMatch(/another process|try again/i);
         expect(mockGitService.createBranch).not.toHaveBeenCalled();
 
         void service.destroy();

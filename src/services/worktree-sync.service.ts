@@ -7,6 +7,7 @@ import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, TrashOperationError } from "../errors";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
+import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { retry } from "../utils/retry";
 import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
@@ -27,20 +28,41 @@ import { TrashService } from "./trash.service";
 import { WorktreeModeSyncRunner } from "./worktree-mode-sync-runner";
 
 import type { ProgressEvent, ProgressListener } from "./progress-emitter";
-import type { RepoLockRelease } from "./repo-operation-lock";
 import type { TrashEntry, TrashManifest } from "./trash.service";
-import type { Config, ForceCleanPreview, ForceCleanResult, SyncOutcome, SyncResult } from "../types";
+import type {
+  Config,
+  ForceCleanPreview,
+  ForceCleanResult,
+  RepoOperationNotStarted,
+  SyncOutcome,
+  SyncResult,
+} from "../types";
 import type { LfsErrorContext } from "../utils/retry";
 
 export type { ProgressEvent, ProgressListener } from "./progress-emitter";
-export type { SyncOutcome, SyncOutcomeAction, SyncOutcomeCounts, SyncResult } from "../types";
+export type {
+  RepoLockUnavailable,
+  RepoOperationNotStarted,
+  SyncOutcome,
+  SyncOutcomeAction,
+  SyncOutcomeCounts,
+  SyncResult,
+} from "../types";
 
-export type ExclusiveRepoOperationResult<T> =
-  | { started: true; value: T }
-  | {
-      started: false;
-      reason: "in_progress" | "locked";
-    };
+export type ExclusiveRepoOperationResult<T> = { started: true; value: T } | RepoOperationNotStarted;
+
+// Why an operation did not start, for callers that turn that into an error.
+// Only `lock_unavailable` names a cause; the other two are contention.
+function describeNotStarted(result: RepoOperationNotStarted): string {
+  switch (result.reason) {
+    case "in_progress":
+      return "another repository operation is in progress";
+    case "locked":
+      return "another process holds the repository lock";
+    case "lock_unavailable":
+      return formatRepoLockUnavailable(result);
+  }
+}
 
 export class WorktreeSyncService {
   private gitService: GitService;
@@ -149,6 +171,10 @@ export class WorktreeSyncService {
     if (this.isInitialized()) return;
     const result = await this.runExclusiveRepoOperation(() => this.initializeUnlocked());
     if (!result.started) {
+      if (result.reason === "lock_unavailable") {
+        this.logger.error(`❌ Initialize not run: ${formatRepoLockUnavailable(result)}`);
+        return;
+      }
       const reason = result.reason === "in_progress" ? "operation in progress" : "another process holds the lock";
       this.logger.warn(`⚠️  Initialize skipped: ${reason}`);
     }
@@ -193,10 +219,7 @@ export class WorktreeSyncService {
   async restoreFromTrash(id: string): Promise<TrashManifest> {
     const result = await this.runExclusiveRepoOperation(() => this.trashService.restore(id), { wait: true });
     if (!result.started) {
-      throw new TrashOperationError(
-        "restore",
-        `cannot restore trash entry '${id}': another process holds the repo lock`,
-      );
+      throw new TrashOperationError("restore", `cannot restore trash entry '${id}': ${describeNotStarted(result)}`);
     }
     return result.value;
   }
@@ -277,7 +300,7 @@ export class WorktreeSyncService {
       },
       { wait: true },
     );
-    if (!result.started) throw new Error("Cannot force clean while another process holds the repository lock");
+    if (!result.started) throw new Error(`Cannot force clean: ${describeNotStarted(result)}`);
     return result.value;
   }
 
@@ -341,7 +364,7 @@ export class WorktreeSyncService {
       },
       { wait: true },
     );
-    if (!result.started) throw new Error("Cannot delete keep ref while another process holds the lock");
+    if (!result.started) throw new Error(`Cannot delete keep ref: ${describeNotStarted(result)}`);
   }
 
   async discardDivergedDirectory(targetPath: string, keepRef?: string): Promise<void> {
@@ -375,7 +398,7 @@ export class WorktreeSyncService {
       },
       { wait: true },
     );
-    if (!result.started) throw new Error("Cannot discard diverged directory while another process holds the lock");
+    if (!result.started) throw new Error(`Cannot discard diverged directory: ${describeNotStarted(result)}`);
   }
 
   updateLogger(logger: Logger): void {
@@ -440,17 +463,24 @@ export class WorktreeSyncService {
     }
 
     return this.repoMutex(async (): Promise<ExclusiveRepoOperationResult<T>> => {
-      const release: RepoLockRelease | null = await this.repoOperationLock.acquire();
-      if (release === null) {
-        this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
-        return { started: false, reason: "locked" };
+      const lock = await this.repoOperationLock.acquire();
+      if (!lock.acquired) {
+        if (lock.reason === "locked") {
+          this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
+          return { started: false, reason: "locked" };
+        }
+        // Not contention: the lock could not be prepared or taken at all, so
+        // the operation did not run. That is a failure of this run with a
+        // cause worth naming, never a skip that blames another process.
+        this.logger.error(`❌ Operation not run: ${formatRepoLockUnavailable(lock)}`);
+        return { started: false, reason: "lock_unavailable", path: lock.path, code: lock.code, error: lock.error };
       }
 
       try {
         return { started: true, value: await operation() };
       } finally {
         try {
-          await release();
+          await lock.release();
         } catch (releaseError) {
           this.logger.warn(`Failed to release sync lock: ${getErrorMessage(releaseError)}`);
         }

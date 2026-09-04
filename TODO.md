@@ -57,7 +57,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T30** — All cross-process locking, git inactivity timeouts, trash reaping and gc are
   silently disabled whenever the inherited environment has NODE_ENV=test; the CLI only sets NODE_ENV
   when it is unset
-- [ ] **T10** — Lock-directory preparation failure is misreported as 'another process holds the
+- [x] **T10** — Lock-directory preparation failure is misreported as 'another process holds the
   lock', counted as a skip, and runOnce exits 0 having synced nothing
 - [ ] **T5** — With skipLfs:true every status probe runs git with an env of only
   {GIT_LFS_SKIP_SMUDGE:1} — global gitignore/config ignored, PATH lookup broken (5.3.1 env fix missed
@@ -823,7 +823,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `mainWorktreePath` (git.service.ts:328), so once the default-branch directory disappears every
   later tick fails at spawn.
 
-### [ ] T10. Lock-directory preparation failure is misreported as 'another process holds the lock', counted as a skip, and runOnce exits 0 having synced nothing
+### [x] T10. Lock-directory preparation failure is misreported as 'another process holds the lock', counted as a skip, and runOnce exits 0 having synced nothing
 
 - **Category**: workflow · **Subsystem**: worktree-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

@@ -1652,7 +1652,7 @@ describe("WorktreeSyncService", () => {
       // must not matter. Stub the cross-process lock so no real lock is taken.
       prevShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
       delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
-      vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue(async () => {});
+      vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue({ acquired: true, release: async () => {} });
       vi.spyOn(GitMaintenanceService.prototype, "runIfDueUnlocked").mockResolvedValue(undefined);
       migrationSpy = vi.spyOn(TrashMigrationService.prototype, "migrateLegacyUnlocked").mockResolvedValue(undefined);
       reaperSpy = vi
@@ -2431,7 +2431,7 @@ describe("WorktreeSyncService", () => {
       // must not matter. Stub the cross-process lock so no real lock is taken.
       prevShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
       delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
-      vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue(async () => {});
+      vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue({ acquired: true, release: async () => {} });
       maintenanceSpy = vi.spyOn(GitMaintenanceService.prototype, "runIfDueUnlocked").mockResolvedValue(undefined);
     });
 
@@ -2444,9 +2444,7 @@ describe("WorktreeSyncService", () => {
       // gc must complete before the cross-process lock is released — after
       // release another process may already be mutating the repo.
       const release = vi.fn(async () => {});
-      vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue(
-        release as Awaited<ReturnType<RepoOperationLock["acquire"]>>,
-      );
+      vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue({ acquired: true, release });
 
       const svc = new WorktreeSyncService(mockConfig);
       await svc.sync();

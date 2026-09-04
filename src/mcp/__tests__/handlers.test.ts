@@ -496,7 +496,7 @@ describe("handleCreateWorktree", () => {
     expect(body.code).toBe("SYNC_IN_PROGRESS");
   });
 
-  it("does not touch git when the repo operation lock is unavailable", async () => {
+  it("does not touch git when another process holds the repo operation lock", async () => {
     const { ctx, git, service } = makeCtx({
       git: {
         branchExists: vi.fn<any>(),
@@ -511,6 +511,34 @@ describe("handleCreateWorktree", () => {
 
     expect(body.code).toBe("SYNC_IN_PROGRESS");
     expect(git.branchExists).not.toHaveBeenCalled();
+    expect(git.createBranch).not.toHaveBeenCalled();
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("returns LOCK_UNAVAILABLE naming the path and errno when the repo lock cannot be taken", async () => {
+    const { ctx, git, service } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>(),
+        createBranch: vi.fn<any>(),
+        addWorktree: vi.fn<any>(),
+      },
+    });
+    service.runExclusiveRepoOperation.mockResolvedValueOnce({
+      started: false,
+      reason: "lock_unavailable",
+      path: "/state/sync-worktrees/locks",
+      code: "ENOTDIR",
+      error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "new-branch", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("LOCK_UNAVAILABLE");
+    expect(body.message).toContain("/state/sync-worktrees/locks");
+    expect(body.message).toContain("ENOTDIR");
+    expect(body.message).not.toMatch(/in progress/i);
     expect(git.createBranch).not.toHaveBeenCalled();
     expect(git.addWorktree).not.toHaveBeenCalled();
   });
@@ -871,6 +899,34 @@ describe("handleSync", () => {
     const result = await invoke(handleSync, ctx, {});
     const body = parseResponse(result);
     expect(body.code).toBe("SYNC_IN_PROGRESS");
+  });
+
+  it("keeps a contended lock as SYNC_IN_PROGRESS", async () => {
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({ started: false, reason: "locked" });
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+    expect(body.code).toBe("SYNC_IN_PROGRESS");
+  });
+
+  it("returns LOCK_UNAVAILABLE naming the path and errno when the repo lock cannot be taken", async () => {
+    // Not contention and not retryable: the sync never ran. The error must
+    // carry the cause rather than claim a sync is already in progress.
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({
+      started: false,
+      reason: "lock_unavailable",
+      path: "/state/sync-worktrees/locks",
+      code: "ENOTDIR",
+      error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+    });
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("LOCK_UNAVAILABLE");
+    expect(body.message).toContain("/state/sync-worktrees/locks");
+    expect(body.message).toContain("ENOTDIR");
+    expect(body.message).not.toMatch(/in progress/i);
   });
 
   it("delegates initialization to service.sync when needed", async () => {

@@ -14,6 +14,7 @@ import { pathsEqual } from "../utils/path-compare";
 
 import {
   CapabilityUnavailableError,
+  RepoLockUnavailableError,
   SyncInProgressError,
   WorktreeTargetExistsError,
   formatToolResponse,
@@ -23,7 +24,7 @@ import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summa
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
 import type { HandlerContext } from "./utils";
 import type { WorktreeLabel } from "./worktree-summary";
-import type { ProgressEvent } from "../services/worktree-sync.service";
+import type { ProgressEvent, RepoOperationNotStarted } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
 type CapabilityKey = keyof Capabilities;
@@ -102,6 +103,19 @@ async function getReadyService(
   };
 }
 
+// Contention (in_progress, locked) is SYNC_IN_PROGRESS and retryable; an
+// unavailable lock is a distinct, non-retryable failure that names its cause.
+function notStartedError(
+  ctx: RepositoryContext,
+  repoName: string | undefined,
+  result: RepoOperationNotStarted,
+): SyncInProgressError | RepoLockUnavailableError {
+  const name = ctx.getEntry(repoName)?.name ?? repoName ?? "unknown";
+  return result.reason === "lock_unavailable"
+    ? new RepoLockUnavailableError(name, result)
+    : new SyncInProgressError(name);
+}
+
 async function runExclusiveRepoOperation<T>(
   ctx: RepositoryContext,
   repoName: string | undefined,
@@ -110,8 +124,7 @@ async function runExclusiveRepoOperation<T>(
 ): Promise<T> {
   const result = await service.runExclusiveRepoOperation(operation);
   if (!result.started) {
-    const name = ctx.getEntry(repoName)?.name ?? repoName ?? "unknown";
-    throw new SyncInProgressError(name);
+    throw notStartedError(ctx, repoName, result);
   }
   return result.value;
 }
@@ -474,7 +487,7 @@ export async function handleSync(
     const start = Date.now();
     const result = await service.sync();
     if (!result.started) {
-      throw new SyncInProgressError(ctx.getEntry(params.repoName)?.name ?? params.repoName ?? "unknown");
+      throw notStartedError(ctx, params.repoName, result);
     }
     const duration = Date.now() - start;
     ctx.invalidateDiscovered();

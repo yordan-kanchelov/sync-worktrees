@@ -11,10 +11,19 @@ import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { Logger } from "./logger.service";
 
-import type { Config } from "../types";
+import type { Config, RepoLockUnavailable } from "../types";
 import type { GitService } from "./git.service";
 
 export type RepoLockRelease = () => Promise<void>;
+
+// `locked` is contention (proper-lockfile's ELOCKED: another process holds the
+// lock) and a clean skip. `lock_unavailable` is everything else — the lock
+// directory or file could not be prepared or locked — and must surface as a
+// failure with its cause, never as "another process holds the lock".
+export type RepoLockAcquireResult =
+  | { acquired: true; release: RepoLockRelease }
+  | { acquired: false; reason: "locked" }
+  | ({ acquired: false } & RepoLockUnavailable);
 
 export class RepoOperationLock {
   constructor(
@@ -27,9 +36,9 @@ export class RepoOperationLock {
     this.logger = logger;
   }
 
-  async acquire(): Promise<RepoLockRelease | null> {
+  async acquire(): Promise<RepoLockAcquireResult> {
     if (isUnitTestShortcutEnabled()) {
-      return async () => {};
+      return { acquired: true, release: async () => {} };
     }
 
     if (resolveMode(this.config) === REPOSITORY_MODES.CLONE) {
@@ -39,60 +48,64 @@ export class RepoOperationLock {
     return this.acquireWorktreeModeLock();
   }
 
-  private async acquireWorktreeDirLock(): Promise<RepoLockRelease | null> {
+  private async acquireWorktreeDirLock(): Promise<RepoLockAcquireResult> {
     const target = getWorktreeDirLockTarget(this.config);
     const lockTarget = path.join(target.dir, target.file);
     try {
       await fs.mkdir(target.dir, { recursive: true });
+    } catch (error) {
+      return this.unavailable("prepare the repo lock directory", target.dir, error);
+    }
+    try {
       await fs.writeFile(lockTarget, "", { flag: "a" });
-    } catch {
-      // Couldn't prepare the lock target (read-only FS, ENOSPC, EACCES).
-      // Treat as 'unable to acquire' so the operation is skipped cleanly
-      // instead of crashing the whole sync run.
-      return null;
+    } catch (error) {
+      return this.unavailable("create the repo lock file", lockTarget, error);
     }
     return this.lockPath(lockTarget);
   }
 
-  private async acquireWorktreeModeLock(): Promise<RepoLockRelease | null> {
+  private async acquireWorktreeModeLock(): Promise<RepoLockAcquireResult> {
     const barePath = this.gitService.getBareRepoPath();
     try {
       await fs.mkdir(barePath, { recursive: true });
-    } catch {
-      return null;
+    } catch (error) {
+      return this.unavailable("prepare the bare repository directory for locking", barePath, error);
     }
-    const releaseBare = await this.lockPath(barePath);
-    if (releaseBare === null) return null;
+    const bare = await this.lockPath(barePath);
+    if (!bare.acquired) return bare;
 
     // The bare-repo lock alone does not serialize what this lock exists to
     // protect: every destructive operation happens under worktreeDir, and the
     // default bare path is derived per config file, so two configs can point
     // different bare repos at the same worktreeDir and both hold "their" bare
     // lock. Hold the worktreeDir-keyed lock as well.
-    const releaseWorktreeDir = await this.acquireWorktreeDirLock();
-    if (releaseWorktreeDir === null) {
+    const worktreeDir = await this.acquireWorktreeDirLock();
+    if (!worktreeDir.acquired) {
       try {
-        await releaseBare();
+        await bare.release();
       } catch (releaseError) {
         this.logger.warn(
-          `Failed to release bare-repo lock after worktreeDir lock contention: ${getErrorMessage(releaseError)}`,
+          `Failed to release bare-repo lock after the worktreeDir lock could not be taken: ${getErrorMessage(releaseError)}`,
         );
       }
-      return null;
+      return worktreeDir;
     }
 
-    return async () => {
-      try {
-        await releaseWorktreeDir();
-      } finally {
-        await releaseBare();
-      }
+    return {
+      acquired: true,
+      release: async () => {
+        try {
+          await worktreeDir.release();
+        } finally {
+          await bare.release();
+        }
+      },
     };
   }
 
-  private async lockPath(lockTarget: string): Promise<RepoLockRelease | null> {
+  private async lockPath(lockTarget: string): Promise<RepoLockAcquireResult> {
     try {
-      return await lockfile.lock(lockTarget, {
+      const release = await lockfile.lock(lockTarget, {
         stale: DEFAULT_CONFIG.LOCK_STALE_MS,
         update: DEFAULT_CONFIG.LOCK_UPDATE_MS,
         retries: 0,
@@ -109,19 +122,27 @@ export class RepoOperationLock {
           );
         },
       });
+      return { acquired: true, release };
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ELOCKED") {
-        return null;
+      if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+        return { acquired: false, reason: "locked" };
       }
-      // A lock we cannot acquire (read-only FS, EACCES/EROFS/EPERM surfaced at
-      // lock time rather than during prep) must be a clean skip, never a fatal
-      // error that crashes the whole multi-repo run. Surface it as a warning so
-      // the cause is visible.
-      this.logger.warn(
-        `Could not acquire repo lock at '${lockTarget}' (${code ?? "unknown"}: ${getErrorMessage(error)}); skipping.`,
-      );
-      return null;
+      // EACCES/EROFS/EPERM surfaced at lock time rather than during prep.
+      return this.unavailable("acquire the repo lock", lockTarget, error);
     }
+  }
+
+  // A lock this process cannot take (read-only FS, ENOSPC, EACCES, a state
+  // dir that is a file) must never crash the whole multi-repo run, but it is
+  // not contention either: nothing was synced and no other process is
+  // responsible. Name the path and errno here, where the cause is known, and
+  // hand the caller a typed reason so it reports a failure, not a skip.
+  private unavailable(what: string, lockPath: string, error: unknown): RepoLockAcquireResult {
+    const code = (error as NodeJS.ErrnoException).code;
+    const message = getErrorMessage(error);
+    this.logger.warn(
+      `Could not ${what} at '${lockPath}' (${code ?? "unknown"}: ${message}); the repository lock is unavailable.`,
+    );
+    return { acquired: false, reason: "lock_unavailable", path: lockPath, code, error: message };
   }
 }

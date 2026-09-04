@@ -108,6 +108,7 @@ export async function runMultipleRepositories(
 
     const skipsByRepo: Array<{ repo: string; reasons: readonly CloneSkipReason[] }> = [];
     const skippedNames = new Set<string>();
+    const lockUnavailableNames = new Set<string>();
     const outcomeFailedNames = new Set<string>();
     const partialSkipNames = new Set<string>();
     for (let i = 0; i < servicesToSync.length; i++) {
@@ -120,7 +121,14 @@ export async function runMultipleRepositories(
 
       if (result.status === "fulfilled") {
         if (!result.value.started) {
-          skippedNames.add(name);
+          // Contention (another process or operation) is a skip: the repo will
+          // be synced by whoever holds the lock. An unavailable lock is not —
+          // nothing synced it and nothing will — so it fails the run.
+          if (result.value.reason === "lock_unavailable") {
+            lockUnavailableNames.add(name);
+          } else {
+            skippedNames.add(name);
+          }
           continue;
         }
 
@@ -155,7 +163,7 @@ export async function runMultipleRepositories(
 
     const initFailures = initResults.filter((result) => result.status === "rejected").length;
     const syncFailures = syncResults.filter((result) => result.status === "rejected").length;
-    const failedCount = initFailures + syncFailures + outcomeFailedNames.size;
+    const failedCount = initFailures + syncFailures + outcomeFailedNames.size + lockUnavailableNames.size;
     const skippedCount = skippedNames.size;
     const successCount = syncResults.filter((result, index) => {
       const repoName = servicesToSync[index].name;
@@ -169,8 +177,9 @@ export async function runMultipleRepositories(
     const processedRepoWord = repositories.length === 1 ? "repo" : "repos";
     const skipSummaryLabel = skippedNames.size === skipsByRepo.length ? "with clone-mode skips" : "skipped";
     const partialSuffix = partialSkipNames.size > 0 ? ` (${partialSkipNames.size} with partial skips)` : "";
+    const failedSuffix = lockUnavailableNames.size > 0 ? ` (${lockUnavailableNames.size} lock unavailable)` : "";
     globalLogger.info(
-      `\n📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced${partialSuffix}, ${skippedCount} ${skipSummaryLabel}, ${failedCount} failed`,
+      `\n📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced${partialSuffix}, ${skippedCount} ${skipSummaryLabel}, ${failedCount} failed${failedSuffix}`,
     );
 
     if (failedCount > 0) {

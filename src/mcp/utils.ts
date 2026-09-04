@@ -1,5 +1,7 @@
 import { SyncWorktreesError } from "../errors";
+import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 
+import type { RepoLockUnavailable } from "../types";
 import type { CallToolResult, ServerContext } from "@modelcontextprotocol/server";
 
 export type HandlerContext = ServerContext;
@@ -64,6 +66,16 @@ export class CapabilityUnavailableError extends SyncWorktreesError {
 export class SyncInProgressError extends SyncWorktreesError {
   constructor(repoName: string) {
     super(`Sync already in progress for '${repoName}'`, "SYNC_IN_PROGRESS");
+  }
+}
+
+// The cross-process repo lock could not be prepared or taken (ENOTDIR, EACCES,
+// EROFS, ENOSPC, ...). Unlike SYNC_IN_PROGRESS nothing else is working on the
+// repository — the operation simply did not run, and retrying will not help
+// until the state directory is fixed.
+export class RepoLockUnavailableError extends SyncWorktreesError {
+  constructor(repoName: string, detail: Pick<RepoLockUnavailable, "path" | "code" | "error">) {
+    super(`Operation not run for '${repoName}': ${formatRepoLockUnavailable(detail)}`, "LOCK_UNAVAILABLE");
   }
 }
 
