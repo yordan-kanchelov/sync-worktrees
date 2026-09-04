@@ -2,13 +2,16 @@ name: PR Checks
 
 on:
   pull_request:
-    types: [opened, synchronize]
-    paths:
-      - '**.ts'
-      - '**.js'
-      - '**.json'
-      - '.github/workflows/**'
-      - 'pnpm-lock.yaml'
+    types: [opened, synchronize, reopened, ready_for_review]
+    # Skip only documentation-only changes. Everything else (sources, tests, configs,
+    # lockfile, workflows, composite actions, changesets) runs the checks, so a required
+    # check is never left 'skipped' for a PR that touches code. site/ has its own workflow.
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+      - 'CNAME'
+      - 'assets/**'
+      - 'site/**'
 
 jobs:
   check-changeset:
@@ -32,7 +35,7 @@ jobs:
         id: check
         run: |
           # Check if this PR touches any code files
-          git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.(ts|js|json)$' > /dev/null || {
+          git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.(ts|tsx|js|cjs|mjs|json)$' > /dev/null || {
             echo "No code changes detected, skipping changeset check"
             echo "has-changeset=skip" >> $GITHUB_OUTPUT
             exit 0

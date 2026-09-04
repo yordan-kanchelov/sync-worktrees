@@ -32,7 +32,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T51** — `pnpm lint` never lints TypeScript: the eslint glob covers 6 root JS files, so all
   75 source and 77 test `.ts`/`.tsx` files ship unlinted and the CI 'Run Linter' step is a no-op for
   the app
-- [ ] **T52** — PR workflow `paths` filter omits `**.tsx`, `**.cjs`, `**.mjs` and
+- [x] **T52** — PR workflow `paths` filter omits `**.tsx`, `**.cjs`, `**.mjs` and
   `.github/actions/**`, so a PR that only changes Ink components (18 `.tsx` files) or the composite
   setup action runs no lint, typecheck, build or tests
 - [ ] **T118** — Prettier is configured (`.prettierrc`) but not installed, has no script, and is
@@ -2431,7 +2431,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   fails on the same change.
 - **Notes**: Coordinator's own finding, verified by running eslint with --debug.
 
-### [ ] T52. PR workflow `paths` filter omits `**.tsx`, `**.cjs`, `**.mjs` and `.github/actions/**`, so a PR that only changes Ink components (18 `.tsx` files) or the composite setup action runs no lint, typecheck, build or tests
+### [x] T52. PR workflow `paths` filter omits `**.tsx`, `**.cjs`, `**.mjs` and `.github/actions/**`, so a PR that only changes Ink components (18 `.tsx` files) or the composite setup action runs no lint, typecheck, build or tests
 
 - **Category**: workflow · **Subsystem**: build-ci-tests
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
