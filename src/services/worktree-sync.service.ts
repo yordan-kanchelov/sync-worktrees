@@ -3,13 +3,14 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, TrashOperationError } from "../errors";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { retry } from "../utils/retry";
 import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
+import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { type CloneSkipReason, CloneSyncService } from "./clone-sync.service";
 import { GitMaintenanceService } from "./git-maintenance.service";
@@ -392,10 +393,11 @@ export class WorktreeSyncService {
 
   // Runs git gc when due, inside the already-held repo lock (mirrors
   // initializeUnlocked — must NOT re-acquire runExclusiveRepoOperation or it
-  // would self-deadlock/skip). Skipped under NODE_ENV=test so unit suites don't
-  // shell out to real git; GitMaintenanceService is covered by its own tests.
+  // would self-deadlock/skip). Skipped under the unit-test shortcut so unit
+  // suites don't shell out to real git; GitMaintenanceService is covered by
+  // its own tests.
   private async runMaintenanceIfDueUnlocked(): Promise<void> {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
+    if (isUnitTestShortcutEnabled()) {
       return;
     }
     await this.maintenanceService.runIfDueUnlocked();
@@ -405,7 +407,7 @@ export class WorktreeSyncService {
   // inside the held lock, never fails the sync. Runs before gc so freshly
   // reaped pin refs can be collected in the same maintenance window.
   private async runTrashMaintenanceUnlocked(): Promise<void> {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
+    if (isUnitTestShortcutEnabled()) {
       return;
     }
     if (this.cloneSyncService) {

@@ -20,6 +20,7 @@ import { fileExists } from "./utils/file-exists";
 import { promptForInitConfig } from "./utils/interactive";
 import { maybeRegisterMcpClients } from "./utils/mcp-registration";
 import { setupSignalHandlers } from "./utils/signal-handlers";
+import { warnIfUnitTestShortcutEnabled } from "./utils/unit-test-shortcut";
 
 import type { CloneSkipReason } from "./services/clone-sync.service";
 import type { ConfigFile, RepositoryConfig } from "./types";
@@ -349,6 +350,7 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
 
 export async function main(): Promise<void> {
   const options = parseArguments();
+  warnIfUnitTestShortcutEnabled((message) => console.warn(message));
 
   switch (options.command) {
     case CLI_COMMANDS.INIT:

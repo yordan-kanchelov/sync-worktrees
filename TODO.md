@@ -54,7 +54,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T40** — create_worktree can move an unregistered directory at the target path into .trash
   (or rm -rf it when trash is disabled) although it is annotated destructiveHint:false and the README
   says the MCP surface cannot remove or touch trash
-- [ ] **T30** — All cross-process locking, git inactivity timeouts, trash reaping and gc are
+- [x] **T30** — All cross-process locking, git inactivity timeouts, trash reaping and gc are
   silently disabled whenever the inherited environment has NODE_ENV=test; the CLI only sets NODE_ENV
   when it is unset
 - [ ] **T10** — Lock-directory preparation failure is misreported as 'another process holds the
@@ -1618,7 +1618,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   only cross-repository check and it keys on `bareRepoDir`; `validateWorktreeBareRepoSeparation`
   (725-739) is per-repository.
 
-### [ ] T30. All cross-process locking, git inactivity timeouts, trash reaping and gc are silently disabled whenever the inherited environment has NODE_ENV=test; the CLI only sets NODE_ENV when it is unset
+### [x] T30. All cross-process locking, git inactivity timeouts, trash reaping and gc are silently disabled whenever the inherited environment has NODE_ENV=test; the CLI only sets NODE_ENV when it is unset
 
 - **Category**: guardrail · **Subsystem**: config
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

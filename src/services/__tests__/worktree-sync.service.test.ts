@@ -4,7 +4,8 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TEST_BRANCHES, createMockLogger } from "../../__tests__/test-utils";
+import { TEST_BRANCHES, createMockLogger, setEnvVar } from "../../__tests__/test-utils";
+import { ENV_CONSTANTS } from "../../constants";
 import { ConfigError, WorktreeNotCleanError } from "../../errors";
 import { GitMaintenanceService } from "../git-maintenance.service";
 import { PathResolutionService } from "../path-resolution.service";
@@ -1643,11 +1644,14 @@ describe("WorktreeSyncService", () => {
   describe("trash maintenance wiring", () => {
     let migrationSpy: ReturnType<typeof vi.spyOn>;
     let reaperSpy: ReturnType<typeof vi.spyOn>;
-    let prevNodeEnv: string | undefined;
+    let prevShortcut: string | undefined;
 
     beforeEach(() => {
-      prevNodeEnv = process.env.NODE_ENV;
-      process.env.NODE_ENV = "production";
+      // The call site is gated off by the worker-wide unit-test shortcut
+      // (setup.ts); unset it so the wiring runs. NODE_ENV stays "test" — it
+      // must not matter. Stub the cross-process lock so no real lock is taken.
+      prevShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
       vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue(async () => {});
       vi.spyOn(GitMaintenanceService.prototype, "runIfDueUnlocked").mockResolvedValue(undefined);
       migrationSpy = vi.spyOn(TrashMigrationService.prototype, "migrateLegacyUnlocked").mockResolvedValue(undefined);
@@ -1657,13 +1661,24 @@ describe("WorktreeSyncService", () => {
     });
 
     afterEach(() => {
-      process.env.NODE_ENV = prevNodeEnv;
+      setEnvVar(ENV_CONSTANTS.UNIT_TEST_SHORTCUT, prevShortcut);
       vi.restoreAllMocks();
     });
 
     it("adopts legacy backups and reaps expired trash after a successful sync", async () => {
       const svc = new WorktreeSyncService(mockConfig);
       await svc.sync();
+      expect(migrationSpy).toHaveBeenCalledTimes(1);
+      expect(reaperSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("is gated by the unit-test shortcut, not by NODE_ENV", async () => {
+      expect(process.env.NODE_ENV).toBe("test");
+      await new WorktreeSyncService(mockConfig).sync();
+      expect(reaperSpy).toHaveBeenCalledTimes(1);
+
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
+      await new WorktreeSyncService(mockConfig).sync();
       expect(migrationSpy).toHaveBeenCalledTimes(1);
       expect(reaperSpy).toHaveBeenCalledTimes(1);
     });
@@ -2408,19 +2423,20 @@ describe("WorktreeSyncService", () => {
 
   describe("maintenance wiring", () => {
     let maintenanceSpy: ReturnType<typeof vi.spyOn>;
-    let prevNodeEnv: string | undefined;
+    let prevShortcut: string | undefined;
 
     beforeEach(() => {
-      // The call site is gated off under NODE_ENV=test; flip it so the wiring runs.
-      // Stub the cross-process lock so flipping the env doesn't trigger real locking.
-      prevNodeEnv = process.env.NODE_ENV;
-      process.env.NODE_ENV = "production";
+      // The call site is gated off by the worker-wide unit-test shortcut
+      // (setup.ts); unset it so the wiring runs. NODE_ENV stays "test" — it
+      // must not matter. Stub the cross-process lock so no real lock is taken.
+      prevShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
       vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue(async () => {});
       maintenanceSpy = vi.spyOn(GitMaintenanceService.prototype, "runIfDueUnlocked").mockResolvedValue(undefined);
     });
 
     afterEach(() => {
-      process.env.NODE_ENV = prevNodeEnv;
+      setEnvVar(ENV_CONSTANTS.UNIT_TEST_SHORTCUT, prevShortcut);
       vi.restoreAllMocks();
     });
 
@@ -2438,6 +2454,16 @@ describe("WorktreeSyncService", () => {
       expect(maintenanceSpy).toHaveBeenCalledTimes(1);
       expect(release).toHaveBeenCalledTimes(1);
       expect(maintenanceSpy.mock.invocationCallOrder[0]).toBeLessThan(release.mock.invocationCallOrder[0]);
+    });
+
+    it("is gated by the unit-test shortcut, not by NODE_ENV", async () => {
+      expect(process.env.NODE_ENV).toBe("test");
+      await new WorktreeSyncService(mockConfig).sync();
+      expect(maintenanceSpy).toHaveBeenCalledTimes(1);
+
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
+      await new WorktreeSyncService(mockConfig).sync();
+      expect(maintenanceSpy).toHaveBeenCalledTimes(1);
     });
 
     it("does not run maintenance when the sync fails", async () => {

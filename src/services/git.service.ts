@@ -11,6 +11,7 @@ import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 import { quarantineDirectory } from "../utils/quarantine";
+import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import { Logger } from "./logger.service";
@@ -68,12 +69,12 @@ export class GitService {
   }
 
   private getFetchTimeoutMs(): number {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    if (isUnitTestShortcutEnabled()) return 0;
     return this.config.fetchTimeoutMs ?? DEFAULT_CONFIG.FETCH_TIMEOUT_MS;
   }
 
   private getCloneTimeoutMs(): number {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    if (isUnitTestShortcutEnabled()) return 0;
     return this.config.cloneTimeoutMs ?? DEFAULT_CONFIG.CLONE_TIMEOUT_MS;
   }
 
@@ -235,8 +236,8 @@ export class GitService {
       );
 
       if (!mainWorktreeRegistered) {
-        // Only warn in non-test environments as this is common in tests due to Git state
-        if (process.env.NODE_ENV !== ENV_CONSTANTS.NODE_ENV_TEST) {
+        // Common under the mocked git of the unit suite; only worth a warning for real runs.
+        if (!isUnitTestShortcutEnabled()) {
           this.logger.warn(`Main worktree was created but not found in worktree list. This may cause issues.`);
         }
       }

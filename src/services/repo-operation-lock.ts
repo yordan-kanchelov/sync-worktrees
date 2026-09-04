@@ -3,10 +3,11 @@ import * as path from "path";
 
 import * as lockfile from "proper-lockfile";
 
-import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG } from "../constants";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getWorktreeDirLockTarget } from "../utils/lock-path";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
+import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { Logger } from "./logger.service";
 
@@ -27,7 +28,7 @@ export class RepoOperationLock {
   }
 
   async acquire(): Promise<RepoLockRelease | null> {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
+    if (isUnitTestShortcutEnabled()) {
       return async () => {};
     }
 

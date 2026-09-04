@@ -10,6 +10,7 @@ import { sanitizeGitEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { normalizeRepoUrlForComparison } from "../utils/git-url";
 import { getErrorMessage, isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
+import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { cloneSkipToOutcomeAction } from "./sync-outcome";
@@ -96,12 +97,12 @@ export class CloneSyncService {
   }
 
   private getCloneTimeoutMs(): number {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    if (isUnitTestShortcutEnabled()) return 0;
     return this.config.cloneTimeoutMs ?? DEFAULT_CONFIG.CLONE_TIMEOUT_MS;
   }
 
   private getFetchTimeoutMs(): number {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    if (isUnitTestShortcutEnabled()) return 0;
     return this.config.fetchTimeoutMs ?? DEFAULT_CONFIG.FETCH_TIMEOUT_MS;
   }
 

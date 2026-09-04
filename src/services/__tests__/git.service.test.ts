@@ -2,7 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import simpleGit from "simple-git";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   TEST_PATHS,
@@ -12,7 +12,9 @@ import {
   createMockGitService,
   createMockLogger,
   createWorktreeListOutput,
+  setEnvVar,
 } from "../../__tests__/test-utils";
+import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { WorktreeNotCleanError } from "../../errors";
 import { GitService } from "../git.service";
 
@@ -106,6 +108,60 @@ describe("GitService", () => {
     (simpleGit as unknown as Mock).mockReturnValue(mockGit);
 
     gitService = new GitService(mockConfig, mockLogger);
+  });
+
+  describe("inactivity timeouts", () => {
+    const originalShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      setEnvVar(ENV_CONSTANTS.UNIT_TEST_SHORTCUT, originalShortcut);
+      setEnvVar("NODE_ENV", originalNodeEnv);
+    });
+
+    it("keeps the default timeouts when NODE_ENV=test but the unit-test shortcut is unset", async () => {
+      // NODE_ENV is whatever the caller's shell or CI exported; it must never disable the timeouts.
+      process.env.NODE_ENV = "test";
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      const service = new GitService(createMockConfig(), mockLogger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+
+      (mockGit.raw as Mock).mockResolvedValue("ref: refs/heads/main\tHEAD\n");
+      await service.getRemoteDefaultBranch(TEST_URLS.github);
+      expect(simpleGit).toHaveBeenCalledWith(
+        expect.objectContaining({ timeout: { block: DEFAULT_CONFIG.FETCH_TIMEOUT_MS } }),
+      );
+    });
+
+    it("prefers the configured timeouts when the unit-test shortcut is unset", () => {
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      const service = new GitService(createMockConfig({ fetchTimeoutMs: 1_000, cloneTimeoutMs: 2_000 }), mockLogger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(1_000);
+      expect((service as any).getCloneTimeoutMs()).toBe(2_000);
+    });
+
+    it("disables the timeouts only while the unit-test shortcut is active for this process", async () => {
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
+      const service = new GitService(createMockConfig(), mockLogger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(0);
+      expect((service as any).getCloneTimeoutMs()).toBe(0);
+
+      (mockGit.raw as Mock).mockResolvedValue("ref: refs/heads/main\tHEAD\n");
+      await service.getRemoteDefaultBranch(TEST_URLS.github);
+      expect(simpleGit).toHaveBeenCalledWith(expect.not.objectContaining({ timeout: expect.anything() }));
+    });
+
+    it("ignores a shortcut value inherited from another process", () => {
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid + 1);
+      const service = new GitService(createMockConfig(), mockLogger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+    });
   });
 
   describe("getRemoteDefaultBranch (#6)", () => {

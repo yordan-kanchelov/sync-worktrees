@@ -96,7 +96,8 @@ export const TEST_TIMEOUT = {
 export const ENV_CONSTANTS = {
   GIT_LFS_SKIP_SMUDGE: "GIT_LFS_SKIP_SMUDGE",
   GIT_ATTR_SOURCE: "GIT_ATTR_SOURCE",
-  NODE_ENV_TEST: "test",
+  /** Set by src/__tests__/setup.ts to the vitest worker's pid; see src/utils/unit-test-shortcut.ts. */
+  UNIT_TEST_SHORTCUT: "SYNC_WORKTREES_UNIT_TEST",
 } as const;
 
 export const PATH_CONSTANTS = {

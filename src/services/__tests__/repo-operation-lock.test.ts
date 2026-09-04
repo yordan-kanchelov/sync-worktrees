@@ -4,6 +4,8 @@ import * as path from "path";
 import * as lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { setEnvVar } from "../../__tests__/test-utils";
+import { ENV_CONSTANTS } from "../../constants";
 import { getWorktreeDirLockTarget } from "../../utils/lock-path";
 import { RepoOperationLock } from "../repo-operation-lock";
 
@@ -25,14 +27,18 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
   };
 }
 
+const SHORTCUT = ENV_CONSTANTS.UNIT_TEST_SHORTCUT;
+
 describe("RepoOperationLock", () => {
+  const originalShortcut = process.env[SHORTCUT];
   const originalNodeEnv = process.env.NODE_ENV;
   const release = vi.fn(async () => {});
   let gitService: Pick<GitService, "getBareRepoPath">;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.NODE_ENV = "production";
+    // setup.ts opts the whole worker into the no-op lock; these tests exercise the real one.
+    delete process.env[SHORTCUT];
     gitService = {
       getBareRepoPath: vi.fn(() => "/tmp/bare.git"),
     };
@@ -42,17 +48,48 @@ describe("RepoOperationLock", () => {
   });
 
   afterEach(() => {
-    process.env.NODE_ENV = originalNodeEnv;
+    setEnvVar(SHORTCUT, originalShortcut);
+    setEnvVar("NODE_ENV", originalNodeEnv);
   });
 
-  it("returns a no-op release in test environment", async () => {
-    process.env.NODE_ENV = "test";
+  it("returns a no-op release while the unit-test shortcut is active for this process", async () => {
+    process.env[SHORTCUT] = String(process.pid);
     const lock = new RepoOperationLock(makeConfig(), gitService as GitService);
 
     const acquired = await lock.acquire();
     await acquired?.();
 
     expect(lockfile.lock).not.toHaveBeenCalled();
+  });
+
+  it("takes the real locks when NODE_ENV=test but the unit-test shortcut is unset", async () => {
+    // A shell, CI job or .env exporting NODE_ENV=test must not switch off
+    // cross-process locking: only the tool-owned shortcut may.
+    process.env.NODE_ENV = "test";
+    expect(process.env[SHORTCUT]).toBeUndefined();
+    const config = makeConfig();
+    const worktreeTarget = getWorktreeDirLockTarget(config);
+    const lock = new RepoOperationLock(config, gitService as GitService);
+
+    const acquired = await lock.acquire();
+
+    expect(acquired).toBeTypeOf("function");
+    expect(lockfile.lock).toHaveBeenCalledTimes(2);
+    expect(lockfile.lock).toHaveBeenCalledWith("/tmp/bare.git", expect.objectContaining({ retries: 0 }));
+    expect(lockfile.lock).toHaveBeenCalledWith(
+      path.join(worktreeTarget.dir, worktreeTarget.file),
+      expect.objectContaining({ retries: 0 }),
+    );
+  });
+
+  it("ignores a shortcut value inherited from another process", async () => {
+    // The vitest worker exports its own pid; a child process (the built CLI
+    // under the e2e suites, a hook command) inherits that value and must lock.
+    process.env[SHORTCUT] = String(process.pid + 1);
+    const lock = new RepoOperationLock(makeConfig(), gitService as GitService);
+
+    await expect(lock.acquire()).resolves.toBeTypeOf("function");
+    expect(lockfile.lock).toHaveBeenCalledTimes(2);
   });
 
   it("locks both the bare repository path and the worktreeDir lock file in worktree mode", async () => {
