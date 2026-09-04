@@ -35,7 +35,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T52** — PR workflow `paths` filter omits `**.tsx`, `**.cjs`, `**.mjs` and
   `.github/actions/**`, so a PR that only changes Ink components (18 `.tsx` files) or the composite
   setup action runs no lint, typecheck, build or tests
-- [ ] **T118** — Prettier is configured (`.prettierrc`) but not installed, has no script, and is
+- [x] **T118** — Prettier is configured (`.prettierrc`) but not installed, has no script, and is
   never enforced in CI
 - [ ] **T119** — CI only exercises Node 24 while `engines` promises `>=22.0.0`; the minimum
   supported runtime (and the ESM module-detection behaviour that differs across 22.x) is never tested
@@ -4476,7 +4476,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: node-cron v3 semantics (where stop was final) predate the 4.x upgrade;
   no test inspects the registry.
 
-### [ ] T118. Prettier is configured (`.prettierrc`) but not installed, has no script, and is never enforced in CI
+### [x] T118. Prettier is configured (`.prettierrc`) but not installed, has no script, and is never enforced in CI
 
 - **Category**: workflow · **Subsystem**: build-ci-tests
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
