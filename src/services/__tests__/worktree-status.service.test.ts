@@ -2,9 +2,10 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import simpleGit from "simple-git";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeNotCleanError } from "../../errors";
+import { setEnvVar } from "../../__tests__/test-utils";
 import { WorktreeStatusService } from "../worktree-status.service";
 
 import type { SimpleGit } from "simple-git";
@@ -950,6 +951,67 @@ describe("WorktreeStatusService", () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
 
       await expect(service.validateWorktreeForRemoval("/test/worktree")).rejects.toThrow(WorktreeNotCleanError);
+    });
+  });
+
+  // simple-git's .env() replaces the child environment wholesale. The LFS-skip
+  // client used for every status probe must therefore carry the (sanitized)
+  // process environment with it: without HOME / XDG_CONFIG_HOME git never reads
+  // the global excludes file, so a `.DS_Store` ignored there reports as an
+  // untracked change and the worktree is neither updated nor pruned; without
+  // PATH the spawn can fail outright.
+  describe("skipLfs git environment", () => {
+    const previous = {
+      HOME: process.env.HOME,
+      EDITOR: process.env.EDITOR,
+      GIT_EDITOR: process.env.GIT_EDITOR,
+    };
+
+    beforeEach(() => {
+      setEnvVar("HOME", "/home/probe-user");
+      setEnvVar("EDITOR", "vim");
+      setEnvVar("GIT_EDITOR", "nano");
+    });
+
+    afterEach(() => {
+      setEnvVar("HOME", previous.HOME);
+      setEnvVar("EDITOR", previous.EDITOR);
+      setEnvVar("GIT_EDITOR", previous.GIT_EDITOR);
+    });
+
+    it("forwards the sanitized process environment alongside GIT_LFS_SKIP_SMUDGE", async () => {
+      const lfsService = new WorktreeStatusService({ skipLfs: true });
+
+      await expect(lfsService.checkWorktreeStatus("/test/worktree")).resolves.toBe(true);
+
+      expect(mockGit.env).toHaveBeenCalledTimes(1);
+      const env = mockGit.env.mock.calls[0][0] as NodeJS.ProcessEnv;
+      expect(process.env.PATH).toBeTruthy();
+      expect(env).toMatchObject({
+        PATH: process.env.PATH,
+        HOME: "/home/probe-user",
+        GIT_LFS_SKIP_SMUDGE: "1",
+      });
+      expect(env).not.toHaveProperty("EDITOR");
+      expect(env).not.toHaveProperty("GIT_EDITOR");
+    });
+
+    it("keeps parity with default env inheritance for the unsafe-env validation", async () => {
+      const lfsService = new WorktreeStatusService({ skipLfs: true });
+
+      await lfsService.checkWorktreeStatus("/test/worktree");
+
+      expect(simpleGit).toHaveBeenCalledWith(
+        "/test/worktree",
+        expect.objectContaining({ unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true } }),
+      );
+    });
+
+    it("leaves the default client alone when skipLfs is off", async () => {
+      await service.checkWorktreeStatus("/test/worktree");
+
+      expect(simpleGit).toHaveBeenCalledWith("/test/worktree");
+      expect(mockGit.env).not.toHaveBeenCalled();
     });
   });
 });

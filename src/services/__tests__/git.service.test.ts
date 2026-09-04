@@ -2219,6 +2219,51 @@ prunable
       );
     });
 
+    // The GIT_ATTR_SOURCE=HEAD client used for `lfs ls-files` passes an explicit
+    // env, and simple-git validates explicit envs (GIT_ASKPASS, GIT_CONFIG_COUNT)
+    // that a default client inherits freely. Without the same allowances as
+    // getCachedGit's clients, a VS Code askpass bridge or CI config-count in the
+    // forwarded environment throws before `lfs ls-files` runs, and the LFS
+    // verification is silently skipped.
+    it("creates the LFS-verification client with the unsafe-env allowances", async () => {
+      const sparseConfig: Config = {
+        ...createMockConfig(),
+        sparseCheckout: { include: ["apps"] },
+      };
+
+      // applySparseAndCheckout also creates a worktree client — through
+      // getCachedGit, which already carries the allowances — so hand out a
+      // fresh client per simpleGit() call and pair each .env() with the
+      // options its own client was constructed with.
+      const envClients: Array<{ options: unknown; env: NodeJS.ProcessEnv }> = [];
+      (simpleGit as unknown as Mock).mockImplementation((p?: any, options?: unknown) => {
+        if (!(p && p.includes("feature-1"))) return mockGit;
+        const client: any = {
+          branch: vi.fn<any>().mockResolvedValue(undefined),
+          raw: vi.fn<any>().mockResolvedValue(""),
+          revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        };
+        client.env = vi.fn((env: NodeJS.ProcessEnv) => {
+          envClients.push({ options, env });
+          return client;
+        });
+        return client;
+      });
+
+      mockShowRef({ local: false, remote: true });
+
+      const sparseGitService = new GitService(sparseConfig, mockLogger);
+
+      await sparseGitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      const lfsClient = envClients.find(({ env }) => env[ENV_CONSTANTS.GIT_ATTR_SOURCE] === "HEAD");
+      expect(lfsClient).toBeDefined();
+      expect(lfsClient!.env).toMatchObject({ PATH: process.env.PATH });
+      expect(lfsClient!.options).toEqual(
+        expect.objectContaining({ unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true } }),
+      );
+    });
+
     it("does not pass --no-checkout when sparseCheckout is unset", async () => {
       mockShowRef({ local: true, remote: false });
       mockGit.raw.mockClear();

@@ -395,8 +395,15 @@ export class GitService {
   }
 
   private async verifyLfsFilesDownloaded(worktreePath: string, branchName: string): Promise<void> {
+    // An explicit env needs the same unsafe-env allowances as getCachedGit's
+    // clients (see buildSimpleGitOptions), or a GIT_ASKPASS / GIT_CONFIG_COUNT
+    // in the forwarded environment makes this client throw before `lfs
+    // ls-files` runs and the verification is silently skipped.
     const worktreeGit = this.config.sparseCheckout
-      ? simpleGit(worktreePath).env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" })
+      ? simpleGit(worktreePath, this.buildSimpleGitOptions(this.getFetchTimeoutMs())).env({
+          ...sanitizeGitEnv(process.env),
+          [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD",
+        })
       : this.getCachedGit(worktreePath);
 
     try {
