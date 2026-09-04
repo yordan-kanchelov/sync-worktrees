@@ -8,10 +8,16 @@ import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { WorktreeStatusService } from "../services/worktree-status.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { calculateDirectorySize } from "../utils/disk-space";
+import { probePathExists } from "../utils/file-exists";
 import { isValidGitBranchName } from "../utils/git-validation";
 import { pathsEqual } from "../utils/path-compare";
 
-import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } from "./utils";
+import {
+  CapabilityUnavailableError,
+  SyncInProgressError,
+  WorktreeTargetExistsError,
+  formatToolResponse,
+} from "./utils";
 import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summary";
 
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
@@ -166,6 +172,28 @@ async function getWorktreesFromService(
     return candidate.getWorktrees();
   }
   return git.getWorktrees();
+}
+
+/**
+ * `addWorktree` treats a directory at the target path that is not a registered
+ * worktree as an orphan and moves it to trash (or deletes it when trash is
+ * disabled). That recovery is right for sync, but `create_worktree` is
+ * advertised as non-destructive and the MCP surface has no trash access, so an
+ * unregistered directory at the target path is refused here instead: nothing
+ * is moved or deleted from the MCP path. A registered path is left to
+ * `addWorktree`, which short-circuits on an existing worktree.
+ */
+async function ensureWorktreeTargetAvailable(worktreePath: string, registered: RepoWorktree[]): Promise<void> {
+  if (registered.some((w) => pathsEqual(w.path, worktreePath))) return;
+
+  const probe = await probePathExists(worktreePath);
+  if (probe === "missing") return;
+  if (probe === "unknown") {
+    throw new Error(
+      `Cannot verify whether '${path.resolve(worktreePath)}' exists; refusing to create a worktree there`,
+    );
+  }
+  throw new WorktreeTargetExistsError(path.resolve(worktreePath));
 }
 
 export async function handleDetectContext(
@@ -380,6 +408,17 @@ export async function handleCreateWorktree(
     await git.fetchAll();
     const existence = await git.branchExists(branchName);
 
+    const worktreeDir = service.config.worktreeDir;
+    const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
+    const existing = await git.getWorktrees();
+    const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
+    if (collision) {
+      throw new Error(
+        `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
+      );
+    }
+    await ensureWorktreeTargetAvailable(worktreePath, existing);
+
     let created = false;
     let pushed = false;
 
@@ -391,15 +430,6 @@ export async function handleCreateWorktree(
       created = true;
     }
 
-    const worktreeDir = service.config.worktreeDir;
-    const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
-    const existing = await git.getWorktrees();
-    const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
-    if (collision) {
-      throw new Error(
-        `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
-      );
-    }
     await git.addWorktree(branchName, worktreePath);
     ctx.invalidateDiscovered();
 

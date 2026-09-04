@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { GitOperationError } from "../../errors";
-import { CapabilityUnavailableError, SyncInProgressError, formatErrorResponse, formatToolResponse } from "../utils";
+import {
+  CapabilityUnavailableError,
+  SyncInProgressError,
+  WorktreeTargetExistsError,
+  formatErrorResponse,
+  formatToolResponse,
+} from "../utils";
 
 describe("formatToolResponse", () => {
   it("wraps data as JSON text content", () => {
@@ -54,6 +60,15 @@ describe("SyncInProgressError", () => {
     const err = new SyncInProgressError("my-repo");
     expect(err.code).toBe("SYNC_IN_PROGRESS");
     expect(err.message).toContain("my-repo");
+  });
+});
+
+describe("WorktreeTargetExistsError", () => {
+  it("has TARGET_EXISTS code and names the path", () => {
+    const err = new WorktreeTargetExistsError("/repo/worktrees/feature-x");
+    expect(err.code).toBe("TARGET_EXISTS");
+    expect(err.message).toContain("/repo/worktrees/feature-x");
+    expect(err.message).toContain("not a registered worktree for a branch");
   });
 });
 

@@ -13,6 +13,7 @@ import {
 } from "../handlers";
 import { syncOutputSchema } from "../output-schemas";
 import { formatErrorResponse } from "../utils";
+import { PathResolutionService } from "../../services/path-resolution.service";
 
 import type { Capabilities, DiscoveredRepoContext, RepositoryContext } from "../context";
 import type { CallToolResult } from "@modelcontextprotocol/server";
@@ -34,6 +35,21 @@ vi.mock("simple-git", () => ({
     raw: vi.fn<any>().mockRejectedValue(new Error("no upstream")),
   })),
 }));
+
+function errno(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(code), { code });
+}
+
+// create_worktree probes its target path on disk (fs.access via probePathExists).
+// The fake /repo/worktrees tree never exists, so default to ENOENT and let the
+// target-path tests override it once per call.
+const fsMock = vi.hoisted(() => ({ access: vi.fn<any>() }));
+
+vi.mock("fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  fsMock.access.mockImplementation(() => Promise.reject(errno("ENOENT")));
+  return { ...actual, access: fsMock.access };
+});
 
 vi.mock("../../utils/disk-space", () => ({
   calculateDirectorySize: vi.fn().mockResolvedValue(123456),
@@ -1388,6 +1404,99 @@ describe("handleCreateWorktree collisions", () => {
     const secondPath = (git.addWorktree as any).mock.calls[0][1];
 
     expect(firstPath).not.toBe(secondPath);
+  });
+});
+
+describe("handleCreateWorktree target path guard", () => {
+  // The same sanitized (hash-suffixed) path the handler derives for the branch.
+  const targetPath = new PathResolutionService().getBranchWorktreePath("/repo/worktrees", "feature/x");
+
+  it("refuses when the target path exists on disk but is not a registered worktree", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/worktrees/main", branch: "main" }]),
+      },
+    });
+    fsMock.access.mockResolvedValueOnce(undefined);
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("TARGET_EXISTS");
+    expect(body.message).toContain(targetPath);
+    expect(body.message).toContain("not a registered worktree");
+    expect(fsMock.access).toHaveBeenCalledWith(targetPath);
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("refuses before creating a new branch when the target path is occupied", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+      },
+    });
+    fsMock.access.mockResolvedValueOnce(undefined);
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("TARGET_EXISTS");
+    // Refusing after createBranch would leave an unpushed local branch behind
+    // that a retry (after cleanup) then checks out without ever pushing.
+    expect(git.createBranch).not.toHaveBeenCalled();
+    expect(git.addWorktree).not.toHaveBeenCalled();
+    expect(git.pushBranch).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the target path cannot be probed", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+      },
+    });
+    fsMock.access.mockRejectedValueOnce(errno("EACCES"));
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("Cannot verify");
+    expect(body.message).toContain(targetPath);
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("proceeds to addWorktree when nothing exists at the target path", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+      },
+    });
+    fsMock.access.mockRejectedValueOnce(errno("ENOENT"));
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(fsMock.access).toHaveBeenCalledWith(targetPath);
+    expect(git.addWorktree).toHaveBeenCalledWith("feature/x", targetPath);
+  });
+
+  it("skips the disk probe when the path is already registered for the same branch", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: targetPath, branch: "feature/x" }]),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(fsMock.access).not.toHaveBeenCalled();
+    expect(git.addWorktree).toHaveBeenCalledWith("feature/x", targetPath);
   });
 });
 

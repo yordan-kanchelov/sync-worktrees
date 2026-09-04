@@ -67,6 +67,15 @@ export class SyncInProgressError extends SyncWorktreesError {
   }
 }
 
+export class WorktreeTargetExistsError extends SyncWorktreesError {
+  constructor(worktreePath: string) {
+    super(
+      `Path '${worktreePath}' exists but is not a registered worktree for a branch; remove it manually or run sync`,
+      "TARGET_EXISTS",
+    );
+  }
+}
+
 export function wrapHandler<P>(
   fn: (params: P, ctx: HandlerContext) => Promise<CallToolResult>,
 ): (params: P, ctx: HandlerContext) => Promise<CallToolResult> {

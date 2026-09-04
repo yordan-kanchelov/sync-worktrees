@@ -51,7 +51,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   invalidateDiscovered() nulls it
 - [x] **T38** — sync tool reports success:true when the sync outcome recorded failures
   (counts.failed > 0); the CLI treats the same outcome as exit code 1
-- [ ] **T40** — create_worktree can move an unregistered directory at the target path into .trash
+- [x] **T40** — create_worktree can move an unregistered directory at the target path into .trash
   (or rm -rf it when trash is disabled) although it is annotated destructiveHint:false and the README
   says the MCP surface cannot remove or touch trash
 - [ ] **T30** — All cross-process locking, git inactivity timeouts, trash reaping and gc are
@@ -1970,7 +1970,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   includeSize}).parse({repo_name:'x', include_size:true, includeSize:false}) → {"includeSize":false}
   (scratch t2.mjs).
 
-### [ ] T40. create_worktree can move an unregistered directory at the target path into .trash (or rm -rf it when trash is disabled) although it is annotated destructiveHint:false and the README says the MCP surface cannot remove or touch trash
+### [x] T40. create_worktree can move an unregistered directory at the target path into .trash (or rm -rf it when trash is disabled) although it is annotated destructiveHint:false and the README says the MCP surface cannot remove or touch trash
 
 - **Category**: guardrail · **Subsystem**: mcp
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
