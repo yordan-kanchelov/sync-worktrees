@@ -4,7 +4,10 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ConfigValidationError } from "../../errors";
 import { RepositoryContext } from "../context";
+import { handleLoadConfig } from "../handlers";
+import { formatErrorResponse } from "../utils";
 
 const mockRemoteUrl = vi.fn<any>();
 const mockWorktreeList = vi.fn<any>();
@@ -1371,6 +1374,40 @@ describe("RepositoryContext repoUrl credential redaction", () => {
       expect(ctx.getEntry("clone-repo")?.config.repoUrl).toBe(TOKEN_URL);
     } finally {
       await fs.rm(cloneDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("RepositoryContext.loadConfig path collisions", () => {
+  it("rejects two entries that share a worktreeDir and surfaces the error through load_config", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-shared-worktree-dir-"));
+    try {
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [
+          { name: "first", repoUrl: "https://github.com/test/first.git", worktreeDir: "./shared", bareRepoDir: "./.bare/first" },
+          { name: "second", repoUrl: "https://github.com/test/second.git", worktreeDir: "./shared", bareRepoDir: "./.bare/second" }
+        ] };`,
+        "utf-8",
+      );
+
+      const ctx = new RepositoryContext();
+      await expect(ctx.loadConfig(configPath)).rejects.toThrow(ConfigValidationError);
+      await expect(ctx.loadConfig(configPath)).rejects.toThrow(/'first' and 'second'.*same worktreeDir/);
+      // A rejected config registers nothing: neither entry may be synced.
+      expect(ctx.getConfiguredRepositoryNames()).toEqual([]);
+      expect(ctx.getConfigPath()).toBeNull();
+
+      // The load_config tool reports the validation error, not a generic failure.
+      const result = await handleLoadConfig(ctx, { configPath }).catch((err: unknown) => formatErrorResponse(err));
+      const body = JSON.parse((result.content[0] as { text: string }).text) as Record<string, unknown>;
+      expect(body.error).toBe(true);
+      expect(body.code).toBe("CONFIG_VALIDATION_FAILED");
+      expect(body.message).toContain("'first' and 'second'");
+      expect(body.message).toContain(path.join(workspace, "shared"));
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
     }
   });
 });

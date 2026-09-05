@@ -208,7 +208,7 @@ export class RepositoryContext {
       );
       resolvedAll.push(resolved);
     }
-    this.configLoader.detectBareRepoDirCollisions(resolvedAll);
+    this.configLoader.detectPathCollisions(resolvedAll);
 
     for (const [name, entry] of this.repos) {
       if (entry.source === "config") {

@@ -404,6 +404,7 @@ Notes:
 
 - `bareRepoDir` defaults to `.bare/<repo-name>` if not specified.
 - If the bare repository at `bareRepoDir` already exists, its `origin` must be `repoUrl` (compared ignoring `.git`, a trailing slash and scheme/host case); otherwise initialization fails naming both URLs. Run `git -C <bareRepoDir> remote set-url origin <repoUrl>` or point `bareRepoDir` at a fresh directory.
+- Every entry needs its own directories: two entries that resolve to the same `worktreeDir` (in either mode) or the same `bareRepoDir`, or whose `worktreeDir` sits at or inside another entry's `bareRepoDir` (or vice versa), are rejected when the config loads, naming both entries and the path. A `worktreeDir` nested inside another entry's `worktreeDir` loads with a warning.
 - Repository-specific settings override `defaults`.
 
 ### Authentication

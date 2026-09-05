@@ -10,7 +10,7 @@ import { matchesPattern } from "../utils/branch-filter";
 import { parseDuration } from "../utils/date-filter";
 import { fileExists } from "../utils/file-exists";
 import { getDefaultBareRepoDir, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
-import { normalizePathForCompare } from "../utils/path-compare";
+import { isPathEqualOrInside, isPathStrictlyInside, normalizePathForCompare, pathsEqual } from "../utils/path-compare";
 import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 
@@ -744,21 +744,74 @@ export class ConfigLoaderService {
     return firstIndex !== -1 && myIndex !== -1 && myIndex !== firstIndex;
   }
 
-  detectBareRepoDirCollisions(repositories: RepositoryConfig[]): void {
-    const seen = new Map<string, { name: string; displayPath: string }>();
-    for (const repo of repositories) {
-      if (!repo.bareRepoDir) continue;
-      const key = normalizePathForCompare(repo.bareRepoDir);
-      const displayPath = path.resolve(repo.bareRepoDir);
-      const existing = seen.get(key);
-      if (existing && existing.name !== repo.name) {
-        throw new Error(
-          `Repositories '${existing.name}' and '${repo.name}' resolve to the same bareRepoDir '${displayPath}'. ` +
-            `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`,
-        );
+  /**
+   * Rejects entries whose directories collide across the config: two entries
+   * sharing a worktreeDir (either mode) or a bareRepoDir, or one entry's
+   * worktreeDir overlapping another entry's bareRepoDir. Each entry's own
+   * worktreeDir/bareRepoDir separation is checked in resolveRepositoryConfig;
+   * this is the cross-entry check. A worktreeDir nested inside another
+   * entry's worktreeDir is allowed but warned about.
+   */
+  detectPathCollisions(repositories: RepositoryConfig[]): void {
+    for (let i = 0; i < repositories.length; i++) {
+      for (let j = i + 1; j < repositories.length; j++) {
+        this.detectPathCollisionBetween(repositories[i], repositories[j]);
       }
-      seen.set(key, { name: repo.name, displayPath });
     }
+  }
+
+  private detectPathCollisionBetween(a: RepositoryConfig, b: RepositoryConfig): void {
+    if (pathsEqual(a.worktreeDir, b.worktreeDir)) {
+      throw new ConfigValidationError(
+        `Repositories '${a.name}' and '${b.name}' worktreeDir`,
+        `resolve to the same worktreeDir '${path.resolve(a.worktreeDir)}'. ` +
+          `Each repository needs its own worktreeDir; sharing one lets each sync move the other's checkouts to trash.`,
+      );
+    }
+
+    if (a.bareRepoDir && b.bareRepoDir && pathsEqual(a.bareRepoDir, b.bareRepoDir)) {
+      throw new ConfigValidationError(
+        `Repositories '${a.name}' and '${b.name}' bareRepoDir`,
+        `resolve to the same bareRepoDir '${path.resolve(a.bareRepoDir)}'. ` +
+          `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`,
+      );
+    }
+
+    this.rejectWorktreeBareOverlap(a, b);
+    this.rejectWorktreeBareOverlap(b, a);
+
+    if (isPathStrictlyInside(a.worktreeDir, b.worktreeDir)) {
+      this.warnOnNestedWorktreeDirs(a, b);
+    } else if (isPathStrictlyInside(b.worktreeDir, a.worktreeDir)) {
+      this.warnOnNestedWorktreeDirs(b, a);
+    }
+  }
+
+  // `worktreeOwner`'s worktreeDir must not sit at or under `bareOwner`'s bare
+  // repo (worktrees would land inside git's object store), and `bareOwner`'s
+  // bare repo must not sit at or under `worktreeOwner`'s worktreeDir (the
+  // sync would treat it as a stale checkout directory).
+  private rejectWorktreeBareOverlap(worktreeOwner: RepositoryConfig, bareOwner: RepositoryConfig): void {
+    if (!bareOwner.bareRepoDir) return;
+    if (
+      isPathEqualOrInside(worktreeOwner.worktreeDir, bareOwner.bareRepoDir) ||
+      isPathEqualOrInside(bareOwner.bareRepoDir, worktreeOwner.worktreeDir)
+    ) {
+      throw new ConfigValidationError(
+        `Repositories '${worktreeOwner.name}' and '${bareOwner.name}' worktreeDir/bareRepoDir`,
+        `must not overlap ('${worktreeOwner.name}' worktreeDir: ${path.resolve(worktreeOwner.worktreeDir)}, ` +
+          `'${bareOwner.name}' bareRepoDir: ${path.resolve(bareOwner.bareRepoDir)})`,
+      );
+    }
+  }
+
+  private warnOnNestedWorktreeDirs(inner: RepositoryConfig, outer: RepositoryConfig): void {
+    console.warn(
+      `[sync-worktrees] worktreeDir '${path.resolve(inner.worktreeDir)}' of repository '${inner.name}' is inside ` +
+        `worktreeDir '${path.resolve(outer.worktreeDir)}' of repository '${outer.name}'. ` +
+        `A remote branch of '${outer.name}' whose directory name matches would move '${inner.name}' to trash. ` +
+        `Give each repository its own worktreeDir.`,
+    );
   }
 
   private isValidGitUrl(url: string): boolean {
@@ -804,7 +857,7 @@ export class ConfigLoaderService {
       this.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry, configFile.repositories),
     );
 
-    this.detectBareRepoDirCollisions(repositories);
+    this.detectPathCollisions(repositories);
 
     if (overrides?.filter) {
       repositories = this.filterRepositories(repositories, overrides.filter);

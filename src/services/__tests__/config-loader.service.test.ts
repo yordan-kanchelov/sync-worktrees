@@ -4,8 +4,10 @@ import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
-import { ConfigError } from "../../errors";
+import { ConfigError, ConfigValidationError } from "../../errors";
 import { ConfigLoaderService } from "../config-loader.service";
+
+import type { RepositoryConfig } from "../../types";
 
 describe("ConfigLoaderService", () => {
   let configLoader: ConfigLoaderService;
@@ -2017,72 +2019,176 @@ describe("ConfigLoaderService", () => {
     });
   });
 
-  describe("detectBareRepoDirCollisions", () => {
+  describe("detectPathCollisions", () => {
+    const originalPlatform = process.platform;
+
+    function setPlatform(platform: NodeJS.Platform): void {
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    }
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    });
+
+    function makeEntry(name: string, overrides: Partial<RepositoryConfig> & { worktreeDir: string }): RepositoryConfig {
+      return {
+        name,
+        repoUrl: `https://github.com/x/${name}.git`,
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        mode: "worktree",
+        ...overrides,
+      };
+    }
+
+    it("throws naming both repos when two worktree-mode repos share a worktreeDir", () => {
+      const repos = [
+        makeEntry("first", { worktreeDir: "/w/shared", bareRepoDir: "/b/first" }),
+        makeEntry("second", { worktreeDir: "/w/shared", bareRepoDir: "/b/second" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'first' and 'second'.*same worktreeDir/);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(path.resolve("/w/shared"));
+    });
+
+    it("throws when a clone-mode and a worktree-mode repo share a worktreeDir", () => {
+      const repos = [
+        makeEntry("checkout", { worktreeDir: "/w/shared", mode: "clone" }),
+        makeEntry("trees", { worktreeDir: "/w/shared", bareRepoDir: "/b/trees" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'checkout' and 'trees'.*same worktreeDir/);
+    });
+
+    it.each([
+      ["equal", "/x", "/x"],
+      ["bareRepoDir inside worktreeDir", "/x", "/x/inner"],
+      ["worktreeDir inside bareRepoDir", "/x/inner", "/x"],
+    ])(
+      "throws when one repo's worktreeDir and another's bareRepoDir overlap (%s)",
+      (_label, worktreeDir, bareRepoDir) => {
+        const repos = [
+          makeEntry("trees", { worktreeDir, bareRepoDir: "/elsewhere/trees" }),
+          makeEntry("bare", { worktreeDir: "/elsewhere/bare-trees", bareRepoDir }),
+        ];
+        expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
+        expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'trees' and 'bare'.*must not overlap/);
+        // Order of entries must not matter.
+        expect(() => configLoader.detectPathCollisions([...repos].reverse())).toThrow(
+          /'trees' and 'bare'.*must not overlap/,
+        );
+      },
+    );
+
+    it("does not throw for distinct directories", () => {
+      const repos = [
+        makeEntry("a", { worktreeDir: "/w/a", bareRepoDir: "/b/a" }),
+        makeEntry("b", { worktreeDir: "/w/b", bareRepoDir: "/b/b" }),
+        makeEntry("c", { worktreeDir: "/w/c", mode: "clone" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
+    });
+
+    it("does not treat a sibling that shares a string prefix as overlapping or nested", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const repos = [
+        makeEntry("x", { worktreeDir: "/w/x", bareRepoDir: "/b/x" }),
+        makeEntry("xy", { worktreeDir: "/w/xy", bareRepoDir: "/w/x-bare" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("treats case-only differences as distinct directories on linux", () => {
+      setPlatform("linux");
+      const repos = [
+        makeEntry("a", { worktreeDir: "/Work/Trees", bareRepoDir: "/Bare/A" }),
+        makeEntry("b", { worktreeDir: "/work/trees", bareRepoDir: "/bare/a" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
+    });
+
+    it("treats case-only worktreeDir duplicates as a collision on darwin", () => {
+      setPlatform("darwin");
+      const repos = [
+        makeEntry("a", { worktreeDir: "/Work/Trees", bareRepoDir: "/bare/a" }),
+        makeEntry("b", { worktreeDir: "/work/trees", bareRepoDir: "/bare/b" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'a' and 'b'.*same worktreeDir/);
+    });
+
+    it("warns without throwing when one worktreeDir is nested inside another", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const repos = [
+        makeEntry("outer", { worktreeDir: "/w", bareRepoDir: "/b/outer" }),
+        makeEntry("inner", { worktreeDir: "/w/sub", bareRepoDir: "/b/inner" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = warn.mock.calls[0][0] as string;
+      expect(message).toContain("'inner'");
+      expect(message).toContain("'outer'");
+      expect(message).toMatch(/is inside worktreeDir/);
+      warn.mockRestore();
+    });
+
     it("throws when two repos resolve to same bareRepoDir", () => {
       const repos = [
-        {
-          name: "a",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/a",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/shared/.bare/x",
-        },
-        {
-          name: "b",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/b",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/shared/.bare/x",
-        },
+        makeEntry("a", { worktreeDir: "/w/a", bareRepoDir: "/shared/.bare/x" }),
+        makeEntry("b", { worktreeDir: "/w/b", bareRepoDir: "/shared/.bare/x" }),
       ];
-      expect(() => configLoader.detectBareRepoDirCollisions(repos)).toThrow(/same bareRepoDir/);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'a' and 'b'.*same bareRepoDir/);
     });
 
     it("does not throw when bareRepoDirs differ", () => {
       const repos = [
-        {
-          name: "a",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/a",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/a/.bare",
-        },
-        {
-          name: "b",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/b",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/b/.bare",
-        },
+        makeEntry("a", { worktreeDir: "/w/a", bareRepoDir: "/a/.bare" }),
+        makeEntry("b", { worktreeDir: "/w/b", bareRepoDir: "/b/.bare" }),
       ];
-      expect(() => configLoader.detectBareRepoDirCollisions(repos)).not.toThrow();
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
     });
 
-    it("detects collision across case-only differences on case-insensitive filesystems", () => {
-      if (process.platform !== "darwin") return;
+    it("detects bareRepoDir collision across case-only differences on darwin", () => {
+      setPlatform("darwin");
       const repos = [
-        {
-          name: "a",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/a",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/Users/Me/.bare/x",
-        },
-        {
-          name: "b",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/b",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/users/me/.bare/x",
-        },
+        makeEntry("a", { worktreeDir: "/w/a", bareRepoDir: "/Users/Me/.bare/x" }),
+        makeEntry("b", { worktreeDir: "/w/b", bareRepoDir: "/users/me/.bare/x" }),
       ];
-      expect(() => configLoader.detectBareRepoDirCollisions(repos)).toThrow(/same bareRepoDir/);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/same bareRepoDir/);
+    });
+  });
+
+  describe("buildRepositories path collisions", () => {
+    async function writeSharedWorktreeDirConfig(): Promise<string> {
+      const configPath = path.join(tempDir, "shared.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default {
+          repositories: [
+            { name: "first", repoUrl: "${TEST_URLS.github}", worktreeDir: "./shared", bareRepoDir: "./.bare/first" },
+            { name: "second", repoUrl: "${TEST_URLS.gitlab}", worktreeDir: "./shared", bareRepoDir: "./.bare/second" }
+          ]
+        };`,
+      );
+      return configPath;
+    }
+
+    it("rejects a config whose entries share a worktreeDir", async () => {
+      const configPath = await writeSharedWorktreeDirConfig();
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(ConfigValidationError);
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(
+        /'first' and 'second'.*same worktreeDir/,
+      );
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(path.join(tempDir, "shared"));
+    });
+
+    it("rejects the collision even when --filter would select only one of the entries", async () => {
+      const configPath = await writeSharedWorktreeDirConfig();
+      await expect(configLoader.buildRepositories(configPath, { filter: "first" })).rejects.toThrow(
+        /'first' and 'second'.*same worktreeDir/,
+      );
     });
   });
 });

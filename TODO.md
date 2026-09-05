@@ -76,7 +76,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T47** — Cross-process repo lock is keyed on XDG_STATE_HOME/HOME, so a daemon and a
   shell-launched run can hold different lock files for the same worktreeDir (clone mode then has no
   lock at all); lock also lives under ~/.cache
-- [ ] **T29** — No validation that two repositories share (or overlap) a worktreeDir: the second
+- [x] **T29** — No validation that two repositories share (or overlap) a worktreeDir: the second
   entry silently trashes the first entry's worktrees and adopts its default-branch checkout, while
   both report 'synced'
 
@@ -1565,7 +1565,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `WorktreeSyncService.forceClean` (226-232) calls `purgeAllUnlocked` with no snapshot of the
   previewed entry ids.
 
-### [ ] T29. No validation that two repositories share (or overlap) a worktreeDir: the second entry silently trashes the first entry's worktrees and adopts its default-branch checkout, while both report 'synced'
+### [x] T29. No validation that two repositories share (or overlap) a worktreeDir: the second entry silently trashes the first entry's worktrees and adopts its default-branch checkout, while both report 'synced'
 
 - **Category**: guardrail · **Subsystem**: config
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
