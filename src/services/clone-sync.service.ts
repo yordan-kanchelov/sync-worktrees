@@ -1,12 +1,11 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import simpleGit from "simple-git";
-
 import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../errors";
 import { fileExists } from "../utils/file-exists";
-import { sanitizeGitEnv } from "../utils/git-env";
+import { appendGitAuthHint } from "../utils/git-auth-error";
+import { createGitClient } from "../utils/git-client";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { normalizeRepoUrlForComparison, redactRepoUrl } from "../utils/git-url";
 import { getErrorMessage, isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
@@ -112,14 +111,11 @@ export class CloneSyncService {
     return this.config.skipLfs === true;
   }
 
+  // Progress and inactivity timeout only; createGitClient adds the env and the
+  // unsafe-env allowances every client needs.
   private buildGitOptions(blockMs: number): Partial<SimpleGitOptions> {
     const options: Partial<SimpleGitOptions> = {
       progress: makeGitProgressHandler(this.logger, (event) => this.emitProgress(event)),
-      // Every clone-mode client passes an explicit env (buildGitEnv), which
-      // trips simple-git's unsafe-env validation on variables plain env
-      // inheritance passes freely (GIT_ASKPASS, GIT_CONFIG_COUNT). The env is
-      // the trusted parent environment, so keep parity with inheritance.
-      unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true },
     };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
@@ -174,18 +170,15 @@ export class CloneSyncService {
   }
 
   private clientFor(dir: string, blockMs: number): SimpleGit {
-    return simpleGit(dir, this.buildGitOptions(blockMs)).env(this.buildGitEnv());
+    return createGitClient(dir, this.buildGitEnv(), this.buildGitOptions(blockMs));
   }
 
-  // Force a stable C locale so git's stderr is deterministic English. The
-  // missing-remote-ref and LFS error classification matches on those strings
-  // and would otherwise misfire under a non-English LANG/LC_ALL. simple-git's
-  // .env() REPLACES the child environment wholesale — it does NOT merge with
-  // process.env — so the full environment (PATH, HOME, SSH_AUTH_SOCK, proxy
-  // vars, ...) must be spread in explicitly or auth and non-default git
-  // installs break for every clone-mode subprocess.
+  // Per-client additions layered over the sanitized process environment by
+  // createGitClient. Force a stable C locale so git's stderr is deterministic
+  // English: the missing-remote-ref and LFS error classification matches on
+  // those strings and would otherwise misfire under a non-English LANG/LC_ALL.
   private buildGitEnv(opts: { forceLfsSkip?: boolean } = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...sanitizeGitEnv(process.env), LC_ALL: "C", LANG: "C" };
+    const env: NodeJS.ProcessEnv = { LC_ALL: "C", LANG: "C" };
     if (opts.forceLfsSkip || this.isLfsSkipEnabled()) {
       env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     }
@@ -247,8 +240,10 @@ export class CloneSyncService {
       if (isLfsError(message)) {
         this.logger.info(`⚠️  LFS error during fetch for '${this.repoName}'; retrying with LFS disabled.`);
         this.emitProgress({ phase: "fetch", message: `Retrying fetch for '${this.repoName}' with LFS disabled` });
-        const lfsSkipGit = simpleGit(worktreeDir, this.buildGitOptions(this.getFetchTimeoutMs())).env(
+        const lfsSkipGit = createGitClient(
+          worktreeDir,
           this.buildGitEnv({ forceLfsSkip: true }),
+          this.buildGitOptions(this.getFetchTimeoutMs()),
         );
         try {
           await lfsSkipGit.fetch(fetchArgs);
@@ -366,7 +361,7 @@ export class CloneSyncService {
     const git =
       repoArg === "origin"
         ? this.clientFor(worktreeDir, this.getFetchTimeoutMs())
-        : simpleGit(this.buildGitOptions(this.getFetchTimeoutMs())).env(this.buildGitEnv());
+        : createGitClient(undefined, this.buildGitEnv(), this.buildGitOptions(this.getFetchTimeoutMs()));
     const output = await git.raw(["ls-remote", "--heads", repoArg]);
     return this.parseLsRemoteHeads(output);
   }
@@ -639,13 +634,16 @@ export class CloneSyncService {
     this.logger.info(`Cloning '${redactRepoUrl(this.config.repoUrl)}' (${branch}) into '${worktreeDir}'...`);
     this.emitProgress({ phase: "clone", message: `Cloning '${this.repoName}' (${branch})` });
 
-    const cloneClient = simpleGit(this.buildGitOptions(this.getCloneTimeoutMs())).env(this.buildGitEnv());
+    const cloneClient = createGitClient(undefined, this.buildGitEnv(), this.buildGitOptions(this.getCloneTimeoutMs()));
 
     try {
       await cloneClient.clone(this.config.repoUrl, worktreeDir, this.buildCloneArgs(branch));
     } catch (error) {
       await this.maybeCleanupPartialClone(worktreeDir, cloneCreatedDir);
-      this.outcomeAccumulator?.recordFailed("repo", getErrorMessage(error), {
+      // The outcome is what the MCP `sync` result and the run summary show, so
+      // carry the credential hint there too (the thrown error gets it at the
+      // WorktreeSyncService funnel).
+      this.outcomeAccumulator?.recordFailed("repo", appendGitAuthHint(getErrorMessage(error)), {
         reason: "clone_failed",
         branch,
         path: worktreeDir,

@@ -50,6 +50,7 @@ describe("Integration Tests", () => {
       clone: vi.fn<any>().mockResolvedValue(undefined),
       addConfig: vi.fn<any>().mockResolvedValue(undefined),
       revparse: vi.fn<any>().mockResolvedValue("abc123def456"),
+      env: vi.fn<any>().mockReturnThis(),
     } as any;
 
     (simpleGit as unknown as Mock).mockReturnValue(mockGit);

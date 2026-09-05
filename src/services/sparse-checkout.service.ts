@@ -1,6 +1,6 @@
 import * as path from "path";
 
-import simpleGit from "simple-git";
+import { createGitClient } from "../utils/git-client";
 
 import { Logger } from "./logger.service";
 
@@ -23,7 +23,7 @@ export class SparseCheckoutService {
 
   constructor(logger?: Logger, gitFactory?: GitFactory) {
     this.logger = logger ?? Logger.createDefault();
-    this.gitFactory = gitFactory ?? ((p: string): SimpleGit => simpleGit(p));
+    this.gitFactory = gitFactory ?? ((p: string): SimpleGit => createGitClient(p));
   }
 
   updateLogger(logger: Logger): void {

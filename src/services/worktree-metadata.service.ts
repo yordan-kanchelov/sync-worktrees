@@ -1,10 +1,9 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import simpleGit from "simple-git";
-
 import { GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 import { atomicWriteFile } from "../utils/atomic-write";
+import { createGitClient } from "../utils/git-client";
 
 import { Logger } from "./logger.service";
 
@@ -161,7 +160,7 @@ export class WorktreeMetadataService {
       this.logger.info(`  Attempting to create initial metadata...`);
 
       try {
-        const worktreeGit = simpleGit(worktreePath);
+        const worktreeGit = createGitClient(worktreePath);
         const currentCommit = await worktreeGit.revparse(["HEAD"]);
 
         const branchSummary = await worktreeGit.branch();

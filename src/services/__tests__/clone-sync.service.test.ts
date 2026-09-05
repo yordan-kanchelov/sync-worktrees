@@ -175,6 +175,29 @@ describe("CloneSyncService", () => {
       });
     });
 
+    // The recorded outcome is what the MCP `sync` result and the run summary
+    // show, so a clone that git could not authenticate carries the remedy
+    // hint there, not only on the rejection.
+    it("records a clone-time authentication failure with the credential hint", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+      const authError = new Error(
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+      );
+      gitMock.clone.mockRejectedValueOnce(authError);
+
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.initialize(outcome)).rejects.toBe(authError);
+
+      const failed = outcome.toOutcome().actions.find((action) => action.kind === "failed");
+      expect(failed).toMatchObject({ reason: "clone_failed" });
+      expect(JSON.stringify(failed)).toMatch(/terminal prompts disabled\\nHint: .*credential helper/);
+    });
+
     it("passes --depth for configured shallow clone depth", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
       (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);

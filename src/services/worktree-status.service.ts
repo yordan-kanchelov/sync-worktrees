@@ -1,18 +1,16 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import simpleGit from "simple-git";
-
 import { ENV_CONSTANTS, GIT_CONSTANTS, GIT_OPERATIONS, PATH_CONSTANTS } from "../constants";
 import { GitOperationError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
-import { sanitizeGitEnv } from "../utils/git-env";
+import { createGitClient } from "../utils/git-client";
 import { getErrorMessage } from "../utils/lfs-error";
 
 import { Logger } from "./logger.service";
 
 import type { LastKnownRemoteTip } from "../types/sync-metadata";
-import type { SimpleGit, SimpleGitOptions } from "simple-git";
+import type { SimpleGit } from "simple-git";
 
 export interface WorktreeStatusDetails {
   modifiedFiles: number;
@@ -58,15 +56,6 @@ const OPERATION_FILES: ReadonlyArray<{ file: string; type: string }> = [
   { file: GIT_OPERATIONS.REBASE_MERGE, type: "rebase" },
   { file: GIT_OPERATIONS.REBASE_APPLY, type: "rebase (apply)" },
 ];
-
-// Same allowances as GitService.buildSimpleGitOptions: a client that passes an
-// explicit env (the sanitizeGitEnv spread below) trips simple-git's unsafe-env
-// validation on variables a default client inherits freely (a VS Code
-// GIT_ASKPASS bridge, CI GIT_CONFIG_COUNT). The env is the trusted parent
-// environment, not untrusted input.
-const LFS_SKIP_GIT_OPTIONS: Partial<SimpleGitOptions> = {
-  unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true },
-};
 
 interface WorktreeSnapshot {
   exists: boolean;
@@ -624,17 +613,11 @@ export class WorktreeStatusService {
     const key = `${path.resolve(worktreePath)}::${this.config.skipLfs ? "1" : "0"}`;
     let git = this.gitInstances.get(key);
     if (!git) {
-      // .env() replaces the child environment wholesale, so the LFS-skip
-      // client must carry the (sanitized) process env with it: without HOME /
+      // createGitClient carries the (sanitized) process env: without HOME /
       // XDG_CONFIG_HOME git ignores the global excludes file and every
       // globally-ignored file reads as an untracked change, and without PATH
       // the spawn itself can fail.
-      git = this.config.skipLfs
-        ? simpleGit(worktreePath, LFS_SKIP_GIT_OPTIONS).env({
-            ...sanitizeGitEnv(process.env),
-            [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1",
-          })
-        : simpleGit(worktreePath);
+      git = createGitClient(worktreePath, this.config.skipLfs ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {});
       this.gitInstances.set(key, git);
     }
     return git;

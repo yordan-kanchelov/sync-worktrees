@@ -14,6 +14,7 @@ vi.mock("simple-git", () => {
     default: vi.fn((basePath?: string) => ({
       remote: (...args: unknown[]) => (mockRemoteUrl as any)(...args),
       raw: (...args: unknown[]) => (mockWorktreeList as any)(basePath, ...args),
+      env: vi.fn<any>().mockReturnThis(),
     })),
   };
 });

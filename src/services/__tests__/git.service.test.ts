@@ -16,6 +16,7 @@ import {
 } from "../../__tests__/test-utils";
 import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { ConfigError, WorktreeNotCleanError } from "../../errors";
+import { GIT_UNSAFE_ALLOWANCES } from "../../utils/git-env";
 import { GitService } from "../git.service";
 
 import type { Config } from "../../types";
@@ -325,6 +326,44 @@ describe("GitService", () => {
       // Fetch is always called to ensure remote refs are up-to-date
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(git).toBe(mockGit);
+    });
+
+    // Every client built through getCachedGit runs git non-interactively: the
+    // env carries GIT_TERMINAL_PROMPT=0 (a credential prompt fails at once
+    // instead of blocking the TUI until the inactivity timeout) and the
+    // options carry the centralized unsafe-env allowances a forwarded shell
+    // environment needs. GIT_TERMINAL_PROMPT is removed from process.env first
+    // so only the sanitizer can be the source of the value.
+    it("builds the default (non-LFS) client with the non-interactive env and the unsafe-env allowances", async () => {
+      const previousPrompt = process.env.GIT_TERMINAL_PROMPT;
+      setEnvVar("GIT_TERMINAL_PROMPT", undefined);
+      try {
+        (fs.access as Mock<any>).mockResolvedValue(undefined);
+        (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+        mockGit.raw
+          .mockResolvedValueOnce(TEST_URLS.github as any)
+          .mockRejectedValueOnce(new Error("config not found"))
+          .mockResolvedValueOnce(
+            createWorktreeListOutput([
+              { path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" },
+            ]) as any,
+          );
+
+        await gitService.initialize();
+
+        expect(simpleGit).toHaveBeenCalledWith(
+          ".bare/repo",
+          expect.objectContaining({ unsafe: GIT_UNSAFE_ALLOWANCES }),
+        );
+        const envs = (mockGit.env as Mock).mock.calls.map((call) => call[0] as NodeJS.ProcessEnv);
+        expect(envs.length).toBeGreaterThan(0);
+        for (const env of envs) {
+          expect(env).toMatchObject({ PATH: process.env.PATH, GIT_TERMINAL_PROMPT: "0" });
+          expect(env).not.toHaveProperty(ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE);
+        }
+      } finally {
+        setEnvVar("GIT_TERMINAL_PROMPT", previousPrompt);
+      }
     });
 
     it("should clone as bare repository when it doesn't exist", async () => {
@@ -923,6 +962,7 @@ describe("GitService", () => {
       const worktreeGitMock = {
         branch: vi.fn<any>().mockResolvedValue(undefined),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       };
 
       // Store original implementation
@@ -1217,6 +1257,7 @@ describe("GitService", () => {
         branch: vi.fn<any>().mockResolvedValue(undefined),
         raw: vi.fn<any>().mockResolvedValue(""),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       });
 
       it("should add worktree without upstream when local exists but remote does not (push:false flow)", async () => {
@@ -1288,6 +1329,7 @@ describe("GitService", () => {
           branch: vi.fn<any>().mockRejectedValue(new Error("fatal: branch 'feature-1' does not point to a commit")),
           raw: vi.fn<any>().mockResolvedValue(""),
           revparse: vi.fn<any>().mockResolvedValue("abc123"),
+          env: vi.fn<any>().mockReturnThis(),
         };
         (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
           p && p.includes("feature-1") ? worktreeGitMock : mockGit,
@@ -1309,6 +1351,7 @@ describe("GitService", () => {
           branch: vi.fn<any>().mockRejectedValue(new Error("upstream-set-failure")),
           raw: vi.fn<any>().mockResolvedValue(""),
           revparse: vi.fn<any>().mockResolvedValue("abc123"),
+          env: vi.fn<any>().mockReturnThis(),
         };
         (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
           p && p.includes("feature-1") ? worktreeGitMock : mockGit,
@@ -1342,6 +1385,7 @@ describe("GitService", () => {
           branch: vi.fn<any>().mockRejectedValue(new Error("fatal: no such remote ref refs/remotes/origin/feature-1")),
           raw: vi.fn<any>().mockResolvedValue(""),
           revparse: vi.fn<any>().mockResolvedValue("abc123"),
+          env: vi.fn<any>().mockReturnThis(),
         };
         (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
           p && p.includes("feature-1") ? worktreeGitMock : mockGit,
@@ -1449,6 +1493,7 @@ describe("GitService", () => {
       const worktreeGitMock = {
         raw: vi.fn<any>().mockResolvedValue(lfsFiles),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       };
 
       (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
@@ -1485,6 +1530,7 @@ describe("GitService", () => {
       const worktreeGitMock = {
         raw: vi.fn<any>().mockResolvedValue("file1.png\nfile2.png\nfile3.png\nfile4.png\nfile5.png\nfile6.png\n"),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       };
 
       (simpleGit as unknown as Mock).mockImplementation((gitPath?: any) => {
@@ -1546,6 +1592,7 @@ describe("GitService", () => {
       const worktreeGitMock = {
         raw: vi.fn<any>().mockResolvedValue(lfsFiles),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       };
 
       (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
@@ -1584,6 +1631,7 @@ describe("GitService", () => {
       const worktreeGitMock = {
         raw: vi.fn<any>().mockResolvedValue(lfsFiles),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       };
 
       (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
@@ -1616,6 +1664,7 @@ describe("GitService", () => {
       const worktreeGitMock = {
         raw: vi.fn<any>().mockResolvedValue(""),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       };
 
       (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
@@ -1651,7 +1700,11 @@ describe("GitService", () => {
 
       await gitService.fetchAll();
 
-      expect(mockGit.env).not.toHaveBeenCalled();
+      // Every client carries the sanitized process env; none of them may
+      // carry the LFS skip.
+      const envs = (mockGit.env as Mock).mock.calls.map((call) => call[0] as NodeJS.ProcessEnv);
+      expect(envs.length).toBeGreaterThan(0);
+      expect(envs.every((env) => env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] === undefined)).toBe(true);
     });
 
     it("should be togglable at runtime", async () => {
@@ -1664,7 +1717,8 @@ describe("GitService", () => {
 
       gitService.setLfsSkipEnabled(false);
       await gitService.fetchAll();
-      expect(mockGit.env).not.toHaveBeenCalled();
+      const envs = (mockGit.env as Mock).mock.calls.map((call) => call[0] as NodeJS.ProcessEnv);
+      expect(envs.every((env) => env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] === undefined)).toBe(true);
     });
   });
 
@@ -1851,6 +1905,7 @@ describe("GitService", () => {
           .fn<any>()
           .mockResolvedValueOnce("2\n") // 2 commits not on any remote
           .mockResolvedValueOnce("5\n"), // commits since last sync (short-circuited, should not be called)
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -1890,6 +1945,7 @@ describe("GitService", () => {
           current: "feature-deleted",
         }),
         raw: vi.fn<any>().mockResolvedValue("0\n"), // 0 commits after last sync
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -2047,6 +2103,7 @@ prunable
         }),
         merge: vi.fn<any>().mockResolvedValue(undefined),
         revparse: vi.fn<any>().mockResolvedValue("newcommit123\n"),
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -2092,6 +2149,7 @@ prunable
       const mockWorktreeGit = {
         raw: vi.fn<any>().mockResolvedValue("abc123\n"),
         revparse: vi.fn<any>().mockResolvedValue("abc123\n"),
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -2106,6 +2164,7 @@ prunable
       const mockWorktreeGit = {
         raw: vi.fn<any>().mockResolvedValue("abc123\n"),
         revparse: vi.fn<any>().mockResolvedValue("def456\n"),
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -2118,6 +2177,7 @@ prunable
       const mockWorktreeGit = {
         raw: vi.fn<any>().mockResolvedValue("abc123\n"),
         revparse: vi.fn<any>().mockResolvedValue("xyz789\n"),
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -2130,6 +2190,7 @@ prunable
       const mockWorktreeGit = {
         raw: vi.fn<any>().mockResolvedValue("commonancestor\n"),
         revparse: vi.fn<any>().mockResolvedValue("remotecommit\n"),
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -2142,6 +2203,7 @@ prunable
       const mockWorktreeGit = {
         raw: vi.fn<any>().mockRejectedValue(new Error("fatal: Not a valid object name")),
         revparse: vi.fn<any>().mockResolvedValue("abc123\n"),
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -2154,6 +2216,7 @@ prunable
       const mockWorktreeGit = {
         raw: vi.fn<any>().mockResolvedValue("abc123\n"),
         revparse: vi.fn<any>().mockRejectedValue(new Error("fatal: Not a valid object name")),
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
@@ -2187,7 +2250,7 @@ prunable
         return "";
       });
 
-      return { revparse, raw };
+      return { revparse, raw, env: vi.fn<any>().mockReturnThis() };
     }
 
     it("returns up_to_date when HEAD equals origin tip", async () => {
@@ -2285,6 +2348,7 @@ prunable
       const client = {
         revparse: vi.fn<any>().mockRejectedValue(new Error("bad ref")),
         raw: vi.fn<any>(),
+        env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(client);
 
@@ -2405,6 +2469,7 @@ prunable
           return Promise.resolve("");
         }),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       };
       worktreeGitMock.env = vi.fn(() => worktreeGitMock);
 
@@ -2452,6 +2517,7 @@ prunable
           return Promise.resolve("");
         }),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       };
       worktreeGitMock.env = vi.fn(() => worktreeGitMock);
 
@@ -2497,6 +2563,7 @@ prunable
           branch: vi.fn<any>().mockResolvedValue(undefined),
           raw: vi.fn<any>().mockResolvedValue(""),
           revparse: vi.fn<any>().mockResolvedValue("abc123"),
+          env: vi.fn<any>().mockReturnThis(),
         };
         client.env = vi.fn((env: NodeJS.ProcessEnv) => {
           envClients.push({ options, env });
@@ -2514,9 +2581,7 @@ prunable
       const lfsClient = envClients.find(({ env }) => env[ENV_CONSTANTS.GIT_ATTR_SOURCE] === "HEAD");
       expect(lfsClient).toBeDefined();
       expect(lfsClient!.env).toMatchObject({ PATH: process.env.PATH });
-      expect(lfsClient!.options).toEqual(
-        expect.objectContaining({ unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true } }),
-      );
+      expect(lfsClient!.options).toEqual(expect.objectContaining({ unsafe: GIT_UNSAFE_ALLOWANCES }));
     });
 
     it("does not pass --no-checkout when sparseCheckout is unset", async () => {
@@ -2545,6 +2610,7 @@ prunable
           .mockImplementationOnce(() => Promise.reject(new Error("sparse-checkout init blew up")))
           .mockResolvedValue(""),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
       };
 
       (simpleGit as unknown as Mock).mockImplementation((p?: any) =>

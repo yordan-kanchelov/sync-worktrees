@@ -70,7 +70,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T21** — initialize() creates the default-branch worktree with a raw `worktree add` and
   treats git's 'already exists' as success; a pre-existing unregistered directory leaves the service
   pointed at a non-repository and every later sync fails at fetch
-- [ ] **T49** — Git subprocesses never set GIT_TERMINAL_PROMPT=0 (or SSH BatchMode): in the TUI a
+- [x] **T49** — Git subprocesses never set GIT_TERMINAL_PROMPT=0 (or SSH BatchMode): in the TUI a
   credential prompt is written into the alternate screen and the fetch blocks until the 300 s
   inactivity timeout instead of failing immediately with an actionable message
 - [ ] **T47** — Cross-process repo lock is keyed on XDG_STATE_HOME/HOME, so a daemon and a
@@ -2342,7 +2342,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   are fire-and-forget, so the daemon would spawn user commands unattended) or narrow the README to
   TUI-created branches.
 
-### [ ] T49. Git subprocesses never set GIT_TERMINAL_PROMPT=0 (or SSH BatchMode): in the TUI a credential prompt is written into the alternate screen and the fetch blocks until the 300 s inactivity timeout instead of failing immediately with an actionable message
+### [x] T49. Git subprocesses never set GIT_TERMINAL_PROMPT=0 (or SSH BatchMode): in the TUI a credential prompt is written into the alternate screen and the fetch blocks until the 300 s inactivity timeout instead of failing immediately with an actionable message
 
 - **Category**: workflow · **Subsystem**: process
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

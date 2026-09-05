@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeNotCleanError } from "../../errors";
 import { setEnvVar } from "../../__tests__/test-utils";
+import { GIT_UNSAFE_ALLOWANCES } from "../../utils/git-env";
 import { WorktreeStatusService } from "../worktree-status.service";
 
 import type { SimpleGit } from "simple-git";
@@ -54,7 +55,10 @@ describe("WorktreeStatusService", () => {
       const result = await service.checkWorktreeStatus("/test/worktree");
 
       expect(result).toBe(true);
-      expect(simpleGit).toHaveBeenCalledWith("/test/worktree");
+      expect(simpleGit).toHaveBeenCalledWith(
+        "/test/worktree",
+        expect.objectContaining({ unsafe: GIT_UNSAFE_ALLOWANCES }),
+      );
     });
 
     // This gate only decides whether to fast-forward, which never touches a
@@ -1003,15 +1007,20 @@ describe("WorktreeStatusService", () => {
 
       expect(simpleGit).toHaveBeenCalledWith(
         "/test/worktree",
-        expect.objectContaining({ unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true } }),
+        expect.objectContaining({ unsafe: GIT_UNSAFE_ALLOWANCES }),
       );
     });
 
-    it("leaves the default client alone when skipLfs is off", async () => {
+    it("runs the default client non-interactively without the LFS skip when skipLfs is off", async () => {
       await service.checkWorktreeStatus("/test/worktree");
 
-      expect(simpleGit).toHaveBeenCalledWith("/test/worktree");
-      expect(mockGit.env).not.toHaveBeenCalled();
+      expect(simpleGit).toHaveBeenCalledWith(
+        "/test/worktree",
+        expect.objectContaining({ unsafe: GIT_UNSAFE_ALLOWANCES }),
+      );
+      const env = (mockGit.env as Mock).mock.calls[0]?.[0] as NodeJS.ProcessEnv;
+      expect(env).toMatchObject({ PATH: process.env.PATH, GIT_TERMINAL_PROMPT: "0" });
+      expect(env).not.toHaveProperty("GIT_LFS_SKIP_SMUDGE");
     });
   });
 });

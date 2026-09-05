@@ -33,6 +33,7 @@ async function invoke<T>(
 vi.mock("simple-git", () => ({
   default: vi.fn(() => ({
     raw: vi.fn<any>().mockRejectedValue(new Error("no upstream")),
+    env: vi.fn<any>().mockReturnThis(),
   })),
 }));
 

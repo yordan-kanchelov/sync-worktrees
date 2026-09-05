@@ -5,6 +5,7 @@ import pLimit from "p-limit";
 
 import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, TrashOperationError } from "../errors";
+import { withGitAuthHint } from "../utils/git-auth-error";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
@@ -182,10 +183,17 @@ export class WorktreeSyncService {
 
   async initializeUnlocked(outcome?: SyncOutcomeAccumulator): Promise<void> {
     this.emitProgress({ phase: "initialize", message: "Initializing repository" });
-    if (this.cloneSyncService) {
-      await this.cloneSyncService.initialize(outcome);
-    } else {
-      await this.gitService.initialize();
+    try {
+      if (this.cloneSyncService) {
+        await this.cloneSyncService.initialize(outcome);
+      } else {
+        await this.gitService.initialize();
+      }
+    } catch (error) {
+      // Every consumer (run-once, cron, the TUI, the MCP server) reports the
+      // rejection's message, so a credential / ssh failure gets its remedy
+      // hint attached here, once, on the way out.
+      throw withGitAuthHint(error);
     }
     this.emitProgress({ phase: "initialize", message: "Repository initialized" });
   }
@@ -544,7 +552,10 @@ export class WorktreeSyncService {
             retryOptionsWithOutcomeReset,
           );
         }
-      } catch (error) {
+      } catch (rawError) {
+        // A credential / ssh failure carries its remedy hint from here on:
+        // the outcome, this log line and the rejection every consumer reports.
+        const error = withGitAuthHint(rawError);
         if (outcome.getCounts().failed === 0) {
           outcome.recordFailed("repo", getErrorMessage(error), { reason: "sync_failed" });
         }

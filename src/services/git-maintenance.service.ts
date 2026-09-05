@@ -1,11 +1,10 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import simpleGit from "simple-git";
-
 import { DEFAULT_CONFIG, MAINTENANCE_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { atomicWriteFile } from "../utils/atomic-write";
 import { parseDuration } from "../utils/date-filter";
+import { createGitClient } from "../utils/git-client";
 import { getErrorMessage } from "../utils/lfs-error";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 
@@ -48,7 +47,7 @@ export class GitMaintenanceService {
     private config: Config,
     private gitService: GitService,
     logger?: Logger,
-    gitFactory: GitFactory = (cwd) => simpleGit(cwd),
+    gitFactory: GitFactory = (cwd) => createGitClient(cwd),
   ) {
     this.logger = logger ?? Logger.createDefault();
     this.gitFactory = gitFactory;

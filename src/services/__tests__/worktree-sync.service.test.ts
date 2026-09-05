@@ -2169,6 +2169,61 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
     });
 
+    // A credential / ssh failure cannot be fixed by retrying: three attempts
+    // with backoff only delay the same failure. It is also the one failure a
+    // user cannot act on from git's message alone in a non-interactive run,
+    // so the rejection, the log line and the outcome carry the remedy hint.
+    it("does not retry a git credential failure and reports it with the credential-helper hint", async () => {
+      const authError = new Error(
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+      );
+      mockGitService.fetchAll.mockRejectedValue(authError);
+
+      await expect(retrySyncService.sync()).rejects.toThrow(
+        /terminal prompts disabled\nHint: .*GIT_TERMINAL_PROMPT=0.*credential helper/,
+      );
+
+      expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
+      expect(mockRetryLogger.error).toHaveBeenCalledWith(
+        "\n❌ Error during worktree synchronization after all retry attempts:",
+        expect.objectContaining({ message: expect.stringContaining("Hint:"), cause: authError }),
+      );
+      expect(retrySyncService.getLastOutcome()?.actions).toEqual([
+        expect.objectContaining({ kind: "failed", reason: "sync_failed", error: expect.stringContaining("Hint:") }),
+      ]);
+    });
+
+    it("does not retry an ssh key failure although git also reports 'Could not read from remote repository'", async () => {
+      mockGitService.fetchAll.mockRejectedValue(
+        new Error("git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n"),
+      );
+
+      await expect(retrySyncService.sync()).rejects.toThrow(/Permission denied \(publickey\)[\s\S]*Hint: .*ssh-agent/);
+
+      expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
+    });
+
+    it("attaches the hint to an authentication failure during initialize", async () => {
+      mockGitService.isInitialized.mockReturnValueOnce(false);
+      mockGitService.initialize.mockRejectedValueOnce(
+        new Error("Host key verification failed.\nfatal: Could not read from remote repository.\n"),
+      );
+
+      await expect(new WorktreeSyncService(retryConfig).initialize()).rejects.toThrow(
+        /Host key verification failed[\s\S]*Hint: .*known_hosts/,
+      );
+    });
+
+    it("leaves other failures without a hint", async () => {
+      const networkError = new Error(
+        "fatal: unable to access 'https://github.com/test/repo.git/': Could not resolve host",
+      );
+      mockGitService.fetchAll.mockRejectedValue(networkError);
+
+      await expect(retrySyncService.sync()).rejects.toBe(networkError);
+      expect(mockGitService.fetchAll).toHaveBeenCalledTimes(3);
+    });
+
     it("should retry indefinitely when configured", async () => {
       const unlimitedConfig: Config = {
         ...retryConfig,

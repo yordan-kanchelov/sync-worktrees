@@ -26,6 +26,7 @@ vi.mock("simple-git", () => {
     default: vi.fn(() => ({
       remote: mockRemoteUrl,
       raw: mockWorktreeList,
+      env: vi.fn<any>().mockReturnThis(),
     })),
   };
 });

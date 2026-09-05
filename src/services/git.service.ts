@@ -1,12 +1,10 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import simpleGit from "simple-git";
-
 import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
-import { sanitizeGitEnv } from "../utils/git-env";
+import { createGitClient } from "../utils/git-client";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir, normalizeRepoUrlForComparison, redactRepoUrl } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
@@ -82,22 +80,21 @@ export class GitService {
     const key = `${path.resolve(dirPath)}::${useLfsSkip ? "1" : "0"}`;
     let git = this.gitInstances.get(key);
     if (!git) {
-      const base = simpleGit(dirPath, this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
-      git = useLfsSkip ? base.env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : base;
+      git = createGitClient(
+        dirPath,
+        useLfsSkip ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {},
+        this.buildSimpleGitOptions(this.getFetchTimeoutMs()),
+      );
       this.gitInstances.set(key, git);
     }
     return git;
   }
 
+  // Progress and inactivity timeout only; createGitClient adds the env and the
+  // unsafe-env allowances every client needs.
   private buildSimpleGitOptions(blockMs: number): Partial<SimpleGitOptions> {
     const options: Partial<SimpleGitOptions> = {
       progress: makeGitProgressHandler(this.logger, (event) => this.progressEmitter?.(event)),
-      // Clients that pass an explicit env (sanitizeGitEnv spread) trip
-      // simple-git's unsafe-env validation on variables the default clients
-      // inherit freely (a VS Code GIT_ASKPASS bridge, CI GIT_CONFIG_COUNT).
-      // The env is the trusted parent environment, not untrusted input, so
-      // keep parity with plain inheritance.
-      unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true },
     };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
@@ -126,10 +123,11 @@ export class GitService {
       // Clone as bare repository
       this.logger.info(`Cloning from "${redactRepoUrl(repoUrl)}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
-      const cloneBase = simpleGit(this.buildSimpleGitOptions(this.getCloneTimeoutMs()));
-      const cloneGit = this.isLfsSkipEnabled()
-        ? cloneBase.env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
-        : cloneBase;
+      const cloneGit = createGitClient(
+        undefined,
+        this.isLfsSkipEnabled() ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {},
+        this.buildSimpleGitOptions(this.getCloneTimeoutMs()),
+      );
       await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare", "--progress"]);
       this.logger.info("✅ Clone successful.");
     }
@@ -285,7 +283,7 @@ export class GitService {
   }
 
   async getRemoteDefaultBranch(repoUrl: string): Promise<string> {
-    const git = simpleGit(this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
+    const git = createGitClient(undefined, {}, this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
 
     try {
       const out = await git.raw(["ls-remote", "--symref", repoUrl, "HEAD"]);
@@ -412,15 +410,12 @@ export class GitService {
   }
 
   private async verifyLfsFilesDownloaded(worktreePath: string, branchName: string): Promise<void> {
-    // An explicit env needs the same unsafe-env allowances as getCachedGit's
-    // clients (see buildSimpleGitOptions), or a GIT_ASKPASS / GIT_CONFIG_COUNT
-    // in the forwarded environment makes this client throw before `lfs
-    // ls-files` runs and the verification is silently skipped.
     const worktreeGit = this.config.sparseCheckout
-      ? simpleGit(worktreePath, this.buildSimpleGitOptions(this.getFetchTimeoutMs())).env({
-          ...sanitizeGitEnv(process.env),
-          [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD",
-        })
+      ? createGitClient(
+          worktreePath,
+          { [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" },
+          this.buildSimpleGitOptions(this.getFetchTimeoutMs()),
+        )
       : this.getCachedGit(worktreePath);
 
     try {

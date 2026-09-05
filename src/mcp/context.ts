@@ -2,12 +2,12 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import pLimit from "p-limit";
-import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
+import { createGitClient } from "../utils/git-client";
 import { redactRepoUrl } from "../utils/git-url";
 import { normalizePathForCompare } from "../utils/path-compare";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
@@ -503,7 +503,7 @@ export class RepositoryContext {
     let currentBranch: string | null = null;
 
     try {
-      const bareGit = simpleGit(bareRepoPath);
+      const bareGit = createGitClient(bareRepoPath);
 
       try {
         const remoteResult = await bareGit.remote(["get-url", "origin"]);
@@ -938,7 +938,7 @@ export class RepositoryContext {
     if (!(await isDirectory(bareRepoPath))) return { worktrees: [] };
 
     try {
-      const output = await simpleGit(bareRepoPath).raw(["worktree", "list", "--porcelain"]);
+      const output = await createGitClient(bareRepoPath).raw(["worktree", "list", "--porcelain"]);
       return { worktrees: parseWorktreeList(output, currentWorktreePath) };
     } catch (err) {
       return { worktrees: [], error: err instanceof Error ? err.message : String(err) };
@@ -1071,7 +1071,7 @@ async function hasGitMetadata(worktreePath: string): Promise<boolean> {
 async function isGitCheckout(checkoutPath: string): Promise<boolean> {
   if (!(await isDirectory(checkoutPath))) return false;
   try {
-    const inside = (await simpleGit(checkoutPath).raw(["rev-parse", "--is-inside-work-tree"])).trim();
+    const inside = (await createGitClient(checkoutPath).raw(["rev-parse", "--is-inside-work-tree"])).trim();
     return inside === "true";
   } catch {
     return false;
@@ -1079,7 +1079,7 @@ async function isGitCheckout(checkoutPath: string): Promise<boolean> {
 }
 
 async function readCurrentBranch(worktreePath: string): Promise<string> {
-  const git = simpleGit(worktreePath);
+  const git = createGitClient(worktreePath);
   const branch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
   if (branch && branch !== "HEAD") {
     return branch;
