@@ -87,10 +87,9 @@ describe("skipLfs status probes honour the global git excludes file", () => {
   // HOME is the temp home so git resolves ~/.config/git/ignore there;
   // XDG_CONFIG_HOME is removed so an inherited value cannot redirect that
   // lookup and GIT_CONFIG_GLOBAL so an inherited global config cannot point
-  // core.excludesFile elsewhere; XDG_STATE_HOME keeps the repo lock inside the
-  // temp dir too.
+  // core.excludesFile elsewhere.
   function runCli(): CliRun {
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: homeDir, XDG_STATE_HOME: path.join(tempDir, "state") };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: homeDir };
     delete env.XDG_CONFIG_HOME;
     delete env.GIT_CONFIG_GLOBAL;
     const result = spawnSync(process.execPath, [binPath, "--config", configPath, "--runOnce"], {

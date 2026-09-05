@@ -492,6 +492,14 @@ defaults: {
 - **`aggressive: true`** runs `git gc --prune=now`, pruning recently-unreachable objects immediately. Use it only for explicit reclamation; the default is the safe choice. The repository operation lock only serializes sync-worktrees' own operations — `--prune=now` can still race manual `git` work happening in the checkout outside the daemon, so avoid enabling it on repositories you also edit by hand concurrently.
 - A maintenance failure is logged as a warning and never fails the sync. The attempt is still timestamped, so a broken `gc` is throttled instead of retried every tick.
 
+### Locking
+
+Every sync runs under a cross-process repository lock, so a cron daemon, a `--runOnce` from a shell and the MCP server never operate on the same checkout at once. A run that finds the lock held is skipped with a warning; a run that cannot create or take the lock fails and names the path and errno.
+
+The lock file lives next to the checkout, in `<parent of worktreeDir>/.sync-worktrees-locks/<hash>.lock`, with `worktreeDir` resolved through symlinks first. Nothing in the environment feeds into that path: a daemon started by systemd, launchd or cron with a minimal environment, a shell whose dotfiles export `XDG_STATE_HOME`, and `sudo` with or without `-E` all contend for the same file as long as they point at the same `worktreeDir`. Worktree-mode repositories additionally lock the bare repository directory. Locks are never placed under `~/.cache` or inside `worktreeDir` itself.
+
+`SYNC_WORKTREES_LOCK_DIR` moves the lock files to another directory — for a checkout whose parent directory is read-only, for instance. It is an escape hatch, not a preference: give it the same absolute path in every process that syncs the same `worktreeDir`, otherwise those processes stop contending for one lock.
+
 ### Branch filtering
 
 Two filters can be combined:

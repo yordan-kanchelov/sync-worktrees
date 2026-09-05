@@ -25,7 +25,6 @@ describe("CLI refuses an existing bare repo whose origin is not the configured r
   let remoteB: string;
   let worktreeDir: string;
   let bareRepoDir: string;
-  let stateHome: string;
   let configPath: string;
 
   async function writeConfig(repoUrl: string): Promise<void> {
@@ -51,7 +50,6 @@ describe("CLI refuses an existing bare repo whose origin is not the configured r
     remoteB = path.join(tempDir, "new-org", "app.git");
     worktreeDir = path.join(tempDir, "worktrees");
     bareRepoDir = path.join(tempDir, ".bare", "app");
-    stateHome = path.join(tempDir, "state");
     configPath = path.join(tempDir, "sync-worktrees.config.js");
 
     await fs.mkdir(path.dirname(remoteA), { recursive: true });
@@ -92,7 +90,6 @@ describe("CLI refuses an existing bare repo whose origin is not the configured r
   function runCli(): CliRun {
     const result = spawnSync(process.execPath, [binPath, "--config", configPath, "--runOnce"], {
       encoding: "utf8",
-      env: { ...process.env, XDG_STATE_HOME: stateHome },
       timeout: 60_000,
       stdio: ["ignore", "pipe", "pipe"],
     });

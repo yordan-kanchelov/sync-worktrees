@@ -27,7 +27,6 @@ describe("CLI fails fast when the remote needs credentials git cannot obtain", (
   let home: string;
   let worktreeDir: string;
   let bareRepoDir: string;
-  let stateHome: string;
   let configPath: string;
   let server: http.Server;
   let remoteUrl: string;
@@ -38,7 +37,6 @@ describe("CLI fails fast when the remote needs credentials git cannot obtain", (
     home = path.join(tempDir, "home");
     worktreeDir = path.join(tempDir, "worktrees");
     bareRepoDir = path.join(tempDir, ".bare", "app");
-    stateHome = path.join(tempDir, "state");
     configPath = path.join(tempDir, "sync-worktrees.config.js");
     await fs.mkdir(home, { recursive: true });
 
@@ -87,7 +85,7 @@ describe("CLI fails fast when the remote needs credentials git cannot obtain", (
     delete env.GIT_ASKPASS;
     delete env.SSH_ASKPASS;
     delete env.GIT_CONFIG_GLOBAL;
-    Object.assign(env, { HOME: home, XDG_CONFIG_HOME: home, XDG_STATE_HOME: stateHome, GIT_CONFIG_NOSYSTEM: "1" });
+    Object.assign(env, { HOME: home, XDG_CONFIG_HOME: home, GIT_CONFIG_NOSYSTEM: "1" });
 
     return new Promise((resolve, reject) => {
       const started = Date.now();

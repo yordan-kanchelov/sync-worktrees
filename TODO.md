@@ -73,7 +73,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T49** — Git subprocesses never set GIT_TERMINAL_PROMPT=0 (or SSH BatchMode): in the TUI a
   credential prompt is written into the alternate screen and the fetch blocks until the 300 s
   inactivity timeout instead of failing immediately with an actionable message
-- [ ] **T47** — Cross-process repo lock is keyed on XDG_STATE_HOME/HOME, so a daemon and a
+- [x] **T47** — Cross-process repo lock is keyed on XDG_STATE_HOME/HOME, so a daemon and a
   shell-launched run can hold different lock files for the same worktreeDir (clone mode then has no
   lock at all); lock also lives under ~/.cache
 - [ ] **T29** — No validation that two repositories share (or overlap) a worktreeDir: the second
@@ -2252,7 +2252,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   counts; App.test.tsx does not measure frame height. The 5.2.0 changelog entry fixed scroll-offset
   clamping, not the height budget.
 
-### [ ] T47. Cross-process repo lock is keyed on XDG_STATE_HOME/HOME, so a daemon and a shell-launched run can hold different lock files for the same worktreeDir (clone mode then has no lock at all); lock also lives under ~/.cache
+### [x] T47. Cross-process repo lock is keyed on XDG_STATE_HOME/HOME, so a daemon and a shell-launched run can hold different lock files for the same worktreeDir (clone mode then has no lock at all); lock also lives under ~/.cache
 
 - **Category**: guardrail · **Subsystem**: process
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

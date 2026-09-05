@@ -132,7 +132,7 @@ export class RepoOperationLock {
     }
   }
 
-  // A lock this process cannot take (read-only FS, ENOSPC, EACCES, a state
+  // A lock this process cannot take (read-only FS, ENOSPC, EACCES, a lock
   // dir that is a file) must never crash the whole multi-repo run, but it is
   // not contention either: nothing was synced and no other process is
   // responsible. Name the path and errno here, where the cause is known, and
@@ -141,7 +141,7 @@ export class RepoOperationLock {
     const code = (error as NodeJS.ErrnoException).code;
     const message = getErrorMessage(error);
     this.logger.warn(
-      `Could not ${what} at '${lockPath}' (${code ?? "unknown"}: ${message}); the repository lock is unavailable.`,
+      `Could not ${what} at '${lockPath}' (${code ?? "unknown"}: ${message}); the repository lock is unavailable. Set SYNC_WORKTREES_LOCK_DIR to a writable directory, identically for every process syncing this worktreeDir.`,
     );
     return { acquired: false, reason: "lock_unavailable", path: lockPath, code, error: message };
   }

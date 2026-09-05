@@ -98,6 +98,9 @@ export const ENV_CONSTANTS = {
   GIT_ATTR_SOURCE: "GIT_ATTR_SOURCE",
   /** Set by src/__tests__/setup.ts to the vitest worker's pid; see src/utils/unit-test-shortcut.ts. */
   UNIT_TEST_SHORTCUT: "SYNC_WORKTREES_UNIT_TEST",
+  /** Escape hatch that moves the repo lock files out of `<parent of worktreeDir>/.sync-worktrees-locks`;
+   * must be set identically for every process sharing a worktreeDir. See src/utils/lock-path.ts. */
+  LOCK_DIR: "SYNC_WORKTREES_LOCK_DIR",
 } as const;
 
 export const PATH_CONSTANTS = {
@@ -108,6 +111,8 @@ export const PATH_CONSTANTS = {
    * copy lands — its presence marks a tool-created clone whose init was
    * interrupted and still owes the copy. */
   CLONE_INIT_PENDING_MARKER: ".sync-worktrees-clone-init.pending",
+  /** Directory next to (never inside) a worktreeDir that holds its cross-process lock file. */
+  LOCK_DIR_NAME: ".sync-worktrees-locks",
 } as const;
 
 export const CONFIG_FILE_NAMES = [

@@ -196,8 +196,9 @@ describe("RepoOperationLock", () => {
   });
 
   it("reports lock_unavailable, not locked, when the lock directory cannot be prepared", async () => {
-    // XDG_STATE_HOME pointing at a file, an unwritable ~/.cache: mkdir fails
-    // before any lock is attempted. Nothing holds the lock — say so.
+    // SYNC_WORKTREES_LOCK_DIR pointing at a file, an unwritable parent
+    // directory: mkdir fails before any lock is attempted. Nothing holds the
+    // lock — say so.
     const config = makeConfig({ mode: "clone", branch: "main", __configFileDir: "/tmp/config" });
     const target = getWorktreeDirLockTarget(config);
     (fs.mkdir as Mock).mockRejectedValue(errno("ENOTDIR", `ENOTDIR: not a directory, mkdir '${target.dir}'`));

@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ENV_CONSTANTS, MAINTENANCE_CONSTANTS, TRASH_CONSTANTS } from "../../constants";
 import { getWorktreeDirLockTarget } from "../../utils/lock-path";
-import { setEnvVar } from "../test-utils";
 
 interface CliRun {
   status: number | null;
@@ -28,7 +27,6 @@ describe("CLI safety features are independent of NODE_ENV", () => {
   let bareRepo: string;
   let worktreeDir: string;
   let bareRepoDir: string;
-  let stateHome: string;
   let configPath: string;
 
   beforeEach(async () => {
@@ -36,7 +34,6 @@ describe("CLI safety features are independent of NODE_ENV", () => {
     bareRepo = path.join(tempDir, "test-repo.git");
     worktreeDir = path.join(tempDir, "worktrees");
     bareRepoDir = path.join(tempDir, ".bare");
-    stateHome = path.join(tempDir, "state");
 
     await simpleGit().init(["--bare", bareRepo]);
     const initDir = path.join(tempDir, "init");
@@ -109,23 +106,17 @@ describe("CLI safety features are independent of NODE_ENV", () => {
     return containerPath;
   }
 
-  // getWorktreeDirLockTarget reads XDG_STATE_HOME from this process; point it at
-  // the child's state dir just long enough to derive the path the child used.
-  function expectedLockFile(): string {
-    const previous = process.env.XDG_STATE_HOME;
-    process.env.XDG_STATE_HOME = stateHome;
-    try {
-      const target = getWorktreeDirLockTarget({
-        repoUrl: `file://${bareRepo}`,
-        worktreeDir,
-        cronSchedule: "0 * * * *",
-        runOnce: true,
-      });
-      expect(target.dir).toBe(path.join(stateHome, "sync-worktrees", "locks"));
-      return path.join(target.dir, target.file);
-    } finally {
-      setEnvVar("XDG_STATE_HOME", previous);
-    }
+  // The lock lives next to the canonical worktreeDir whatever the child's
+  // environment says, so the path the child used can be derived right here.
+  async function expectedLockFile(): Promise<string> {
+    const target = getWorktreeDirLockTarget({
+      repoUrl: `file://${bareRepo}`,
+      worktreeDir,
+      cronSchedule: "0 * * * *",
+      runOnce: true,
+    });
+    expect(target.dir).toBe(path.join(await fs.realpath(tempDir), ".sync-worktrees-locks"));
+    return path.join(target.dir, target.file);
   }
 
   it.each([
@@ -135,7 +126,7 @@ describe("CLI safety features are independent of NODE_ENV", () => {
     "locks, reaps expired trash and runs gc under NODE_ENV=test with the unit-test shortcut $variant",
     async ({ inherit }) => {
       const containerPath = await seedExpiredTrashEntry();
-      const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "test", XDG_STATE_HOME: stateHome };
+      const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "test" };
       if (inherit) {
         expect(env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT]).toBe(String(process.pid));
       } else {
@@ -149,7 +140,7 @@ describe("CLI safety features are independent of NODE_ENV", () => {
       expect(run.stderr).not.toContain(ENV_CONSTANTS.UNIT_TEST_SHORTCUT);
 
       // Cross-process lock: the worktreeDir-keyed lock file is created on acquire.
-      const lockStats = await fs.stat(expectedLockFile());
+      const lockStats = await fs.stat(await expectedLockFile());
       expect(lockStats.isFile()).toBe(true);
 
       // Trash reaper: the pre-seeded expired entry is gone.
@@ -178,7 +169,7 @@ describe("CLI safety features are independent of NODE_ENV", () => {
 
     const result = spawnSync(process.execPath, [wrapper, "list", "--config", configPath], {
       encoding: "utf8",
-      env: { ...process.env, XDG_STATE_HOME: stateHome },
+      env: process.env,
       timeout: 60_000,
       stdio: ["ignore", "pipe", "pipe"],
     });
