@@ -203,7 +203,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "create_worktree",
     {
       description:
-        "Worktree-mode only; clone-mode repos error here. Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Returns: {success, branchName, worktreePath, created, pushed}.",
+        "Worktree-mode only; clone-mode repos error here. Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Never moves, trashes or deletes an existing directory: errors with code TARGET_EXISTS when the target path exists on disk but is not a registered worktree (clean it up manually or via sync). Returns: {success, branchName, worktreePath, created, pushed}.",
       inputSchema: z.object({
         branchName: z.string().describe("Branch name. Slashes/special chars sanitized for dir name."),
         baseBranch: z
@@ -231,7 +231,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "sync",
     {
       description:
-        "Repo-wide sync: fetch, create worktrees for new remote branches, remove pruned (clean only), fast-forward existing. Emits progress. In worktree mode: single worktree? Use update_worktree. Single create? Use create_worktree. Preconditions: config loaded + repo initialized (auto-runs). Returns: {success, duration, skips}.",
+        "Repo-wide sync: fetch, create worktrees for new remote branches, remove pruned (clean only), fast-forward existing. Emits progress. In worktree mode: single worktree? Use update_worktree. Single create? Use create_worktree. Preconditions: config loaded + repo initialized (auto-runs). Returns: {success, duration, failed, failures, outcome, skips}. success=false when any action failed (failed>0; details in failures) — the call itself still completes, so check success rather than isError.",
       inputSchema: z.object({
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),

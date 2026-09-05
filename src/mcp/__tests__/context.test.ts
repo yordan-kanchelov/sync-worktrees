@@ -1140,6 +1140,127 @@ describe("RepositoryContext.getService error messages", () => {
   });
 });
 
+describe("RepositoryContext.getBaseCapabilities", () => {
+  beforeEach(() => {
+    mockRemoteUrl.mockReset();
+    mockWorktreeList.mockReset();
+  });
+
+  it("returns null when no repository is selected or the name is unknown", () => {
+    const ctx = new RepositoryContext();
+    registerConfigured(ctx, "configured");
+
+    expect(ctx.getBaseCapabilities()).toBeNull();
+    expect(ctx.getBaseCapabilities("missing")).toBeNull();
+  });
+
+  it("allows every tool for a configured worktree-mode repository", () => {
+    const ctx = new RepositoryContext();
+    registerConfigured(ctx, "configured");
+
+    expect(ctx.getBaseCapabilities("configured")).toEqual({
+      listWorktrees: { available: true },
+      getStatus: { available: true },
+      createWorktree: { available: true },
+      updateWorktree: { available: true },
+      sync: { available: true },
+      initialize: { available: true },
+    });
+  });
+
+  it("blocks worktree mutations but allows sync for a configured clone-mode repository", () => {
+    const ctx = new RepositoryContext();
+    ctx.__registerForTest("clone", {
+      config: {
+        repoUrl: "https://example.com/clone.git",
+        worktreeDir: "/repos/clone",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+        mode: "clone",
+      },
+      source: "config" as const,
+    });
+
+    const caps = ctx.getBaseCapabilities("clone");
+    expect(caps?.createWorktree).toEqual({ available: false, reason: expect.stringContaining("clone-mode") });
+    expect(caps?.updateWorktree).toEqual({ available: false, reason: expect.stringContaining("clone-mode") });
+    expect(caps?.sync).toEqual({ available: true });
+    expect(caps?.initialize).toEqual({ available: true });
+  });
+
+  it("blocks sync and initialize for a detected repository that has no discovered context", () => {
+    const ctx = new RepositoryContext();
+    registerDetected(ctx, "detected");
+    expect(ctx.getDiscoveredContext("detected")).toBeNull();
+
+    const caps = ctx.getBaseCapabilities("detected");
+    expect(caps?.listWorktrees).toEqual({ available: true });
+    expect(caps?.getStatus).toEqual({ available: true });
+    expect(caps?.createWorktree).toEqual({ available: true });
+    expect(caps?.updateWorktree).toEqual({ available: true });
+    expect(caps?.sync).toEqual({
+      available: false,
+      reason: expect.stringContaining("no config file loaded (running in auto-detect mode)"),
+    });
+    expect(caps?.initialize).toEqual({ available: false, reason: expect.stringContaining("load_config") });
+  });
+
+  it("matches the discovered capabilities and survives cache invalidation", async () => {
+    const fixture = await makeWorktreeFixture();
+    try {
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+      mockWorktreeList.mockResolvedValue(
+        [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+      );
+
+      const ctx = new RepositoryContext();
+      const result = await ctx.detectFromPath(fixture.currentWorktree);
+      expect(result.kind).toBe("unmanaged");
+      expect(ctx.getBaseCapabilities()?.sync).toEqual(result.capabilities.sync);
+
+      ctx.invalidateDiscovered();
+
+      expect(ctx.getDiscoveredContext()).toBeNull();
+      expect(ctx.getBaseCapabilities()?.sync).toEqual(result.capabilities.sync);
+      expect(ctx.getBaseCapabilities()?.initialize).toEqual(result.capabilities.initialize);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("explains that the loaded config does not list a detected repository", async () => {
+    const fixture = await makeWorktreeFixture();
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-other-cfg-"));
+    try {
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "other", repoUrl: "https://github.com/test/other.git", bareRepoDir: "./.bare/other", worktreeDir: "./other", cronSchedule: "0 * * * *" }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+      mockWorktreeList.mockResolvedValue(
+        [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+      );
+
+      const ctx = new RepositoryContext();
+      await ctx.loadConfig(configPath);
+      const result = await ctx.detectFromPath(fixture.currentWorktree);
+
+      expect(result.kind).toBe("unmanaged");
+      expect(result.configPath).toBe(configPath);
+      expect(result.capabilities.sync.reason).toContain(`not listed in the loaded config ${configPath}`);
+      expect(result.capabilities.sync.reason).not.toContain("no config file loaded");
+      expect(result.capabilities.initialize).toEqual(result.capabilities.sync);
+      expect(result.repoName).not.toBeNull();
+      expect(ctx.getBaseCapabilities(result.repoName ?? undefined)?.sync).toEqual(result.capabilities.sync);
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+      await fixture.cleanup();
+    }
+  });
+});
+
 describe("RepositoryContext launchCwd", () => {
   it("defaults launchCwd to process.cwd()", () => {
     const ctx = new RepositoryContext();
@@ -1149,5 +1270,106 @@ describe("RepositoryContext launchCwd", () => {
   it("resolves explicit launchCwd to an absolute path", () => {
     const ctx = new RepositoryContext({ launchCwd: "/some/relative/../abs/path" });
     expect(ctx.getLaunchCwd()).toBe(path.resolve("/some/relative/../abs/path"));
+  });
+});
+
+describe("RepositoryContext repoUrl credential redaction", () => {
+  const TOKEN_URL = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+  const REDACTED_URL = "https://***@github.com/test/repo.git";
+  let fixture: Awaited<ReturnType<typeof makeWorktreeFixture>>;
+
+  beforeEach(async () => {
+    fixture = await makeWorktreeFixture();
+    mockRemoteUrl.mockReset();
+    mockWorktreeList.mockReset();
+  });
+
+  afterEach(async () => {
+    await fixture.cleanup();
+  });
+
+  it("redacts the origin URL read from git in the discovered context but keeps it for git operations", async () => {
+    mockRemoteUrl.mockResolvedValue(`${TOKEN_URL}\n`);
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    const result = await ctx.detectFromPath(fixture.currentWorktree);
+
+    expect(result.repoUrl).toBe(REDACTED_URL);
+    expect(JSON.stringify(result)).not.toContain("s3cr3t-token");
+    // Detection still recognises a usable remote.
+    expect(result.capabilities.createWorktree.available).toBe(true);
+    // The auto-detected entry that backs git operations keeps the working URL;
+    // only the presentation list is redacted.
+    expect(result.repoName).not.toBeNull();
+    expect(ctx.getEntry(result.repoName as string)?.config.repoUrl).toBe(TOKEN_URL);
+    expect(ctx.getRepositoryList()).toEqual([
+      expect.objectContaining({ name: result.repoName, repoUrl: REDACTED_URL }),
+    ]);
+  });
+
+  it("redacts configured repoUrls in sibling repositories, the repository list and detailed summaries", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    ctx.__registerForTest("token-repo", {
+      config: {
+        repoUrl: TOKEN_URL,
+        bareRepoDir: "/repos/token-repo/.bare",
+        worktreeDir: "/repos/token-repo/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+
+    const result = await ctx.detectFromPath(fixture.currentWorktree);
+
+    expect(result.siblingRepositories).toEqual([
+      expect.objectContaining({ name: "token-repo", repoUrl: REDACTED_URL, configMatched: true }),
+    ]);
+    expect(ctx.getRepositoryList()).toContainEqual(
+      expect.objectContaining({ name: "token-repo", repoUrl: REDACTED_URL }),
+    );
+    await expect(ctx.getConfiguredRepositorySummaries({ detailed: true })).resolves.toEqual([
+      expect.objectContaining({ name: "token-repo", mode: "worktree", repoUrl: REDACTED_URL }),
+    ]);
+    expect(JSON.stringify([result, ctx.getRepositoryList()])).not.toContain("s3cr3t-token");
+    expect(ctx.getEntry("token-repo")?.config.repoUrl).toBe(TOKEN_URL);
+  });
+
+  it("redacts the configured repoUrl of a clone-mode checkout", async () => {
+    const cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-token-"));
+    try {
+      await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
+      mockWorktreeList.mockResolvedValue("main\n");
+
+      const ctx = new RepositoryContext();
+      ctx.__registerForTest("clone-repo", {
+        config: {
+          repoUrl: TOKEN_URL,
+          worktreeDir: cloneDir,
+          mode: "clone",
+          cronSchedule: "0 * * * *",
+          runOnce: true,
+        },
+        source: "config" as const,
+      });
+
+      const result = await ctx.detectFromPath(cloneDir);
+
+      expect(result.kind).toBe("managed");
+      expect(result.repoName).toBe("clone-repo");
+      expect(result.repoUrl).toBe(REDACTED_URL);
+      expect(JSON.stringify(result)).not.toContain("s3cr3t-token");
+      expect(ctx.getEntry("clone-repo")?.config.repoUrl).toBe(TOKEN_URL);
+    } finally {
+      await fs.rm(cloneDir, { recursive: true, force: true });
+    }
   });
 });

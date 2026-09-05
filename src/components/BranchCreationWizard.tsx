@@ -18,11 +18,7 @@ export interface BranchCreationWizardProps {
   ) => Promise<{ success: boolean; finalName: string; error?: string }>;
   onClose: () => void;
   onComplete: (success: boolean) => void;
-  onBranchCreated?: (context: {
-    repoIndex: number;
-    baseBranch: string;
-    newBranch: string;
-  }) => void;
+  onBranchCreated?: (context: { repoIndex: number; baseBranch: string; newBranch: string }) => void;
 }
 
 const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
@@ -37,9 +33,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 }) => {
   const [step, setStep] = useState<WizardStep>(repositories.length > 1 ? "SELECT_PROJECT" : "SELECT_BRANCH");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
-  const [selectedRepoIndex, setSelectedRepoIndex] = useState(
-    repositories.length === 1 ? repositories[0].index : -1,
-  );
+  const [selectedRepoIndex, setSelectedRepoIndex] = useState(repositories.length === 1 ? repositories[0].index : -1);
   const [projectFilter, setProjectFilter] = useState("");
   const [branches, setBranches] = useState<string[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string>("");
@@ -139,7 +133,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   useEffect(() => {
     if (step === "SELECT_BRANCH" && !branchesLoadedRef.current && !loading && selectedRepoIndex >= 0) {
       branchesLoadedRef.current = true;
-      loadBranches(selectedRepoIndex);
+      void loadBranches(selectedRepoIndex);
     }
   }, [step, selectedRepoIndex, loading, loadBranches]);
 
@@ -225,7 +219,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
           setSelectedRepoIndex(selectedRepo.index);
           branchesLoadedRef.current = true;
           setIsFetching(false);
-          loadBranches(selectedRepo.index);
+          void loadBranches(selectedRepo.index);
           setStep("SELECT_BRANCH");
         }
       } else if (key.backspace || key.delete) {
@@ -320,7 +314,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
             <Text color="yellow">No matches</Text>
           ) : (
             <>
-              {startIdx > 0 && <Text dimColor>  ...</Text>}
+              {startIdx > 0 && <Text dimColor> ...</Text>}
               {visibleProjects.map((repo, idx) => {
                 const actualIdx = startIdx + idx;
                 const isSelected = actualIdx === selectedProjectIndex;
@@ -333,7 +327,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
                   </Box>
                 );
               })}
-              {endIdx < filteredProjects.length && <Text dimColor>  ...</Text>}
+              {endIdx < filteredProjects.length && <Text dimColor> ...</Text>}
             </>
           )}
         </Box>
@@ -376,7 +370,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
             <Text color="yellow">No matches</Text>
           ) : (
             <>
-              {startIdx > 0 && <Text dimColor>  ...</Text>}
+              {startIdx > 0 && <Text dimColor> ...</Text>}
               {visibleBranches.map((branch, idx) => {
                 const actualIdx = startIdx + idx;
                 const isSelected = actualIdx === selectedBranchIndex;
@@ -391,7 +385,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
                   </Box>
                 );
               })}
-              {endIdx < filteredBranches.length && <Text dimColor>  ...</Text>}
+              {endIdx < filteredBranches.length && <Text dimColor> ...</Text>}
             </>
           )}
         </Box>
@@ -415,9 +409,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
           <Text>{branchName}</Text>
           <Text color="gray">|</Text>
         </Box>
-        {validationError && (
-          <Text color="red">{validationError}</Text>
-        )}
+        {validationError && <Text color="red">{validationError}</Text>}
         {!validationError && endsWithSlash && (
           <Text color="yellow" dimColor>
             Hint: consecutive slashes (//) are not allowed

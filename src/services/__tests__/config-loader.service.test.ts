@@ -1,7 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
 import { ConfigError } from "../../errors";
@@ -114,6 +114,58 @@ describe("ConfigLoaderService", () => {
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Duplicate repository name: duplicate");
+    });
+
+    it("redacts credentials from the invalid repoUrl error", async () => {
+      const configPath = path.join(tempDir, "invalid-url.config.js");
+      const configContent = `
+        export default {
+          repositories: [
+            {
+              name: "bad-url",
+              repoUrl: "ftp://ci-bot:s3cr3t-token@example.com/repo.git",
+              worktreeDir: "/worktrees"
+            }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Repository 'bad-url' has invalid 'repoUrl': 'ftp://***@example.com/repo.git'",
+      );
+    });
+
+    it("redacts credentials from the duplicate repoUrl warning", async () => {
+      const configPath = path.join(tempDir, "duplicate-url.config.js");
+      const configContent = `
+        export default {
+          repositories: [
+            {
+              name: "first",
+              repoUrl: "https://ci-bot:s3cr3t-token@example.com/repo.git",
+              worktreeDir: "/worktrees1",
+              bareRepoDir: "/bare1"
+            },
+            {
+              name: "second",
+              repoUrl: "https://ci-bot:s3cr3t-token@example.com/repo.git",
+              worktreeDir: "/worktrees2",
+              bareRepoDir: "/bare2"
+            }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await configLoader.loadConfigFile(configPath);
+
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "repoUrl 'https://***@example.com/repo.git' appears in multiple entries (first, second)",
+        ),
+      );
+      expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain("s3cr3t-token");
     });
 
     it("should throw error for empty repositories array", async () => {

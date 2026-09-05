@@ -2,11 +2,12 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import App, { AppProps } from "../App";
+import type { AppProps } from "../App";
+import App from "../App";
 import { AppEventEmitter } from "../../utils/app-events";
 
 // Helper to wait for React state updates
-const waitForStateUpdate = () => new Promise(resolve => setTimeout(resolve, 100));
+const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 describe("App", () => {
   let defaultProps: AppProps;
@@ -21,7 +22,9 @@ describe("App", () => {
       onManualSync: vi.fn(),
       onReload: vi.fn(),
       onQuit: vi.fn().mockResolvedValue(undefined),
-      getRepositoryList: vi.fn().mockReturnValue([{ index: 0, name: "test-repo", repoUrl: "https://example.com/repo.git" }]),
+      getRepositoryList: vi
+        .fn()
+        .mockReturnValue([{ index: 0, name: "test-repo", repoUrl: "https://example.com/repo.git" }]),
       getBranchesForRepo: vi.fn().mockResolvedValue(["main", "develop"]),
       getDefaultBranchForRepo: vi.fn().mockReturnValue("main"),
       createAndPushBranch: vi.fn().mockResolvedValue({ success: true, finalName: "test-branch" }),
@@ -80,7 +83,6 @@ describe("App", () => {
 
       expect(lastFrame()).toContain("Running");
     });
-
   });
 
   describe("event subscriptions", () => {
@@ -204,7 +206,6 @@ describe("App", () => {
       // No error should occur - events are just silently ignored
     });
   });
-
 
   describe("updateLastSyncTime functionality", () => {
     it("should update last sync time and set status to idle", async () => {

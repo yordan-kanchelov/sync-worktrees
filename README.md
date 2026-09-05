@@ -127,7 +127,7 @@ Install the sync-worktrees MCP server with your client.
 }
 ```
 
-If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require a loaded config (or call `load_config` at runtime).
+If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require the repository to be listed in a loaded config (or call `load_config` at runtime); they stay unavailable for auto-detected repositories no matter which other tools have run.
 
 <details>
 <summary>Claude Code</summary>
@@ -265,7 +265,7 @@ Open `Settings` → `AI` → `Manage MCP Servers` → `+ Add` (see [Warp MCP doc
 | `get_worktree_status`    | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress).                                                                                                                                 |
 | `create_worktree`        | Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`.                                                                                  |
 | `update_worktree`        | Fast-forward one worktree to match upstream.                                                                                                                                                                                      |
-| `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications.                                                                                                                                  |
+| `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. `success` is false (with `failed`/`failures` listed) when any action failed, matching the CLI's exit code 1.                     |
 | `initialize`             | Clone the bare repo and create the main worktree. Requires config. Streams progress.                                                                                                                                              |
 | `load_config`            | Load or reload a config file at runtime.                                                                                                                                                                                          |
 | `set_current_repository` | Select the active repo when multiple are configured.                                                                                                                                                                              |
@@ -275,7 +275,7 @@ All tools that target a single repo accept an optional `repoName`. When omitted,
 ### Safety
 
 - The MCP surface exposes no removal or trash operations — an agent cannot delete a worktree or touch the trash through it. Removal happens via sync's own safety-gated pruning or manual git commands.
-- `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk.
+- `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk, and errors with code `TARGET_EXISTS` when its target directory already exists but is not a registered worktree — it never moves an existing directory to trash or deletes it (clean the path up manually or let `sync` reconcile it).
 - Branches created by sync-worktrees use `--no-track` first, then publish with `git push -u origin <branch>`, so they do not inherit `origin/main` as their upstream.
 - Path-targeted tools verify the supplied path is a registered worktree of the selected repository.
 
@@ -403,6 +403,7 @@ export default config;
 Notes:
 
 - `bareRepoDir` defaults to `.bare/<repo-name>` if not specified.
+- If the bare repository at `bareRepoDir` already exists, its `origin` must be `repoUrl` (compared ignoring `.git`, a trailing slash and scheme/host case); otherwise initialization fails naming both URLs. Run `git -C <bareRepoDir> remote set-url origin <repoUrl>` or point `bareRepoDir` at a fresh directory.
 - Repository-specific settings override `defaults`.
 
 ### Clone mode

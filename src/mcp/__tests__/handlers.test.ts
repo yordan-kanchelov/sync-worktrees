@@ -11,7 +11,9 @@ import {
   handleSync,
   handleUpdateWorktree,
 } from "../handlers";
+import { syncOutputSchema } from "../output-schemas";
 import { formatErrorResponse } from "../utils";
+import { PathResolutionService } from "../../services/path-resolution.service";
 
 import type { Capabilities, DiscoveredRepoContext, RepositoryContext } from "../context";
 import type { CallToolResult } from "@modelcontextprotocol/server";
@@ -33,6 +35,21 @@ vi.mock("simple-git", () => ({
     raw: vi.fn<any>().mockRejectedValue(new Error("no upstream")),
   })),
 }));
+
+function errno(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(code), { code });
+}
+
+// create_worktree probes its target path on disk (fs.access via probePathExists).
+// The fake /repo/worktrees tree never exists, so default to ENOENT and let the
+// target-path tests override it once per call.
+const fsMock = vi.hoisted(() => ({ access: vi.fn<any>() }));
+
+vi.mock("fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  fsMock.access.mockImplementation(() => Promise.reject(errno("ENOENT")));
+  return { ...actual, access: fsMock.access };
+});
 
 vi.mock("../../utils/disk-space", () => ({
   calculateDirectorySize: vi.fn().mockResolvedValue(123456),
@@ -114,6 +131,7 @@ type MockGit = {
 
 function makeCtx(opts: {
   discovered?: DiscoveredRepoContext | null;
+  baseCapabilities?: Capabilities | null;
   git?: Partial<MockGit>;
   syncInProgress?: boolean;
   loadConfigImpl?: (configPath: string) => Promise<unknown>;
@@ -173,6 +191,9 @@ function makeCtx(opts: {
   const ctx = {
     detectFromPath: vi.fn<any>().mockResolvedValue(opts.discovered ?? makeDiscovered()),
     getDiscoveredContext: vi.fn<any>().mockReturnValue(opts.discovered ?? makeDiscovered()),
+    getBaseCapabilities: vi
+      .fn<any>()
+      .mockReturnValue(opts.baseCapabilities === undefined ? makeCapabilities() : opts.baseCapabilities),
     getEntry: vi.fn<any>().mockReturnValue({
       name: opts.currentRepo ?? "test",
       service,
@@ -279,6 +300,7 @@ describe("handleListWorktrees", () => {
 
     const ctx = {
       getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getBaseCapabilities: vi.fn<any>().mockReturnValue(makeCapabilities()),
       getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
         makeDiscovered({
           repoName: String(repoName),
@@ -333,6 +355,7 @@ describe("handleListWorktrees", () => {
 
     const ctx = {
       getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getBaseCapabilities: vi.fn<any>().mockReturnValue(makeCapabilities()),
       getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
         makeDiscovered({
           repoName: String(repoName),
@@ -473,7 +496,7 @@ describe("handleCreateWorktree", () => {
     expect(body.code).toBe("SYNC_IN_PROGRESS");
   });
 
-  it("does not touch git when the repo operation lock is unavailable", async () => {
+  it("does not touch git when another process holds the repo operation lock", async () => {
     const { ctx, git, service } = makeCtx({
       git: {
         branchExists: vi.fn<any>(),
@@ -488,6 +511,34 @@ describe("handleCreateWorktree", () => {
 
     expect(body.code).toBe("SYNC_IN_PROGRESS");
     expect(git.branchExists).not.toHaveBeenCalled();
+    expect(git.createBranch).not.toHaveBeenCalled();
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("returns LOCK_UNAVAILABLE naming the path and errno when the repo lock cannot be taken", async () => {
+    const { ctx, git, service } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>(),
+        createBranch: vi.fn<any>(),
+        addWorktree: vi.fn<any>(),
+      },
+    });
+    service.runExclusiveRepoOperation.mockResolvedValueOnce({
+      started: false,
+      reason: "lock_unavailable",
+      path: "/state/sync-worktrees/locks",
+      code: "ENOTDIR",
+      error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "new-branch", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("LOCK_UNAVAILABLE");
+    expect(body.message).toContain("/state/sync-worktrees/locks");
+    expect(body.message).toContain("ENOTDIR");
+    expect(body.message).not.toMatch(/in progress/i);
     expect(git.createBranch).not.toHaveBeenCalled();
     expect(git.addWorktree).not.toHaveBeenCalled();
   });
@@ -637,11 +688,55 @@ describe("handleSync", () => {
     expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
   });
 
+  it("allows sync for a config-source entry whose discovery cache is empty", async () => {
+    const { ctx, service } = makeCtx({});
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(service.sync).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies sync from durable capabilities when the discovery cache is empty", async () => {
+    const { ctx, service } = makeCtx({
+      baseCapabilities: makeCapabilities({
+        sync: { available: false, reason: "repository is not listed in the loaded config" },
+      }),
+    });
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(body.message).toContain("not listed in the loaded config");
+    expect(ctx.getService).not.toHaveBeenCalled();
+    expect(service.sync).not.toHaveBeenCalled();
+  });
+
+  it("lets a durable denial win over a discovered context that reports sync as available", async () => {
+    const { ctx, service } = makeCtx({
+      discovered: makeDiscovered({ capabilities: makeCapabilities({ sync: { available: true } }) }),
+      baseCapabilities: makeCapabilities({ sync: { available: false, reason: "no config file loaded" } }),
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(body.message).toContain("no config file loaded");
+    expect(service.sync).not.toHaveBeenCalled();
+  });
+
   it("calls service.sync and returns duration", async () => {
     const { ctx, service } = makeCtx({});
     const result = await invoke(handleSync, ctx, {});
     const body = parseResponse(result);
     expect(body.success).toBe(true);
+    expect(body.failed).toBe(0);
+    expect(body.failures).toEqual([]);
     expect(typeof body.duration).toBe("number");
     expect(service.sync).toHaveBeenCalled();
     expect(body.outcome).toMatchObject({
@@ -652,6 +747,81 @@ describe("handleSync", () => {
     });
     expect(typeof body.outcome.durationMs).toBe("number");
     expect(body.skips).toEqual([]);
+    expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("reports success=false with the failed count and failures when the outcome recorded failures", async () => {
+    const { ctx, service } = makeCtx({});
+    const failure = {
+      kind: "failed",
+      scope: "worktree",
+      error: "EACCES: permission denied, rename '/repo/worktrees/b' -> '/repo/.trash/b'",
+      reason: "remove_failed",
+      branch: "b",
+      path: "/repo/worktrees/b",
+    };
+    // The runner collects per-worktree failures via Promise.allSettled and
+    // records them on the outcome instead of rejecting sync().
+    service.sync.mockResolvedValue({
+      started: true,
+      outcome: {
+        mode: "worktree",
+        started: true,
+        counts: { created: 1, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 1, noop: 0 },
+        actions: [{ kind: "created", branch: "a", path: "/repo/worktrees/a" }, failure],
+      },
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    // The call itself completed, so this is a structured result, not an error.
+    expect(result.isError).not.toBe(true);
+    expect(body.success).toBe(false);
+    expect(body.failed).toBe(1);
+    expect(body.failures).toEqual([failure]);
+    expect(body.outcome.counts.failed).toBe(1);
+    expect(body.outcome.actions).toHaveLength(2);
+    expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("reports success=false for a clone-mode outcome that recorded a repo-scoped failure", async () => {
+    const { ctx, service } = makeCtx({
+      service: { isCloneMode: vi.fn<any>().mockReturnValue(true) },
+    });
+    const failure = { kind: "failed", scope: "repo", error: "fetch failed", reason: "sync_failed" };
+    service.sync.mockResolvedValue({
+      started: true,
+      outcome: {
+        mode: "clone",
+        started: true,
+        counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 1, noop: 0 },
+        actions: [failure],
+      },
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(result.isError).not.toBe(true);
+    expect(body.success).toBe(false);
+    expect(body.failed).toBe(1);
+    expect(body.failures).toEqual([failure]);
+    expect(body.outcome.mode).toBe("clone");
+  });
+
+  it("treats a result without an outcome as a success with no failures", async () => {
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({ started: true });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.failed).toBe(0);
+    expect(body.failures).toEqual([]);
+    expect(body.outcome.counts.failed).toBe(0);
+    expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
   });
 
   it("invokes autoSelectCurrentRepoIfSingleConfig when repoName is omitted", async () => {
@@ -731,6 +901,34 @@ describe("handleSync", () => {
     expect(body.code).toBe("SYNC_IN_PROGRESS");
   });
 
+  it("keeps a contended lock as SYNC_IN_PROGRESS", async () => {
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({ started: false, reason: "locked" });
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+    expect(body.code).toBe("SYNC_IN_PROGRESS");
+  });
+
+  it("returns LOCK_UNAVAILABLE naming the path and errno when the repo lock cannot be taken", async () => {
+    // Not contention and not retryable: the sync never ran. The error must
+    // carry the cause rather than claim a sync is already in progress.
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({
+      started: false,
+      reason: "lock_unavailable",
+      path: "/state/sync-worktrees/locks",
+      code: "ENOTDIR",
+      error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+    });
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("LOCK_UNAVAILABLE");
+    expect(body.message).toContain("/state/sync-worktrees/locks");
+    expect(body.message).toContain("ENOTDIR");
+    expect(body.message).not.toMatch(/in progress/i);
+  });
+
   it("delegates initialization to service.sync when needed", async () => {
     const { ctx, service } = makeCtx({});
     service.isInitialized.mockReturnValue(false);
@@ -802,6 +1000,23 @@ describe("handleInitialize", () => {
 
     expect(body.defaultBranch).toBe("develop");
     expect(service.getDefaultBranch).toHaveBeenCalled();
+  });
+
+  it("denies initialize from durable capabilities when the discovery cache is empty", async () => {
+    const { ctx, service } = makeCtx({
+      baseCapabilities: makeCapabilities({
+        initialize: { available: false, reason: "no config file loaded (running in auto-detect mode)" },
+      }),
+    });
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+
+    const result = await invoke(handleInitialize, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(body.message).toContain("auto-detect mode");
+    expect(ctx.getService).not.toHaveBeenCalled();
+    expect(service.initializeUnlocked).not.toHaveBeenCalled();
   });
 
   it("sends progress notifications when service emits events", async () => {
@@ -1248,6 +1463,99 @@ describe("handleCreateWorktree collisions", () => {
   });
 });
 
+describe("handleCreateWorktree target path guard", () => {
+  // The same sanitized (hash-suffixed) path the handler derives for the branch.
+  const targetPath = new PathResolutionService().getBranchWorktreePath("/repo/worktrees", "feature/x");
+
+  it("refuses when the target path exists on disk but is not a registered worktree", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/worktrees/main", branch: "main" }]),
+      },
+    });
+    fsMock.access.mockResolvedValueOnce(undefined);
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("TARGET_EXISTS");
+    expect(body.message).toContain(targetPath);
+    expect(body.message).toContain("not a registered worktree");
+    expect(fsMock.access).toHaveBeenCalledWith(targetPath);
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("refuses before creating a new branch when the target path is occupied", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+      },
+    });
+    fsMock.access.mockResolvedValueOnce(undefined);
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("TARGET_EXISTS");
+    // Refusing after createBranch would leave an unpushed local branch behind
+    // that a retry (after cleanup) then checks out without ever pushing.
+    expect(git.createBranch).not.toHaveBeenCalled();
+    expect(git.addWorktree).not.toHaveBeenCalled();
+    expect(git.pushBranch).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the target path cannot be probed", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+      },
+    });
+    fsMock.access.mockRejectedValueOnce(errno("EACCES"));
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("Cannot verify");
+    expect(body.message).toContain(targetPath);
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("proceeds to addWorktree when nothing exists at the target path", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+      },
+    });
+    fsMock.access.mockRejectedValueOnce(errno("ENOENT"));
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(fsMock.access).toHaveBeenCalledWith(targetPath);
+    expect(git.addWorktree).toHaveBeenCalledWith("feature/x", targetPath);
+  });
+
+  it("skips the disk probe when the path is already registered for the same branch", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: targetPath, branch: "feature/x" }]),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(fsMock.access).not.toHaveBeenCalled();
+    expect(git.addWorktree).toHaveBeenCalledWith("feature/x", targetPath);
+  });
+});
+
 describe("handleListWorktrees includeSize", () => {
   it("returns sizeBytes when includeSize=true", async () => {
     const { ctx } = makeCtx({
@@ -1458,5 +1766,92 @@ describe("handleDetectContext includeStatus", () => {
       staleHint: false,
     });
     expect(body.allWorktreeErrorsByRepo).toEqual({ broken: "git worktree list failed" });
+  });
+});
+
+describe("credential redaction in tool responses", () => {
+  const TOKEN_URL = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+  const REDACTED_URL = "https://***@github.com/test/repo.git";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("detect_context never echoes credentials from repoUrl, siblings, configured repositories or git errors", async () => {
+    const { ctx } = makeCtx({
+      discovered: makeDiscovered({
+        repoUrl: TOKEN_URL,
+        siblingRepositories: [
+          {
+            name: "sib",
+            bareRepoPath: "/ws/sib/.bare",
+            worktreeDir: "/ws/sib/worktrees",
+            repoUrl: TOKEN_URL,
+            present: true,
+            configMatched: true,
+          },
+        ],
+        notes: [`Failed to read bare repo at /ws/.bare: fatal: unable to access '${TOKEN_URL}/': 403`],
+      }),
+      configuredRepositorySummaries: [
+        {
+          name: "frontend",
+          mode: "worktree",
+          worktreeDir: "/ws/frontend",
+          repoUrl: TOKEN_URL,
+          bareRepoDir: "/ws/.bare/frontend",
+          isCurrent: true,
+          localReady: true,
+        },
+      ],
+      allConfiguredWorktreeErrors: { frontend: `fatal: could not read from remote repository ${TOKEN_URL}` },
+    });
+
+    const result = await invoke(handleDetectContext, ctx, { detailed: true, includeAllWorktrees: true });
+    const body = parseResponse(result);
+
+    expect(body.repoUrl).toBe(REDACTED_URL);
+    expect(body.siblingRepositories[0].repoUrl).toBe(REDACTED_URL);
+    expect(body.configuredRepositories[0].repoUrl).toBe(REDACTED_URL);
+    expect(body.notes[0]).toBe(
+      `Failed to read bare repo at /ws/.bare: fatal: unable to access '${REDACTED_URL}/': 403`,
+    );
+    expect(body.allWorktreeErrorsByRepo.frontend).toBe(`fatal: could not read from remote repository ${REDACTED_URL}`);
+    expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
+  });
+
+  it("load_config never echoes credentials from the repository list", async () => {
+    const { ctx } = makeCtx({ configPath: "/ws/sync-worktrees.config.js" });
+    vi.mocked(ctx.getRepositoryList).mockReturnValue([
+      { name: "frontend", repoUrl: TOKEN_URL, worktreeDir: "/ws/frontend", source: "config" },
+    ]);
+
+    const result = await invoke(handleLoadConfig, ctx, { configPath: "/ws/sync-worktrees.config.js" });
+    const body = parseResponse(result);
+
+    expect(body.repositories).toEqual([
+      { name: "frontend", repoUrl: REDACTED_URL, worktreeDir: "/ws/frontend", source: "config" },
+    ]);
+    expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
+  });
+
+  it("sync turns a git error that quotes the remote URL into a redacted error response", async () => {
+    const { ctx } = makeCtx({
+      service: {
+        sync: vi
+          .fn<any>()
+          .mockRejectedValue(
+            new Error(`fatal: unable to access '${TOKEN_URL}/': The requested URL returned error: 403`),
+          ),
+      },
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("INTERNAL_ERROR");
+    expect(body.message).toBe(`fatal: unable to access '${REDACTED_URL}/': The requested URL returned error: 403`);
+    expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
   });
 });

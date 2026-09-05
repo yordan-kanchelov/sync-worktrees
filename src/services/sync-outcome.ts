@@ -18,7 +18,7 @@ function cloneCounts(counts: SyncOutcomeCounts): SyncOutcomeCounts {
 }
 
 function cloneAction(action: SyncOutcomeAction): SyncOutcomeAction {
-  return { ...action } as SyncOutcomeAction;
+  return { ...action };
 }
 
 function countKeyFor(action: SyncOutcomeAction): keyof SyncOutcomeCounts {

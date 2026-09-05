@@ -1,8 +1,10 @@
 import * as fs from "fs/promises";
 
 import simpleGit from "simple-git";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { setEnvVar } from "../../__tests__/test-utils";
+import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../../errors";
 import { BranchCreatedActionsService } from "../branch-created-actions.service";
 import { CloneSyncService } from "../clone-sync.service";
@@ -89,6 +91,53 @@ describe("CloneSyncService", () => {
     gitMock = buildGitMock();
     (simpleGit as unknown as Mock).mockReturnValue(gitMock);
     logger = Logger.createDefault();
+  });
+
+  describe("inactivity timeouts", () => {
+    const originalShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      setEnvVar(ENV_CONSTANTS.UNIT_TEST_SHORTCUT, originalShortcut);
+      setEnvVar("NODE_ENV", originalNodeEnv);
+    });
+
+    it("keeps the default timeouts when NODE_ENV=test but the unit-test shortcut is unset", () => {
+      process.env.NODE_ENV = "test";
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+    });
+
+    it("prefers the configured timeouts when the unit-test shortcut is unset", () => {
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      const service = new CloneSyncService(
+        makeConfig({ fetchTimeoutMs: 1_000, cloneTimeoutMs: 2_000 }),
+        buildGitService(),
+        logger,
+      );
+
+      expect((service as any).getFetchTimeoutMs()).toBe(1_000);
+      expect((service as any).getCloneTimeoutMs()).toBe(2_000);
+    });
+
+    it("disables the timeouts only while the unit-test shortcut is active for this process", () => {
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(0);
+      expect((service as any).getCloneTimeoutMs()).toBe(0);
+    });
+
+    it("ignores a shortcut value inherited from another process", () => {
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid + 1);
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+    });
   });
 
   describe("initialize", () => {
@@ -1392,6 +1441,62 @@ describe("CloneSyncService", () => {
 
       expect(resolved).toBe("develop");
       expect(gitService.getRemoteDefaultBranch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("credential redaction", () => {
+    const TOKEN_URL = "https://ci-bot:s3cr3t-token@github.com/example/repo.git";
+    const REDACTED_URL = "https://***@github.com/example/repo.git";
+    const OTHER_TOKEN_URL = "https://other-bot:0th3r-token@github.com/example/other.git";
+
+    it("logs the clone with the URL redacted while git receives the working URL", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+      const infoSpy = vi.spyOn(logger, "info");
+      const config = makeConfig({ repoUrl: TOKEN_URL });
+      const service = new CloneSyncService(config, buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(gitMock.clone).toHaveBeenCalledWith(TOKEN_URL, config.worktreeDir, expect.any(Array));
+      expect(infoSpy).toHaveBeenCalledWith(`Cloning '${REDACTED_URL}' (main) into '${config.worktreeDir}'...`);
+      expect(JSON.stringify(infoSpy.mock.calls)).not.toContain("s3cr3t-token");
+    });
+
+    it("reports an origin mismatch with both URLs redacted in the skip, the warning and the progress event", async () => {
+      const skips: CloneSkipReason[] = [];
+      const progressEvents: Array<{ phase: string; message: string }> = [];
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "remote get-url origin") return OTHER_TOKEN_URL;
+        return "";
+      });
+      const warnSpy = vi.spyOn(logger, "warn");
+      const service = new CloneSyncService(makeConfig({ repoUrl: TOKEN_URL }), buildGitService(), logger, {
+        onSkip: (reason) => skips.push(reason),
+        progressEmitter: (event) => progressEvents.push(event),
+      });
+
+      await service.initialize();
+
+      expect(skips).toEqual([
+        { kind: "origin_mismatch", actual: "https://***@github.com/example/other.git", expected: REDACTED_URL },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`has origin 'https://***@github.com/example/other.git', expected '${REDACTED_URL}'`),
+      );
+      expect(progressEvents).toContainEqual(
+        expect.objectContaining({
+          phase: "skip",
+          message: `Skipping '${REDACTED_URL}': origin 'https://***@github.com/example/other.git' is not '${REDACTED_URL}'`,
+        }),
+      );
+      expect(JSON.stringify([skips, warnSpy.mock.calls, progressEvents])).not.toMatch(/s3cr3t-token|0th3r-token/);
+      expect(gitMock.fetch).not.toHaveBeenCalled();
     });
   });
 });

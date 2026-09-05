@@ -7,6 +7,7 @@ import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
 import ForceCleanModal from "./ForceCleanModal";
 import LogPanel from "./LogPanel";
+import { redactSecretsInText } from "../utils/git-url";
 import { MOUSE_TRACKING_DISABLE, MOUSE_TRACKING_ENABLE, isMouseSequence } from "../utils/mouse";
 import type { AppEventEmitter } from "../utils/app-events";
 import type { AppSyncProgress } from "../utils/app-events";
@@ -26,8 +27,8 @@ export interface AppProps {
   events: AppEventEmitter;
   repositoryCount: number;
   cronSchedule?: string;
-  onManualSync: () => void;
-  onReload: () => void;
+  onManualSync: () => void | Promise<void>;
+  onReload: () => void | Promise<void>;
   onQuit: () => Promise<void>;
   maxProgressLines?: number;
   getRepositoryList: () => RepositoryListEntry[];
@@ -127,7 +128,10 @@ const App: React.FC<AppProps> = ({
         ...prev,
         {
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          message,
+          // Every log line (service loggers, reload/sync failures, wizard
+          // errors) lands here, so a git error that quotes a credential-bearing
+          // remote URL is scrubbed before it reaches the log buffer.
+          message: redactSecretsInText(message),
           level,
           timestamp: new Date(),
         },

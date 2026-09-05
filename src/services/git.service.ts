@@ -3,14 +3,15 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import { GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { ConfigError, GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { sanitizeGitEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
-import { getDefaultBareRepoDir } from "../utils/git-url";
+import { getDefaultBareRepoDir, normalizeRepoUrlForComparison, redactRepoUrl } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 import { quarantineDirectory } from "../utils/quarantine";
+import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import { Logger } from "./logger.service";
@@ -68,12 +69,12 @@ export class GitService {
   }
 
   private getFetchTimeoutMs(): number {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    if (isUnitTestShortcutEnabled()) return 0;
     return this.config.fetchTimeoutMs ?? DEFAULT_CONFIG.FETCH_TIMEOUT_MS;
   }
 
   private getCloneTimeoutMs(): number {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    if (isUnitTestShortcutEnabled()) return 0;
     return this.config.cloneTimeoutMs ?? DEFAULT_CONFIG.CLONE_TIMEOUT_MS;
   }
 
@@ -82,9 +83,7 @@ export class GitService {
     let git = this.gitInstances.get(key);
     if (!git) {
       const base = simpleGit(dirPath, this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
-      git = useLfsSkip
-        ? base.env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
-        : base;
+      git = useLfsSkip ? base.env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" }) : base;
       this.gitInstances.set(key, git);
     }
     return git;
@@ -112,12 +111,20 @@ export class GitService {
   async initialize(): Promise<SimpleGit> {
     const { repoUrl } = this.config;
 
+    // Check if bare repo already exists
+    let bareRepoExists: boolean;
     try {
-      // Check if bare repo already exists
       await fs.access(path.join(this.bareRepoPath, "HEAD"));
+      bareRepoExists = true;
     } catch {
+      bareRepoExists = false;
+    }
+
+    if (bareRepoExists) {
+      await this.assertBareRepoOriginMatches(this.getCachedGit(this.bareRepoPath));
+    } else {
       // Clone as bare repository
-      this.logger.info(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
+      this.logger.info(`Cloning from "${redactRepoUrl(repoUrl)}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
       const cloneBase = simpleGit(this.buildSimpleGitOptions(this.getCloneTimeoutMs()));
       const cloneGit = this.isLfsSkipEnabled()
@@ -187,66 +194,75 @@ export class GitService {
     }
 
     if (needsMainWorktree) {
-      // Create main worktree if it doesn't exist
+      // The default branch is created through the same path as every other
+      // branch. A directory already at its path that is not a registered
+      // worktree — the checkout left behind after `.bare/` was deleted to
+      // recover from corruption, an unrelated directory of the same name — is
+      // moved to trash or quarantine first, never adopted: this.git and every
+      // later fetch would otherwise run inside a non-repository.
       this.logger.info(`Creating ${this.defaultBranch} worktree at "${this.mainWorktreePath}"...`);
-      await fs.mkdir(this.config.worktreeDir, { recursive: true });
-      // Use absolute path for worktree add to avoid relative path issues
-      const absoluteWorktreePath = path.resolve(this.mainWorktreePath);
-
-      // Check if local branch exists
-      const branches = await bareGit.branch();
-      const defaultBranchExists = branches.all.includes(this.defaultBranch);
-
-      const useNoCheckoutMain = !!this.config.sparseCheckout;
-      const noCheckoutFlagMain = useNoCheckoutMain ? ["--no-checkout"] : [];
-
       try {
-        if (defaultBranchExists) {
-          await bareGit.raw(["worktree", "add", ...noCheckoutFlagMain, absoluteWorktreePath, this.defaultBranch]);
-          const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
-          await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
-          await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, this.defaultBranch, false);
-        } else {
-          await bareGit.raw([
-            "worktree",
-            "add",
-            ...noCheckoutFlagMain,
-            "--track",
-            "-b",
-            this.defaultBranch,
-            absoluteWorktreePath,
-            `origin/${this.defaultBranch}`,
-          ]);
-          await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, this.defaultBranch, true);
-        }
+        await this.addWorktree(this.defaultBranch, this.mainWorktreePath);
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("already exists")) {
-          this.logger.info(
-            `${this.defaultBranch} worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`,
-          );
-        } else {
+        // A concurrent creator can land between addWorktree's existence probe
+        // and git's own check, in which case git reports the path as already
+        // existing. That is benign only when the path is a registered worktree
+        // now; an unregistered directory stays an error.
+        if (
+          !getErrorMessage(error).includes(ERROR_MESSAGES.ALREADY_EXISTS) ||
+          !(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))
+        ) {
           throw error;
         }
+        this.logger.info(
+          `${this.defaultBranch} worktree at '${this.mainWorktreePath}' was registered concurrently; reusing it.`,
+        );
       }
 
-      // Ensure the worktree is registered by checking it exists in the list
-      const updatedWorktrees = await this.getWorktreesFromBare(bareGit, true);
-      const mainWorktreeRegistered = updatedWorktrees.some(
-        (w) => path.resolve(w.path) === path.resolve(this.mainWorktreePath),
-      );
-
-      if (!mainWorktreeRegistered) {
-        // Only warn in non-test environments as this is common in tests due to Git state
-        if (process.env.NODE_ENV !== ENV_CONSTANTS.NODE_ENV_TEST) {
-          this.logger.warn(`Main worktree was created but not found in worktree list. This may cause issues.`);
-        }
+      if (!(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))) {
+        throw new WorktreeError(
+          `${this.defaultBranch} worktree at '${path.resolve(this.mainWorktreePath)}' is not registered with the bare repository at '${path.resolve(this.bareRepoPath)}' after creation`,
+          "NOT_REGISTERED",
+        );
       }
     }
 
     // Use the main worktree as our primary git instance
     this.git = this.getCachedGit(this.mainWorktreePath);
     return this.git;
+  }
+
+  // An existing bare repo is found by path alone, and the default bareRepoDir
+  // is `.bare/<repo-name>` — the same directory for old-org/app and
+  // new-org/app. So before anything is fetched from it, its origin must be
+  // the configured repoUrl; otherwise a changed repoUrl would keep syncing
+  // the remote the bare repo was cloned from, and nothing in the log would
+  // say so. Mirrors clone mode's origin check: URLs compare normalized
+  // (scheme/host case, trailing slash, forge `.git`) so equivalent spellings
+  // don't false-positive, and are shown redacted. A bare repo whose origin
+  // cannot be read is not a mismatch — the fetch that follows reports it.
+  private async assertBareRepoOriginMatches(bareGit: SimpleGit): Promise<void> {
+    const bareRepoPath = path.resolve(this.bareRepoPath);
+
+    let originUrl: string;
+    try {
+      originUrl = (await bareGit.raw(["remote", "get-url", "origin"])).trim();
+    } catch {
+      this.logger.warn(`Could not read 'origin' remote URL from existing bare repository at '${bareRepoPath}'.`);
+      return;
+    }
+
+    if (!originUrl || normalizeRepoUrlForComparison(originUrl) === normalizeRepoUrlForComparison(this.config.repoUrl)) {
+      return;
+    }
+
+    const actual = redactRepoUrl(originUrl);
+    const expected = redactRepoUrl(this.config.repoUrl);
+    throw new ConfigError(
+      `Existing bare repository at '${bareRepoPath}' has origin '${actual}', expected '${expected}'. ` +
+        `Update the remote (git -C "${bareRepoPath}" remote set-url origin "${expected}") or point bareRepoDir at a fresh directory.`,
+      "ORIGIN_MISMATCH",
+    );
   }
 
   getGit(): SimpleGit {
@@ -299,20 +315,20 @@ export class GitService {
 
     if (existing.length === 1) {
       this.logger.warn(
-        `Could not read symref HEAD for '${repoUrl}'; using the only common branch found ('${existing[0]}') as the default.`,
+        `Could not read symref HEAD for '${redactRepoUrl(repoUrl)}'; using the only common branch found ('${existing[0]}') as the default.`,
       );
       return existing[0];
     }
 
     if (existing.length > 1) {
       throw new Error(
-        `Unable to detect default branch for '${repoUrl}': symref HEAD is unavailable and multiple common branches exist (${existing.join(", ")}). ` +
+        `Unable to detect default branch for '${redactRepoUrl(repoUrl)}': symref HEAD is unavailable and multiple common branches exist (${existing.join(", ")}). ` +
           `Set 'branch' explicitly in the repository config.`,
       );
     }
 
     throw new Error(
-      `Unable to detect default branch for '${repoUrl}'. ` +
+      `Unable to detect default branch for '${redactRepoUrl(repoUrl)}'. ` +
         `Set 'branch' explicitly in the repository config or ensure the remote is reachable.`,
     );
   }
@@ -396,8 +412,15 @@ export class GitService {
   }
 
   private async verifyLfsFilesDownloaded(worktreePath: string, branchName: string): Promise<void> {
+    // An explicit env needs the same unsafe-env allowances as getCachedGit's
+    // clients (see buildSimpleGitOptions), or a GIT_ASKPASS / GIT_CONFIG_COUNT
+    // in the forwarded environment makes this client throw before `lfs
+    // ls-files` runs and the verification is silently skipped.
     const worktreeGit = this.config.sparseCheckout
-      ? simpleGit(worktreePath).env({ ...sanitizeGitEnv(process.env), [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" })
+      ? simpleGit(worktreePath, this.buildSimpleGitOptions(this.getFetchTimeoutMs())).env({
+          ...sanitizeGitEnv(process.env),
+          [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD",
+        })
       : this.getCachedGit(worktreePath);
 
     try {
@@ -490,7 +513,7 @@ export class GitService {
           `This might cause issues if tools access the worktree immediately.`,
       );
     } catch (error) {
-      this.logger.warn(`  - ⚠️ Warning: Could not verify LFS files for '${branchName}': ${error}`);
+      this.logger.warn(`  - ⚠️ Warning: Could not verify LFS files for '${branchName}': ${String(error)}`);
     }
   }
 
@@ -550,7 +573,7 @@ export class GitService {
         parentCommit.trim(),
       );
     } catch (metadataError) {
-      this.logger.error(`  - ❌ Failed to create metadata for '${branchName}': ${metadataError}`);
+      this.logger.error(`  - ❌ Failed to create metadata for '${branchName}': ${String(metadataError)}`);
       throw new Error(`Metadata creation failed for ${branchName}. This worktree cannot be auto-managed.`);
     }
   }
@@ -584,7 +607,7 @@ export class GitService {
       // Directory doesn't exist, which is expected - continue with creation
     }
 
-    let createdNewBranch = false;
+    let createdNewBranch: boolean;
     try {
       const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
 
@@ -647,7 +670,7 @@ export class GitService {
           );
         }
         await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
-        let retryCreatedNewBranch = false;
+        let retryCreatedNewBranch: boolean;
         try {
           const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
           retryCreatedNewBranch = await this.runWorktreeAddByMatrix(
@@ -672,7 +695,7 @@ export class GitService {
           }
           return;
         } catch (retryError) {
-          this.logger.error(`  - Failed to create worktree on retry: ${retryError}`);
+          this.logger.error(`  - Failed to create worktree on retry: ${String(retryError)}`);
           throw retryError;
         }
       }
@@ -691,7 +714,7 @@ export class GitService {
         throw error;
       }
 
-      this.logger.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${error}`);
+      this.logger.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${String(error)}`);
 
       // Check again if directory exists before fallback attempt
       try {
@@ -867,7 +890,7 @@ export class GitService {
     try {
       await this.metadataService.deleteMetadataFromPath(this.bareRepoPath, worktreePath);
     } catch (metadataError) {
-      this.logger.warn(`Failed to delete metadata for worktree: ${metadataError}`);
+      this.logger.warn(`Failed to delete metadata for worktree: ${String(metadataError)}`);
     }
   }
 
@@ -1189,7 +1212,7 @@ export class GitService {
         this.defaultBranch,
       );
     } catch (metadataError) {
-      this.logger.warn(`Failed to update metadata for worktree: ${metadataError}`);
+      this.logger.warn(`Failed to update metadata for worktree: ${String(metadataError)}`);
     }
   }
 
@@ -1323,7 +1346,7 @@ export class GitService {
 
       return localTree.trim() === remoteTree.trim();
     } catch (error) {
-      this.logger.error(`Error comparing tree content: ${error}`);
+      this.logger.error(`Error comparing tree content: ${String(error)}`);
       return false; // Assume trees are different if we can't compare
     }
   }
@@ -1406,7 +1429,7 @@ export class GitService {
         this.defaultBranch,
       );
     } catch (metadataError) {
-      this.logger.warn(`Failed to update metadata after reset: ${metadataError}`);
+      this.logger.warn(`Failed to update metadata after reset: ${String(metadataError)}`);
     }
     return true;
   }
@@ -1485,6 +1508,12 @@ export class GitService {
 
   async getWorktreeMetadata(worktreePath: string): Promise<SyncMetadata | null> {
     return this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
+  }
+
+  private async isRegisteredWorktree(bareGit: SimpleGit, worktreePath: string): Promise<boolean> {
+    const absoluteWorktreePath = path.resolve(worktreePath);
+    const worktrees = await this.getWorktreesFromBare(bareGit, true);
+    return worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath && !w.isPrunable);
   }
 
   private async getWorktreesFromBare(

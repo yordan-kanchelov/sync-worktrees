@@ -166,3 +166,13 @@ export function buildGitLogResponse(commits: Array<{ hash: string; message: stri
     })),
   };
 }
+
+// process.env coerces every assignment to a string, so restoring a variable
+// that was originally unset has to delete it rather than assign undefined.
+export function setEnvVar(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}

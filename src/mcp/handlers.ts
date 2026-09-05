@@ -8,16 +8,23 @@ import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { WorktreeStatusService } from "../services/worktree-status.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { calculateDirectorySize } from "../utils/disk-space";
+import { probePathExists } from "../utils/file-exists";
 import { isValidGitBranchName } from "../utils/git-validation";
 import { pathsEqual } from "../utils/path-compare";
 
-import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } from "./utils";
+import {
+  CapabilityUnavailableError,
+  RepoLockUnavailableError,
+  SyncInProgressError,
+  WorktreeTargetExistsError,
+  formatToolResponse,
+} from "./utils";
 import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summary";
 
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
 import type { HandlerContext } from "./utils";
 import type { WorktreeLabel } from "./worktree-summary";
-import type { ProgressEvent } from "../services/worktree-sync.service";
+import type { ProgressEvent, RepoOperationNotStarted } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
 type CapabilityKey = keyof Capabilities;
@@ -38,12 +45,27 @@ type ListedWorktree = {
   lastSyncAt: string | null;
   sizeBytes: number | null;
 };
+type RepoWorktreeListing = { worktrees: ListedWorktree[]; error?: string };
 
 const pathResolution = new PathResolutionService();
 const CLONE_MODE_WORKTREE_MUTATION_REASON =
   "clone-mode repositories have a single checkout; use sync for clone-mode updates";
 
-function ensureCapability(discovered: DiscoveredRepoContext | null, key: CapabilityKey, toolName: string): void {
+function ensureCapability(
+  ctx: RepositoryContext,
+  repoName: string | undefined,
+  discovered: DiscoveredRepoContext | null,
+  key: CapabilityKey,
+  toolName: string,
+): void {
+  // Gate on the entry's durable capabilities before consulting the discovery
+  // cache: every mutating tool clears that cache, so an empty `discovered`
+  // must never read as "allowed" (it used to let sync/initialize run against
+  // an auto-detected repo right after update_worktree or create_worktree).
+  const base = ctx.getBaseCapabilities(repoName)?.[key];
+  if (base && !base.available) {
+    throw new CapabilityUnavailableError(toolName, base.reason ? [base.reason] : (discovered?.notes ?? []));
+  }
   if (!discovered) return;
   const cap = discovered.capabilities[key];
   if (!cap.available) {
@@ -66,7 +88,7 @@ async function getReadyService(
   }
   const discovered = ctx.getDiscoveredContext(repoName);
   if (options.capability && options.toolName) {
-    ensureCapability(discovered, options.capability, options.toolName);
+    ensureCapability(ctx, repoName, discovered, options.capability, options.toolName);
   }
 
   const service = await ctx.getService(repoName);
@@ -81,6 +103,19 @@ async function getReadyService(
   };
 }
 
+// Contention (in_progress, locked) is SYNC_IN_PROGRESS and retryable; an
+// unavailable lock is a distinct, non-retryable failure that names its cause.
+function notStartedError(
+  ctx: RepositoryContext,
+  repoName: string | undefined,
+  result: RepoOperationNotStarted,
+): SyncInProgressError | RepoLockUnavailableError {
+  const name = ctx.getEntry(repoName)?.name ?? repoName ?? "unknown";
+  return result.reason === "lock_unavailable"
+    ? new RepoLockUnavailableError(name, result)
+    : new SyncInProgressError(name);
+}
+
 async function runExclusiveRepoOperation<T>(
   ctx: RepositoryContext,
   repoName: string | undefined,
@@ -89,8 +124,7 @@ async function runExclusiveRepoOperation<T>(
 ): Promise<T> {
   const result = await service.runExclusiveRepoOperation(operation);
   if (!result.started) {
-    const name = ctx.getEntry(repoName)?.name ?? repoName ?? "unknown";
-    throw new SyncInProgressError(name);
+    throw notStartedError(ctx, repoName, result);
   }
   return result.value;
 }
@@ -153,6 +187,28 @@ async function getWorktreesFromService(
   return git.getWorktrees();
 }
 
+/**
+ * `addWorktree` treats a directory at the target path that is not a registered
+ * worktree as an orphan and moves it to trash (or deletes it when trash is
+ * disabled). That recovery is right for sync, but `create_worktree` is
+ * advertised as non-destructive and the MCP surface has no trash access, so an
+ * unregistered directory at the target path is refused here instead: nothing
+ * is moved or deleted from the MCP path. A registered path is left to
+ * `addWorktree`, which short-circuits on an existing worktree.
+ */
+async function ensureWorktreeTargetAvailable(worktreePath: string, registered: RepoWorktree[]): Promise<void> {
+  if (registered.some((w) => pathsEqual(w.path, worktreePath))) return;
+
+  const probe = await probePathExists(worktreePath);
+  if (probe === "missing") return;
+  if (probe === "unknown") {
+    throw new Error(
+      `Cannot verify whether '${path.resolve(worktreePath)}' exists; refusing to create a worktree there`,
+    );
+  }
+  throw new WorktreeTargetExistsError(path.resolve(worktreePath));
+}
+
 export async function handleDetectContext(
   ctx: RepositoryContext,
   params: { path?: string; includeStatus?: boolean; includeAllWorktrees?: boolean; detailed?: boolean },
@@ -186,10 +242,10 @@ export async function handleDetectContext(
 
   if (allWorktreesByRepo) {
     const entries = await Promise.all(
-      Object.entries(allWorktreesByRepo).map(async ([repoName, worktrees]) => [
-        repoName,
-        await enrichDetectedWorktrees(worktrees, statusService, statusLimit),
-      ]),
+      Object.entries(allWorktreesByRepo).map(
+        async ([repoName, worktrees]) =>
+          [repoName, await enrichDetectedWorktrees(worktrees, statusService, statusLimit)] as const,
+      ),
     );
     allWorktreesByRepo = Object.fromEntries(entries);
   }
@@ -237,10 +293,10 @@ export async function handleListWorktrees(
     const statusLimit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
     const repositories = await Promise.all(
       configuredRepoNames.map((repoName) =>
-        limit(async () => {
+        limit(async (): Promise<[string, RepoWorktreeListing]> => {
           try {
             const worktrees = await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit);
-            return [repoName, { worktrees }] as const;
+            return [repoName, { worktrees }];
           } catch (err) {
             return [
               repoName,
@@ -248,7 +304,7 @@ export async function handleListWorktrees(
                 worktrees: [],
                 error: err instanceof Error ? err.message : String(err),
               },
-            ] as const;
+            ];
           }
         }),
       ),
@@ -365,6 +421,17 @@ export async function handleCreateWorktree(
     await git.fetchAll();
     const existence = await git.branchExists(branchName);
 
+    const worktreeDir = service.config.worktreeDir;
+    const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
+    const existing = await git.getWorktrees();
+    const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
+    if (collision) {
+      throw new Error(
+        `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
+      );
+    }
+    await ensureWorktreeTargetAvailable(worktreePath, existing);
+
     let created = false;
     let pushed = false;
 
@@ -376,15 +443,6 @@ export async function handleCreateWorktree(
       created = true;
     }
 
-    const worktreeDir = service.config.worktreeDir;
-    const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
-    const existing = await git.getWorktrees();
-    const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
-    if (collision) {
-      throw new Error(
-        `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
-      );
-    }
     await git.addWorktree(branchName, worktreePath);
     ctx.invalidateDiscovered();
 
@@ -429,7 +487,7 @@ export async function handleSync(
     const start = Date.now();
     const result = await service.sync();
     if (!result.started) {
-      throw new SyncInProgressError(ctx.getEntry(params.repoName)?.name ?? params.repoName ?? "unknown");
+      throw notStartedError(ctx, params.repoName, result);
     }
     const duration = Date.now() - start;
     ctx.invalidateDiscovered();
@@ -444,9 +502,18 @@ export async function handleSync(
       ...reason,
       message: formatCloneSkipReason(reason),
     }));
+    // Per-action failures (a worktree that could not be removed, a sparse
+    // checkout that could not be applied, ...) are recorded on the outcome
+    // instead of rejecting sync(). The CLI's --runOnce turns them into exit
+    // code 1; mirror that here so `success` is not a lie, while the call
+    // itself still completed, so isError stays false.
+    const failed = outcome.counts.failed;
+    const failures = outcome.actions.filter((action) => action.kind === "failed");
     return formatToolResponse({
-      success: true,
+      success: failed === 0,
       duration,
+      failed,
+      failures,
       outcome: {
         ...outcome,
         durationMs: outcome.durationMs ?? duration,

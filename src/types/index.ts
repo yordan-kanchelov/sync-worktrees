@@ -138,10 +138,33 @@ export interface SyncOutcome {
   durationMs?: number;
 }
 
-export type SyncResult =
-  | { started: true; outcome: SyncOutcome }
+/**
+ * The cross-process repository lock could not be taken for a reason other
+ * than contention: the lock directory or lock file could not be prepared or
+ * locked (ENOTDIR, EACCES, EROFS, ENOSPC, ...). Nothing else holds the lock;
+ * this process simply cannot take it, so the operation did not run.
+ */
+export interface RepoLockUnavailable {
+  reason: "lock_unavailable";
+  /** Lock directory or lock file that could not be prepared or locked. */
+  path: string;
+  /** errno code reported by the OS, when there was one. */
+  code?: string;
+  /** Underlying error message. */
+  error: string;
+}
+
+/**
+ * Why a repository operation did not start. `in_progress` and `locked` are
+ * contention (another operation or process is working on the repository) and
+ * read as skips; `lock_unavailable` is an infrastructure failure of this run.
+ */
+export type RepoOperationNotStarted =
   | { started: false; reason: "in_progress" }
-  | { started: false; reason: "locked" };
+  | { started: false; reason: "locked" }
+  | ({ started: false } & RepoLockUnavailable);
+
+export type SyncResult = { started: true; outcome: SyncOutcome } | RepoOperationNotStarted;
 
 export interface Config {
   repoUrl: string;

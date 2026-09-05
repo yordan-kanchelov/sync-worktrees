@@ -8,8 +8,9 @@ import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError
 import { fileExists } from "../utils/file-exists";
 import { sanitizeGitEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
-import { normalizeRepoUrlForComparison } from "../utils/git-url";
+import { normalizeRepoUrlForComparison, redactRepoUrl } from "../utils/git-url";
 import { getErrorMessage, isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
+import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { cloneSkipToOutcomeAction } from "./sync-outcome";
@@ -91,17 +92,19 @@ export class CloneSyncService {
     return [{ path: worktreeDir, branch }];
   }
 
+  // Display name only (log lines and progress messages), so the URL fallback
+  // is shown with any embedded credentials stripped.
   private get repoName(): string {
-    return (this.config as RepositoryConfig).name ?? this.config.repoUrl;
+    return (this.config as RepositoryConfig).name ?? redactRepoUrl(this.config.repoUrl);
   }
 
   private getCloneTimeoutMs(): number {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    if (isUnitTestShortcutEnabled()) return 0;
     return this.config.cloneTimeoutMs ?? DEFAULT_CONFIG.CLONE_TIMEOUT_MS;
   }
 
   private getFetchTimeoutMs(): number {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) return 0;
+    if (isUnitTestShortcutEnabled()) return 0;
     return this.config.fetchTimeoutMs ?? DEFAULT_CONFIG.FETCH_TIMEOUT_MS;
   }
 
@@ -571,7 +574,7 @@ export class CloneSyncService {
     const branch = await this.resolveBranch();
     const worktreeDir = this.config.worktreeDir;
 
-    let entries: string[] | null = null;
+    let entries: string[] | null;
     try {
       entries = await fs.readdir(worktreeDir);
     } catch (error) {
@@ -633,7 +636,7 @@ export class CloneSyncService {
     const cloneCreatedDir = entries === null;
     await fs.mkdir(worktreeDir, { recursive: true });
 
-    this.logger.info(`Cloning '${this.config.repoUrl}' (${branch}) into '${worktreeDir}'...`);
+    this.logger.info(`Cloning '${redactRepoUrl(this.config.repoUrl)}' (${branch}) into '${worktreeDir}'...`);
     this.emitProgress({ phase: "clone", message: `Cloning '${this.repoName}' (${branch})` });
 
     const cloneClient = simpleGit(this.buildGitOptions(this.getCloneTimeoutMs())).env(this.buildGitEnv());
@@ -691,7 +694,8 @@ export class CloneSyncService {
   // repoUrl (e.g. repoUrl was repointed in config). Returns a skip descriptor so
   // we never fetch/ff-merge from the wrong remote; null when origin matches or
   // can't be read. Comparison is normalized so https/.git/trailing-slash
-  // variants don't false-positive; the raw URLs are kept in the message.
+  // variants don't false-positive; the URLs are kept in the message and skip
+  // descriptor with any embedded credentials stripped (both can carry one).
   private async evaluateOriginMatch(
     git: SimpleGit,
     worktreeDir: string,
@@ -708,12 +712,14 @@ export class CloneSyncService {
       return null;
     }
 
+    const actual = redactRepoUrl(originUrl);
+    const expected = redactRepoUrl(this.config.repoUrl);
     return {
-      skip: { kind: "origin_mismatch", actual: originUrl, expected: this.config.repoUrl },
+      skip: { kind: "origin_mismatch", actual, expected },
       warnMessage:
-        `Existing clone at '${worktreeDir}' has origin '${originUrl}', expected '${this.config.repoUrl}'. ` +
+        `Existing clone at '${worktreeDir}' has origin '${actual}', expected '${expected}'. ` +
         `Update the remote ('git remote set-url origin <url>') or point worktreeDir at a fresh path.`,
-      progressDetail: `origin '${originUrl}' is not '${this.config.repoUrl}'`,
+      progressDetail: `origin '${actual}' is not '${expected}'`,
     };
   }
 

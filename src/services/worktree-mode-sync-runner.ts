@@ -3,7 +3,7 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, ERROR_MESSAGES, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
@@ -983,7 +983,9 @@ export class WorktreeModeSyncRunner {
     const observedHead = (await this.gitService.getCurrentCommit(worktree.path)).trim();
     const treesIdentical = await this.gitService.compareTreeContent(worktree.path, worktree.branch);
 
-    const hasLocalChanges = treesIdentical ? false : await this.hasLocalChangesSinceLastSync(worktree.path, observedHead);
+    const hasLocalChanges = treesIdentical
+      ? false
+      : await this.hasLocalChangesSinceLastSync(worktree.path, observedHead);
     if (
       (treesIdentical || !hasLocalChanges) &&
       (await this.gitService.resetToUpstream(worktree.path, worktree.branch, observedHead))

@@ -2,7 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import simpleGit from "simple-git";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   TEST_PATHS,
@@ -12,8 +12,10 @@ import {
   createMockGitService,
   createMockLogger,
   createWorktreeListOutput,
+  setEnvVar,
 } from "../../__tests__/test-utils";
-import { WorktreeNotCleanError } from "../../errors";
+import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
+import { ConfigError, WorktreeNotCleanError } from "../../errors";
 import { GitService } from "../git.service";
 
 import type { Config } from "../../types";
@@ -58,6 +60,65 @@ describe("GitService", () => {
   let mockMetadataService: any;
   let mockLogger: Logger;
 
+  const MAIN_WORKTREE_PATH = path.join(TEST_PATHS.worktree, "main");
+
+  // Args-keyed stand-in for the bare repository during initialize(). The
+  // worktree list reports the default-branch worktree from the start when
+  // `mainRegistered`, otherwise only once `worktree add` has run (unless
+  // `registersOnAdd` is false), so reuse, creation and a creation that never
+  // registered can be told apart. Returns the `worktree add` invocations.
+  const mockInitializeGit = (
+    opts: {
+      mainPath?: string;
+      mainRegistered?: boolean;
+      registersOnAdd?: boolean;
+      addError?: Error;
+      registersOnAddError?: boolean;
+      local?: boolean;
+      remote?: boolean;
+    } = {},
+  ): { addCalls: string[][] } => {
+    const mainPath = opts.mainPath ?? MAIN_WORKTREE_PATH;
+    let registered = opts.mainRegistered ?? false;
+    const addCalls: string[][] = [];
+    (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+      if (!Array.isArray(args)) return Promise.resolve("");
+      const [command, subcommand] = args as string[];
+      if (command === "remote" && subcommand === "get-url") return Promise.resolve(TEST_URLS.github);
+      if (command === "symbolic-ref") return Promise.resolve("refs/remotes/origin/main");
+      if (command === "worktree" && subcommand === "list") {
+        return Promise.resolve(
+          registered ? createWorktreeListOutput([{ path: mainPath, branch: "main", commit: "abc123" }]) : "",
+        );
+      }
+      if (command === "worktree" && subcommand === "add") {
+        addCalls.push(args as string[]);
+        if (opts.addError) {
+          registered = opts.registersOnAddError ?? false;
+          return Promise.reject(opts.addError);
+        }
+        registered = opts.registersOnAdd ?? true;
+        return Promise.resolve("");
+      }
+      if (command === "show-ref") {
+        const ref = args[args.length - 1] as string;
+        const exists = ref.startsWith("refs/heads/") ? (opts.local ?? false) : (opts.remote ?? true);
+        return exists ? Promise.resolve("") : Promise.reject(new Error("show-ref: not found"));
+      }
+      return Promise.resolve("");
+    });
+    return { addCalls };
+  };
+
+  // Everything exists except the default-branch worktree directory.
+  const mockMainWorktreeMissing = (mainPath: string = MAIN_WORKTREE_PATH): void => {
+    (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+      if (typeof p === "string" && (p === mainPath || p.startsWith(mainPath + path.sep))) {
+        throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+      }
+    });
+  };
+
   const mockShowRef = (opts: { local: boolean; remote: boolean }): void => {
     (mockGit.raw as Mock).mockImplementation((args: unknown) => {
       if (Array.isArray(args) && args[0] === "show-ref" && args[1] === "--verify") {
@@ -93,7 +154,18 @@ describe("GitService", () => {
         all: ["origin/main", "origin/feature-1", "origin/feature-2", "local-branch"],
         current: "main",
       }) as any,
-      raw: vi.fn<any>().mockResolvedValue("") as any,
+      // The default-branch worktree is registered by default, so initialize()
+      // reuses it. Tests that exercise its creation install their own stand-in
+      // with mockInitializeGit.
+      raw: vi
+        .fn<any>()
+        .mockImplementation((args: unknown) =>
+          Promise.resolve(
+            Array.isArray(args) && args[0] === "worktree" && args[1] === "list"
+              ? createWorktreeListOutput([{ path: MAIN_WORKTREE_PATH, branch: "main", commit: "abc123" }])
+              : "",
+          ),
+        ) as any,
       status: vi.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })) as any,
       reset: vi.fn<any>().mockResolvedValue(undefined) as any,
       clone: vi.fn<any>().mockResolvedValue(undefined) as any,
@@ -108,7 +180,72 @@ describe("GitService", () => {
     gitService = new GitService(mockConfig, mockLogger);
   });
 
+  describe("inactivity timeouts", () => {
+    const originalShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      setEnvVar(ENV_CONSTANTS.UNIT_TEST_SHORTCUT, originalShortcut);
+      setEnvVar("NODE_ENV", originalNodeEnv);
+    });
+
+    it("keeps the default timeouts when NODE_ENV=test but the unit-test shortcut is unset", async () => {
+      // NODE_ENV is whatever the caller's shell or CI exported; it must never disable the timeouts.
+      process.env.NODE_ENV = "test";
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      const service = new GitService(createMockConfig(), mockLogger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+
+      (mockGit.raw as Mock).mockResolvedValue("ref: refs/heads/main\tHEAD\n");
+      await service.getRemoteDefaultBranch(TEST_URLS.github);
+      expect(simpleGit).toHaveBeenCalledWith(
+        expect.objectContaining({ timeout: { block: DEFAULT_CONFIG.FETCH_TIMEOUT_MS } }),
+      );
+    });
+
+    it("prefers the configured timeouts when the unit-test shortcut is unset", () => {
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      const service = new GitService(createMockConfig({ fetchTimeoutMs: 1_000, cloneTimeoutMs: 2_000 }), mockLogger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(1_000);
+      expect((service as any).getCloneTimeoutMs()).toBe(2_000);
+    });
+
+    it("disables the timeouts only while the unit-test shortcut is active for this process", async () => {
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
+      const service = new GitService(createMockConfig(), mockLogger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(0);
+      expect((service as any).getCloneTimeoutMs()).toBe(0);
+
+      (mockGit.raw as Mock).mockResolvedValue("ref: refs/heads/main\tHEAD\n");
+      await service.getRemoteDefaultBranch(TEST_URLS.github);
+      expect(simpleGit).toHaveBeenCalledWith(expect.not.objectContaining({ timeout: expect.anything() }));
+    });
+
+    it("ignores a shortcut value inherited from another process", () => {
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid + 1);
+      const service = new GitService(createMockConfig(), mockLogger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+    });
+  });
+
   describe("getRemoteDefaultBranch (#6)", () => {
+    it("names the remote with credentials redacted when no default branch can be detected", async () => {
+      const tokenUrl = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+      (mockGit.raw as Mock).mockImplementation(async () => ""); // no symref, no common branch
+
+      await expect(gitService.getRemoteDefaultBranch(tokenUrl)).rejects.toThrow(
+        "Unable to detect default branch for 'https://***@github.com/test/repo.git'.",
+      );
+      // git itself is still handed the working URL.
+      expect(mockGit.raw).toHaveBeenCalledWith(["ls-remote", "--symref", tokenUrl, "HEAD"]);
+    });
+
     it("returns the branch from ls-remote --symref HEAD", async () => {
       (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
         const a = args as string[];
@@ -147,17 +284,37 @@ describe("GitService", () => {
   });
 
   describe("initialize", () => {
+    it("logs the bare clone with credentials redacted while git receives the working URL", async () => {
+      const tokenUrl = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+      gitService = new GitService(createMockConfig({ repoUrl: tokenUrl }), mockLogger);
+      (fs.access as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("config not found"))
+        .mockResolvedValueOnce("" as any)
+        .mockResolvedValueOnce("" as any);
+
+      await gitService.initialize();
+
+      expect(mockGit.clone).toHaveBeenCalledWith(tokenUrl, ".bare/repo", ["--bare", "--progress"]);
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        'Cloning from "https://***@github.com/test/repo.git" as bare repository into ".bare/repo"...',
+      );
+      expect(JSON.stringify((mockLogger.info as Mock).mock.calls)).not.toContain("s3cr3t-token");
+    });
+
     it("should use existing bare repository when it exists", async () => {
       // Mock fs.access to succeed (bare repo exists)
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock config check to throw error (config doesn't exist)
+      // Mock origin check to match, config check to throw error (config doesn't exist)
       mockGit.raw
-        .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
+        .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
+        .mockRejectedValueOnce(new Error("config not found")) // Second call: config check throws
         .mockResolvedValueOnce(
           createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
-        ); // Second call: worktree list
+        ); // Third call: worktree list
 
       const git = await gitService.initialize();
 
@@ -187,40 +344,24 @@ describe("GitService", () => {
       expect(fs.mkdir).toHaveBeenCalled();
       expect(simpleGit).toHaveBeenCalledWith(expect.objectContaining({ progress: expect.any(Function) }));
       expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare", "--progress"]);
+      // A fresh clone's origin is repoUrl by construction; only an existing bare repo is checked.
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["remote", "get-url", "origin"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
     });
 
     it("should create main worktree if it doesn't exist", async () => {
-      // Mock fs.access to succeed (bare repo exists)
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
-      // Mock fs.mkdir
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock config check and worktree list
-      mockGit.raw
-        .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
-        .mockResolvedValueOnce("" as any) // Second call: getWorktreesFromBare returns empty
-        .mockResolvedValueOnce("" as any); // Third call: worktree add
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      const { addCalls } = mockInitializeGit({ local: false, remote: true });
+      mockMainWorktreeMissing();
 
       await gitService.initialize();
 
       // Fetch is always called to ensure remote refs are up-to-date
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(fs.mkdir).toHaveBeenCalledWith(TEST_PATHS.worktree, { recursive: true });
-      expect(mockGit.raw).toHaveBeenCalledWith([
-        "worktree",
-        "add",
-        "--track",
-        "-b",
-        "main",
-        TEST_PATHS.worktree + "/main",
-        "origin/main",
-      ]);
+      expect(addCalls).toEqual([["worktree", "add", "--track", "-b", "main", MAIN_WORKTREE_PATH, "origin/main"]]);
+      expect(gitService.isInitialized()).toBe(true);
     });
 
     it("should resolve relative paths to absolute paths when creating worktrees", async () => {
@@ -232,54 +373,133 @@ describe("GitService", () => {
         runOnce: false,
       };
       const relativeGitService = new GitService(relativeConfig);
-
-      // Mock fs.access to succeed (bare repo exists)
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
-      // Mock fs.mkdir
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock config check and worktree list
-      mockGit.raw
-        .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
-        .mockResolvedValueOnce("" as any) // Second call: getWorktreesFromBare returns empty
-        .mockResolvedValueOnce("" as any); // Third call: worktree add
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      const expectedAbsolutePath = path.resolve("./test/worktrees/main");
+      const { addCalls } = mockInitializeGit({ mainPath: expectedAbsolutePath, local: false, remote: true });
+      mockMainWorktreeMissing(expectedAbsolutePath);
 
       await relativeGitService.initialize();
 
       // Fetch is always called to ensure remote refs are up-to-date
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       // Verify that the worktree add command received an absolute path
-      const expectedAbsolutePath = path.resolve("./test/worktrees/main");
-      expect(mockGit.raw).toHaveBeenCalledWith([
-        "worktree",
-        "add",
-        "--track",
-        "-b",
-        "main",
-        expectedAbsolutePath,
-        "origin/main",
-      ]);
+      expect(addCalls).toEqual([["worktree", "add", "--track", "-b", "main", expectedAbsolutePath, "origin/main"]]);
     });
 
-    it("should gracefully handle existing directory when creating main worktree", async () => {
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      mockGit.raw
-        .mockRejectedValueOnce(new Error("config not found")) // config check
-        .mockResolvedValueOnce("" as any) // worktree list empty => needsMainWorktree = true
-        .mockRejectedValueOnce(new Error("already exists")); // worktree add fails
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+    // A directory already sitting at the default-branch worktree path is
+    // either the registered worktree (reuse it) or stale (the checkout left
+    // behind after `.bare/` was deleted, an unrelated directory of the same
+    // name). A stale one must go through the same trash/quarantine handling as
+    // every other branch's stale directory and never be adopted: this.git
+    // would point at a non-repository and every later fetch would fail.
+    describe("existing directory at the default-branch worktree path", () => {
+      const worktreeAddCallOrder = (): number => {
+        const raw = mockGit.raw as Mock;
+        const index = raw.mock.calls.findIndex(
+          ([args]) => Array.isArray(args) && args[0] === "worktree" && args[1] === "add",
+        );
+        return raw.mock.invocationCallOrder[index];
+      };
 
-      await gitService.initialize();
+      it("reuses a registered default-branch worktree without touching it", async () => {
+        const { addCalls } = mockInitializeGit({ mainRegistered: true });
+        const trasher = vi.fn<any>().mockResolvedValue("/test/worktrees/.trash/id/payload");
+        gitService.setStaleDirectoryTrasher(trasher as unknown as (dirPath: string) => Promise<string>);
 
-      // Should NOT call fs.rm - handles the error gracefully instead
-      expect(fs.rm).not.toHaveBeenCalled();
+        await gitService.initialize();
+
+        expect(addCalls).toEqual([]);
+        expect(trasher).not.toHaveBeenCalled();
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(true);
+      });
+
+      it("moves an unregistered directory to trash before creating the worktree", async () => {
+        const { addCalls } = mockInitializeGit({ local: false, remote: true });
+        const trasher = vi.fn<any>().mockResolvedValue("/test/worktrees/.trash/id/payload");
+        gitService.setStaleDirectoryTrasher(trasher as unknown as (dirPath: string) => Promise<string>);
+
+        await gitService.initialize();
+
+        expect(trasher).toHaveBeenCalledWith(MAIN_WORKTREE_PATH);
+        expect(addCalls).toEqual([["worktree", "add", "--track", "-b", "main", MAIN_WORKTREE_PATH, "origin/main"]]);
+        expect(trasher.mock.invocationCallOrder[0]).toBeLessThan(worktreeAddCallOrder());
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(true);
+      });
+
+      it("quarantines an unregistered directory containing a .git instead of deleting it", async () => {
+        const { addCalls } = mockInitializeGit({ local: false, remote: true });
+
+        await gitService.initialize();
+
+        expect(fs.rename).toHaveBeenCalledWith(MAIN_WORKTREE_PATH, expect.stringContaining(".removed"));
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(addCalls).toHaveLength(1);
+        expect(gitService.isInitialized()).toBe(true);
+      });
+
+      it("deletes an unregistered directory without a .git before creating the worktree", async () => {
+        const { addCalls } = mockInitializeGit({ local: false, remote: true });
+        (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+          if (p === path.join(MAIN_WORKTREE_PATH, ".git")) {
+            throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+          }
+        });
+
+        await gitService.initialize();
+
+        expect(fs.rm).toHaveBeenCalledWith(MAIN_WORKTREE_PATH, { recursive: true, force: true });
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(addCalls).toHaveLength(1);
+      });
+
+      it("rejects naming the path when the worktree is still not registered after creation", async () => {
+        const { addCalls } = mockInitializeGit({ local: false, remote: true, registersOnAdd: false });
+        mockMainWorktreeMissing();
+
+        await expect(gitService.initialize()).rejects.toMatchObject({
+          code: "WORKTREE_NOT_REGISTERED",
+          message: expect.stringContaining(MAIN_WORKTREE_PATH),
+        });
+
+        expect(addCalls).toHaveLength(1);
+        expect(gitService.isInitialized()).toBe(false);
+      });
+
+      it("rejects git's 'already exists' when the directory is not a registered worktree", async () => {
+        mockInitializeGit({
+          local: false,
+          remote: true,
+          addError: new Error(`fatal: '${MAIN_WORKTREE_PATH}' already exists`),
+        });
+        mockMainWorktreeMissing();
+
+        await expect(gitService.initialize()).rejects.toThrow("already exists");
+
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(false);
+      });
+
+      it("reuses the worktree when git's 'already exists' comes from a concurrent registration", async () => {
+        mockInitializeGit({
+          local: false,
+          remote: true,
+          addError: new Error(`fatal: '${MAIN_WORKTREE_PATH}' already exists`),
+          registersOnAddError: true,
+        });
+        mockMainWorktreeMissing();
+        const trasher = vi.fn<any>().mockResolvedValue("/test/worktrees/.trash/id/payload");
+        gitService.setStaleDirectoryTrasher(trasher as unknown as (dirPath: string) => Promise<string>);
+
+        await gitService.initialize();
+
+        expect(trasher).not.toHaveBeenCalled();
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(true);
+      });
     });
 
     it("should not add duplicate fetch config when it already exists", async () => {
@@ -287,12 +507,13 @@ describe("GitService", () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock config check to return existing fetch config
+      // Mock origin check to match, config check to return existing fetch config
       mockGit.raw
-        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*") // First call: config exists
+        .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
+        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*") // Second call: config exists
         .mockResolvedValueOnce(
           createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
-        ); // Second call: worktree list
+        ); // Third call: worktree list
 
       const git = await gitService.initialize();
 
@@ -303,6 +524,92 @@ describe("GitService", () => {
       // Fetch is always called to ensure remote refs are up-to-date
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(git).toBe(mockGit);
+    });
+
+    // An existing bare repo is found by path alone, and the default bareRepoDir
+    // (`.bare/<repo-name>`) is the same directory for old-org/repo and
+    // new-org/repo, so its origin must be the configured repoUrl before anything
+    // is fetched from it.
+    describe("existing bare repository origin", () => {
+      const bareRepoPath = path.resolve(".bare/repo");
+      const mainWorktreeList = createWorktreeListOutput([
+        { path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" },
+      ]);
+
+      beforeEach(() => {
+        (fs.access as Mock<any>).mockResolvedValue(undefined);
+        (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      });
+
+      it("rejects with both URLs and the set-url remedy when origin differs from repoUrl, before any fetch", async () => {
+        gitService = new GitService(createMockConfig({ repoUrl: "https://gitlab.com/new-org/repo.git" }), mockLogger);
+        mockGit.raw.mockResolvedValueOnce("https://github.com/old-org/repo.git\n" as any); // remote get-url origin
+
+        await expect(gitService.initialize()).rejects.toMatchObject({
+          constructor: ConfigError,
+          code: "CONFIG_ORIGIN_MISMATCH",
+          message:
+            `Existing bare repository at '${bareRepoPath}' has origin 'https://github.com/old-org/repo.git', expected 'https://gitlab.com/new-org/repo.git'. ` +
+            `Update the remote (git -C "${bareRepoPath}" remote set-url origin "https://gitlab.com/new-org/repo.git") or point bareRepoDir at a fresh directory.`,
+        });
+
+        expect(mockGit.raw).toHaveBeenCalledWith(["remote", "get-url", "origin"]);
+        expect(mockGit.fetch).not.toHaveBeenCalled();
+        expect(mockGit.clone).not.toHaveBeenCalled();
+        expect(mockGit.addConfig).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(false);
+      });
+
+      it("redacts credentials in both URLs of the mismatch message", async () => {
+        gitService = new GitService(
+          createMockConfig({ repoUrl: "https://ci-bot:new-token@github.com/new-org/repo.git" }),
+          mockLogger,
+        );
+        mockGit.raw.mockResolvedValueOnce("https://old-bot:old-token@github.com/old-org/repo.git\n" as any);
+
+        await expect(gitService.initialize()).rejects.toMatchObject({
+          constructor: ConfigError,
+          code: "CONFIG_ORIGIN_MISMATCH",
+          message: expect.stringContaining(
+            "has origin 'https://***@github.com/old-org/repo.git', expected 'https://***@github.com/new-org/repo.git'. " +
+              `Update the remote (git -C "${bareRepoPath}" remote set-url origin "https://***@github.com/new-org/repo.git")`,
+          ),
+        });
+
+        expect(mockGit.fetch).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ["without the .git suffix", "https://github.com/test/repo"],
+        ["with a trailing slash", "https://github.com/test/repo.git/"],
+        ["with a different host case", "HTTPS://GitHub.COM/test/repo.git"],
+      ])("proceeds to fetch when origin is repoUrl %s", async (_variant, originUrl) => {
+        mockGit.raw
+          .mockResolvedValueOnce(`${originUrl}\n` as any) // remote get-url origin
+          .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+          .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
+          .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+
+        await expect(gitService.initialize()).resolves.toBe(mockGit);
+
+        expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
+        expect(mockLogger.warn).not.toHaveBeenCalled();
+      });
+
+      it("warns and proceeds when the bare repository has no readable origin", async () => {
+        mockGit.raw
+          .mockRejectedValueOnce(new Error("error: No such remote 'origin'")) // remote get-url origin
+          .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+          .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
+          .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+
+        await expect(gitService.initialize()).resolves.toBe(mockGit);
+
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          `Could not read 'origin' remote URL from existing bare repository at '${bareRepoPath}'.`,
+        );
+        expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
+      });
     });
   });
 
@@ -563,10 +870,9 @@ describe("GitService", () => {
     });
 
     it("keeps branches whose names contain '|' (legal refname character) (#review)", async () => {
-      const mockOutput = [
-        "origin/feature|wip 2024-01-15T10:30:00-05:00",
-        "origin/main 2024-01-10T14:20:00-05:00",
-      ].join("\n");
+      const mockOutput = ["origin/feature|wip 2024-01-15T10:30:00-05:00", "origin/main 2024-01-10T14:20:00-05:00"].join(
+        "\n",
+      );
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
 
@@ -808,9 +1114,7 @@ describe("GitService", () => {
       const trasher = vi.fn<any>().mockRejectedValue(new Error("ENOENT: no such file or directory"));
       gitService.setStaleDirectoryTrasher(trasher as unknown as (dirPath: string) => Promise<string>);
 
-      (fs.access as Mock<any>).mockRejectedValue(
-        Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }),
-      );
+      (fs.access as Mock<any>).mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       mockGit.raw.mockReset();
       mockGit.raw
@@ -2050,7 +2354,9 @@ prunable
 
     it("should throw when fetch fails during initialization", async () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
-      mockGit.raw.mockRejectedValueOnce(new Error("config not found"));
+      mockGit.raw
+        .mockResolvedValueOnce(TEST_URLS.github as any) // origin URL matches repoUrl
+        .mockRejectedValueOnce(new Error("config not found"));
       mockGit.fetch.mockRejectedValueOnce(new Error("Network unreachable"));
 
       await expect(gitService.initialize()).rejects.toThrow("Network unreachable");
@@ -2061,12 +2367,14 @@ prunable
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
       // Sequence all raw calls in order of execution:
-      // 1. config check → reject (triggers addConfig)
-      // 2. symbolic-ref → reject (first detection attempt fails)
-      // 3. set-head → reject (skips second symbolic-ref, falls to branch -r)
-      // 4. worktree list → returns main worktree so no creation needed
+      // 1. remote get-url origin → matches repoUrl
+      // 2. config check → reject (triggers addConfig)
+      // 3. symbolic-ref → reject (first detection attempt fails)
+      // 4. set-head → reject (skips second symbolic-ref, falls to branch -r)
+      // 5. worktree list → returns main worktree so no creation needed
       mockGit.raw.mockReset();
       mockGit.raw
+        .mockResolvedValueOnce(TEST_URLS.github as any)
         .mockRejectedValueOnce(new Error("config not found"))
         .mockRejectedValueOnce(new Error("not a symbolic ref"))
         .mockRejectedValueOnce(new Error("set-head failed"))
@@ -2163,6 +2471,51 @@ prunable
           ["sparse-checkout", "set", "--no-cone", "/*", "!docs"],
           ["checkout", "HEAD"],
         ]),
+      );
+    });
+
+    // The GIT_ATTR_SOURCE=HEAD client used for `lfs ls-files` passes an explicit
+    // env, and simple-git validates explicit envs (GIT_ASKPASS, GIT_CONFIG_COUNT)
+    // that a default client inherits freely. Without the same allowances as
+    // getCachedGit's clients, a VS Code askpass bridge or CI config-count in the
+    // forwarded environment throws before `lfs ls-files` runs, and the LFS
+    // verification is silently skipped.
+    it("creates the LFS-verification client with the unsafe-env allowances", async () => {
+      const sparseConfig: Config = {
+        ...createMockConfig(),
+        sparseCheckout: { include: ["apps"] },
+      };
+
+      // applySparseAndCheckout also creates a worktree client — through
+      // getCachedGit, which already carries the allowances — so hand out a
+      // fresh client per simpleGit() call and pair each .env() with the
+      // options its own client was constructed with.
+      const envClients: Array<{ options: unknown; env: NodeJS.ProcessEnv }> = [];
+      (simpleGit as unknown as Mock).mockImplementation((p?: any, options?: unknown) => {
+        if (!(p && p.includes("feature-1"))) return mockGit;
+        const client: any = {
+          branch: vi.fn<any>().mockResolvedValue(undefined),
+          raw: vi.fn<any>().mockResolvedValue(""),
+          revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        };
+        client.env = vi.fn((env: NodeJS.ProcessEnv) => {
+          envClients.push({ options, env });
+          return client;
+        });
+        return client;
+      });
+
+      mockShowRef({ local: false, remote: true });
+
+      const sparseGitService = new GitService(sparseConfig, mockLogger);
+
+      await sparseGitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      const lfsClient = envClients.find(({ env }) => env[ENV_CONSTANTS.GIT_ATTR_SOURCE] === "HEAD");
+      expect(lfsClient).toBeDefined();
+      expect(lfsClient!.env).toMatchObject({ PATH: process.env.PATH });
+      expect(lfsClient!.options).toEqual(
+        expect.objectContaining({ unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true } }),
       );
     });
 

@@ -19,9 +19,7 @@ const WHEEL_LINES = 3;
 type ScrollState = { follow: boolean; offset: number };
 
 type ScrollAction =
-  | { type: "by"; delta: number; maxOffset: number }
-  | { type: "top" }
-  | { type: "bottom"; maxOffset: number };
+  { type: "by"; delta: number; maxOffset: number } | { type: "top" } | { type: "bottom"; maxOffset: number };
 
 function scrollReducer(state: ScrollState, action: ScrollAction): ScrollState {
   switch (action.type) {
@@ -149,9 +147,7 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
   return (
     <Box borderStyle="single" flexDirection="column" flexGrow={1} paddingX={1}>
       <Box justifyContent="space-between">
-        <Text bold>
-          📋 Logs {logs.length > 0 && <Text dimColor>({logs.length} entries)</Text>}
-        </Text>
+        <Text bold>📋 Logs {logs.length > 0 && <Text dimColor>({logs.length} entries)</Text>}</Text>
         {isActive && (
           <Text dimColor>
             {hasMoreAbove || hasMoreBelow ? "↑/↓ scroll" : ""} {autoScroll ? "(auto)" : ""}
@@ -159,11 +155,7 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
         )}
       </Box>
 
-      {hasMoreAbove && (
-        <Text dimColor>
-          ↑ {aboveCount} more above
-        </Text>
-      )}
+      {hasMoreAbove && <Text dimColor>↑ {aboveCount} more above</Text>}
 
       {visibleLogs.map((log) => (
         <Text key={log.id} color={getLogColor(log.level)} wrap="truncate">
@@ -175,11 +167,7 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
         <Text key={`empty-${i}`}> </Text>
       ))}
 
-      {hasMoreBelow && (
-        <Text dimColor>
-          ↓ {belowCount} more below
-        </Text>
-      )}
+      {hasMoreBelow && <Text dimColor>↓ {belowCount} more below</Text>}
     </Box>
   );
 };

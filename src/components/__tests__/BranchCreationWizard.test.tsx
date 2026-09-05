@@ -2,7 +2,8 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import BranchCreationWizard, { BranchCreationWizardProps } from "../BranchCreationWizard";
+import type { BranchCreationWizardProps } from "../BranchCreationWizard";
+import BranchCreationWizard from "../BranchCreationWizard";
 
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -334,9 +335,7 @@ describe("BranchCreationWizard", () => {
       await waitForStateUpdate();
 
       expect(createAndPushBranch).toHaveBeenCalledWith(2, "main", "my-feature");
-      expect(onBranchCreated).toHaveBeenCalledWith(
-        expect.objectContaining({ repoIndex: 2 }),
-      );
+      expect(onBranchCreated).toHaveBeenCalledWith(expect.objectContaining({ repoIndex: 2 }));
     });
   });
 

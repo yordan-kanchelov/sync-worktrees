@@ -16,17 +16,11 @@
     "resolveJsonModule": true,
     "resolvePackageJsonExports": true,
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    "declarationMap": false,
+    "sourceMap": false,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src/**/*"],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "src/**/__tests__/**/*",
-    "src/**/*.test.ts",
-    "src/**/*.spec.ts"
-  ]
+  "exclude": ["node_modules", "dist", "src/**/__tests__/**/*", "src/**/*.test.ts", "src/**/*.spec.ts"]
 }

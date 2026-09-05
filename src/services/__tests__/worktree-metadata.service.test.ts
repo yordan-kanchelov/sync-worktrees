@@ -568,7 +568,12 @@ describe("WorktreeMetadataService", () => {
         "fatal: not a git repository",
       );
 
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("❌ Failed to create metadata"), expect.anything());
+      // Logger.error prints one scrubbed line (message + inspected error) rather
+      // than handing the raw Error to console.error, so credential-bearing URLs
+      // in git output never reach the terminal unredacted.
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("❌ Failed to create metadata Error: fatal: not a git repository"),
+      );
 
       consoleSpy.mockRestore();
       logSpy.mockRestore();
