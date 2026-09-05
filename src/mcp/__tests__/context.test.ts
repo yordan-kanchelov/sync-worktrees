@@ -1272,3 +1272,104 @@ describe("RepositoryContext launchCwd", () => {
     expect(ctx.getLaunchCwd()).toBe(path.resolve("/some/relative/../abs/path"));
   });
 });
+
+describe("RepositoryContext repoUrl credential redaction", () => {
+  const TOKEN_URL = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+  const REDACTED_URL = "https://***@github.com/test/repo.git";
+  let fixture: Awaited<ReturnType<typeof makeWorktreeFixture>>;
+
+  beforeEach(async () => {
+    fixture = await makeWorktreeFixture();
+    mockRemoteUrl.mockReset();
+    mockWorktreeList.mockReset();
+  });
+
+  afterEach(async () => {
+    await fixture.cleanup();
+  });
+
+  it("redacts the origin URL read from git in the discovered context but keeps it for git operations", async () => {
+    mockRemoteUrl.mockResolvedValue(`${TOKEN_URL}\n`);
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    const result = await ctx.detectFromPath(fixture.currentWorktree);
+
+    expect(result.repoUrl).toBe(REDACTED_URL);
+    expect(JSON.stringify(result)).not.toContain("s3cr3t-token");
+    // Detection still recognises a usable remote.
+    expect(result.capabilities.createWorktree.available).toBe(true);
+    // The auto-detected entry that backs git operations keeps the working URL;
+    // only the presentation list is redacted.
+    expect(result.repoName).not.toBeNull();
+    expect(ctx.getEntry(result.repoName as string)?.config.repoUrl).toBe(TOKEN_URL);
+    expect(ctx.getRepositoryList()).toEqual([
+      expect.objectContaining({ name: result.repoName, repoUrl: REDACTED_URL }),
+    ]);
+  });
+
+  it("redacts configured repoUrls in sibling repositories, the repository list and detailed summaries", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    ctx.__registerForTest("token-repo", {
+      config: {
+        repoUrl: TOKEN_URL,
+        bareRepoDir: "/repos/token-repo/.bare",
+        worktreeDir: "/repos/token-repo/worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+
+    const result = await ctx.detectFromPath(fixture.currentWorktree);
+
+    expect(result.siblingRepositories).toEqual([
+      expect.objectContaining({ name: "token-repo", repoUrl: REDACTED_URL, configMatched: true }),
+    ]);
+    expect(ctx.getRepositoryList()).toContainEqual(
+      expect.objectContaining({ name: "token-repo", repoUrl: REDACTED_URL }),
+    );
+    await expect(ctx.getConfiguredRepositorySummaries({ detailed: true })).resolves.toEqual([
+      expect.objectContaining({ name: "token-repo", mode: "worktree", repoUrl: REDACTED_URL }),
+    ]);
+    expect(JSON.stringify([result, ctx.getRepositoryList()])).not.toContain("s3cr3t-token");
+    expect(ctx.getEntry("token-repo")?.config.repoUrl).toBe(TOKEN_URL);
+  });
+
+  it("redacts the configured repoUrl of a clone-mode checkout", async () => {
+    const cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-token-"));
+    try {
+      await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
+      mockWorktreeList.mockResolvedValue("main\n");
+
+      const ctx = new RepositoryContext();
+      ctx.__registerForTest("clone-repo", {
+        config: {
+          repoUrl: TOKEN_URL,
+          worktreeDir: cloneDir,
+          mode: "clone",
+          cronSchedule: "0 * * * *",
+          runOnce: true,
+        },
+        source: "config" as const,
+      });
+
+      const result = await ctx.detectFromPath(cloneDir);
+
+      expect(result.kind).toBe("managed");
+      expect(result.repoName).toBe("clone-repo");
+      expect(result.repoUrl).toBe(REDACTED_URL);
+      expect(JSON.stringify(result)).not.toContain("s3cr3t-token");
+      expect(ctx.getEntry("clone-repo")?.config.repoUrl).toBe(TOKEN_URL);
+    } finally {
+      await fs.rm(cloneDir, { recursive: true, force: true });
+    }
+  });
+});

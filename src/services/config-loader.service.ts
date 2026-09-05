@@ -9,7 +9,7 @@ import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } fr
 import { matchesPattern } from "../utils/branch-filter";
 import { parseDuration } from "../utils/date-filter";
 import { fileExists } from "../utils/file-exists";
-import { getDefaultBareRepoDir } from "../utils/git-url";
+import { getDefaultBareRepoDir, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
 import { normalizePathForCompare } from "../utils/path-compare";
 import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
@@ -120,7 +120,7 @@ export class ConfigLoaderService {
 
       if (!this.isValidGitUrl(repoObj.repoUrl)) {
         throw new Error(
-          `Repository '${repoObj.name}' has invalid 'repoUrl': '${repoObj.repoUrl}'. ` +
+          `Repository '${repoObj.name}' has invalid 'repoUrl': '${redactSecretsInText(repoObj.repoUrl)}'. ` +
             `Expected an HTTP(S), SSH, Git protocol URL, or a local/file path (file://, absolute filesystem path)`,
         );
       }
@@ -522,7 +522,7 @@ export class ConfigLoaderService {
     for (const [url, names] of seen) {
       if (names.length > 1) {
         console.warn(
-          `[sync-worktrees] repoUrl '${url}' appears in multiple entries (${names.join(", ")}). ` +
+          `[sync-worktrees] repoUrl '${redactRepoUrl(url)}' appears in multiple entries (${names.join(", ")}). ` +
             `Pin 'bareRepoDir' on duplicate entries to make config reorder-proof.`,
         );
       }

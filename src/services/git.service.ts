@@ -8,7 +8,7 @@ import { GitOperationError, WorktreeError, WorktreeNotCleanError } from "../erro
 import { probePathExists } from "../utils/file-exists";
 import { sanitizeGitEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
-import { getDefaultBareRepoDir } from "../utils/git-url";
+import { getDefaultBareRepoDir, redactRepoUrl } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 import { quarantineDirectory } from "../utils/quarantine";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
@@ -116,7 +116,7 @@ export class GitService {
       await fs.access(path.join(this.bareRepoPath, "HEAD"));
     } catch {
       // Clone as bare repository
-      this.logger.info(`Cloning from "${repoUrl}" as bare repository into "${this.bareRepoPath}"...`);
+      this.logger.info(`Cloning from "${redactRepoUrl(repoUrl)}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
       const cloneBase = simpleGit(this.buildSimpleGitOptions(this.getCloneTimeoutMs()));
       const cloneGit = this.isLfsSkipEnabled()
@@ -298,20 +298,20 @@ export class GitService {
 
     if (existing.length === 1) {
       this.logger.warn(
-        `Could not read symref HEAD for '${repoUrl}'; using the only common branch found ('${existing[0]}') as the default.`,
+        `Could not read symref HEAD for '${redactRepoUrl(repoUrl)}'; using the only common branch found ('${existing[0]}') as the default.`,
       );
       return existing[0];
     }
 
     if (existing.length > 1) {
       throw new Error(
-        `Unable to detect default branch for '${repoUrl}': symref HEAD is unavailable and multiple common branches exist (${existing.join(", ")}). ` +
+        `Unable to detect default branch for '${redactRepoUrl(repoUrl)}': symref HEAD is unavailable and multiple common branches exist (${existing.join(", ")}). ` +
           `Set 'branch' explicitly in the repository config.`,
       );
     }
 
     throw new Error(
-      `Unable to detect default branch for '${repoUrl}'. ` +
+      `Unable to detect default branch for '${redactRepoUrl(repoUrl)}'. ` +
         `Set 'branch' explicitly in the repository config or ensure the remote is reachable.`,
     );
   }

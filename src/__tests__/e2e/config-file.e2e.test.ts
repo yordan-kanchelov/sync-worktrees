@@ -272,4 +272,31 @@ export default {
 
     expect(output).toContain("age-repo");
   });
+
+  it("redacts credentials embedded in repoUrl from the list output", async () => {
+    const configPath = path.join(tmpBase, "token-url.config.js");
+    await fs.mkdir(tmpBase, { recursive: true });
+
+    const configContent = `
+export default {
+  repositories: [
+    {
+      name: "token-repo",
+      repoUrl: "https://ci-bot:s3cr3t-token@example.com/org/repo.git",
+      worktreeDir: "${path.join(tmpBase, "worktrees-token").replace(/\\/g, "/")}"
+    }
+  ]
+};
+`;
+
+    await fs.writeFile(configPath, configContent);
+
+    const output = execSync(`node "${cliPath}" list --config "${configPath}"`, {
+      encoding: "utf-8",
+    });
+
+    expect(output).toContain("token-repo");
+    expect(output).toContain("URL: https://***@example.com/org/repo.git");
+    expect(output).not.toContain("s3cr3t-token");
+  });
 });

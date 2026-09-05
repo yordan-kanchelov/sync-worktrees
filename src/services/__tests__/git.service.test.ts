@@ -165,6 +165,17 @@ describe("GitService", () => {
   });
 
   describe("getRemoteDefaultBranch (#6)", () => {
+    it("names the remote with credentials redacted when no default branch can be detected", async () => {
+      const tokenUrl = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+      (mockGit.raw as Mock).mockImplementation(async () => ""); // no symref, no common branch
+
+      await expect(gitService.getRemoteDefaultBranch(tokenUrl)).rejects.toThrow(
+        "Unable to detect default branch for 'https://***@github.com/test/repo.git'.",
+      );
+      // git itself is still handed the working URL.
+      expect(mockGit.raw).toHaveBeenCalledWith(["ls-remote", "--symref", tokenUrl, "HEAD"]);
+    });
+
     it("returns the branch from ls-remote --symref HEAD", async () => {
       (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
         const a = args as string[];
@@ -203,6 +214,25 @@ describe("GitService", () => {
   });
 
   describe("initialize", () => {
+    it("logs the bare clone with credentials redacted while git receives the working URL", async () => {
+      const tokenUrl = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+      gitService = new GitService(createMockConfig({ repoUrl: tokenUrl }), mockLogger);
+      (fs.access as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw
+        .mockRejectedValueOnce(new Error("config not found"))
+        .mockResolvedValueOnce("" as any)
+        .mockResolvedValueOnce("" as any);
+
+      await gitService.initialize();
+
+      expect(mockGit.clone).toHaveBeenCalledWith(tokenUrl, ".bare/repo", ["--bare", "--progress"]);
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        'Cloning from "https://***@github.com/test/repo.git" as bare repository into ".bare/repo"...',
+      );
+      expect(JSON.stringify((mockLogger.info as Mock).mock.calls)).not.toContain("s3cr3t-token");
+    });
+
     it("should use existing bare repository when it exists", async () => {
       // Mock fs.access to succeed (bare repo exists)
       (fs.access as Mock<any>).mockResolvedValue(undefined);

@@ -1768,3 +1768,90 @@ describe("handleDetectContext includeStatus", () => {
     expect(body.allWorktreeErrorsByRepo).toEqual({ broken: "git worktree list failed" });
   });
 });
+
+describe("credential redaction in tool responses", () => {
+  const TOKEN_URL = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+  const REDACTED_URL = "https://***@github.com/test/repo.git";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("detect_context never echoes credentials from repoUrl, siblings, configured repositories or git errors", async () => {
+    const { ctx } = makeCtx({
+      discovered: makeDiscovered({
+        repoUrl: TOKEN_URL,
+        siblingRepositories: [
+          {
+            name: "sib",
+            bareRepoPath: "/ws/sib/.bare",
+            worktreeDir: "/ws/sib/worktrees",
+            repoUrl: TOKEN_URL,
+            present: true,
+            configMatched: true,
+          },
+        ],
+        notes: [`Failed to read bare repo at /ws/.bare: fatal: unable to access '${TOKEN_URL}/': 403`],
+      }),
+      configuredRepositorySummaries: [
+        {
+          name: "frontend",
+          mode: "worktree",
+          worktreeDir: "/ws/frontend",
+          repoUrl: TOKEN_URL,
+          bareRepoDir: "/ws/.bare/frontend",
+          isCurrent: true,
+          localReady: true,
+        },
+      ],
+      allConfiguredWorktreeErrors: { frontend: `fatal: could not read from remote repository ${TOKEN_URL}` },
+    });
+
+    const result = await invoke(handleDetectContext, ctx, { detailed: true, includeAllWorktrees: true });
+    const body = parseResponse(result);
+
+    expect(body.repoUrl).toBe(REDACTED_URL);
+    expect(body.siblingRepositories[0].repoUrl).toBe(REDACTED_URL);
+    expect(body.configuredRepositories[0].repoUrl).toBe(REDACTED_URL);
+    expect(body.notes[0]).toBe(
+      `Failed to read bare repo at /ws/.bare: fatal: unable to access '${REDACTED_URL}/': 403`,
+    );
+    expect(body.allWorktreeErrorsByRepo.frontend).toBe(`fatal: could not read from remote repository ${REDACTED_URL}`);
+    expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
+  });
+
+  it("load_config never echoes credentials from the repository list", async () => {
+    const { ctx } = makeCtx({ configPath: "/ws/sync-worktrees.config.js" });
+    vi.mocked(ctx.getRepositoryList).mockReturnValue([
+      { name: "frontend", repoUrl: TOKEN_URL, worktreeDir: "/ws/frontend", source: "config" },
+    ]);
+
+    const result = await invoke(handleLoadConfig, ctx, { configPath: "/ws/sync-worktrees.config.js" });
+    const body = parseResponse(result);
+
+    expect(body.repositories).toEqual([
+      { name: "frontend", repoUrl: REDACTED_URL, worktreeDir: "/ws/frontend", source: "config" },
+    ]);
+    expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
+  });
+
+  it("sync turns a git error that quotes the remote URL into a redacted error response", async () => {
+    const { ctx } = makeCtx({
+      service: {
+        sync: vi
+          .fn<any>()
+          .mockRejectedValue(
+            new Error(`fatal: unable to access '${TOKEN_URL}/': The requested URL returned error: 403`),
+          ),
+      },
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("INTERNAL_ERROR");
+    expect(body.message).toBe(`fatal: unable to access '${REDACTED_URL}/': The requested URL returned error: 403`);
+    expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
+  });
+});

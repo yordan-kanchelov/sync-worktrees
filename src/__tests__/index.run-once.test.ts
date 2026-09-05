@@ -222,4 +222,25 @@ describe("runMultipleRepositories", () => {
     expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("0 skipped"));
     expect(process.exitCode).toBe(1);
   });
+
+  it("prints the run-once banner with credentials stripped from the repository URL", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+    const tokenRepo: RepositoryConfig = { ...repo, repoUrl: "https://ci-bot:s3cr3t-token@example.com/r.git" };
+
+    await runMultipleRepositories(configFile, [tokenRepo]);
+
+    expect(mocks.logger.info).toHaveBeenCalledWith("   URL: https://***@example.com/r.git");
+    const everything = [
+      ...mocks.logger.info.mock.calls,
+      ...mocks.logger.warn.mock.calls,
+      ...mocks.logger.error.mock.calls,
+    ]
+      .flat()
+      .map(String)
+      .join("\n");
+    expect(everything).not.toContain("s3cr3t-token");
+  });
 });

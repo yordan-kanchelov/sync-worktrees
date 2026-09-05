@@ -8,6 +8,7 @@ import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
+import { redactRepoUrl } from "../utils/git-url";
 import { normalizePathForCompare } from "../utils/path-compare";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
@@ -70,6 +71,12 @@ export interface ConfiguredWorktreeRepositorySummary extends ConfiguredRepositor
 
 export type ConfiguredRepositorySummary = ConfiguredCloneRepositorySummary | ConfiguredWorktreeRepositorySummary;
 
+/**
+ * Presentation view of a discovered checkout, returned to MCP clients. Every
+ * `repoUrl` in it (and in the sibling / configured-repository summaries) is
+ * passed through {@link redactRepoUrl}; the working URL stays on the entry's
+ * `config`, which is what the services use for git operations.
+ */
 export interface DiscoveredRepoContext {
   isWorktree: boolean;
   kind: "managed" | "unmanaged" | "unsupported";
@@ -322,7 +329,7 @@ export class RepositoryContext {
         name: entry.name,
         bareRepoPath,
         worktreeDir: path.resolve(entry.config.worktreeDir),
-        repoUrl: entry.config.repoUrl,
+        repoUrl: redactRepoUrl(entry.config.repoUrl),
         present: configPresence[i],
         configMatched: true,
       };
@@ -601,7 +608,7 @@ export class RepositoryContext {
       currentBranch,
       currentWorktreePath: worktreeRoot,
       bareRepoPath,
-      repoUrl,
+      repoUrl: repoUrl === null ? null : redactRepoUrl(repoUrl),
       worktreeDir,
       allWorktrees: worktrees,
       siblingRepositories,
@@ -818,7 +825,7 @@ export class RepositoryContext {
   getRepositoryList(): Array<{ name: string; repoUrl: string; worktreeDir: string; source: "config" | "detected" }> {
     return Array.from(this.repos.values()).map((e) => ({
       name: e.name,
-      repoUrl: e.config.repoUrl,
+      repoUrl: redactRepoUrl(e.config.repoUrl),
       worktreeDir: e.config.worktreeDir,
       source: e.source,
     }));
@@ -852,7 +859,7 @@ export class RepositoryContext {
       entries.map((entry) =>
         limit(async () => {
           const summary = buildLean(entry);
-          summary.repoUrl = entry.config.repoUrl;
+          summary.repoUrl = redactRepoUrl(entry.config.repoUrl);
           if (entry.config.branch) summary.branch = entry.config.branch;
           if (entry.config.sparseCheckout) {
             const sc = entry.config.sparseCheckout;
@@ -971,7 +978,7 @@ export class RepositoryContext {
       currentBranch,
       currentWorktreePath: resolvedRoot,
       bareRepoPath: null,
-      repoUrl: entry.config.repoUrl,
+      repoUrl: redactRepoUrl(entry.config.repoUrl),
       worktreeDir: resolvedRoot,
       allWorktrees: [{ path: resolvedRoot, branch, isCurrent: true }],
       siblingRepositories: [],

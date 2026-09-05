@@ -1443,4 +1443,60 @@ describe("CloneSyncService", () => {
       expect(gitService.getRemoteDefaultBranch).not.toHaveBeenCalled();
     });
   });
+
+  describe("credential redaction", () => {
+    const TOKEN_URL = "https://ci-bot:s3cr3t-token@github.com/example/repo.git";
+    const REDACTED_URL = "https://***@github.com/example/repo.git";
+    const OTHER_TOKEN_URL = "https://other-bot:0th3r-token@github.com/example/other.git";
+
+    it("logs the clone with the URL redacted while git receives the working URL", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+      const infoSpy = vi.spyOn(logger, "info");
+      const config = makeConfig({ repoUrl: TOKEN_URL });
+      const service = new CloneSyncService(config, buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(gitMock.clone).toHaveBeenCalledWith(TOKEN_URL, config.worktreeDir, expect.any(Array));
+      expect(infoSpy).toHaveBeenCalledWith(`Cloning '${REDACTED_URL}' (main) into '${config.worktreeDir}'...`);
+      expect(JSON.stringify(infoSpy.mock.calls)).not.toContain("s3cr3t-token");
+    });
+
+    it("reports an origin mismatch with both URLs redacted in the skip, the warning and the progress event", async () => {
+      const skips: CloneSkipReason[] = [];
+      const progressEvents: Array<{ phase: string; message: string }> = [];
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "remote get-url origin") return OTHER_TOKEN_URL;
+        return "";
+      });
+      const warnSpy = vi.spyOn(logger, "warn");
+      const service = new CloneSyncService(makeConfig({ repoUrl: TOKEN_URL }), buildGitService(), logger, {
+        onSkip: (reason) => skips.push(reason),
+        progressEmitter: (event) => progressEvents.push(event),
+      });
+
+      await service.initialize();
+
+      expect(skips).toEqual([
+        { kind: "origin_mismatch", actual: "https://***@github.com/example/other.git", expected: REDACTED_URL },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`has origin 'https://***@github.com/example/other.git', expected '${REDACTED_URL}'`),
+      );
+      expect(progressEvents).toContainEqual(
+        expect.objectContaining({
+          phase: "skip",
+          message: `Skipping '${REDACTED_URL}': origin 'https://***@github.com/example/other.git' is not '${REDACTED_URL}'`,
+        }),
+      );
+      expect(JSON.stringify([skips, warnSpy.mock.calls, progressEvents])).not.toMatch(/s3cr3t-token|0th3r-token/);
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -62,7 +62,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T5** — With skipLfs:true every status probe runs git with an env of only
   {GIT_LFS_SKIP_SMUDGE:1} — global gitignore/config ignored, PATH lookup broken (5.3.1 env fix missed
   this site)
-- [ ] **T50** — Repository URLs are echoed verbatim in logs, the `list` command, error messages and
+- [x] **T50** — Repository URLs are echoed verbatim in logs, the `list` command, error messages and
   MCP responses, so a `https://user:TOKEN@host/repo.git` credential leaks into terminal scrollback,
   TUI log buffers and agent transcripts
 - [ ] **T22** — Worktree mode never checks that an existing bare repo's origin URL matches
@@ -2377,7 +2377,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   has not set one) in `sanitizeGitEnv` turns a silent 5-minute hang per tick into an immediate,
   actionable authentication error.
 
-### [ ] T50. Repository URLs are echoed verbatim in logs, the `list` command, error messages and MCP responses, so a `https://user:TOKEN@host/repo.git` credential leaks into terminal scrollback, TUI log buffers and agent transcripts
+### [x] T50. Repository URLs are echoed verbatim in logs, the `list` command, error messages and MCP responses, so a `https://user:TOKEN@host/repo.git` credential leaks into terminal scrollback, TUI log buffers and agent transcripts
 
 - **Category**: guardrail · **Subsystem**: security
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

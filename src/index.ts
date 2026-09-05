@@ -3,6 +3,7 @@
 import { realpathSync } from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { inspect } from "util";
 
 import { input } from "@inquirer/prompts";
 import pLimit from "p-limit";
@@ -17,6 +18,7 @@ import { CLI_COMMANDS, parseArguments } from "./utils/cli";
 import { formatCloneSkipReason } from "./utils/clone-skip-format";
 import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
 import { fileExists } from "./utils/file-exists";
+import { redactRepoUrl, redactSecretsInText } from "./utils/git-url";
 import { promptForInitConfig } from "./utils/interactive";
 import { maybeRegisterMcpClients } from "./utils/mcp-registration";
 import { setupSignalHandlers } from "./utils/signal-handlers";
@@ -65,7 +67,7 @@ export async function runMultipleRepositories(
           const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug);
 
           repoLogger.info(`\n📦 Repository: ${repoConfig.name}`);
-          repoLogger.info(`   URL: ${repoConfig.repoUrl}`);
+          repoLogger.info(`   URL: ${redactRepoUrl(repoConfig.repoUrl)}`);
           repoLogger.info(`   Worktrees: ${repoConfig.worktreeDir}`);
           if (repoConfig.bareRepoDir) {
             repoLogger.info(`   Bare repo: ${repoConfig.bareRepoDir}`);
@@ -230,7 +232,7 @@ async function runList(configPath: string, filter?: string): Promise<void> {
 
     repositories.forEach((repo, index) => {
       console.log(`${index + 1}. ${repo.name}`);
-      console.log(`   URL: ${repo.repoUrl}`);
+      console.log(`   URL: ${redactRepoUrl(repo.repoUrl)}`);
       console.log(`   Worktrees: ${repo.worktreeDir}`);
       console.log(`   Schedule: ${repo.cronSchedule}`);
       console.log(`   Run Once: ${repo.runOnce}`);
@@ -395,8 +397,10 @@ function isMainEntrypoint(): boolean {
 }
 
 if (isMainEntrypoint()) {
-  main().catch((error) => {
-    console.error("❌ Unhandled error:", error);
+  main().catch((error: unknown) => {
+    // Inspect before printing so a git error that quotes a credential-bearing
+    // remote URL can be scrubbed; console.error(msg, error) would print it raw.
+    console.error("❌ Unhandled error:", redactSecretsInText(typeof error === "string" ? error : inspect(error)));
     process.exit(1);
   });
 }
