@@ -3,7 +3,7 @@ import * as path from "path";
 
 import simpleGit from "simple-git";
 
-import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { sanitizeGitEnv } from "../utils/git-env";
@@ -194,60 +194,36 @@ export class GitService {
     }
 
     if (needsMainWorktree) {
-      // Create main worktree if it doesn't exist
+      // The default branch is created through the same path as every other
+      // branch. A directory already at its path that is not a registered
+      // worktree — the checkout left behind after `.bare/` was deleted to
+      // recover from corruption, an unrelated directory of the same name — is
+      // moved to trash or quarantine first, never adopted: this.git and every
+      // later fetch would otherwise run inside a non-repository.
       this.logger.info(`Creating ${this.defaultBranch} worktree at "${this.mainWorktreePath}"...`);
-      await fs.mkdir(this.config.worktreeDir, { recursive: true });
-      // Use absolute path for worktree add to avoid relative path issues
-      const absoluteWorktreePath = path.resolve(this.mainWorktreePath);
-
-      // Check if local branch exists
-      const branches = await bareGit.branch();
-      const defaultBranchExists = branches.all.includes(this.defaultBranch);
-
-      const useNoCheckoutMain = !!this.config.sparseCheckout;
-      const noCheckoutFlagMain = useNoCheckoutMain ? ["--no-checkout"] : [];
-
       try {
-        if (defaultBranchExists) {
-          await bareGit.raw(["worktree", "add", ...noCheckoutFlagMain, absoluteWorktreePath, this.defaultBranch]);
-          const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
-          await worktreeGit.branch(["--set-upstream-to", `origin/${this.defaultBranch}`, this.defaultBranch]);
-          await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, this.defaultBranch, false);
-        } else {
-          await bareGit.raw([
-            "worktree",
-            "add",
-            ...noCheckoutFlagMain,
-            "--track",
-            "-b",
-            this.defaultBranch,
-            absoluteWorktreePath,
-            `origin/${this.defaultBranch}`,
-          ]);
-          await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, this.defaultBranch, true);
-        }
+        await this.addWorktree(this.defaultBranch, this.mainWorktreePath);
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("already exists")) {
-          this.logger.info(
-            `${this.defaultBranch} worktree directory already exists at '${absoluteWorktreePath}', skipping creation.`,
-          );
-        } else {
+        // A concurrent creator can land between addWorktree's existence probe
+        // and git's own check, in which case git reports the path as already
+        // existing. That is benign only when the path is a registered worktree
+        // now; an unregistered directory stays an error.
+        if (
+          !getErrorMessage(error).includes(ERROR_MESSAGES.ALREADY_EXISTS) ||
+          !(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))
+        ) {
           throw error;
         }
+        this.logger.info(
+          `${this.defaultBranch} worktree at '${this.mainWorktreePath}' was registered concurrently; reusing it.`,
+        );
       }
 
-      // Ensure the worktree is registered by checking it exists in the list
-      const updatedWorktrees = await this.getWorktreesFromBare(bareGit, true);
-      const mainWorktreeRegistered = updatedWorktrees.some(
-        (w) => path.resolve(w.path) === path.resolve(this.mainWorktreePath),
-      );
-
-      if (!mainWorktreeRegistered) {
-        // Common under the mocked git of the unit suite; only worth a warning for real runs.
-        if (!isUnitTestShortcutEnabled()) {
-          this.logger.warn(`Main worktree was created but not found in worktree list. This may cause issues.`);
-        }
+      if (!(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))) {
+        throw new WorktreeError(
+          `${this.defaultBranch} worktree at '${path.resolve(this.mainWorktreePath)}' is not registered with the bare repository at '${path.resolve(this.bareRepoPath)}' after creation`,
+          "NOT_REGISTERED",
+        );
       }
     }
 
@@ -1532,6 +1508,12 @@ export class GitService {
 
   async getWorktreeMetadata(worktreePath: string): Promise<SyncMetadata | null> {
     return this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
+  }
+
+  private async isRegisteredWorktree(bareGit: SimpleGit, worktreePath: string): Promise<boolean> {
+    const absoluteWorktreePath = path.resolve(worktreePath);
+    const worktrees = await this.getWorktreesFromBare(bareGit, true);
+    return worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath && !w.isPrunable);
   }
 
   private async getWorktreesFromBare(

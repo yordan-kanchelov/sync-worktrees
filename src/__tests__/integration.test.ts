@@ -24,6 +24,13 @@ describe("Integration Tests", () => {
   let mockScheduledTask: { start: Mock; stop: Mock };
   let mockLogger: Logger;
 
+  // Bare-repository stand-in: the default-branch worktree is registered, so
+  // initialize() reuses it instead of creating one; every other call is a no-op.
+  const rawDefault = async (args: unknown): Promise<string> =>
+    Array.isArray(args) && args[0] === "worktree" && args[1] === "list"
+      ? `worktree ${TEST_PATHS.worktree}/main\nbranch refs/heads/main\n\n`
+      : "";
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockLogger = createMockLogger();
@@ -35,7 +42,7 @@ describe("Integration Tests", () => {
         all: ["origin/main", "origin/feature-1", "origin/feature-2"],
         current: "main",
       }),
-      raw: vi.fn<any>().mockResolvedValue(""),
+      raw: vi.fn<any>().mockImplementation(rawDefault),
       status: vi.fn<any>().mockResolvedValue({
         isClean: vi.fn().mockReturnValue(true),
       }),
@@ -75,40 +82,45 @@ describe("Integration Tests", () => {
 
   describe("Full sync workflow", () => {
     it("should skip creating worktree for currently checked out branch", async () => {
-      // Mock readdir to return empty (no existing worktrees)
+      // feature-1 is already checked out in a registered worktree; nothing
+      // else exists yet. `worktree add` registers its target, after which the
+      // path exists and the worktree list reports it.
       (fs.readdir as Mock<any>).mockResolvedValueOnce([]);
-
-      // Mock fetch for initialization
-      mockGit.fetch.mockResolvedValue({} as any);
-
-      // Mock raw calls for initialization and sync
-      mockGit.raw
-        .mockResolvedValueOnce(TEST_URLS.github) // remote get-url origin: the existing bare repo matches repoUrl
-        .mockImplementationOnce(() => {
-          throw new Error("config not found");
-        }) // config check
-        .mockResolvedValueOnce("worktree /test/repo\nbranch refs/heads/main\n\n") // worktree list for init
-        .mockResolvedValueOnce("") // worktree add for main during init (if needed)
-        .mockResolvedValueOnce(
-          "worktree /test/repo\nbranch refs/heads/main\n\nworktree /test/worktrees/main\nbranch refs/heads/main\n\n",
-        ) // worktree list for sync
-        .mockResolvedValue(""); // default for other calls
+      const registered: Array<{ path: string; branch: string }> = [
+        { path: `${TEST_PATHS.worktree}/feature-1`, branch: "feature-1" },
+      ];
+      (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+        const pathStr = String(p);
+        const underWorktreeDir = pathStr.startsWith(`${TEST_PATHS.worktree}/`);
+        const exists = registered.some((w) => pathStr === w.path || pathStr.startsWith(`${w.path}/`));
+        if (underWorktreeDir && !exists) {
+          throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+        }
+      });
+      (mockGit.raw as Mock<any>).mockImplementation(async (args: unknown) => {
+        const argsArray = args as string[];
+        if (argsArray[0] === "remote" && argsArray[1] === "get-url") return TEST_URLS.github;
+        if (argsArray[0] === "config") throw new Error("config not found");
+        if (argsArray[0] === "show-ref" && String(argsArray[argsArray.length - 1]).startsWith("refs/heads/")) {
+          throw new Error("show-ref: not found"); // no local branches yet: every add tracks origin
+        }
+        if (argsArray[0] === "worktree" && argsArray[1] === "list") {
+          return registered.map((w) => `worktree ${w.path}\nbranch refs/heads/${w.branch}\n`).join("\n");
+        }
+        if (argsArray[0] === "worktree" && argsArray[1] === "add") {
+          const branchIndex = argsArray.indexOf("-b") + 1;
+          registered.push({ path: argsArray[branchIndex + 1], branch: argsArray[branchIndex] });
+          return "";
+        }
+        return "";
+      });
 
       // Mock branch calls
-      mockGit.branch
-        .mockResolvedValueOnce({
-          // First call: git.branch(["-r"]) for remote branches
-          all: ["origin/main", "origin/feature-1", "origin/feature-2"],
-          current: "",
-        } as any)
-        .mockResolvedValueOnce({
-          // Second call: getCurrentBranch
-          current: "feature-1",
-          all: [],
-        } as any)
-        // Mock branch calls for addWorktree
-        .mockResolvedValueOnce({ all: [], current: "main" } as any) // for main worktree
-        .mockResolvedValueOnce({ all: [], current: "main" } as any); // for feature-2 worktree
+      (mockGit.branch as Mock<any>).mockImplementation(async (args?: unknown) =>
+        Array.isArray(args) && args[0] === "-r"
+          ? ({ all: ["origin/main", "origin/feature-1", "origin/feature-2"], current: "" } as any)
+          : ({ all: [], current: "main" } as any),
+      );
 
       const config = createMockConfig({ runOnce: true, logger: mockLogger });
 
@@ -189,7 +201,9 @@ describe("Integration Tests", () => {
       const config = createMockConfig({ runOnce: true, logger: mockLogger });
 
       // Make first worktree add fail
-      mockGit.raw.mockRejectedValueOnce(new Error("Worktree already exists")).mockResolvedValue("");
+      (mockGit.raw as Mock<any>)
+        .mockRejectedValueOnce(new Error("Worktree already exists"))
+        .mockImplementation(rawDefault);
 
       const service = new WorktreeSyncService(config);
       await service.initialize();
@@ -222,7 +236,7 @@ describe("Integration Tests", () => {
         const argsArray = args as string[];
         mockRawCalls.push(argsArray);
         if (argsArray[0] === "worktree" && argsArray[1] === "list" && argsArray[2] === "--porcelain") {
-          return `worktree /test/repo
+          return `worktree /test/worktrees/main
 branch refs/heads/main
 
 worktree /test/worktrees/feature-1
@@ -290,7 +304,7 @@ branch refs/heads/dirty-branch
         }
 
         if (argsArray[0] === "worktree" && argsArray[1] === "list" && argsArray[2] === "--porcelain") {
-          return `worktree /test/repo
+          return `worktree /test/worktrees/main
 branch refs/heads/main
 
 worktree /test/worktrees/feature-1

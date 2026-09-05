@@ -60,6 +60,65 @@ describe("GitService", () => {
   let mockMetadataService: any;
   let mockLogger: Logger;
 
+  const MAIN_WORKTREE_PATH = path.join(TEST_PATHS.worktree, "main");
+
+  // Args-keyed stand-in for the bare repository during initialize(). The
+  // worktree list reports the default-branch worktree from the start when
+  // `mainRegistered`, otherwise only once `worktree add` has run (unless
+  // `registersOnAdd` is false), so reuse, creation and a creation that never
+  // registered can be told apart. Returns the `worktree add` invocations.
+  const mockInitializeGit = (
+    opts: {
+      mainPath?: string;
+      mainRegistered?: boolean;
+      registersOnAdd?: boolean;
+      addError?: Error;
+      registersOnAddError?: boolean;
+      local?: boolean;
+      remote?: boolean;
+    } = {},
+  ): { addCalls: string[][] } => {
+    const mainPath = opts.mainPath ?? MAIN_WORKTREE_PATH;
+    let registered = opts.mainRegistered ?? false;
+    const addCalls: string[][] = [];
+    (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+      if (!Array.isArray(args)) return Promise.resolve("");
+      const [command, subcommand] = args as string[];
+      if (command === "remote" && subcommand === "get-url") return Promise.resolve(TEST_URLS.github);
+      if (command === "symbolic-ref") return Promise.resolve("refs/remotes/origin/main");
+      if (command === "worktree" && subcommand === "list") {
+        return Promise.resolve(
+          registered ? createWorktreeListOutput([{ path: mainPath, branch: "main", commit: "abc123" }]) : "",
+        );
+      }
+      if (command === "worktree" && subcommand === "add") {
+        addCalls.push(args as string[]);
+        if (opts.addError) {
+          registered = opts.registersOnAddError ?? false;
+          return Promise.reject(opts.addError);
+        }
+        registered = opts.registersOnAdd ?? true;
+        return Promise.resolve("");
+      }
+      if (command === "show-ref") {
+        const ref = args[args.length - 1] as string;
+        const exists = ref.startsWith("refs/heads/") ? (opts.local ?? false) : (opts.remote ?? true);
+        return exists ? Promise.resolve("") : Promise.reject(new Error("show-ref: not found"));
+      }
+      return Promise.resolve("");
+    });
+    return { addCalls };
+  };
+
+  // Everything exists except the default-branch worktree directory.
+  const mockMainWorktreeMissing = (mainPath: string = MAIN_WORKTREE_PATH): void => {
+    (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+      if (typeof p === "string" && (p === mainPath || p.startsWith(mainPath + path.sep))) {
+        throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+      }
+    });
+  };
+
   const mockShowRef = (opts: { local: boolean; remote: boolean }): void => {
     (mockGit.raw as Mock).mockImplementation((args: unknown) => {
       if (Array.isArray(args) && args[0] === "show-ref" && args[1] === "--verify") {
@@ -95,7 +154,18 @@ describe("GitService", () => {
         all: ["origin/main", "origin/feature-1", "origin/feature-2", "local-branch"],
         current: "main",
       }) as any,
-      raw: vi.fn<any>().mockResolvedValue("") as any,
+      // The default-branch worktree is registered by default, so initialize()
+      // reuses it. Tests that exercise its creation install their own stand-in
+      // with mockInitializeGit.
+      raw: vi
+        .fn<any>()
+        .mockImplementation((args: unknown) =>
+          Promise.resolve(
+            Array.isArray(args) && args[0] === "worktree" && args[1] === "list"
+              ? createWorktreeListOutput([{ path: MAIN_WORKTREE_PATH, branch: "main", commit: "abc123" }])
+              : "",
+          ),
+        ) as any,
       status: vi.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })) as any,
       reset: vi.fn<any>().mockResolvedValue(undefined) as any,
       clone: vi.fn<any>().mockResolvedValue(undefined) as any,
@@ -282,35 +352,16 @@ describe("GitService", () => {
     });
 
     it("should create main worktree if it doesn't exist", async () => {
-      // Mock fs.access to succeed (bare repo exists)
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
-      // Mock fs.mkdir
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock origin check, config check and worktree list
-      mockGit.raw
-        .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
-        .mockRejectedValueOnce(new Error("config not found")) // Second call: config check throws
-        .mockResolvedValueOnce("" as any) // Third call: getWorktreesFromBare returns empty
-        .mockResolvedValueOnce("" as any); // Fourth call: worktree add
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      const { addCalls } = mockInitializeGit({ local: false, remote: true });
+      mockMainWorktreeMissing();
 
       await gitService.initialize();
 
       // Fetch is always called to ensure remote refs are up-to-date
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(fs.mkdir).toHaveBeenCalledWith(TEST_PATHS.worktree, { recursive: true });
-      expect(mockGit.raw).toHaveBeenCalledWith([
-        "worktree",
-        "add",
-        "--track",
-        "-b",
-        "main",
-        TEST_PATHS.worktree + "/main",
-        "origin/main",
-      ]);
+      expect(addCalls).toEqual([["worktree", "add", "--track", "-b", "main", MAIN_WORKTREE_PATH, "origin/main"]]);
+      expect(gitService.isInitialized()).toBe(true);
     });
 
     it("should resolve relative paths to absolute paths when creating worktrees", async () => {
@@ -322,56 +373,133 @@ describe("GitService", () => {
         runOnce: false,
       };
       const relativeGitService = new GitService(relativeConfig);
-
-      // Mock fs.access to succeed (bare repo exists)
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
-      // Mock fs.mkdir
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock origin check, config check and worktree list
-      mockGit.raw
-        .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
-        .mockRejectedValueOnce(new Error("config not found")) // Second call: config check throws
-        .mockResolvedValueOnce("" as any) // Third call: getWorktreesFromBare returns empty
-        .mockResolvedValueOnce("" as any); // Fourth call: worktree add
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+      const expectedAbsolutePath = path.resolve("./test/worktrees/main");
+      const { addCalls } = mockInitializeGit({ mainPath: expectedAbsolutePath, local: false, remote: true });
+      mockMainWorktreeMissing(expectedAbsolutePath);
 
       await relativeGitService.initialize();
 
       // Fetch is always called to ensure remote refs are up-to-date
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       // Verify that the worktree add command received an absolute path
-      const expectedAbsolutePath = path.resolve("./test/worktrees/main");
-      expect(mockGit.raw).toHaveBeenCalledWith([
-        "worktree",
-        "add",
-        "--track",
-        "-b",
-        "main",
-        expectedAbsolutePath,
-        "origin/main",
-      ]);
+      expect(addCalls).toEqual([["worktree", "add", "--track", "-b", "main", expectedAbsolutePath, "origin/main"]]);
     });
 
-    it("should gracefully handle existing directory when creating main worktree", async () => {
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      mockGit.raw
-        .mockResolvedValueOnce(TEST_URLS.github as any) // origin URL matches repoUrl
-        .mockRejectedValueOnce(new Error("config not found")) // config check
-        .mockResolvedValueOnce("" as any) // worktree list empty => needsMainWorktree = true
-        .mockRejectedValueOnce(new Error("already exists")); // worktree add fails
-      mockGit.branch.mockResolvedValueOnce({
-        all: [],
-        current: "main",
-      } as any);
+    // A directory already sitting at the default-branch worktree path is
+    // either the registered worktree (reuse it) or stale (the checkout left
+    // behind after `.bare/` was deleted, an unrelated directory of the same
+    // name). A stale one must go through the same trash/quarantine handling as
+    // every other branch's stale directory and never be adopted: this.git
+    // would point at a non-repository and every later fetch would fail.
+    describe("existing directory at the default-branch worktree path", () => {
+      const worktreeAddCallOrder = (): number => {
+        const raw = mockGit.raw as Mock;
+        const index = raw.mock.calls.findIndex(
+          ([args]) => Array.isArray(args) && args[0] === "worktree" && args[1] === "add",
+        );
+        return raw.mock.invocationCallOrder[index];
+      };
 
-      await gitService.initialize();
+      it("reuses a registered default-branch worktree without touching it", async () => {
+        const { addCalls } = mockInitializeGit({ mainRegistered: true });
+        const trasher = vi.fn<any>().mockResolvedValue("/test/worktrees/.trash/id/payload");
+        gitService.setStaleDirectoryTrasher(trasher as unknown as (dirPath: string) => Promise<string>);
 
-      // Should NOT call fs.rm - handles the error gracefully instead
-      expect(fs.rm).not.toHaveBeenCalled();
+        await gitService.initialize();
+
+        expect(addCalls).toEqual([]);
+        expect(trasher).not.toHaveBeenCalled();
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(true);
+      });
+
+      it("moves an unregistered directory to trash before creating the worktree", async () => {
+        const { addCalls } = mockInitializeGit({ local: false, remote: true });
+        const trasher = vi.fn<any>().mockResolvedValue("/test/worktrees/.trash/id/payload");
+        gitService.setStaleDirectoryTrasher(trasher as unknown as (dirPath: string) => Promise<string>);
+
+        await gitService.initialize();
+
+        expect(trasher).toHaveBeenCalledWith(MAIN_WORKTREE_PATH);
+        expect(addCalls).toEqual([["worktree", "add", "--track", "-b", "main", MAIN_WORKTREE_PATH, "origin/main"]]);
+        expect(trasher.mock.invocationCallOrder[0]).toBeLessThan(worktreeAddCallOrder());
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(true);
+      });
+
+      it("quarantines an unregistered directory containing a .git instead of deleting it", async () => {
+        const { addCalls } = mockInitializeGit({ local: false, remote: true });
+
+        await gitService.initialize();
+
+        expect(fs.rename).toHaveBeenCalledWith(MAIN_WORKTREE_PATH, expect.stringContaining(".removed"));
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(addCalls).toHaveLength(1);
+        expect(gitService.isInitialized()).toBe(true);
+      });
+
+      it("deletes an unregistered directory without a .git before creating the worktree", async () => {
+        const { addCalls } = mockInitializeGit({ local: false, remote: true });
+        (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+          if (p === path.join(MAIN_WORKTREE_PATH, ".git")) {
+            throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+          }
+        });
+
+        await gitService.initialize();
+
+        expect(fs.rm).toHaveBeenCalledWith(MAIN_WORKTREE_PATH, { recursive: true, force: true });
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(addCalls).toHaveLength(1);
+      });
+
+      it("rejects naming the path when the worktree is still not registered after creation", async () => {
+        const { addCalls } = mockInitializeGit({ local: false, remote: true, registersOnAdd: false });
+        mockMainWorktreeMissing();
+
+        await expect(gitService.initialize()).rejects.toMatchObject({
+          code: "WORKTREE_NOT_REGISTERED",
+          message: expect.stringContaining(MAIN_WORKTREE_PATH),
+        });
+
+        expect(addCalls).toHaveLength(1);
+        expect(gitService.isInitialized()).toBe(false);
+      });
+
+      it("rejects git's 'already exists' when the directory is not a registered worktree", async () => {
+        mockInitializeGit({
+          local: false,
+          remote: true,
+          addError: new Error(`fatal: '${MAIN_WORKTREE_PATH}' already exists`),
+        });
+        mockMainWorktreeMissing();
+
+        await expect(gitService.initialize()).rejects.toThrow("already exists");
+
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(false);
+      });
+
+      it("reuses the worktree when git's 'already exists' comes from a concurrent registration", async () => {
+        mockInitializeGit({
+          local: false,
+          remote: true,
+          addError: new Error(`fatal: '${MAIN_WORKTREE_PATH}' already exists`),
+          registersOnAddError: true,
+        });
+        mockMainWorktreeMissing();
+        const trasher = vi.fn<any>().mockResolvedValue("/test/worktrees/.trash/id/payload");
+        gitService.setStaleDirectoryTrasher(trasher as unknown as (dirPath: string) => Promise<string>);
+
+        await gitService.initialize();
+
+        expect(trasher).not.toHaveBeenCalled();
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(true);
+      });
     });
 
     it("should not add duplicate fetch config when it already exists", async () => {
