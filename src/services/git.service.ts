@@ -4,11 +4,11 @@ import * as path from "path";
 import simpleGit from "simple-git";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import { GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
+import { ConfigError, GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { sanitizeGitEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
-import { getDefaultBareRepoDir, redactRepoUrl } from "../utils/git-url";
+import { getDefaultBareRepoDir, normalizeRepoUrlForComparison, redactRepoUrl } from "../utils/git-url";
 import { getErrorMessage } from "../utils/lfs-error";
 import { quarantineDirectory } from "../utils/quarantine";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
@@ -111,10 +111,18 @@ export class GitService {
   async initialize(): Promise<SimpleGit> {
     const { repoUrl } = this.config;
 
+    // Check if bare repo already exists
+    let bareRepoExists: boolean;
     try {
-      // Check if bare repo already exists
       await fs.access(path.join(this.bareRepoPath, "HEAD"));
+      bareRepoExists = true;
     } catch {
+      bareRepoExists = false;
+    }
+
+    if (bareRepoExists) {
+      await this.assertBareRepoOriginMatches(this.getCachedGit(this.bareRepoPath));
+    } else {
       // Clone as bare repository
       this.logger.info(`Cloning from "${redactRepoUrl(repoUrl)}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
@@ -246,6 +254,39 @@ export class GitService {
     // Use the main worktree as our primary git instance
     this.git = this.getCachedGit(this.mainWorktreePath);
     return this.git;
+  }
+
+  // An existing bare repo is found by path alone, and the default bareRepoDir
+  // is `.bare/<repo-name>` — the same directory for old-org/app and
+  // new-org/app. So before anything is fetched from it, its origin must be
+  // the configured repoUrl; otherwise a changed repoUrl would keep syncing
+  // the remote the bare repo was cloned from, and nothing in the log would
+  // say so. Mirrors clone mode's origin check: URLs compare normalized
+  // (scheme/host case, trailing slash, forge `.git`) so equivalent spellings
+  // don't false-positive, and are shown redacted. A bare repo whose origin
+  // cannot be read is not a mismatch — the fetch that follows reports it.
+  private async assertBareRepoOriginMatches(bareGit: SimpleGit): Promise<void> {
+    const bareRepoPath = path.resolve(this.bareRepoPath);
+
+    let originUrl: string;
+    try {
+      originUrl = (await bareGit.raw(["remote", "get-url", "origin"])).trim();
+    } catch {
+      this.logger.warn(`Could not read 'origin' remote URL from existing bare repository at '${bareRepoPath}'.`);
+      return;
+    }
+
+    if (!originUrl || normalizeRepoUrlForComparison(originUrl) === normalizeRepoUrlForComparison(this.config.repoUrl)) {
+      return;
+    }
+
+    const actual = redactRepoUrl(originUrl);
+    const expected = redactRepoUrl(this.config.repoUrl);
+    throw new ConfigError(
+      `Existing bare repository at '${bareRepoPath}' has origin '${actual}', expected '${expected}'. ` +
+        `Update the remote (git -C "${bareRepoPath}" remote set-url origin "${expected}") or point bareRepoDir at a fresh directory.`,
+      "ORIGIN_MISMATCH",
+    );
   }
 
   getGit(): SimpleGit {

@@ -403,6 +403,7 @@ export default config;
 Notes:
 
 - `bareRepoDir` defaults to `.bare/<repo-name>` if not specified.
+- If the bare repository at `bareRepoDir` already exists, its `origin` must be `repoUrl` (compared ignoring `.git`, a trailing slash and scheme/host case); otherwise initialization fails naming both URLs. Run `git -C <bareRepoDir> remote set-url origin <repoUrl>` or point `bareRepoDir` at a fresh directory.
 - Repository-specific settings override `defaults`.
 
 ### Clone mode

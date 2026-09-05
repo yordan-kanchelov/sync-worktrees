@@ -65,7 +65,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T50** — Repository URLs are echoed verbatim in logs, the `list` command, error messages and
   MCP responses, so a `https://user:TOKEN@host/repo.git` credential leaks into terminal scrollback,
   TUI log buffers and agent transcripts
-- [ ] **T22** — Worktree mode never checks that an existing bare repo's origin URL matches
+- [x] **T22** — Worktree mode never checks that an existing bare repo's origin URL matches
   config.repoUrl (clone mode does), so a changed repoUrl silently keeps syncing the old remote
 - [ ] **T21** — initialize() creates the default-branch worktree with a raw `worktree add` and
   treats git's 'already exists' as success; a pre-existing unregistered directory leaves the service
@@ -1309,7 +1309,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   re-cloning the bare repo with an existing worktree dir, `worktree add` failed with 'already
   exists' and `git status` inside reported 'not a git repository: .../bare2/worktrees/wt-b2'.
 
-### [ ] T22. Worktree mode never checks that an existing bare repo's origin URL matches config.repoUrl (clone mode does), so a changed repoUrl silently keeps syncing the old remote
+### [x] T22. Worktree mode never checks that an existing bare repo's origin URL matches config.repoUrl (clone mode does), so a changed repoUrl silently keeps syncing the old remote
 
 - **Category**: guardrail · **Subsystem**: git
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

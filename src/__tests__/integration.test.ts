@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 
-import { TEST_PATHS, createMockConfig, createMockLogger } from "./test-utils";
+import { TEST_PATHS, TEST_URLS, createMockConfig, createMockLogger } from "./test-utils";
 // import { parseArguments } from '../utils/cli'; // Skip due to ESM issues
 
 import type { Logger } from "../services/logger.service";
@@ -83,6 +83,7 @@ describe("Integration Tests", () => {
 
       // Mock raw calls for initialization and sync
       mockGit.raw
+        .mockResolvedValueOnce(TEST_URLS.github) // remote get-url origin: the existing bare repo matches repoUrl
         .mockImplementationOnce(() => {
           throw new Error("config not found");
         }) // config check

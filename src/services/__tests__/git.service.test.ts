@@ -15,7 +15,7 @@ import {
   setEnvVar,
 } from "../../__tests__/test-utils";
 import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
-import { WorktreeNotCleanError } from "../../errors";
+import { ConfigError, WorktreeNotCleanError } from "../../errors";
 import { GitService } from "../git.service";
 
 import type { Config } from "../../types";
@@ -238,12 +238,13 @@ describe("GitService", () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock config check to throw error (config doesn't exist)
+      // Mock origin check to match, config check to throw error (config doesn't exist)
       mockGit.raw
-        .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
+        .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
+        .mockRejectedValueOnce(new Error("config not found")) // Second call: config check throws
         .mockResolvedValueOnce(
           createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
-        ); // Second call: worktree list
+        ); // Third call: worktree list
 
       const git = await gitService.initialize();
 
@@ -273,6 +274,8 @@ describe("GitService", () => {
       expect(fs.mkdir).toHaveBeenCalled();
       expect(simpleGit).toHaveBeenCalledWith(expect.objectContaining({ progress: expect.any(Function) }));
       expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare", "--progress"]);
+      // A fresh clone's origin is repoUrl by construction; only an existing bare repo is checked.
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["remote", "get-url", "origin"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
@@ -283,11 +286,12 @@ describe("GitService", () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock config check and worktree list
+      // Mock origin check, config check and worktree list
       mockGit.raw
-        .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
-        .mockResolvedValueOnce("" as any) // Second call: getWorktreesFromBare returns empty
-        .mockResolvedValueOnce("" as any); // Third call: worktree add
+        .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
+        .mockRejectedValueOnce(new Error("config not found")) // Second call: config check throws
+        .mockResolvedValueOnce("" as any) // Third call: getWorktreesFromBare returns empty
+        .mockResolvedValueOnce("" as any); // Fourth call: worktree add
       mockGit.branch.mockResolvedValueOnce({
         all: [],
         current: "main",
@@ -323,11 +327,12 @@ describe("GitService", () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock config check and worktree list
+      // Mock origin check, config check and worktree list
       mockGit.raw
-        .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
-        .mockResolvedValueOnce("" as any) // Second call: getWorktreesFromBare returns empty
-        .mockResolvedValueOnce("" as any); // Third call: worktree add
+        .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
+        .mockRejectedValueOnce(new Error("config not found")) // Second call: config check throws
+        .mockResolvedValueOnce("" as any) // Third call: getWorktreesFromBare returns empty
+        .mockResolvedValueOnce("" as any); // Fourth call: worktree add
       mockGit.branch.mockResolvedValueOnce({
         all: [],
         current: "main",
@@ -354,6 +359,7 @@ describe("GitService", () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       mockGit.raw
+        .mockResolvedValueOnce(TEST_URLS.github as any) // origin URL matches repoUrl
         .mockRejectedValueOnce(new Error("config not found")) // config check
         .mockResolvedValueOnce("" as any) // worktree list empty => needsMainWorktree = true
         .mockRejectedValueOnce(new Error("already exists")); // worktree add fails
@@ -373,12 +379,13 @@ describe("GitService", () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       // Mock fs.mkdir
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock config check to return existing fetch config
+      // Mock origin check to match, config check to return existing fetch config
       mockGit.raw
-        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*") // First call: config exists
+        .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
+        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*") // Second call: config exists
         .mockResolvedValueOnce(
           createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
-        ); // Second call: worktree list
+        ); // Third call: worktree list
 
       const git = await gitService.initialize();
 
@@ -389,6 +396,92 @@ describe("GitService", () => {
       // Fetch is always called to ensure remote refs are up-to-date
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(git).toBe(mockGit);
+    });
+
+    // An existing bare repo is found by path alone, and the default bareRepoDir
+    // (`.bare/<repo-name>`) is the same directory for old-org/repo and
+    // new-org/repo, so its origin must be the configured repoUrl before anything
+    // is fetched from it.
+    describe("existing bare repository origin", () => {
+      const bareRepoPath = path.resolve(".bare/repo");
+      const mainWorktreeList = createWorktreeListOutput([
+        { path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" },
+      ]);
+
+      beforeEach(() => {
+        (fs.access as Mock<any>).mockResolvedValue(undefined);
+        (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      });
+
+      it("rejects with both URLs and the set-url remedy when origin differs from repoUrl, before any fetch", async () => {
+        gitService = new GitService(createMockConfig({ repoUrl: "https://gitlab.com/new-org/repo.git" }), mockLogger);
+        mockGit.raw.mockResolvedValueOnce("https://github.com/old-org/repo.git\n" as any); // remote get-url origin
+
+        await expect(gitService.initialize()).rejects.toMatchObject({
+          constructor: ConfigError,
+          code: "CONFIG_ORIGIN_MISMATCH",
+          message:
+            `Existing bare repository at '${bareRepoPath}' has origin 'https://github.com/old-org/repo.git', expected 'https://gitlab.com/new-org/repo.git'. ` +
+            `Update the remote (git -C "${bareRepoPath}" remote set-url origin "https://gitlab.com/new-org/repo.git") or point bareRepoDir at a fresh directory.`,
+        });
+
+        expect(mockGit.raw).toHaveBeenCalledWith(["remote", "get-url", "origin"]);
+        expect(mockGit.fetch).not.toHaveBeenCalled();
+        expect(mockGit.clone).not.toHaveBeenCalled();
+        expect(mockGit.addConfig).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(false);
+      });
+
+      it("redacts credentials in both URLs of the mismatch message", async () => {
+        gitService = new GitService(
+          createMockConfig({ repoUrl: "https://ci-bot:new-token@github.com/new-org/repo.git" }),
+          mockLogger,
+        );
+        mockGit.raw.mockResolvedValueOnce("https://old-bot:old-token@github.com/old-org/repo.git\n" as any);
+
+        await expect(gitService.initialize()).rejects.toMatchObject({
+          constructor: ConfigError,
+          code: "CONFIG_ORIGIN_MISMATCH",
+          message: expect.stringContaining(
+            "has origin 'https://***@github.com/old-org/repo.git', expected 'https://***@github.com/new-org/repo.git'. " +
+              `Update the remote (git -C "${bareRepoPath}" remote set-url origin "https://***@github.com/new-org/repo.git")`,
+          ),
+        });
+
+        expect(mockGit.fetch).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ["without the .git suffix", "https://github.com/test/repo"],
+        ["with a trailing slash", "https://github.com/test/repo.git/"],
+        ["with a different host case", "HTTPS://GitHub.COM/test/repo.git"],
+      ])("proceeds to fetch when origin is repoUrl %s", async (_variant, originUrl) => {
+        mockGit.raw
+          .mockResolvedValueOnce(`${originUrl}\n` as any) // remote get-url origin
+          .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+          .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
+          .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+
+        await expect(gitService.initialize()).resolves.toBe(mockGit);
+
+        expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
+        expect(mockLogger.warn).not.toHaveBeenCalled();
+      });
+
+      it("warns and proceeds when the bare repository has no readable origin", async () => {
+        mockGit.raw
+          .mockRejectedValueOnce(new Error("error: No such remote 'origin'")) // remote get-url origin
+          .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+          .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
+          .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+
+        await expect(gitService.initialize()).resolves.toBe(mockGit);
+
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          `Could not read 'origin' remote URL from existing bare repository at '${bareRepoPath}'.`,
+        );
+        expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
+      });
     });
   });
 
@@ -2133,7 +2226,9 @@ prunable
 
     it("should throw when fetch fails during initialization", async () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
-      mockGit.raw.mockRejectedValueOnce(new Error("config not found"));
+      mockGit.raw
+        .mockResolvedValueOnce(TEST_URLS.github as any) // origin URL matches repoUrl
+        .mockRejectedValueOnce(new Error("config not found"));
       mockGit.fetch.mockRejectedValueOnce(new Error("Network unreachable"));
 
       await expect(gitService.initialize()).rejects.toThrow("Network unreachable");
@@ -2144,12 +2239,14 @@ prunable
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
       // Sequence all raw calls in order of execution:
-      // 1. config check → reject (triggers addConfig)
-      // 2. symbolic-ref → reject (first detection attempt fails)
-      // 3. set-head → reject (skips second symbolic-ref, falls to branch -r)
-      // 4. worktree list → returns main worktree so no creation needed
+      // 1. remote get-url origin → matches repoUrl
+      // 2. config check → reject (triggers addConfig)
+      // 3. symbolic-ref → reject (first detection attempt fails)
+      // 4. set-head → reject (skips second symbolic-ref, falls to branch -r)
+      // 5. worktree list → returns main worktree so no creation needed
       mockGit.raw.mockReset();
       mockGit.raw
+        .mockResolvedValueOnce(TEST_URLS.github as any)
         .mockRejectedValueOnce(new Error("config not found"))
         .mockRejectedValueOnce(new Error("not a symbolic ref"))
         .mockRejectedValueOnce(new Error("set-head failed"))
