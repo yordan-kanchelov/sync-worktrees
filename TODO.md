@@ -82,7 +82,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 ### Batch 2 — worktree-mode create/update correctness
 
-- [ ] **T17** — Bare clone leaves stale refs/heads/* copies of every remote branch; the 'local &&
+- [x] **T17** — Bare clone leaves stale refs/heads/* copies of every remote branch; the 'local &&
   remote' worktree-add path checks out that stale tip and the same sync never fast-forwards it
 - [ ] **T18** — Default-branch detection is frozen to a dangling `refs/remotes/origin/HEAD`; after
   the remote renames its default branch every sync fails in the update phase and the old default is
@@ -1118,7 +1118,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   so the missing branch is not exercised; clone-sync tests drive `checkoutBranch` directly with
   `initialized=true`. F10/F13 addressed the MCP handler, not the TUI.
 
-### [ ] T17. Bare clone leaves stale refs/heads/* copies of every remote branch; the 'local && remote' worktree-add path checks out that stale tip and the same sync never fast-forwards it
+### [x] T17. Bare clone leaves stale refs/heads/* copies of every remote branch; the 'local && remote' worktree-add path checks out that stale tip and the same sync never fast-forwards it
 
 - **Category**: correctness · **Subsystem**: git
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

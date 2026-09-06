@@ -384,8 +384,9 @@ export class WorktreeModeSyncRunner {
     const results = await Promise.allSettled(
       plan.map(({ branchName, worktreePath }) =>
         limit(async () => {
+          let createdHead: string | null;
           try {
-            await this.gitService.addWorktree(branchName, worktreePath);
+            createdHead = await this.gitService.addWorktree(branchName, worktreePath);
             this.logger.info(`  ✅ Created worktree for '${branchName}'`);
             outcome.recordCreated(branchName, worktreePath);
           } catch (error) {
@@ -397,12 +398,44 @@ export class WorktreeModeSyncRunner {
             });
             throw error;
           }
+          await this.verifyCreatedWorktreeTip(branchName, worktreePath, createdHead, outcome);
         }),
       ),
     );
 
     const successCount = results.filter((r) => r.status === "fulfilled").length;
     this.logger.info(`  Created ${successCount}/${plan.length} worktrees successfully`);
+  }
+
+  // addWorktree starts a new worktree at origin/<branch> unless the bare
+  // repository's local ref for the branch carries commits origin/<branch>
+  // does not reach, in which case it keeps that tip. The update phase was
+  // planned before the create, so nothing else looks at the new worktree
+  // until the next sync: report the mismatch now rather than a plain
+  // "created" for a worktree whose files are not the remote's. Never fails
+  // the sync — the worktree exists and the next sync's update rules own it.
+  private async verifyCreatedWorktreeTip(
+    branch: string,
+    worktreePath: string,
+    createdHead: string | null,
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<void> {
+    if (!createdHead) return;
+
+    let remoteTip: string;
+    try {
+      remoteTip = await this.gitService.getRemoteCommit(`${GIT_CONSTANTS.REFS.REMOTES}/${branch}`);
+    } catch (error) {
+      this.logger.warn(
+        `  - ⚠️ Could not verify that the new worktree for '${branch}' starts at origin/${branch}: ${getErrorMessage(error)}`,
+      );
+      return;
+    }
+    if (remoteTip === createdHead) return;
+
+    const message = `Worktree starts at ${createdHead.slice(0, 7)} while origin/${branch} is at ${remoteTip.slice(0, 7)}: it was not moved to origin/${branch} (local-only commits, or the fast-forward was skipped; see the log); the next sync applies its usual update rules`;
+    this.logger.warn(`  - ⚠️ '${branch}': ${message}`);
+    outcome.recordSkipped("worktree", "local_only_commits", { branch, path: worktreePath, message });
   }
 
   // Persist each worktree's upstream tip while the remote ref still exists.

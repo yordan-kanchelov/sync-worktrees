@@ -120,7 +120,10 @@ describe("GitService", () => {
     });
   };
 
-  const mockShowRef = (opts: { local: boolean; remote: boolean }): void => {
+  // `localOnlyCommits` answers the `rev-list --count origin/<b>..<b>` probe of
+  // the local+remote path: 0 (the default) means the local ref is only behind
+  // the remote, "unknown" makes the probe fail.
+  const mockShowRef = (opts: { local: boolean; remote: boolean; localOnlyCommits?: number | "unknown" }): void => {
     (mockGit.raw as Mock).mockImplementation((args: unknown) => {
       if (Array.isArray(args) && args[0] === "show-ref" && args[1] === "--verify") {
         const ref = args[args.length - 1];
@@ -130,6 +133,12 @@ describe("GitService", () => {
         if (typeof ref === "string" && ref.startsWith("refs/remotes/origin/")) {
           return opts.remote ? Promise.resolve("") : Promise.reject(new Error("show-ref: not found"));
         }
+      }
+      if (Array.isArray(args) && args[0] === "rev-list" && args[1] === "--count") {
+        const count = opts.localOnlyCommits ?? 0;
+        return count === "unknown"
+          ? Promise.reject(new Error("rev-list: bad revision"))
+          : Promise.resolve(`${count}\n`);
       }
       return Promise.resolve("");
     });
@@ -291,6 +300,8 @@ describe("GitService", () => {
       (fs.access as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
       mockGit.raw
+        .mockResolvedValueOnce("refs/heads/main\n" as any) // symbolic-ref HEAD of the fresh clone
+        .mockResolvedValueOnce("refs/heads/main\n" as any) // for-each-ref refs/heads: only the default branch
         .mockRejectedValueOnce(new Error("config not found"))
         .mockResolvedValueOnce("" as any)
         .mockResolvedValueOnce("" as any);
@@ -371,11 +382,13 @@ describe("GitService", () => {
       (fs.access as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       // Mock fs.mkdir
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      // Mock config check and worktree list
+      // Mock the clone-copy cleanup, config check and worktree list
       mockGit.raw
-        .mockRejectedValueOnce(new Error("config not found")) // First call: config check throws
-        .mockResolvedValueOnce("" as any) // Second call: getWorktreesFromBare returns empty
-        .mockResolvedValueOnce("" as any); // Third call: worktree add
+        .mockResolvedValueOnce("refs/heads/main\n" as any) // symbolic-ref HEAD of the fresh clone
+        .mockResolvedValueOnce("refs/heads/main\n" as any) // for-each-ref refs/heads: only the default branch
+        .mockRejectedValueOnce(new Error("config not found")) // config check throws
+        .mockResolvedValueOnce("" as any) // getWorktreesFromBare returns empty
+        .mockResolvedValueOnce("" as any); // worktree add
 
       await gitService.initialize();
 
@@ -388,6 +401,108 @@ describe("GitService", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
+      // Only the default branch's copy was under refs/heads, so nothing to delete.
+      expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["branch", "-D"]));
+    });
+
+    // `git clone --bare` copies every remote branch into refs/heads/*, and the
+    // fetch refspec only updates refs/remotes/origin/*, so those copies stay
+    // frozen at clone time and a worktree added later would check out the
+    // frozen tip. They are dropped right after the clone — all but the branch
+    // HEAD points at, which the default-branch worktree is created from — in
+    // batches, since each `branch -D` call rewrites packed-refs once.
+    describe("clone-time refs/heads copies", () => {
+      // Args-keyed stand-in for a fresh clone whose refs/heads hold `branches`.
+      const mockFreshClone = (branches: string[], opts: { headRefError?: Error } = {}): void => {
+        (fs.access as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+        (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+        (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+          if (!Array.isArray(args)) return Promise.resolve("");
+          const [command, subcommand] = args as string[];
+          if (command === "symbolic-ref" && subcommand === "-q") {
+            return opts.headRefError ? Promise.reject(opts.headRefError) : Promise.resolve("refs/heads/main\n");
+          }
+          if (command === "symbolic-ref") return Promise.resolve("refs/remotes/origin/main");
+          if (command === "for-each-ref" && args[2] === "refs/heads/") {
+            return Promise.resolve(branches.map((b) => `refs/heads/${b}\n`).join(""));
+          }
+          if (command === "worktree" && subcommand === "list") {
+            return Promise.resolve(
+              createWorktreeListOutput([{ path: MAIN_WORKTREE_PATH, branch: "main", commit: "abc123" }]),
+            );
+          }
+          return Promise.resolve("");
+        });
+      };
+
+      const branchDeleteCalls = (): string[][] =>
+        mockGit.raw.mock.calls
+          .map((call) => call[0] as unknown as string[])
+          .filter((args) => Array.isArray(args) && args[0] === "branch" && args[1] === "-D");
+
+      it("deletes every non-default refs/heads copy right after a fresh clone", async () => {
+        mockFreshClone(["feature-1", "main", "release/2.0"]);
+
+        await gitService.initialize();
+
+        expect(mockGit.raw).toHaveBeenCalledWith(["for-each-ref", "--format=%(refname)", "refs/heads/"]);
+        expect(branchDeleteCalls()).toEqual([["branch", "-D", "feature-1", "release/2.0"]]);
+        expect(mockLogger.info).toHaveBeenCalledWith(
+          "Removed 2 clone-time local branch copies; worktrees are created from origin/* instead.",
+        );
+        // The cleanup runs before the fetch refspec is configured and the remote refs fetched.
+        const deleteOrder =
+          mockGit.raw.mock.invocationCallOrder[
+            mockGit.raw.mock.calls.findIndex((call) => (call[0] as unknown as string[])[0] === "branch")
+          ];
+        expect(deleteOrder).toBeLessThan(mockGit.fetch.mock.invocationCallOrder[0]);
+      });
+
+      it("deletes the copies in batches", async () => {
+        const branches = Array.from({ length: 450 }, (_, i) => `b/${i}`);
+        mockFreshClone(["main", ...branches]);
+
+        await gitService.initialize();
+
+        const calls = branchDeleteCalls();
+        expect(calls.map((args) => args.length - 2)).toEqual([200, 200, 50]);
+        expect(calls.flatMap((args) => args.slice(2))).toEqual(branches);
+      });
+
+      it("leaves the copies alone and continues when HEAD cannot be read", async () => {
+        mockFreshClone(["feature-1", "main"], { headRefError: new Error("fatal: ref HEAD is not a symbolic ref") });
+
+        await expect(gitService.initialize()).resolves.toBe(mockGit);
+
+        expect(branchDeleteCalls()).toEqual([]);
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("Could not remove clone-time local branch copies"),
+        );
+      });
+
+      it("never deletes refs/heads of an existing bare repository", async () => {
+        // Everything in the default fixture exists; the raw stand-in answers an
+        // existing repository's origin check and lists a full refs/heads.
+        (fs.access as Mock<any>).mockResolvedValue(undefined);
+        (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+          if (!Array.isArray(args)) return Promise.resolve("");
+          const [command, subcommand] = args as string[];
+          if (command === "remote" && subcommand === "get-url") return Promise.resolve(TEST_URLS.github);
+          if (command === "for-each-ref") return Promise.resolve("refs/heads/main\nrefs/heads/feature-1\n");
+          if (command === "worktree" && subcommand === "list") {
+            return Promise.resolve(
+              createWorktreeListOutput([{ path: MAIN_WORKTREE_PATH, branch: "main", commit: "abc123" }]),
+            );
+          }
+          return Promise.resolve("");
+        });
+
+        await gitService.initialize();
+
+        expect(mockGit.clone).not.toHaveBeenCalled();
+        expect(mockGit.raw).not.toHaveBeenCalledWith(["for-each-ref", "--format=%(refname)", "refs/heads/"]);
+        expect(branchDeleteCalls()).toEqual([]);
+      });
     });
 
     it("should create main worktree if it doesn't exist", async () => {
@@ -956,11 +1071,16 @@ describe("GitService", () => {
       ]);
     });
 
-    it("should add worktree and set upstream when branch exists locally", async () => {
-      mockShowRef({ local: true, remote: true });
+    // A bare clone copies every remote branch into refs/heads/* and the fetch
+    // refspec never updates those copies, so a local ref with no worktree is a
+    // stale snapshot. When it is only behind origin/<branch>, the worktree is
+    // created from it as before and then fast-forwarded to origin's tip.
+    it("should fast-forward a local branch that is only behind to origin's tip when it exists locally", async () => {
+      mockShowRef({ local: true, remote: true, localOnlyCommits: 0 });
 
       const worktreeGitMock = {
         branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi.fn<any>().mockResolvedValue(""),
         revparse: vi.fn<any>().mockResolvedValue("abc123"),
         env: vi.fn<any>().mockReturnThis(),
       };
@@ -978,13 +1098,140 @@ describe("GitService", () => {
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "rev-list",
+        "--count",
+        "refs/remotes/origin/feature-1..refs/heads/feature-1",
+      ]);
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
       expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
+      expect(worktreeGitMock.raw).toHaveBeenCalledWith(["merge", "--ff-only", "origin/feature-1"]);
+
+      // Probed before the add; fast-forwarded once the upstream is set.
+      const callOrder = (fn: Mock, matches: (args: string[]) => boolean): number =>
+        fn.mock.invocationCallOrder[fn.mock.calls.findIndex((call) => matches(call[0] as unknown as string[]))];
+      const revListOrder = callOrder(mockGit.raw as Mock, (args) => args[0] === "rev-list");
+      const addOrder = callOrder(mockGit.raw as Mock, (args) => args[0] === "worktree" && args[1] === "add");
+      const mergeOrder = callOrder(worktreeGitMock.raw as Mock, (args) => args[0] === "merge");
+      expect(revListOrder).toBeLessThan(addOrder);
+      expect(worktreeGitMock.branch.mock.invocationCallOrder[0]).toBeLessThan(mergeOrder);
 
       // Restore original implementation
       if (originalImplementation) {
         (simpleGit as unknown as Mock).mockImplementation(originalImplementation);
       }
+    });
+
+    // Commits not on origin/<branch> cannot be told apart from a copy whose
+    // history was rebased away on the remote, and only never-pushed work would
+    // be lost by a reset: the local tip is kept as before, with the upstream
+    // set, and the log says why it was not moved.
+    it("should keep the local tip when the local branch has commits not on origin", async () => {
+      mockShowRef({ local: true, remote: true, localOnlyCommits: 2 });
+
+      const worktreeGitMock = {
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi.fn<any>().mockResolvedValue(""),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+      );
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
+      expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
+      expect(worktreeGitMock.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["merge"]));
+      expect(worktreeGitMock.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["reset"]));
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        "  - Local branch 'feature-1' has 2 commit(s) not on origin/feature-1; keeping its current tip instead of resetting it",
+      );
+    });
+
+    it("should keep the local tip when the local-only commit probe fails", async () => {
+      mockShowRef({ local: true, remote: true, localOnlyCommits: "unknown" });
+
+      const worktreeGitMock = {
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi.fn<any>().mockResolvedValue(""),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+      );
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
+      expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
+      expect(worktreeGitMock.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["merge"]));
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        "  - Could not tell whether local branch 'feature-1' has commits not on origin/feature-1; keeping its current tip",
+      );
+    });
+
+    // A failed fast-forward is not a failed create: the worktree exists at the
+    // local tip, which the next sync's update phase fast-forwards.
+    it("should keep the worktree and warn when the fast-forward fails", async () => {
+      mockShowRef({ local: true, remote: true, localOnlyCommits: 0 });
+
+      const worktreeGitMock = {
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi
+          .fn<any>()
+          .mockImplementation((args: unknown) =>
+            Array.isArray(args) && args[0] === "merge"
+              ? Promise.reject(new Error("index.lock exists"))
+              : Promise.resolve(""),
+          ),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+      );
+
+      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).resolves.toBe("abc123");
+
+      expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["worktree", "remove"]));
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        "  - ⚠️ Could not fast-forward the new worktree for 'feature-1' to origin/feature-1: index.lock exists",
+      );
+    });
+
+    // The runner compares this against origin/<branch> after each create.
+    it("should resolve to the created worktree's HEAD, and to null when the path already is a worktree", async () => {
+      mockShowRef({ local: false, remote: true });
+      const worktreeGitMock = {
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi.fn<any>().mockResolvedValue(""),
+        revparse: vi.fn<any>().mockResolvedValue("f00dfeed\n"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+      );
+
+      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).resolves.toBe("f00dfeed");
+      expect(mockMetadataService.createInitialMetadataFromPath).toHaveBeenCalledWith(
+        expect.any(String),
+        "/test/worktrees/feature-1",
+        "f00dfeed",
+        "origin/feature-1",
+        "main",
+        expect.any(String),
+      );
+
+      (fs.access as Mock<any>).mockResolvedValueOnce(undefined);
+      mockGit.raw.mockReset();
+      mockGit.raw.mockResolvedValueOnce(
+        "worktree /test/worktrees/feature-1\n" + "HEAD abc123\n" + "branch refs/heads/feature-1\n\n",
+      );
+
+      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).resolves.toBeNull();
     });
 
     it("should resolve relative paths to absolute paths when adding worktrees", async () => {
@@ -1168,7 +1415,7 @@ describe("GitService", () => {
         .mockResolvedValueOnce("") // retry add succeeds
         .mockResolvedValueOnce(""); // LFS ls-files
 
-      await expect(gitService.addWorktree("feature-1", worktreePath)).resolves.toBeUndefined();
+      await expect(gitService.addWorktree("feature-1", worktreePath)).resolves.toBe("abc123");
 
       expect(trasher).not.toHaveBeenCalled();
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", worktreePath]);
@@ -1293,6 +1540,22 @@ describe("GitService", () => {
 
         expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
         expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
+        expect(worktreeGitMock.raw).toHaveBeenCalledWith(["merge", "--ff-only", "origin/feature-1"]);
+      });
+
+      it("should not fast-forward when both exist and the local branch has commits not on origin", async () => {
+        const worktreeGitMock = makeWorktreeGitMock();
+        (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+          p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+        );
+
+        mockShowRef({ local: true, remote: true, localOnlyCommits: 1 });
+
+        await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+        expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
+        expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
+        expect(worktreeGitMock.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["merge"]));
       });
 
       it("should use --track when local missing but remote exists", async () => {
@@ -2393,6 +2656,7 @@ prunable
     });
 
     it("should throw metadata error even when worktree cleanup also fails", async () => {
+      (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found")); // target directory absent
       mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(new Error("Failed to write metadata"));
 
       mockGit.raw.mockReset();
@@ -2501,6 +2765,61 @@ prunable
           ["checkout", "HEAD"],
         ]),
       );
+    });
+
+    // A --no-checkout worktree has no index or files yet, so the fast-forward
+    // only moves the ref; the checkout after the sparse setup populates it.
+    it("moves a behind local branch to origin's tip before the sparse checkout", async () => {
+      const sparseConfig: Config = {
+        ...createMockConfig(),
+        sparseCheckout: { include: ["apps"] },
+      };
+
+      const worktreeRawCalls: string[][] = [];
+      const worktreeGitMock: any = {
+        branch: vi.fn<any>().mockResolvedValue(undefined),
+        raw: vi.fn<any>().mockImplementation((...args: unknown[]) => {
+          worktreeRawCalls.push(args[0] as string[]);
+          return Promise.resolve("");
+        }),
+        revparse: vi.fn<any>().mockResolvedValue("abc123"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      worktreeGitMock.env = vi.fn(() => worktreeGitMock);
+
+      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+      );
+
+      mockShowRef({ local: true, remote: true, localOnlyCommits: 0 });
+
+      const sparseGitService = new GitService(sparseConfig, mockLogger);
+      mockGit.raw.mockClear();
+
+      await sparseGitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "worktree",
+        "add",
+        "--no-checkout",
+        "/test/worktrees/feature-1",
+        "feature-1",
+      ]);
+      expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
+      expect(worktreeRawCalls).toEqual(
+        expect.arrayContaining([
+          ["reset", "--soft", "origin/feature-1"],
+          ["sparse-checkout", "init", "--cone"],
+          ["sparse-checkout", "set", "--cone", "apps"],
+          ["checkout", "HEAD"],
+        ]),
+      );
+      expect(worktreeRawCalls).not.toContainEqual(["merge", "--ff-only", "origin/feature-1"]);
+      const resetIndex = worktreeRawCalls.findIndex((args) => args[0] === "reset");
+      const sparseIndex = worktreeRawCalls.findIndex((args) => args[0] === "sparse-checkout");
+      const checkoutIndex = worktreeRawCalls.findIndex((args) => args[0] === "checkout");
+      expect(resetIndex).toBeLessThan(sparseIndex);
+      expect(sparseIndex).toBeLessThan(checkoutIndex);
     });
 
     it("uses --no-cone for excludes config", async () => {

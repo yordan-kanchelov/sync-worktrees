@@ -413,6 +413,82 @@ describe("WorktreeSyncService", () => {
       });
     });
 
+    // addWorktree starts a new worktree at origin/<branch> unless the bare
+    // repository's local ref carries commits not on it, in which case it keeps
+    // that tip. The update phase is planned before creates, so the runner checks
+    // each created HEAD against the remote tip itself and reports a mismatch
+    // instead of a plain "created" — without failing the sync.
+    describe("created worktree tip verification", () => {
+      beforeEach(() => {
+        mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
+        mockGitService.getWorktrees.mockResolvedValue([]);
+        mockGitService.addWorktree.mockImplementation(async (branch: string) =>
+          branch === "feature-1" ? "aaaa1111" : "bbbb2222",
+        );
+        mockGitService.getRemoteCommit.mockImplementation(async (ref: string) =>
+          ref === "refs/remotes/origin/feature-1" ? "aaaa1111" : "cccc3333",
+        );
+      });
+
+      it("reports a created worktree whose HEAD is not origin's tip and keeps the sync green", async () => {
+        const result = await service.sync();
+
+        expect(mockGitService.getRemoteCommit).toHaveBeenCalledWith("refs/remotes/origin/feature-1");
+        expect(mockGitService.getRemoteCommit).toHaveBeenCalledWith("refs/remotes/origin/feature-2");
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("'feature-2': Worktree starts at bbbb222 while origin/feature-2 is at cccc333"),
+        );
+        expect(mockLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining("'feature-1'"));
+        expect(result).toMatchObject({
+          started: true,
+          outcome: {
+            counts: expect.objectContaining({ created: 2, skipped: 1, failed: 0 }),
+            actions: expect.arrayContaining([
+              { kind: "created", branch: "feature-1", path: wtPath("/test/worktrees", "feature-1") },
+              { kind: "created", branch: "feature-2", path: wtPath("/test/worktrees", "feature-2") },
+              expect.objectContaining({
+                kind: "skipped",
+                scope: "worktree",
+                reason: "local_only_commits",
+                branch: "feature-2",
+                path: wtPath("/test/worktrees", "feature-2"),
+                message: expect.stringContaining("was not moved to origin/feature-2"),
+              }),
+            ]),
+          },
+        });
+        if (result.started) {
+          expect(result.outcome.actions.filter((action) => action.kind === "skipped")).toHaveLength(1);
+        }
+      });
+
+      it("only warns when the remote tip cannot be read", async () => {
+        mockGitService.getRemoteCommit.mockRejectedValue(new Error("bad revision"));
+
+        const result = await service.sync();
+
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("Could not verify that the new worktree for 'feature-1' starts at origin/feature-1"),
+        );
+        expect(result).toMatchObject({
+          started: true,
+          outcome: { counts: expect.objectContaining({ created: 2, skipped: 0, failed: 0 }) },
+        });
+      });
+
+      it("does not verify when addWorktree created nothing", async () => {
+        mockGitService.addWorktree.mockResolvedValue(null);
+
+        const result = await service.sync();
+
+        expect(mockGitService.getRemoteCommit).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          started: true,
+          outcome: { counts: expect.objectContaining({ created: 2, skipped: 0, failed: 0 }) },
+        });
+      });
+    });
+
     it("should handle empty remote branches", async () => {
       mockGitService.getRemoteBranches.mockResolvedValue([]);
       (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {

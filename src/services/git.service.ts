@@ -25,6 +25,12 @@ import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export type RemoteRelationship = "up_to_date" | "fast_forward" | "local_ahead" | "diverged" | "indeterminate_shallow";
 
+// Branch names per `git branch -D` invocation when dropping a fresh bare
+// clone's refs/heads/* copies. One call per batch keeps a repository with
+// thousands of branches to a handful of packed-refs rewrites instead of one
+// per ref, while staying far below any platform's argument-length limit.
+const BRANCH_DELETE_BATCH_SIZE = 200;
+
 export type GitServiceOptions = Pick<
   Config,
   | "repoUrl"
@@ -130,6 +136,7 @@ export class GitService {
       );
       await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare", "--progress"]);
       this.logger.info("✅ Clone successful.");
+      await this.dropClonedBranchCopies(this.getCachedGit(this.bareRepoPath));
     }
 
     // Configure bare repository for worktrees
@@ -261,6 +268,40 @@ export class GitService {
         `Update the remote (git -C "${bareRepoPath}" remote set-url origin "${expected}") or point bareRepoDir at a fresh directory.`,
       "ORIGIN_MISMATCH",
     );
+  }
+
+  // `git clone --bare` copies every remote branch into refs/heads/*, and the
+  // fetch refspec only ever updates refs/remotes/origin/*, so those copies
+  // stay frozen at clone time. A worktree added months later for such a
+  // branch would check out that frozen tip: addWorktree fast-forwards a copy
+  // that is merely behind to origin's tip, but a copy whose commits were
+  // rebased away on the remote is indistinguishable from never-pushed work
+  // and is kept.
+  // Drop the copies while they are provably copies — right after the clone,
+  // before any worktree exists. The branch HEAD points at stays (the
+  // default-branch worktree is created from it). An existing bare repository
+  // is never touched here: its refs/heads/* may carry real local-only commits
+  // from a worktree that was removed. Best-effort — a leftover copy is a
+  // stale-checkout risk that addWorktree mitigates, not a broken repository.
+  private async dropClonedBranchCopies(bareGit: SimpleGit): Promise<void> {
+    try {
+      const headRef = (await bareGit.raw(["symbolic-ref", "-q", "HEAD"])).trim();
+      const branches = (await bareGit.raw(["for-each-ref", "--format=%(refname)", GIT_CONSTANTS.REFS.HEADS]))
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((ref) => ref.startsWith(GIT_CONSTANTS.REFS.HEADS) && ref !== headRef)
+        .map((ref) => ref.slice(GIT_CONSTANTS.REFS.HEADS.length));
+      if (branches.length === 0) return;
+
+      for (let start = 0; start < branches.length; start += BRANCH_DELETE_BATCH_SIZE) {
+        await bareGit.raw(["branch", "-D", ...branches.slice(start, start + BRANCH_DELETE_BATCH_SIZE)]);
+      }
+      this.logger.info(
+        `Removed ${branches.length} clone-time local branch ${branches.length === 1 ? "copy" : "copies"}; worktrees are created from origin/* instead.`,
+      );
+    } catch (error) {
+      this.logger.warn(`Could not remove clone-time local branch copies: ${getErrorMessage(error)}`);
+    }
   }
 
   getGit(): SimpleGit {
@@ -553,27 +594,32 @@ export class GitService {
     return { worktreeRemoved };
   }
 
-  private async createWorktreeMetadata(bareGit: SimpleGit, worktreePath: string, branchName: string): Promise<void> {
+  // Resolves to the worktree's HEAD, which the metadata records as lastSyncCommit.
+  private async createWorktreeMetadata(bareGit: SimpleGit, worktreePath: string, branchName: string): Promise<string> {
     try {
       const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
-      const currentCommit = await worktreeGit.revparse(["HEAD"]);
+      const currentCommit = (await worktreeGit.revparse(["HEAD"])).trim();
       const parentCommit = await bareGit.revparse([this.defaultBranch]);
 
       await this.metadataService.createInitialMetadataFromPath(
         this.bareRepoPath,
         worktreePath,
-        currentCommit.trim(),
+        currentCommit,
         `origin/${branchName}`,
         this.defaultBranch,
         parentCommit.trim(),
       );
+      return currentCommit;
     } catch (metadataError) {
       this.logger.error(`  - ❌ Failed to create metadata for '${branchName}': ${String(metadataError)}`);
       throw new Error(`Metadata creation failed for ${branchName}. This worktree cannot be auto-managed.`);
     }
   }
 
-  async addWorktree(branchName: string, worktreePath: string): Promise<void> {
+  // Resolves to the HEAD commit of the worktree this call created, or null when
+  // the path already was a registered worktree (including one a concurrent
+  // operation registered first) and nothing was created.
+  async addWorktree(branchName: string, worktreePath: string): Promise<string | null> {
     const bareGit = this.getCachedGit(this.bareRepoPath, this.isLfsSkipEnabled());
     // Use absolute path for worktree add to avoid relative path issues
     const absoluteWorktreePath = path.resolve(worktreePath);
@@ -589,7 +635,7 @@ export class GitService {
 
       if (isValidWorktree) {
         this.logger.info(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
-        return;
+        return null;
       } else {
         // Directory exists but is not a valid worktree - clean it up
         this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}'`);
@@ -625,7 +671,7 @@ export class GitService {
       }
 
       try {
-        await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+        return await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
       } catch (metadataError) {
         this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
         await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
@@ -653,7 +699,7 @@ export class GitService {
 
         if (existingWorktree && !existingWorktree.isPrunable) {
           this.logger.info(`  - Worktree for '${branchName}' was created by concurrent operation`);
-          return;
+          return null;
         }
 
         this.logger.warn(`  - Worktree already registered but missing. Removing that registration and retrying...`);
@@ -682,13 +728,12 @@ export class GitService {
           }
 
           try {
-            await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+            return await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
           } catch (metadataError) {
             this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
             await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, retryCreatedNewBranch);
             throw new Error(`Metadata creation failed for '${branchName}': ${getErrorMessage(metadataError)}`);
           }
-          return;
         } catch (retryError) {
           this.logger.error(`  - Failed to create worktree on retry: ${String(retryError)}`);
           throw retryError;
@@ -720,7 +765,7 @@ export class GitService {
 
         if (isValidWorktree) {
           this.logger.info(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
-          return;
+          return null;
         } else {
           // Directory exists but is not a valid worktree - clean it up
           this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}' before fallback attempt`);
@@ -747,7 +792,7 @@ export class GitService {
         }
 
         try {
-          await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+          return await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
         } catch (metadataError) {
           this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
           await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, false);
@@ -763,7 +808,7 @@ export class GitService {
 
           if (existingWorktree && !existingWorktree.isPrunable) {
             this.logger.info(`  - Worktree for '${branchName}' was created by concurrent operation during fallback`);
-            return;
+            return null;
           }
         }
 
@@ -784,6 +829,19 @@ export class GitService {
     const noCheckoutFlag = useNoCheckout ? ["--no-checkout"] : [];
 
     if (localExists && remoteExists) {
+      // With no worktree for it, the local ref is usually a stale snapshot of
+      // the remote — a bare clone's refs/heads/* copy, or the tip a removed
+      // worktree was last synced to — that nothing ever fast-forwards. It is
+      // probed before the add and fast-forwarded right after, inside the new
+      // worktree: `worktree add` keeps its error surface (a missing but still
+      // registered path must reach addWorktree's recovery, which a branch
+      // reset such as `-B` pre-empts with git's branch-in-use error), and the
+      // branch ref only moves once the worktree using it is ours. Commits not
+      // on origin/<branch> are kept: a copy whose history was rebased away
+      // looks exactly like never-pushed work from here, and only the latter
+      // would be lost. The next sync applies its usual update rules then.
+      const localOnlyCommits = await this.countLocalOnlyCommits(bareGit, branchName);
+
       await bareGit.raw(["worktree", "add", ...noCheckoutFlag, absoluteWorktreePath, branchName]);
 
       // branch --set-upstream-to is a config-only operation and works on a --no-checkout
@@ -793,6 +851,16 @@ export class GitService {
         await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
       } catch (error) {
         throw await this.wrapUpstreamFailure(bareGit, absoluteWorktreePath, branchName, false, error);
+      }
+
+      if (localOnlyCommits === 0) {
+        await this.fastForwardNewWorktree(absoluteWorktreePath, branchName, useNoCheckout);
+      } else {
+        this.logger.info(
+          localOnlyCommits === null
+            ? `  - Could not tell whether local branch '${branchName}' has commits not on origin/${branchName}; keeping its current tip`
+            : `  - Local branch '${branchName}' has ${localOnlyCommits} commit(s) not on origin/${branchName}; keeping its current tip instead of resetting it`,
+        );
       }
 
       await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, false);
@@ -824,6 +892,50 @@ export class GitService {
       `Branch '${branchName}' does not exist locally or on origin; create it first`,
       "BRANCH_NOT_FOUND",
     );
+  }
+
+  // Commits on the local branch that origin/<branch> does not reach. Zero
+  // means the local tip is an ancestor of (or equal to) the remote tip, so
+  // moving it there is a fast-forward that loses nothing. null when git cannot
+  // answer, which callers treat as "may have local-only commits".
+  private async countLocalOnlyCommits(bareGit: SimpleGit, branchName: string): Promise<number | null> {
+    try {
+      const out = await bareGit.raw([
+        "rev-list",
+        "--count",
+        `${GIT_CONSTANTS.REFS.REMOTES}/${branchName}..${GIT_CONSTANTS.REFS.HEADS}${branchName}`,
+      ]);
+      const count = Number.parseInt(out.trim(), 10);
+      return Number.isNaN(count) ? null : count;
+    } catch {
+      return null;
+    }
+  }
+
+  // Moves a just-created worktree from the local ref's stale tip to
+  // origin/<branch>, which countLocalOnlyCommits has shown to be a
+  // fast-forward. A checked-out worktree merges; a --no-checkout worktree has
+  // no index or files yet, so only the ref moves and the checkout that follows
+  // the sparse setup populates it at the new tip. Best-effort: on failure the
+  // worktree stays at the local tip — the state the next sync's update phase
+  // fast-forwards anyway — and the runner reports the mismatch.
+  private async fastForwardNewWorktree(
+    absoluteWorktreePath: string,
+    branchName: string,
+    noCheckout: boolean,
+  ): Promise<void> {
+    const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
+    try {
+      if (noCheckout) {
+        await worktreeGit.raw(["reset", "--soft", `origin/${branchName}`]);
+      } else {
+        await worktreeGit.raw(["merge", "--ff-only", `origin/${branchName}`]);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `  - ⚠️ Could not fast-forward the new worktree for '${branchName}' to origin/${branchName}: ${getErrorMessage(error)}`,
+      );
+    }
   }
 
   private async runSparseStepWithRollback(
