@@ -888,7 +888,7 @@ export class WorktreeModeSyncRunner {
             return { action: "diverged", worktree };
           }
 
-          const isBehind = await this.gitService.isWorktreeBehind(worktree.path);
+          const isBehind = await this.gitService.isWorktreeBehind(worktree.path, worktree.branch);
           if (!isBehind) return { action: "noop", worktree, reason: "already_up_to_date" };
 
           const sparseCfg = this.config.sparseCheckout;
@@ -916,7 +916,7 @@ export class WorktreeModeSyncRunner {
     const worktreesToUpdate: { path: string; branch: string }[] = [];
     const divergedWorktrees: { path: string; branch: string }[] = [];
 
-    for (const result of checkResults) {
+    checkResults.forEach((result, index) => {
       if (result.status === "fulfilled" && result.value) {
         switch (result.value.action) {
           case "update":
@@ -933,15 +933,19 @@ export class WorktreeModeSyncRunner {
             break;
         }
       } else if (result.status === "rejected") {
-        // Probe-only failure (status / fast-forward / divergence check threw). The
+        // Probe-only failure (status / fast-forward / behind check threw). The
         // actual update is gated on success here, so a probe error means we never
         // touched the worktree — treat it as a skip, not a hard failure.
-        this.logger.error(`  - Error checking worktree:`, result.reason);
+        // allSettled keeps the input order, so actions[index] is this worktree.
+        const { branch, path: worktreePath } = actions[index];
+        this.logger.error(`  - Error checking worktree '${branch}':`, result.reason);
         outcome.recordSkipped("worktree", "update_check_failed", {
+          branch,
+          path: worktreePath,
           message: getErrorMessage(result.reason),
         });
       }
-    }
+    });
 
     // Phase 4b: Perform mutations (updates + diverged handling) with lower concurrency
     const updateLimit = pLimit(

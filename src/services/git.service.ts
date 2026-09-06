@@ -868,7 +868,9 @@ export class GitService {
           : ["worktree", "add", absoluteWorktreePath, branchName];
         await bareGit.raw(fallbackArgs);
         await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, false);
-        this.logger.info(`  - Created worktree for '${branchName}' (without tracking)`);
+        // The plain add set no upstream; give it one when origin/<branch> exists.
+        const tracking = await this.trackRemoteBranchIfExists(branchName, absoluteWorktreePath);
+        this.logger.info(`  - Created worktree for '${branchName}'${tracking ? "" : " (without tracking)"}`);
 
         if (!this.isLfsSkipEnabled()) {
           await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
@@ -1382,26 +1384,31 @@ export class GitService {
     return this.getWorktreesFromBare(bareGit);
   }
 
-  async isWorktreeBehind(worktreePath: string): Promise<boolean> {
+  // Whether origin/<branch> has commits the worktree's HEAD lacks, from one
+  // `rev-list --left-right --count HEAD...refs/remotes/origin/<branch>`
+  // (left = ahead, right = behind). The remote ref is named explicitly — the
+  // same ref canFastForward and updateWorktree use — rather than read from
+  // `<branch>@{upstream}`, so a branch with no upstream configured (a restored
+  // worktree, one created without a push, the no-tracking fallback) is
+  // classified like any other instead of passing as up to date. A failed
+  // probe throws: the runner records update_check_failed for it.
+  async isWorktreeBehind(worktreePath: string, branch: string): Promise<boolean> {
     const worktreeGit = this.getCachedGit(worktreePath);
-    try {
-      // Get the current branch
-      const branchSummary = await worktreeGit.branch();
-      const currentBranch = branchSummary.current;
-
-      // Check if the branch has an upstream
-      const upstreamInfo = await worktreeGit.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]);
-      if (!upstreamInfo.trim()) {
-        return false; // No upstream, can't be behind
-      }
-
-      // Count commits behind upstream
-      const behindCount = await worktreeGit.raw(["rev-list", "--count", `HEAD..${upstreamInfo.trim()}`]);
-      return parseInt(behindCount.trim(), 10) > 0;
-    } catch {
-      // If any command fails, assume not behind
-      return false;
+    const output = await worktreeGit.raw([
+      "rev-list",
+      "--left-right",
+      "--count",
+      `HEAD...${GIT_CONSTANTS.REFS.REMOTES}/${branch}`,
+    ]);
+    const counts = output.trim().split(/\s+/);
+    const behind = Number.parseInt(counts[1] ?? "", 10);
+    if (counts.length !== 2 || Number.isNaN(behind)) {
+      throw new GitOperationError(
+        "rev-list",
+        `unexpected ahead/behind output for '${branch}' in '${worktreePath}': ${JSON.stringify(output)}`,
+      );
     }
+    return behind > 0;
   }
 
   async updateWorktree(worktreePath: string): Promise<void> {
@@ -1661,22 +1668,47 @@ export class GitService {
 
   async branchExists(branchName: string): Promise<{ local: boolean; remote: boolean }> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
-    const checkRef = async (ref: string): Promise<boolean> => {
-      try {
-        // simple-git resolves `show-ref --quiet` when Git exits 1, so keep stdout enabled.
-        await bareGit.raw(["show-ref", "--verify", ref]);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
     const [local, remote] = await Promise.all([
-      checkRef(`${GIT_CONSTANTS.REFS.HEADS}${branchName}`),
-      checkRef(`${GIT_CONSTANTS.REFS.REMOTES}/${branchName}`),
+      this.refExists(bareGit, `${GIT_CONSTANTS.REFS.HEADS}${branchName}`),
+      this.refExists(bareGit, `${GIT_CONSTANTS.REFS.REMOTES}/${branchName}`),
     ]);
 
     return { local, remote };
+  }
+
+  private async refExists(git: SimpleGit, ref: string): Promise<boolean> {
+    try {
+      // simple-git resolves `show-ref --quiet` when Git exits 1, so keep stdout enabled.
+      await git.raw(["show-ref", "--verify", ref]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Points branch.<name>.remote/merge at origin/<name> when that remote branch
+  // is known locally. Sync itself never relies on the upstream — its probes
+  // name origin/<name> explicitly — but `git pull`, `git status` and the
+  // ahead/behind views in the worktree do, so a branch registered without
+  // tracking (a trash restore, `branch --no-track`, the no-tracking add
+  // fallback) gets one whenever it can. Resolves to whether it was set and
+  // never throws: no remote branch is the normal state of an unpushed branch,
+  // and a failure to set it leaves a working worktree, so it is only logged.
+  async trackRemoteBranchIfExists(branchName: string, worktreePath: string): Promise<boolean> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    if (!(await this.refExists(bareGit, `${GIT_CONSTANTS.REFS.REMOTES}/${branchName}`))) {
+      return false;
+    }
+    const upstream = `${GIT_CONSTANTS.REMOTE_PREFIX}${branchName}`;
+    try {
+      // Config-only: works on a --no-checkout worktree too.
+      await this.getCachedGit(worktreePath).raw(["branch", `--set-upstream-to=${upstream}`, branchName]);
+      this.logger.info(`  - Set upstream of '${branchName}' to ${upstream}`);
+      return true;
+    } catch (error) {
+      this.logger.warn(`  - ⚠️ Could not set upstream of '${branchName}' to ${upstream}: ${getErrorMessage(error)}`);
+      return false;
+    }
   }
 
   async getLocalBranches(): Promise<string[]> {

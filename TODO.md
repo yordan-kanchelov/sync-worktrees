@@ -87,7 +87,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T18** — Default-branch detection is frozen to a dangling `refs/remotes/origin/HEAD`; after
   the remote renames its default branch every sync fails in the update phase and the old default is
   never pruned
-- [ ] **T3** — Worktrees without an upstream (trash restore, MCP create_worktree push=false,
+- [x] **T3** — Worktrees without an upstream (trash restore, MCP create_worktree push=false,
   'without tracking' fallback) are never fast-forwarded and are reported as already_up_to_date forever
 - [ ] **T63** — isWorktreeBehind uses @{upstream} while canFastForward/updateWorktree use
   origin/<branch>: a differing upstream yields a phantom 'updated/fast_forward' outcome every sync
@@ -530,7 +530,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   per-worktree spawn. Also reported as: “Every per-worktree probe runs simple-git branch() = `git
   branch -v -a`, listing/annotating all local+remote refs; cost scales O(worktrees x refs)”.
 
-### [ ] T3. Worktrees without an upstream (trash restore, MCP create_worktree push=false, 'without tracking' fallback) are never fast-forwarded and are reported as already_up_to_date forever
+### [x] T3. Worktrees without an upstream (trash restore, MCP create_worktree push=false, 'without tracking' fallback) are never fast-forwarded and are reported as already_up_to_date forever
 
 - **Category**: correctness · **Subsystem**: worktree-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

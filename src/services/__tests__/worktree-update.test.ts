@@ -226,6 +226,66 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         );
       }
     });
+
+    // The behind probe names origin/<branch> explicitly, so it gets the branch
+    // from the runner: a worktree whose branch has no upstream configured
+    // (trash restore, create_worktree push:false) is fast-forwarded like any
+    // other once origin's tip differs, instead of passing as up to date.
+    it("hands the branch to the behind probe and fast-forwards a worktree whose branch has no upstream", async () => {
+      mockGitService.isWorktreeBehind.mockImplementation(
+        async (_worktreePath: string, branch: string) => branch === "feature",
+      );
+
+      const result = await service.sync();
+
+      expect(mockGitService.isWorktreeBehind).toHaveBeenCalledWith("/test/worktrees/feature", "feature");
+      expect(mockGitService.isWorktreeBehind).toHaveBeenCalledWith("/test/worktrees/main", "main");
+      expect(mockGitService.isWorktreeBehind).toHaveBeenCalledWith("/test/worktrees/develop", "develop");
+      expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(1);
+      expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature");
+
+      expect(result.started).toBe(true);
+      if (!result.started) throw new Error("sync did not start");
+      const featureActions = result.outcome.actions.filter((action) => action.branch === "feature");
+      expect(featureActions).toEqual([
+        { kind: "updated", branch: "feature", path: "/test/worktrees/feature", reason: "fast_forward" },
+      ]);
+      expect(result.outcome.actions).toContainEqual(
+        expect.objectContaining({ kind: "noop", reason: "already_up_to_date", branch: "main" }),
+      );
+    });
+
+    it("records update_check_failed for the worktree whose behind probe throws, and updates the others", async () => {
+      mockGitService.isWorktreeBehind.mockImplementation(async (worktreePath: string) => {
+        if (worktreePath.includes("feature")) {
+          throw new Error("fatal: bad revision 'HEAD...refs/remotes/origin/feature'");
+        }
+        return true;
+      });
+
+      const result = await service.sync();
+
+      expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
+      expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/test/worktrees/feature");
+      expect(mockLogger.error).toHaveBeenCalledWith("  - Error checking worktree 'feature':", expect.any(Error));
+
+      expect(result.started).toBe(true);
+      if (!result.started) throw new Error("sync did not start");
+      expect(result.outcome.counts.failed).toBe(0);
+      expect(result.outcome.actions.filter((action) => action.branch === "feature")).toEqual([
+        {
+          kind: "skipped",
+          scope: "worktree",
+          reason: "update_check_failed",
+          branch: "feature",
+          path: "/test/worktrees/feature",
+          message: "fatal: bad revision 'HEAD...refs/remotes/origin/feature'",
+        },
+      ]);
+      expect(result.outcome.actions).not.toContainEqual(
+        expect.objectContaining({ reason: "already_up_to_date", branch: "feature" }),
+      );
+    });
   });
 
   describe("Default branch retention with branchMaxAge", () => {

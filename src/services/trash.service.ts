@@ -517,6 +517,14 @@ export class TrashService {
           .getSparseCheckoutService()
           .applyToWorktree(manifest.originalPath, this.config.sparseCheckout);
       }
+      // `git branch <name> <sha>` set no upstream; point the branch at
+      // origin/<branch> when it is known so pull/status work as before.
+      // Best-effort: the worktree is complete either way.
+      try {
+        await this.gitService.trackRemoteBranchIfExists(branch, manifest.originalPath);
+      } catch (upstreamError) {
+        this.logger.warn(`⚠️ Could not set the upstream of restored '${branch}': ${getErrorMessage(upstreamError)}`);
+      }
     } catch (error) {
       await this.gitService
         .removeWorktree(manifest.originalPath, { force: true })

@@ -38,69 +38,52 @@ describe("GitService - Update Methods", () => {
   });
 
   describe("isWorktreeBehind", () => {
-    it("should return true when worktree is behind upstream", async () => {
-      mockGit.branch.mockResolvedValue({
-        current: "feature-branch",
-        all: ["feature-branch", "main"],
-        branches: {},
-        detached: false,
-      } as any);
+    // One explicit-ref probe. The remote ref comes from the branch argument,
+    // never from `<branch>@{upstream}`, so a worktree whose branch has no
+    // upstream configured (trash restore, create_worktree push:false, the
+    // no-tracking fallback) is classified exactly like a tracking one.
+    it("counts commits behind refs/remotes/origin/<branch> with one left-right rev-list", async () => {
+      mockGit.raw.mockResolvedValueOnce("0\t3\n"); // ahead 0, behind 3
 
-      // Mock upstream exists
-      mockGit.raw.mockResolvedValueOnce("origin/feature-branch\n");
-
-      // Mock 3 commits behind
-      mockGit.raw.mockResolvedValueOnce("3\n");
-
-      const result = await service.isWorktreeBehind("/test/worktrees/feature");
+      const result = await service.isWorktreeBehind("/test/worktrees/feature", "feature-branch");
 
       expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", "feature-branch@{upstream}"]);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD..origin/feature-branch"]);
+      expect(mockGit.raw).toHaveBeenCalledTimes(1);
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "rev-list",
+        "--left-right",
+        "--count",
+        "HEAD...refs/remotes/origin/feature-branch",
+      ]);
+      expect(mockGit.branch).not.toHaveBeenCalled();
     });
 
-    it("should return false when worktree is up to date", async () => {
-      mockGit.branch.mockResolvedValue({
-        current: "main",
-        all: ["main"],
-        branches: {},
-        detached: false,
-      } as any);
+    it("is not behind when HEAD equals the remote tip", async () => {
+      mockGit.raw.mockResolvedValueOnce("0\t0\n");
 
-      // Mock upstream exists
-      mockGit.raw.mockResolvedValueOnce("origin/main\n");
-
-      // Mock 0 commits behind
-      mockGit.raw.mockResolvedValueOnce("0\n");
-
-      const result = await service.isWorktreeBehind("/test/worktrees/main");
-
-      expect(result).toBe(false);
+      await expect(service.isWorktreeBehind("/test/worktrees/main", "main")).resolves.toBe(false);
     });
 
-    it("should return false when no upstream is configured", async () => {
-      mockGit.branch.mockResolvedValue({
-        current: "local-only",
-        all: ["local-only"],
-        branches: {},
-        detached: false,
-      } as any);
+    it("is not behind when the worktree is only ahead of the remote", async () => {
+      mockGit.raw.mockResolvedValueOnce("2\t0\n");
 
-      // Mock no upstream
-      mockGit.raw.mockResolvedValueOnce("");
-
-      const result = await service.isWorktreeBehind("/test/worktrees/local-only");
-
-      expect(result).toBe(false);
-      expect(mockGit.raw).toHaveBeenCalledTimes(1); // Only upstream check, no commit count
+      await expect(service.isWorktreeBehind("/test/worktrees/feature", "feature-branch")).resolves.toBe(false);
     });
 
-    it("should return false when error occurs", async () => {
-      mockGit.branch.mockRejectedValue(new Error("Git error"));
+    it("throws when the probe fails instead of reporting 'not behind'", async () => {
+      mockGit.raw.mockRejectedValueOnce(new Error("fatal: bad revision 'HEAD...refs/remotes/origin/feature-branch'"));
 
-      const result = await service.isWorktreeBehind("/test/worktrees/error");
+      await expect(service.isWorktreeBehind("/test/worktrees/feature", "feature-branch")).rejects.toThrow(
+        "bad revision",
+      );
+    });
 
-      expect(result).toBe(false);
+    it("throws on output it cannot read as an ahead/behind pair", async () => {
+      mockGit.raw.mockResolvedValueOnce("origin/feature-branch\n");
+
+      await expect(service.isWorktreeBehind("/test/worktrees/feature", "feature-branch")).rejects.toThrow(
+        /unexpected ahead\/behind output for 'feature-branch'/,
+      );
     });
   });
 

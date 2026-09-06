@@ -24,6 +24,7 @@ function makeGitStub() {
     getLocalBranchCommit: vi.fn<any>().mockResolvedValue(null),
     createBranchAt: vi.fn<any>().mockResolvedValue(undefined),
     addWorktreeNoCheckout: vi.fn<any>().mockResolvedValue(undefined),
+    trackRemoteBranchIfExists: vi.fn<any>().mockResolvedValue(false),
     resetWorktreeIndex: vi.fn<any>().mockResolvedValue(undefined),
     removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
     deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
@@ -490,6 +491,53 @@ describe("TrashService", () => {
       expect(gitStub.addWorktreeNoCheckout).toHaveBeenCalledWith("feature-left-ref", source);
       expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
       await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("preserved");
+    });
+
+    // `git branch <name> <sha>` leaves the recreated branch without an
+    // upstream. Sync fast-forwards it regardless, but pull/status in the
+    // worktree only work once branch.<name>.merge points at origin/<name>.
+    it("points the recreated branch at origin/<branch> once the worktree is registered", async () => {
+      const source = await makeSourceDir("feature-track", { "work.txt": "data" });
+      const { manifest } = await service.trashDirectory({ dirPath: source, branch: "feature-track", reason: "prune" });
+      const order: string[] = [];
+      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
+        order.push("addWorktreeNoCheckout");
+        await fs.mkdir(args[1] as string, { recursive: true });
+      });
+      gitStub.trackRemoteBranchIfExists.mockImplementation(async () => {
+        order.push("trackRemoteBranchIfExists");
+        return true;
+      });
+
+      await service.restore(manifest.id);
+
+      expect(gitStub.trackRemoteBranchIfExists).toHaveBeenCalledWith("feature-track", source);
+      expect(order).toEqual(["addWorktreeNoCheckout", "trackRemoteBranchIfExists"]);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it("finishes the restore with a warning when the upstream cannot be set", async () => {
+      const source = await makeSourceDir("feature-no-upstream", { "work.txt": "data" });
+      const { manifest } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-no-upstream",
+        reason: "prune",
+      });
+      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
+        await fs.mkdir(args[1] as string, { recursive: true });
+      });
+      gitStub.trackRemoteBranchIfExists.mockRejectedValue(new Error("config locked"));
+
+      const restored = await service.restore(manifest.id);
+
+      expect(restored.branch).toBe("feature-no-upstream");
+      expect(gitStub.removeWorktree).not.toHaveBeenCalled();
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("data");
+      await expect(service.listEntries()).resolves.toMatchObject({ entries: [] });
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Could not set the upstream of restored 'feature-no-upstream': config locked"),
+      );
     });
 
     it("falls back to a plain files restore when the entry has no pin — gc may have collected the commit", async () => {

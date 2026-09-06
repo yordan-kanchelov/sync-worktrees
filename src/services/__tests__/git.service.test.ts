@@ -1278,6 +1278,51 @@ describe("GitService", () => {
       expect(rawCalls[rawCalls.length - 1]).toEqual([["worktree", "add", "/test/worktrees/feature-1", "feature-1"]]);
     });
 
+    // The plain add of the fallback sets no upstream. origin/<branch> is looked
+    // up again afterwards: `remoteAfterAdd` is what that lookup finds (the
+    // first lookup must say it exists, or the tracking add is never tried).
+    const mockFallbackAdd = (opts: { remoteAfterAdd: boolean }): void => {
+      let trackingAddCalled = false;
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (!Array.isArray(args)) return Promise.resolve("");
+        if (args[0] === "show-ref" && args[1] === "--verify") {
+          const ref = args[args.length - 1] as string;
+          if (ref.startsWith("refs/heads/")) return Promise.reject(new Error("show-ref: not found"));
+          return !trackingAddCalled || opts.remoteAfterAdd
+            ? Promise.resolve("")
+            : Promise.reject(new Error("show-ref: not found"));
+        }
+        if (args[0] === "worktree" && args[1] === "add" && args.includes("--track") && !trackingAddCalled) {
+          trackingAddCalled = true;
+          return Promise.reject(new Error("cannot set up tracking"));
+        }
+        return Promise.resolve("");
+      });
+    };
+
+    it("sets origin/<branch> as the upstream after the no-tracking fallback when the remote branch exists", async () => {
+      mockFallbackAdd({ remoteAfterAdd: true });
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      const upstreamCalls = (mockGit.raw as Mock).mock.calls.filter(
+        (call) => Array.isArray(call[0]) && call[0][0] === "branch",
+      );
+      expect(upstreamCalls).toEqual([[["branch", "--set-upstream-to=origin/feature-1", "feature-1"]]]);
+      expect(mockLogger.info).toHaveBeenCalledWith("  - Set upstream of 'feature-1' to origin/feature-1");
+      expect(mockLogger.info).toHaveBeenCalledWith("  - Created worktree for 'feature-1'");
+      expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("(without tracking)"));
+    });
+
+    it("leaves the fallback worktree without an upstream when origin/<branch> is gone", async () => {
+      mockFallbackAdd({ remoteAfterAdd: false });
+
+      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
+
+      expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["branch"]));
+      expect(mockLogger.info).toHaveBeenCalledWith("  - Created worktree for 'feature-1' (without tracking)");
+    });
+
     it("should NOT fallback to simple add when a non-tracking error occurs", async () => {
       (mockGit.raw as Mock).mockImplementation((args: unknown) => {
         if (Array.isArray(args)) {
@@ -1362,13 +1407,16 @@ describe("GitService", () => {
         .mockResolvedValueOnce("") // refs/remotes/origin exists
         .mockRejectedValueOnce(new Error("no such remote ref")) // tracking add fails
         .mockResolvedValueOnce("") // worktree list - empty (directory is not a valid worktree)
-        .mockResolvedValueOnce(""); // fallback worktree add succeeds
+        .mockResolvedValueOnce("") // fallback worktree add succeeds
+        .mockResolvedValueOnce("") // show-ref remotes (upstream lookup after the plain add)
+        .mockResolvedValueOnce(""); // branch --set-upstream-to
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
       expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
-      // Calls: show-ref heads, show-ref remotes, tracking add (fail), worktree list, fallback add, LFS ls-files
-      expect(mockGit.raw).toHaveBeenCalledTimes(6);
+      // Calls: show-ref heads, show-ref remotes, tracking add (fail), worktree list, fallback add,
+      // show-ref remotes, branch --set-upstream-to, LFS ls-files
+      expect(mockGit.raw).toHaveBeenCalledTimes(8);
     });
 
     it("should throw error when metadata creation fails", async () => {
@@ -2618,6 +2666,59 @@ prunable
       const result = await gitService.classifyRemoteRelationship("/test/worktrees/feature-1", "feature-1");
 
       expect(result).toBe("diverged");
+    });
+  });
+
+  describe("trackRemoteBranchIfExists", () => {
+    // Runs in the worktree (config-only, so a --no-checkout worktree is fine);
+    // the remote ref is looked up in the bare repository.
+    const useWorktreeGit = (): ReturnType<typeof makeUpstreamWorktreeGit> => {
+      const worktreeGitMock = makeUpstreamWorktreeGit();
+      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
+        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
+      );
+      return worktreeGitMock;
+    };
+    const makeUpstreamWorktreeGit = () => ({
+      raw: vi.fn<any>().mockResolvedValue("branch 'feature-1' set up to track 'origin/feature-1'.\n"),
+      env: vi.fn<any>().mockReturnThis(),
+    });
+
+    it("sets the upstream in the worktree when refs/remotes/origin/<branch> exists", async () => {
+      const worktreeGit = useWorktreeGit();
+      mockShowRef({ local: true, remote: true });
+
+      await expect(gitService.trackRemoteBranchIfExists("feature-1", "/test/worktrees/feature-1")).resolves.toBe(true);
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["show-ref", "--verify", "refs/remotes/origin/feature-1"]);
+      expect(worktreeGit.raw).toHaveBeenCalledWith(["branch", "--set-upstream-to=origin/feature-1", "feature-1"]);
+      expect(mockLogger.info).toHaveBeenCalledWith("  - Set upstream of 'feature-1' to origin/feature-1");
+      expect(mockLogger.warn).not.toHaveBeenCalled();
+    });
+
+    it("does nothing when the remote branch is not known locally", async () => {
+      const worktreeGit = useWorktreeGit();
+      mockShowRef({ local: true, remote: false });
+
+      await expect(gitService.trackRemoteBranchIfExists("feature-1", "/test/worktrees/feature-1")).resolves.toBe(false);
+
+      expect(worktreeGit.raw).not.toHaveBeenCalled();
+      expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("Set upstream"));
+      expect(mockLogger.warn).not.toHaveBeenCalled();
+    });
+
+    it("warns instead of throwing when git refuses to set the upstream", async () => {
+      const worktreeGit = useWorktreeGit();
+      worktreeGit.raw.mockRejectedValue(new Error("fatal: branch 'feature-1' does not exist"));
+      mockShowRef({ local: true, remote: true });
+
+      await expect(gitService.trackRemoteBranchIfExists("feature-1", "/test/worktrees/feature-1")).resolves.toBe(false);
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Could not set upstream of 'feature-1' to origin/feature-1: fatal: branch 'feature-1' does not exist",
+        ),
+      );
     });
   });
 
