@@ -55,7 +55,7 @@ export class WorktreeModeSyncRunner {
   ): Promise<void> {
     await this.fetchLatestRemoteData(phaseTimer, syncContext);
 
-    const { remoteBranches, defaultBranch } = await this.resolveSyncBranches();
+    const { remoteBranches, defaultBranch } = await this.resolveSyncBranches(outcome);
     const pendingDivergedBranches = await this.getPendingDivergedBranches();
 
     await fs.mkdir(this.config.worktreeDir, { recursive: true });
@@ -268,13 +268,23 @@ export class WorktreeModeSyncRunner {
     }
   }
 
-  private async resolveSyncBranches(): Promise<{ remoteBranches: string[]; defaultBranch: string }> {
-    const remoteBranches = this.config.branchMaxAge
+  private async resolveSyncBranches(
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<{ remoteBranches: string[]; defaultBranch: string }> {
+    const { all, filtered: remoteBranches } = this.config.branchMaxAge
       ? await this.getRemoteBranchesFilteredByActivity()
       : await this.getRemoteBranchesFilteredByName();
-    const defaultBranch = this.gitService.getDefaultBranch();
+    const defaultBranch = await this.resolveDefaultBranch(all, outcome);
 
-    if (!remoteBranches.includes(defaultBranch)) {
+    // The default branch stays in the inventory even when the name or age
+    // filters drop it: its worktree is where every fetch runs. Only while
+    // origin still has it, though. A default the remote renamed or deleted
+    // has no origin/<branch> to update from, so retaining it would leave a
+    // permanent update candidate that fails every sync and a worktree that is
+    // never pruned; it goes through the normal prune pipeline instead.
+    if (!all.includes(defaultBranch)) {
+      this.logger.warn(`Default branch '${defaultBranch}' does not exist on origin; not retaining its worktree.`);
+    } else if (!remoteBranches.includes(defaultBranch)) {
       remoteBranches.push(defaultBranch);
       this.logger.info(`Ensuring default branch '${defaultBranch}' is retained.`);
     }
@@ -282,7 +292,31 @@ export class WorktreeModeSyncRunner {
     return { remoteBranches, defaultBranch };
   }
 
-  private async getRemoteBranchesFilteredByActivity(): Promise<string[]> {
+  // A default branch absent from the freshly fetched refs means the remote
+  // renamed or deleted it (fetch --prune never updates origin/HEAD, so the
+  // detected name would otherwise stay frozen). GitService re-resolves it and
+  // moves the fetch anchor first — the new default's worktree is created or
+  // adopted and fetches run from it from now on — so the old default's
+  // worktree can be pruned further down without breaking the next fetch. It
+  // throws when no default that exists on origin can be resolved, which fails
+  // this sync before anything is pruned while the old worktree still anchors
+  // the fetch.
+  private async resolveDefaultBranch(remoteBranches: string[], outcome: SyncOutcomeAccumulator): Promise<string> {
+    const current = this.gitService.getDefaultBranch();
+    if (remoteBranches.includes(current)) return current;
+
+    this.logger.info(`Default branch '${current}' no longer exists on origin; re-resolving the default branch...`);
+    const refresh = await this.gitService.refreshDefaultBranch();
+    if (refresh.created) {
+      this.logger.info(`  ✅ Created worktree for '${refresh.defaultBranch}' at '${refresh.mainWorktreePath}'`);
+      outcome.recordCreated(refresh.defaultBranch, refresh.mainWorktreePath);
+    }
+    return refresh.defaultBranch;
+  }
+
+  // Both listings resolve to every remote branch (`all`) and the ones that
+  // pass the configured filters (`filtered`).
+  private async getRemoteBranchesFilteredByActivity(): Promise<{ all: string[]; filtered: string[] }> {
     const branchesWithActivity = await this.gitService.getRemoteBranchesWithActivity();
     this.logger.info(`Found ${branchesWithActivity.length} remote branches.`);
 
@@ -312,10 +346,10 @@ export class WorktreeModeSyncRunner {
       this.logger.info(`  - Excluded ${excludedCount} stale branches.`);
     }
 
-    return remoteBranches;
+    return { all: branchesWithActivity.map((b) => b.branch), filtered: remoteBranches };
   }
 
-  private async getRemoteBranchesFilteredByName(): Promise<string[]> {
+  private async getRemoteBranchesFilteredByName(): Promise<{ all: string[]; filtered: string[] }> {
     const allBranches = await this.gitService.getRemoteBranches();
     this.logger.info(`Found ${allBranches.length} remote branches.`);
 
@@ -325,7 +359,7 @@ export class WorktreeModeSyncRunner {
       this.logger.info(`After branch name filtering: ${remoteBranches.length} of ${allBranches.length} branches.`);
     }
 
-    return remoteBranches;
+    return { all: allBranches, filtered: remoteBranches };
   }
 
   private async finalizeSyncAttempt(phaseTimer: PhaseTimer): Promise<void> {

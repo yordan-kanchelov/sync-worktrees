@@ -84,7 +84,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 - [x] **T17** — Bare clone leaves stale refs/heads/* copies of every remote branch; the 'local &&
   remote' worktree-add path checks out that stale tip and the same sync never fast-forwards it
-- [ ] **T18** — Default-branch detection is frozen to a dangling `refs/remotes/origin/HEAD`; after
+- [x] **T18** — Default-branch detection is frozen to a dangling `refs/remotes/origin/HEAD`; after
   the remote renames its default branch every sync fails in the update phase and the old default is
   never pruned
 - [ ] **T3** — Worktrees without an upstream (trash restore, MCP create_worktree push=false,
@@ -1168,7 +1168,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `refs/heads/*` right after cloning — removes the whole class; option (b) patches the create path
   only.
 
-### [ ] T18. Default-branch detection is frozen to a dangling `refs/remotes/origin/HEAD`; after the remote renames its default branch every sync fails in the update phase and the old default is never pruned
+### [x] T18. Default-branch detection is frozen to a dangling `refs/remotes/origin/HEAD`; after the remote renames its default branch every sync fails in the update phase and the old default is never pruned
 
 - **Category**: correctness · **Subsystem**: git
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

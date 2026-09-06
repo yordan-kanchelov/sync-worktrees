@@ -54,6 +54,12 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       }),
       getCurrentBranch: vi.fn<any>().mockResolvedValue("main"),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
+      refreshDefaultBranch: vi.fn<any>().mockResolvedValue({
+        previous: "main",
+        defaultBranch: "main",
+        mainWorktreePath: "/test/worktrees/main",
+        created: false,
+      }),
       getWorktrees: vi.fn<any>().mockResolvedValue([]),
       isWorktreeBehind: vi.fn<any>().mockResolvedValue(false),
       canFastForward: vi.fn<any>().mockResolvedValue(true),

@@ -25,6 +25,16 @@ import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export type RemoteRelationship = "up_to_date" | "fast_forward" | "local_ahead" | "diverged" | "indeterminate_shallow";
 
+export interface DefaultBranchRefresh {
+  previous: string;
+  defaultBranch: string;
+  // The default branch's worktree — where fetches run from now.
+  mainWorktreePath: string;
+  // Whether this refresh created that worktree (rather than keeping or
+  // adopting an existing one).
+  created: boolean;
+}
+
 // Branch names per `git branch -D` invocation when dropping a fresh bare
 // clone's refs/heads/* copies. One call per batch keeps a repository with
 // thousands of branches to a handful of packed-refs rewrites instead of one
@@ -163,34 +173,60 @@ export class GitService {
     // Detect the default branch (works from local refs even without fetch)
     this.defaultBranch = await this.detectDefaultBranch(bareGit);
     this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
+    await this.ensureMainWorktree(bareGit);
 
+    // Use the main worktree as our primary git instance
+    this.git = this.getCachedGit(this.mainWorktreePath);
+    return this.git;
+  }
+
+  // Makes sure a registered worktree checked out on the default branch exists
+  // and leaves mainWorktreePath pointing at it: every fetch runs from there.
+  // Resolves to true when this call created the worktree.
+  //
+  // A registered worktree on the default branch at another path is adopted
+  // rather than duplicated: it is the hashed directory the sync created while
+  // the branch was an ordinary remote branch, before the remote made it the
+  // default, and git refuses a second worktree on a branch that is already
+  // checked out.
+  private async ensureMainWorktree(bareGit: SimpleGit): Promise<boolean> {
     // Check if main worktree exists
     let needsMainWorktree = true;
     try {
       const worktrees = await this.getWorktreesFromBare(bareGit, true);
-      const registered = worktrees.some((w) => path.resolve(w.path) === path.resolve(this.mainWorktreePath));
+      const target = path.resolve(this.mainWorktreePath);
+      const registered =
+        worktrees.find((w) => path.resolve(w.path) === target) ??
+        worktrees.find((w) => w.branch === this.defaultBranch);
       if (registered) {
+        const registeredPath = path.resolve(registered.path);
         // A registration whose directory was destroyed out-of-band (rm -rf, a
         // wiped volume) would otherwise satisfy this check forever: the planner
         // never plans a create for the default branch, so nothing else rebuilds
         // it and every sync fails at fetch. Only a definitive "missing" clears
         // the registration — an unverifiable probe keeps it, same rule as
         // dropStaleRegistrations.
-        if ((await probePathExists(this.mainWorktreePath)) === "missing") {
+        if ((await probePathExists(registeredPath)) === "missing") {
           this.logger.info(
-            `${this.defaultBranch} worktree directory is missing at "${this.mainWorktreePath}"; clearing its stale registration and recreating it.`,
+            `${this.defaultBranch} worktree directory is missing at "${registeredPath}"; clearing its stale registration and recreating it.`,
           );
           try {
-            await bareGit.raw(["worktree", "remove", "--force", path.resolve(this.mainWorktreePath)]);
+            await bareGit.raw(["worktree", "remove", "--force", registeredPath]);
           } catch (removalError) {
             // A locked registration makes single --force fail, which correctly
             // preserves it; leave the old (broken) state rather than guess.
             this.logger.warn(
-              `Could not clear stale registration for '${this.mainWorktreePath}': ${getErrorMessage(removalError)}`,
+              `Could not clear stale registration for '${registeredPath}': ${getErrorMessage(removalError)}`,
             );
             needsMainWorktree = false;
           }
         } else {
+          if (registeredPath !== target) {
+            this.logger.info(
+              `${this.defaultBranch} is already checked out at "${registered.path}"; using it as the ${this.defaultBranch} worktree.`,
+            );
+            this.mainWorktreePath = registered.path;
+          }
           needsMainWorktree = false;
         }
       }
@@ -198,43 +234,41 @@ export class GitService {
       // If worktree list fails, assume we need main worktree
     }
 
-    if (needsMainWorktree) {
-      // The default branch is created through the same path as every other
-      // branch. A directory already at its path that is not a registered
-      // worktree — the checkout left behind after `.bare/` was deleted to
-      // recover from corruption, an unrelated directory of the same name — is
-      // moved to trash or quarantine first, never adopted: this.git and every
-      // later fetch would otherwise run inside a non-repository.
-      this.logger.info(`Creating ${this.defaultBranch} worktree at "${this.mainWorktreePath}"...`);
-      try {
-        await this.addWorktree(this.defaultBranch, this.mainWorktreePath);
-      } catch (error) {
-        // A concurrent creator can land between addWorktree's existence probe
-        // and git's own check, in which case git reports the path as already
-        // existing. That is benign only when the path is a registered worktree
-        // now; an unregistered directory stays an error.
-        if (
-          !getErrorMessage(error).includes(ERROR_MESSAGES.ALREADY_EXISTS) ||
-          !(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))
-        ) {
-          throw error;
-        }
-        this.logger.info(
-          `${this.defaultBranch} worktree at '${this.mainWorktreePath}' was registered concurrently; reusing it.`,
-        );
-      }
+    if (!needsMainWorktree) return false;
 
-      if (!(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))) {
-        throw new WorktreeError(
-          `${this.defaultBranch} worktree at '${path.resolve(this.mainWorktreePath)}' is not registered with the bare repository at '${path.resolve(this.bareRepoPath)}' after creation`,
-          "NOT_REGISTERED",
-        );
+    // The default branch is created through the same path as every other
+    // branch. A directory already at its path that is not a registered
+    // worktree — the checkout left behind after `.bare/` was deleted to
+    // recover from corruption, an unrelated directory of the same name — is
+    // moved to trash or quarantine first, never adopted: this.git and every
+    // later fetch would otherwise run inside a non-repository.
+    this.logger.info(`Creating ${this.defaultBranch} worktree at "${this.mainWorktreePath}"...`);
+    let created = false;
+    try {
+      created = (await this.addWorktree(this.defaultBranch, this.mainWorktreePath)) !== null;
+    } catch (error) {
+      // A concurrent creator can land between addWorktree's existence probe
+      // and git's own check, in which case git reports the path as already
+      // existing. That is benign only when the path is a registered worktree
+      // now; an unregistered directory stays an error.
+      if (
+        !getErrorMessage(error).includes(ERROR_MESSAGES.ALREADY_EXISTS) ||
+        !(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))
+      ) {
+        throw error;
       }
+      this.logger.info(
+        `${this.defaultBranch} worktree at '${this.mainWorktreePath}' was registered concurrently; reusing it.`,
+      );
     }
 
-    // Use the main worktree as our primary git instance
-    this.git = this.getCachedGit(this.mainWorktreePath);
-    return this.git;
+    if (!(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))) {
+      throw new WorktreeError(
+        `${this.defaultBranch} worktree at '${path.resolve(this.mainWorktreePath)}' is not registered with the bare repository at '${path.resolve(this.bareRepoPath)}' after creation`,
+        "NOT_REGISTERED",
+      );
+    }
+    return created;
   }
 
   // An existing bare repo is found by path alone, and the default bareRepoDir
@@ -319,6 +353,50 @@ export class GitService {
     return this.defaultBranch;
   }
 
+  // Re-resolves the default branch from the fetched remote refs and, when the
+  // remote renamed it, moves this service over to the new one. Fetches run
+  // from the default branch's worktree, so the new default's worktree is
+  // created (or an existing one adopted) and this.git re-pointed here, before
+  // the caller can prune the old default's worktree. Nothing changes while
+  // origin still has the current default. Throws when no default that exists
+  // on origin can be resolved: the caller then fails the sync before pruning
+  // anything, and the old worktree keeps anchoring fetches until a later
+  // sync resolves it.
+  async refreshDefaultBranch(): Promise<DefaultBranchRefresh> {
+    this.assertInitialized();
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const previous = this.defaultBranch;
+
+    const detected = await this.detectDefaultBranch(bareGit);
+    if (!(await this.branchExists(detected)).remote) {
+      throw new GitOperationError(
+        "detect-default-branch",
+        `origin/${detected} does not exist${detected === previous ? "" : ` (was '${previous}')`}; ` +
+          "set the remote's HEAD to the new default branch and sync again",
+      );
+    }
+    if (detected === previous) {
+      return { previous, defaultBranch: previous, mainWorktreePath: this.mainWorktreePath, created: false };
+    }
+
+    this.logger.info(`Default branch changed from '${previous}' to '${detected}' on origin.`);
+    const previousMainWorktreePath = this.mainWorktreePath;
+    this.defaultBranch = detected;
+    this.mainWorktreePath = path.join(this.config.worktreeDir, detected);
+    let created: boolean;
+    try {
+      created = await this.ensureMainWorktree(bareGit);
+    } catch (error) {
+      // The old default's worktree still exists and still anchors fetches;
+      // keep pointing at it so the next sync can retry the switch.
+      this.defaultBranch = previous;
+      this.mainWorktreePath = previousMainWorktreePath;
+      throw error;
+    }
+    this.git = this.getCachedGit(this.mainWorktreePath);
+    return { previous, defaultBranch: detected, mainWorktreePath: this.mainWorktreePath, created };
+  }
+
   getBareRepoPath(): string {
     return this.bareRepoPath;
   }
@@ -399,11 +477,16 @@ export class GitService {
   async getRemoteBranches(): Promise<string[]> {
     const git = this.getGit();
     const branches = await git.branch(["-r"]);
-    // Filter on the full ref BEFORE stripping the prefix: a remote branch
-    // literally named "origin" lists as "origin/origin" and is a real branch —
-    // filtering the stripped name would silently drop it (and its worktree
-    // would then read as stale and be pruned).
-    return branches.all
+    return GitService.remoteBranchNames(branches.all);
+  }
+
+  // Remote branch names (without "origin/") from a `branch -r` listing.
+  // Filter on the full ref BEFORE stripping the prefix: a remote branch
+  // literally named "origin" lists as "origin/origin" and is a real branch —
+  // filtering the stripped name would silently drop it (and its worktree
+  // would then read as stale and be pruned).
+  private static remoteBranchNames(refs: string[]): string[] {
+    return refs
       .filter((b) => b.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) && !b.endsWith("/HEAD"))
       .map((b) => b.slice(GIT_CONSTANTS.REMOTE_PREFIX.length))
       .filter((b) => b.length > 0);
@@ -1224,44 +1307,66 @@ export class GitService {
     return branchSummary.current;
   }
 
+  // refs/remotes/origin/HEAD is a symref that only `remote set-head` writes.
+  // `fetch --prune` drops refs/remotes/origin/<old> once the remote renamed or
+  // deleted its default branch but leaves the symref pointing at the old
+  // name, so it is trusted only while its target is still a remote branch.
+  // Otherwise the remote is asked again, and failing that a common default
+  // name that does exist is used.
   private async detectDefaultBranch(bareGit: SimpleGit): Promise<string> {
-    const originHeadPrefix = "refs/remotes/origin/";
+    const remoteBranches = await this.listRemoteBranchNames(bareGit);
+    const fromSymref = await this.readOriginHead(bareGit);
+    if (fromSymref !== null && (remoteBranches === null || remoteBranches.has(fromSymref))) {
+      return fromSymref;
+    }
+
+    if (fromSymref !== null) {
+      this.logger.info(
+        `origin/HEAD points at '${fromSymref}', which no longer exists on origin; asking origin for its default branch...`,
+      );
+    }
     try {
-      // Try to get the symbolic ref for origin/HEAD
-      const headRef = await bareGit.raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
-      // Extract branch name from refs/remotes/origin/main or refs/remotes/origin/master
-      const ref = headRef.trim();
-      const branch = ref.startsWith(originHeadPrefix) ? ref.slice(originHeadPrefix.length) : "";
-      if (branch) {
-        return branch;
+      await bareGit.raw(["remote", "set-head", "origin", "-a"]);
+      const refreshed = await this.readOriginHead(bareGit);
+      if (refreshed !== null) {
+        return refreshed;
       }
-    } catch {
-      // If that fails, try to set HEAD automatically
-      try {
-        await bareGit.raw(["remote", "set-head", "origin", "-a"]);
-        const headRef = await bareGit.raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
-        const ref = headRef.trim();
-        const branch = ref.startsWith(originHeadPrefix) ? ref.slice(originHeadPrefix.length) : "";
-        if (branch) {
-          return branch;
-        }
-      } catch {
-        // If all else fails, try to detect from remote branches
-        try {
-          const remoteBranches = await bareGit.branch(["-r"]);
-          const commonDefaults = GIT_CONSTANTS.COMMON_DEFAULT_BRANCHES;
-          for (const defaultName of commonDefaults) {
-            if (remoteBranches.all.some((branch) => branch === `origin/${defaultName}`)) {
-              return defaultName;
-            }
-          }
-        } catch {
-          // Ignore and fall through to default
+    } catch (error) {
+      this.logger.warn(`Could not read the default branch from origin: ${getErrorMessage(error)}`);
+    }
+
+    if (remoteBranches !== null) {
+      for (const defaultName of GIT_CONSTANTS.COMMON_DEFAULT_BRANCHES) {
+        if (remoteBranches.has(defaultName)) {
+          return defaultName;
         }
       }
     }
     // Final fallback
     return GIT_CONSTANTS.DEFAULT_BRANCH;
+  }
+
+  // Branch name origin/HEAD points at, or null when the symref is missing or
+  // does not name a remote branch.
+  private async readOriginHead(bareGit: SimpleGit): Promise<string | null> {
+    const originHeadPrefix = `${GIT_CONSTANTS.REFS.REMOTES}/`;
+    try {
+      const ref = (await bareGit.raw(["symbolic-ref", `${GIT_CONSTANTS.REFS.REMOTES}/HEAD`])).trim();
+      const branch = ref.startsWith(originHeadPrefix) ? ref.slice(originHeadPrefix.length) : "";
+      return branch.length > 0 ? branch : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // null when the listing itself failed, which callers treat as "unknown"
+  // rather than "no branches".
+  private async listRemoteBranchNames(bareGit: SimpleGit): Promise<Set<string> | null> {
+    try {
+      return new Set(GitService.remoteBranchNames((await bareGit.branch(["-r"])).all));
+    } catch {
+      return null;
+    }
   }
 
   setLfsSkipEnabled(value: boolean): void {

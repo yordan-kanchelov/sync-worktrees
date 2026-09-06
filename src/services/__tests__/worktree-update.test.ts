@@ -73,6 +73,23 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       hasOperationInProgress: vi.fn().mockResolvedValue(false),
       hasModifiedSubmodules: vi.fn().mockResolvedValue(false),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
+      refreshDefaultBranch: vi.fn().mockResolvedValue({
+        previous: "main",
+        defaultBranch: "main",
+        mainWorktreePath: "/test/worktrees/main",
+        created: false,
+      }),
+      getFullWorktreeStatus: vi.fn().mockResolvedValue({
+        isClean: true,
+        hasUnpushedCommits: false,
+        hasStashedChanges: false,
+        hasOperationInProgress: false,
+        hasModifiedSubmodules: false,
+        upstreamGone: false,
+        fullyPushedUpstreamDeleted: false,
+        canRemove: true,
+        reasons: [],
+      }),
     } as any;
 
     attachMockGitService();
@@ -321,6 +338,89 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       await service.sync();
 
       expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Ensuring default branch"));
+      expect(mockGitService.refreshDefaultBranch).not.toHaveBeenCalled();
+    });
+  });
+
+  // Retaining the default branch is only right while origin still has it.
+  // After the remote renamed or deleted it, keeping it in the inventory left
+  // its worktree a permanent update candidate (failing every sync, since
+  // origin/<old> no longer exists) that was never pruned, while the new
+  // default was created as an ordinary hashed peer directory.
+  describe("Default branch that origin no longer has", () => {
+    beforeEach(() => {
+      // Trash off so a prune ends in a plain removeWorktree; the audit record
+      // written before it needs a file handle from the mocked fs.
+      mockConfig.trash = { enabled: false };
+      service = new WorktreeSyncService(mockConfig);
+      attachMockGitService();
+      (fs.open as Mock<any>).mockResolvedValue({
+        appendFile: vi.fn().mockResolvedValue(undefined),
+        sync: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      });
+      (mockGitService.getRemoteBranches as Mock).mockResolvedValue(["trunk", "feature"]);
+      (mockGitService.getWorktrees as Mock).mockResolvedValue([
+        { path: "/test/worktrees/main", branch: "main" },
+        { path: "/test/worktrees/feature", branch: "feature" },
+        { path: "/test/worktrees/trunk", branch: "trunk" },
+      ]);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+    });
+
+    it("re-resolves the default, records its new worktree and prunes the old default instead of retaining it", async () => {
+      (mockGitService.refreshDefaultBranch as Mock).mockResolvedValue({
+        previous: "main",
+        defaultBranch: "trunk",
+        mainWorktreePath: "/test/worktrees/trunk",
+        created: true,
+      });
+
+      const result = await service.sync();
+
+      expect(mockGitService.refreshDefaultBranch).toHaveBeenCalledTimes(1);
+      expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("Ensuring default branch 'main'"));
+      // main went through the prune pipeline, never the update phase.
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/worktrees/main", undefined);
+      expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/main");
+      expect(mockGitService.canFastForward).not.toHaveBeenCalledWith("/test/worktrees/main", "main");
+      // trunk's worktree was created by the switch, not planned again.
+      expect(mockGitService.addWorktree).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        started: true,
+        outcome: {
+          counts: expect.objectContaining({ created: 1, removed: 1, failed: 0 }),
+          actions: expect.arrayContaining([
+            { kind: "created", branch: "trunk", path: "/test/worktrees/trunk" },
+            { kind: "removed", branch: "main", path: "/test/worktrees/main" },
+          ]),
+        },
+      });
+    });
+
+    it("retains the default only while origin has it, even when re-resolution keeps the same name", async () => {
+      (mockGitService.getRemoteBranches as Mock).mockResolvedValue(["feature"]);
+
+      await service.sync();
+
+      expect(mockGitService.refreshDefaultBranch).toHaveBeenCalledTimes(1);
+      expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("Ensuring default branch"));
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Default branch 'main' does not exist on origin; not retaining its worktree"),
+      );
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/worktrees/main", undefined);
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("main", expect.any(String));
+    });
+
+    it("fails the sync before pruning anything when the default cannot be re-resolved", async () => {
+      (mockGitService.refreshDefaultBranch as Mock).mockRejectedValue(new Error("origin/main does not exist"));
+
+      await expect(service.sync()).rejects.toThrow("origin/main does not exist");
+
+      expect(mockGitService.getFullWorktreeStatus).not.toHaveBeenCalled();
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+      expect(mockGitService.addWorktree).not.toHaveBeenCalled();
+      expect(mockGitService.updateWorktree).not.toHaveBeenCalled();
     });
   });
 

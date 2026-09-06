@@ -2673,9 +2673,209 @@ prunable
     });
   });
 
+  // refs/remotes/origin/HEAD is only ever written by `remote set-head`, so
+  // after the remote renamed or deleted its default branch, `fetch --prune`
+  // leaves the symref naming a branch that no longer exists. Detection trusts
+  // it only while its target is still one of the remote branches.
+  describe("detectDefaultBranch after the remote renamed its default", () => {
+    const detect = (): Promise<string> => (gitService as any).detectDefaultBranch(mockGit);
+
+    // Args-keyed stand-in: origin/HEAD reads `symrefTargets` in order (the
+    // last one repeats), `remote set-head origin -a` resolves unless
+    // `setHeadError`, and `branch -r` lists `remoteBranches`.
+    const mockOriginHead = (opts: {
+      symrefTargets: string[];
+      remoteBranches: string[];
+      setHeadError?: Error;
+    }): void => {
+      const targets = [...opts.symrefTargets];
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (!Array.isArray(args)) return Promise.resolve("");
+        const [command, subcommand] = args as string[];
+        if (command === "symbolic-ref") {
+          const target = targets.length > 1 ? targets.shift() : targets[0];
+          return Promise.resolve(`refs/remotes/origin/${target}\n`);
+        }
+        if (command === "remote" && subcommand === "set-head") {
+          return opts.setHeadError ? Promise.reject(opts.setHeadError) : Promise.resolve("");
+        }
+        return Promise.resolve("");
+      });
+      (mockGit.branch as Mock).mockResolvedValue({
+        all: opts.remoteBranches.map((branch) => `origin/${branch}`),
+        current: "",
+      });
+    };
+
+    it("trusts origin/HEAD while its target is still a remote branch", async () => {
+      mockOriginHead({ symrefTargets: ["main"], remoteBranches: ["main", "feature-1"] });
+
+      await expect(detect()).resolves.toBe("main");
+
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["remote", "set-head", "origin", "-a"]);
+    });
+
+    it("asks origin again when origin/HEAD names a branch that is gone, and uses its answer", async () => {
+      mockOriginHead({ symrefTargets: ["master", "main"], remoteBranches: ["main", "feature-1"] });
+
+      await expect(detect()).resolves.toBe("main");
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["remote", "set-head", "origin", "-a"]);
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        expect.stringContaining("origin/HEAD points at 'master', which no longer exists on origin"),
+      );
+    });
+
+    it("falls back to a common default name that exists when origin cannot be asked", async () => {
+      mockOriginHead({
+        symrefTargets: ["master"],
+        remoteBranches: ["feature-1", "trunk"],
+        setHeadError: new Error("Cannot determine remote HEAD"),
+      });
+
+      await expect(detect()).resolves.toBe("trunk");
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Could not read the default branch from origin: Cannot determine remote HEAD"),
+      );
+    });
+  });
+
+  // Fetches run from the default branch's worktree. When the remote renamed
+  // its default, the switch has to create (or adopt) the new default's
+  // worktree and re-point fetches at it before the old one can be pruned —
+  // and leave the old one in place when that cannot be done.
+  describe("refreshDefaultBranch", () => {
+    const TRUNK_WORKTREE_PATH = path.join(TEST_PATHS.worktree, "trunk");
+
+    // The bare repository after `fetch --prune` dropped origin/main: origin/HEAD
+    // still names main until `remote set-head` runs (which then reports
+    // `newHead`, or fails when null), origin has `remoteBranches`, and
+    // `worktrees` are registered (a `worktree add` registers its worktree).
+    const mockRenamedRemote = (
+      opts: {
+        remoteBranches?: string[];
+        worktrees?: Array<{ path: string; branch: string }>;
+        newHead?: string | null;
+        addError?: Error;
+      } = {},
+    ): { addCalls: string[][] } => {
+      const remoteBranches = opts.remoteBranches ?? ["trunk", "feature-1"];
+      const newHead = opts.newHead === undefined ? "trunk" : opts.newHead;
+      const worktrees = [...(opts.worktrees ?? [{ path: MAIN_WORKTREE_PATH, branch: "main" }])];
+      const addCalls: string[][] = [];
+      let headSet = false;
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (!Array.isArray(args)) return Promise.resolve("");
+        const [command, subcommand] = args as string[];
+        if (command === "symbolic-ref") {
+          return Promise.resolve(`refs/remotes/origin/${headSet ? newHead : "main"}\n`);
+        }
+        if (command === "remote" && subcommand === "set-head") {
+          if (newHead === null) return Promise.reject(new Error("Cannot determine remote HEAD"));
+          headSet = true;
+          return Promise.resolve("");
+        }
+        if (command === "worktree" && subcommand === "list") {
+          return Promise.resolve(createWorktreeListOutput(worktrees.map((w) => ({ ...w, commit: "abc123" }))));
+        }
+        if (command === "worktree" && subcommand === "add") {
+          addCalls.push(args as string[]);
+          if (opts.addError) return Promise.reject(opts.addError);
+          worktrees.push({ path: args[args.length - 2] as string, branch: args[args.length - 3] as string });
+          return Promise.resolve("");
+        }
+        if (command === "show-ref") {
+          const ref = args[args.length - 1] as string;
+          const remotePrefix = "refs/remotes/origin/";
+          return ref.startsWith(remotePrefix) && remoteBranches.includes(ref.slice(remotePrefix.length))
+            ? Promise.resolve("")
+            : Promise.reject(new Error("show-ref: not found"));
+        }
+        return Promise.resolve("");
+      });
+      (mockGit.branch as Mock).mockResolvedValue({
+        all: remoteBranches.map((branch) => `origin/${branch}`),
+        current: "",
+      });
+      return { addCalls };
+    };
+
+    it("switches to the renamed default, creates its worktree and fetches from it", async () => {
+      await gitService.initialize();
+      const { addCalls } = mockRenamedRemote();
+      mockMainWorktreeMissing(TRUNK_WORKTREE_PATH);
+      (simpleGit as unknown as Mock).mockClear();
+
+      await expect(gitService.refreshDefaultBranch()).resolves.toEqual({
+        previous: "main",
+        defaultBranch: "trunk",
+        mainWorktreePath: TRUNK_WORKTREE_PATH,
+        created: true,
+      });
+
+      expect(gitService.getDefaultBranch()).toBe("trunk");
+      expect(mockGit.raw).toHaveBeenCalledWith(["remote", "set-head", "origin", "-a"]);
+      expect(addCalls).toEqual([["worktree", "add", "--track", "-b", "trunk", TRUNK_WORKTREE_PATH, "origin/trunk"]]);
+      expect(mockLogger.info).toHaveBeenCalledWith("Default branch changed from 'main' to 'trunk' on origin.");
+      // The primary client — where every fetch runs — is the new worktree's.
+      expect(simpleGit).toHaveBeenCalledWith(
+        TRUNK_WORKTREE_PATH,
+        expect.objectContaining({ progress: expect.any(Function) }),
+      );
+      expect((gitService as any).mainWorktreePath).toBe(TRUNK_WORKTREE_PATH);
+      await expect(gitService.fetchAll()).resolves.toBeUndefined();
+    });
+
+    it("adopts the worktree the new default already has under its hashed directory", async () => {
+      await gitService.initialize();
+      const hashedTrunkPath = path.join(TEST_PATHS.worktree, "trunk-0123abcd");
+      const { addCalls } = mockRenamedRemote({
+        worktrees: [
+          { path: MAIN_WORKTREE_PATH, branch: "main" },
+          { path: hashedTrunkPath, branch: "trunk" },
+        ],
+      });
+
+      await expect(gitService.refreshDefaultBranch()).resolves.toEqual({
+        previous: "main",
+        defaultBranch: "trunk",
+        mainWorktreePath: hashedTrunkPath,
+        created: false,
+      });
+
+      expect(addCalls).toEqual([]);
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        expect.stringContaining(`trunk is already checked out at "${hashedTrunkPath}"`),
+      );
+    });
+
+    it("keeps the old default as the fetch anchor when the new default's worktree cannot be created", async () => {
+      await gitService.initialize();
+      mockRenamedRemote({ addError: new Error("disk full") });
+      mockMainWorktreeMissing(TRUNK_WORKTREE_PATH);
+
+      await expect(gitService.refreshDefaultBranch()).rejects.toThrow("disk full");
+
+      expect(gitService.getDefaultBranch()).toBe("main");
+      expect((gitService as any).mainWorktreePath).toBe(MAIN_WORKTREE_PATH);
+    });
+
+    it("fails instead of switching when no default that exists on origin can be resolved", async () => {
+      await gitService.initialize();
+      mockRenamedRemote({ remoteBranches: ["feature-1"], newHead: null });
+
+      await expect(gitService.refreshDefaultBranch()).rejects.toThrow("origin/main does not exist");
+
+      expect(gitService.getDefaultBranch()).toBe("main");
+      expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["worktree", "add"]));
+    });
+  });
+
   describe("initialize - failure scenarios", () => {
     it("detects default branches whose names contain slashes", async () => {
       mockGit.raw.mockResolvedValueOnce("refs/remotes/origin/release/2024\n" as any);
+      (mockGit.branch as Mock).mockResolvedValueOnce({ all: ["origin/release/2024"], current: "" } as any);
 
       await expect((gitService as any).detectDefaultBranch(mockGit)).resolves.toBe("release/2024");
     });
