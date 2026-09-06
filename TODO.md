@@ -91,7 +91,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   'without tracking' fallback) are never fast-forwarded and are reported as already_up_to_date forever
 - [x] **T63** — isWorktreeBehind uses @{upstream} while canFastForward/updateWorktree use
   origin/<branch>: a differing upstream yields a phantom 'updated/fast_forward' outcome every sync
-- [ ] **T6** — A transient probe failure in canFastForward/isLocalAheadOfRemote is interpreted as
+- [x] **T6** — A transient probe failure in canFastForward/isLocalAheadOfRemote is interpreted as
   'diverged' and can move a healthy, fully pushed worktree to trash and recreate it
 - [ ] **T9** — Long-lived process never recovers when the default-branch worktree is deleted
   out-of-band: every later sync fails with 'spawn git ENOENT'
@@ -664,7 +664,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   }` object to simple-git's `.env()`, which replaces the child environment; `git.service.ts:86` and
   `clone-sync.service.ts:185` already spread `sanitizeGitEnv(process.env)` — mirror that.
 
-### [ ] T6. A transient probe failure in canFastForward/isLocalAheadOfRemote is interpreted as 'diverged' and can move a healthy, fully pushed worktree to trash and recreate it
+### [x] T6. A transient probe failure in canFastForward/isLocalAheadOfRemote is interpreted as 'diverged' and can move a healthy, fully pushed worktree to trash and recreate it
 
 - **Category**: guardrail · **Subsystem**: worktree-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

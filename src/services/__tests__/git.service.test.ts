@@ -2540,30 +2540,126 @@ prunable
       expect(result).toBe(false);
     });
 
-    it("should return false when merge-base fails", async () => {
+    // simple-git resolves merge-base's exit 1 (no common ancestor) to an
+    // empty string. That is a genuine "not ahead" — unrelated histories — and
+    // must not be confused with a probe that failed.
+    it("returns false, without throwing, when merge-base finds no common ancestor", async () => {
       const mockWorktreeGit = {
-        raw: vi.fn<any>().mockRejectedValue(new Error("fatal: Not a valid object name")),
+        raw: vi.fn<any>().mockResolvedValue(""),
+        revparse: vi.fn<any>().mockResolvedValue("def456\n"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      await expect(gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1")).resolves.toBe(false);
+    });
+
+    // A probe that could not run must not answer "no": the runner reads
+    // "cannot fast-forward, not ahead" as diverged and moves the worktree.
+    it("throws when merge-base fails instead of reporting 'not ahead'", async () => {
+      const cause = new Error("fatal: Not a valid object name");
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockRejectedValue(cause),
         revparse: vi.fn<any>().mockResolvedValue("abc123\n"),
         env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
-      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
-
-      expect(result).toBe(false);
+      await expect(gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1")).rejects.toMatchObject({
+        name: "GitOperationError",
+        code: "GIT_OPERATION_FAILED",
+        message:
+          "Git operation 'merge-base' failed: could not tell whether 'feature-1' in '/test/worktrees/feature-1' is ahead of origin/feature-1: fatal: Not a valid object name",
+        cause,
+      });
     });
 
-    it("should return false when revparse fails", async () => {
+    it("throws when revparse fails instead of reporting 'not ahead'", async () => {
       const mockWorktreeGit = {
         raw: vi.fn<any>().mockResolvedValue("abc123\n"),
-        revparse: vi.fn<any>().mockRejectedValue(new Error("fatal: Not a valid object name")),
+        revparse: vi.fn<any>().mockRejectedValue(new Error("spawn git EMFILE")),
         env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
-      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
+      await expect(gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1")).rejects.toThrow(
+        /is ahead of origin\/feature-1: spawn git EMFILE$/,
+      );
+    });
+  });
 
-      expect(result).toBe(false);
+  describe("canFastForward", () => {
+    beforeEach(async () => {
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      await gitService.initialize();
+    });
+
+    it("returns true when the merge base is HEAD (HEAD is an ancestor of the remote tip)", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
+        revparse: vi.fn<any>().mockResolvedValue("abc123\n"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).resolves.toBe(true);
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["merge-base", "HEAD", "origin/feature-1"]);
+      expect(mockWorktreeGit.revparse).toHaveBeenCalledWith(["HEAD"]);
+    });
+
+    it("returns false when the merge base is not HEAD", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockResolvedValue("ancestor\n"),
+        revparse: vi.fn<any>().mockResolvedValue("head\n"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).resolves.toBe(false);
+    });
+
+    // Unrelated histories: merge-base exits 1 with nothing on stdout, which
+    // simple-git resolves to "". A genuine "cannot fast-forward", not a failure.
+    it("returns false, without throwing, when merge-base finds no common ancestor", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockResolvedValue(""),
+        revparse: vi.fn<any>().mockResolvedValue("head\n"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).resolves.toBe(false);
+    });
+
+    it("throws when merge-base fails instead of reporting 'cannot fast-forward'", async () => {
+      const cause = new Error("spawn git EMFILE");
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockRejectedValue(cause),
+        revparse: vi.fn<any>().mockResolvedValue("head\n"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).rejects.toMatchObject({
+        name: "GitOperationError",
+        code: "GIT_OPERATION_FAILED",
+        message:
+          "Git operation 'merge-base' failed: could not tell whether 'feature-1' in '/test/worktrees/feature-1' can fast-forward: spawn git EMFILE",
+        cause,
+      });
+    });
+
+    it("throws when revparse fails instead of reporting 'cannot fast-forward'", async () => {
+      const mockWorktreeGit = {
+        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
+        revparse: vi.fn<any>().mockRejectedValue(new Error("fatal: Not a valid object name HEAD")),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).rejects.toThrow(
+        /can fast-forward: fatal: Not a valid object name HEAD$/,
+      );
     });
   });
 

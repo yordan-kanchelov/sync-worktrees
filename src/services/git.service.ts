@@ -33,6 +33,14 @@ export interface WorktreeUpdateResult {
   after: string;
 }
 
+// Commits on either side of HEAD...refs/remotes/origin/<branch>: `ahead` are
+// HEAD's own, `behind` are the remote tip's. Both above zero means the two
+// histories have diverged.
+export interface AheadBehindCounts {
+  ahead: number;
+  behind: number;
+}
+
 export interface DefaultBranchRefresh {
   previous: string;
   defaultBranch: string;
@@ -1392,15 +1400,18 @@ export class GitService {
     return this.getWorktreesFromBare(bareGit);
   }
 
-  // Whether origin/<branch> has commits the worktree's HEAD lacks, from one
+  // How many commits HEAD has that origin/<branch> lacks (ahead) and the
+  // other way round (behind), from one
   // `rev-list --left-right --count HEAD...refs/remotes/origin/<branch>`
   // (left = ahead, right = behind). The remote ref is named explicitly — the
   // same ref canFastForward and updateWorktree use — rather than read from
   // `<branch>@{upstream}`, so a branch with no upstream configured (a restored
   // worktree, one created without a push, the no-tracking fallback) is
-  // classified like any other instead of passing as up to date. A failed
-  // probe throws: the runner records update_check_failed for it.
-  async isWorktreeBehind(worktreePath: string, branch: string): Promise<boolean> {
+  // classified like any other instead of passing as up to date. Unrelated
+  // histories count on both sides; only a probe that could not run (the ref
+  // is gone, git failed to spawn) throws, so a caller never mistakes "cannot
+  // determine" for an answer.
+  async getAheadBehindCounts(worktreePath: string, branch: string): Promise<AheadBehindCounts> {
     const worktreeGit = this.getCachedGit(worktreePath);
     const output = await worktreeGit.raw([
       "rev-list",
@@ -1409,14 +1420,21 @@ export class GitService {
       `HEAD...${GIT_CONSTANTS.REFS.REMOTES}/${branch}`,
     ]);
     const counts = output.trim().split(/\s+/);
+    const ahead = Number.parseInt(counts[0] ?? "", 10);
     const behind = Number.parseInt(counts[1] ?? "", 10);
-    if (counts.length !== 2 || Number.isNaN(behind)) {
+    if (counts.length !== 2 || Number.isNaN(ahead) || Number.isNaN(behind)) {
       throw new GitOperationError(
         "rev-list",
         `unexpected ahead/behind output for '${branch}' in '${worktreePath}': ${JSON.stringify(output)}`,
       );
     }
-    return behind > 0;
+    return { ahead, behind };
+  }
+
+  // Whether origin/<branch> has commits the worktree's HEAD lacks. A failed
+  // probe throws: the runner records update_check_failed for it.
+  async isWorktreeBehind(worktreePath: string, branch: string): Promise<boolean> {
+    return (await this.getAheadBehindCounts(worktreePath, branch)).behind > 0;
   }
 
   // Fast-forwards the worktree to origin/<its branch> and reports whether HEAD
@@ -1473,41 +1491,50 @@ export class GitService {
     }
   }
 
+  // Whether HEAD is an ancestor of origin/<branch>, so a fast-forward would
+  // bring the worktree to the remote tip (equal tips count too). simple-git
+  // resolves merge-base's exit 1 — no common ancestor — to an empty string,
+  // and that is a genuine "no": unrelated histories cannot fast-forward. Only
+  // a probe that could not run throws, so a spawn failure or a `fatal:` is
+  // never read as "no" and never sends a healthy worktree into diverged
+  // handling; the runner records update_check_failed for it instead.
   async canFastForward(worktreePath: string, branch: string): Promise<boolean> {
     const worktreeGit = this.getCachedGit(worktreePath);
+    let mergeBase: string;
+    let headSha: string;
     try {
-      // Get the merge base between HEAD and the remote branch
-      const mergeBase = await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`]);
-      const mergeBaseSha = mergeBase.trim();
-
-      // Get current HEAD SHA
-      const headSha = await worktreeGit.revparse(["HEAD"]);
-      const headShaTrimmed = headSha.trim();
-
-      // If merge base equals HEAD, then HEAD is an ancestor of remote and can fast-forward
-      return mergeBaseSha === headShaTrimmed;
-    } catch {
-      // If merge-base fails, branches have diverged
-      return false;
+      mergeBase = (await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`])).trim();
+      headSha = (await worktreeGit.revparse(["HEAD"])).trim();
+    } catch (error) {
+      throw new GitOperationError(
+        "merge-base",
+        `could not tell whether '${branch}' in '${worktreePath}' can fast-forward: ${getErrorMessage(error)}`,
+        error instanceof Error ? error : undefined,
+      );
     }
+    // Merge base at HEAD: HEAD is an ancestor of the remote tip.
+    return mergeBase !== "" && mergeBase === headSha;
   }
 
+  // Whether origin/<branch> is an ancestor of HEAD, so the worktree only has
+  // commits the remote lacks (equal tips count too). Same contract as
+  // canFastForward: an empty merge base is "no", a failed probe throws.
   async isLocalAheadOfRemote(worktreePath: string, branch: string): Promise<boolean> {
     const worktreeGit = this.getCachedGit(worktreePath);
+    let mergeBase: string;
+    let remoteSha: string;
     try {
-      // Get the merge base between HEAD and the remote branch
-      const mergeBase = await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`]);
-      const mergeBaseSha = mergeBase.trim();
-
-      // Get remote branch SHA
-      const remoteSha = await worktreeGit.revparse([`origin/${branch}`]);
-      const remoteShaTrimmed = remoteSha.trim();
-
-      // If merge base equals remote, local is ahead (remote is ancestor of local)
-      return mergeBaseSha === remoteShaTrimmed;
-    } catch {
-      return false;
+      mergeBase = (await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`])).trim();
+      remoteSha = (await worktreeGit.revparse([`origin/${branch}`])).trim();
+    } catch (error) {
+      throw new GitOperationError(
+        "merge-base",
+        `could not tell whether '${branch}' in '${worktreePath}' is ahead of origin/${branch}: ${getErrorMessage(error)}`,
+        error instanceof Error ? error : undefined,
+      );
     }
+    // Merge base at the remote tip: the remote is an ancestor of HEAD.
+    return mergeBase !== "" && mergeBase === remoteSha;
   }
 
   async classifyRemoteRelationship(worktreePath: string, branch: string): Promise<RemoteRelationship> {

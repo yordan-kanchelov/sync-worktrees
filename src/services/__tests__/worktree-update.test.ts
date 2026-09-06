@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockLogger } from "../../__tests__/test-utils";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
-import type { Config } from "../../types";
+import type { Config, SyncResult } from "../../types";
 import type { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
 import type { Mock, Mocked } from "vitest";
@@ -286,6 +286,93 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       expect(result.outcome.actions).not.toContainEqual(
         expect.objectContaining({ reason: "already_up_to_date", branch: "feature" }),
       );
+    });
+
+    // canFastForward / isLocalAheadOfRemote throw when their merge-base could
+    // not run (EMFILE, ENOMEM, a `fatal:`) rather than answering "no": a pair
+    // of "no"s is what Phase 4a reads as diverged, and diverged handling can
+    // move a healthy, fully pushed worktree to trash and recreate it.
+    describe("a fast-forward or local-ahead probe that throws", () => {
+      const runner = (): any => (service as any).worktreeModeSyncRunner;
+
+      beforeEach(() => {
+        vi.spyOn(runner(), "handleDivergedBranch");
+        vi.spyOn(runner().trashService, "trashAndUnregisterWorktree");
+        (mockGitService as any).isLocalAheadOfRemote = vi.fn<any>().mockResolvedValue(false);
+        mockGitService.isWorktreeBehind.mockResolvedValue(true);
+      });
+
+      function expectFeatureLeftAlone(result: SyncResult, message: string): void {
+        expect(runner().handleDivergedBranch).not.toHaveBeenCalled();
+        expect(runner().trashService.trashAndUnregisterWorktree).not.toHaveBeenCalled();
+        expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/test/worktrees/feature");
+        // The other two worktrees are still updated.
+        expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
+        expect(mockLogger.error).toHaveBeenCalledWith("  - Error checking worktree 'feature':", expect.any(Error));
+
+        expect(result.started).toBe(true);
+        if (!result.started) throw new Error("sync did not start");
+        expect(result.outcome.counts.failed).toBe(0);
+        expect(result.outcome.counts.preserved).toBe(0);
+        expect(result.outcome.actions.filter((action) => action.branch === "feature")).toEqual([
+          {
+            kind: "skipped",
+            scope: "worktree",
+            reason: "update_check_failed",
+            branch: "feature",
+            path: "/test/worktrees/feature",
+            message,
+          },
+        ]);
+      }
+
+      it("records update_check_failed and never starts diverged handling when canFastForward throws", async () => {
+        const message =
+          "Git operation 'merge-base' failed: could not tell whether 'feature' in '/test/worktrees/feature' can fast-forward: spawn git EMFILE";
+        mockGitService.canFastForward.mockImplementation(async (worktreePath: string) => {
+          if (worktreePath.includes("feature")) throw new Error(message);
+          return true;
+        });
+
+        const result = await service.sync();
+
+        expect(mockGitService.isLocalAheadOfRemote).not.toHaveBeenCalled();
+        expectFeatureLeftAlone(result, message);
+      });
+
+      it("records update_check_failed and never starts diverged handling when isLocalAheadOfRemote throws", async () => {
+        mockGitService.canFastForward.mockImplementation(
+          async (worktreePath: string) => !worktreePath.includes("feature"),
+        );
+        mockGitService.isLocalAheadOfRemote.mockRejectedValue(
+          new Error("fatal: Not a valid object name origin/feature"),
+        );
+
+        const result = await service.sync();
+
+        expectFeatureLeftAlone(result, "fatal: Not a valid object name origin/feature");
+      });
+
+      // Two genuine "no"s — merge-base found no common ancestor, which
+      // simple-git hands back as an empty string, so neither probe throws —
+      // still reach diverged handling.
+      it("still hands a worktree with no common ancestor to diverged handling", async () => {
+        mockGitService.canFastForward.mockImplementation(
+          async (worktreePath: string) => !worktreePath.includes("feature"),
+        );
+        mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+        runner().handleDivergedBranch.mockResolvedValue(false);
+
+        await service.sync();
+
+        expect(runner().handleDivergedBranch).toHaveBeenCalledTimes(1);
+        expect(runner().handleDivergedBranch).toHaveBeenCalledWith(
+          { path: "/test/worktrees/feature", branch: "feature" },
+          expect.anything(),
+        );
+      });
     });
 
     // Phase 4a saw origin/feature ahead of HEAD, but by the time Phase 4b ran

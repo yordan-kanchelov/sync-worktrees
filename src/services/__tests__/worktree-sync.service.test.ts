@@ -70,6 +70,9 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       resetToUpstream: vi.fn<any>().mockResolvedValue(true),
       hasDivergedHistory: vi.fn<any>().mockResolvedValue(false),
       isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
+      // Diverged handling re-verifies with this throwing probe before it moves
+      // anything; commits on both sides is the genuine diverged state.
+      getAheadBehindCounts: vi.fn<any>().mockResolvedValue({ ahead: 1, behind: 1 }),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
@@ -1804,6 +1807,7 @@ describe("WorktreeSyncService", () => {
       mockGitService.resetToUpstream.mockResolvedValue(true);
       mockGitService.updateRef.mockResolvedValue(undefined);
       mockGitService.deleteLocalBranch.mockResolvedValue(undefined);
+      mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 1, behind: 1 });
     });
 
     it("should reset to upstream when trees are identical (rebase with same content)", async () => {
@@ -2029,6 +2033,43 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
       // The replacement exists now, so the entry must stop reserving the branch.
       expect(JSON.parse(manifestWrite!.content).replacedAt).toEqual(expect.any(String));
+    });
+
+    // A probe that cannot answer must not let the trash pipeline start: with
+    // trash on, diverged-replace moves the directory, deletes the local branch
+    // and recreates the worktree from origin — reversible, but not something
+    // to do to a worktree nobody has shown to be diverged.
+    it("with trash enabled, trashes nothing when the re-verify probe throws", async () => {
+      service = new WorktreeSyncService({ ...mockConfig, trash: undefined });
+
+      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+      mockGitService.checkWorktreeStatus.mockResolvedValue(true);
+      mockGitService.hasOperationInProgress.mockResolvedValue(false);
+      mockGitService.getWorktreeMetadata.mockResolvedValue({ lastSyncCommit: "old-commit" } as any);
+      mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
+      mockGitService.getAheadBehindCounts.mockRejectedValue(new Error("spawn git EMFILE"));
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
+
+      await service.sync();
+
+      expect(mockGitService.getAheadBehindCounts).toHaveBeenCalledWith("/test/worktrees/feature-1", "feature-1");
+      expect(findLastManifestWrite()).toBeUndefined();
+      expect(fs.rename).not.toHaveBeenCalled();
+      expect(mockGitService.createBundleFromRef).not.toHaveBeenCalled();
+      expect(mockGitService.deleteLocalBranch).not.toHaveBeenCalled();
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+      expect(mockGitService.compareTreeContent).not.toHaveBeenCalled();
+      expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("feature-1", "/test/worktrees/feature-1");
+      expect(service.getLastOutcome()?.actions).toContainEqual(
+        expect.objectContaining({
+          kind: "failed",
+          reason: "diverged_recovery_failed",
+          branch: "feature-1",
+          error: expect.stringContaining("EMFILE"),
+        }),
+      );
     });
 
     function findDivergedInfoWrite(): { path: string; info: any } | undefined {

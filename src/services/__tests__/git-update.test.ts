@@ -88,6 +88,53 @@ describe("GitService - Update Methods", () => {
     });
   });
 
+  describe("getAheadBehindCounts", () => {
+    it("reads both sides of one left-right rev-list against refs/remotes/origin/<branch>", async () => {
+      mockGit.raw.mockResolvedValueOnce("2\t3\n");
+
+      await expect(service.getAheadBehindCounts("/test/worktrees/feature", "feature-branch")).resolves.toEqual({
+        ahead: 2,
+        behind: 3,
+      });
+      expect(mockGit.raw).toHaveBeenCalledTimes(1);
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "rev-list",
+        "--left-right",
+        "--count",
+        "HEAD...refs/remotes/origin/feature-branch",
+      ]);
+    });
+
+    // Unrelated histories are no error to rev-list: every commit lands on one
+    // side or the other, which is the genuine diverged shape.
+    it("counts unrelated histories on both sides", async () => {
+      mockGit.raw.mockResolvedValueOnce("1\t1\n");
+
+      await expect(service.getAheadBehindCounts("/test/worktrees/feature", "feature-branch")).resolves.toEqual({
+        ahead: 1,
+        behind: 1,
+      });
+    });
+
+    it("throws when the probe fails instead of answering", async () => {
+      mockGit.raw.mockRejectedValueOnce(
+        new Error("fatal: ambiguous argument 'HEAD...refs/remotes/origin/feature-branch': unknown revision"),
+      );
+
+      await expect(service.getAheadBehindCounts("/test/worktrees/feature", "feature-branch")).rejects.toThrow(
+        "unknown revision",
+      );
+    });
+
+    it("throws on output it cannot read as an ahead/behind pair", async () => {
+      mockGit.raw.mockResolvedValueOnce("\n");
+
+      await expect(service.getAheadBehindCounts("/test/worktrees/feature", "feature-branch")).rejects.toThrow(
+        /unexpected ahead\/behind output for 'feature-branch' in '\/test\/worktrees\/feature'/,
+      );
+    });
+  });
+
   describe("updateWorktree", () => {
     const featureBranch = { current: "feature-branch", all: ["feature-branch"], branches: {}, detached: false };
 

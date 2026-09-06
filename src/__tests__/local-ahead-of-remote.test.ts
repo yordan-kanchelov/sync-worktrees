@@ -45,6 +45,9 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
       isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
+      // Diverged handling re-verifies with this throwing probe before it moves
+      // anything; commits on both sides is the genuine diverged state.
+      getAheadBehindCounts: vi.fn<any>().mockResolvedValue({ ahead: 1, behind: 1 }),
       // The trash-disabled diverged flow pins a keep ref and deletes the stale
       // local branch before recreating the worktree.
       updateRef: vi.fn<any>().mockResolvedValue(undefined),

@@ -16,7 +16,7 @@ import { RemovalAuditService } from "./removal-audit.service";
 import { TrashService } from "./trash.service";
 import { createWorktreeSyncPlan } from "./worktree-sync-planner";
 
-import type { GitService } from "./git.service";
+import type { AheadBehindCounts, GitService } from "./git.service";
 import type { Logger } from "./logger.service";
 import type { ProgressEmitter } from "./progress-emitter";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
@@ -933,9 +933,11 @@ export class WorktreeModeSyncRunner {
             break;
         }
       } else if (result.status === "rejected") {
-        // Probe-only failure (status / fast-forward / behind check threw). The
-        // actual update is gated on success here, so a probe error means we never
-        // touched the worktree — treat it as a skip, not a hard failure.
+        // Probe-only failure (status / fast-forward / local-ahead / behind
+        // check threw). Every probe throws when it cannot answer instead of
+        // reporting "no" — a merge-base that failed to spawn must never read
+        // as "diverged" — and the update is gated on success here, so a probe
+        // error means we never touched the worktree: a skip, not a hard failure.
         // allSettled keeps the input order, so actions[index] is this worktree.
         const { branch, path: worktreePath } = actions[index];
         this.logger.error(`  - Error checking worktree '${branch}':`, result.reason);
@@ -1060,6 +1062,18 @@ export class WorktreeModeSyncRunner {
       return false;
     }
 
+    // The classification that got us here came from merge-base probes (or a
+    // refused fast-forward) that ran a while ago, under high concurrency.
+    // Before the reset or the move, confirm with a probe that throws when it
+    // cannot answer that HEAD and origin/<branch> really have commits on both
+    // sides. Anything else is re-classified and left for the next sync; a
+    // probe that throws surfaces as diverged_recovery_failed at the call site.
+    const counts = await this.gitService.getAheadBehindCounts(worktree.path, worktree.branch);
+    if (counts.ahead === 0 || counts.behind === 0) {
+      this.recordNotDiverged(worktree, outcome, counts);
+      return false;
+    }
+
     const observedHead = (await this.gitService.getCurrentCommit(worktree.path)).trim();
     const treesIdentical = await this.gitService.compareTreeContent(worktree.path, worktree.branch);
 
@@ -1134,6 +1148,38 @@ export class WorktreeModeSyncRunner {
         );
     }
     return true;
+  }
+
+  // The re-verification in handleDivergedBranch found the worktree not
+  // diverged after all: HEAD moved between the earlier probe and now (a pull
+  // or a push in the worktree), or that probe answered on a spurious read.
+  // Record what Phase 4a would say for the state seen now and touch nothing;
+  // a worktree that is only behind is fast-forwarded on the next sync, through
+  // the same sparse-checkout gate as any other.
+  private recordNotDiverged(
+    worktree: { path: string; branch: string },
+    outcome: SyncOutcomeAccumulator,
+    { ahead, behind }: AheadBehindCounts,
+  ): void {
+    const details = { branch: worktree.branch, path: worktree.path };
+    const summary = `${ahead} ahead / ${behind} behind origin/${worktree.branch}`;
+    if (ahead === 0 && behind === 0) {
+      this.logger.info(
+        `   '${worktree.branch}' is not diverged after all: HEAD is at origin/${worktree.branch}. Leaving it alone.`,
+      );
+      outcome.recordNoop("worktree", "already_up_to_date", details);
+    } else if (behind === 0) {
+      this.logger.info(`⏭️  Skipping '${worktree.branch}' - not diverged after all, has unpushed commits (${summary})`);
+      outcome.recordSkipped("worktree", "local_ahead", { ...details, message: `not diverged: ${summary}` });
+    } else {
+      this.logger.info(
+        `⏭️  Skipping '${worktree.branch}' - not diverged after all, only behind (${summary}); the next sync fast-forwards it`,
+      );
+      outcome.recordSkipped("worktree", "not_diverged", {
+        ...details,
+        message: `${summary}; fast-forwarded on the next sync`,
+      });
+    }
   }
 
   private async hasLocalChangesSinceLastSync(worktreePath: string, currentCommit?: string): Promise<boolean> {
