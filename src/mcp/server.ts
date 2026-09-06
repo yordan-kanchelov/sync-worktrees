@@ -251,7 +251,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "update_worktree",
     {
       description:
-        "Worktree-mode only; clone-mode repos error here; use sync to update the checkout. Fast-forward one worktree to upstream. No merge, no rebase, aborts if not fast-forwardable. Whole repo? Use sync.",
+        "Worktree-mode only; clone-mode repos error here; use sync to update the checkout. Fast-forward one worktree to upstream. No merge, no rebase, aborts if not fast-forwardable. Whole repo? Use sync. Returns: {success, worktreePath, updated}; updated=false when the worktree already matched origin/<branch> and nothing was merged.",
       inputSchema: z.object({
         path: z.string().describe(`Worktree path to fast-forward. ${PATH_DESCRIBE_SUFFIX}`),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),

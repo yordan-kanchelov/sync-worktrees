@@ -37,7 +37,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
         { path: "/test/worktrees/feature-diverged", branch: "feature-diverged" },
       ]),
       isWorktreeBehind: vi.fn<any>().mockResolvedValue(false),
-      updateWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
       hasDivergedHistory: vi.fn<any>().mockResolvedValue(false),
       canFastForward: vi.fn<any>().mockResolvedValue(true),
       compareTreeContent: vi.fn<any>().mockResolvedValue(false),
@@ -289,6 +289,7 @@ describe("Rebased Branch Handling", () => {
         if (path.includes("feature-diverged")) {
           throw new Error("fatal: Not possible to fast-forward, aborting.");
         }
+        return { updated: true, before: "old111", after: "new222" };
       });
 
       mockGitService.canFastForward.mockImplementation(async (path) => {
@@ -495,6 +496,7 @@ describe("Rebased Branch Handling", () => {
           };
           throw error;
         }
+        return { updated: true, before: "old111", after: "new222" };
       });
 
       await service.sync();
@@ -548,6 +550,7 @@ describe("Rebased Branch Handling", () => {
           };
           throw error;
         }
+        return { updated: true, before: "old111", after: "new222" };
       });
 
       await service.sync();
@@ -594,6 +597,7 @@ describe("Rebased Branch Handling", () => {
             "fatal: unable to access 'https://github.com/test/repo.git/': Could not resolve host: github.com",
           );
         }
+        return { updated: true, before: "old111", after: "new222" };
       });
 
       await service.sync();

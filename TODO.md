@@ -89,7 +89,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   never pruned
 - [x] **T3** — Worktrees without an upstream (trash restore, MCP create_worktree push=false,
   'without tracking' fallback) are never fast-forwarded and are reported as already_up_to_date forever
-- [ ] **T63** — isWorktreeBehind uses @{upstream} while canFastForward/updateWorktree use
+- [x] **T63** — isWorktreeBehind uses @{upstream} while canFastForward/updateWorktree use
   origin/<branch>: a differing upstream yields a phantom 'updated/fast_forward' outcome every sync
 - [ ] **T6** — A transient probe failure in canFastForward/isLocalAheadOfRemote is interpreted as
   'diverged' and can move a healthy, fully pushed worktree to trash and recreate it
@@ -2755,7 +2755,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   (clean/pushed/stash/op) all pass for an ordinary pushed branch. Trash makes it reversible but the
   branch is silently removed from the managed set forever.
 
-### [ ] T63. isWorktreeBehind uses @{upstream} while canFastForward/updateWorktree use origin/<branch>: a differing upstream yields a phantom 'updated/fast_forward' outcome every sync
+### [x] T63. isWorktreeBehind uses @{upstream} while canFastForward/updateWorktree use origin/<branch>: a differing upstream yields a phantom 'updated/fast_forward' outcome every sync
 
 - **Category**: correctness · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

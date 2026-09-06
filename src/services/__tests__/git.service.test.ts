@@ -2413,12 +2413,17 @@ prunable
           current: "feature-1",
         }),
         merge: vi.fn<any>().mockResolvedValue(undefined),
-        revparse: vi.fn<any>().mockResolvedValue("newcommit123\n"),
+        // HEAD before and after the fast-forward.
+        revparse: vi.fn<any>().mockResolvedValueOnce("oldcommit456\n").mockResolvedValueOnce("newcommit123\n"),
         env: vi.fn<any>().mockReturnThis(),
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
-      await gitService.updateWorktree("/test/worktrees/feature-1");
+      await expect(gitService.updateWorktree("/test/worktrees/feature-1")).resolves.toEqual({
+        updated: true,
+        before: "oldcommit456",
+        after: "newcommit123",
+      });
 
       expect(mockWorktreeGit.merge).toHaveBeenCalledWith(["origin/feature-1", "--ff-only"]);
       expect(mockMetadataService.updateLastSyncFromPath).toHaveBeenCalledWith(
@@ -2435,7 +2440,7 @@ prunable
 
       mockGit.branch.mockResolvedValue({ current: "main" } as any);
       (mockGit as any).merge = vi.fn<any>().mockResolvedValue(undefined);
-      mockGit.revparse.mockResolvedValue("newcommit123\n" as any);
+      mockGit.revparse.mockResolvedValueOnce("oldcommit456\n" as any).mockResolvedValueOnce("newcommit123\n" as any);
 
       await gitService.updateWorktree("/test/worktrees/main");
 
@@ -2447,6 +2452,31 @@ prunable
         "updated",
         "main",
       );
+    });
+
+    // HEAD already sat at origin/<branch> when the merge ran (it got there
+    // between the runner's behind probe and the fast-forward), so nothing was
+    // updated: lastSyncCommit/lastSyncDate and syncHistory must stay as they are.
+    it("leaves the sync metadata alone when the fast-forward moved nothing", async () => {
+      await gitService.initialize();
+      mockMetadataService.updateLastSyncFromPath.mockClear();
+
+      const mockWorktreeGit = {
+        branch: vi.fn<any>().mockResolvedValue({ current: "feature-1" }),
+        merge: vi.fn<any>().mockResolvedValue(undefined),
+        revparse: vi.fn<any>().mockResolvedValue("samecommit789\n"),
+        env: vi.fn<any>().mockReturnThis(),
+      };
+      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
+
+      await expect(gitService.updateWorktree("/test/worktrees/feature-1")).resolves.toEqual({
+        updated: false,
+        before: "samecommit789",
+        after: "samecommit789",
+      });
+
+      expect(mockWorktreeGit.merge).toHaveBeenCalledWith(["origin/feature-1", "--ff-only"]);
+      expect(mockMetadataService.updateLastSyncFromPath).not.toHaveBeenCalled();
     });
   });
 

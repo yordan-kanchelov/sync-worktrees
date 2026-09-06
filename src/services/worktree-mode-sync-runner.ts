@@ -960,9 +960,18 @@ export class WorktreeModeSyncRunner {
           let changed = true;
           try {
             this.logger.info(`  - Updating worktree '${worktree.branch}'...`);
-            await this.gitService.updateWorktree(worktree.path);
-            this.logger.info(`    ✅ Successfully updated '${worktree.branch}'.`);
-            outcome.recordUpdated(worktree.branch, worktree.path, "fast_forward");
+            const { updated } = await this.gitService.updateWorktree(worktree.path);
+            if (updated) {
+              this.logger.info(`    ✅ Successfully updated '${worktree.branch}'.`);
+              outcome.recordUpdated(worktree.branch, worktree.path, "fast_forward");
+            } else {
+              // Behind at the Phase 4a probe, but nothing left to merge once the
+              // fast-forward ran: HEAD reached origin/<branch> in between (a
+              // `git pull` in the worktree, say). Nothing changed here, so say
+              // so rather than report an update that did not happen.
+              this.logger.info(`    ℹ️  '${worktree.branch}' was already up to date; nothing to fast-forward.`);
+              outcome.recordNoop("worktree", "already_up_to_date", worktree);
+            }
           } catch (error) {
             const errorMessage = getErrorMessage(error);
 

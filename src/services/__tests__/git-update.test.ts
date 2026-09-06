@@ -29,6 +29,7 @@ describe("GitService - Update Methods", () => {
       branch: vi.fn(),
       raw: vi.fn(),
       merge: vi.fn(),
+      revparse: vi.fn(),
       env: vi.fn().mockReturnThis(),
     } as any;
 
@@ -88,24 +89,59 @@ describe("GitService - Update Methods", () => {
   });
 
   describe("updateWorktree", () => {
-    it("should perform fast-forward merge", async () => {
-      mockGit.branch.mockResolvedValue({
-        current: "feature-branch",
-        all: ["feature-branch"],
-        branches: {},
-        detached: false,
-      } as any);
+    const featureBranch = { current: "feature-branch", all: ["feature-branch"], branches: {}, detached: false };
 
+    // The metadata service is stubbed so its "no metadata yet" fallback does
+    // not read HEAD on its own; what it is told is asserted directly.
+    let updateLastSync: Mock;
+    const stubMetadata = (): void => {
+      updateLastSync = vi.fn().mockResolvedValue(undefined);
+      (service as any).metadataService = { updateLastSyncFromPath: updateLastSync };
+    };
+    beforeEach(stubMetadata);
+
+    it("fast-forwards to origin/<current branch> and reports the HEAD move from the shas around the merge", async () => {
+      mockGit.branch.mockResolvedValue(featureBranch as any);
+      mockGit.revparse.mockResolvedValueOnce("aaa111\n").mockResolvedValueOnce("bbb222\n");
       mockGit.merge.mockResolvedValue({} as any);
 
-      await service.updateWorktree("/test/worktrees/feature");
+      const result = await service.updateWorktree("/test/worktrees/feature");
 
       expect(mockGit.merge).toHaveBeenCalledWith(["origin/feature-branch", "--ff-only"]);
+      expect(result).toEqual({ updated: true, before: "aaa111", after: "bbb222" });
+      // HEAD is read once on each side of the merge.
+      expect(mockGit.revparse).toHaveBeenCalledTimes(2);
+      expect(mockGit.revparse).toHaveBeenCalledWith(["HEAD"]);
+      const [beforeRead, afterRead] = mockGit.revparse.mock.invocationCallOrder;
+      const [mergeCall] = mockGit.merge.mock.invocationCallOrder;
+      expect(beforeRead).toBeLessThan(mergeCall);
+      expect(mergeCall).toBeLessThan(afterRead);
+      // The sync metadata records the commit HEAD moved to.
+      expect(updateLastSync).toHaveBeenCalledWith(
+        expect.any(String),
+        "/test/worktrees/feature",
+        "bbb222",
+        "updated",
+        expect.any(String),
+      );
+    });
+
+    it("reports updated:false with equal shas, and writes no metadata, when the fast-forward had nothing to merge", async () => {
+      mockGit.branch.mockResolvedValue(featureBranch as any);
+      mockGit.revparse.mockResolvedValue("ccc333\n");
+      mockGit.merge.mockResolvedValue({} as any);
+
+      const result = await service.updateWorktree("/test/worktrees/feature");
+
+      expect(mockGit.merge).toHaveBeenCalledWith(["origin/feature-branch", "--ff-only"]);
+      expect(result).toEqual({ updated: false, before: "ccc333", after: "ccc333" });
+      expect(updateLastSync).not.toHaveBeenCalled();
     });
 
     it("should use LFS skip when configured", async () => {
       mockConfig.skipLfs = true;
       service = new GitService(mockConfig);
+      stubMetadata();
 
       mockGit.branch.mockResolvedValue({
         current: "main",
@@ -114,6 +150,7 @@ describe("GitService - Update Methods", () => {
         detached: false,
       } as any);
 
+      mockGit.revparse.mockResolvedValueOnce("aaa111\n").mockResolvedValueOnce("bbb222\n");
       mockGit.merge.mockResolvedValue({} as any);
 
       await service.updateWorktree("/test/worktrees/main");
@@ -130,9 +167,12 @@ describe("GitService - Update Methods", () => {
         detached: false,
       } as any);
 
+      mockGit.revparse.mockResolvedValue("aaa111\n");
       mockGit.merge.mockRejectedValue(new Error("Not possible to fast-forward"));
 
       await expect(service.updateWorktree("/test/worktrees/diverged")).rejects.toThrow("Not possible to fast-forward");
+      // HEAD was read before the merge only; nothing is reported for a failed one.
+      expect(mockGit.revparse).toHaveBeenCalledTimes(1);
     });
   });
 

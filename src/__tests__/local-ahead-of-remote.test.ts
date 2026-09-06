@@ -36,7 +36,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
         { path: "/test/worktrees/feature-ahead", branch: "feature-ahead" },
       ]),
       isWorktreeBehind: vi.fn<any>().mockResolvedValue(false),
-      updateWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
       hasDivergedHistory: vi.fn<any>().mockResolvedValue(false),
       canFastForward: vi.fn<any>().mockResolvedValue(true),
       compareTreeContent: vi.fn<any>().mockResolvedValue(false),

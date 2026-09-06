@@ -86,7 +86,7 @@ function makeService(): { service: Record<string, any>; git: Record<string, any>
     createBranch: vi.fn<any>().mockResolvedValue(undefined),
     pushBranch: vi.fn<any>().mockResolvedValue(undefined),
     addWorktree: vi.fn<any>().mockResolvedValue(undefined),
-    updateWorktree: vi.fn<any>().mockResolvedValue(undefined),
+    updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
   };
   const service = {
     config: {} as Record<string, unknown>,

@@ -25,6 +25,14 @@ import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export type RemoteRelationship = "up_to_date" | "fast_forward" | "local_ahead" | "diverged" | "indeterminate_shallow";
 
+// What updateWorktree did: `updated` is whether the fast-forward moved HEAD;
+// `before` and `after` are HEAD on either side of it (equal for a no-op).
+export interface WorktreeUpdateResult {
+  updated: boolean;
+  before: string;
+  after: string;
+}
+
 export interface DefaultBranchRefresh {
   previous: string;
   defaultBranch: string;
@@ -1411,28 +1419,39 @@ export class GitService {
     return behind > 0;
   }
 
-  async updateWorktree(worktreePath: string): Promise<void> {
+  // Fast-forwards the worktree to origin/<its branch> and reports whether HEAD
+  // actually moved, from a sha comparison around the merge rather than from the
+  // runner's earlier behind probe: HEAD can reach the remote tip between the
+  // two (a `git pull` in the worktree), and `merge --ff-only` succeeds with
+  // nothing to bring in. Sync metadata (lastSyncCommit, lastSyncDate, the
+  // syncHistory entry) is only written when HEAD moved, so a no-op leaves no
+  // trace of an update that did not happen.
+  async updateWorktree(worktreePath: string): Promise<WorktreeUpdateResult> {
     const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
 
-    // Perform a fast-forward merge
     const branchSummary = await worktreeGit.branch();
     const currentBranch = branchSummary.current;
 
+    const before = (await worktreeGit.revparse(["HEAD"])).trim();
     await worktreeGit.merge([`origin/${currentBranch}`, "--ff-only"]);
+    const after = (await worktreeGit.revparse(["HEAD"])).trim();
+    const updated = after !== before;
 
-    // Update metadata after successful update (use path-based method)
-    try {
-      const currentCommit = await worktreeGit.revparse(["HEAD"]);
-      await this.metadataService.updateLastSyncFromPath(
-        this.bareRepoPath,
-        worktreePath,
-        currentCommit.trim(),
-        "updated",
-        this.defaultBranch,
-      );
-    } catch (metadataError) {
-      this.logger.warn(`Failed to update metadata for worktree: ${String(metadataError)}`);
+    if (updated) {
+      try {
+        await this.metadataService.updateLastSyncFromPath(
+          this.bareRepoPath,
+          worktreePath,
+          after,
+          "updated",
+          this.defaultBranch,
+        );
+      } catch (metadataError) {
+        this.logger.warn(`Failed to update metadata for worktree: ${String(metadataError)}`);
+      }
     }
+
+    return { updated, before, after };
   }
 
   async hasDivergedHistory(worktreePath: string, expectedBranch: string): Promise<boolean> {

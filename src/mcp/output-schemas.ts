@@ -238,6 +238,9 @@ export const syncOutputSchema = z.looseObject({
 export const updateWorktreeOutputSchema = z.looseObject({
   success: z.boolean(),
   worktreePath: z.string(),
+  updated: z
+    .boolean()
+    .describe("Whether the fast-forward moved HEAD. false when the worktree already matched origin/<branch>."),
 });
 
 export const initializeOutputSchema = z.looseObject({

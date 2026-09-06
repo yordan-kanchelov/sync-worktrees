@@ -64,7 +64,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       checkWorktreeStatus: vi.fn().mockResolvedValue(true), // All clean by default
       isWorktreeBehind: vi.fn().mockResolvedValue(false), // Not behind by default
       canFastForward: vi.fn().mockResolvedValue(true), // Can fast-forward by default
-      updateWorktree: vi.fn().mockResolvedValue(undefined),
+      updateWorktree: vi.fn().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
       addWorktree: vi.fn().mockResolvedValue(undefined),
       removeWorktree: vi.fn().mockResolvedValue(undefined),
       pruneWorktrees: vi.fn().mockResolvedValue(undefined),
@@ -182,6 +182,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         if (path.includes("feature")) {
           throw new Error("Fast-forward merge failed");
         }
+        return { updated: true, before: "old111", after: "new222" };
       });
 
       await service.sync();
@@ -285,6 +286,40 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       expect(result.outcome.actions).not.toContainEqual(
         expect.objectContaining({ reason: "already_up_to_date", branch: "feature" }),
       );
+    });
+
+    // Phase 4a saw origin/feature ahead of HEAD, but by the time Phase 4b ran
+    // the fast-forward there was nothing left to merge (HEAD reached the
+    // remote tip in between). That is not an update: the outcome records
+    // already_up_to_date and no "Successfully updated" line is logged.
+    it("records already_up_to_date, not an update, when the fast-forward finds HEAD already at the remote tip", async () => {
+      mockGitService.isWorktreeBehind.mockImplementation(
+        async (_worktreePath: string, branch: string) => branch === "feature",
+      );
+      mockGitService.updateWorktree.mockResolvedValue({ updated: false, before: "abc123", after: "abc123" });
+
+      const result = await service.sync();
+
+      expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(1);
+      expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature");
+      expect(mockLogger.info).toHaveBeenCalledWith("  - Updating worktree 'feature'...");
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        "    ℹ️  'feature' was already up to date; nothing to fast-forward.",
+      );
+      expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("Successfully updated"));
+
+      expect(result.started).toBe(true);
+      if (!result.started) throw new Error("sync did not start");
+      expect(result.outcome.counts).toEqual(expect.objectContaining({ updated: 0, noop: 3, failed: 0 }));
+      expect(result.outcome.actions.filter((action) => action.branch === "feature")).toEqual([
+        {
+          kind: "noop",
+          scope: "worktree",
+          reason: "already_up_to_date",
+          branch: "feature",
+          path: "/test/worktrees/feature",
+        },
+      ]);
     });
   });
 

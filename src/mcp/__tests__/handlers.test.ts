@@ -154,7 +154,7 @@ function makeCtx(opts: {
     createBranch: vi.fn<any>(),
     pushBranch: vi.fn<any>(),
     addWorktree: vi.fn<any>(),
-    updateWorktree: vi.fn<any>(),
+    updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
     getDefaultBranch: vi.fn<any>().mockReturnValue("main"),
     getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
     ...opts.git,
@@ -1094,6 +1094,20 @@ describe("handleUpdateWorktree", () => {
     expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
     expect(git.fetchBranch).toHaveBeenCalledWith("feature");
     expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature");
+    expect(body.updated).toBe(true);
+  });
+
+  it("reports updated:false when the worktree already matched origin/<branch>", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature" }]),
+        updateWorktree: vi.fn<any>().mockResolvedValue({ updated: false, before: "abc123", after: "abc123" }),
+      },
+    });
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" });
+    const body = parseResponse(result);
+    expect(body).toEqual({ success: true, worktreePath: "/w/feature", updated: false });
+    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature");
   });
 
   it("fetches the target branch before updating the worktree", async () => {
@@ -1106,6 +1120,7 @@ describe("handleUpdateWorktree", () => {
         }),
         updateWorktree: vi.fn<any>().mockImplementation(async () => {
           callOrder.push("updateWorktree");
+          return { updated: true, before: "old111", after: "new222" };
         }),
       },
     });

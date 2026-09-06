@@ -543,12 +543,13 @@ export async function handleUpdateWorktree(
     const worktree = await ensureRepoWorktree(ctx, params, service, git);
 
     await git.fetchBranch(worktree.branch);
-    await git.updateWorktree(worktree.path);
+    const { updated } = await git.updateWorktree(worktree.path);
     ctx.invalidateDiscovered();
 
     return formatToolResponse({
       success: true,
       worktreePath: worktree.path,
+      updated,
     });
   });
 }
