@@ -1406,6 +1406,7 @@ describe("GitService", () => {
         .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
         .mockResolvedValueOnce("") // refs/remotes/origin exists
         .mockRejectedValueOnce(new Error("no such remote ref")) // tracking add fails
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // rollback probe: no branch was left behind
         .mockResolvedValueOnce("") // worktree list - empty (directory is not a valid worktree)
         .mockResolvedValueOnce("") // fallback worktree add succeeds
         .mockResolvedValueOnce("") // show-ref remotes (upstream lookup after the plain add)
@@ -1414,9 +1415,9 @@ describe("GitService", () => {
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
       expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
-      // Calls: show-ref heads, show-ref remotes, tracking add (fail), worktree list, fallback add,
-      // show-ref remotes, branch --set-upstream-to, LFS ls-files
-      expect(mockGit.raw).toHaveBeenCalledTimes(8);
+      // Calls: show-ref heads, show-ref remotes, tracking add (fail), rollback show-ref heads,
+      // worktree list, fallback add, show-ref remotes, branch --set-upstream-to, LFS ls-files
+      expect(mockGit.raw).toHaveBeenCalledTimes(9);
     });
 
     it("should throw error when metadata creation fails", async () => {
@@ -2958,6 +2959,7 @@ locked
         .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
         .mockResolvedValueOnce("") // refs/remotes/origin exists
         .mockRejectedValueOnce(new Error("no such remote ref")) // tracking add fails
+        .mockRejectedValueOnce(new Error("show-ref: not found")) // rollback probe: no branch was left behind
         .mockRejectedValueOnce(new Error("simple add also failed")); // fallback add fails
 
       await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(

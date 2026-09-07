@@ -372,6 +372,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         expect(runner().handleDivergedBranch).toHaveBeenCalledTimes(1);
         expect(runner().handleDivergedBranch).toHaveBeenCalledWith(
           { path: "/test/worktrees/feature", branch: "feature" },
+          expect.objectContaining({ lfsSkipEnabled: false }),
           expect.anything(),
         );
       });

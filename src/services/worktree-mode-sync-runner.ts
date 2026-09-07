@@ -95,12 +95,12 @@ export class WorktreeModeSyncRunner {
       },
     );
 
-    await this.createNewWorktreesWithTiming(syncPlan, phaseTimer, outcome);
+    await this.createNewWorktreesWithTiming(syncPlan, phaseTimer, syncContext, outcome);
     await this.recordRemoteBranchTips([...worktrees, ...syncPlan.create.filter((action) => action.kind === "create")]);
     await this.pruneOldWorktreesWithTiming(syncPlan.prune, phaseTimer, outcome);
 
     if (this.config.updateExistingWorktrees !== false) {
-      await this.updateExistingWorktreesWithTiming(syncPlan.update, phaseTimer, outcome);
+      await this.updateExistingWorktreesWithTiming(syncPlan.update, phaseTimer, syncContext, outcome);
     }
 
     if (this.config.sparseCheckout) {
@@ -387,18 +387,23 @@ export class WorktreeModeSyncRunner {
   private async createNewWorktreesWithTiming(
     syncPlan: SyncPlan,
     phaseTimer: PhaseTimer,
+    syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
     phaseTimer.startPhase("Phase 2: Create");
     this.progressEmitter.emit({ phase: "create", message: "Creating worktrees for new branches" });
 
-    await this.createNewWorktrees(syncPlan.create, outcome);
+    await this.createNewWorktrees(syncPlan.create, syncContext, outcome);
 
     phaseTimer.setPhaseCount("Phase 2: Create", syncPlan.create.length);
     phaseTimer.endPhase();
   }
 
-  private async createNewWorktrees(actions: CreateAction[], outcome: SyncOutcomeAccumulator): Promise<void> {
+  private async createNewWorktrees(
+    actions: CreateAction[],
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<void> {
     if (actions.length === 0) {
       this.logger.info("Step 2: No new branches to create worktrees for.");
       return;
@@ -436,7 +441,7 @@ export class WorktreeModeSyncRunner {
         limit(async () => {
           let createdHead: string | null;
           try {
-            createdHead = await this.gitService.addWorktree(branchName, worktreePath);
+            createdHead = await this.addWorktreeWithLfsFallback(branchName, worktreePath, syncContext, outcome);
             this.logger.info(`  ✅ Created worktree for '${branchName}'`);
             outcome.recordCreated(branchName, worktreePath);
           } catch (error) {
@@ -455,6 +460,61 @@ export class WorktreeModeSyncRunner {
 
     const successCount = results.filter((r) => r.status === "fulfilled").length;
     this.logger.info(`  Created ${successCount}/${plan.length} worktrees successfully`);
+  }
+
+  // `git fetch` into a bare repository never runs the LFS smudge filter, so the
+  // fallback in fetchLatestRemoteData is not where LFS actually fails — the
+  // checkout inside `git worktree add` is (an object missing on the server, an
+  // endpoint the daemon holds no credentials for). That failure was recorded as
+  // create_failed and then dropped by the create phase's allSettled, so it never
+  // reached retry()'s LFS handler: the branch failed again on every tick while
+  // GIT_LFS_SKIP_SMUDGE=1 would have checked its pointer files out.
+  //
+  // So the fallback happens here, per branch and bounded to one extra attempt.
+  // Whether the skip was already on is read before the attempt: a checkout that
+  // already ran with LFS downloads off has nothing left to fall back to, and its
+  // failure is recorded by the caller exactly as before.
+  private async addWorktreeWithLfsFallback(
+    branchName: string,
+    worktreePath: string,
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<string | null> {
+    const skipAlreadyEnabled = this.config.skipLfs === true || syncContext.lfsSkipEnabled;
+
+    try {
+      return await this.gitService.addWorktree(branchName, worktreePath);
+    } catch (error) {
+      if (skipAlreadyEnabled || !isLfsError(getErrorMessage(error))) throw error;
+
+      this.logger.warn(`  - ⚠️ LFS checkout failed for '${branchName}': ${getErrorMessage(error)}`);
+      this.enableLfsSkipForSync(syncContext, outcome, branchName, worktreePath);
+      return await this.gitService.addWorktree(branchName, worktreePath);
+    }
+  }
+
+  // The skip is a GitService-wide switch (every client it hands out then carries
+  // GIT_LFS_SKIP_SMUDGE=1), restored by resetLfsSkipIfNeeded when the sync ends,
+  // so it is flipped once per sync rather than once per branch: the create phase
+  // checks several branches out at a time and each of them can fail this way.
+  // No lock is needed — nothing awaits between the read and the writes below, so
+  // the first branch through flips it and the others just retry under it.
+  private enableLfsSkipForSync(
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+    branch: string,
+    worktreePath: string,
+  ): void {
+    if (syncContext.lfsSkipEnabled) return;
+
+    this.logger.info("⚠️  Temporarily disabling LFS downloads for this sync...");
+    this.gitService.setLfsSkipEnabled(true);
+    syncContext.lfsSkipEnabled = true;
+    outcome.recordNoop("repo", "lfs_skip_enabled", {
+      branch,
+      path: worktreePath,
+      message: "LFS downloads disabled for the rest of this sync after an LFS checkout failure",
+    });
   }
 
   // addWorktree starts a new worktree at origin/<branch> unless the bare
@@ -858,18 +918,23 @@ export class WorktreeModeSyncRunner {
   private async updateExistingWorktreesWithTiming(
     actions: UpdateAction[],
     phaseTimer: PhaseTimer,
+    syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
     phaseTimer.startPhase("Phase 4: Update");
     this.progressEmitter.emit({ phase: "update", message: "Updating existing worktrees" });
 
-    await this.updateExistingWorktrees(actions, outcome);
+    await this.updateExistingWorktrees(actions, syncContext, outcome);
 
     phaseTimer.setPhaseCount("Phase 4: Update", actions.length);
     phaseTimer.endPhase();
   }
 
-  private async updateExistingWorktrees(actions: UpdateAction[], outcome: SyncOutcomeAccumulator): Promise<void> {
+  private async updateExistingWorktrees(
+    actions: UpdateAction[],
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<void> {
     this.logger.info("Step 4: Checking for worktrees that need updates...");
 
     const divergedDir = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
@@ -1018,7 +1083,7 @@ export class WorktreeModeSyncRunner {
                 `    ⚠️ Branch '${worktree.branch}' cannot be fast-forwarded. Checking for divergence...`,
               );
               try {
-                changed = await this.handleDivergedBranch(worktree, outcome);
+                changed = await this.handleDivergedBranch(worktree, syncContext, outcome);
               } catch (divergedError) {
                 this.logger.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, divergedError);
                 outcome.recordFailed("worktree", getErrorMessage(divergedError), {
@@ -1048,7 +1113,7 @@ export class WorktreeModeSyncRunner {
         updateLimit(async () => {
           let changed: boolean;
           try {
-            changed = await this.handleDivergedBranch(worktree, outcome);
+            changed = await this.handleDivergedBranch(worktree, syncContext, outcome);
           } catch (error) {
             this.logger.error(`    ❌ Failed to handle diverged branch '${worktree.branch}':`, error);
             outcome.recordFailed("worktree", getErrorMessage(error), {
@@ -1082,6 +1147,7 @@ export class WorktreeModeSyncRunner {
 
   private async handleDivergedBranch(
     worktree: { path: string; branch: string },
+    syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<boolean> {
     this.logger.info(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
@@ -1170,7 +1236,7 @@ export class WorktreeModeSyncRunner {
       .catch((auditError: unknown) =>
         this.logger.warn(`  ⚠️ Failed to write removal audit record: ${getErrorMessage(auditError)}`),
       );
-    await this.gitService.addWorktree(worktree.branch, worktree.path);
+    await this.addWorktreeWithLfsFallback(worktree.branch, worktree.path, syncContext, outcome);
     this.logger.info(`   Created fresh worktree from upstream at: ${worktree.path}`);
     if (trashEntry) {
       // Best effort: if this does not land, the entry keeps reserving the branch

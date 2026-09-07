@@ -1613,6 +1613,29 @@ describe("WorktreeSyncService", () => {
         expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Failed to fetch 1 branches"));
       });
 
+      // The smudge filter runs at checkout, not at fetch, so the fallback has to
+      // engage from the create phase as well — and the skip it turns on there
+      // must be restored when the sync ends, exactly like the fetch fallback's.
+      it("retries a worktree checkout that failed with an LFS error and restores the skip", async () => {
+        mockGitService.addWorktree = vi
+          .fn<any>()
+          .mockRejectedValueOnce(new Error("fatal: assets/big.bin: smudge filter lfs failed"))
+          .mockResolvedValue(null) as any;
+
+        const result = await service.sync();
+
+        // feature-1 (failed, then retried) + feature-2.
+        expect(mockGitService.addWorktree).toHaveBeenCalledTimes(3);
+        expect(mockGitService.setLfsSkipEnabled).toHaveBeenCalledWith(true);
+        expect(mockGitService.setLfsSkipEnabled).toHaveBeenLastCalledWith(false);
+        expect(result.started).toBe(true);
+        if (!result.started) throw new Error("sync did not start");
+        expect(result.outcome.counts).toMatchObject({ created: 2, failed: 0 });
+        expect(result.outcome.actions).toContainEqual(
+          expect.objectContaining({ kind: "noop", scope: "repo", reason: "lfs_skip_enabled" }),
+        );
+      });
+
       it("should not retry LFS branch-by-branch if skipLfs is already configured", async () => {
         // Configure to skip LFS from the start
         mockConfig.skipLfs = true;

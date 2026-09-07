@@ -1083,16 +1083,35 @@ export class GitService {
     }
 
     if (remoteExists) {
-      await bareGit.raw([
-        "worktree",
-        "add",
-        ...noCheckoutFlag,
-        "--track",
-        "-b",
-        branchName,
-        absoluteWorktreePath,
-        `origin/${branchName}`,
-      ]);
+      try {
+        await bareGit.raw([
+          "worktree",
+          "add",
+          ...noCheckoutFlag,
+          "--track",
+          "-b",
+          branchName,
+          absoluteWorktreePath,
+          `origin/${branchName}`,
+        ]);
+      } catch (error) {
+        // git creates refs/heads/<branch> before it checks the files out, and
+        // it does not undo that when the checkout fails (an LFS smudge filter,
+        // a full disk) even though it does clean the worktree up. Left behind,
+        // the branch turns every later attempt into the local+remote case,
+        // where the add runs against a local ref nothing fast-forwards. Only
+        // this call's branch is deleted: `localExists` was false at the probe
+        // above, so refs/heads/<branch> can only be the one git just made.
+        //
+        // Except when the path was already registered: git does create the
+        // branch there, but addWorktree's recovery path clears the stale
+        // registration and adds again, adopting whatever ref is present, so
+        // deleting it here would only fight that retry.
+        if (!getErrorMessage(error).includes("already registered worktree")) {
+          await this.deleteBranchLeftByFailedAdd(bareGit, branchName);
+        }
+        throw error;
+      }
       await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, true);
       return true;
     }
@@ -1143,6 +1162,31 @@ export class GitService {
     } catch (error) {
       this.logger.warn(
         `  - ⚠️ Could not fast-forward the new worktree for '${branchName}' to origin/${branchName}: ${getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  // Best-effort rollback of the branch a failed `worktree add --track -b` left
+  // behind. Never throws: the add's own error is what the caller must see, and
+  // a branch that could not be deleted (a worktree still holds it) is a stale
+  // ref, not a broken repository.
+  private async deleteBranchLeftByFailedAdd(bareGit: SimpleGit, branchName: string): Promise<void> {
+    try {
+      if (!(await this.refExists(bareGit, `${GIT_CONSTANTS.REFS.HEADS}${branchName}`))) return;
+      // The branch git just created sits at origin/<branch>. Anything ahead of
+      // the remote was written by someone else between the probe and the add,
+      // and a bare repo keeps no reflog to recover it from.
+      if ((await this.countLocalOnlyCommits(bareGit, branchName)) !== 0) {
+        this.logger.warn(
+          `  - Left the local branch '${branchName}' in place: it carries commits that are not on origin/${branchName}`,
+        );
+        return;
+      }
+      await bareGit.raw(["branch", "-D", branchName]);
+      this.logger.info(`  - Removed the local branch '${branchName}' left behind by the failed worktree add`);
+    } catch (error) {
+      this.logger.warn(
+        `  - Could not remove the local branch '${branchName}' left behind by the failed worktree add: ${getErrorMessage(error)}`,
       );
     }
   }

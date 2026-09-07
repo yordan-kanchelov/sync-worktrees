@@ -106,7 +106,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T23** — `fetchTimeoutMs` is applied as an inactivity kill to every command on cached clients
   (worktree add checkout, ff-merge, checkout HEAD, status); `worktree add` is silent during checkout,
   so large-repo creation is SIGINT'd after 5 min and can never succeed
-- [ ] **T4** — LFS-skip retry is wired only to fetchAll, where LFS never fails; per-worktree
+- [x] **T4** — LFS-skip retry is wired only to fetchAll, where LFS never fails; per-worktree
   checkout LFS failures are swallowed by Promise.allSettled and repeat every tick
 - [ ] **T8** — LFS verification sleeps up to 30 s per created worktree, serialized, although nothing
   can change the files after `worktree add` returns (F18 left the wait in place)
@@ -574,7 +574,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   intended. F3 fixed MCP staleness (fetch before update) but not the missing-upstream
   classification.
 
-### [ ] T4. LFS-skip retry is wired only to fetchAll, where LFS never fails; per-worktree checkout LFS failures are swallowed by Promise.allSettled and repeat every tick
+### [x] T4. LFS-skip retry is wired only to fetchAll, where LFS never fails; per-worktree checkout LFS failures are swallowed by Promise.allSettled and repeat every tick
 
 - **Category**: correctness · **Subsystem**: worktree-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
