@@ -624,6 +624,8 @@ retry: {
 } // cap retry delay at 1 minute
 ```
 
+Two inactivity timeouts guard the git commands that talk to the remote: `fetchTimeoutMs` (default 5 minutes — `fetch`, `push`, `ls-remote`, `remote set-head`) and `cloneTimeoutMs` (default 15 minutes — the initial clone). Each kills its command when no output arrives inside the window, so a stalled connection ends the attempt instead of hanging the sync forever; `0` disables one. Local commands never carry them: `git worktree add` prints nothing while it checks out a large repository, and killing it there would fail a creation that only needed more time. Both knobs are documented in [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js).
+
 For repositories with Git LFS issues or large files you don't need, set `skipLfs: true` in `defaults` or per repository. The tool also retries LFS-specific failures with LFS disabled (configurable via `retry.maxLfsRetries`).
 
 ### Hooks and file copying

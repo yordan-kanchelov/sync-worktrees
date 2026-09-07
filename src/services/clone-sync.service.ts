@@ -80,7 +80,7 @@ export class CloneSyncService {
       return [];
     }
 
-    const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+    const git = this.localClientFor(worktreeDir);
     let branch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
 
     if (!branch || branch === "HEAD") {
@@ -169,8 +169,21 @@ export class CloneSyncService {
     );
   }
 
-  private clientFor(dir: string, blockMs: number): SimpleGit {
-    return createGitClient(dir, this.buildGitEnv(), this.buildGitOptions(blockMs));
+  // Client for local commands (rev-parse, config, show-ref, for-each-ref,
+  // update-ref, merge, switch, checkout, remote get-url). No inactivity kill:
+  // simple-git's block timeout only resets on stdout/stderr data, and git is
+  // legitimately silent for minutes while a merge or checkout materializes a
+  // large tree — killing it there fails a sync that would have succeeded.
+  private localClientFor(dir: string): SimpleGit {
+    return createGitClient(dir, this.buildGitEnv(), this.buildGitOptions(0));
+  }
+
+  // Client for network commands (fetch, ls-remote). Silence there means a
+  // stalled connection or a prompt nobody can answer, so fetchTimeoutMs stays
+  // the guard that ends the attempt. `dir` undefined runs without a working
+  // directory (ls-remote against a URL).
+  private networkClientFor(dir?: string): SimpleGit {
+    return createGitClient(dir, this.buildGitEnv(), this.buildGitOptions(this.getFetchTimeoutMs()));
   }
 
   // Per-client additions layered over the sanitized process environment by
@@ -221,7 +234,7 @@ export class CloneSyncService {
   }
 
   private async fetchWithRecovery(
-    git: SimpleGit,
+    networkGit: SimpleGit,
     fetchArgs: string[],
     worktreeDir: string,
     branch: string,
@@ -233,13 +246,15 @@ export class CloneSyncService {
       if (recordSkip) this.recordMissingRemoteRefSkip(branch);
     };
     try {
-      await git.fetch(fetchArgs);
+      await networkGit.fetch(fetchArgs);
       return { skipped: false };
     } catch (fetchError) {
       const message = getErrorMessage(fetchError);
       if (isLfsError(message)) {
         this.logger.info(`⚠️  LFS error during fetch for '${this.repoName}'; retrying with LFS disabled.`);
         this.emitProgress({ phase: "fetch", message: `Retrying fetch for '${this.repoName}' with LFS disabled` });
+        // Same kind of client as the one that just failed (a network fetch),
+        // only with LFS smudging disabled.
         const lfsSkipGit = createGitClient(
           worktreeDir,
           this.buildGitEnv({ forceLfsSkip: true }),
@@ -290,7 +305,7 @@ export class CloneSyncService {
     }
   }
 
-  private async unshallowIfDepthRemoved(git: SimpleGit): Promise<void> {
+  private async unshallowIfDepthRemoved(git: SimpleGit, networkGit: SimpleGit): Promise<void> {
     if (this.config.depth !== undefined) return;
 
     if (!(await this.isShallowRepository(git))) return;
@@ -298,7 +313,7 @@ export class CloneSyncService {
     this.logger.info(
       `[deepen] Existing shallow clone for '${this.repoName}' has no configured depth; fetching full history...`,
     );
-    await git.fetch(["--unshallow", "--no-tags"]);
+    await networkGit.fetch(["--unshallow", "--no-tags"]);
   }
 
   private getDeepenTargets(): readonly number[] {
@@ -309,7 +324,7 @@ export class CloneSyncService {
     return SHALLOW_RELATION_DEEPEN_TARGETS.filter((target) => target > configuredDepth);
   }
 
-  private async deepenShallowHistoryToDepth(git: SimpleGit, branch: string, targetDepth: number): Promise<void> {
+  private async deepenShallowHistoryToDepth(networkGit: SimpleGit, branch: string, targetDepth: number): Promise<void> {
     this.logger.info(
       `[deepen] Shallow clone for '${this.repoName}' lacks enough history to classify origin/${branch}; ` +
         `refetching to depth ${targetDepth} before deciding.`,
@@ -318,7 +333,7 @@ export class CloneSyncService {
       phase: "fetch",
       message: `Deepening '${this.repoName}' to depth ${targetDepth} before classifying origin/${branch}`,
     });
-    await git.fetch([
+    await networkGit.fetch([
       "origin",
       "--depth",
       String(targetDepth),
@@ -358,10 +373,7 @@ export class CloneSyncService {
   async getRemoteBranches(): Promise<string[]> {
     const worktreeDir = path.resolve(this.config.worktreeDir);
     const repoArg = (await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR))) ? "origin" : this.config.repoUrl;
-    const git =
-      repoArg === "origin"
-        ? this.clientFor(worktreeDir, this.getFetchTimeoutMs())
-        : createGitClient(undefined, this.buildGitEnv(), this.buildGitOptions(this.getFetchTimeoutMs()));
+    const git = repoArg === "origin" ? this.networkClientFor(worktreeDir) : this.networkClientFor();
     const output = await git.raw(["ls-remote", "--heads", repoArg]);
     return this.parseLsRemoteHeads(output);
   }
@@ -462,7 +474,8 @@ export class CloneSyncService {
     }
 
     const worktreeDir = this.config.worktreeDir;
-    const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+    const git = this.localClientFor(worktreeDir);
+    const networkGit = this.networkClientFor(worktreeDir);
     const originMismatch = await this.evaluateOriginMatch(git, worktreeDir);
     if (originMismatch) {
       throw new ConfigError(
@@ -498,7 +511,7 @@ export class CloneSyncService {
     // existing shallow clone is unshallowed before the branch fetch, so switching
     // branches doesn't leave the new branch shallow while the rest is full.
     try {
-      await this.unshallowIfDepthRemoved(git);
+      await this.unshallowIfDepthRemoved(git, networkGit);
     } catch (error) {
       // Same classification as the branch fetch below: a deleted tracked
       // branch fails the narrowed-refspec unshallow with the same error.
@@ -509,7 +522,7 @@ export class CloneSyncService {
     }
 
     const fetchArgs = await this.buildFetchArgs(git, branch);
-    if ((await this.fetchWithRecovery(git, fetchArgs, worktreeDir, branch, false)).skipped) {
+    if ((await this.fetchWithRecovery(networkGit, fetchArgs, worktreeDir, branch, false)).skipped) {
       throw new GitOperationError("checkout", `origin/${branch} is missing for '${this.repoName}'`);
     }
     // Same post-fetch verify as runSyncAttempt: a fetch can succeed without
@@ -597,7 +610,7 @@ export class CloneSyncService {
         this.initialized = true;
         return;
       }
-      const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+      const git = this.localClientFor(worktreeDir);
       await this.configureSingleBranchRemote(git, branch);
       // A pending marker means this clone was created by an init of ours that
       // was interrupted after the clone — finish the post-clone steps now.
@@ -651,7 +664,7 @@ export class CloneSyncService {
       throw error;
     }
 
-    const worktreeGit = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+    const worktreeGit = this.localClientFor(worktreeDir);
     await this.configureSingleBranchRemote(worktreeGit, branch);
 
     this.logger.info(`✅ Clone successful.`);
@@ -725,7 +738,7 @@ export class CloneSyncService {
     expectedBranch: string,
   ): Promise<{ valid: true } | { valid: false; skip: CloneSkipReason; warnMessage: string; progressDetail: string }> {
     const worktreeDir = this.config.worktreeDir;
-    const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+    const git = this.localClientFor(worktreeDir);
 
     const originMismatch = await this.evaluateOriginMatch(git, worktreeDir);
     if (originMismatch) {
@@ -858,7 +871,8 @@ export class CloneSyncService {
 
     const branch = await this.resolveBranch();
     const worktreeDir = this.config.worktreeDir;
-    const git = this.clientFor(worktreeDir, this.getFetchTimeoutMs());
+    const git = this.localClientFor(worktreeDir);
+    const networkGit = this.networkClientFor(worktreeDir);
 
     let currentBranch: string;
     try {
@@ -901,7 +915,7 @@ export class CloneSyncService {
     // it into the same soft skip instead of letting it escape as a hard
     // failure that only shallow clones would hit.
     try {
-      await this.unshallowIfDepthRemoved(git);
+      await this.unshallowIfDepthRemoved(git, networkGit);
     } catch (error) {
       if (isMissingRemoteRefError(getErrorMessage(error))) {
         this.recordMissingRemoteRefSkip(branch);
@@ -914,7 +928,7 @@ export class CloneSyncService {
 
     const fetchArgs = await this.buildFetchArgs(git, branch);
     this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
-    if ((await this.fetchWithRecovery(git, fetchArgs, worktreeDir, branch)).skipped) {
+    if ((await this.fetchWithRecovery(networkGit, fetchArgs, worktreeDir, branch)).skipped) {
       return;
     }
     this.emitProgress({ phase: "fetch", message: `Fetched origin/${branch} for '${this.repoName}'` });
@@ -956,7 +970,7 @@ export class CloneSyncService {
     let lastDeepenedTo: number | null = null;
     if (relationship === "indeterminate_shallow") {
       for (const target of this.getDeepenTargets()) {
-        await this.deepenShallowHistoryToDepth(git, branch, target);
+        await this.deepenShallowHistoryToDepth(networkGit, branch, target);
         lastDeepenedTo = target;
         relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch);
         if (relationship !== "indeterminate_shallow") break;

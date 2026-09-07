@@ -123,22 +123,47 @@ export class GitService {
     return this.config.cloneTimeoutMs ?? DEFAULT_CONFIG.CLONE_TIMEOUT_MS;
   }
 
-  private getCachedGit(dirPath: string, useLfsSkip = false): SimpleGit {
-    const key = `${path.resolve(dirPath)}::${useLfsSkip ? "1" : "0"}`;
+  // Each path gets one client per (LFS env, kind) combination, and the two
+  // kinds differ only in the inactivity timeout: same baseDir, same LFS/env
+  // additions, same unsafe allowances. The kind is part of the cache key so a
+  // local command can never pick up the network client's kill (or vice versa).
+  private getCachedClient(dirPath: string, useLfsSkip: boolean, kind: "local" | "network"): SimpleGit {
+    const key = `${path.resolve(dirPath)}::${useLfsSkip ? "1" : "0"}::${kind}`;
     let git = this.gitInstances.get(key);
     if (!git) {
       git = createGitClient(
         dirPath,
         useLfsSkip ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {},
-        this.buildSimpleGitOptions(this.getFetchTimeoutMs()),
+        this.buildSimpleGitOptions(kind === "network" ? this.getFetchTimeoutMs() : 0),
       );
       this.gitInstances.set(key, git);
     }
     return git;
   }
 
+  // Client for local commands (worktree add/remove/list/prune, merge,
+  // checkout, reset, status, ls-files, rev-list/rev-parse, branch,
+  // for-each-ref, bundle, ...). No inactivity kill: simple-git's block timeout
+  // only resets on stdout/stderr data, and git is legitimately silent for
+  // minutes while `worktree add` checks out a large repository (its internal
+  // `reset --hard` prints nothing on a pipe) or while LFS smudges files. A
+  // silence-based kill there SIGINTs a creation that would have succeeded,
+  // on every tick, forever.
+  private getCachedGit(dirPath: string, useLfsSkip = false): SimpleGit {
+    return this.getCachedClient(dirPath, useLfsSkip, "local");
+  }
+
+  // Client for network commands (fetch, push, ls-remote, `remote set-head`).
+  // Silence here means a stalled connection or a prompt nobody can answer, so
+  // fetchTimeoutMs stays the guard that ends the attempt instead of hanging
+  // the sync forever.
+  private getCachedNetworkGit(dirPath: string, useLfsSkip = false): SimpleGit {
+    return this.getCachedClient(dirPath, useLfsSkip, "network");
+  }
+
   // Progress and inactivity timeout only; createGitClient adds the env and the
-  // unsafe-env allowances every client needs.
+  // unsafe-env allowances every client needs. blockMs 0 means no inactivity
+  // kill at all (local commands, and the unit-test shortcut).
   private buildSimpleGitOptions(blockMs: number): Partial<SimpleGitOptions> {
     const options: Partial<SimpleGitOptions> = {
       progress: makeGitProgressHandler(this.logger, (event) => this.progressEmitter?.(event)),
@@ -199,7 +224,7 @@ export class GitService {
     // Always fetch to ensure remote refs are up-to-date
     // This is needed for branch creation UI even when repo already exists
     this.logger.info("Fetching remote branches...");
-    await bareGit.fetch(["--all", "--progress"]);
+    await this.getCachedNetworkGit(this.bareRepoPath).fetch(["--all", "--progress"]);
 
     // Detect the default branch (works from local refs even without fetch)
     this.defaultBranch = await this.detectDefaultBranch(bareGit);
@@ -539,13 +564,23 @@ export class GitService {
   // not installed" and sends the user looking in the wrong place — so the
   // directory is named instead. ensureAnchorWorktree rebuilds it before every
   // sync attempt; this covers a deletion that lands after that check.
+  //
+  // Building the client is inside the try: simple-git validates baseDir when
+  // a client is constructed, so whether the deletion is reported as a spawn
+  // failure (client already cached) or as "Cannot use simple-git on a
+  // directory that does not exist" (first use of this path's network client)
+  // depends only on timing — both mean the same thing and get the same,
+  // probe-confirmed rephrasing.
   private async fetchFromAnchor(args: string[]): Promise<void> {
-    const git = this.getCachedGit(this.mainWorktreePath, this.isLfsSkipEnabled());
     try {
+      const git = this.getCachedNetworkGit(this.mainWorktreePath, this.isLfsSkipEnabled());
       await git.fetch(args);
     } catch (error) {
       const anchorPath = path.resolve(this.mainWorktreePath);
-      if (getErrorMessage(error).includes("spawn git ENOENT") && (await probePathExists(anchorPath)) === "missing") {
+      const message = getErrorMessage(error);
+      const namesMissingWorkingDir =
+        message.includes("spawn git ENOENT") || message.includes(GIT_CONSTANTS.MISSING_BASE_DIR_ERROR);
+      if (namesMissingWorkingDir && (await probePathExists(anchorPath)) === "missing") {
         throw new GitOperationError(
           "fetch",
           `working directory '${anchorPath}' does not exist`,
@@ -623,11 +658,9 @@ export class GitService {
 
   private async verifyLfsFilesDownloaded(worktreePath: string, branchName: string): Promise<void> {
     const worktreeGit = this.config.sparseCheckout
-      ? createGitClient(
-          worktreePath,
-          { [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" },
-          this.buildSimpleGitOptions(this.getFetchTimeoutMs()),
-        )
+      ? // `lfs ls-files` reads the index and .gitattributes — a local command,
+        // so no inactivity kill, same as the cached client used otherwise.
+        createGitClient(worktreePath, { [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" }, this.buildSimpleGitOptions(0))
       : this.getCachedGit(worktreePath);
 
     try {
@@ -1434,7 +1467,9 @@ export class GitService {
       );
     }
     try {
-      await bareGit.raw(["remote", "set-head", "origin", "-a"]);
+      // The only command here that talks to the remote, so it runs on the
+      // network client (the caller's bareGit is the local one).
+      await this.getCachedNetworkGit(this.bareRepoPath).raw(["remote", "set-head", "origin", "-a"]);
       const refreshed = await this.readOriginHead(bareGit);
       if (refreshed !== null) {
         return refreshed;
@@ -1903,7 +1938,7 @@ export class GitService {
   }
 
   async pushBranch(branchName: string): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const bareGit = this.getCachedNetworkGit(this.bareRepoPath);
 
     await bareGit.push(["origin", `${branchName}:${branchName}`, "-u"]);
     this.logger.info(`Pushed branch '${branchName}' to remote`);

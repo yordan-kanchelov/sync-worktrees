@@ -19,6 +19,10 @@ export const GIT_CONSTANTS = {
   SUBMODULE_STATUS_OUT_OF_SYNC: "+",
   SUBMODULE_STATUS_CONFLICTED: "U",
   GITDIR_PREFIX: "gitdir:",
+  // simple-git validates baseDir when a client is constructed and rejects with
+  // this text; like `spawn git ENOENT` from an already-built client, it means
+  // the working directory is gone.
+  MISSING_BASE_DIR_ERROR: "Cannot use simple-git on a directory that does not exist",
   GIT_CHECK_IGNORE_NO_MATCH: "exit code: 1",
   REFS: {
     HEADS: "refs/heads/",

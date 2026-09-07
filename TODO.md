@@ -103,7 +103,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T24** — removeWorktree only classifies git's 'dirty' refusal; locked worktrees and worktrees
   with initialized submodules turn into hard `remove_failed` failures (exit 1) every tick, and the
   `locked` flag parsed from `worktree list` is discarded
-- [ ] **T23** — `fetchTimeoutMs` is applied as an inactivity kill to every command on cached clients
+- [x] **T23** — `fetchTimeoutMs` is applied as an inactivity kill to every command on cached clients
   (worktree add checkout, ff-merge, checkout HEAD, status); `worktree add` is silent during checkout,
   so large-repo creation is SIGINT'd after 5 min and can never succeed
 - [ ] **T4** — LFS-skip retry is wired only to fetchAll, where LFS never fails; per-worktree
@@ -1336,7 +1336,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   has no equivalent and the loader's duplicate-bareRepoDir validation is per-file, not per-remote.
   No test covers a repoUrl change against an existing bare repo.
 
-### [ ] T23. `fetchTimeoutMs` is applied as an inactivity kill to every command on cached clients (worktree add checkout, ff-merge, checkout HEAD, status); `worktree add` is silent during checkout, so large-repo creation is SIGINT'd after 5 min and can never succeed
+### [x] T23. `fetchTimeoutMs` is applied as an inactivity kill to every command on cached clients (worktree add checkout, ff-merge, checkout HEAD, status); `worktree add` is silent during checkout, so large-repo creation is SIGINT'd after 5 min and can never succeed
 
 - **Category**: correctness · **Subsystem**: git
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

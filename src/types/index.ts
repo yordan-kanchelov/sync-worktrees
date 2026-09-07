@@ -227,8 +227,11 @@ export interface Config {
    */
   __configFileDir?: string;
   /**
-   * Inactivity timeout (ms) for fetch/standard git operations.
-   * Triggers when no stdout/stderr data arrives within window.
+   * Inactivity timeout (ms) for the git commands that talk to the remote:
+   * `fetch`, `push`, `ls-remote` and `remote set-head`. Triggers when no
+   * stdout/stderr data arrives within the window, killing the command.
+   * Local commands (worktree add, merge, checkout, status, ...) never carry
+   * it — they are legitimately silent while a large checkout runs.
    * Default: 300_000 (5 min). Set 0 to disable.
    */
   fetchTimeoutMs?: number;
