@@ -29,6 +29,9 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
     mockGitServiceInstance: {
       initialize: vi.fn<any>().mockResolvedValue(undefined),
       isInitialized: vi.fn().mockReturnValue(true),
+      // The anchor (default-branch) worktree is present unless a test says otherwise.
+      ensureAnchorWorktree: vi.fn<any>().mockResolvedValue(false),
+      getMainWorktreePath: vi.fn(() => "/test/worktrees/main"),
       fetchAll: vi.fn<any>().mockResolvedValue(undefined),
       fetchBranch: vi.fn<any>().mockResolvedValue(undefined),
       getRemoteBranches: vi.fn<any>().mockResolvedValue(["main", "feature-1", "feature-2"]),
@@ -1723,6 +1726,61 @@ describe("WorktreeSyncService", () => {
         expect(fs.rename).not.toHaveBeenCalledWith(orphanPath, expect.anything());
         expect(fs.rm).not.toHaveBeenCalledWith(orphanPath, expect.anything());
       });
+    });
+  });
+
+  // Every remote-facing command in a sync runs in the default branch's
+  // worktree, and the planner never plans a create for that branch — so the
+  // sync itself has to rebuild the directory when it was deleted out-of-band,
+  // before the first git command, on every run and not just the first.
+  describe("default-branch worktree heal", () => {
+    beforeEach(() => {
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      mockGitService.getWorktrees.mockResolvedValue([]);
+      mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
+    });
+
+    afterEach(() => {
+      // vi.clearAllMocks() drops recorded calls but keeps implementations, and
+      // this mock instance is shared with every other suite in the file.
+      mockGitService.ensureAnchorWorktree.mockResolvedValue(false);
+    });
+
+    it("heals the anchor before fetching and reports what it recreated", async () => {
+      mockGitService.ensureAnchorWorktree.mockResolvedValueOnce(true);
+
+      const result = await service.sync();
+
+      expect(mockGitService.ensureAnchorWorktree).toHaveBeenCalledTimes(1);
+      expect(mockGitService.ensureAnchorWorktree.mock.invocationCallOrder[0]).toBeLessThan(
+        mockGitService.fetchAll.mock.invocationCallOrder[0],
+      );
+      expect(result).toMatchObject({
+        started: true,
+        outcome: {
+          actions: expect.arrayContaining([{ kind: "created", branch: "main", path: "/test/worktrees/main" }]),
+        },
+      });
+      const logged = (mockLogger.info as Mock).mock.calls.map((call) => String(call[0])).join("\n");
+      expect(logged).toContain("/test/worktrees/main");
+    });
+
+    it("records nothing when the anchor is already there", async () => {
+      const result = await service.sync();
+
+      expect(mockGitService.ensureAnchorWorktree).toHaveBeenCalledTimes(1);
+      expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
+      expect(result.started && result.outcome.actions.filter((action) => action.kind === "created")).toEqual([]);
+    });
+
+    it("fails the sync naming the directory when the anchor cannot be probed", async () => {
+      mockGitService.ensureAnchorWorktree.mockRejectedValueOnce(
+        new Error("Cannot determine whether the main worktree at '/test/worktrees/main' still exists"),
+      );
+
+      const svc = new WorktreeSyncService({ ...mockConfig, retry: { maxAttempts: 1, initialDelayMs: 0 } });
+      await expect(svc.sync()).rejects.toThrow("/test/worktrees/main");
+      expect(mockGitService.fetchAll).not.toHaveBeenCalled();
     });
   });
 

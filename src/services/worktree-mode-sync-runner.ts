@@ -53,6 +53,7 @@ export class WorktreeModeSyncRunner {
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
+    await this.ensureFetchAnchor(outcome);
     await this.fetchLatestRemoteData(phaseTimer, syncContext);
 
     const { remoteBranches, defaultBranch } = await this.resolveSyncBranches(outcome);
@@ -242,6 +243,21 @@ export class WorktreeModeSyncRunner {
     }
 
     return pending;
+  }
+
+  // The fetch below and every remote-facing read after it run with the default
+  // branch's worktree as their working directory, and the planner never plans a
+  // create for the default branch. So a directory deleted out-of-band (rm -rf,
+  // an unmounted volume) has to be rebuilt here, before the first git command:
+  // GitService.initialize heals it too, but a long-lived process only
+  // initializes once and every later sync would otherwise fail at the fetch.
+  private async ensureFetchAnchor(outcome: SyncOutcomeAccumulator): Promise<void> {
+    if (!(await this.gitService.ensureAnchorWorktree())) return;
+
+    const branch = this.gitService.getDefaultBranch();
+    const anchorPath = this.gitService.getMainWorktreePath();
+    this.logger.info(`  ✅ Recreated the '${branch}' worktree at '${anchorPath}'`);
+    outcome.recordCreated(branch, anchorPath);
   }
 
   private async fetchLatestRemoteData(phaseTimer: PhaseTimer, syncContext: SyncRetryContext): Promise<void> {

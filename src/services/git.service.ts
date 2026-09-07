@@ -369,6 +369,43 @@ export class GitService {
     return this.defaultBranch;
   }
 
+  // The default branch's worktree — the directory every remote-facing command
+  // runs in (fetch, the branch listings, the tip probes).
+  getMainWorktreePath(): string {
+    return this.mainWorktreePath;
+  }
+
+  // Re-checks the anchor before a sync uses it, and rebuilds it when it was
+  // destroyed out-of-band (rm -rf, an unmounted volume). initialize() runs the
+  // same heal, but a long-lived process (daemon, TUI, MCP server) initializes
+  // once and isInitialized() then stays true forever, so without this every
+  // later tick failed at `spawn git ENOENT` — which reads as "git is not
+  // installed" — until the process was restarted.
+  // Resolves to true when this call rebuilt the worktree.
+  async ensureAnchorWorktree(): Promise<boolean> {
+    this.assertInitialized();
+    const anchorPath = path.resolve(this.mainWorktreePath);
+    const probe = await probePathExists(anchorPath);
+    if (probe === "exists") return false;
+    if (probe === "unknown") {
+      // Same rule as every other path decision here: an unverifiable path is
+      // not a missing one. Fail naming the directory rather than recreate a
+      // worktree that may still be there, or spawn git inside a path that
+      // could not even be stat'ed.
+      throw new WorktreeError(
+        `Cannot determine whether the ${this.defaultBranch} worktree at '${anchorPath}' still exists; refusing to run git there`,
+        "ANCHOR_UNVERIFIABLE",
+      );
+    }
+
+    this.logger.warn(`Default-branch worktree at '${anchorPath}' is missing; recreating it.`);
+    const created = await this.ensureMainWorktree(this.getCachedGit(this.bareRepoPath));
+    // ensureMainWorktree can settle on another registered checkout of the
+    // default branch, so re-point the primary instance the way initialize does.
+    this.git = this.getCachedGit(this.mainWorktreePath);
+    return created;
+  }
+
   // Re-resolves the default branch from the fetched remote refs and, when the
   // remote renamed it, moves this service over to the new one. Fetches run
   // from the default branch's worktree, so the new default's worktree is
@@ -474,14 +511,34 @@ export class GitService {
   async fetchAll(): Promise<void> {
     this.assertInitialized();
     this.logger.info("Fetching latest data from remote...");
-    const git = this.getCachedGit(this.mainWorktreePath, this.isLfsSkipEnabled());
-    await git.fetch(["--all", "--prune", "--progress"]);
+    await this.fetchFromAnchor(["--all", "--prune", "--progress"]);
   }
 
   async fetchBranch(branchName: string): Promise<void> {
     this.assertInitialized();
+    await this.fetchFromAnchor(["origin", branchName, "--prune", "--progress"]);
+  }
+
+  // Fetches run in the default branch's worktree. When that directory is gone,
+  // spawning git there fails with `spawn git ENOENT`, which reads as "git is
+  // not installed" and sends the user looking in the wrong place — so the
+  // directory is named instead. ensureAnchorWorktree rebuilds it before every
+  // sync attempt; this covers a deletion that lands after that check.
+  private async fetchFromAnchor(args: string[]): Promise<void> {
     const git = this.getCachedGit(this.mainWorktreePath, this.isLfsSkipEnabled());
-    await git.fetch(["origin", branchName, "--prune", "--progress"]);
+    try {
+      await git.fetch(args);
+    } catch (error) {
+      const anchorPath = path.resolve(this.mainWorktreePath);
+      if (getErrorMessage(error).includes("spawn git ENOENT") && (await probePathExists(anchorPath)) === "missing") {
+        throw new GitOperationError(
+          "fetch",
+          `working directory '${anchorPath}' does not exist`,
+          error instanceof Error ? error : undefined,
+        );
+      }
+      throw error;
+    }
   }
 
   private assertInitialized(): void {

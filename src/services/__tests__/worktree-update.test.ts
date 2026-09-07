@@ -73,6 +73,8 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       hasOperationInProgress: vi.fn().mockResolvedValue(false),
       hasModifiedSubmodules: vi.fn().mockResolvedValue(false),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
+      ensureAnchorWorktree: vi.fn().mockResolvedValue(false),
+      getMainWorktreePath: vi.fn().mockReturnValue("/test/worktrees/main"),
       refreshDefaultBranch: vi.fn().mockResolvedValue({
         previous: "main",
         defaultBranch: "main",

@@ -93,7 +93,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   origin/<branch>: a differing upstream yields a phantom 'updated/fast_forward' outcome every sync
 - [x] **T6** — A transient probe failure in canFastForward/isLocalAheadOfRemote is interpreted as
   'diverged' and can move a healthy, fully pushed worktree to trash and recreate it
-- [ ] **T9** — Long-lived process never recovers when the default-branch worktree is deleted
+- [x] **T9** — Long-lived process never recovers when the default-branch worktree is deleted
   out-of-band: every later sync fails with 'spawn git ENOENT'
 - [ ] **T19** — Unpushed-commit probe uses the bare branch name as a revision; a tag with the same
   name shadows the branch and reports 0 unpushed commits with exit 0
@@ -778,7 +778,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   verification warns for every created worktree on machines without git-lfs, even for repositories
   that do not use LFS”.
 
-### [ ] T9. Long-lived process never recovers when the default-branch worktree is deleted out-of-band: every later sync fails with 'spawn git ENOENT'
+### [x] T9. Long-lived process never recovers when the default-branch worktree is deleted out-of-band: every later sync fails with 'spawn git ENOENT'
 
 - **Category**: correctness · **Subsystem**: worktree-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
