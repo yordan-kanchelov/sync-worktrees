@@ -95,7 +95,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   'diverged' and can move a healthy, fully pushed worktree to trash and recreate it
 - [x] **T9** — Long-lived process never recovers when the default-branch worktree is deleted
   out-of-band: every later sync fails with 'spawn git ENOENT'
-- [ ] **T19** — Unpushed-commit probe uses the bare branch name as a revision; a tag with the same
+- [x] **T19** — Unpushed-commit probe uses the bare branch name as a revision; a tag with the same
   name shadows the branch and reports 0 unpushed commits with exit 0
 - [ ] **T20** — Uninitialized submodules (`-` status) are classified as 'modified submodules', so
   every worktree of a repo with submodules is permanently un-prunable, flagged ⊞, and blocked from
@@ -1207,7 +1207,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   and only runs `remote set-head -a` when it is absent; `resolveSyncBranches` (runner 271-283) then
   force-appends the stale name.
 
-### [ ] T19. Unpushed-commit probe uses the bare branch name as a revision; a tag with the same name shadows the branch and reports 0 unpushed commits with exit 0
+### [x] T19. Unpushed-commit probe uses the bare branch name as a revision; a tag with the same name shadows the branch and reports 0 unpushed commits with exit 0
 
 - **Category**: correctness · **Subsystem**: git
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

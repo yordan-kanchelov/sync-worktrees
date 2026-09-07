@@ -755,7 +755,10 @@ export class GitService {
     try {
       const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
       const currentCommit = (await worktreeGit.revparse(["HEAD"])).trim();
-      const parentCommit = await bareGit.revparse([this.defaultBranch]);
+      // refs/heads/<default>, not the bare name: a tag sharing the default
+      // branch's name resolves first and would record the tag's commit as the
+      // worktree's parent.
+      const parentCommit = await bareGit.revparse([`${GIT_CONSTANTS.REFS.HEADS}${this.defaultBranch}`]);
 
       await this.metadataService.createInitialMetadataFromPath(
         this.bareRepoPath,

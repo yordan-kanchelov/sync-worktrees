@@ -258,7 +258,14 @@ export class WorktreeStatusService {
           (raw) => ({ ok: true as const, value: raw }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
-        git.raw(["rev-list", "--count", currentBranch, "--not", "--remotes"]).then(
+        // HEAD, never the short branch name: git resolves a bare name through
+        // refs/tags/<name> before refs/heads/<name>, so a tag sharing the
+        // branch's name (`git checkout -b 1.4.2 1.4.2`) answers for the tag —
+        // with nothing but `warning: refname '<name>' is ambiguous.` on stderr
+        // and exit 0 — and local-only commits count as zero, which would let
+        // the prune pipeline remove the worktree. The branch is checked out
+        // here (the !detached guard above), so HEAD is exactly its tip.
+        git.raw(["rev-list", "--count", "HEAD", "--not", "--remotes"]).then(
           (raw) => ({ ok: true as const, value: raw }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
@@ -435,10 +442,9 @@ export class WorktreeStatusService {
         return true;
       }
 
-      const branchSummary = await worktreeGit.branch();
-      const currentBranch = branchSummary.current;
-
-      const anyRemoteResult = await worktreeGit.raw(["rev-list", "--count", currentBranch, "--not", "--remotes"]);
+      // Same unambiguous revision as collectSnapshot: a tag sharing the
+      // branch's name shadows the branch and hides its unpushed commits.
+      const anyRemoteResult = await worktreeGit.raw(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
       const anyRemoteCount = this.parseCount(anyRemoteResult);
       if (anyRemoteCount === null || anyRemoteCount > 0) {
         return true;

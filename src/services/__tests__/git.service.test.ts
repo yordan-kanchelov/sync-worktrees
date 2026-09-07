@@ -2228,13 +2228,8 @@ describe("GitService", () => {
         "/test/worktrees/feature-deleted",
       );
       // The any-remote check runs first and is sufficient to block on its own
-      expect(mockWorktreeGit.raw).toHaveBeenCalledWith([
-        "rev-list",
-        "--count",
-        "feature-deleted",
-        "--not",
-        "--remotes",
-      ]);
+      // HEAD, not the bare branch name a same-named tag would shadow.
+      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
       expect(mockWorktreeGit.raw).toHaveBeenCalledTimes(1);
     });
 

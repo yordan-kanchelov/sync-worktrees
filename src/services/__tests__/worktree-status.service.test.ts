@@ -41,6 +41,15 @@ describe("WorktreeStatusService", () => {
     (simpleGit as unknown as Mock).mockReturnValue(mockGit);
   });
 
+  // The revision every `rev-list --count <rev> --not --remotes` probe was
+  // spawned with. Git resolves a bare name through refs/tags/<name> before
+  // refs/heads/<name>, so the probe must never name the branch that way.
+  const unpushedProbeRevisions = (): string[] =>
+    (mockGit.raw as Mock).mock.calls
+      .map((call: any[]) => (Array.isArray(call[0]) ? (call[0] as string[]) : (call as string[])))
+      .filter((args: string[]) => args[0] === "rev-list" && args.includes("--remotes"))
+      .map((args: string[]) => args[2]);
+
   describe("checkWorktreeStatus", () => {
     it("should return true for clean worktree", async () => {
       mockGit.status.mockResolvedValue({
@@ -336,7 +345,7 @@ describe("WorktreeStatusService", () => {
       const result = await service.hasUnpushedCommits("/test/worktree");
 
       expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "main", "--not", "--remotes"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
     });
 
     it("should also check lastSyncCommit in addition to the any-remote check", async () => {
@@ -349,8 +358,21 @@ describe("WorktreeStatusService", () => {
       const result = await service.hasUnpushedCommits("/test/worktree", "abc123");
 
       expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "main", "--not", "--remotes"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
+    });
+
+    // A branch cut from a same-named tag (`git checkout -b 1.4.2 1.4.2`) is a
+    // normal hotfix workflow. Passing the bare name lets the tag answer for the
+    // branch — git only warns on stderr and exits 0 — so unpushed work reads as
+    // zero and the prune pipeline removes the worktree.
+    it("must probe the worktree's HEAD, never the bare branch name", async () => {
+      mockGit.branch.mockResolvedValue({ current: "release-1", detached: false } as any);
+
+      await service.hasUnpushedCommits("/test/worktree");
+
+      expect(unpushedProbeRevisions()).toEqual(["HEAD"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
     });
 
     it("should return true on error (conservative)", async () => {
@@ -785,9 +807,25 @@ describe("WorktreeStatusService", () => {
 
       const status = await service.getFullWorktreeStatus("/test/worktree", false, "headCommitSha");
 
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "main", "--not", "--remotes"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
       expect(status.hasUnpushedCommits).toBe(true);
       expect(status.canRemove).toBe(false);
+    });
+
+    it("must probe the worktree's HEAD, never the bare branch name, for unpushed commits", async () => {
+      setupCleanWorktreeMocks();
+      mockGit.branch.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg && firstArg[0] === "-r") {
+          return { all: ["origin/main"] } as any;
+        }
+        return { current: "release-1", detached: false } as any;
+      }) as any);
+
+      await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(unpushedProbeRevisions()).toEqual(["HEAD"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
     });
 
     it("must report an operation in progress when operation-file probes fail with EMFILE", async () => {
