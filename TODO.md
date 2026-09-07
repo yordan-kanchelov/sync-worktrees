@@ -108,7 +108,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   so large-repo creation is SIGINT'd after 5 min and can never succeed
 - [x] **T4** — LFS-skip retry is wired only to fetchAll, where LFS never fails; per-worktree
   checkout LFS failures are swallowed by Promise.allSettled and repeat every tick
-- [ ] **T8** — LFS verification sleeps up to 30 s per created worktree, serialized, although nothing
+- [x] **T8** — LFS verification sleeps up to 30 s per created worktree, serialized, although nothing
   can change the files after `worktree add` returns (F18 left the wait in place)
 - [ ] **T62** — Remote branches ending in '/HEAD' (and ambiguous refname:short cases) are dropped
   from the sync inventory, so their worktrees are pruned as stale
@@ -736,7 +736,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   is created, inside the removal pipeline that holds the repo lock; the size only feeds
   `manifest.sizeBytes` and the TUI preview.
 
-### [ ] T8. LFS verification sleeps up to 30 s per created worktree, serialized, although nothing can change the files after `worktree add` returns (F18 left the wait in place)
+### [x] T8. LFS verification sleeps up to 30 s per created worktree, serialized, although nothing can change the files after `worktree add` returns (F18 left the wait in place)
 
 - **Category**: performance · **Subsystem**: worktree-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

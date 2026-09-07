@@ -592,7 +592,7 @@ export class WorktreeStatusService {
     } catch (error) {
       const errorMessage = getErrorMessage(error);
 
-      if (errorMessage.includes(GIT_CONSTANTS.GIT_CHECK_IGNORE_NO_MATCH)) {
+      if (errorMessage.includes(GIT_CONSTANTS.GIT_NO_MATCH_EXIT)) {
         return files;
       }
 

@@ -11,6 +11,7 @@ import { createMockLogger } from "../test-utils";
 
 import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
+import type { Mock } from "vitest";
 
 // Real git, no git-lfs binary: a fake `filter.lfs` smudge driver plus
 // `filter.lfs.required` reproduces exactly what a broken LFS setup does to
@@ -101,13 +102,14 @@ describe("LFS smudge failures during worktree creation (E2E)", () => {
     await fs.writeFile(configPath, `${config}[filter "lfs"]\n\tsmudge = ${smudgeScript}\n\trequired = true\n`);
   }
 
-  async function pushBranchWithLfsFile(): Promise<void> {
+  async function pushBranchWithLfsFile(branch = "feature/lfs"): Promise<void> {
     const seed = simpleGit(seedDir);
-    await seed.checkoutLocalBranch("feature/lfs");
+    await seed.checkout("main");
+    await seed.checkoutLocalBranch(branch);
     await fs.writeFile(path.join(seedDir, "big.bin"), POINTER);
     await seed.add(".");
     await seed.commit("Add an LFS-tracked file");
-    await seed.push("origin", "feature/lfs");
+    await seed.push("origin", branch);
   }
 
   it("falls back to LFS-free checkout and creates the worktree", async () => {
@@ -164,5 +166,34 @@ describe("LFS smudge failures during worktree creation (E2E)", () => {
     // worktree from that local ref instead of origin/feature/lfs.
     const localBranches = await simpleGit(bareRepoDir).raw(["branch", "--list", "feature/lfs"]);
     expect(localBranches.trim()).toBe("");
+  }, 60_000);
+
+  // The same repository on a machine with no git-lfs at all and no filter
+  // configured: the checkout copies the pointer files through, which is not a
+  // failure. Verifying that is worth at most one warning for the whole process
+  // — never one per created worktree, and never a wait for files that cannot
+  // change after `git worktree add` has returned.
+  it("creates every worktree of an LFS repository without git-lfs, warning at most once", async () => {
+    const logger = createMockLogger();
+    const service = new WorktreeSyncService(makeConfig(logger));
+
+    await syncOnce(service);
+    await pushBranchWithLfsFile("feature/one");
+    await pushBranchWithLfsFile("feature/two");
+
+    const startedAt = Date.now();
+    const outcome = await syncOnce(service);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(outcome.counts).toMatchObject({ created: 2, failed: 0 });
+    const onePath = pathResolution.getBranchWorktreePath(worktreeDir, "feature/one");
+    await expect(fs.readFile(path.join(onePath, "big.bin"), "utf8")).resolves.toBe(POINTER);
+
+    const lfsWarnings = (logger.warn as unknown as Mock).mock.calls
+      .map(([message]) => String(message))
+      .filter((message) => message.toLowerCase().includes("lfs"));
+    expect(lfsWarnings.length).toBeLessThanOrEqual(1);
+    // Two worktrees used to cost a minute of sleeping here (30 s each, serialized).
+    expect(elapsedMs).toBeLessThan(20_000);
   }, 60_000);
 });
