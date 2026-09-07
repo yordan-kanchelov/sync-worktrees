@@ -88,6 +88,23 @@ const LFS_FILTER_ATTRIBUTE = "filter=lfs";
 // daemon that runs for weeks.
 const LFS_ATTRIBUTE_CACHE_LIMIT = 256;
 
+// Full-ref prefix of origin's remote-tracking branches. Every inventory
+// listing reads %(refname) and strips this literal prefix, never
+// %(refname:short): git's short form is ambiguity-dependent and silently
+// renames refs. It shortens refs/remotes/origin/feature/HEAD to
+// "origin/feature" (a branch that does not exist) and prints
+// "remotes/origin/x" whenever a local branch literally named "origin/x"
+// exists — either way the real branch leaves the inventory and its worktree
+// then reads as stale and is pruned.
+const REMOTE_REF_PREFIX = `${GIT_CONSTANTS.REFS.REMOTES}/`;
+
+// The one ref under that prefix that is not a branch: the symref
+// `git remote set-head` writes. It is excluded by its full name only —
+// "feature/HEAD" is a legal branch name, so an endsWith("/HEAD") test would
+// drop a real branch (and prune its worktree) along with the symref.
+const ORIGIN_HEAD_REF = `${REMOTE_REF_PREFIX}HEAD`;
+const ORIGIN_HEAD_SHORT_REF = `${GIT_CONSTANTS.REMOTE_PREFIX}HEAD`;
+
 export type GitServiceOptions = Pick<
   Config,
   | "repoUrl"
@@ -616,20 +633,38 @@ export class GitService {
 
   async getRemoteBranches(): Promise<string[]> {
     const git = this.getGit();
-    const branches = await git.branch(["-r"]);
+    const branches = await git.branch(["-r", "--no-color"]);
     return GitService.remoteBranchNames(branches.all);
   }
 
-  // Remote branch names (without "origin/") from a `branch -r` listing.
+  // Remote branch names (without "origin/") from a `branch -r` listing, which
+  // prints %(refname:lstrip=2) — always "origin/<name>" verbatim, never a
+  // disambiguated short name.
   // Filter on the full ref BEFORE stripping the prefix: a remote branch
   // literally named "origin" lists as "origin/origin" and is a real branch —
   // filtering the stripped name would silently drop it (and its worktree
-  // would then read as stale and be pruned).
+  // would then read as stale and be pruned). Only the origin/HEAD symref is
+  // excluded, by its exact name: "feature/HEAD" is a legal branch name, so an
+  // endsWith("/HEAD") test would drop it too. git renders the symref as an
+  // "origin/HEAD -> origin/main" arrow line; a refname can never contain a
+  // space, so such a line is dropped whether or not the parser split it.
+  // Callers must pass --no-color: under color.ui=always git wraps every name
+  // in escape codes, the prefix test then fails for all of them, and an empty
+  // inventory turns every worktree into a prune candidate.
   private static remoteBranchNames(refs: string[]): string[] {
     return refs
-      .filter((b) => b.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) && !b.endsWith("/HEAD"))
+      .filter((b) => b.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) && b !== ORIGIN_HEAD_SHORT_REF && !b.includes(" "))
       .map((b) => b.slice(GIT_CONSTANTS.REMOTE_PREFIX.length))
       .filter((b) => b.length > 0);
+  }
+
+  // Branch name for one full remote-tracking ref, or null when the ref is not
+  // one of origin's branches (a foreign prefix, the origin/HEAD symref, or the
+  // prefix with nothing after it).
+  private static remoteBranchFromRef(ref: string): string | null {
+    if (!ref.startsWith(REMOTE_REF_PREFIX) || ref === ORIGIN_HEAD_REF) return null;
+    const branch = ref.slice(REMOTE_REF_PREFIX.length);
+    return branch.length > 0 ? branch : null;
   }
 
   async getRemoteBranchesWithActivity(): Promise<{ branch: string; lastActivity: Date }[]> {
@@ -640,8 +675,8 @@ export class GitService {
     // never contain NUL or newline.
     const result = await git.raw([
       "for-each-ref",
-      "--format=%(refname:short)%00%(committerdate:iso8601)",
-      "refs/remotes/origin",
+      "--format=%(refname)%00%(committerdate:iso8601)",
+      GIT_CONSTANTS.REFS.REMOTES,
     ]);
 
     const branches: { branch: string; lastActivity: Date }[] = [];
@@ -652,21 +687,16 @@ export class GitService {
 
     for (const line of lines) {
       const [ref, dateStr] = line.split("\0", 2);
-      if (ref && dateStr && !ref.endsWith("/HEAD")) {
-        // Same rule as getRemoteBranches: strip the prefix, never filter the
-        // stripped name (a branch literally named "origin" is real).
-        if (!ref.startsWith(GIT_CONSTANTS.REMOTE_PREFIX)) {
-          continue;
-        }
-        const branch = ref.slice(GIT_CONSTANTS.REMOTE_PREFIX.length);
-        if (branch.length === 0) {
-          continue;
-        }
-        const lastActivity = new Date(dateStr);
-        // Skip if the date is invalid
-        if (!isNaN(lastActivity.getTime())) {
-          branches.push({ branch, lastActivity });
-        }
+      if (!ref || !dateStr) continue;
+      // Same rule as getRemoteBranches: strip the literal prefix off the full
+      // refname, never filter the stripped name (a branch literally named
+      // "origin" is real, and so is one named "feature/HEAD").
+      const branch = GitService.remoteBranchFromRef(ref);
+      if (branch === null) continue;
+      const lastActivity = new Date(dateStr);
+      // Skip if the date is invalid
+      if (!isNaN(lastActivity.getTime())) {
+        branches.push({ branch, lastActivity });
       }
     }
 
@@ -1548,17 +1578,16 @@ export class GitService {
   /** Map of remote branch name (without "origin/") → tip oid, from the bare repo. */
   async getRemoteBranchTips(): Promise<Map<string, string>> {
     const git = this.getGit();
-    const raw = await git.raw(["for-each-ref", "--format=%(refname:short) %(objectname)", GIT_CONSTANTS.REFS.REMOTES]);
+    const raw = await git.raw(["for-each-ref", "--format=%(refname)%00%(objectname)", GIT_CONSTANTS.REFS.REMOTES]);
     const tips = new Map<string, string>();
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      const spaceIdx = trimmed.lastIndexOf(" ");
-      if (spaceIdx <= 0) continue;
-      const ref = trimmed.slice(0, spaceIdx);
-      const oid = trimmed.slice(spaceIdx + 1);
-      if (!ref.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) || ref === `${GIT_CONSTANTS.REMOTE_PREFIX}HEAD`) continue;
-      tips.set(ref.slice(GIT_CONSTANTS.REMOTE_PREFIX.length), oid);
+      const [ref, oid] = trimmed.split("\0", 2);
+      if (!ref || !oid) continue;
+      const branch = GitService.remoteBranchFromRef(ref);
+      if (branch === null) continue;
+      tips.set(branch, oid);
     }
     return tips;
   }
@@ -1644,7 +1673,7 @@ export class GitService {
   // rather than "no branches".
   private async listRemoteBranchNames(bareGit: SimpleGit): Promise<Set<string> | null> {
     try {
-      return new Set(GitService.remoteBranchNames((await bareGit.branch(["-r"])).all));
+      return new Set(GitService.remoteBranchNames((await bareGit.branch(["-r", "--no-color"])).all));
     } catch {
       return null;
     }

@@ -110,7 +110,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   checkout LFS failures are swallowed by Promise.allSettled and repeat every tick
 - [x] **T8** — LFS verification sleeps up to 30 s per created worktree, serialized, although nothing
   can change the files after `worktree add` returns (F18 left the wait in place)
-- [ ] **T62** — Remote branches ending in '/HEAD' (and ambiguous refname:short cases) are dropped
+- [x] **T62** — Remote branches ending in '/HEAD' (and ambiguous refname:short cases) are dropped
   from the sync inventory, so their worktrees are pruned as stale
 - [ ] **T77** — A detached-HEAD managed worktree is reported and counted as a freshly created
   worktree on every sync
@@ -2710,7 +2710,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   DEFAULT_CONFIG.RETRY.JITTER_MS is dead”. Guards checked: F11 documented the util-vs-policy split
   but the README text was not updated and constants were added without rewiring the policy.
 
-### [ ] T62. Remote branches ending in '/HEAD' (and ambiguous refname:short cases) are dropped from the sync inventory, so their worktrees are pruned as stale
+### [x] T62. Remote branches ending in '/HEAD' (and ambiguous refname:short cases) are dropped from the sync inventory, so their worktrees are pruned as stale
 
 - **Category**: guardrail · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

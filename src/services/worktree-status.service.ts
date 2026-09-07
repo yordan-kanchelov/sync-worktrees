@@ -268,7 +268,7 @@ export class WorktreeStatusService {
         return null;
       }),
       git.branch().catch(() => null),
-      git.branch(["-r"]).catch(() => null),
+      git.branch(["-r", "--no-color"]).catch(() => null),
       git.stashList().catch((e: unknown) => {
         this.logger.error(`Error checking stash`, e);
         return null;
@@ -507,7 +507,7 @@ export class WorktreeStatusService {
       const currentBranch = branchSummary.current;
 
       const upstream = await worktreeGit.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]);
-      const remoteBranches = await worktreeGit.branch(["-r"]);
+      const remoteBranches = await worktreeGit.branch(["-r", "--no-color"]);
 
       return !remoteBranches.all.includes(upstream.trim());
     } catch (error) {
