@@ -540,8 +540,28 @@ export class WorktreeModeSyncRunner {
   }
 
   private async pruneOldWorktrees(actions: PruneAction[], outcome: SyncOutcomeAccumulator): Promise<void> {
-    if (actions.length > 0) {
-      this.logger.info(`Step 3: Checking ${actions.length} stale worktrees to prune...`);
+    // A locked worktree never reaches the status probe, the `du` scan or a
+    // rename: git refuses to remove it while the lock stands, so touching it
+    // would only burn work on every tick and end in that refusal.
+    const checks: Array<{ branch: string; path: string }> = [];
+    for (const action of actions) {
+      if (action.kind === "skip-prune") {
+        const because = action.lockReason !== undefined ? `: ${action.lockReason}` : "";
+        this.logger.info(
+          `  - 🔒 Skipping removal of '${action.branch}' - the worktree is locked${because}. To let sync remove it: git worktree unlock ${action.path}`,
+        );
+        outcome.recordSkipped("worktree", "worktree_locked", {
+          branch: action.branch,
+          path: action.path,
+          message: `worktree is locked${because}`,
+        });
+        continue;
+      }
+      checks.push({ branch: action.branch, path: action.path });
+    }
+
+    if (checks.length > 0) {
+      this.logger.info(`Step 3: Checking ${checks.length} stale worktrees to prune...`);
 
       // Two-phase approach: First check status in parallel (read-only, safe),
       // then remove worktrees in parallel (mutation, needs lower concurrency)
@@ -549,7 +569,7 @@ export class WorktreeModeSyncRunner {
       const limit = pLimit(maxConcurrent);
 
       const statusResults = await Promise.allSettled(
-        actions.map(({ branch: branchName, path: worktreePath }) =>
+        checks.map(({ branch: branchName, path: worktreePath }) =>
           limit(async () => {
             const status = await this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug);
             return { branchName, worktreePath, status };
@@ -746,7 +766,7 @@ export class WorktreeModeSyncRunner {
           this.logDebugDetails(branchName, status.details);
         }
       }
-    } else {
+    } else if (actions.length === 0) {
       this.logger.info("Step 3: No stale worktrees to prune.");
     }
   }

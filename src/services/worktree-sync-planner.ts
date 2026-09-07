@@ -14,13 +14,19 @@ export interface WorktreeInventory {
 export interface WorktreeEntry {
   path: string;
   branch: string;
+  /** git refuses to remove a locked worktree, so it is never planned for prune. */
+  locked?: boolean;
+  /** Reason recorded with the lock, when git has one. */
+  lockReason?: string;
 }
 
 export type CreateAction =
   | { kind: "create"; branch: string; path: string }
   | { kind: "skip-create"; branch: string; path: string; reason: "path-collision"; conflictingBranch: string };
 
-export type PruneAction = { kind: "check-prune"; branch: string; path: string };
+export type PruneAction =
+  | { kind: "check-prune"; branch: string; path: string }
+  | { kind: "skip-prune"; branch: string; path: string; reason: "locked"; lockReason?: string };
 
 export type UpdateAction = { kind: "update-candidate"; branch: string; path: string };
 
@@ -94,7 +100,21 @@ export function planPruneActions(inventory: WorktreeInventory): PruneAction[] {
   const remoteBranches = new Set(inventory.remoteBranches);
   return inventory.existingWorktrees
     .filter((worktree) => !remoteBranches.has(worktree.branch))
-    .map((worktree) => ({ kind: "check-prune", branch: worktree.branch, path: worktree.path }));
+    .map((worktree) =>
+      // A locked worktree is one the user told git to protect. Planning it as a
+      // prune candidate would spend a status probe, a `du` size scan and two
+      // renames on it every tick and end in git's refusal anyway, so it is
+      // planned as a deliberate skip instead.
+      worktree.locked
+        ? ({
+            kind: "skip-prune",
+            branch: worktree.branch,
+            path: worktree.path,
+            reason: "locked",
+            ...(worktree.lockReason !== undefined && { lockReason: worktree.lockReason }),
+          } as const)
+        : ({ kind: "check-prune", branch: worktree.branch, path: worktree.path } as const),
+    );
 }
 
 export function planUpdateActions(inventory: WorktreeInventory): UpdateAction[] {

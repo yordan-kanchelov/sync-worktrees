@@ -21,6 +21,7 @@ const wtPath = (dir: string, branch: string): string => pathResolution.getBranch
 import type { Config } from "../../types";
 import type { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
+import type { RemovalAuditService } from "../removal-audit.service";
 import type { Mock, Mocked } from "vitest";
 
 // Use vi.hoisted to create mock instance that can be accessed in both factory and tests
@@ -64,6 +65,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
         created: false,
       }),
       getWorktrees: vi.fn<any>().mockResolvedValue([]),
+      getWorktreeLock: vi.fn<any>().mockResolvedValue({ locked: false }),
       isWorktreeBehind: vi.fn<any>().mockResolvedValue(false),
       canFastForward: vi.fn<any>().mockResolvedValue(true),
       updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
@@ -1302,6 +1304,148 @@ describe("WorktreeSyncService", () => {
           started: true,
           outcome: { counts: expect.objectContaining({ removed: 0, failed: 0 }) },
         });
+      });
+
+      // git refuses a locked worktree, and a worktree holding initialized
+      // submodules without --force. Both used to reach the generic branch and
+      // set a non-zero exit code on every single tick.
+      it.each([
+        ["a locked worktree", "git refused removal: fatal: cannot remove a locked working tree, lock reason: demo box"],
+        [
+          "a worktree containing submodules",
+          "git refused removal: fatal: working trees containing submodules cannot be moved or removed",
+        ],
+      ])("records git's refusal of %s as a skip rather than remove_failed", async (_label, reason) => {
+        setupStaleWorktree();
+        mockGitService.removeWorktree.mockRejectedValue(
+          new WorktreeNotCleanError(path.join("/test/worktrees", "old-branch"), [reason]),
+        );
+
+        const result = await service.sync();
+
+        expect(result).toMatchObject({
+          started: true,
+          outcome: {
+            counts: expect.objectContaining({ removed: 0, failed: 0 }),
+            actions: expect.arrayContaining([
+              expect.objectContaining({
+                kind: "skipped",
+                reason: "git_refused_removal",
+                branch: "old-branch",
+                message: expect.stringContaining(reason),
+              }),
+            ]),
+          },
+        });
+        expect((result as { outcome: { actions: unknown[] } }).outcome.actions).not.toContainEqual(
+          expect.objectContaining({ kind: "failed" }),
+        );
+      });
+    });
+
+    // `git worktree lock` is a deliberate "leave this alone". Pruning such a
+    // worktree can only end in git's refusal, so it must not be status-probed,
+    // size-scanned or renamed into .trash/ on the way there.
+    describe("locked worktrees", () => {
+      const lockedPath = path.join("/test/worktrees", "old-branch");
+
+      const setupLockedWorktree = (lockReason?: string): void => {
+        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
+          if (!(dirPath as string).endsWith("worktrees")) {
+            const error: any = new Error("ENOENT: no such file or directory");
+            error.code = "ENOENT";
+            throw error;
+          }
+          return ["old-branch"];
+        });
+        mockGitService.getWorktrees.mockResolvedValue([
+          { path: lockedPath, branch: "old-branch", locked: true, ...(lockReason !== undefined && { lockReason }) },
+        ]);
+        mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
+      };
+
+      afterEach(() => {
+        mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
+        mockGitService.getWorktrees.mockResolvedValue([]);
+        // clearAllMocks() drops recorded calls, not implementations.
+        mockGitService.getWorktreeLock.mockResolvedValue({ locked: false });
+      });
+
+      it("skips a locked worktree before any status probe or removal, quoting the lock reason", async () => {
+        setupLockedWorktree("demo box");
+
+        const result = await service.sync();
+
+        expect(mockGitService.getFullWorktreeStatus).not.toHaveBeenCalledWith(lockedPath, expect.anything());
+        expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+        expect(fs.rename).not.toHaveBeenCalledWith(lockedPath, expect.anything());
+        expect(result).toMatchObject({
+          started: true,
+          outcome: {
+            counts: expect.objectContaining({ removed: 0, failed: 0 }),
+            actions: expect.arrayContaining([
+              expect.objectContaining({
+                kind: "skipped",
+                reason: "worktree_locked",
+                branch: "old-branch",
+                path: lockedPath,
+                message: expect.stringContaining("demo box"),
+              }),
+            ]),
+          },
+        });
+      });
+
+      it("skips a lock with no reason too", async () => {
+        setupLockedWorktree();
+
+        const result = await service.sync();
+
+        expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          started: true,
+          outcome: {
+            counts: expect.objectContaining({ removed: 0, failed: 0 }),
+            actions: expect.arrayContaining([
+              expect.objectContaining({ kind: "skipped", reason: "worktree_locked", branch: "old-branch" }),
+            ]),
+          },
+        });
+      });
+
+      it("never moves a locked worktree into .trash/ when trash is enabled", async () => {
+        service = new WorktreeSyncService({ ...mockConfig, trash: undefined });
+        setupLockedWorktree("demo box");
+
+        const result = await service.sync();
+
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          started: true,
+          outcome: {
+            counts: expect.objectContaining({ removed: 0, failed: 0 }),
+            actions: expect.arrayContaining([
+              expect.objectContaining({ kind: "skipped", reason: "worktree_locked", branch: "old-branch" }),
+            ]),
+          },
+        });
+      });
+
+      // Second line of defense for the callers that do not consult the plan
+      // (and for a lock taken between the listing and the removal): the trash
+      // path refuses before it renames anything.
+      it("refuses to trash a worktree that git reports as locked", async () => {
+        mockGitService.getWorktreeLock.mockResolvedValue({ locked: true, reason: "demo box" });
+        const trashService = new TrashService({ ...mockConfig, trash: undefined }, mockGitService, mockLogger, {
+          record: vi.fn<any>().mockResolvedValue(undefined),
+        } as unknown as RemovalAuditService);
+
+        await expect(
+          trashService.trashAndUnregisterWorktree({ dirPath: lockedPath, branch: "old-branch", reason: "prune" }),
+        ).rejects.toBeInstanceOf(WorktreeNotCleanError);
+        expect(fs.rename).not.toHaveBeenCalled();
+        expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       });
     });
 

@@ -17,6 +17,7 @@ describe("parseWorktreeListPorcelain", () => {
         detached: false,
         prunable: false,
         locked: false,
+        lockReason: null,
       },
     ]);
   });
@@ -78,5 +79,28 @@ describe("parseWorktreeListPorcelain", () => {
     const output = ["worktree /repo/locked", "branch refs/heads/feat", "locked portable drive", ""].join("\n");
     const result = parseWorktreeListPorcelain(output);
     expect(result[0].locked).toBe(true);
+    expect(result[0].lockReason).toBe("portable drive");
+  });
+
+  it("reports a lock with no reason as locked without one", () => {
+    const output = ["worktree /repo/locked", "branch refs/heads/feat", "locked", ""].join("\n");
+    const result = parseWorktreeListPorcelain(output);
+    expect(result[0].locked).toBe(true);
+    expect(result[0].lockReason).toBeNull();
+  });
+
+  // git runs the reason through quote_c_style, so a reason holding a newline or
+  // a quote arrives on one line, double-quoted and escaped. Keeping it exactly
+  // as git printed it is what makes the value safe to put in a log line.
+  it("keeps a C-quoted lock reason as git printed it", () => {
+    const output = [
+      "worktree /repo/locked",
+      "branch refs/heads/feat",
+      String.raw`locked "multi\nline \"quoted\" reason"`,
+      "",
+    ].join("\n");
+    const result = parseWorktreeListPorcelain(output);
+    expect(result[0].locked).toBe(true);
+    expect(result[0].lockReason).toBe(String.raw`"multi\nline \"quoted\" reason"`);
   });
 });

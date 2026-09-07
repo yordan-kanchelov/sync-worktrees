@@ -27,6 +27,7 @@ function makeGitStub() {
     trackRemoteBranchIfExists: vi.fn<any>().mockResolvedValue(false),
     resetWorktreeIndex: vi.fn<any>().mockResolvedValue(undefined),
     removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
+    getWorktreeLock: vi.fn<any>().mockResolvedValue({ locked: false }),
     deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
     deleteLocalBranchIfAt: vi.fn<any>().mockResolvedValue(undefined),
   };

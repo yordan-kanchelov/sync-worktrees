@@ -100,7 +100,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T20** — Uninitialized submodules (`-` status) are classified as 'modified submodules', so
   every worktree of a repo with submodules is permanently un-prunable, flagged ⊞, and blocked from
   sparse narrowing
-- [ ] **T24** — removeWorktree only classifies git's 'dirty' refusal; locked worktrees and worktrees
+- [x] **T24** — removeWorktree only classifies git's 'dirty' refusal; locked worktrees and worktrees
   with initialized submodules turn into hard `remove_failed` failures (exit 1) every tick, and the
   `locked` flag parsed from `worktree list` is discarded
 - [ ] **T23** — `fetchTimeoutMs` is applied as an inactivity kill to every command on cached clients
@@ -1373,7 +1373,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   (git.service.ts:80-91) applies `fetchTimeoutMs` to every cached client, including the ones used
   for `worktree add`, `merge --ff-only`, `checkout HEAD` and `status`.
 
-### [ ] T24. removeWorktree only classifies git's 'dirty' refusal; locked worktrees and worktrees with initialized submodules turn into hard `remove_failed` failures (exit 1) every tick, and the `locked` flag parsed from `worktree list` is discarded
+### [x] T24. removeWorktree only classifies git's 'dirty' refusal; locked worktrees and worktrees with initialized submodules turn into hard `remove_failed` failures (exit 1) every tick, and the `locked` flag parsed from `worktree list` is discarded
 
 - **Category**: guardrail · **Subsystem**: git
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

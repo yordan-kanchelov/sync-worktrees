@@ -2090,6 +2090,45 @@ describe("GitService", () => {
       );
       expect(mockMetadataService.deleteMetadataFromPath).not.toHaveBeenCalled();
     });
+
+    // A worktree the user locked is not a broken removal: git refuses it even
+    // with a single --force, and `-f -f` would defeat the lock, so the caller
+    // has to see a skip rather than a hard failure on every tick.
+    it("classifies git's locked-worktree refusal as WorktreeNotCleanError, forced or not", async () => {
+      (mockGit.raw as Mock).mockRejectedValue(
+        new Error(
+          "fatal: cannot remove a locked working tree, lock reason: demo box\nuse 'remove -f -f' to override or unlock first",
+        ),
+      );
+
+      await expect(gitService.removeWorktree("/test/worktrees/feature-1")).rejects.toBeInstanceOf(
+        WorktreeNotCleanError,
+      );
+      await expect(gitService.removeWorktree("/test/worktrees/feature-1", { force: true })).rejects.toBeInstanceOf(
+        WorktreeNotCleanError,
+      );
+      expect(mockMetadataService.deleteMetadataFromPath).not.toHaveBeenCalled();
+    });
+
+    it("classifies git's submodule refusal as WorktreeNotCleanError", async () => {
+      (mockGit.raw as Mock).mockRejectedValue(
+        new Error("fatal: working trees containing submodules cannot be moved or removed"),
+      );
+
+      await expect(gitService.removeWorktree("/test/worktrees/feature-1")).rejects.toBeInstanceOf(
+        WorktreeNotCleanError,
+      );
+      expect(mockMetadataService.deleteMetadataFromPath).not.toHaveBeenCalled();
+    });
+
+    it("still rethrows a genuine git failure untouched", async () => {
+      (mockGit.raw as Mock).mockRejectedValue(new Error("fatal: not a git repository"));
+
+      await expect(gitService.removeWorktree("/test/worktrees/feature-1")).rejects.toThrow("not a git repository");
+      await expect(gitService.removeWorktree("/test/worktrees/feature-1")).rejects.not.toBeInstanceOf(
+        WorktreeNotCleanError,
+      );
+    });
   });
 
   describe("addWorktree stale directory safety", () => {
@@ -2276,9 +2315,9 @@ describe("GitService", () => {
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main", isPrunable: false },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
-        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false },
+        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false, locked: false },
       ]);
     });
 
@@ -2294,8 +2333,8 @@ branch refs/heads/feature-1`);
       const worktrees = await gitService.getWorktrees();
 
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main", isPrunable: false },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
+        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false },
       ]);
     });
 
@@ -2324,8 +2363,8 @@ branch refs/heads/feature-1
       const worktrees = await gitService.getWorktrees();
 
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main", isPrunable: false },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
+        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false },
       ]);
     });
 
@@ -2347,9 +2386,9 @@ branch refs/heads/feature-2`);
       const worktrees = await gitService.getWorktrees();
 
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main", isPrunable: false },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
-        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false },
+        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false, locked: false },
       ]);
     });
 
@@ -2372,10 +2411,10 @@ branch refs/heads/feature-2`);
       const worktrees = await gitService.getWorktrees();
 
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main", isPrunable: false },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false },
-        { path: "/path/to/worktrees/stale-worktree", branch: "stale-branch", isPrunable: true },
-        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false },
+        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false },
+        { path: "/path/to/worktrees/stale-worktree", branch: "stale-branch", isPrunable: true, locked: false },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false, locked: false },
       ]);
     });
 
@@ -2393,9 +2432,70 @@ prunable
       const worktrees = await gitService.getWorktrees();
 
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main", isPrunable: false },
-        { path: "/path/to/worktrees/incomplete", branch: "incomplete-branch", isPrunable: true },
+        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false },
+        { path: "/path/to/worktrees/incomplete", branch: "incomplete-branch", isPrunable: true, locked: false },
       ]);
+    });
+
+    // The lock flag is what keeps a worktree the user protected out of the
+    // prune pipeline entirely, so it has to survive the listing.
+    it("should surface locked worktrees and their lock reason", async () => {
+      await gitService.initialize();
+
+      mockGit.raw.mockResolvedValue(`worktree /path/to/repo
+branch refs/heads/main
+
+worktree /path/to/worktrees/pinned
+branch refs/heads/pinned
+locked demo box
+
+worktree /path/to/worktrees/held
+branch refs/heads/held
+locked
+`);
+
+      const worktrees = await gitService.getWorktrees();
+
+      expect(worktrees).toEqual([
+        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false },
+        {
+          path: "/path/to/worktrees/pinned",
+          branch: "pinned",
+          isPrunable: false,
+          locked: true,
+          lockReason: "demo box",
+        },
+        { path: "/path/to/worktrees/held", branch: "held", isPrunable: false, locked: true },
+      ]);
+    });
+  });
+
+  describe("getWorktreeLock", () => {
+    beforeEach(async () => {
+      await gitService.initialize();
+    });
+
+    it("reports the lock and its reason for a locked registration", async () => {
+      mockGit.raw.mockResolvedValue(`worktree /path/to/worktrees/pinned
+branch refs/heads/pinned
+locked demo box
+`);
+
+      await expect(gitService.getWorktreeLock("/path/to/worktrees/pinned")).resolves.toEqual({
+        locked: true,
+        reason: "demo box",
+      });
+    });
+
+    it("reports unlocked for an unregistered path and for a listing that fails", async () => {
+      mockGit.raw.mockResolvedValue(`worktree /path/to/worktrees/pinned
+branch refs/heads/pinned
+locked
+`);
+      await expect(gitService.getWorktreeLock("/path/to/worktrees/other")).resolves.toEqual({ locked: false });
+
+      mockGit.raw.mockRejectedValue(new Error("fatal: not a git repository"));
+      await expect(gitService.getWorktreeLock("/path/to/worktrees/pinned")).resolves.toEqual({ locked: false });
     });
   });
 

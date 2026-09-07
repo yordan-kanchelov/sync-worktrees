@@ -41,6 +41,21 @@ export interface AheadBehindCounts {
   behind: number;
 }
 
+// One entry of `git worktree list --porcelain`. `locked` carries git's own
+// lock flag: a locked worktree is one the user asked git to protect, and git
+// refuses to remove it (even with a single --force) until it is unlocked, so
+// callers must treat it as off-limits rather than as a removal that failed.
+export interface RegisteredWorktree {
+  path: string;
+  branch: string;
+  isPrunable?: boolean;
+  // Optional like isPrunable: every listing sets it, and callers that build a
+  // worktree by hand (tests, fixtures) should not have to.
+  locked?: boolean;
+  /** Reason given to `git worktree lock --reason`; absent when git records none. */
+  lockReason?: string;
+}
+
 export interface DefaultBranchRefresh {
   previous: string;
   defaultBranch: string;
@@ -1133,6 +1148,21 @@ export class GitService {
     return wrapped;
   }
 
+  // `git worktree remove` refuses three ways, and none of them means the
+  // repository is broken — they are git protecting user state, so callers see a
+  // skip-shaped WorktreeNotCleanError instead of a hard failure:
+  //  - a dirty tree ("contains modified or untracked files", "use --force");
+  //  - a worktree the user locked, which git refuses even with a single
+  //    --force ("cannot remove a locked working tree ... use 'remove -f -f'").
+  //    We never pass -f -f: force-unlocking a worktree somebody deliberately
+  //    locked is exactly what the lock exists to prevent;
+  //  - without --force, a worktree holding initialized submodules ("working
+  //    trees containing submodules cannot be moved or removed").
+  private static isRemovalRefusal(message: string, forced: boolean): boolean {
+    if (/locked working tree/i.test(message)) return true;
+    return !forced && /contains modified or untracked files|use --force|containing submodules/i.test(message);
+  }
+
   async removeWorktree(worktreePath: string, options?: { force?: boolean }): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
 
@@ -1147,7 +1177,7 @@ export class GitService {
       await bareGit.raw(args);
     } catch (error) {
       const message = getErrorMessage(error);
-      if (!options?.force && /contains modified or untracked files|use --force/i.test(message)) {
+      if (GitService.isRemovalRefusal(message, options?.force ?? false)) {
         throw new WorktreeNotCleanError(worktreePath, [`git refused removal: ${message}`]);
       }
       throw error;
@@ -1455,9 +1485,32 @@ export class GitService {
     return this.config.skipLfs || this.lfsSkipOverride;
   }
 
-  async getWorktrees(): Promise<{ path: string; branch: string }[]> {
+  async getWorktrees(): Promise<RegisteredWorktree[]> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     return this.getWorktreesFromBare(bareGit);
+  }
+
+  // Whether git holds a lock on the registration covering `worktreePath` — a
+  // worktree the user asked git to protect, which `worktree remove` refuses
+  // while the lock stands. Callers use it to leave such a worktree alone
+  // before they move anything. An unregistered path, a detached-HEAD sibling
+  // and an unreadable listing all answer "not locked": the caller's own
+  // removal reports the real problem, and blocking on a failed listing would
+  // stop removals git would happily perform.
+  async getWorktreeLock(worktreePath: string): Promise<{ locked: boolean; reason?: string }> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    let worktrees: RegisteredWorktree[];
+    try {
+      worktrees = await this.getWorktreesFromBare(bareGit, true);
+    } catch (error) {
+      this.logger.warn(`Could not read worktree lock state for '${worktreePath}': ${getErrorMessage(error)}`);
+      return { locked: false };
+    }
+
+    const target = path.resolve(worktreePath);
+    const registered = worktrees.find((worktree) => path.resolve(worktree.path) === target);
+    if (!registered?.locked) return { locked: false };
+    return { locked: true, ...(registered.lockReason !== undefined && { reason: registered.lockReason }) };
   }
 
   // How many commits HEAD has that origin/<branch> lacks (ahead) and the
@@ -1866,10 +1919,7 @@ export class GitService {
     return worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath && !w.isPrunable);
   }
 
-  private async getWorktreesFromBare(
-    bareGit: SimpleGit,
-    includeDetached = false,
-  ): Promise<{ path: string; branch: string; isPrunable?: boolean }[]> {
+  private async getWorktreesFromBare(bareGit: SimpleGit, includeDetached = false): Promise<RegisteredWorktree[]> {
     const result = await bareGit.raw(["worktree", "list", "--porcelain"]);
     return parseWorktreeListPorcelain(result)
       .filter((w) => includeDetached || (!w.detached && w.branch !== null))
@@ -1877,6 +1927,8 @@ export class GitService {
         path: w.path,
         branch: w.branch ?? "",
         isPrunable: w.prunable,
+        locked: w.locked,
+        ...(w.lockReason !== null && { lockReason: w.lockReason }),
       }));
   }
 }
