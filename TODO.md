@@ -97,7 +97,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   out-of-band: every later sync fails with 'spawn git ENOENT'
 - [x] **T19** — Unpushed-commit probe uses the bare branch name as a revision; a tag with the same
   name shadows the branch and reports 0 unpushed commits with exit 0
-- [ ] **T20** — Uninitialized submodules (`-` status) are classified as 'modified submodules', so
+- [x] **T20** — Uninitialized submodules (`-` status) are classified as 'modified submodules', so
   every worktree of a repo with submodules is permanently un-prunable, flagged ⊞, and blocked from
   sparse narrowing
 - [ ] **T24** — removeWorktree only classifies git's 'dirty' refusal; locked worktrees and worktrees
@@ -1237,7 +1237,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `refs/heads/${branch}` in `rev-list --count` (worktree-status.service.ts:262, 442). Removal is
   trash-backed, so the exposure is a wrong 'safe to remove' verdict rather than permanent loss.
 
-### [ ] T20. Uninitialized submodules (`-` status) are classified as 'modified submodules', so every worktree of a repo with submodules is permanently un-prunable, flagged ⊞, and blocked from sparse narrowing
+### [x] T20. Uninitialized submodules (`-` status) are classified as 'modified submodules', so every worktree of a repo with submodules is permanently un-prunable, flagged ⊞, and blocked from sparse narrowing
 
 - **Category**: correctness · **Subsystem**: git
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

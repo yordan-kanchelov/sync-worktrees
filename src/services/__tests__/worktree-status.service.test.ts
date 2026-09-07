@@ -328,6 +328,107 @@ describe("WorktreeStatusService", () => {
       expect(result.canRemove).toBe(true);
       expect(result.reasons).toEqual([]);
     });
+
+    // `git worktree add` never initializes submodules, so `git submodule status`
+    // prints "-<oid> <path>" for every submodule of every worktree this tool
+    // creates. Counting that "not initialized" marker as a modification made
+    // canRemove permanently false for such repos: the branch was never pruned,
+    // sparse narrowing was skipped and the TUI flagged ⊞ forever.
+    describe("submodule status prefixes", () => {
+      const setupCleanWorktree = (submoduleStatus: string): void => {
+        mockGit.status.mockResolvedValue({
+          modified: [],
+          deleted: [],
+          renamed: [],
+          created: [],
+          conflicted: [],
+          not_added: [],
+        } as any);
+        mockGit.raw.mockImplementation((async (...args: any[]) => {
+          const firstArg = Array.isArray(args[0]) ? args[0] : args;
+          if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
+            return "origin/main\n";
+          }
+          if (firstArg[0] === "submodule") {
+            return submoduleStatus;
+          }
+          return "0\n";
+        }) as any);
+        mockGit.branch.mockImplementation((async (...args: any[]) => {
+          const firstArg = Array.isArray(args[0]) ? args[0] : args;
+          if (firstArg && firstArg[0] === "-r") {
+            return { all: ["origin/main"] } as any;
+          }
+          return { current: "main", detached: false } as any;
+        }) as any);
+        mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+        (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (target === "/test/worktree") return undefined;
+          throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
+        });
+      };
+
+      it("treats an uninitialized submodule as removable", async () => {
+        setupCleanWorktree("-6f73556 libs/sub\n");
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.hasModifiedSubmodules).toBe(false);
+        expect(result.canRemove).toBe(true);
+        expect(result.reasons).toEqual([]);
+        expect(result.details?.modifiedSubmodules).toBeUndefined();
+      });
+
+      it("treats an in-sync submodule as removable", async () => {
+        setupCleanWorktree(" 6f73556 libs/sub (heads/main)\n");
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.hasModifiedSubmodules).toBe(false);
+        expect(result.canRemove).toBe(true);
+        expect(result.details?.modifiedSubmodules).toBeUndefined();
+      });
+
+      it("blocks removal when a submodule's checked-out commit differs", async () => {
+        setupCleanWorktree("+6f73556 libs/sub (heads/main)\n");
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.hasModifiedSubmodules).toBe(true);
+        expect(result.canRemove).toBe(false);
+        expect(result.reasons).toContain("modified submodules");
+        expect(result.details?.modifiedSubmodules).toEqual(["libs/sub"]);
+      });
+
+      it("blocks removal when a submodule has merge conflicts", async () => {
+        setupCleanWorktree("U6f73556 libs/sub (heads/main)\n");
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.hasModifiedSubmodules).toBe(true);
+        expect(result.canRemove).toBe(false);
+        expect(result.reasons).toContain("modified submodules");
+        expect(result.details?.modifiedSubmodules).toEqual(["libs/sub"]);
+      });
+
+      // The details list used to capture the object id, because the old regex
+      // grabbed the first \S+ run after the prefix.
+      it("reports submodule paths — including paths with spaces — not object ids", async () => {
+        setupCleanWorktree(
+          [
+            "-6f73556 libs/untouched",
+            "+1e24239 libs/my sub (v1.0-1-g1e24239)",
+            " abc1234 libs/in-sync (heads/main)",
+            "",
+          ].join("\n"),
+        );
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.details?.modifiedSubmodules).toEqual(["libs/my sub"]);
+      });
+    });
   });
 
   describe("hasUnpushedCommits", () => {
@@ -470,6 +571,25 @@ describe("WorktreeStatusService", () => {
 
     it("should return false for clean submodules", async () => {
       mockGit.raw.mockResolvedValue(" abc123 submodule1\n abc456 submodule2");
+
+      const result = await service.hasModifiedSubmodules("/test/worktree");
+
+      expect(result).toBe(false);
+    });
+
+    it("should return true for conflicted submodules", async () => {
+      mockGit.raw.mockResolvedValue("U6f73556 libs/sub (heads/main)");
+
+      const result = await service.hasModifiedSubmodules("/test/worktree");
+
+      expect(result).toBe(true);
+    });
+
+    // What every worktree `git worktree add` builds looks like: git does not
+    // initialize submodules for a new worktree, and an uninitialized submodule
+    // has no working tree that could be holding local work.
+    it("should return false for uninitialized submodules", async () => {
+      mockGit.raw.mockResolvedValue("-6f73556 libs/sub\n-6f73556 libs/other");
 
       const result = await service.hasModifiedSubmodules("/test/worktree");
 

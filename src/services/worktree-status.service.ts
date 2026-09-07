@@ -57,6 +57,44 @@ const OPERATION_FILES: ReadonlyArray<{ file: string; type: string }> = [
   { file: GIT_OPERATIONS.REBASE_APPLY, type: "rebase (apply)" },
 ];
 
+// `git submodule status` prints one line per submodule: a single status
+// character in column 0, the recorded object id, the path, and — only for an
+// initialized submodule — a " (<describe>)" suffix.
+//
+//   " " in sync   "-" not initialized   "+" commit differs   "U" merge conflicts
+//
+// Only "+" and "U" mean the worktree holds submodule state that could be lost.
+// "-" is the state every tool-created worktree starts in, because `git worktree
+// add` never initializes submodules; counting it as modified made every
+// worktree of a repo with submodules permanently un-prunable.
+//
+// A submodule path can contain spaces, so the path is everything after the
+// object id minus the describe suffix — not the first \S+ run (which used to
+// hand callers the object id itself).
+const SUBMODULE_STATUS_LINE = /^(.)(\S+)[ \t]+(.+)$/;
+const SUBMODULE_DESCRIBE_SUFFIX = /[ \t]+\([^()]*\)$/;
+
+function parseModifiedSubmodulePath(line: string): string | null {
+  const match = SUBMODULE_STATUS_LINE.exec(line);
+  if (!match) return null;
+  const [, prefix, , rest] = match;
+  if (prefix !== GIT_CONSTANTS.SUBMODULE_STATUS_OUT_OF_SYNC && prefix !== GIT_CONSTANTS.SUBMODULE_STATUS_CONFLICTED) {
+    return null;
+  }
+  const submodulePath = rest.replace(SUBMODULE_DESCRIBE_SUFFIX, "").trim();
+  return submodulePath || null;
+}
+
+function collectModifiedSubmodules(submoduleStatus: string): string[] {
+  const modified: string[] = [];
+  for (const line of submoduleStatus.split("\n")) {
+    if (!line.trim()) continue;
+    const submodulePath = parseModifiedSubmodulePath(line);
+    if (submodulePath) modified.push(submodulePath);
+  }
+  return modified;
+}
+
 interface WorktreeSnapshot {
   exists: boolean;
   status: Awaited<ReturnType<SimpleGit["status"]>> | null;
@@ -369,15 +407,7 @@ export class WorktreeStatusService {
 
   private deriveModifiedSubmodules(snap: WorktreeSnapshot): string[] {
     if (!snap.submoduleStatus) return [];
-    const modified: string[] = [];
-    for (const line of snap.submoduleStatus.split("\n").filter((l) => l.trim())) {
-      const firstChar = line.charAt(0);
-      if (firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_ADDED || firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_REMOVED) {
-        const match = line.match(/^[+-]\s*(\S+)/);
-        if (match) modified.push(match[1]);
-      }
-    }
-    return modified;
+    return collectModifiedSubmodules(snap.submoduleStatus);
   }
 
   private buildStatusDetails(snap: WorktreeSnapshot): WorktreeStatusDetails {
@@ -514,18 +544,7 @@ export class WorktreeStatusService {
 
     try {
       const result = await worktreeGit.raw(["submodule", "status"]);
-      const lines = result.split("\n").filter((line) => line.trim());
-
-      for (const line of lines) {
-        const firstChar = line.charAt(0);
-        if (
-          firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_ADDED ||
-          firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_REMOVED
-        ) {
-          return true;
-        }
-      }
-      return false;
+      return collectModifiedSubmodules(result).length > 0;
     } catch (error) {
       this.logger.error(`Error checking submodule status`, error);
       return true;

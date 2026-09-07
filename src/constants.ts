@@ -11,8 +11,13 @@ export const GIT_CONSTANTS = {
   TRASH_REF_PREFIX: "refs/sync-worktrees/trash/",
   KEEP_REF_PREFIX: "refs/sync-worktrees/keep/",
   LFS_HEADER: "version https://git-lfs.github.com/spec/",
-  SUBMODULE_STATUS_ADDED: "+",
-  SUBMODULE_STATUS_REMOVED: "-",
+  // Column-0 prefixes of `git submodule status`: " " in sync, "-" not
+  // initialized, "+" the checked-out commit differs from the superproject's
+  // index, "U" merge conflicts. Only "+" and "U" mean the worktree holds
+  // submodule state that could be lost — "-" is what `git worktree add` always
+  // leaves behind, since it never initializes submodules.
+  SUBMODULE_STATUS_OUT_OF_SYNC: "+",
+  SUBMODULE_STATUS_CONFLICTED: "U",
   GITDIR_PREFIX: "gitdir:",
   GIT_CHECK_IGNORE_NO_MATCH: "exit code: 1",
   REFS: {
