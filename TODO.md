@@ -135,7 +135,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   WorktreeStatusService): ~20 KB retained per branch lifetime in daemon mode
 - [x] **T57** — `git check-ignore` after `git status --porcelain -u` is a redundant spawn per dirty
   worktree (status never lists ignored paths) and passes every untracked path as argv
-- [ ] **T58** — isPathInsideBaseDir uses synchronous existsSync/realpathSync per registered worktree
+- [x] **T58** — isPathInsideBaseDir uses synchronous existsSync/realpathSync per registered worktree
   and re-resolves worktreeDir every call (≈41 ms of blocked event loop per sync at 400 worktrees)
 - [ ] **T60** — Phase progress emits exactly 5 events per attempt with no processed/total, so the
   TUI and MCP progress show a static message during long create/prune/update phases
@@ -2607,7 +2607,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   report ignored entries; GIT_CHECK_IGNORE_NO_MATCH handling shows the 'nothing matched' outcome is
   the expected normal case.
 
-### [ ] T58. isPathInsideBaseDir uses synchronous existsSync/realpathSync per registered worktree and re-resolves worktreeDir every call (≈41 ms of blocked event loop per sync at 400 worktrees)
+### [x] T58. isPathInsideBaseDir uses synchronous existsSync/realpathSync per registered worktree and re-resolves worktreeDir every call (≈41 ms of blocked event loop per sync at 400 worktrees)
 
 - **Category**: performance · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

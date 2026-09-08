@@ -27,6 +27,10 @@ import type { CreateAction, PruneAction, SparseAction, SyncPlan, UpdateAction } 
 import type { Config } from "../types";
 import type { PhaseTimer } from "../utils/timing";
 
+// How many worktreeDir containment probes may be in flight at once. Pure stat
+// work, so this is about event-loop latency rather than about a process budget.
+const PATH_CONTAINMENT_CONCURRENCY = 8;
+
 export class WorktreeModeSyncRunner {
   private pathResolution = new PathResolutionService();
   private removalAudit: RemovalAuditService;
@@ -62,15 +66,7 @@ export class WorktreeModeSyncRunner {
     await fs.mkdir(this.config.worktreeDir, { recursive: true });
 
     const registeredWorktrees = await this.gitService.getWorktrees();
-    const worktrees: typeof registeredWorktrees = [];
-    const externalWorktrees: typeof registeredWorktrees = [];
-    for (const worktree of registeredWorktrees) {
-      if (this.pathResolution.isPathInsideBaseDir(worktree.path, this.config.worktreeDir)) {
-        worktrees.push(worktree);
-      } else {
-        externalWorktrees.push(worktree);
-      }
-    }
+    const { worktrees, externalWorktrees } = await this.partitionByWorktreeDir(registeredWorktrees);
     const externalBranches = new Set(externalWorktrees.map((worktree) => worktree.branch));
     const plannedBranches = remoteBranches.filter(
       (branch) => !externalBranches.has(branch) && !pendingDivergedBranches.has(branch),
@@ -174,6 +170,52 @@ export class WorktreeModeSyncRunner {
         }),
       ),
     );
+  }
+
+  // Splits the registered worktrees into the ones inside worktreeDir and the
+  // ones a user registered elsewhere, which the sync leaves alone.
+  //
+  // worktreeDir is canonicalized once for the whole partition rather than
+  // re-resolved alongside every candidate: this runs on every sync attempt in
+  // the TUI/daemon process, where a few hundred synchronous realpath walks are
+  // milliseconds of blocked event loop — a dropped frame and a late cron
+  // callback — and are multiplied by every repository sharing the process.
+  // Every candidate is still canonicalized individually, so a worktree that
+  // reaches outside the base through a symlink is still classified as external.
+  // The one snapshot of the base makes the batch consistent rather than safer:
+  // swapping worktreeDir mid-partition can no longer have some candidates
+  // judged against the old directory and the rest against the new one, but a
+  // base already swapped when the snapshot is taken now applies to the whole
+  // batch instead of a prefix of it. Either way that needs write control over
+  // worktreeDir's parent, which is already control of the tree being managed.
+  private async partitionByWorktreeDir<T extends { path: string }>(
+    registeredWorktrees: T[],
+  ): Promise<{ worktrees: T[]; externalWorktrees: T[] }> {
+    if (registeredWorktrees.length === 0) {
+      return { worktrees: [], externalWorktrees: [] };
+    }
+    const resolvedWorktreeDir = await this.pathResolution.resolveBaseDir(this.config.worktreeDir);
+    // Bounded rather than one probe per worktree at once: a few hundred
+    // in-flight probes queue behind libuv's thread pool and land their
+    // callbacks in a single poll phase, which stalls the loop for longer than
+    // the synchronous version being replaced ever did.
+    const limit = pLimit(PATH_CONTAINMENT_CONCURRENCY);
+    const inside = await Promise.all(
+      registeredWorktrees.map((worktree) =>
+        limit(() => this.pathResolution.isPathInsideResolvedBaseDir(worktree.path, resolvedWorktreeDir)),
+      ),
+    );
+
+    const worktrees: T[] = [];
+    const externalWorktrees: T[] = [];
+    for (const [index, worktree] of registeredWorktrees.entries()) {
+      if (inside[index]) {
+        worktrees.push(worktree);
+      } else {
+        externalWorktrees.push(worktree);
+      }
+    }
+    return { worktrees, externalWorktrees };
   }
 
   // A registration whose directory is definitively gone (rm -rf, a wiped volume)
