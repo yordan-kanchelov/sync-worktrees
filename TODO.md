@@ -131,7 +131,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T55** — GitService.updateLogger does not reach WorktreeStatusService/WorktreeMetadataService
   or cached progress handlers, so in the TUI their log lines bypass the log panel and go to the raw
   console
-- [ ] **T56** — Per-worktree simple-git client caches are never evicted (GitService ×2 variants +
+- [x] **T56** — Per-worktree simple-git client caches are never evicted (GitService ×2 variants +
   WorktreeStatusService): ~20 KB retained per branch lifetime in daemon mode
 - [ ] **T57** — `git check-ignore` after `git status --porcelain -u` is a redundant spawn per dirty
   worktree (status never lists ignored paths) and passes every untracked path as argv
@@ -2552,7 +2552,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   (worktree-sync.service.ts:380-391 lists nine services) and the two GitService-owned helpers were
   missed; there is no test asserting log routing after updateLogger.
 
-### [ ] T56. Per-worktree simple-git client caches are never evicted (GitService ×2 variants + WorktreeStatusService): ~20 KB retained per branch lifetime in daemon mode
+### [x] T56. Per-worktree simple-git client caches are never evicted (GitService ×2 variants + WorktreeStatusService): ~20 KB retained per branch lifetime in daemon mode
 
 - **Category**: performance · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

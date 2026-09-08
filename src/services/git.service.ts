@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS, PATH_CONS
 import { ConfigError, GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
 import { fileExists, probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
+import { GitClientCache } from "../utils/git-client-cache";
 import { isGitLfsInstalled, isLfsSmudgeSkippedByEnv, warnGitLfsMissingOnce } from "../utils/git-lfs-probe";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir, normalizeRepoUrlForComparison, redactRepoUrl } from "../utils/git-url";
@@ -160,7 +161,7 @@ export class GitService {
   private lfsSkipOverride = false;
   // Tree oid -> whether that tree's .gitattributes declare an LFS filter.
   private lfsAttributeCache = new Map<string, boolean>();
-  private gitInstances = new Map<string, SimpleGit>();
+  private gitInstances = new GitClientCache();
 
   constructor(
     private config: GitServiceOptions,
@@ -204,17 +205,29 @@ export class GitService {
   // additions, same unsafe allowances. The kind is part of the cache key so a
   // local command can never pick up the network client's kill (or vice versa).
   private getCachedClient(dirPath: string, useLfsSkip: boolean, kind: "local" | "network"): SimpleGit {
-    const key = `${path.resolve(dirPath)}::${useLfsSkip ? "1" : "0"}::${kind}`;
-    let git = this.gitInstances.get(key);
-    if (!git) {
-      git = createGitClient(
+    return this.gitInstances.get(dirPath, `${useLfsSkip ? "1" : "0"}::${kind}`, () =>
+      createGitClient(
         dirPath,
         useLfsSkip ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {},
         this.buildSimpleGitOptions(kind === "network" ? this.getFetchTimeoutMs() : 0),
-      );
-      this.gitInstances.set(key, git);
-    }
-    return git;
+      ),
+    );
+  }
+
+  // Every client cached for a path that has stopped being this repository's
+  // worktree — removed, moved to trash, quarantined under .removed/, or
+  // preserved under .diverged/. Nothing else drops them, so without this a
+  // daemon kept every client it ever built (~7 KB apiece, measured: the
+  // instance plus its own copy of the sanitized environment) and grew with the
+  // repository's branch churn rather than with its worktree count. The status
+  // service is cleared alongside this cache — it keys clients by the same
+  // paths, and its own removal notice can only come from here.
+  //
+  // Dropping the entries never disturbs an operation already running on one of
+  // those clients — whoever asked for it still holds it.
+  private forgetCachedClients(dirPath: string): void {
+    this.gitInstances.forget(dirPath);
+    this.statusService.forgetWorktree(dirPath);
   }
 
   // Client for local commands (worktree add/remove/list/prune, merge,
@@ -377,6 +390,7 @@ export class GitService {
           );
           try {
             await bareGit.raw(["worktree", "remove", "--force", registeredPath]);
+            this.forgetCachedClients(registeredPath);
           } catch (removalError) {
             // A locked registration makes single --force fail, which correctly
             // preserves it; leave the old (broken) state rather than guess.
@@ -1121,6 +1135,7 @@ export class GitService {
     let worktreeRemoved = true;
     try {
       await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
+      this.forgetCachedClients(absoluteWorktreePath);
     } catch (rollbackError) {
       worktreeRemoved = false;
       const ctx = failureContext ? ` after ${failureContext}` : "";
@@ -1255,6 +1270,7 @@ export class GitService {
         this.logger.warn(`  - Worktree already registered but missing. Removing that registration and retrying...`);
         try {
           await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
+          this.forgetCachedClients(absoluteWorktreePath);
         } catch (removalError) {
           this.logger.warn(
             `  - Failed to remove stale registration for '${absoluteWorktreePath}': ${getErrorMessage(removalError)}. Continuing with directory cleanup and retry.`,
@@ -1600,6 +1616,7 @@ export class GitService {
       }
       throw error;
     }
+    this.forgetCachedClients(worktreePath);
     this.logger.info(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
 
     // Clean up metadata using the worktree path
@@ -1699,6 +1716,11 @@ export class GitService {
   // A stale directory that contains a .git may be a live checkout that git
   // failed to report; quarantine it instead of deleting.
   private async clearStaleWorktreeDirectory(absoluteWorktreePath: string): Promise<void> {
+    // However this ends — the directory is already gone, or it is about to be
+    // trashed, quarantined or deleted — no client cached for the path outlives
+    // it. Dropping them up front covers every exit below; the refusal paths
+    // leave the directory in place and cost nothing but a rebuilt client.
+    this.forgetCachedClients(absoluteWorktreePath);
     // Nothing at the path means nothing to clear. Falling through would hand a
     // missing directory to the trasher, which fails with ENOENT and turns a
     // recoverable stale registration into a permanent creation failure.

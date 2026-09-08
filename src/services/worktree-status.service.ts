@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, GIT_OPERATIONS, PATH_CONS
 import { GitOperationError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
+import { GitClientCache } from "../utils/git-client-cache";
 import { getErrorMessage } from "../utils/lfs-error";
 
 import { Logger } from "./logger.service";
@@ -129,7 +130,7 @@ export interface WorktreeStatusServiceConfig {
 }
 
 export class WorktreeStatusService {
-  private gitInstances = new Map<string, SimpleGit>();
+  private gitInstances = new GitClientCache();
   private logger: Logger;
   // One budget for every git process this service spawns, shared by all
   // worktrees. A single snapshot fans out to five commands at once, and the
@@ -679,16 +680,22 @@ export class WorktreeStatusService {
   }
 
   private createGitInstance(worktreePath: string): SimpleGit {
-    const key = `${path.resolve(worktreePath)}::${this.config.skipLfs ? "1" : "0"}`;
-    let git = this.gitInstances.get(key);
-    if (!git) {
+    return this.gitInstances.get(worktreePath, this.config.skipLfs ? "1" : "0", () =>
       // createGitClient carries the (sanitized) process env: without HOME /
       // XDG_CONFIG_HOME git ignores the global excludes file and every
       // globally-ignored file reads as an untracked change, and without PATH
       // the spawn itself can fail.
-      git = createGitClient(worktreePath, this.config.skipLfs ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {});
-      this.gitInstances.set(key, git);
-    }
-    return git;
+      createGitClient(worktreePath, this.config.skipLfs ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {}),
+    );
+  }
+
+  /**
+   * Drops the client cached for a worktree that no longer exists. Called by
+   * GitService, which owns this service and is where every removal lands — a
+   * status client is built per worktree path, so without this the cache keeps
+   * one for every branch the repository ever had.
+   */
+  forgetWorktree(worktreePath: string): void {
+    this.gitInstances.forget(worktreePath);
   }
 }
