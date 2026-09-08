@@ -8,7 +8,7 @@ import { createMockLogger } from "../../__tests__/test-utils";
 import { PathResolutionService } from "../path-resolution.service";
 import { ProgressEmitter } from "../progress-emitter";
 import { SyncOutcomeAccumulator } from "../sync-outcome";
-import { WorktreeModeSyncRunner } from "../worktree-mode-sync-runner";
+import { PATH_CONTAINMENT_CONCURRENCY, WorktreeModeSyncRunner } from "../worktree-mode-sync-runner";
 import { PhaseTimer } from "../../utils/timing";
 
 import type { GitService } from "../git.service";
@@ -23,6 +23,11 @@ const spies = vi.hoisted(() => ({
   existsSync: vi.fn(),
   realpathSync: vi.fn(),
   realpath: vi.fn(),
+  // Highest number of async realpath calls outstanding at one moment. This is
+  // what the concurrency bound actually controls, and unlike elapsed time it
+  // does not move with machine load or coverage instrumentation.
+  inFlight: 0,
+  peakInFlight: 0,
 }));
 
 // The spies count calls and then delegate: the partition has to be exercised
@@ -50,7 +55,11 @@ vi.mock("fs/promises", async () => {
     ...actual,
     realpath: (...args: Parameters<typeof actual.realpath>) => {
       spies.realpath(...args);
-      return actual.realpath(...args);
+      spies.inFlight += 1;
+      spies.peakInFlight = Math.max(spies.peakInFlight, spies.inFlight);
+      return actual.realpath(...args).finally(() => {
+        spies.inFlight -= 1;
+      });
     },
   };
 });
@@ -193,40 +202,30 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
   it("lets the event loop run while partitioning", async () => {
     let ticks = 0;
     let probing = false;
-    let maxGapMs = 0;
-    let lastTickAt = 0;
-    let startedAt = 0;
-    let elapsedMs = 0;
     const tick = (): void => {
       if (!probing) return;
       ticks++;
-      const now = performance.now();
-      maxGapMs = Math.max(maxGapMs, now - lastTickAt);
-      lastTickAt = now;
       setImmediate(tick);
     };
     gitService.getWorktrees.mockImplementation(async () => {
       probing = true;
-      startedAt = performance.now();
-      lastTickAt = startedAt;
+      spies.peakInFlight = 0;
       setImmediate(tick);
       return registered;
     });
     onFoundLog = () => {
       probing = false;
-      elapsedMs = performance.now() - startedAt;
     };
 
     await run();
 
     expect(ticks).toBeGreaterThan(0);
-    // Bounding the concurrency is what keeps each gap short: resolving all
-    // WORKTREE_COUNT paths at once queues them behind libuv's four-thread pool
-    // and lands every callback in one poll phase, which measures worse than
-    // the synchronous loop this replaced. Measured as a share of the partition
-    // rather than in milliseconds, because a loaded machine stretches the gap
-    // and the partition together: bounded spends a few percent of the
-    // partition inside its longest gap, unbounded about half of it.
-    expect(maxGapMs).toBeLessThan(elapsedMs * 0.25);
+    // Yielding is only half of it: resolving all WORKTREE_COUNT paths at once
+    // queues them behind libuv's four-thread pool and lands every callback in
+    // one poll phase, which measures worse than the synchronous loop this
+    // replaced. Assert the bound the runner actually applies rather than an
+    // elapsed time, which moves with machine load and coverage instrumentation.
+    expect(spies.peakInFlight).toBeGreaterThan(0);
+    expect(spies.peakInFlight).toBeLessThanOrEqual(PATH_CONTAINMENT_CONCURRENCY);
   });
 });

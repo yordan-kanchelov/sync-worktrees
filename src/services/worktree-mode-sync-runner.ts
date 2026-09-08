@@ -30,7 +30,7 @@ import type { PhaseTimer } from "../utils/timing";
 
 // How many worktreeDir containment probes may be in flight at once. Pure stat
 // work, so this is about event-loop latency rather than about a process budget.
-const PATH_CONTAINMENT_CONCURRENCY = 8;
+export const PATH_CONTAINMENT_CONCURRENCY = 8;
 
 export class WorktreeModeSyncRunner {
   private pathResolution = new PathResolutionService();
