@@ -50,6 +50,12 @@ describe("WorktreeStatusService", () => {
       .filter((args: string[]) => args[0] === "rev-list" && args.includes("--remotes"))
       .map((args: string[]) => args[2]);
 
+  // Every `git.raw` subcommand the service spawned, in call order.
+  const gitSubcommands = (): string[] =>
+    (mockGit.raw as Mock).mock.calls
+      .map((call: any[]) => (Array.isArray(call[0]) ? (call[0] as string[]) : (call as string[])))
+      .map((args: string[]) => args[0]);
+
   describe("checkWorktreeStatus", () => {
     it("should return true for clean worktree", async () => {
       mockGit.status.mockResolvedValue({
@@ -105,70 +111,49 @@ describe("WorktreeStatusService", () => {
       expect(result).toBe(false);
     });
 
-    it("should return true when only gitignored untracked files exist", async () => {
+    // `git status --porcelain -u` never lists an ignored path: the `??` lines
+    // simple-git parses into `not_added` are by definition the paths no exclude
+    // rule matched, and `--ignored` (which nothing here passes) reports ignored
+    // paths on separate `!!` lines that land in `status.ignored`. The service
+    // used to re-check `not_added` with `git check-ignore -- <every path>`,
+    // a spawn that could never remove anything.
+    it("takes status.not_added as the untracked-not-ignored list, without a second git command", async () => {
       mockGit.status.mockResolvedValue({
         modified: [],
         deleted: [],
         renamed: [],
         created: [],
         conflicted: [],
-        not_added: [".DS_Store", "node_modules/file.js"],
+        not_added: ["new-file.ts", "docs/notes.md"],
       } as any);
-      mockGit.raw.mockResolvedValue(".DS_Store\nnode_modules/file.js\n");
-
-      const result = await service.checkWorktreeStatus("/test/worktree");
-
-      expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["check-ignore", "--", ".DS_Store", "node_modules/file.js"]);
-    });
-
-    it("should return false when untracked files are not gitignored", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: ["new-file.ts", ".DS_Store"],
-      } as any);
-      mockGit.raw.mockResolvedValue(".DS_Store\n");
 
       const result = await service.checkWorktreeStatus("/test/worktree");
 
       expect(result).toBe(false);
-      expect(mockGit.raw).toHaveBeenCalledWith(["check-ignore", "--", "new-file.ts", ".DS_Store"]);
+      expect(gitSubcommands()).toEqual([]);
     });
 
-    it("should handle git check-ignore returning all files not ignored", async () => {
+    // A worktree holding a large untracked output directory that nothing
+    // gitignores used to hand `check-ignore` an argv of every path in it; past
+    // the kernel's ARG_MAX the spawn failed with E2BIG, checkWorktreeStatus
+    // threw, and the update phase recorded `update_check_failed` for that
+    // worktree every tick instead of the correct "dirty worktree".
+    it("answers for a worktree with tens of thousands of untracked files", async () => {
+      const generated = Array.from(
+        { length: 20_000 },
+        (_, index) => `dist/webpack-cache/client-production/chunk-${index}.module.js`,
+      );
       mockGit.status.mockResolvedValue({
         modified: [],
         deleted: [],
         renamed: [],
         created: [],
         conflicted: [],
-        not_added: ["file1.ts", "file2.ts"],
+        not_added: generated,
       } as any);
-      mockGit.raw.mockRejectedValue(new Error("Command failed: exit code: 1"));
 
-      const result = await service.checkWorktreeStatus("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should handle git check-ignore errors gracefully", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: ["file.txt"],
-      } as any);
-      mockGit.raw.mockRejectedValue(new Error("check-ignore failed"));
-      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      await expect(service.checkWorktreeStatus("/test/worktree")).rejects.toThrow("check-ignore failed");
-      consoleSpy.mockRestore();
+      await expect(service.checkWorktreeStatus("/test/worktree")).resolves.toBe(false);
+      expect(gitSubcommands()).toEqual([]);
     });
   });
 
@@ -302,6 +287,9 @@ describe("WorktreeStatusService", () => {
       expect(result.reasons).toEqual(["stashed changes"]);
     });
 
+    // git has already dropped every ignored path before simple-git parses the
+    // status, so a worktree holding nothing but `.DS_Store` reports no `??`
+    // lines at all — and the snapshot spends no second command confirming it.
     it("should treat worktree as clean when only gitignored files exist", async () => {
       mockGit.status.mockResolvedValue({
         modified: [],
@@ -309,11 +297,10 @@ describe("WorktreeStatusService", () => {
         renamed: [],
         created: [],
         conflicted: [],
-        not_added: [".DS_Store"],
+        not_added: [],
       } as any);
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "check-ignore") return ".DS_Store\n";
         if (firstArg[0] === "submodule") return "";
         return "0\n";
       }) as any);
@@ -327,6 +314,38 @@ describe("WorktreeStatusService", () => {
       expect(result.isClean).toBe(true);
       expect(result.canRemove).toBe(true);
       expect(result.reasons).toEqual([]);
+      expect(gitSubcommands()).not.toContain("check-ignore");
+    });
+
+    // The other half: what status does report as untracked is a real change,
+    // listed verbatim, and still costs no extra git command.
+    it("should report status.not_added verbatim as the untracked changes", async () => {
+      mockGit.status.mockResolvedValue({
+        modified: [],
+        deleted: [],
+        renamed: [],
+        created: [],
+        conflicted: [],
+        not_added: ["src/scratch.ts", "notes.md"],
+      } as any);
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "submodule") return "";
+        return "0\n";
+      }) as any);
+      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
+
+      const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+      expect(result.isClean).toBe(false);
+      expect(result.canRemove).toBe(false);
+      expect(result.reasons).toEqual(["uncommitted changes"]);
+      expect(result.details?.untrackedFiles).toBe(2);
+      expect(result.details?.untrackedFilesList).toEqual(["src/scratch.ts", "notes.md"]);
+      expect(gitSubcommands()).not.toContain("check-ignore");
     });
 
     // `git worktree add` never initializes submodules, so `git submodule status`
@@ -724,17 +743,17 @@ describe("WorktreeStatusService", () => {
     });
 
     it("should not throw for worktree with only gitignored files", async () => {
+      // git filtered `.DS_Store` out of the status itself; nothing re-checks it.
       mockGit.status.mockResolvedValue({
         modified: [],
         deleted: [],
         renamed: [],
         created: [],
         conflicted: [],
-        not_added: [".DS_Store"],
+        not_added: [],
       } as any);
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "check-ignore") return ".DS_Store\n";
         if (firstArg[0] === "submodule") return "";
         return "0\n";
       }) as any);

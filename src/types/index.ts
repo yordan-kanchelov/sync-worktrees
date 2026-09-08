@@ -80,11 +80,11 @@ export interface ParallelismConfig {
   /**
    * Max concurrent git processes spent on read-only status probes (default: 20).
    *
-   * One status check of a worktree runs up to ten git commands (`status`,
+   * One status check of a worktree runs up to nine git commands (`status`,
    * `branch`, `branch -r`, `stash list` and `submodule status` at once, then up
-   * to four `rev-parse`/`rev-list` probes, then `check-ignore`). They share this
-   * one budget across all worktrees, so it is a ceiling on git processes, not on
-   * worktrees in flight.
+   * to four `rev-parse`/`rev-list` probes). They share this one budget across
+   * all worktrees, so it is a ceiling on git processes, not on worktrees in
+   * flight.
    *
    * Git's own children are extra: `git submodule status` runs a helper script
    * and a child per submodule, measured on git 2.43 at ~1.5 git processes and

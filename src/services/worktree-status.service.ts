@@ -187,13 +187,12 @@ export class WorktreeStatusService {
       return false;
     }
 
-    if (status.not_added.length > 0) {
-      const untrackedFiles = status.not_added;
-      const notIgnoredFiles = await this.filterUntrackedFiles(worktreePath, untrackedFiles);
-      return notIgnoredFiles.length === 0;
-    }
-
-    return true;
+    // `status.not_added` is already the untracked-and-not-ignored list: git
+    // only writes a path to a `??` line when no exclude rule matched it, and
+    // even `--ignored` (which nothing here passes) reports ignored paths on
+    // separate `!!` lines that simple-git parses into `status.ignored`. See
+    // untracked-ignored-status.e2e.test.ts.
+    return status.not_added.length === 0;
   }
 
   async getFullWorktreeStatus(
@@ -397,14 +396,8 @@ export class WorktreeStatusService {
 
     const operationProbe = gitDirResult ? await this.detectOperationFile(gitDirResult) : { file: null, unknown: false };
 
-    let untrackedNotIgnored: string[] = [];
-    if (status && status.not_added.length > 0) {
-      try {
-        untrackedNotIgnored = await this.filterUntrackedFiles(worktreePath, status.not_added);
-      } catch {
-        untrackedNotIgnored = status.not_added;
-      }
-    }
+    // Untracked-and-not-ignored straight from status — see checkWorktreeStatus.
+    const untrackedNotIgnored = status?.not_added ?? [];
 
     return {
       exists: true,
@@ -616,32 +609,6 @@ export class WorktreeStatusService {
 
     if (!status.canRemove) {
       throw new WorktreeNotCleanError(worktreePath, status.reasons);
-    }
-  }
-
-  private async filterUntrackedFiles(worktreePath: string, files: string[]): Promise<string[]> {
-    if (files.length === 0) return [];
-
-    const worktreeGit = this.createGitInstance(worktreePath);
-
-    try {
-      const result = await this.runGit(() => worktreeGit.raw(["check-ignore", "--", ...files]));
-
-      const ignoredFiles = new Set(
-        result
-          .trim()
-          .split("\n")
-          .filter((f) => f),
-      );
-      return files.filter((f) => !ignoredFiles.has(f));
-    } catch (error) {
-      const errorMessage = getErrorMessage(error);
-
-      if (errorMessage.includes(GIT_CONSTANTS.GIT_NO_MATCH_EXIT)) {
-        return files;
-      }
-
-      throw error;
     }
   }
 

@@ -23,9 +23,9 @@ export const GIT_CONSTANTS = {
   // this text; like `spawn git ENOENT` from an already-built client, it means
   // the working directory is gone.
   MISSING_BASE_DIR_ERROR: "Cannot use simple-git on a directory that does not exist",
-  // simple-git's message fragment for a git command that exited 1. Both
-  // `check-ignore` and `grep` use that exit code for "nothing matched",
-  // which is an answer rather than a failure.
+  // simple-git's message fragment for a git command that exited 1. `git grep`
+  // uses that exit code for "nothing matched", which is an answer rather than
+  // a failure.
   GIT_NO_MATCH_EXIT: "exit code: 1",
   REFS: {
     HEADS: "refs/heads/",

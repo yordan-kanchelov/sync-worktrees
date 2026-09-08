@@ -76,10 +76,10 @@ const config = {
   // Performance tuning tips:
   // - maxWorktreeCreation: Keep at 1 to avoid Git lock contention issues
   // - maxStatusChecks: Safe to increase (20-50) since they're read-only. One
-  //   status check of a worktree runs up to ten git commands (status, branch,
+  //   status check of a worktree runs up to nine git commands (status, branch,
   //   branch -r, stash list and submodule status at once, then rev-parse and
-  //   rev-list probes, then check-ignore); they all share this one budget, so
-  //   it caps git processes, not worktrees. Git's own children are extra:
+  //   rev-list probes); they all share this one budget, so it caps git
+  //   processes, not worktrees. Git's own children are extra:
   //   `git submodule status` runs a helper script and a child per submodule,
   //   about 3 processes per call on an 8-submodule superproject.
   // - maxWorktreeUpdates: Can safely increase to 5-10 on fast systems

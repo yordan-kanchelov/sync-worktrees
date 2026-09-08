@@ -150,7 +150,7 @@ describe("Update phase spawn budget (E2E)", () => {
 
     // And none of what used to run per worktree runs at all.
     const perWorktreeCommands = large.filter((command) =>
-      /^(status|rev-list|merge-base|rev-parse|branch|check-ignore|stash|submodule)\b/.test(command),
+      /^(status|rev-list|merge-base|rev-parse|branch|stash|submodule)\b/.test(command),
     );
     expect(perWorktreeCommands).toEqual([]);
   });

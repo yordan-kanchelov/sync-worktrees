@@ -133,7 +133,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   console
 - [x] **T56** — Per-worktree simple-git client caches are never evicted (GitService ×2 variants +
   WorktreeStatusService): ~20 KB retained per branch lifetime in daemon mode
-- [ ] **T57** — `git check-ignore` after `git status --porcelain -u` is a redundant spawn per dirty
+- [x] **T57** — `git check-ignore` after `git status --porcelain -u` is a redundant spawn per dirty
   worktree (status never lists ignored paths) and passes every untracked path as argv
 - [ ] **T58** — isPathInsideBaseDir uses synchronous existsSync/realpathSync per registered worktree
   and re-resolves worktreeDir every call (≈41 ms of blocked event loop per sync at 400 worktrees)
@@ -2576,7 +2576,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: Caching was added for spawn-option reuse; no lifecycle hook clears it
   and nothing measures daemon heap.
 
-### [ ] T57. `git check-ignore` after `git status --porcelain -u` is a redundant spawn per dirty worktree (status never lists ignored paths) and passes every untracked path as argv
+### [x] T57. `git check-ignore` after `git status --porcelain -u` is a redundant spawn per dirty worktree (status never lists ignored paths) and passes every untracked path as argv
 
 - **Category**: performance · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
