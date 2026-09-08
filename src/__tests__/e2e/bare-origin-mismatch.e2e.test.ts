@@ -34,9 +34,9 @@ describe("CLI refuses an existing bare repo whose origin is not the configured r
   repositories: [
     {
       name: "app",
-      repoUrl: "${repoUrl}",
-      worktreeDir: "${worktreeDir}",
-      bareRepoDir: "${bareRepoDir}",
+      repoUrl: ${JSON.stringify(repoUrl)},
+      worktreeDir: ${JSON.stringify(worktreeDir)},
+      bareRepoDir: ${JSON.stringify(bareRepoDir)},
     }
   ]
 };

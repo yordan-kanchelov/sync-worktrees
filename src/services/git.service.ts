@@ -607,7 +607,8 @@ export class GitService {
     const expected = redactRepoUrl(this.config.repoUrl);
     throw new ConfigError(
       `Existing bare repository at '${bareRepoPath}' has origin '${actual}', expected '${expected}'. ` +
-        `Update the remote (git -C "${bareRepoPath}" remote set-url origin "${expected}") or point bareRepoDir at a fresh directory.`,
+        `Update the remote (git -C "${bareRepoPath}" remote set-url origin <the repoUrl configured for this ` +
+        `repository>) or point bareRepoDir at a fresh directory.`,
       "ORIGIN_MISMATCH",
     );
   }

@@ -713,7 +713,8 @@ describe("GitService", () => {
           code: "CONFIG_ORIGIN_MISMATCH",
           message:
             `Existing bare repository at '${bareRepoPath}' has origin 'https://github.com/old-org/repo.git', expected 'https://gitlab.com/new-org/repo.git'. ` +
-            `Update the remote (git -C "${bareRepoPath}" remote set-url origin "https://gitlab.com/new-org/repo.git") or point bareRepoDir at a fresh directory.`,
+            `Update the remote (git -C "${bareRepoPath}" remote set-url origin <the repoUrl configured for this ` +
+            `repository>) or point bareRepoDir at a fresh directory.`,
         });
 
         expect(mockGit.raw).toHaveBeenCalledWith(["remote", "get-url", "origin"]);
@@ -730,14 +731,17 @@ describe("GitService", () => {
         );
         mockGit.raw.mockResolvedValueOnce("https://old-bot:old-token@github.com/old-org/repo.git\n" as any);
 
-        await expect(gitService.initialize()).rejects.toMatchObject({
-          constructor: ConfigError,
-          code: "CONFIG_ORIGIN_MISMATCH",
-          message: expect.stringContaining(
-            "has origin 'https://***@github.com/old-org/repo.git', expected 'https://***@github.com/new-org/repo.git'. " +
-              `Update the remote (git -C "${bareRepoPath}" remote set-url origin "https://***@github.com/new-org/repo.git")`,
-          ),
-        });
+        const error = await gitService.initialize().catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as ConfigError).code).toBe("CONFIG_ORIGIN_MISMATCH");
+        expect((error as ConfigError).message).toContain(
+          "has origin 'https://***@github.com/old-org/repo.git', expected 'https://***@github.com/new-org/repo.git'. ",
+        );
+        // The remedy must not hand back a redacted URL to paste: '***' stands
+        // in for the credentials, so running that command would set origin to
+        // a URL that cannot fetch.
+        expect((error as ConfigError).message).not.toContain('set-url origin "https://***@');
 
         expect(mockGit.fetch).not.toHaveBeenCalled();
       });

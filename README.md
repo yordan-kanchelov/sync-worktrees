@@ -409,7 +409,7 @@ Notes:
 
 ### Authentication
 
-sync-worktrees runs every git command non-interactively — as a daemon, a cron tick, the MCP server or the TUI, nobody can answer a prompt — so it sets `GIT_TERMINAL_PROMPT=0`. Credentials must come from a source that needs no prompt:
+sync-worktrees runs every git command non-interactively — as a daemon, a cron tick, the MCP server or the TUI, nobody can answer a prompt — so it sets `GIT_TERMINAL_PROMPT=0` — unless you have exported that variable yourself, which is left alone so `--runOnce` in a terminal can still prompt. Credentials must come from a source that needs no prompt:
 
 - **HTTPS** — a git credential helper (`git config --global credential.helper <helper>`, or your platform's keychain / credential manager) that already holds credentials for the remote. An askpass program (`GIT_ASKPASS`, `core.askPass`) keeps working. A remote that would prompt fails within a second with git's message plus a hint naming the fix, and that failure is not retried.
 - **SSH** — a key loaded into `ssh-agent` (or one without a passphrase) and the host already present in `~/.ssh/known_hosts`. A key the remote rejects or a host key that does not match fails at once with a hint and is not retried. Known limitation: `GIT_TERMINAL_PROMPT=0` covers git's own prompts only; ssh reads a key passphrase or an unknown-host confirmation from the terminal itself, so a passphrase-protected key without an agent or a host missing from `known_hosts` still blocks until the fetch inactivity timeout (unchanged from earlier releases). sync-worktrees does not set `GIT_SSH_COMMAND`, because git gives it precedence over the `core.sshCommand` config key; a `core.sshCommand`-aware `BatchMode` wrapper is a follow-up.

@@ -26,7 +26,9 @@ const SSH_KEY_HINT =
 
 const SSH_HOST_KEY_HINT =
   "sync-worktrees runs git non-interactively and cannot confirm a host key: " +
-  "add the host to ~/.ssh/known_hosts first (e.g. `ssh-keyscan <host> >> ~/.ssh/known_hosts`, or run `ssh <host>` once).";
+  "add the host to ~/.ssh/known_hosts first. Compare the key against the fingerprint your git host publishes " +
+  "before trusting it: `ssh-keyscan <host> | ssh-keygen -lf -` to read the fingerprint, then append that same " +
+  "`ssh-keyscan <host>` output to ~/.ssh/known_hosts once it matches.";
 
 const HINT_PREFIX = "Hint: ";
 
