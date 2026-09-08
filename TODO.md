@@ -126,7 +126,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   answers 'nothing changed'
 - [x] **T53** — MAX_SAFE_TOTAL_CONCURRENT_OPS validation counts each status check as one process,
   but every getFullWorktreeStatus spawns 6 git processes in parallel (240 at default settings)
-- [ ] **T54** — `update_check_failed` skip and its log line carry no branch or path, so the user
+- [x] **T54** — `update_check_failed` skip and its log line carry no branch or path, so the user
   cannot tell which of N worktrees failed the probe
 - [ ] **T55** — GitService.updateLogger does not reach WorktreeStatusService/WorktreeMetadataService
   or cached progress handlers, so in the TUI their log lines bypass the log panel and go to the raw
@@ -2489,7 +2489,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `maxStatusChecks` as one operation per slot, while `getFullWorktreeStatus` fans out six git
   processes per slot (worktree-status.service.ts:228-247) and then up to four more (257-282).
 
-### [ ] T54. `update_check_failed` skip and its log line carry no branch or path, so the user cannot tell which of N worktrees failed the probe
+### [x] T54. `update_check_failed` skip and its log line carry no branch or path, so the user cannot tell which of N worktrees failed the probe
 
 - **Category**: workflow · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

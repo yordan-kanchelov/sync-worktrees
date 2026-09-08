@@ -213,19 +213,30 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/develop", "develop");
 
       // A probe-only failure must NOT become a hard `recordFailed` (which would
-      // poison the exit code). It is recorded as `update_check_failed` skip.
-      if (result.started) {
-        expect(result.outcome?.counts.failed ?? 0).toBe(0);
-        expect(result.outcome?.counts.skipped ?? 0).toBeGreaterThanOrEqual(1);
-        const actions = result.outcome?.actions ?? [];
-        expect(actions).toContainEqual(
-          expect.objectContaining({
-            kind: "skipped",
-            scope: "worktree",
-            reason: "update_check_failed",
-          }),
-        );
-      }
+      // poison the exit code). It is recorded as `update_check_failed` skip,
+      // and it names the worktree it failed on: the git error carries the
+      // command and its stderr but not the directory it ran in, so without the
+      // branch and path a daemon with hundreds of worktrees reports a failure
+      // nobody can locate.
+      expect(result.started).toBe(true);
+      if (!result.started) throw new Error("sync did not start");
+      expect(result.outcome?.counts.failed ?? 0).toBe(0);
+      expect(result.outcome?.counts.skipped ?? 0).toBeGreaterThanOrEqual(1);
+      const actions = result.outcome?.actions ?? [];
+      expect(actions).toContainEqual(
+        expect.objectContaining({
+          kind: "skipped",
+          scope: "worktree",
+          reason: "update_check_failed",
+          branch: "feature",
+          path: "/test/worktrees/feature",
+        }),
+      );
+
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "  - Error checking worktree 'feature' (/test/worktrees/feature):",
+        expect.any(Error),
+      );
     });
 
     // The ahead/behind probe names origin/<branch> explicitly, so it gets the
@@ -268,7 +279,10 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
       expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/test/worktrees/feature", "feature");
-      expect(mockLogger.error).toHaveBeenCalledWith("  - Error checking worktree 'feature':", expect.any(Error));
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "  - Error checking worktree 'feature' (/test/worktrees/feature):",
+        expect.any(Error),
+      );
 
       expect(result.started).toBe(true);
       if (!result.started) throw new Error("sync did not start");
@@ -310,7 +324,10 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/test/worktrees/feature", "feature");
         // The other two worktrees are still updated.
         expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
-        expect(mockLogger.error).toHaveBeenCalledWith("  - Error checking worktree 'feature':", expect.any(Error));
+        expect(mockLogger.error).toHaveBeenCalledWith(
+          "  - Error checking worktree 'feature' (/test/worktrees/feature):",
+          expect.any(Error),
+        );
 
         expect(result.started).toBe(true);
         if (!result.started) throw new Error("sync did not start");

@@ -866,7 +866,7 @@ describe("WorktreeSyncService", () => {
       ]);
       mockGitService.getFullWorktreeStatus.mockRejectedValue(new Error("Status check failed"));
 
-      await service.sync();
+      const result = await service.sync();
 
       expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/worktrees/broken-branch", undefined);
       expect(mockLogger.error).toHaveBeenCalledWith(
@@ -875,6 +875,24 @@ describe("WorktreeSyncService", () => {
       );
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping removal"));
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+
+      // The status error names the git command, not the worktree it ran in, so
+      // the log line and the skip have to carry the branch and path themselves.
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "  - Error checking worktree 'broken-branch' (/test/worktrees/broken-branch):",
+        expect.any(Error),
+      );
+
+      expect(result.started).toBe(true);
+      if (!result.started) throw new Error("sync did not start");
+      expect(result.outcome.actions).toContainEqual({
+        kind: "skipped",
+        scope: "worktree",
+        reason: "prune_status_check_failed",
+        branch: "broken-branch",
+        path: "/test/worktrees/broken-branch",
+        message: "Status check failed",
+      });
     });
 
     it("should create multiple new worktrees", async () => {

@@ -672,13 +672,8 @@ export class WorktreeModeSyncRunner {
       const limit = pLimit(maxConcurrent);
 
       const statusResults = await Promise.allSettled(
-        checks.map(({ branch: branchName, path: worktreePath }) =>
-          limit(async () => {
-            const status = await this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug);
-            return { branchName, worktreePath, status };
-          }).catch((error) => {
-            throw Object.assign(error instanceof Error ? error : new Error(String(error)), { branchName });
-          }),
+        checks.map(({ path: worktreePath }) =>
+          limit(async () => this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug)),
         ),
       );
 
@@ -689,9 +684,14 @@ export class WorktreeModeSyncRunner {
         status: Awaited<ReturnType<GitService["getFullWorktreeStatus"]>>;
       }> = [];
 
-      for (const result of statusResults) {
+      // allSettled keeps the input order, so checks[index] is this worktree.
+      // A rejection carries the git command and its stderr but no cwd, so the
+      // branch and path have to come from here or the log line and the skip
+      // name none of the worktrees the daemon was checking.
+      statusResults.forEach((result, index) => {
+        const { branch: branchName, path: worktreePath } = checks[index];
         if (result.status === "fulfilled") {
-          const { branchName, worktreePath, status } = result.value;
+          const status = result.value;
           if (status.canRemove) {
             if (this.blockedByDisabledTrash(status)) {
               this.logger.warn(
@@ -709,15 +709,15 @@ export class WorktreeModeSyncRunner {
             toSkip.push({ branchName, worktreePath, status });
           }
         } else {
-          const branchName = (result.reason as Error & { branchName?: string })?.branchName ?? "unknown";
-          this.logger.error(`  - Error checking worktree '${branchName}':`, result.reason);
+          this.logger.error(`  - Error checking worktree '${branchName}' (${worktreePath}):`, result.reason);
           this.logger.warn(`  - ⚠️ Skipping removal of '${branchName}' due to status check failure (conservative)`);
           outcome.recordSkipped("worktree", "prune_status_check_failed", {
             branch: branchName,
+            path: worktreePath,
             message: getErrorMessage(result.reason),
           });
         }
-      }
+      });
 
       if (toRemove.length > 0) {
         const removeLimit = pLimit(
@@ -1112,8 +1112,12 @@ export class WorktreeModeSyncRunner {
         // as "diverged" — and the update is gated on success here, so a probe
         // error means we never touched the worktree: a skip, not a hard failure.
         // allSettled keeps the input order, so actions[index] is this worktree.
+        // The git error names the command and its stderr but not the directory
+        // it ran in, so the branch and path have to be logged and recorded from
+        // here — otherwise a daemon watching hundreds of worktrees reports a
+        // failed probe with nothing that says which one.
         const { branch, path: worktreePath } = actions[index];
-        this.logger.error(`  - Error checking worktree '${branch}':`, result.reason);
+        this.logger.error(`  - Error checking worktree '${branch}' (${worktreePath}):`, result.reason);
         outcome.recordSkipped("worktree", "update_check_failed", {
           branch,
           path: worktreePath,
