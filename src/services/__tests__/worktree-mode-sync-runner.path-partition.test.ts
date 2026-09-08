@@ -195,6 +195,8 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
     let probing = false;
     let maxGapMs = 0;
     let lastTickAt = 0;
+    let startedAt = 0;
+    let elapsedMs = 0;
     const tick = (): void => {
       if (!probing) return;
       ticks++;
@@ -205,12 +207,14 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
     };
     gitService.getWorktrees.mockImplementation(async () => {
       probing = true;
-      lastTickAt = performance.now();
+      startedAt = performance.now();
+      lastTickAt = startedAt;
       setImmediate(tick);
       return registered;
     });
     onFoundLog = () => {
       probing = false;
+      elapsedMs = performance.now() - startedAt;
     };
 
     await run();
@@ -219,9 +223,10 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
     // Bounding the concurrency is what keeps each gap short: resolving all
     // WORKTREE_COUNT paths at once queues them behind libuv's four-thread pool
     // and lands every callback in one poll phase, which measures worse than
-    // the synchronous loop this replaced. Bounded runs well under a
-    // millisecond here and unbounded well over five, so the threshold has room
-    // on both sides.
-    expect(maxGapMs).toBeLessThan(5);
+    // the synchronous loop this replaced. Measured as a share of the partition
+    // rather than in milliseconds, because a loaded machine stretches the gap
+    // and the partition together: bounded spends a few percent of the
+    // partition inside its longest gap, unbounded about half of it.
+    expect(maxGapMs).toBeLessThan(elapsedMs * 0.25);
   });
 });
