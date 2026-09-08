@@ -10,6 +10,7 @@ import { ConfigError, WorktreeNotCleanError } from "../../errors";
 import { GitMaintenanceService } from "../git-maintenance.service";
 import { PathResolutionService } from "../path-resolution.service";
 import { RepoOperationLock } from "../repo-operation-lock";
+import { SparseCheckoutService } from "../sparse-checkout.service";
 import { TrashMigrationService } from "../trash-migration.service";
 import { TrashReaperService } from "../trash-reaper.service";
 import { TrashService } from "../trash.service";
@@ -2645,6 +2646,32 @@ describe("WorktreeSyncService", () => {
       await svc.sync();
 
       expect(applyToWorktree).not.toHaveBeenCalled();
+    });
+
+    // git echoes a cone include written as `apps/` back as `apps`, so the mocked
+    // pattern helpers above would hide a mismatch here: wire in the real ones.
+    it("does not re-apply when only a trailing slash separates config from the worktree", async () => {
+      const real = new SparseCheckoutService(createMockLogger());
+      mockGitService.getSparseCheckoutService.mockReturnValue({
+        applyToWorktree,
+        readCurrent,
+        isNarrowing: real.isNarrowing.bind(real),
+        buildPatterns: real.buildPatterns.bind(real),
+        needsUpdate: vi.fn().mockResolvedValue(true),
+        resolveMode: real.resolveMode.bind(real),
+        patternsEqual: real.patternsEqual.bind(real),
+      } as any);
+      readCurrent.mockResolvedValue(["apps"]);
+
+      const svc = new WorktreeSyncService({
+        ...mockConfig,
+        runOnce: true,
+        sparseCheckout: { include: ["apps/"] },
+      });
+      await svc.sync();
+
+      expect(applyToWorktree).not.toHaveBeenCalled();
+      expect(mockGitService.checkoutHead).not.toHaveBeenCalled();
     });
 
     it("applies and checks out when widening (current is subset of desired)", async () => {

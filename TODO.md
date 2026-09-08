@@ -119,7 +119,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   are unused
 - [x] **T81** — An interrupted bare clone (SIGKILL/power loss) leaves a HEAD-less bareRepoDir that
   makes every later initialize fail with git's 'destination path already exists' and no recovery path
-- [ ] **T64** — Sparse reconcile (Step 5) is not idempotent for includes with a trailing slash:
+- [x] **T64** — Sparse reconcile (Step 5) is not idempotent for includes with a trailing slash:
   re-applies patterns and runs `git checkout HEAD` on every worktree every sync
 - [ ] **T2** — Update phase spawns ~6 git processes per worktree every tick (4 + 6W per sync)
   including a full `git status` scan before the cheap tip comparison; one `for-each-ref` already
@@ -2785,7 +2785,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: worktree-update.test.ts mocks both probes independently so the
   inconsistency is invisible; no e2e sets a non-default upstream.
 
-### [ ] T64. Sparse reconcile (Step 5) is not idempotent for includes with a trailing slash: re-applies patterns and runs `git checkout HEAD` on every worktree every sync
+### [x] T64. Sparse reconcile (Step 5) is not idempotent for includes with a trailing slash: re-applies patterns and runs `git checkout HEAD` on every worktree every sync
 
 - **Category**: correctness · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

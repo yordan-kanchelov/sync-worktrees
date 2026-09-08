@@ -102,6 +102,51 @@ describe("SparseCheckoutService", () => {
     it("trims whitespace and drops empty entries", () => {
       expect(service.buildPatterns({ include: ["  apps  ", "", "packages"] })).toEqual(["apps", "packages"]);
     });
+
+    it("strips trailing slashes from cone includes", () => {
+      expect(service.buildPatterns({ include: ["apps/", "tools/build//"] })).toEqual(["apps", "tools/build"]);
+    });
+
+    it("compares equal to the cone list output for a trailing-slash include", () => {
+      expect(service.patternsEqual(service.buildPatterns({ include: ["apps/"] }), ["apps"])).toBe(true);
+    });
+
+    it("sorts and de-duplicates cone includes the way git echoes them back", () => {
+      expect(service.buildPatterns({ include: ["tools/build", "apps/", "apps"] })).toEqual(["apps", "tools/build"]);
+    });
+
+    it("drops cone includes already covered by an included parent", () => {
+      expect(service.buildPatterns({ include: ["apps", "apps/web", "apps-x"] })).toEqual(["apps", "apps-x"]);
+    });
+
+    it("leaves a slash-only cone include alone so git still rejects it", () => {
+      expect(service.buildPatterns({ include: ["/"] })).toEqual(["/"]);
+    });
+
+    it("resolves a '..' segment instead of treating it as a child of the directory it escapes", () => {
+      expect(service.buildPatterns({ include: ["apps", "apps/../docs"] })).toEqual(["apps", "docs"]);
+    });
+
+    it("collapses repeated slashes and '.' segments like git does", () => {
+      expect(service.buildPatterns({ include: ["tools//build", "./apps"] })).toEqual(["apps", "tools/build"]);
+    });
+
+    it("de-duplicates cone includes that only differ before normalization", () => {
+      expect(service.buildPatterns({ include: ["apps", "./apps", "apps/"] })).toEqual(["apps"]);
+    });
+
+    it("sorts cone includes by UTF-8 bytes, as git does, not by UTF-16 code units", () => {
+      // U+E000 is a lower byte sequence than U+1D400 but a higher code unit.
+      expect(service.buildPatterns({ include: ["x\u{1D400}", "x\u{E000}"] })).toEqual(["x\u{E000}", "x\u{1D400}"]);
+    });
+
+    it("keeps trailing slashes, order and duplicates for no-cone patterns", () => {
+      expect(service.buildPatterns({ include: ["tools/", "apps/", "apps/"], mode: "no-cone" })).toEqual([
+        "tools/",
+        "apps/",
+        "apps/",
+      ]);
+    });
   });
 
   describe("applyToWorktree", () => {
@@ -119,6 +164,18 @@ describe("SparseCheckoutService", () => {
       expect(mockGit.raw).toHaveBeenNthCalledWith(2, ["sparse-checkout", "set", "--no-cone", "/*", "!docs"]);
     });
 
+    it("hands git the canonical cone directories, not the raw includes", async () => {
+      mockGit.raw.mockResolvedValue("");
+      await service.applyToWorktree("/wt", { include: ["tools/build/", "apps/"] });
+      expect(mockGit.raw).toHaveBeenNthCalledWith(2, ["sparse-checkout", "set", "--cone", "apps", "tools/build"]);
+    });
+
+    it("keeps no-cone patterns verbatim, trailing slash included", async () => {
+      mockGit.raw.mockResolvedValue("");
+      await service.applyToWorktree("/wt", { include: ["apps/"], exclude: ["docs/"] });
+      expect(mockGit.raw).toHaveBeenNthCalledWith(2, ["sparse-checkout", "set", "--no-cone", "apps/", "!docs/"]);
+    });
+
     it("throws if patterns are empty", async () => {
       await expect(service.applyToWorktree("/wt", { include: ["", "  "] })).rejects.toThrow(/no patterns/);
     });
@@ -129,6 +186,12 @@ describe("SparseCheckoutService", () => {
       mockGit.raw.mockResolvedValue("apps\npackages\n");
       const out = await service.readCurrent("/wt");
       expect(out).toEqual(["apps", "packages"]);
+    });
+
+    it("turns off path quoting so non-ASCII directories come back unescaped", async () => {
+      mockGit.raw.mockResolvedValue("apps\n");
+      await service.readCurrent("/wt");
+      expect(mockGit.raw).toHaveBeenCalledWith(["-c", "core.quotePath=false", "sparse-checkout", "list"]);
     });
 
     it("returns null on empty output", async () => {
@@ -179,7 +242,7 @@ describe("SparseCheckoutService", () => {
           if (responses.configMode instanceof Error) throw responses.configMode;
           return responses.configMode;
         }
-        if (key.startsWith("sparse-checkout list")) {
+        if (key.endsWith("sparse-checkout list")) {
           return responses.sparseList ?? "";
         }
         return "";
@@ -206,6 +269,16 @@ describe("SparseCheckoutService", () => {
       expect(await service.needsUpdate("/wt", cfg)).toBe(true);
     });
 
+    it("returns false when a trailing-slash include matches the cone list output", async () => {
+      mockGitResponses({ configMode: "true\n", sparseList: "apps\n" });
+      expect(await service.needsUpdate("/wt", { include: ["apps/"] })).toBe(false);
+    });
+
+    it("returns false for a non-ASCII include that git no longer C-quotes", async () => {
+      mockGitResponses({ configMode: "true\n", sparseList: "apps\ncaf\u00e9\n" });
+      expect(await service.needsUpdate("/wt", { include: ["café", "apps"] })).toBe(false);
+    });
+
     it("returns true when auto-promoted no-cone differs from existing cone", async () => {
       const promoted: SparseCheckoutConfig = { include: ["/*"], exclude: ["docs"], mode: "cone" };
       mockGitResponses({ configMode: "true\n", sparseList: "/*\n!docs\n" });
@@ -217,6 +290,10 @@ describe("SparseCheckoutService", () => {
     it("returns false when current is null or empty", () => {
       expect(service.isNarrowing(null, ["apps"])).toBe(false);
       expect(service.isNarrowing([], ["apps"])).toBe(false);
+    });
+
+    it("returns false for a trailing-slash include of an unchanged directory", () => {
+      expect(service.isNarrowing(["apps"], service.buildPatterns({ include: ["apps/"] }))).toBe(false);
     });
 
     it("returns true when next omits a current pattern", () => {
@@ -305,6 +382,23 @@ describe("SparseCheckoutService", () => {
 
     it("does not match a sibling directory whose name shares a prefix", () => {
       expect(service.pathsTouchSparse(["sources/foo.ts"], { include: ["src"] })).toBe(false);
+    });
+
+    it("matches inside the directory a '..' segment actually resolves to", () => {
+      // git materializes `docs/` for this config, so an update touching it
+      // must not be skipped as "outside the sparse paths".
+      expect(service.pathsTouchSparse(["docs/x.md"], { include: ["apps", "apps/../docs"] })).toBe(true);
+    });
+
+    // Same class as the '..' case above: git normalizes these away, so the
+    // files really are in the worktree and an update touching them must run.
+    it.each([
+      ["apps//", "apps/x.md"],
+      ["./apps", "apps/x.md"],
+      ["tools//build", "tools/build/x.md"],
+      ["apps/./web", "apps/web/x.md"],
+    ])("matches inside %j, which git normalizes", (include, filePath) => {
+      expect(service.pathsTouchSparse([filePath], { include: [include] })).toBe(true);
     });
 
     it("matches when include itself is the exact path", () => {
