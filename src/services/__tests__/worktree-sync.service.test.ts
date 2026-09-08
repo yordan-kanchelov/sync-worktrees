@@ -4,7 +4,14 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TEST_BRANCHES, createMockLogger, setEnvVar } from "../../__tests__/test-utils";
+import {
+  PRIMARY_CHECKOUT_GIT_DIRS,
+  PRIMARY_CHECKOUT_GIT_DIR_PROBE,
+  TEST_BRANCHES,
+  buildFsStats,
+  createMockLogger,
+  setEnvVar,
+} from "../../__tests__/test-utils";
 import { ENV_CONSTANTS } from "../../constants";
 import { ConfigError, WorktreeNotCleanError } from "../../errors";
 import { GitMaintenanceService } from "../git-maintenance.service";
@@ -120,6 +127,7 @@ describe("WorktreeSyncService", () => {
     // Suites that don't care about directory contents still reach it through the
     // trash listing, and an undefined default made that read as a hard failure.
     (fs.readdir as Mock<any>).mockResolvedValue([]);
+    (fs.lstat as Mock<any>).mockResolvedValue(buildFsStats("directory"));
 
     handleWrites = [];
     (fs.open as Mock<any>).mockImplementation(async (filePath: unknown) => ({
@@ -153,6 +161,7 @@ describe("WorktreeSyncService", () => {
       raw: vi.fn(async (args: string[]) => {
         const key = args.join(" ");
         if (key === "remote get-url origin") return "https://github.com/test/repo.git";
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
       }),

@@ -142,7 +142,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 ### Batch 3 — clone mode
 
-- [ ] **T12** — Adopting a directory whose `.git` is a gitdir pointer (linked worktree / submodule)
+- [x] **T12** — Adopting a directory whose `.git` is a gitdir pointer (linked worktree / submodule)
   rewrites the PARENT repository's fetch refspec and deletes its remote-tracking refs
 - [ ] **T13** — A clone that fails after fetch ("Clone succeeded, but checkout failed", e.g. LFS
   smudge error) is left in place and silently adopted as a valid clone on the next run; sync then
@@ -889,7 +889,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `verbatimSymlinks: true` is passed, so the copied link becomes absolute and points into the
   directory that is deleted next.
 
-### [ ] T12. Adopting a directory whose `.git` is a gitdir pointer (linked worktree / submodule) rewrites the PARENT repository's fetch refspec and deletes its remote-tracking refs
+### [x] T12. Adopting a directory whose `.git` is a gitdir pointer (linked worktree / submodule) rewrites the PARENT repository's fetch refspec and deletes its remote-tracking refs
 
 - **Category**: guardrail · **Subsystem**: clone-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

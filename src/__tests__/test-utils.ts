@@ -4,6 +4,7 @@ import * as path from "path";
 
 import { vi } from "vitest";
 
+import type { Stats } from "fs";
 import type { Logger } from "../services/logger.service";
 import type { Config } from "../types";
 import type { SimpleGit } from "simple-git";
@@ -188,4 +189,20 @@ export function setEnvVar(name: string, value: string | undefined): void {
   } else {
     process.env[name] = value;
   }
+}
+
+// Clone mode only writes to a checkout it has proved is a primary, non-linked
+// one: `.git` must be that checkout's own directory, and git must report it as
+// both the git dir and the common git dir (a linked worktree or submodule
+// reports the owning repository's instead). A fake that stands in for an
+// ordinary clone has to answer that probe, or every write path refuses it.
+export const PRIMARY_CHECKOUT_GIT_DIR_PROBE = "rev-parse --git-dir --git-common-dir";
+export const PRIMARY_CHECKOUT_GIT_DIRS = ".git\n.git\n";
+
+export function buildFsStats(kind: "directory" | "file" | "symlink"): Stats {
+  return {
+    isDirectory: () => kind === "directory",
+    isFile: () => kind === "file",
+    isSymbolicLink: () => kind === "symlink",
+  } as unknown as Stats;
 }

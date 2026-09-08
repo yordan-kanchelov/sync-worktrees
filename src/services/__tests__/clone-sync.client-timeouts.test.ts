@@ -3,7 +3,12 @@ import * as fs from "fs/promises";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { setEnvVar } from "../../__tests__/test-utils";
+import {
+  PRIMARY_CHECKOUT_GIT_DIRS,
+  PRIMARY_CHECKOUT_GIT_DIR_PROBE,
+  buildFsStats,
+  setEnvVar,
+} from "../../__tests__/test-utils";
 import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { CloneSyncService } from "../clone-sync.service";
 import { Logger } from "../logger.service";
@@ -58,6 +63,7 @@ describe("CloneSyncService git client timeouts", () => {
   const rawOutput = (args: string[]): string => {
     const key = args.join(" ");
     if (key.startsWith("remote get-url origin")) return REPO_URL;
+    if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
     if (key.startsWith("rev-parse --abbrev-ref HEAD")) return "main";
     if (key.startsWith("ls-remote")) return "aaaa\trefs/heads/main\n";
     return "";
@@ -78,6 +84,7 @@ describe("CloneSyncService git client timeouts", () => {
     vi.clearAllMocks();
     built = [];
     logger = Logger.createDefault();
+    (fs.lstat as unknown as Mock).mockResolvedValue(buildFsStats("directory"));
     // The suite-wide shortcut zeroes both timeouts; these tests need the real
     // ones to tell the two client kinds apart.
     delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
