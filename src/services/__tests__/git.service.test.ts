@@ -1295,7 +1295,10 @@ describe("GitService", () => {
         p && p.includes("feature-1") ? worktreeGitMock : mockGit,
       );
 
-      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).resolves.toBe("abc123");
+      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).resolves.toEqual({
+        status: "created",
+        head: "abc123",
+      });
 
       expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["worktree", "remove"]));
       expect(mockLogger.warn).toHaveBeenCalledWith(
@@ -1304,7 +1307,7 @@ describe("GitService", () => {
     });
 
     // The runner compares this against origin/<branch> after each create.
-    it("should resolve to the created worktree's HEAD, and to null when the path already is a worktree", async () => {
+    it("reports the created worktree's HEAD, and an already-registered path as no creation", async () => {
       mockShowRef({ local: false, remote: true });
       const worktreeGitMock = {
         branch: vi.fn<any>().mockResolvedValue(undefined),
@@ -1316,7 +1319,10 @@ describe("GitService", () => {
         p && p.includes("feature-1") ? worktreeGitMock : mockGit,
       );
 
-      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).resolves.toBe("f00dfeed");
+      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).resolves.toEqual({
+        status: "created",
+        head: "f00dfeed",
+      });
       expect(mockMetadataService.createInitialMetadataFromPath).toHaveBeenCalledWith(
         expect.any(String),
         "/test/worktrees/feature-1",
@@ -1332,7 +1338,10 @@ describe("GitService", () => {
         "worktree /test/worktrees/feature-1\n" + "HEAD abc123\n" + "branch refs/heads/feature-1\n\n",
       );
 
-      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).resolves.toBeNull();
+      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).resolves.toEqual({
+        status: "already_registered",
+        detached: false,
+      });
     });
 
     it("should resolve relative paths to absolute paths when adding worktrees", async () => {
@@ -1566,7 +1575,10 @@ describe("GitService", () => {
         .mockResolvedValueOnce("") // retry add succeeds
         .mockResolvedValueOnce(""); // LFS ls-files
 
-      await expect(gitService.addWorktree("feature-1", worktreePath)).resolves.toBe("abc123");
+      await expect(gitService.addWorktree("feature-1", worktreePath)).resolves.toEqual({
+        status: "created",
+        head: "abc123",
+      });
 
       expect(trasher).not.toHaveBeenCalled();
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", worktreePath]);
@@ -1630,6 +1642,9 @@ describe("GitService", () => {
       expect(fs.rm).not.toHaveBeenCalled();
     });
 
+    // Detached is reported apart from a plain "already registered" so the
+    // runner can record the skip it is instead of counting a creation that
+    // never happened, on this and every later tick.
     it("treats a detached registration at the target path as occupied", async () => {
       const worktreePath = "/test/worktrees/feature-1";
       (fs.access as Mock<any>).mockResolvedValue(undefined);
@@ -1643,10 +1658,33 @@ describe("GitService", () => {
       mockGit.raw.mockClear();
       (fs.rename as Mock<any>).mockClear();
 
-      await gitService.addWorktree("feature-1", worktreePath);
+      await expect(gitService.addWorktree("feature-1", worktreePath)).resolves.toEqual({
+        status: "already_registered",
+        detached: true,
+      });
 
       expect(fs.rm).not.toHaveBeenCalledWith(worktreePath, { recursive: true, force: true });
       expect(fs.rename).not.toHaveBeenCalled();
+      expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["worktree", "add"]));
+    });
+
+    it("reports a registration on the branch itself as already registered but not detached", async () => {
+      const worktreePath = "/test/worktrees/feature-1";
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        const command = args as string[];
+        if (command[0] === "worktree" && command[1] === "list") {
+          return `worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\n\n`;
+        }
+        return "";
+      });
+      mockGit.raw.mockClear();
+
+      await expect(gitService.addWorktree("feature-1", worktreePath)).resolves.toEqual({
+        status: "already_registered",
+        detached: false,
+      });
+
       expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["worktree", "add"]));
     });
 

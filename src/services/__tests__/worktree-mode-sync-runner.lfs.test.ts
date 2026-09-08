@@ -47,7 +47,7 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
       getRemoteBranches: vi.fn().mockResolvedValue(["main", "feature-1"]),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
       getWorktrees: vi.fn().mockResolvedValue([{ path: mainPath, branch: "main" }]),
-      addWorktree: vi.fn().mockResolvedValue("abc1234"),
+      addWorktree: vi.fn().mockResolvedValue({ status: "created", head: "abc1234" }),
       getRemoteCommit: vi.fn().mockResolvedValue("abc1234"),
       getRemoteBranchTips: vi.fn().mockResolvedValue(new Map()),
       setLfsSkipEnabled: vi.fn(),
@@ -87,7 +87,9 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
   }
 
   it("retries a branch whose checkout failed with an LFS error, with LFS downloads disabled", async () => {
-    gitService.addWorktree.mockRejectedValueOnce(new Error(LFS_FAILURE)).mockResolvedValue("abc1234");
+    gitService.addWorktree
+      .mockRejectedValueOnce(new Error(LFS_FAILURE))
+      .mockResolvedValue({ status: "created", head: "abc1234" });
 
     const syncContext: SyncRetryContext = { lfsSkipEnabled: false };
     const outcome = await run(makeRunner(), syncContext);
@@ -163,7 +165,7 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
         throw new Error(LFS_FAILURE);
       }
-      return "abc1234";
+      return { status: "created", head: "abc1234" };
     });
 
     const outcome = await run(makeRunner({ parallelism: { maxWorktreeCreation: created.length } }));
@@ -187,7 +189,9 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
       { path: mainPath, branch: "main" },
       { path: divergedWorktreePath, branch },
     ]);
-    gitService.addWorktree.mockRejectedValueOnce(new Error(LFS_FAILURE)).mockResolvedValue("abc1234");
+    gitService.addWorktree
+      .mockRejectedValueOnce(new Error(LFS_FAILURE))
+      .mockResolvedValue({ status: "created", head: "abc1234" });
 
     Object.assign(gitService, {
       hasOperationInProgress: vi.fn().mockResolvedValue(false),

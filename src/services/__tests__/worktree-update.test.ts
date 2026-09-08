@@ -65,7 +65,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       isWorktreeBehind: vi.fn().mockResolvedValue(false), // Not behind by default
       canFastForward: vi.fn().mockResolvedValue(true), // Can fast-forward by default
       updateWorktree: vi.fn().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
-      addWorktree: vi.fn().mockResolvedValue(undefined),
+      addWorktree: vi.fn().mockResolvedValue({ status: "created", head: "def456" }),
       removeWorktree: vi.fn().mockResolvedValue(undefined),
       pruneWorktrees: vi.fn().mockResolvedValue(undefined),
       hasUnpushedCommits: vi.fn().mockResolvedValue(false),

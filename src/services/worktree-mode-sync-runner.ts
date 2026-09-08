@@ -16,7 +16,7 @@ import { RemovalAuditService } from "./removal-audit.service";
 import { TrashService } from "./trash.service";
 import { createWorktreeSyncPlan } from "./worktree-sync-planner";
 
-import type { AheadBehindCounts, GitService } from "./git.service";
+import type { AddWorktreeResult, AheadBehindCounts, GitService } from "./git.service";
 import type { Logger } from "./logger.service";
 import type { ProgressEmitter } from "./progress-emitter";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
@@ -439,11 +439,9 @@ export class WorktreeModeSyncRunner {
     const results = await Promise.allSettled(
       plan.map(({ branchName, worktreePath }) =>
         limit(async () => {
-          let createdHead: string | null;
+          let addResult: AddWorktreeResult;
           try {
-            createdHead = await this.addWorktreeWithLfsFallback(branchName, worktreePath, syncContext, outcome);
-            this.logger.info(`  ✅ Created worktree for '${branchName}'`);
-            outcome.recordCreated(branchName, worktreePath);
+            addResult = await this.addWorktreeWithLfsFallback(branchName, worktreePath, syncContext, outcome);
           } catch (error) {
             this.logger.error(`  ❌ Failed to create worktree for '${branchName}':`, getErrorMessage(error));
             outcome.recordFailed("worktree", getErrorMessage(error), {
@@ -453,12 +451,37 @@ export class WorktreeModeSyncRunner {
             });
             throw error;
           }
-          await this.verifyCreatedWorktreeTip(branchName, worktreePath, createdHead, outcome);
+
+          // A detached registration already sits at the target path: someone
+          // checked a commit out inside the worktree by hand, which drops it
+          // from the inventory the plan was built from and makes its branch
+          // look new every tick. Nothing was created, so report the skip
+          // rather than counting a creation that never happened.
+          if (addResult.status === "already_registered" && addResult.detached) {
+            const message = `Worktree at '${worktreePath}' is on a detached HEAD, so sync leaves it alone; check the branch back out to have it synced again`;
+            this.logger.warn(`  ⏭️ Skipping '${branchName}': ${message}`);
+            outcome.recordSkipped("worktree", "detached_worktree", {
+              branch: branchName,
+              path: worktreePath,
+              message,
+            });
+            return false;
+          }
+
+          // Either this call created the worktree, or a concurrent creator
+          // registered the same branch at the same path first; both leave the
+          // worktree this sync asked for in place.
+          this.logger.info(`  ✅ Created worktree for '${branchName}'`);
+          outcome.recordCreated(branchName, worktreePath);
+          if (addResult.status === "created") {
+            await this.verifyCreatedWorktreeTip(branchName, worktreePath, addResult.head, outcome);
+          }
+          return true;
         }),
       ),
     );
 
-    const successCount = results.filter((r) => r.status === "fulfilled").length;
+    const successCount = results.filter((r) => r.status === "fulfilled" && r.value).length;
     this.logger.info(`  Created ${successCount}/${plan.length} worktrees successfully`);
   }
 
@@ -479,7 +502,7 @@ export class WorktreeModeSyncRunner {
     worktreePath: string,
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
-  ): Promise<string | null> {
+  ): Promise<AddWorktreeResult> {
     const skipAlreadyEnabled = this.config.skipLfs === true || syncContext.lfsSkipEnabled;
 
     try {
@@ -527,11 +550,9 @@ export class WorktreeModeSyncRunner {
   private async verifyCreatedWorktreeTip(
     branch: string,
     worktreePath: string,
-    createdHead: string | null,
+    createdHead: string,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
-    if (!createdHead) return;
-
     let remoteTip: string;
     try {
       remoteTip = await this.gitService.getRemoteCommit(`${GIT_CONSTANTS.REFS.REMOTES}/${branch}`);

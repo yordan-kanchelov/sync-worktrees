@@ -112,7 +112,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   can change the files after `worktree add` returns (F18 left the wait in place)
 - [x] **T62** — Remote branches ending in '/HEAD' (and ambiguous refname:short cases) are dropped
   from the sync inventory, so their worktrees are pruned as stale
-- [ ] **T77** — A detached-HEAD managed worktree is reported and counted as a freshly created
+- [x] **T77** — A detached-HEAD managed worktree is reported and counted as a freshly created
   worktree on every sync
 - [ ] **T78** — Dead and silently broken git wrappers: `localBranchExists` always returns true and
   `hasDivergedHistory` always returns false (simple-git swallows silent exit-1); several other exports
@@ -3232,7 +3232,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: Grep for `phaseTimer` shows it is only referenced in the worktree
   runner call (line 511); CloneSyncService has no timer parameter.
 
-### [ ] T77. A detached-HEAD managed worktree is reported and counted as a freshly created worktree on every sync
+### [x] T77. A detached-HEAD managed worktree is reported and counted as a freshly created worktree on every sync
 
 - **Category**: correctness · **Subsystem**: git
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

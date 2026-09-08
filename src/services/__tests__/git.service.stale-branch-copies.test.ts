@@ -142,7 +142,7 @@ describe("GitService worktree creation from stale local branch refs", () => {
     const remoteTip = await revParse(bareRepoDir, "refs/remotes/origin/feature");
     expect(remoteTip).not.toBe(cloneTip);
 
-    await expect(git.addWorktree("feature", featurePath)).resolves.toBe(remoteTip);
+    await expect(git.addWorktree("feature", featurePath)).resolves.toEqual({ status: "created", head: remoteTip });
 
     expect(await revParse(featurePath, "HEAD")).toBe(remoteTip);
     expect(await revParse(bareRepoDir, "refs/heads/feature")).toBe(remoteTip);
@@ -166,7 +166,7 @@ describe("GitService worktree creation from stale local branch refs", () => {
     const remoteTip = await revParse(bareRepoDir, "refs/remotes/origin/feature");
     expect(remoteTip).not.toBe(cloneTip);
 
-    await expect(git.addWorktree("feature", featurePath)).resolves.toBe(remoteTip);
+    await expect(git.addWorktree("feature", featurePath)).resolves.toEqual({ status: "created", head: remoteTip });
 
     expect(await revParse(featurePath, "HEAD")).toBe(remoteTip);
     expect(await revParse(bareRepoDir, "refs/heads/feature")).toBe(remoteTip);

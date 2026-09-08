@@ -114,7 +114,10 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
   it("creates a worktree whose git commands stay silent longer than fetchTimeoutMs", async () => {
     useSlowGit();
 
-    await expect(gitService.addWorktree("feat", featPath)).resolves.toMatch(/^[0-9a-f]{7,40}$/);
+    await expect(gitService.addWorktree("feat", featPath)).resolves.toEqual({
+      status: "created",
+      head: expect.stringMatching(/^[0-9a-f]{7,40}$/),
+    });
 
     await expect(fs.access(path.join(featPath, ".git"))).resolves.toBeUndefined();
     await expect(fs.access(path.join(featPath, "feat.txt"))).resolves.toBeUndefined();

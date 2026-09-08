@@ -36,7 +36,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       fetchAll: vi.fn<any>().mockResolvedValue(undefined),
       fetchBranch: vi.fn<any>().mockResolvedValue(undefined),
       getRemoteBranches: vi.fn<any>().mockResolvedValue(["main", "feature-1", "feature-2"]),
-      addWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      addWorktree: vi.fn<any>().mockResolvedValue({ status: "created", head: "def456" }),
       removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
       pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
       checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
@@ -436,9 +436,10 @@ describe("WorktreeSyncService", () => {
       beforeEach(() => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
         mockGitService.getWorktrees.mockResolvedValue([]);
-        mockGitService.addWorktree.mockImplementation(async (branch: string) =>
-          branch === "feature-1" ? "aaaa1111" : "bbbb2222",
-        );
+        mockGitService.addWorktree.mockImplementation(async (branch: string) => ({
+          status: "created",
+          head: branch === "feature-1" ? "aaaa1111" : "bbbb2222",
+        }));
         mockGitService.getRemoteCommit.mockImplementation(async (ref: string) =>
           ref === "refs/remotes/origin/feature-1" ? "aaaa1111" : "cccc3333",
         );
@@ -490,8 +491,8 @@ describe("WorktreeSyncService", () => {
         });
       });
 
-      it("does not verify when addWorktree created nothing", async () => {
-        mockGitService.addWorktree.mockResolvedValue(null);
+      it("does not verify when the path already was a registered worktree", async () => {
+        mockGitService.addWorktree.mockResolvedValue({ status: "already_registered", detached: false });
 
         const result = await service.sync();
 
@@ -1620,7 +1621,7 @@ describe("WorktreeSyncService", () => {
         mockGitService.addWorktree = vi
           .fn<any>()
           .mockRejectedValueOnce(new Error("fatal: assets/big.bin: smudge filter lfs failed"))
-          .mockResolvedValue(null) as any;
+          .mockResolvedValue({ status: "created", head: "def456" }) as any;
 
         const result = await service.sync();
 

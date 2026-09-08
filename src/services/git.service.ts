@@ -55,7 +55,21 @@ export interface RegisteredWorktree {
   locked?: boolean;
   /** Reason given to `git worktree lock --reason`; absent when git records none. */
   lockReason?: string;
+  /**
+   * Set (to true) only for a worktree git lists as detached — one with no
+   * branch checked out. `getWorktrees()` filters those out entirely, so only
+   * listings that ask for detached entries ever carry it.
+   */
+  detached?: boolean;
 }
+
+// What one addWorktree call did. `created` carries the new worktree's HEAD —
+// the commit callers compare against origin/<branch>. `already_registered`
+// means the path was a registered worktree before the call and nothing was
+// created: either one a concurrent operation registered first, or a
+// detached-HEAD checkout someone left there, which no sync of ours owns.
+export type AddWorktreeResult =
+  { status: "created"; head: string } | { status: "already_registered"; detached: boolean };
 
 export interface DefaultBranchRefresh {
   previous: string;
@@ -336,7 +350,7 @@ export class GitService {
     this.logger.info(`Creating ${this.defaultBranch} worktree at "${this.mainWorktreePath}"...`);
     let created = false;
     try {
-      created = (await this.addWorktree(this.defaultBranch, this.mainWorktreePath)) !== null;
+      created = (await this.addWorktree(this.defaultBranch, this.mainWorktreePath)).status === "created";
     } catch (error) {
       // A concurrent creator can land between addWorktree's existence probe
       // and git's own check, in which case git reports the path as already
@@ -953,10 +967,12 @@ export class GitService {
     }
   }
 
-  // Resolves to the HEAD commit of the worktree this call created, or null when
-  // the path already was a registered worktree (including one a concurrent
-  // operation registered first) and nothing was created.
-  async addWorktree(branchName: string, worktreePath: string): Promise<string | null> {
+  // Resolves to what the call did: the HEAD commit of the worktree it created,
+  // or `already_registered` when the path already was a registered worktree
+  // (one a concurrent operation registered first, or a detached-HEAD checkout
+  // someone left there) and nothing was created. Callers that count creations
+  // must read `status` rather than assume a create happened.
+  async addWorktree(branchName: string, worktreePath: string): Promise<AddWorktreeResult> {
     const bareGit = this.getCachedGit(this.bareRepoPath, this.isLfsSkipEnabled());
     // Use absolute path for worktree add to avoid relative path issues
     const absoluteWorktreePath = path.resolve(worktreePath);
@@ -968,11 +984,11 @@ export class GitService {
       await fs.access(absoluteWorktreePath);
       // Directory exists - check if it's already a valid worktree
       const worktrees = await this.getWorktreesFromBare(bareGit, true);
-      const isValidWorktree = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
+      const registered = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
 
-      if (isValidWorktree) {
+      if (registered) {
         this.logger.info(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
-        return null;
+        return { status: "already_registered", detached: registered.detached === true };
       } else {
         // Directory exists but is not a valid worktree - clean it up
         this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}'`);
@@ -1006,7 +1022,8 @@ export class GitService {
       await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
 
       try {
-        return await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+        const head = await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+        return { status: "created", head };
       } catch (metadataError) {
         this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
         await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
@@ -1034,7 +1051,7 @@ export class GitService {
 
         if (existingWorktree && !existingWorktree.isPrunable) {
           this.logger.info(`  - Worktree for '${branchName}' was created by concurrent operation`);
-          return null;
+          return { status: "already_registered", detached: existingWorktree.detached === true };
         }
 
         this.logger.warn(`  - Worktree already registered but missing. Removing that registration and retrying...`);
@@ -1061,7 +1078,8 @@ export class GitService {
           await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
 
           try {
-            return await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+            const head = await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+            return { status: "created", head };
           } catch (metadataError) {
             this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
             await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, retryCreatedNewBranch);
@@ -1094,11 +1112,11 @@ export class GitService {
         await fs.access(absoluteWorktreePath);
         // Directory exists - check if it's already a valid worktree
         const worktrees = await this.getWorktreesFromBare(bareGit, true);
-        const isValidWorktree = worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath);
+        const registered = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
 
-        if (isValidWorktree) {
+        if (registered) {
           this.logger.info(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
-          return null;
+          return { status: "already_registered", detached: registered.detached === true };
         } else {
           // Directory exists but is not a valid worktree - clean it up
           this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}' before fallback attempt`);
@@ -1125,7 +1143,8 @@ export class GitService {
         await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
 
         try {
-          return await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+          const head = await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+          return { status: "created", head };
         } catch (metadataError) {
           this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
           await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, false);
@@ -1141,7 +1160,7 @@ export class GitService {
 
           if (existingWorktree && !existingWorktree.isPrunable) {
             this.logger.info(`  - Worktree for '${branchName}' was created by concurrent operation during fallback`);
-            return null;
+            return { status: "already_registered", detached: existingWorktree.detached === true };
           }
         }
 
@@ -2131,6 +2150,9 @@ export class GitService {
         isPrunable: w.prunable,
         locked: w.locked,
         ...(w.lockReason !== null && { lockReason: w.lockReason }),
+        // Only set when true: a listing that excludes detached entries would
+        // otherwise carry a `detached: false` on every worktree it returns.
+        ...(w.detached && { detached: true }),
       }));
   }
 }

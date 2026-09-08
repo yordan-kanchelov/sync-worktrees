@@ -22,7 +22,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getMainWorktreePath: vi.fn(() => "/test/worktrees/main"),
       fetchAll: vi.fn<any>().mockResolvedValue(undefined),
       getRemoteBranches: vi.fn<any>().mockResolvedValue(["main", "feature-rebased", "feature-diverged"]),
-      addWorktree: vi.fn<any>().mockResolvedValue(undefined),
+      addWorktree: vi.fn<any>().mockResolvedValue({ status: "created", head: "def456" }),
       removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
       pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
       checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
