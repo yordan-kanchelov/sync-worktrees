@@ -38,13 +38,9 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getRemoteBranches: vi.fn<any>().mockResolvedValue(["main", "feature-1", "feature-2"]),
       addWorktree: vi.fn<any>().mockResolvedValue({ status: "created", head: "def456" }),
       removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
-      pruneWorktrees: vi.fn<any>().mockResolvedValue(undefined),
       checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
-      hasUnpushedCommits: vi.fn<any>().mockResolvedValue(false),
-      hasUpstreamGone: vi.fn<any>().mockResolvedValue(false),
       hasStashedChanges: vi.fn<any>().mockResolvedValue(false),
       hasOperationInProgress: vi.fn<any>().mockResolvedValue(false),
-      hasModifiedSubmodules: vi.fn<any>().mockResolvedValue(false),
       getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
         isClean: true,
         hasUnpushedCommits: false,
@@ -56,7 +52,6 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
         canRemove: true,
         reasons: [],
       }),
-      getCurrentBranch: vi.fn<any>().mockResolvedValue("main"),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
       refreshDefaultBranch: vi.fn<any>().mockResolvedValue({
         previous: "main",
@@ -73,7 +68,6 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       setLfsSkipEnabled: vi.fn(),
       compareTreeContent: vi.fn<any>().mockResolvedValue(false),
       resetToUpstream: vi.fn<any>().mockResolvedValue(true),
-      hasDivergedHistory: vi.fn<any>().mockResolvedValue(false),
       isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
       // Diverged handling re-verifies with this throwing probe before it moves
       // anything; commits on both sides is the genuine diverged state.
@@ -363,7 +357,6 @@ describe("WorktreeSyncService", () => {
       mockGitService.getWorktrees.mockResolvedValue([]);
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
-      mockGitService.hasUnpushedCommits.mockResolvedValue(false);
       mockGitService.getFullWorktreeStatus.mockResolvedValue({
         isClean: true,
         hasUnpushedCommits: false,
@@ -411,9 +404,6 @@ describe("WorktreeSyncService", () => {
         undefined,
       );
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
-
-      // Should prune at the end
-      expect(mockGitService.pruneWorktrees).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         started: true,
         outcome: {
@@ -519,7 +509,6 @@ describe("WorktreeSyncService", () => {
 
       expect(mockGitService.addWorktree).not.toHaveBeenCalled();
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(mockGitService.pruneWorktrees).not.toHaveBeenCalled();
     });
 
     it("never plans mutations for registered worktrees outside worktreeDir", async () => {
@@ -887,7 +876,6 @@ describe("WorktreeSyncService", () => {
       );
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping removal"));
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      expect(mockGitService.pruneWorktrees).not.toHaveBeenCalled();
     });
 
     it("should create multiple new worktrees", async () => {
@@ -1149,7 +1137,6 @@ describe("WorktreeSyncService", () => {
       await service.sync();
 
       expect(fs.rm).not.toHaveBeenCalled();
-      expect(mockGitService.pruneWorktrees).not.toHaveBeenCalled();
     });
 
     it("does not scan the workspace root for orphan candidates", async () => {
@@ -1161,7 +1148,6 @@ describe("WorktreeSyncService", () => {
       await service.sync();
 
       expect(fs.readdir).not.toHaveBeenCalledWith("/test/worktrees");
-      expect(mockGitService.pruneWorktrees).not.toHaveBeenCalled();
     });
 
     // Removal-safety regression tests: orphan cleanup must never
@@ -1454,7 +1440,6 @@ describe("WorktreeSyncService", () => {
       it("should handle feature branches with slashes correctly", async () => {
         const remoteBranchesWithSlashes = [TEST_BRANCHES.main, "feat/LCR-8879", "feat/PHX-3198", TEST_BRANCHES.bugfix];
         mockGitService.getRemoteBranches.mockResolvedValue(remoteBranchesWithSlashes);
-        mockGitService.getCurrentBranch.mockResolvedValue(TEST_BRANCHES.main);
 
         // First sync - create worktrees
         (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
@@ -1486,7 +1471,6 @@ describe("WorktreeSyncService", () => {
 
       it("should not treat parent directories of slash branches as orphaned", async () => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main", "feat/LCR-8879", "feat/PHX-3198"]);
-        mockGitService.getCurrentBranch.mockResolvedValue("main");
 
         // Mock file system showing nested structure
         (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
@@ -1517,7 +1501,6 @@ describe("WorktreeSyncService", () => {
 
       it("should remove slash-named worktrees correctly when branch is deleted", async () => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main"]); // feat branches deleted from remote
-        mockGitService.getCurrentBranch.mockResolvedValue("main");
 
         (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
           if ((dirPath as string).endsWith(".diverged")) {
@@ -1541,7 +1524,6 @@ describe("WorktreeSyncService", () => {
 
       it("should handle mixed flat and nested worktree structures", async () => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main", "simple-branch", "feat/nested-branch"]);
-        mockGitService.getCurrentBranch.mockResolvedValue("main");
 
         // Mock mixed directory structure
         (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
@@ -2473,8 +2455,6 @@ describe("WorktreeSyncService", () => {
       mockGitService.fetchAll.mockRejectedValueOnce(networkError).mockResolvedValueOnce(undefined);
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "develop"]);
       mockGitService.getWorktrees.mockResolvedValue([{ path: path.join("/test/worktrees", "main"), branch: "main" }]);
-      mockGitService.getCurrentBranch.mockResolvedValue("main");
-      mockGitService.pruneWorktrees.mockResolvedValue(undefined);
 
       await retrySyncService.sync();
 
@@ -2490,8 +2470,6 @@ describe("WorktreeSyncService", () => {
       mockGitService.getWorktrees
         .mockRejectedValueOnce(fsError)
         .mockResolvedValue([{ path: path.join("/test/worktrees", "main"), branch: "main" }]);
-      mockGitService.getCurrentBranch.mockResolvedValue("main");
-      mockGitService.pruneWorktrees.mockResolvedValue(undefined);
 
       await retrySyncService.sync();
 
@@ -2599,8 +2577,6 @@ describe("WorktreeSyncService", () => {
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
       mockGitService.getWorktrees.mockResolvedValue([]);
-      mockGitService.getCurrentBranch.mockResolvedValue("main");
-      mockGitService.pruneWorktrees.mockResolvedValue(undefined);
 
       await unlimitedSyncService.sync();
 
@@ -2618,35 +2594,12 @@ describe("WorktreeSyncService", () => {
 
       mockGitService.getRemoteBranches.mockResolvedValue(["main"]);
       mockGitService.getWorktrees.mockResolvedValue([]);
-      mockGitService.getCurrentBranch.mockResolvedValue("main");
-      mockGitService.pruneWorktrees.mockResolvedValue(undefined);
 
       await retrySyncService.sync();
 
       expect(mockRetryLogger.info).toHaveBeenCalledWith(expect.stringContaining("⚠️  Sync attempt 1 failed"));
       expect(mockRetryLogger.info).toHaveBeenCalledWith(expect.stringContaining("🔄 Retrying synchronization"));
       expect(mockRetryLogger.info).toHaveBeenCalledWith(expect.stringContaining("⚠️  Sync attempt 2 failed"));
-    });
-
-    it("should complete sync if only non-critical operations fail", async () => {
-      mockGitService.fetchAll.mockResolvedValue(undefined);
-      mockGitService.getRemoteBranches.mockResolvedValue(["main", "develop"]);
-      mockGitService.getWorktrees.mockResolvedValue([{ path: path.join("/test/worktrees", "main"), branch: "main" }]);
-      mockGitService.getCurrentBranch.mockResolvedValue("main");
-
-      const pruneError = new Error("Prune failed");
-      (pruneError as any).code = "EBUSY";
-      mockGitService.pruneWorktrees
-        .mockRejectedValueOnce(pruneError)
-        .mockRejectedValueOnce(pruneError)
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValue(undefined);
-
-      await retrySyncService.sync();
-
-      expect(mockGitService.fetchAll).toHaveBeenCalled();
-      expect(mockGitService.getRemoteBranches).toHaveBeenCalled();
-      expect(mockGitService.pruneWorktrees).not.toHaveBeenCalled();
     });
   });
 

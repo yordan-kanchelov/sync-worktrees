@@ -67,11 +67,8 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       updateWorktree: vi.fn().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
       addWorktree: vi.fn().mockResolvedValue({ status: "created", head: "def456" }),
       removeWorktree: vi.fn().mockResolvedValue(undefined),
-      pruneWorktrees: vi.fn().mockResolvedValue(undefined),
-      hasUnpushedCommits: vi.fn().mockResolvedValue(false),
       hasStashedChanges: vi.fn().mockResolvedValue(false),
       hasOperationInProgress: vi.fn().mockResolvedValue(false),
-      hasModifiedSubmodules: vi.fn().mockResolvedValue(false),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
       ensureAnchorWorktree: vi.fn().mockResolvedValue(false),
       getMainWorktreePath: vi.fn().mockReturnValue("/test/worktrees/main"),
@@ -191,9 +188,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
       // Should attempt to update all worktrees
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(3);
-
-      // Service should not throw even if one update fails
-      expect(mockGitService.pruneWorktrees).not.toHaveBeenCalled();
     });
 
     it("should handle errors when checking worktree status", async () => {

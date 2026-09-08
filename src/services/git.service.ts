@@ -424,6 +424,9 @@ export class GitService {
   // stale-checkout risk that addWorktree mitigates, not a broken repository.
   private async dropClonedBranchCopies(bareGit: SimpleGit): Promise<void> {
     try {
+      // `-q` is safe here even though simple-git resolves its silent exit 1:
+      // the empty string it yields for a HEAD that is not a symref means "no
+      // branch to protect", which is what a detached HEAD actually is.
       const headRef = (await bareGit.raw(["symbolic-ref", "-q", "HEAD"])).trim();
       const branches = (await bareGit.raw(["for-each-ref", "--format=%(refname)", GIT_CONSTANTS.REFS.HEADS]))
         .split("\n")
@@ -1412,12 +1415,6 @@ export class GitService {
     }
   }
 
-  async pruneWorktrees(): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["worktree", "prune"]);
-    this.logger.info("Pruned worktree metadata.");
-  }
-
   async updateRef(refName: string, sha: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     await bareGit.raw(["update-ref", refName, sha]);
@@ -1435,16 +1432,6 @@ export class GitService {
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
-  }
-
-  async localBranchExists(branchName: string): Promise<boolean> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    try {
-      await bareGit.raw(["show-ref", "--verify", "--quiet", `${GIT_CONSTANTS.REFS.HEADS}${branchName}`]);
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   async getLocalBranchCommit(branchName: string): Promise<string | null> {
@@ -1571,15 +1558,6 @@ export class GitService {
     return this.statusService.checkWorktreeStatus(worktreePath);
   }
 
-  async hasUnpushedCommits(worktreePath: string): Promise<boolean> {
-    const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
-    return this.statusService.hasUnpushedCommits(worktreePath, metadata?.lastSyncCommit);
-  }
-
-  async hasUpstreamGone(worktreePath: string): Promise<boolean> {
-    return this.statusService.hasUpstreamGone(worktreePath);
-  }
-
   async hasStashedChanges(worktreePath: string): Promise<boolean> {
     return this.statusService.hasStashedChanges(worktreePath);
   }
@@ -1620,18 +1598,8 @@ export class GitService {
     );
   }
 
-  async hasModifiedSubmodules(worktreePath: string): Promise<boolean> {
-    return this.statusService.hasModifiedSubmodules(worktreePath);
-  }
-
   async hasOperationInProgress(worktreePath: string): Promise<boolean> {
     return this.statusService.hasOperationInProgress(worktreePath);
-  }
-
-  async getCurrentBranch(): Promise<string> {
-    const git = this.getGit();
-    const branchSummary = await git.branch();
-    return branchSummary.current;
   }
 
   // refs/remotes/origin/HEAD is a symref that only `remote set-head` writes.
@@ -1804,25 +1772,6 @@ export class GitService {
     }
 
     return { updated, before, after };
-  }
-
-  async hasDivergedHistory(worktreePath: string, expectedBranch: string): Promise<boolean> {
-    const worktreeGit = this.getCachedGit(worktreePath);
-
-    // Validate branch matches
-    const branchInfo = await worktreeGit.branch();
-    if (branchInfo.current !== expectedBranch) {
-      this.logger.warn(`Branch mismatch in hasDivergedHistory: expected ${expectedBranch}, got ${branchInfo.current}`);
-      return false; // Conservative: assume can fast-forward
-    }
-
-    try {
-      // Check if HEAD is an ancestor of the remote branch (can fast-forward)
-      await worktreeGit.raw(["merge-base", "--is-ancestor", "HEAD", `origin/${expectedBranch}`]);
-      return false; // Can fast-forward
-    } catch {
-      return true; // Histories have diverged
-    }
   }
 
   // Whether HEAD is an ancestor of origin/<branch>, so a fast-forward would
@@ -2089,12 +2038,6 @@ export class GitService {
       this.logger.warn(`  - ⚠️ Could not set upstream of '${branchName}' to ${upstream}: ${getErrorMessage(error)}`);
       return false;
     }
-  }
-
-  async getLocalBranches(): Promise<string[]> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    const branches = await bareGit.branch();
-    return branches.all;
   }
 
   private async resolveCreateBranchBaseRef(bareGit: SimpleGit, baseBranch: string): Promise<string> {

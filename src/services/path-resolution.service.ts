@@ -50,22 +50,9 @@ export class PathResolutionService {
     return a.length > b.length && a.charAt(b.length) === path.sep && a.startsWith(b);
   }
 
-  normalizeWorktreePath(worktreePath: string, worktreeBaseDir: string): string {
-    const resolved = this.resolveRealPath(worktreePath);
-    const resolvedBase = this.resolveRealPath(worktreeBaseDir);
-    if (!this.isResolvedPathInsideBase(resolved, resolvedBase)) {
-      throw new Error(`Worktree path '${worktreePath}' is outside base directory '${worktreeBaseDir}'`);
-    }
-    return path.relative(resolvedBase, resolved);
-  }
-
   isPathInsideBaseDir(targetPath: string, baseDir: string): boolean {
     const resolved = this.resolveRealPath(targetPath);
     const resolvedBase = this.resolveRealPath(baseDir);
     return this.isResolvedPathInsideBase(resolved, resolvedBase);
-  }
-
-  extractBranchFromWorktreePath(worktreePath: string, worktreeBaseDir: string): string {
-    return this.normalizeWorktreePath(worktreePath, worktreeBaseDir);
   }
 }

@@ -20,7 +20,6 @@ function makeGitStub() {
     getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
     updateRef: vi.fn<any>().mockResolvedValue(undefined),
     deleteRef: vi.fn<any>().mockResolvedValue(undefined),
-    localBranchExists: vi.fn<any>().mockResolvedValue(false),
     getLocalBranchCommit: vi.fn<any>().mockResolvedValue(null),
     createBranchAt: vi.fn<any>().mockResolvedValue(undefined),
     addWorktreeNoCheckout: vi.fn<any>().mockResolvedValue(undefined),

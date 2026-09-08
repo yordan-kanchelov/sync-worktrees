@@ -42,25 +42,6 @@ describe("PathResolutionService", () => {
     });
   });
 
-  describe("normalizeWorktreePath", () => {
-    it("should extract relative path within base directory", () => {
-      const result = service.normalizeWorktreePath("/base/worktrees/feature/test", "/base/worktrees");
-      expect(result).toBe("feature/test");
-    });
-
-    it("should throw error for path outside base directory", () => {
-      expect(() => {
-        service.normalizeWorktreePath("/outside/path", "/base/worktrees");
-      }).toThrow("is outside base directory");
-    });
-
-    it("should throw error for absolute relative path", () => {
-      expect(() => {
-        service.normalizeWorktreePath("/different/base", "/base/worktrees");
-      }).toThrow("is outside base directory");
-    });
-  });
-
   describe("isPathInsideBaseDir", () => {
     it("should return true for path inside base directory", () => {
       expect(service.isPathInsideBaseDir("/base/sub/path", "/base")).toBe(true);
@@ -74,16 +55,12 @@ describe("PathResolutionService", () => {
       expect(service.isPathInsideBaseDir("/base/../outside", "/base")).toBe(false);
     });
 
+    it("should return false for a deep traversal escape", () => {
+      expect(service.isPathInsideBaseDir("/base/worktrees/../../etc/passwd", "/base/worktrees")).toBe(false);
+    });
+
     it("should return true when path equals base directory", () => {
       expect(service.isPathInsideBaseDir("/base", "/base")).toBe(true);
-    });
-  });
-
-  describe("normalizeWorktreePath - traversal", () => {
-    it("should throw for path traversal with ..", () => {
-      expect(() => {
-        service.normalizeWorktreePath("/base/worktrees/../../etc/passwd", "/base/worktrees");
-      }).toThrow("is outside base directory");
     });
   });
 
@@ -118,28 +95,10 @@ describe("PathResolutionService", () => {
       await fs.rm(tmpRoot, { recursive: true, force: true });
     });
 
-    it("normalizeWorktreePath should reject symlink escaping base", () => {
-      if (!symlinkSupported) return;
-      const target = path.join(symlinkInsideBase, "child");
-      expect(() => service.normalizeWorktreePath(target, baseDir)).toThrow("is outside base directory");
-    });
-
     it("isPathInsideBaseDir should return false for symlink escaping base", () => {
       if (!symlinkSupported) return;
       const target = path.join(symlinkInsideBase, "child");
       expect(service.isPathInsideBaseDir(target, baseDir)).toBe(false);
-    });
-  });
-
-  describe("extractBranchFromWorktreePath", () => {
-    it("should extract branch name from worktree path", () => {
-      const result = service.extractBranchFromWorktreePath("/worktrees/feature/test", "/worktrees");
-      expect(result).toBe("feature/test");
-    });
-
-    it("should handle flat branch names", () => {
-      const result = service.extractBranchFromWorktreePath("/worktrees/main", "/worktrees");
-      expect(result).toBe("main");
     });
   });
 });

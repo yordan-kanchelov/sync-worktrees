@@ -114,7 +114,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   from the sync inventory, so their worktrees are pruned as stale
 - [x] **T77** — A detached-HEAD managed worktree is reported and counted as a freshly created
   worktree on every sync
-- [ ] **T78** — Dead and silently broken git wrappers: `localBranchExists` always returns true and
+- [x] **T78** — Dead and silently broken git wrappers: `localBranchExists` always returns true and
   `hasDivergedHistory` always returns false (simple-git swallows silent exit-1); several other exports
   are unused
 - [ ] **T81** — An interrupted bare clone (SIGKILL/power loss) leaves a HEAD-less bareRepoDir that
@@ -3257,7 +3257,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   accounting; test 'treats a detached registration at the target path as occupied'
   (git.service.test.ts:891) only asserts no re-creation, not the outcome.
 
-### [ ] T78. Dead and silently broken git wrappers: `localBranchExists` always returns true and `hasDivergedHistory` always returns false (simple-git swallows silent exit-1); several other exports are unused
+### [x] T78. Dead and silently broken git wrappers: `localBranchExists` always returns true and `hasDivergedHistory` always returns false (simple-git swallows silent exit-1); several other exports are unused
 
 - **Category**: correctness · **Subsystem**: git
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
