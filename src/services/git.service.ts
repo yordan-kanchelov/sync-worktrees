@@ -69,6 +69,15 @@ export interface RegisteredWorktree {
    * listings that ask for detached entries ever carry it.
    */
   detached?: boolean;
+  /**
+   * The oid `git worktree list --porcelain` printed for this worktree's HEAD.
+   * For a worktree on a branch that is refs/heads/<branch> resolved through the
+   * worktree's own HEAD symref, so it is the one thing the bare repo's refs
+   * cannot tell apart from a detached or mid-operation checkout — and it comes
+   * out of the listing every sync already makes, at no extra spawn. Absent when
+   * git printed no HEAD line (a prunable registration, the bare repo itself).
+   */
+  head?: string;
 }
 
 // What one addWorktree call did. `created` carries the new worktree's HEAD —
@@ -125,7 +134,6 @@ const REMOTE_REF_PREFIX = `${GIT_CONSTANTS.REFS.REMOTES}/`;
 // "feature/HEAD" is a legal branch name, so an endsWith("/HEAD") test would
 // drop a real branch (and prune its worktree) along with the symref.
 const ORIGIN_HEAD_REF = `${REMOTE_REF_PREFIX}HEAD`;
-const ORIGIN_HEAD_SHORT_REF = `${GIT_CONSTANTS.REMOTE_PREFIX}HEAD`;
 
 export type GitServiceOptions = Pick<
   Config,
@@ -811,30 +819,36 @@ export class GitService {
   }
 
   async getRemoteBranches(): Promise<string[]> {
-    const git = this.getGit();
-    const branches = await git.branch(["-r", "--no-color"]);
-    return GitService.remoteBranchNames(branches.all);
+    return [...(await this.readRemoteBranchTips(this.getGit())).keys()];
   }
 
-  // Remote branch names (without "origin/") from a `branch -r` listing, which
-  // prints %(refname:lstrip=2) — always "origin/<name>" verbatim, never a
-  // disambiguated short name.
-  // Filter on the full ref BEFORE stripping the prefix: a remote branch
-  // literally named "origin" lists as "origin/origin" and is a real branch —
-  // filtering the stripped name would silently drop it (and its worktree
-  // would then read as stale and be pruned). Only the origin/HEAD symref is
-  // excluded, by its exact name: "feature/HEAD" is a legal branch name, so an
-  // endsWith("/HEAD") test would drop it too. git renders the symref as an
-  // "origin/HEAD -> origin/main" arrow line; a refname can never contain a
-  // space, so such a line is dropped whether or not the parser split it.
-  // Callers must pass --no-color: under color.ui=always git wraps every name
-  // in escape codes, the prefix test then fails for all of them, and an empty
-  // inventory turns every worktree into a prune candidate.
-  private static remoteBranchNames(refs: string[]): string[] {
-    return refs
-      .filter((b) => b.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) && b !== ORIGIN_HEAD_SHORT_REF && !b.includes(" "))
-      .map((b) => b.slice(GIT_CONSTANTS.REMOTE_PREFIX.length))
-      .filter((b) => b.length > 0);
+  // Every origin branch and its tip oid, from one `for-each-ref` over
+  // refs/remotes/origin. This replaced `branch -v -r`, which asked git to
+  // resolve and print a commit subject for every branch only for the names to
+  // be thrown away: on a repository with hundreds of branches that is the
+  // difference between reading the ref store and walking the object database,
+  // and it ran on every tick.
+  //
+  // Output shape is fixed by --format, not by the reader's terminal or config:
+  // a full %(refname), never %(refname:short) (ambiguity-dependent — git prints
+  // "remotes/origin/x" once a local branch literally named "origin/x" exists,
+  // and shortens refs/remotes/origin/feature/HEAD to "origin/feature", a branch
+  // that does not exist), and no color escapes to strip under color.ui=always.
+  // A NUL separates the two fields because a refname can hold neither NUL nor
+  // newline, so no branch name can corrupt a line.
+  private async readRemoteBranchTips(git: SimpleGit): Promise<Map<string, string>> {
+    const raw = await git.raw(["for-each-ref", "--format=%(refname)%00%(objectname)", GIT_CONSTANTS.REFS.REMOTES]);
+    const tips = new Map<string, string>();
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const [ref, oid] = trimmed.split("\0", 2);
+      if (!ref || !oid) continue;
+      const branch = GitService.remoteBranchFromRef(ref);
+      if (branch === null) continue;
+      tips.set(branch, oid);
+    }
+    return tips;
   }
 
   // Branch name for one full remote-tracking ref, or null when the ref is not
@@ -1736,19 +1750,7 @@ export class GitService {
 
   /** Map of remote branch name (without "origin/") → tip oid, from the bare repo. */
   async getRemoteBranchTips(): Promise<Map<string, string>> {
-    const git = this.getGit();
-    const raw = await git.raw(["for-each-ref", "--format=%(refname)%00%(objectname)", GIT_CONSTANTS.REFS.REMOTES]);
-    const tips = new Map<string, string>();
-    for (const line of raw.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const [ref, oid] = trimmed.split("\0", 2);
-      if (!ref || !oid) continue;
-      const branch = GitService.remoteBranchFromRef(ref);
-      if (branch === null) continue;
-      tips.set(branch, oid);
-    }
-    return tips;
+    return this.readRemoteBranchTips(this.getGit());
   }
 
   async recordRemoteTip(worktreePath: string, branchName: string, oid: string): Promise<void> {
@@ -1822,7 +1824,7 @@ export class GitService {
   // rather than "no branches".
   private async listRemoteBranchNames(bareGit: SimpleGit): Promise<Set<string> | null> {
     try {
-      return new Set(GitService.remoteBranchNames((await bareGit.branch(["-r", "--no-color"])).all));
+      return new Set((await this.readRemoteBranchTips(bareGit)).keys());
     } catch {
       return null;
     }
@@ -1867,14 +1869,16 @@ export class GitService {
   // How many commits HEAD has that origin/<branch> lacks (ahead) and the
   // other way round (behind), from one
   // `rev-list --left-right --count HEAD...refs/remotes/origin/<branch>`
-  // (left = ahead, right = behind). The remote ref is named explicitly — the
-  // same ref canFastForward and updateWorktree use — rather than read from
-  // `<branch>@{upstream}`, so a branch with no upstream configured (a restored
-  // worktree, one created without a push, the no-tracking fallback) is
-  // classified like any other instead of passing as up to date. Unrelated
-  // histories count on both sides; only a probe that could not run (the ref
-  // is gone, git failed to spawn) throws, so a caller never mistakes "cannot
-  // determine" for an answer.
+  // (left = ahead, right = behind). This is the whole classification the
+  // update phase needs — up to date, behind, ahead, diverged — in one process,
+  // where a merge-base pair plus a behind probe used to take three or four.
+  // The remote ref is named explicitly — the same ref updateWorktree merges —
+  // rather than read from `<branch>@{upstream}`, so a branch with no upstream
+  // configured (a restored worktree, one created without a push, the
+  // no-tracking fallback) is classified like any other instead of passing as
+  // up to date. Unrelated histories count on both sides; only a probe that
+  // could not run (the ref is gone, git failed to spawn) throws, so a caller
+  // never mistakes "cannot determine" for an answer.
   async getAheadBehindCounts(worktreePath: string, branch: string): Promise<AheadBehindCounts> {
     const worktreeGit = this.getCachedGit(worktreePath);
     const output = await worktreeGit.raw([
@@ -1895,27 +1899,23 @@ export class GitService {
     return { ahead, behind };
   }
 
-  // Whether origin/<branch> has commits the worktree's HEAD lacks. A failed
-  // probe throws: the runner records update_check_failed for it.
-  async isWorktreeBehind(worktreePath: string, branch: string): Promise<boolean> {
-    return (await this.getAheadBehindCounts(worktreePath, branch)).behind > 0;
-  }
-
-  // Fast-forwards the worktree to origin/<its branch> and reports whether HEAD
+  // Fast-forwards the worktree to origin/<branch> and reports whether HEAD
   // actually moved, from a sha comparison around the merge rather than from the
   // runner's earlier behind probe: HEAD can reach the remote tip between the
   // two (a `git pull` in the worktree), and `merge --ff-only` succeeds with
   // nothing to bring in. Sync metadata (lastSyncCommit, lastSyncDate, the
   // syncHistory entry) is only written when HEAD moved, so a no-op leaves no
   // trace of an update that did not happen.
-  async updateWorktree(worktreePath: string): Promise<WorktreeUpdateResult> {
+  //
+  // The branch is passed in rather than read back with `git branch`: callers
+  // reach this from a registration git itself listed, so the extra spawn only
+  // re-derived a name they already held — once per updated worktree, on every
+  // tick that had anything to update.
+  async updateWorktree(worktreePath: string, branch: string): Promise<WorktreeUpdateResult> {
     const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
 
-    const branchSummary = await worktreeGit.branch();
-    const currentBranch = branchSummary.current;
-
     const before = (await worktreeGit.revparse(["HEAD"])).trim();
-    await worktreeGit.merge([`origin/${currentBranch}`, "--ff-only"]);
+    await worktreeGit.merge([`origin/${branch}`, "--ff-only"]);
     const after = (await worktreeGit.revparse(["HEAD"])).trim();
     const updated = after !== before;
 
@@ -1934,52 +1934,6 @@ export class GitService {
     }
 
     return { updated, before, after };
-  }
-
-  // Whether HEAD is an ancestor of origin/<branch>, so a fast-forward would
-  // bring the worktree to the remote tip (equal tips count too). simple-git
-  // resolves merge-base's exit 1 — no common ancestor — to an empty string,
-  // and that is a genuine "no": unrelated histories cannot fast-forward. Only
-  // a probe that could not run throws, so a spawn failure or a `fatal:` is
-  // never read as "no" and never sends a healthy worktree into diverged
-  // handling; the runner records update_check_failed for it instead.
-  async canFastForward(worktreePath: string, branch: string): Promise<boolean> {
-    const worktreeGit = this.getCachedGit(worktreePath);
-    let mergeBase: string;
-    let headSha: string;
-    try {
-      mergeBase = (await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`])).trim();
-      headSha = (await worktreeGit.revparse(["HEAD"])).trim();
-    } catch (error) {
-      throw new GitOperationError(
-        "merge-base",
-        `could not tell whether '${branch}' in '${worktreePath}' can fast-forward: ${getErrorMessage(error)}`,
-        error instanceof Error ? error : undefined,
-      );
-    }
-    // Merge base at HEAD: HEAD is an ancestor of the remote tip.
-    return mergeBase !== "" && mergeBase === headSha;
-  }
-
-  // Whether origin/<branch> is an ancestor of HEAD, so the worktree only has
-  // commits the remote lacks (equal tips count too). Same contract as
-  // canFastForward: an empty merge base is "no", a failed probe throws.
-  async isLocalAheadOfRemote(worktreePath: string, branch: string): Promise<boolean> {
-    const worktreeGit = this.getCachedGit(worktreePath);
-    let mergeBase: string;
-    let remoteSha: string;
-    try {
-      mergeBase = (await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`])).trim();
-      remoteSha = (await worktreeGit.revparse([`origin/${branch}`])).trim();
-    } catch (error) {
-      throw new GitOperationError(
-        "merge-base",
-        `could not tell whether '${branch}' in '${worktreePath}' is ahead of origin/${branch}: ${getErrorMessage(error)}`,
-        error instanceof Error ? error : undefined,
-      );
-    }
-    // Merge base at the remote tip: the remote is an ancestor of HEAD.
-    return mergeBase !== "" && mergeBase === remoteSha;
   }
 
   async classifyRemoteRelationship(worktreePath: string, branch: string): Promise<RemoteRelationship> {
@@ -2258,6 +2212,7 @@ export class GitService {
         // Only set when true: a listing that excludes detached entries would
         // otherwise carry a `detached: false` on every worktree it returns.
         ...(w.detached && { detached: true }),
+        ...(w.head !== null && { head: w.head }),
       }));
   }
 }

@@ -138,17 +138,34 @@ async function ensureRepoWorktreePath(
   return (await ensureRepoWorktree(ctx, params, service, git)).path;
 }
 
+/**
+ * Resolves `params.path` to a registered worktree of this repository.
+ *
+ * `fresh` skips the discovery snapshot and asks git for the listing. That
+ * snapshot is a plain field with no freshness check: a `git checkout -b` inside
+ * a worktree touches only that worktree's own admin HEAD, so neither the
+ * detection mtime cache nor `invalidateDiscovered` ever notices, and the branch
+ * name recorded when the session first detected the repository can outlive the
+ * checkout it described. A stale name is harmless to a tool that only labels or
+ * locates a worktree, but not to one that then acts on the branch: merging
+ * origin/<stale name> into a worktree that has since been moved to another
+ * branch fast-forwards *that* branch to the wrong tip, silently, whenever the
+ * new branch has no commits of its own. Callers that mutate must pass `fresh`.
+ */
 async function ensureRepoWorktree(
   ctx: RepositoryContext,
   params: WorktreePathParams,
   service: RepoService,
   git: RepoGitService,
+  options: { fresh?: boolean } = {},
 ): Promise<RepoWorktree> {
   const targetPath = params.path;
-  const discovered = ctx.getDiscoveredContext(params.repoName);
-  if (discovered?.allWorktrees.length) {
-    const match = discovered.allWorktrees.find((w) => pathsEqual(w.path, targetPath));
-    if (match) return { path: path.resolve(match.path), branch: match.branch };
+  if (!options.fresh) {
+    const discovered = ctx.getDiscoveredContext(params.repoName);
+    if (discovered?.allWorktrees.length) {
+      const match = discovered.allWorktrees.find((w) => pathsEqual(w.path, targetPath));
+      if (match) return { path: path.resolve(match.path), branch: match.branch };
+    }
   }
 
   try {
@@ -540,10 +557,13 @@ export async function handleUpdateWorktree(
     if (!service.isInitialized()) {
       await service.initializeUnlocked();
     }
-    const worktree = await ensureRepoWorktree(ctx, params, service, git);
+    // `fresh`: the branch this resolves to is the ref the fast-forward below
+    // merges, so it has to be the branch the worktree is on now, not the one
+    // the session's discovery snapshot remembers.
+    const worktree = await ensureRepoWorktree(ctx, params, service, git, { fresh: true });
 
     await git.fetchBranch(worktree.branch);
-    const { updated } = await git.updateWorktree(worktree.path);
+    const { updated } = await git.updateWorktree(worktree.path, worktree.branch);
     ctx.invalidateDiscovered();
 
     return formatToolResponse({

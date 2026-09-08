@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 
-import { TEST_PATHS, TEST_URLS, createMockConfig, createMockLogger } from "./test-utils";
+import { TEST_PATHS, TEST_URLS, createMockConfig, createMockLogger, createRemoteRefListOutput } from "./test-utils";
 // import { parseArguments } from '../utils/cli'; // Skip due to ESM issues
 
 import type { Logger } from "../services/logger.service";
@@ -24,12 +24,19 @@ describe("Integration Tests", () => {
   let mockScheduledTask: { start: Mock; stop: Mock };
   let mockLogger: Logger;
 
+  // Origin's branches, as the for-each-ref inventory lists them.
+  const REMOTE_BRANCHES = ["main", "feature-1", "feature-2"];
+
   // Bare-repository stand-in: the default-branch worktree is registered, so
   // initialize() reuses it instead of creating one; every other call is a no-op.
-  const rawDefault = async (args: unknown): Promise<string> =>
-    Array.isArray(args) && args[0] === "worktree" && args[1] === "list"
-      ? `worktree ${TEST_PATHS.worktree}/main\nbranch refs/heads/main\n\n`
-      : "";
+  const rawDefault = async (args: unknown): Promise<string> => {
+    if (!Array.isArray(args)) return "";
+    if (args[0] === "worktree" && args[1] === "list") {
+      return `worktree ${TEST_PATHS.worktree}/main\nbranch refs/heads/main\n\n`;
+    }
+    if (args[0] === "for-each-ref") return createRemoteRefListOutput(REMOTE_BRANCHES);
+    return "";
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -39,7 +46,7 @@ describe("Integration Tests", () => {
     mockGit = {
       fetch: vi.fn<any>().mockResolvedValue(undefined),
       branch: vi.fn<any>().mockResolvedValue({
-        all: ["origin/main", "origin/feature-1", "origin/feature-2"],
+        all: REMOTE_BRANCHES.map((branch) => `origin/${branch}`),
         current: "main",
       }),
       raw: vi.fn<any>().mockImplementation(rawDefault),
@@ -236,6 +243,9 @@ describe("Integration Tests", () => {
       (mockGit.raw as Mock<any>).mockImplementation(async (args) => {
         const argsArray = args as string[];
         mockRawCalls.push(argsArray);
+        if (argsArray[0] === "for-each-ref") {
+          return createRemoteRefListOutput(REMOTE_BRANCHES);
+        }
         if (argsArray[0] === "worktree" && argsArray[1] === "list" && argsArray[2] === "--porcelain") {
           return `worktree /test/worktrees/main
 branch refs/heads/main
@@ -293,6 +303,10 @@ branch refs/heads/dirty-branch
       (mockGit.raw as Mock<any>).mockImplementation(async (args) => {
         const argsArray = args as string[];
         mockRawCalls.push(argsArray);
+
+        if (argsArray[0] === "for-each-ref") {
+          return createRemoteRefListOutput(REMOTE_BRANCHES);
+        }
 
         if (argsArray[0] === "show-ref" && argsArray[1] === "--verify") {
           const ref = argsArray[argsArray.length - 1];

@@ -18,6 +18,8 @@ export interface WorktreeEntry {
   locked?: boolean;
   /** Reason recorded with the lock, when git has one. */
   lockReason?: string;
+  /** The worktree's HEAD oid as git listed it; absent when the listing had none. */
+  head?: string;
 }
 
 export type CreateAction =
@@ -28,7 +30,11 @@ export type PruneAction =
   | { kind: "check-prune"; branch: string; path: string }
   | { kind: "skip-prune"; branch: string; path: string; reason: "locked"; lockReason?: string };
 
-export type UpdateAction = { kind: "update-candidate"; branch: string; path: string };
+// `head` is what the registration listing said this worktree's HEAD was. The
+// update phase compares it against origin/<branch>'s tip to answer "nothing
+// changed" without spawning anything per worktree, so it is carried through the
+// plan rather than probed again.
+export type UpdateAction = { kind: "update-candidate"; branch: string; path: string; head?: string };
 
 export type SparseAction =
   | { kind: "check-sparse"; branch: string; path: string }
@@ -121,7 +127,12 @@ export function planUpdateActions(inventory: WorktreeInventory): UpdateAction[] 
   const remoteBranches = new Set(inventory.remoteBranches);
   return inventory.existingWorktrees
     .filter((worktree) => remoteBranches.has(worktree.branch))
-    .map((worktree) => ({ kind: "update-candidate", branch: worktree.branch, path: worktree.path }));
+    .map((worktree) => ({
+      kind: "update-candidate",
+      branch: worktree.branch,
+      path: worktree.path,
+      ...(worktree.head !== undefined && { head: worktree.head }),
+    }));
 }
 
 export function planSparseActions(inventory: WorktreeInventory, sparseCheckout?: SparseCheckoutConfig): SparseAction[] {

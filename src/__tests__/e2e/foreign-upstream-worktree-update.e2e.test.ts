@@ -214,15 +214,15 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
     const before = await syncFieldsOf(git, topicPath);
 
     const topicV2 = await pushCommit("topic", "v2");
-    const probe = git.isWorktreeBehind.bind(git);
+    const probe = git.getAheadBehindCounts.bind(git);
     let probeSaidBehind: boolean | undefined;
-    const spy = vi.spyOn(git, "isWorktreeBehind").mockImplementation(async (worktreePath, branch) => {
-      const behind = await probe(worktreePath, branch);
+    const spy = vi.spyOn(git, "getAheadBehindCounts").mockImplementation(async (worktreePath, branch) => {
+      const counts = await probe(worktreePath, branch);
       if (branch === "topic") {
-        probeSaidBehind = behind;
+        probeSaidBehind = counts.behind > 0;
         await simpleGit(topicPath).merge(["origin/topic", "--ff-only"]);
       }
-      return behind;
+      return counts;
     });
 
     const outcome = await syncOutcome(service);

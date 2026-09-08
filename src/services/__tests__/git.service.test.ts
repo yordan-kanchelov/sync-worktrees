@@ -11,6 +11,7 @@ import {
   createMockConfig,
   createMockGitService,
   createMockLogger,
+  createRemoteRefListOutput,
   createWorktreeListOutput,
   setEnvVar,
 } from "../../__tests__/test-utils";
@@ -172,15 +173,18 @@ describe("GitService", () => {
       // The default-branch worktree is registered by default, so initialize()
       // reuses it. Tests that exercise its creation install their own stand-in
       // with mockInitializeGit.
-      raw: vi
-        .fn<any>()
-        .mockImplementation((args: unknown) =>
-          Promise.resolve(
-            Array.isArray(args) && args[0] === "worktree" && args[1] === "list"
-              ? createWorktreeListOutput([{ path: MAIN_WORKTREE_PATH, branch: "main", commit: "abc123" }])
-              : "",
-          ),
-        ) as any,
+      raw: vi.fn<any>().mockImplementation((args: unknown) => {
+        if (!Array.isArray(args)) return Promise.resolve("");
+        if (args[0] === "worktree" && args[1] === "list") {
+          return Promise.resolve(
+            createWorktreeListOutput([{ path: MAIN_WORKTREE_PATH, branch: "main", commit: "abc123" }]),
+          );
+        }
+        if (args[0] === "for-each-ref" && args[args.length - 1] === "refs/remotes/origin") {
+          return Promise.resolve(createRemoteRefListOutput(["main", "feature-1", "feature-2"]));
+        }
+        return Promise.resolve("");
+      }) as any,
       status: vi.fn<any>().mockResolvedValue(buildGitStatusResponse({ isClean: true })) as any,
       reset: vi.fn<any>().mockResolvedValue(undefined) as any,
       clone: vi.fn<any>().mockResolvedValue(undefined) as any,
@@ -1145,15 +1149,30 @@ describe("GitService", () => {
       await gitService.initialize();
     });
 
+    // The listing comes from `for-each-ref` on full refnames, never
+    // `branch -v -r`: nothing here has to resolve a commit to print a subject
+    // line that is then thrown away, and no output is shaped by the reader's
+    // color settings or by which short names happen to be ambiguous.
+    const forEachRef = (entries: Array<string | { ref: string; oid: string }>): void => {
+      (mockGit.raw as Mock).mockImplementation((args: unknown) =>
+        Promise.resolve(Array.isArray(args) && args[0] === "for-each-ref" ? createRemoteRefListOutput(entries) : ""),
+      );
+    };
+
     it("should return only remote branches without origin prefix", async () => {
       const branches = await gitService.getRemoteBranches();
 
-      expect(mockGit.branch).toHaveBeenCalledWith(["-r", "--no-color"]);
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "for-each-ref",
+        "--format=%(refname)%00%(objectname)",
+        "refs/remotes/origin",
+      ]);
+      expect(mockGit.branch).not.toHaveBeenCalled();
       expect(branches).toEqual(["main", "feature-1", "feature-2"]);
     });
 
     it("should handle empty branch list", async () => {
-      mockGit.branch.mockResolvedValue({ all: [], current: "" } as any);
+      forEachRef([]);
 
       const branches = await gitService.getRemoteBranches();
 
@@ -1161,10 +1180,7 @@ describe("GitService", () => {
     });
 
     it("should filter out origin/HEAD", async () => {
-      mockGit.branch.mockResolvedValue({
-        all: ["origin/main", "origin/feature-1", "origin/HEAD"],
-        current: "main",
-      } as any);
+      forEachRef(["main", "feature-1", { ref: "refs/remotes/origin/HEAD", oid: "main-oid" }]);
 
       const branches = await gitService.getRemoteBranches();
 
@@ -1173,25 +1189,21 @@ describe("GitService", () => {
     });
 
     it("keeps a remote branch named 'feature/HEAD' and drops only the symref (#review)", async () => {
-      mockGit.branch.mockResolvedValue({
-        all: ["origin/HEAD", "origin/feature/HEAD", "origin/main"],
-        current: "main",
-      } as any);
+      forEachRef([{ ref: "refs/remotes/origin/HEAD", oid: "main-oid" }, "feature/HEAD", "main"]);
 
       const branches = await gitService.getRemoteBranches();
 
       expect(branches).toEqual(["feature/HEAD", "main"]);
     });
 
-    it("drops the 'origin/HEAD -> origin/main' arrow line git prints for the symref (#review)", async () => {
-      mockGit.branch.mockResolvedValue({
-        all: ["origin/HEAD -> origin/main", "origin/feature/HEAD", "origin/main"],
-        current: "main",
-      } as any);
+    // A branch literally named "origin" is a real branch; only the exact
+    // origin/HEAD symref is dropped.
+    it("keeps a remote branch literally named 'origin' (#review)", async () => {
+      forEachRef(["origin", "main"]);
 
       const branches = await gitService.getRemoteBranches();
 
-      expect(branches).toEqual(["feature/HEAD", "main"]);
+      expect(branches).toEqual(["origin", "main"]);
     });
   });
 
@@ -2686,10 +2698,13 @@ describe("GitService", () => {
       const worktrees = await gitService.getWorktrees();
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      // The HEAD oid git prints for each worktree is carried through: the
+      // update phase compares it against origin's tip to decide, without a
+      // per-worktree probe, that nothing changed.
       expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false },
-        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false },
-        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false, locked: false },
+        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false, head: "abc123" },
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false, head: "def456" },
+        { path: "/path/to/worktrees/feature-2", branch: "feature-2", isPrunable: false, locked: false, head: "ghi789" },
       ]);
     });
 
@@ -2886,7 +2901,7 @@ locked
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
-      await expect(gitService.updateWorktree("/test/worktrees/feature-1")).resolves.toEqual({
+      await expect(gitService.updateWorktree("/test/worktrees/feature-1", "feature-1")).resolves.toEqual({
         updated: true,
         before: "oldcommit456",
         after: "newcommit123",
@@ -2905,11 +2920,10 @@ locked
     it("should update metadata for main worktree", async () => {
       await gitService.initialize();
 
-      mockGit.branch.mockResolvedValue({ current: "main" } as any);
       (mockGit as any).merge = vi.fn<any>().mockResolvedValue(undefined);
       mockGit.revparse.mockResolvedValueOnce("oldcommit456\n" as any).mockResolvedValueOnce("newcommit123\n" as any);
 
-      await gitService.updateWorktree("/test/worktrees/main");
+      await gitService.updateWorktree("/test/worktrees/main", "main");
 
       expect((mockGit as any).merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
       expect(mockMetadataService.updateLastSyncFromPath).toHaveBeenCalledWith(
@@ -2936,7 +2950,7 @@ locked
       };
       (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
 
-      await expect(gitService.updateWorktree("/test/worktrees/feature-1")).resolves.toEqual({
+      await expect(gitService.updateWorktree("/test/worktrees/feature-1", "feature-1")).resolves.toEqual({
         updated: false,
         before: "samecommit789",
         after: "samecommit789",
@@ -2944,189 +2958,6 @@ locked
 
       expect(mockWorktreeGit.merge).toHaveBeenCalledWith(["origin/feature-1", "--ff-only"]);
       expect(mockMetadataService.updateLastSyncFromPath).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("isLocalAheadOfRemote", () => {
-    beforeEach(async () => {
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
-      await gitService.initialize();
-    });
-
-    it("should return true when local is ahead of remote", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
-        revparse: vi.fn<any>().mockResolvedValue("abc123\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
-
-      expect(result).toBe(true);
-      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["merge-base", "HEAD", "origin/feature-1"]);
-      expect(mockWorktreeGit.revparse).toHaveBeenCalledWith(["origin/feature-1"]);
-    });
-
-    it("should return false when local is behind remote", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
-        revparse: vi.fn<any>().mockResolvedValue("def456\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return false when merge-base differs from remote (truly diverged)", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
-        revparse: vi.fn<any>().mockResolvedValue("xyz789\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return false when truly diverged (neither ancestor of other)", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue("commonancestor\n"),
-        revparse: vi.fn<any>().mockResolvedValue("remotecommit\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      const result = await gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1");
-
-      expect(result).toBe(false);
-    });
-
-    // simple-git resolves merge-base's exit 1 (no common ancestor) to an
-    // empty string. That is a genuine "not ahead" — unrelated histories — and
-    // must not be confused with a probe that failed.
-    it("returns false, without throwing, when merge-base finds no common ancestor", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue(""),
-        revparse: vi.fn<any>().mockResolvedValue("def456\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      await expect(gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1")).resolves.toBe(false);
-    });
-
-    // A probe that could not run must not answer "no": the runner reads
-    // "cannot fast-forward, not ahead" as diverged and moves the worktree.
-    it("throws when merge-base fails instead of reporting 'not ahead'", async () => {
-      const cause = new Error("fatal: Not a valid object name");
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockRejectedValue(cause),
-        revparse: vi.fn<any>().mockResolvedValue("abc123\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      await expect(gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1")).rejects.toMatchObject({
-        name: "GitOperationError",
-        code: "GIT_OPERATION_FAILED",
-        message:
-          "Git operation 'merge-base' failed: could not tell whether 'feature-1' in '/test/worktrees/feature-1' is ahead of origin/feature-1: fatal: Not a valid object name",
-        cause,
-      });
-    });
-
-    it("throws when revparse fails instead of reporting 'not ahead'", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
-        revparse: vi.fn<any>().mockRejectedValue(new Error("spawn git EMFILE")),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      await expect(gitService.isLocalAheadOfRemote("/test/worktrees/feature-1", "feature-1")).rejects.toThrow(
-        /is ahead of origin\/feature-1: spawn git EMFILE$/,
-      );
-    });
-  });
-
-  describe("canFastForward", () => {
-    beforeEach(async () => {
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
-      await gitService.initialize();
-    });
-
-    it("returns true when the merge base is HEAD (HEAD is an ancestor of the remote tip)", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
-        revparse: vi.fn<any>().mockResolvedValue("abc123\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).resolves.toBe(true);
-      expect(mockWorktreeGit.raw).toHaveBeenCalledWith(["merge-base", "HEAD", "origin/feature-1"]);
-      expect(mockWorktreeGit.revparse).toHaveBeenCalledWith(["HEAD"]);
-    });
-
-    it("returns false when the merge base is not HEAD", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue("ancestor\n"),
-        revparse: vi.fn<any>().mockResolvedValue("head\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).resolves.toBe(false);
-    });
-
-    // Unrelated histories: merge-base exits 1 with nothing on stdout, which
-    // simple-git resolves to "". A genuine "cannot fast-forward", not a failure.
-    it("returns false, without throwing, when merge-base finds no common ancestor", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue(""),
-        revparse: vi.fn<any>().mockResolvedValue("head\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).resolves.toBe(false);
-    });
-
-    it("throws when merge-base fails instead of reporting 'cannot fast-forward'", async () => {
-      const cause = new Error("spawn git EMFILE");
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockRejectedValue(cause),
-        revparse: vi.fn<any>().mockResolvedValue("head\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).rejects.toMatchObject({
-        name: "GitOperationError",
-        code: "GIT_OPERATION_FAILED",
-        message:
-          "Git operation 'merge-base' failed: could not tell whether 'feature-1' in '/test/worktrees/feature-1' can fast-forward: spawn git EMFILE",
-        cause,
-      });
-    });
-
-    it("throws when revparse fails instead of reporting 'cannot fast-forward'", async () => {
-      const mockWorktreeGit = {
-        raw: vi.fn<any>().mockResolvedValue("abc123\n"),
-        revparse: vi.fn<any>().mockRejectedValue(new Error("fatal: Not a valid object name HEAD")),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      await expect(gitService.canFastForward("/test/worktrees/feature-1", "feature-1")).rejects.toThrow(
-        /can fast-forward: fatal: Not a valid object name HEAD$/,
-      );
     });
   });
 
@@ -3377,7 +3208,7 @@ locked
 
     // Args-keyed stand-in: origin/HEAD reads `symrefTargets` in order (the
     // last one repeats), `remote set-head origin -a` resolves unless
-    // `setHeadError`, and `branch -r` lists `remoteBranches`.
+    // `setHeadError`, and the remote-ref listing holds `remoteBranches`.
     const mockOriginHead = (opts: {
       symrefTargets: string[];
       remoteBranches: string[];
@@ -3394,11 +3225,10 @@ locked
         if (command === "remote" && subcommand === "set-head") {
           return opts.setHeadError ? Promise.reject(opts.setHeadError) : Promise.resolve("");
         }
+        if (command === "for-each-ref") {
+          return Promise.resolve(createRemoteRefListOutput(opts.remoteBranches));
+        }
         return Promise.resolve("");
-      });
-      (mockGit.branch as Mock).mockResolvedValue({
-        all: opts.remoteBranches.map((branch) => `origin/${branch}`),
-        current: "",
       });
     };
 
@@ -3569,8 +3399,12 @@ locked
 
   describe("initialize - failure scenarios", () => {
     it("detects default branches whose names contain slashes", async () => {
-      mockGit.raw.mockResolvedValueOnce("refs/remotes/origin/release/2024\n" as any);
-      (mockGit.branch as Mock).mockResolvedValueOnce({ all: ["origin/release/2024"], current: "" } as any);
+      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+        if (!Array.isArray(args)) return Promise.resolve("");
+        if (args[0] === "symbolic-ref") return Promise.resolve("refs/remotes/origin/release/2024\n");
+        if (args[0] === "for-each-ref") return Promise.resolve(createRemoteRefListOutput(["release/2024"]));
+        return Promise.resolve("");
+      });
 
       await expect((gitService as any).detectDefaultBranch(mockGit)).resolves.toBe("release/2024");
     });
@@ -3592,21 +3426,21 @@ locked
       // Sequence all raw calls in order of execution:
       // 1. remote get-url origin → matches repoUrl
       // 2. config check → reject (triggers addConfig)
-      // 3. symbolic-ref → reject (first detection attempt fails)
-      // 4. set-head → reject (skips second symbolic-ref, falls to branch -r)
-      // 5. worktree list → returns main worktree so no creation needed
+      // 3. for-each-ref → reject (the remote branch listing fails, so no
+      //    common default name can be confirmed to exist either)
+      // 4. symbolic-ref → reject (first detection attempt fails)
+      // 5. set-head → reject (skips second symbolic-ref)
+      // 6. worktree list → returns main worktree so no creation needed
       mockGit.raw.mockReset();
       mockGit.raw
         .mockResolvedValueOnce(TEST_URLS.github as any)
         .mockRejectedValueOnce(new Error("config not found"))
+        .mockRejectedValueOnce(new Error("ref listing failed"))
         .mockRejectedValueOnce(new Error("not a symbolic ref"))
         .mockRejectedValueOnce(new Error("set-head failed"))
         .mockResolvedValueOnce(
           createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
         );
-
-      // branch(-r) in detectDefaultBranch → also fails, so all detection methods exhausted
-      mockGit.branch.mockRejectedValueOnce(new Error("branch list failed"));
 
       const git = await gitService.initialize();
       expect(git).toBe(mockGit);

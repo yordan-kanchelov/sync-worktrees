@@ -196,12 +196,13 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
     Object.assign(gitService, {
       hasOperationInProgress: vi.fn().mockResolvedValue(false),
       checkWorktreeStatus: vi.fn().mockResolvedValue(true),
-      // Only the diverged branch refuses the fast-forward; main is up to date.
-      canFastForward: vi.fn().mockImplementation((worktreePath: string) => worktreePath !== divergedWorktreePath),
-      isWorktreeBehind: vi.fn().mockResolvedValue(false),
-      isLocalAheadOfRemote: vi.fn().mockResolvedValue(false),
       hasStashedChanges: vi.fn().mockResolvedValue(false),
-      getAheadBehindCounts: vi.fn().mockResolvedValue({ ahead: 1, behind: 1 }),
+      // Only the diverged branch has commits on both sides; main is up to date.
+      getAheadBehindCounts: vi
+        .fn()
+        .mockImplementation(async (worktreePath: string) =>
+          worktreePath === divergedWorktreePath ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 0 },
+        ),
       getCurrentCommit: vi.fn().mockResolvedValue("localtip"),
       compareTreeContent: vi.fn().mockResolvedValue(true),
       resetToUpstream: vi.fn().mockResolvedValue(false),

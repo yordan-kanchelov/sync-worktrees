@@ -1067,7 +1067,7 @@ describe("case-insensitive path handling in handlers", () => {
     const result = await invoke(handleUpdateWorktree, ctx, { path: "/users/foo/repo/feature" });
     const body = parseResponse(result);
     expect(body.success).toBe(true);
-    expect(git.updateWorktree).toHaveBeenCalledWith("/Users/foo/Repo/Feature");
+    expect(git.updateWorktree).toHaveBeenCalledWith("/Users/foo/Repo/Feature", "feature");
   });
 
   it("rejects mixed-case worktree path on linux (case-sensitive)", async () => {
@@ -1093,8 +1093,31 @@ describe("handleUpdateWorktree", () => {
     expect(body.success).toBe(true);
     expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
     expect(git.fetchBranch).toHaveBeenCalledWith("feature");
-    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature");
+    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature", "feature");
     expect(body.updated).toBe(true);
+  });
+
+  // The discovery snapshot has no freshness check: a `git checkout -b` inside
+  // a worktree touches only that worktree's own admin HEAD, so the branch the
+  // session recorded at detection time can outlive the checkout it described.
+  // Acting on that name would merge origin/<old branch> into the worktree and,
+  // whenever the new branch has no commits of its own, fast-forward *it* to the
+  // old branch's tip — a silent branch rewrite. The branch is read back from
+  // git before the fetch and the merge.
+  it("merges the branch the worktree is on now, not the one the discovery snapshot remembers", async () => {
+    const { ctx, git, service } = makeCtx({
+      discovered: makeDiscovered({ allWorktrees: [{ path: "/w/main", branch: "main", isCurrent: false }] }),
+      git: { getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/main", branch: "wip" }]) },
+    });
+
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/main" });
+
+    expect(parseResponse(result).success).toBe(true);
+    expect(service.getWorktrees).toHaveBeenCalled();
+    expect(git.updateWorktree).toHaveBeenCalledWith("/w/main", "wip");
+    expect(git.updateWorktree).not.toHaveBeenCalledWith("/w/main", "main");
+    expect(git.fetchBranch).toHaveBeenCalledWith("wip");
+    expect(git.fetchBranch).not.toHaveBeenCalledWith("main");
   });
 
   it("reports updated:false when the worktree already matched origin/<branch>", async () => {
@@ -1107,7 +1130,7 @@ describe("handleUpdateWorktree", () => {
     const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" });
     const body = parseResponse(result);
     expect(body).toEqual({ success: true, worktreePath: "/w/feature", updated: false });
-    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature");
+    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature", "feature");
   });
 
   it("fetches the target branch before updating the worktree", async () => {

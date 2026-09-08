@@ -96,11 +96,18 @@ export class WorktreeModeSyncRunner {
     );
 
     await this.createNewWorktreesWithTiming(syncPlan, phaseTimer, syncContext, outcome);
-    await this.recordRemoteBranchTips([...worktrees, ...syncPlan.create.filter((action) => action.kind === "create")]);
+    // One listing of origin's tips for the whole attempt: the tip recording
+    // below and the update phase's "nothing changed" test read the same map.
+    // Nothing fetches between them, so no second look could say anything new.
+    const remoteTips = await this.readRemoteBranchTips();
+    await this.recordRemoteBranchTips(
+      [...worktrees, ...syncPlan.create.filter((action) => action.kind === "create")],
+      remoteTips,
+    );
     await this.pruneOldWorktreesWithTiming(syncPlan.prune, phaseTimer, outcome);
 
     if (this.config.updateExistingWorktrees !== false) {
-      await this.updateExistingWorktreesWithTiming(syncPlan.update, phaseTimer, syncContext, outcome);
+      await this.updateExistingWorktreesWithTiming(syncPlan.update, phaseTimer, syncContext, outcome, remoteTips);
     }
 
     if (this.config.sparseCheckout) {
@@ -574,28 +581,39 @@ export class WorktreeModeSyncRunner {
   // "HEAD was on the remote before the deletion" — without it every such
   // worktree reads as having unpushed commits forever. Best-effort: a failed
   // recording only means that worktree stays conservatively preserved.
-  private async recordRemoteBranchTips(worktrees: Array<{ path: string; branch: string }>): Promise<void> {
+  private async recordRemoteBranchTips(
+    worktrees: Array<{ path: string; branch: string }>,
+    tips: Map<string, string> | null,
+  ): Promise<void> {
+    if (tips === null || tips.size === 0) return;
+
+    const limit = pLimit(this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+
+    await Promise.all(
+      worktrees.map((wt) =>
+        limit(async () => {
+          const oid = tips.get(wt.branch);
+          if (!oid) return;
+          await this.gitService
+            .recordRemoteTip(wt.path, wt.branch, oid)
+            .catch((error: unknown) =>
+              this.logger.warn(`  - ⚠️ Could not record remote tip for '${wt.branch}': ${getErrorMessage(error)}`),
+            );
+        }),
+      ),
+    );
+  }
+
+  // Every origin tip in one `for-each-ref` on the bare repo. Best effort on
+  // purpose: both readers have a per-worktree fallback, so a listing that
+  // failed costs speed and a metadata record, never a sync — the update phase
+  // simply probes every worktree the way it did before this listing existed.
+  private async readRemoteBranchTips(): Promise<Map<string, string> | null> {
     try {
-      const tips = await this.gitService.getRemoteBranchTips();
-      if (tips.size === 0) return;
-
-      const limit = pLimit(this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
-
-      await Promise.all(
-        worktrees.map((wt) =>
-          limit(async () => {
-            const oid = tips.get(wt.branch);
-            if (!oid) return;
-            await this.gitService
-              .recordRemoteTip(wt.path, wt.branch, oid)
-              .catch((error: unknown) =>
-                this.logger.warn(`  - ⚠️ Could not record remote tip for '${wt.branch}': ${getErrorMessage(error)}`),
-              );
-          }),
-        ),
-      );
+      return await this.gitService.getRemoteBranchTips();
     } catch (error) {
-      this.logger.warn(`⚠️ Could not record remote branch tips: ${getErrorMessage(error)}`);
+      this.logger.warn(`⚠️ Could not read remote branch tips: ${getErrorMessage(error)}`);
+      return null;
     }
   }
 
@@ -941,11 +959,12 @@ export class WorktreeModeSyncRunner {
     phaseTimer: PhaseTimer,
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
+    remoteTips: Map<string, string> | null,
   ): Promise<void> {
     phaseTimer.startPhase("Phase 4: Update");
     this.progressEmitter.emit({ phase: "update", message: "Updating existing worktrees" });
 
-    await this.updateExistingWorktrees(actions, syncContext, outcome);
+    await this.updateExistingWorktrees(actions, syncContext, outcome, remoteTips);
 
     phaseTimer.setPhaseCount("Phase 4: Update", actions.length);
     phaseTimer.endPhase();
@@ -955,6 +974,7 @@ export class WorktreeModeSyncRunner {
     actions: UpdateAction[],
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
+    remoteTips: Map<string, string> | null,
   ): Promise<void> {
     this.logger.info("Step 4: Checking for worktrees that need updates...");
 
@@ -997,21 +1017,48 @@ export class WorktreeModeSyncRunner {
           const hasOp = await this.gitService.hasOperationInProgress(worktree.path);
           if (hasOp) return { action: "skip", worktree, reason: "operation_in_progress" };
 
+          // The cheap answer first: git's own registration listing resolved
+          // this worktree's HEAD, and one for-each-ref gave origin's tip for
+          // every branch. When they are the same oid there is provably nothing
+          // to fast-forward, nothing to diverge from and nothing an ahead/behind
+          // probe could add — so neither `git status` nor any per-worktree git
+          // process runs, which is what keeps a tick where nothing changed off
+          // the repository's back. (The oid is HEAD's, not the bare repo's
+          // refs/heads/<branch>: it is the worktree's own view, so a checkout
+          // that moved out from under the branch ref cannot slip through here.)
+          //
+          // Both oids are a snapshot: HEAD comes from the listing taken at the
+          // top of the attempt and the tips from after the create phase, which
+          // is not instant when there are worktrees to build. A HEAD that moves
+          // *to* the tip in that window still falls through to the probes, so
+          // the comparison only ever errs toward doing more work — except for a
+          // HEAD moved *away* from the tip (a `reset --hard` mid-attempt),
+          // which still matches the stale oid and is reported up to date.
+          // Nothing is mutated on that path; the next tick reads the new HEAD
+          // and updates it, so the cost is one tick of latency.
+          const remoteTip = remoteTips?.get(worktree.branch);
+          if (remoteTip !== undefined && action.head === remoteTip) {
+            return { action: "noop", worktree, reason: "already_up_to_date" };
+          }
+
           const isClean = await this.gitService.checkWorktreeStatus(worktree.path);
           if (!isClean) return { action: "skip", worktree, reason: "dirty_worktree" };
 
-          const canFastForward = await this.gitService.canFastForward(worktree.path, worktree.branch);
-          if (!canFastForward) {
-            const isAhead = await this.gitService.isLocalAheadOfRemote(worktree.path, worktree.branch);
-            if (isAhead) {
-              this.logger.info(`⏭️  Skipping '${worktree.branch}' - has unpushed commits`);
-              return { action: "skip", worktree, reason: "local_ahead" };
-            }
-            return { action: "diverged", worktree };
+          // One `rev-list --left-right --count` in place of the merge-base pair
+          // plus the behind probe, with the same verdicts: no commits of its
+          // own means a fast-forward reaches the remote tip, commits on both
+          // sides (unrelated histories included, which count on both sides)
+          // mean diverged, and only commits of its own mean unpushed work.
+          // Same contract as those probes too — it throws rather than answering
+          // when it could not run, so a spawn failure never reads as "diverged"
+          // and never sends a healthy worktree into diverged handling.
+          const { ahead, behind } = await this.gitService.getAheadBehindCounts(worktree.path, worktree.branch);
+          if (ahead > 0) {
+            if (behind > 0) return { action: "diverged", worktree };
+            this.logger.info(`⏭️  Skipping '${worktree.branch}' - has unpushed commits`);
+            return { action: "skip", worktree, reason: "local_ahead" };
           }
-
-          const isBehind = await this.gitService.isWorktreeBehind(worktree.path, worktree.branch);
-          if (!isBehind) return { action: "noop", worktree, reason: "already_up_to_date" };
+          if (behind === 0) return { action: "noop", worktree, reason: "already_up_to_date" };
 
           const sparseCfg = this.config.sparseCheckout;
           if (sparseCfg && sparseCfg.skipUpdateWhenOutsideSparse !== false) {
@@ -1055,9 +1102,9 @@ export class WorktreeModeSyncRunner {
             break;
         }
       } else if (result.status === "rejected") {
-        // Probe-only failure (status / fast-forward / local-ahead / behind
-        // check threw). Every probe throws when it cannot answer instead of
-        // reporting "no" — a merge-base that failed to spawn must never read
+        // Probe-only failure (the status check or the ahead/behind count
+        // threw). Every probe throws when it cannot answer instead of
+        // reporting "no" — a rev-list that failed to spawn must never read
         // as "diverged" — and the update is gated on success here, so a probe
         // error means we never touched the worktree: a skip, not a hard failure.
         // allSettled keeps the input order, so actions[index] is this worktree.
@@ -1084,7 +1131,7 @@ export class WorktreeModeSyncRunner {
           let changed = true;
           try {
             this.logger.info(`  - Updating worktree '${worktree.branch}'...`);
-            const { updated } = await this.gitService.updateWorktree(worktree.path);
+            const { updated } = await this.gitService.updateWorktree(worktree.path, worktree.branch);
             if (updated) {
               this.logger.info(`    ✅ Successfully updated '${worktree.branch}'.`);
               outcome.recordUpdated(worktree.branch, worktree.path, "fast_forward");
@@ -1185,8 +1232,8 @@ export class WorktreeModeSyncRunner {
       return false;
     }
 
-    // The classification that got us here came from merge-base probes (or a
-    // refused fast-forward) that ran a while ago, under high concurrency.
+    // The classification that got us here came from an ahead/behind count (or
+    // a refused fast-forward) that ran a while ago, under high concurrency.
     // Before the reset or the move, confirm with a probe that throws when it
     // cannot answer that HEAD and origin/<branch> really have commits on both
     // sides. Anything else is re-classified and left for the next sync; a

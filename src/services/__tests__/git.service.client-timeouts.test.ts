@@ -178,7 +178,7 @@ describe("GitService git client timeouts", () => {
     it("issues the fast-forward merge through a client with no block timeout", async () => {
       const service = newService();
 
-      await service.updateWorktree(FEATURE_WORKTREE_PATH);
+      await service.updateWorktree(FEATURE_WORKTREE_PATH, "feature-1");
 
       const merger = onlyClientThatRan("merge", "origin/feature-1");
       expect(merger.baseDir).toBe(FEATURE_WORKTREE_PATH);

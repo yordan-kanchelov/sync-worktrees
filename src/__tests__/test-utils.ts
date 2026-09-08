@@ -123,6 +123,19 @@ export function createBranchListOutput(branches: string[]): string {
   return branches.map((branch) => `  remotes/origin/${branch}`).join("\n");
 }
 
+// One `for-each-ref --format=%(refname)%00%(objectname) refs/remotes/origin`
+// listing: the inventory GitService reads to learn which branches origin has
+// and where each one points. Entries are given as branch names (with a
+// placeholder oid) or as explicit ref/oid pairs, for the refs that are not
+// plain "refs/remotes/origin/<branch>".
+export function createRemoteRefListOutput(entries: Array<string | { ref: string; oid: string }>): string {
+  return entries
+    .map((entry) =>
+      typeof entry === "string" ? `refs/remotes/origin/${entry}\0${entry}-oid` : `${entry.ref}\0${entry.oid}`,
+    )
+    .join("\n");
+}
+
 // Test Execution Helper
 export async function withTempDirectory<T>(fn: (tempDir: string) => Promise<T>): Promise<T> {
   const tempDir = await createTempDirectory();

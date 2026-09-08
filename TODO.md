@@ -121,7 +121,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   makes every later initialize fail with git's 'destination path already exists' and no recovery path
 - [x] **T64** — Sparse reconcile (Step 5) is not idempotent for includes with a trailing slash:
   re-applies patterns and runs `git checkout HEAD` on every worktree every sync
-- [ ] **T2** — Update phase spawns ~6 git processes per worktree every tick (4 + 6W per sync)
+- [x] **T2** — Update phase spawns ~6 git processes per worktree every tick (4 + 6W per sync)
   including a full `git status` scan before the cheap tip comparison; one `for-each-ref` already
   answers 'nothing changed'
 - [ ] **T53** — MAX_SAFE_TOTAL_CONCURRENT_OPS validation counts each status check as one process,
@@ -469,7 +469,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 
 ## Medium severity
 
-### [ ] T2. Update phase spawns ~6 git processes per worktree every tick (4 + 6W per sync) including a full `git status` scan before the cheap tip comparison; one `for-each-ref` already answers 'nothing changed'
+### [x] T2. Update phase spawns ~6 git processes per worktree every tick (4 + 6W per sync) including a full `git status` scan before the cheap tip comparison; one `for-each-ref` already answers 'nothing changed'
 
 - **Category**: performance · **Subsystem**: worktree-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

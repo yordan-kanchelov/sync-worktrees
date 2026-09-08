@@ -32,18 +32,17 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
         { path: "/test/worktrees/main", branch: "main" },
         { path: "/test/worktrees/feature-ahead", branch: "feature-ahead" },
       ]),
-      isWorktreeBehind: vi.fn<any>().mockResolvedValue(false),
       updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
-      canFastForward: vi.fn<any>().mockResolvedValue(true),
       compareTreeContent: vi.fn<any>().mockResolvedValue(false),
       resetToUpstream: vi.fn<any>().mockResolvedValue(true),
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
-      isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
-      // Diverged handling re-verifies with this throwing probe before it moves
-      // anything; commits on both sides is the genuine diverged state.
-      getAheadBehindCounts: vi.fn<any>().mockResolvedValue({ ahead: 1, behind: 1 }),
+      // The one probe the update phase runs per worktree, and the one diverged
+      // handling re-verifies with before it moves anything. Default: up to date.
+      getAheadBehindCounts: vi.fn<any>().mockResolvedValue({ ahead: 0, behind: 0 }),
+      getRemoteBranchTips: vi.fn<any>().mockResolvedValue(new Map()),
+      recordRemoteTip: vi.fn<any>().mockResolvedValue(undefined),
       // The trash-disabled diverged flow pins a keep ref and deletes the stale
       // local branch before recreating the worktree.
       updateRef: vi.fn<any>().mockResolvedValue(undefined),
@@ -93,15 +92,11 @@ describe("Local Branch Ahead of Remote", () => {
       (fs.readdir as Mock<any>).mockResolvedValue([]);
       (fs.access as Mock<any>).mockResolvedValue(undefined);
 
-      // feature-ahead cannot fast-forward because it's ahead of remote
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-ahead");
-      });
-
-      // But it's not truly diverged - local is ahead of remote
-      mockGitService.isLocalAheadOfRemote.mockImplementation(async (path) => {
-        return path.includes("feature-ahead");
-      });
+      // feature-ahead has commits of its own and none from the remote: it
+      // cannot fast-forward, but it is not diverged either.
+      mockGitService.getAheadBehindCounts.mockImplementation(async (path: string) =>
+        path.includes("feature-ahead") ? { ahead: 2, behind: 0 } : { ahead: 0, behind: 0 },
+      );
 
       await service.sync();
 
@@ -119,13 +114,9 @@ describe("Local Branch Ahead of Remote", () => {
       (fs.readdir as Mock<any>).mockResolvedValue([]);
       (fs.access as Mock<any>).mockResolvedValue(undefined);
 
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-ahead");
-      });
-
-      mockGitService.isLocalAheadOfRemote.mockImplementation(async (path) => {
-        return path.includes("feature-ahead");
-      });
+      mockGitService.getAheadBehindCounts.mockImplementation(async (path: string) =>
+        path.includes("feature-ahead") ? { ahead: 2, behind: 0 } : { ahead: 0, behind: 0 },
+      );
 
       await service.sync();
 
@@ -146,13 +137,10 @@ describe("Local Branch Ahead of Remote", () => {
         { path: "/test/worktrees/feature-diverged", branch: "feature-diverged" },
       ]);
 
-      // Cannot fast-forward
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-diverged");
-      });
-
-      // NOT ahead - truly diverged
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
+      // Commits on both sides - truly diverged
+      mockGitService.getAheadBehindCounts.mockImplementation(async (path: string) =>
+        path.includes("feature-diverged") ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 0 },
+      );
 
       // Trees are different
       mockGitService.compareTreeContent.mockResolvedValue(false);
@@ -190,21 +178,20 @@ describe("Local Branch Ahead of Remote", () => {
         return !path.includes("feature-ahead");
       });
 
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-ahead");
-      });
-
-      mockGitService.isLocalAheadOfRemote.mockImplementation(async (path) => {
-        return path.includes("feature-ahead");
-      });
+      mockGitService.getAheadBehindCounts.mockImplementation(async (path: string) =>
+        path.includes("feature-ahead") ? { ahead: 2, behind: 0 } : { ahead: 0, behind: 0 },
+      );
 
       await service.sync();
 
       // Should NOT move to diverged - uncommitted changes check should skip first
       expect(fs.rename).not.toHaveBeenCalled();
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      // isLocalAheadOfRemote should not be called because we exit early due to uncommitted changes
-      expect(mockGitService.isLocalAheadOfRemote).not.toHaveBeenCalled();
+      // The ahead/behind probe is never spawned for it: the dirty check exits first.
+      expect(mockGitService.getAheadBehindCounts).not.toHaveBeenCalledWith(
+        "/test/worktrees/feature-ahead",
+        "feature-ahead",
+      );
     });
   });
 });

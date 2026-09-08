@@ -62,17 +62,15 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       }),
       getWorktrees: vi.fn<any>().mockResolvedValue([]),
       getWorktreeLock: vi.fn<any>().mockResolvedValue({ locked: false }),
-      isWorktreeBehind: vi.fn<any>().mockResolvedValue(false),
-      canFastForward: vi.fn<any>().mockResolvedValue(true),
       updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
       getGit: vi.fn<any>(),
       setLfsSkipEnabled: vi.fn(),
       compareTreeContent: vi.fn<any>().mockResolvedValue(false),
       resetToUpstream: vi.fn<any>().mockResolvedValue(true),
-      isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
-      // Diverged handling re-verifies with this throwing probe before it moves
-      // anything; commits on both sides is the genuine diverged state.
-      getAheadBehindCounts: vi.fn<any>().mockResolvedValue({ ahead: 1, behind: 1 }),
+      // The one probe the update phase runs per worktree, and the one diverged
+      // handling re-verifies with before it moves anything. Default: nothing on
+      // either side, so a worktree is up to date unless a test says otherwise.
+      getAheadBehindCounts: vi.fn<any>().mockResolvedValue({ ahead: 0, behind: 0 }),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
@@ -1649,12 +1647,12 @@ describe("WorktreeSyncService", () => {
       ]);
 
       // These should not be called when updates are disabled
-      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+      mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 1 });
 
       await service.sync();
 
       // Verify update checks were not performed
-      expect(mockGitService.isWorktreeBehind).not.toHaveBeenCalled();
+      expect(mockGitService.getAheadBehindCounts).not.toHaveBeenCalled();
       expect(mockGitService.updateWorktree).not.toHaveBeenCalled();
     });
 
@@ -1685,20 +1683,19 @@ describe("WorktreeSyncService", () => {
         .mockResolvedValueOnce(false) // feature-1: has local changes
         .mockResolvedValueOnce(true); // feature-2: clean
 
-      mockGitService.canFastForward.mockResolvedValue(true); // All can fast-forward
-
-      mockGitService.isWorktreeBehind
-        .mockResolvedValueOnce(false) // main: up to date
-        .mockResolvedValueOnce(true); // feature-2: behind
+      // No tips to compare against, so every worktree reaches the probes.
+      mockGitService.getAheadBehindCounts
+        .mockResolvedValueOnce({ ahead: 0, behind: 0 }) // main: up to date
+        .mockResolvedValueOnce({ ahead: 0, behind: 1 }); // feature-2: behind
 
       await service.sync();
 
-      // Should only check behind status for clean worktrees
-      expect(mockGitService.isWorktreeBehind).toHaveBeenCalledTimes(2); // Only for clean worktrees
+      // Should only count ahead/behind for clean worktrees
+      expect(mockGitService.getAheadBehindCounts).toHaveBeenCalledTimes(2); // Only for clean worktrees
 
       // Should only update feature-2 (clean and behind)
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(1);
-      expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature-2");
+      expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature-2", "feature-2");
     });
 
     // Default-on trash: removals must move data into .trash/ instead of
@@ -2020,8 +2017,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should reset to upstream when trees are identical (rebase with same content)", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(true);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
@@ -2038,8 +2033,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("preserves the worktree when the final reset safety check detects a late collision", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(true);
       mockGitService.resetToUpstream.mockResolvedValue(false);
       (fs.rename as Mock<any>).mockResolvedValue(undefined);
@@ -2052,8 +2045,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should reset to upstream when trees differ but no local changes since last sync", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
@@ -2073,8 +2064,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should move to .diverged and recreate when trees differ and local changes exist", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
@@ -2100,8 +2089,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("skips diverged replace when the worktree has stashed changes", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
       mockGitService.hasStashedChanges.mockResolvedValue(true);
@@ -2118,8 +2105,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should use copy+remove fallback when rename fails with EXDEV", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
@@ -2150,8 +2135,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("with trash disabled, pins a keep ref before the move and deletes the local branch before recreating", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
@@ -2190,8 +2173,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("restores a moved diverged worktree when deleting its stale branch fails", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.getWorktreeMetadata.mockResolvedValue({ lastSyncCommit: "old-commit" } as any);
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
@@ -2207,8 +2188,6 @@ describe("WorktreeSyncService", () => {
     it("with trash enabled, trashes the diverged worktree with keepPinOnReap so its commits survive trash expiry", async () => {
       service = new WorktreeSyncService({ ...mockConfig, trash: undefined });
 
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
@@ -2251,14 +2230,16 @@ describe("WorktreeSyncService", () => {
     it("with trash enabled, trashes nothing when the re-verify probe throws", async () => {
       service = new WorktreeSyncService({ ...mockConfig, trash: undefined });
 
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
       mockGitService.getWorktreeMetadata.mockResolvedValue({ lastSyncCommit: "old-commit" } as any);
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
-      mockGitService.getAheadBehindCounts.mockRejectedValue(new Error("spawn git EMFILE"));
+      // Diverged at the Phase 4a probe; the re-verify that runs just before
+      // anything moves is the one that cannot answer.
+      mockGitService.getAheadBehindCounts
+        .mockResolvedValueOnce({ ahead: 1, behind: 1 })
+        .mockRejectedValue(new Error("spawn git EMFILE"));
       (fs.rename as Mock<any>).mockResolvedValue(undefined);
 
       await service.sync();
@@ -2293,8 +2274,6 @@ describe("WorktreeSyncService", () => {
     it("points a trashed diverged copy at the trash restore flow, not the keep ref", async () => {
       service = new WorktreeSyncService({ ...mockConfig, trash: undefined });
 
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.getWorktreeMetadata.mockResolvedValue({ lastSyncCommit: "old-commit" } as any);
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
@@ -2312,8 +2291,6 @@ describe("WorktreeSyncService", () => {
     // With trash off the keep ref really is the only thing holding the commits,
     // and releasing it by hand is what loses them.
     it("points a .diverged copy at the keep-ref release flow", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.getWorktreeMetadata.mockResolvedValue({ lastSyncCommit: "old-commit" } as any);
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
@@ -2328,8 +2305,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should skip diverged branch handling when local is ahead of remote", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(true);
+      mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 1, behind: 0 });
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
 
@@ -2341,10 +2317,10 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should count update task as success when fast-forward fails but diverged recovery succeeds", async () => {
-      mockGitService.canFastForward.mockResolvedValue(true);
-      mockGitService.isWorktreeBehind.mockResolvedValue(true);
+      // Behind at the Phase 4a probe; the re-verify inside diverged handling
+      // (the suite default) then finds commits on both sides.
+      mockGitService.getAheadBehindCounts.mockResolvedValueOnce({ ahead: 0, behind: 1 });
       mockGitService.updateWorktree.mockRejectedValue(new Error("Not possible to fast-forward, aborting"));
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(true);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
@@ -2360,8 +2336,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should surface failure and skip worktree recreation when both rename and copy fallback fail", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);
@@ -2391,8 +2365,6 @@ describe("WorktreeSyncService", () => {
     });
 
     it("writes .diverged-info.json with branch, commits and timestamp when diverging", async () => {
-      mockGitService.canFastForward.mockResolvedValue(false);
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasOperationInProgress.mockResolvedValue(false);

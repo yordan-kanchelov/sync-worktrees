@@ -152,7 +152,10 @@ describe("capability gate with a real RepositoryContext", () => {
   it.each(mutators)(
     "keeps sync and initialize unavailable after %s clears the discovery cache",
     async (_tool, mutate) => {
-      const { service } = installService();
+      const { service, git } = installService();
+      // `update_worktree` resolves the worktree's branch from a live listing
+      // rather than the discovery snapshot, so git has to report the fixture.
+      git.getWorktrees.mockResolvedValue([{ path: fixture.currentWorktree, branch: "feature-x" }]);
       const ctx = new RepositoryContext({ launchCwd: fixture.currentWorktree });
 
       const detected = await ctx.detectFromPath(fixture.currentWorktree);

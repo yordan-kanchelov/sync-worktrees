@@ -33,18 +33,19 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
         { path: "/test/worktrees/feature-rebased", branch: "feature-rebased" },
         { path: "/test/worktrees/feature-diverged", branch: "feature-diverged" },
       ]),
-      isWorktreeBehind: vi.fn<any>().mockResolvedValue(false),
       updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
-      canFastForward: vi.fn<any>().mockResolvedValue(true),
       compareTreeContent: vi.fn<any>().mockResolvedValue(false),
       resetToUpstream: vi.fn<any>().mockResolvedValue(true),
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
-      isLocalAheadOfRemote: vi.fn<any>().mockResolvedValue(false),
-      // Diverged handling re-verifies with this throwing probe before it moves
-      // anything; commits on both sides is the genuine diverged state.
+      // The one probe the update phase runs per worktree, and the one diverged
+      // handling re-verifies with before it moves anything. Commits on both
+      // sides is the genuine diverged state; suites that want another verdict
+      // say so per worktree.
       getAheadBehindCounts: vi.fn<any>().mockResolvedValue({ ahead: 1, behind: 1 }),
+      getRemoteBranchTips: vi.fn<any>().mockResolvedValue(new Map()),
+      recordRemoteTip: vi.fn<any>().mockResolvedValue(undefined),
       // The trash-disabled diverged flow pins a keep ref and deletes the stale
       // local branch before recreating the worktree.
       updateRef: vi.fn<any>().mockResolvedValue(undefined),
@@ -104,9 +105,11 @@ describe("Rebased Branch Handling", () => {
       (fs.readdir as Mock<any>).mockResolvedValue([]);
       (fs.access as Mock<any>).mockResolvedValue(undefined);
 
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-rebased");
-      });
+      // The one probe the update phase runs per worktree: commits on both sides
+      // for the worktree under test, nothing on either side for the rest.
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) =>
+        worktreePath.includes("feature-rebased") ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 0 },
+      );
 
       mockGitService.compareTreeContent.mockImplementation(async (path) => {
         return path.includes("feature-rebased");
@@ -138,9 +141,11 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/feature-no-local-changes", branch: "feature-no-local-changes" },
       ]);
 
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-no-local-changes");
-      });
+      // The one probe the update phase runs per worktree: commits on both sides
+      // for the worktree under test, nothing on either side for the rest.
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) =>
+        worktreePath.includes("feature-no-local-changes") ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 0 },
+      );
 
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
@@ -179,9 +184,11 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/feature-with-local-changes", branch: "feature-with-local-changes" },
       ]);
 
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-with-local-changes");
-      });
+      // The one probe the update phase runs per worktree: commits on both sides
+      // for the worktree under test, nothing on either side for the rest.
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) =>
+        worktreePath.includes("feature-with-local-changes") ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 0 },
+      );
 
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
@@ -227,9 +234,11 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/feature-no-metadata", branch: "feature-no-metadata" },
       ]);
 
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-no-metadata");
-      });
+      // The one probe the update phase runs per worktree: commits on both sides
+      // for the worktree under test, nothing on either side for the rest.
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) =>
+        worktreePath.includes("feature-no-metadata") ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 0 },
+      );
 
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
@@ -278,10 +287,11 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/feature-diverged", branch: "feature-diverged" },
       ]);
 
-      // Mock worktree to be behind to trigger update flow
-      mockGitService.isWorktreeBehind.mockImplementation(async (path) => {
-        return path.includes("feature-diverged");
-      });
+      // The one probe the update phase runs per worktree: commits on both sides
+      // for the worktree under test, nothing on either side for the rest.
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) =>
+        worktreePath.includes("feature-diverged") ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 0 },
+      );
 
       // Mock update to throw fast-forward error for diverged branch
       mockGitService.updateWorktree.mockImplementation(async (path) => {
@@ -289,10 +299,6 @@ describe("Rebased Branch Handling", () => {
           throw new Error("fatal: Not possible to fast-forward, aborting.");
         }
         return { updated: true, before: "old111", after: "new222" };
-      });
-
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-diverged");
       });
 
       mockGitService.compareTreeContent.mockResolvedValue(false);
@@ -385,7 +391,7 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/branch2", branch: "branch2" },
       ]);
 
-      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 1, behind: 1 });
 
       mockGitService.compareTreeContent.mockImplementation(async (path) => {
         return path.includes("branch1");
@@ -413,7 +419,7 @@ describe("Rebased Branch Handling", () => {
 
       (fs.rename as Mock<any>).mockRejectedValue(new Error("Permission denied"));
 
-      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 1, behind: 1 });
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
       await service.sync();
@@ -441,7 +447,7 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/release/v1.0.0", branch: "release/v1.0.0" },
       ]);
 
-      mockGitService.canFastForward.mockResolvedValue(false);
+      mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 1, behind: 1 });
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
       await service.sync();
@@ -476,13 +482,11 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/feature-diverged-behind", branch: "feature-diverged-behind" },
       ]);
 
-      mockGitService.canFastForward.mockImplementation(async (path) => {
-        return !path.includes("feature-diverged-behind");
-      });
-
-      mockGitService.isWorktreeBehind.mockImplementation(async (path) => {
-        return path.includes("feature-diverged-behind");
-      });
+      // The one probe the update phase runs per worktree: commits on both sides
+      // for the worktree under test, nothing on either side for the rest.
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) =>
+        worktreePath.includes("feature-diverged-behind") ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 0 },
+      );
 
       mockGitService.compareTreeContent.mockResolvedValue(false);
 
@@ -532,10 +536,14 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/feature-diverged-behind", branch: "feature-diverged-behind" },
       ]);
 
-      mockGitService.canFastForward.mockResolvedValue(true);
-
-      mockGitService.isWorktreeBehind.mockImplementation(async (path) => {
-        return path.includes("feature-diverged-behind");
+      // Behind at the Phase 4a probe, so a fast-forward is attempted; the
+      // re-verify inside diverged handling then finds commits on both sides.
+      let classified = false;
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) => {
+        if (!worktreePath.includes("feature-diverged-behind")) return { ahead: 0, behind: 0 };
+        if (classified) return { ahead: 1, behind: 1 };
+        classified = true;
+        return { ahead: 0, behind: 1 };
       });
 
       mockGitService.compareTreeContent.mockResolvedValue(false);
@@ -554,7 +562,10 @@ describe("Rebased Branch Handling", () => {
 
       await service.sync();
 
-      expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
+      expect(mockGitService.updateWorktree).toHaveBeenCalledWith(
+        "/test/worktrees/feature-diverged-behind",
+        "feature-diverged-behind",
+      );
 
       expect(fs.rename).toHaveBeenCalledWith(
         "/test/worktrees/feature-diverged-behind",
@@ -584,11 +595,9 @@ describe("Rebased Branch Handling", () => {
         { path: "/test/worktrees/feature-diverged-behind", branch: "feature-diverged-behind" },
       ]);
 
-      mockGitService.canFastForward.mockResolvedValue(true);
-
-      mockGitService.isWorktreeBehind.mockImplementation(async (path) => {
-        return path.includes("feature-diverged-behind");
-      });
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) =>
+        worktreePath.includes("feature-diverged-behind") ? { ahead: 0, behind: 1 } : { ahead: 0, behind: 0 },
+      );
 
       mockGitService.updateWorktree.mockImplementation(async (path) => {
         if (path.includes("feature-diverged-behind")) {
@@ -601,7 +610,10 @@ describe("Rebased Branch Handling", () => {
 
       await service.sync();
 
-      expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature-diverged-behind");
+      expect(mockGitService.updateWorktree).toHaveBeenCalledWith(
+        "/test/worktrees/feature-diverged-behind",
+        "feature-diverged-behind",
+      );
 
       expect(fs.rename).not.toHaveBeenCalled();
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
@@ -640,6 +652,19 @@ describe("Rebased Branch Handling", () => {
       return result.outcome;
     }
 
+    // Phase 4a and the re-verify read the same probe, so the classification
+    // that reaches diverged handling has to be staged: commits on both sides
+    // the first time this worktree is asked, `reverify` every time after.
+    function probeDivergedThen(reverify: () => Promise<{ ahead: number; behind: number }>): void {
+      let classified = false;
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) => {
+        if (!worktreePath.includes("feature-diverged")) return { ahead: 0, behind: 0 };
+        if (classified) return reverify();
+        classified = true;
+        return { ahead: 1, behind: 1 };
+      });
+    }
+
     beforeEach(async () => {
       await service.initialize();
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
@@ -658,11 +683,8 @@ describe("Rebased Branch Handling", () => {
       // metadata would send the worktree to .diverged/.
       mockGitService.checkWorktreeStatus.mockResolvedValue(true);
       mockGitService.hasStashedChanges.mockResolvedValue(false);
-      mockGitService.isWorktreeBehind.mockResolvedValue(false);
       mockGitService.updateWorktree.mockResolvedValue({ updated: true, before: "old111", after: "new222" });
-      mockGitService.canFastForward.mockImplementation(async (path) => !path.includes("feature-diverged"));
-      mockGitService.isLocalAheadOfRemote.mockResolvedValue(false);
-      mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 1, behind: 1 });
+      probeDivergedThen(async () => ({ ahead: 1, behind: 1 }));
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.resetToUpstream.mockResolvedValue(true);
       mockGitService.getWorktreeMetadata.mockResolvedValue(null);
@@ -670,8 +692,10 @@ describe("Rebased Branch Handling", () => {
     });
 
     it("records diverged_recovery_failed and moves nothing when the re-verify probe throws", async () => {
-      mockGitService.getAheadBehindCounts.mockRejectedValue(
-        new Error("fatal: ambiguous argument 'HEAD...refs/remotes/origin/feature-diverged': unknown revision"),
+      probeDivergedThen(() =>
+        Promise.reject(
+          new Error("fatal: ambiguous argument 'HEAD...refs/remotes/origin/feature-diverged': unknown revision"),
+        ),
       );
 
       const outcome = await syncOutcome();
@@ -698,18 +722,23 @@ describe("Rebased Branch Handling", () => {
     });
 
     it("also aborts on a throwing probe when it got here through a refused fast-forward", async () => {
-      // Phase 4a: fast-forwardable and behind; Phase 4b: the merge refuses.
-      mockGitService.canFastForward.mockResolvedValue(true);
-      mockGitService.isWorktreeBehind.mockImplementation(async (path) => path.includes("feature-diverged"));
+      // Phase 4a: behind, so a fast-forward is attempted; Phase 4b: the merge
+      // refuses, and the re-verify before anything moves cannot answer.
+      let classified = false;
+      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) => {
+        if (!worktreePath.includes("feature-diverged")) return { ahead: 0, behind: 0 };
+        if (classified) throw new Error("spawn git EMFILE");
+        classified = true;
+        return { ahead: 0, behind: 1 };
+      });
       mockGitService.updateWorktree.mockImplementation(async (path) => {
         if (path.includes("feature-diverged")) throw new Error("fatal: Not possible to fast-forward, aborting.");
         return { updated: true, before: "old111", after: "new222" };
       });
-      mockGitService.getAheadBehindCounts.mockRejectedValue(new Error("spawn git EMFILE"));
 
       const outcome = await syncOutcome();
 
-      expect(mockGitService.updateWorktree).toHaveBeenCalledWith(featurePath);
+      expect(mockGitService.updateWorktree).toHaveBeenCalledWith(featurePath, "feature-diverged");
       expectNothingTouched();
       expect(outcome.actions.filter((action) => action.branch === "feature-diverged")).toEqual([
         expect.objectContaining({
@@ -757,7 +786,7 @@ describe("Rebased Branch Handling", () => {
         },
       },
     ])("leaves a worktree alone and re-classifies it when the probe finds it $state", async ({ counts, action }) => {
-      mockGitService.getAheadBehindCounts.mockResolvedValue(counts);
+      probeDivergedThen(async () => counts);
 
       const outcome = await syncOutcome();
 
@@ -767,11 +796,11 @@ describe("Rebased Branch Handling", () => {
       expect(outcome.actions.filter((entry) => entry.branch === "feature-diverged")).toEqual([action]);
     });
 
-    // merge-base found no common ancestor — simple-git hands that back as an
-    // empty string, so both merge-base probes answer "no" without throwing —
-    // and rev-list counts commits on both sides: this one really moves.
+    // Commits on both sides at the probe and again at the re-verify — which is
+    // also how unrelated histories count, since rev-list counts every commit on
+    // each side when there is no common ancestor: this one really moves.
     it("moves a worktree whose histories have commits on both sides, unrelated histories included", async () => {
-      mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 1, behind: 1 });
+      probeDivergedThen(async () => ({ ahead: 1, behind: 1 }));
 
       const outcome = await syncOutcome();
 
