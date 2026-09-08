@@ -12,6 +12,7 @@ import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 
 import { PathResolutionService } from "./path-resolution.service";
+import { trackPhaseItems } from "./progress-emitter";
 import { RemovalAuditService } from "./removal-audit.service";
 import { TrashService } from "./trash.service";
 import { createWorktreeSyncPlan } from "./worktree-sync-planner";
@@ -118,16 +119,19 @@ export class WorktreeModeSyncRunner {
     if (!sparseConfig) return;
 
     this.logger.info("Step 5: Reconciling sparse-checkout patterns on existing worktrees...");
+    this.progressEmitter.emit({ phase: "sparse", message: "Reconciling sparse-checkout patterns" });
     const sparseService = this.gitService.getSparseCheckoutService();
     const desired = sparseService.buildPatterns(sparseConfig);
 
     const limit = pLimit(this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+    // Only the checks are work; the other kinds are the planner saying there is
+    // nothing to reconcile, so they are neither run nor counted.
+    const checks = actions.filter((action) => action.kind === "check-sparse");
+    const itemDone = trackPhaseItems(this.progressEmitter, "sparse", "Reconciling sparse-checkout", checks.length);
 
     await Promise.all(
-      actions.map((action) =>
+      checks.map((action) =>
         limit(async () => {
-          if (action.kind !== "check-sparse") return;
-
           try {
             try {
               await fs.access(action.path);
@@ -167,7 +171,7 @@ export class WorktreeModeSyncRunner {
               path: action.path,
             });
           }
-        }),
+        }).finally(() => itemDone(action.branch)),
       ),
     );
   }
@@ -484,6 +488,11 @@ export class WorktreeModeSyncRunner {
     const maxConcurrent =
       this.config.parallelism?.maxWorktreeCreation ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
     const limit = pLimit(maxConcurrent);
+    // Counted where the creation settles rather than where it is dispatched, so
+    // that a phase running several checkouts at once still reports a count that
+    // only moves forward. Attached to the limited promise so that every way out
+    // of the callback — created, skipped, failed — counts the branch once.
+    const itemDone = trackPhaseItems(this.progressEmitter, "create", "Creating worktrees", plan.length);
 
     const results = await Promise.allSettled(
       plan.map(({ branchName, worktreePath }) =>
@@ -526,7 +535,7 @@ export class WorktreeModeSyncRunner {
             await this.verifyCreatedWorktreeTip(branchName, worktreePath, addResult.head, outcome);
           }
           return true;
-        }),
+        }).finally(() => itemDone(branchName)),
       ),
     );
 
@@ -712,10 +721,16 @@ export class WorktreeModeSyncRunner {
       // maxStatusChecks git processes.
       const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
       const limit = pLimit(maxConcurrent);
+      // Both stages of the phase report their own count: the checks are what a
+      // prune of hundreds of worktrees spends its time in, and only the ones
+      // that pass them reach the removals below.
+      const checkDone = trackPhaseItems(this.progressEmitter, "prune", "Checking worktrees to prune", checks.length);
 
       const statusResults = await Promise.allSettled(
-        checks.map(({ path: worktreePath }) =>
-          limit(async () => this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug)),
+        checks.map(({ branch, path: worktreePath }) =>
+          limit(async () => this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug)).finally(() =>
+            checkDone(branch),
+          ),
         ),
       );
 
@@ -765,6 +780,8 @@ export class WorktreeModeSyncRunner {
         const removeLimit = pLimit(
           this.config.parallelism?.maxWorktreeRemoval ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL,
         );
+
+        const removeDone = trackPhaseItems(this.progressEmitter, "prune", "Pruning stale worktrees", toRemove.length);
 
         const removeResults = await Promise.allSettled(
           toRemove.map(({ branchName, worktreePath }) =>
@@ -878,7 +895,7 @@ export class WorktreeModeSyncRunner {
                 });
                 throw error;
               }
-            }),
+            }).finally(() => removeDone(branchName)),
           ),
         );
 
@@ -1048,6 +1065,11 @@ export class WorktreeModeSyncRunner {
     // Phase 4a: Check which worktrees need updates (parallel, read-only, high concurrency)
     const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
     const limit = pLimit(maxConcurrent);
+    // Every candidate counts here, including the ones settled by the oid
+    // comparison below without a single git process: they are the denominator
+    // the user is waiting on, and skipping them would leave the count crawling
+    // through a total it can never reach.
+    const checkDone = trackPhaseItems(this.progressEmitter, "update", "Checking worktrees for updates", actions.length);
 
     const checkResults = await Promise.allSettled(
       actions.map((action) =>
@@ -1124,7 +1146,7 @@ export class WorktreeModeSyncRunner {
           }
 
           return { action: "update", worktree };
-        }),
+        }).finally(() => checkDone(action.branch)),
       ),
     );
 
@@ -1174,6 +1196,15 @@ export class WorktreeModeSyncRunner {
     );
 
     const mutationTasks: Promise<{ type: "update" | "diverged"; branch: string; changed: boolean }>[] = [];
+    // Fast-forwards and diverged handling are one stage as far as progress is
+    // concerned: both mutate a worktree, both run under updateLimit, and the
+    // user waiting on "Updating worktrees" wants one count over all of them.
+    const mutationDone = trackPhaseItems(
+      this.progressEmitter,
+      "update",
+      "Updating worktrees",
+      worktreesToUpdate.length + divergedWorktrees.length,
+    );
 
     for (const worktree of worktreesToUpdate) {
       mutationTasks.push(
@@ -1222,7 +1253,7 @@ export class WorktreeModeSyncRunner {
             }
           }
           return { type: "update" as const, branch: worktree.branch, changed };
-        }),
+        }).finally(() => mutationDone(worktree.branch)),
       );
     }
 
@@ -1242,7 +1273,7 @@ export class WorktreeModeSyncRunner {
             throw error;
           }
           return { type: "diverged" as const, branch: worktree.branch, changed };
-        }),
+        }).finally(() => mutationDone(worktree.branch)),
       );
     }
 

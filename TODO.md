@@ -137,7 +137,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   worktree (status never lists ignored paths) and passes every untracked path as argv
 - [x] **T58** — isPathInsideBaseDir uses synchronous existsSync/realpathSync per registered worktree
   and re-resolves worktreeDir every call (≈41 ms of blocked event loop per sync at 400 worktrees)
-- [ ] **T60** — Phase progress emits exactly 5 events per attempt with no processed/total, so the
+- [x] **T60** — Phase progress emits exactly 5 events per attempt with no processed/total, so the
   TUI and MCP progress show a static message during long create/prune/update phases
 
 ### Batch 3 — clone mode
@@ -2660,7 +2660,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: The planner refactor created the separation but no command consumes it;
   README/CLI options document only run/init/list.
 
-### [ ] T60. Phase progress emits exactly 5 events per attempt with no processed/total, so the TUI and MCP progress show a static message during long create/prune/update phases
+### [x] T60. Phase progress emits exactly 5 events per attempt with no processed/total, so the TUI and MCP progress show a static message during long create/prune/update phases
 
 - **Category**: workflow · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

@@ -13,10 +13,14 @@ import {
 } from "../handlers";
 import { syncOutputSchema } from "../output-schemas";
 import { formatErrorResponse } from "../utils";
+import { createMockLogger } from "../../__tests__/test-utils";
 import { PathResolutionService } from "../../services/path-resolution.service";
+import { makeGitProgressHandler } from "../../utils/git-progress";
 
 import type { Capabilities, DiscoveredRepoContext, RepositoryContext } from "../context";
+import type { ProgressEvent } from "../../services/progress-emitter";
 import type { CallToolResult } from "@modelcontextprotocol/server";
+import type { SimpleGitProgressEvent } from "simple-git";
 
 async function invoke<T>(
   handler: (ctx: RepositoryContext, params: T, handlerContext?: any) => Promise<CallToolResult>,
@@ -942,6 +946,35 @@ describe("handleSync", () => {
     expect(service.sync).toHaveBeenCalled();
   });
 
+  function notifiedParams(notify: ReturnType<typeof vi.fn>): Array<{ progress: number; total?: number }> {
+    return notify.mock.calls.map((call: unknown[]) => (call[0] as any).params);
+  }
+
+  // The one rule the protocol puts on a progress token: every notification's
+  // value is above the one before it.
+  function expectIncreasing(params: Array<{ progress: number; total?: number }>): void {
+    for (let index = 1; index < params.length; index++) {
+      expect(params[index].progress).toBeGreaterThan(params[index - 1].progress);
+    }
+    // A total is only ever sent when the progress fits inside it.
+    for (const param of params) {
+      if (param.total !== undefined) expect(param.total).toBeGreaterThanOrEqual(param.progress);
+    }
+  }
+
+  // Subscribes a listener the way attachProgressReporter does and hands back a
+  // function that pushes one event through it.
+  function wireProgress(service: any): (event: ProgressEvent) => void {
+    const listeners: Array<(event: unknown) => void> = [];
+    service.onProgress = vi.fn<any>().mockImplementation((listener: any) => {
+      listeners.push(listener);
+      return () => listeners.splice(listeners.indexOf(listener), 1);
+    });
+    return (event) => {
+      for (const listener of listeners) listener(event);
+    };
+  }
+
   it("sends progress notifications from structured events", async () => {
     const { ctx, service } = makeCtx({});
     const progressListeners: Array<(e: { phase: string; message: string }) => void> = [];
@@ -971,6 +1004,153 @@ describe("handleSync", () => {
       method: "notifications/progress",
       params: { progressToken: "tok-1", progress: 2, message: "[create] Creating" },
     });
+  });
+
+  // The phases carry their own item counts now; a client showing a bar wants
+  // those rather than "the fifth event of this sync".
+  it("reports the counts an event carries as progress and total", async () => {
+    const { ctx, service } = makeCtx({});
+    const emit = wireProgress(service);
+    service.sync.mockImplementation(async () => {
+      emit({ phase: "create", message: "Creating worktrees: 'feature-1' (1/3)", processed: 1, total: 3 });
+      emit({ phase: "create", message: "Creating worktrees: 'feature-2' (2/3)", processed: 2, total: 3 });
+      return { started: true };
+    });
+
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    await handleSync(ctx, {}, { mcpReq: { _meta: { progressToken: "tok-1" }, notify } } as any);
+
+    expect(notify).toHaveBeenNthCalledWith(1, {
+      method: "notifications/progress",
+      params: {
+        progressToken: "tok-1",
+        progress: 1,
+        total: 3,
+        message: "[create] Creating worktrees: 'feature-1' (1/3)",
+      },
+    });
+    expect(notify).toHaveBeenNthCalledWith(2, {
+      method: "notifications/progress",
+      params: {
+        progressToken: "tok-1",
+        progress: 2,
+        total: 3,
+        message: "[create] Creating worktrees: 'feature-2' (2/3)",
+      },
+    });
+  });
+
+  // "The progress value MUST increase with each notification, even if the total
+  // is unknown" (MCP spec, notifications/progress) — while a sync's counts
+  // restart at 1 in every phase and in every stage of a phase.
+  it("keeps progress increasing across phases and stages that restart their counts", async () => {
+    const { ctx, service } = makeCtx({});
+    const emit = wireProgress(service);
+    service.sync.mockImplementation(async () => {
+      emit({ phase: "fetch", message: "Fetching latest data from remote" });
+      emit({ phase: "create", message: "Creating worktrees for new branches" });
+      for (const processed of [1, 2, 3]) {
+        emit({ phase: "create", message: `Creating worktrees: 'b${processed}' (${processed}/3)`, processed, total: 3 });
+      }
+      emit({ phase: "prune", message: "Pruning stale worktrees" });
+      for (const processed of [1, 2]) {
+        emit({
+          phase: "prune",
+          message: `Checking worktrees to prune: 'g${processed}' (${processed}/2)`,
+          processed,
+          total: 2,
+        });
+      }
+      // Same phase, second stage: the count starts over at 1.
+      emit({ phase: "prune", message: "Pruning stale worktrees: 'g1' (1/1)", processed: 1, total: 1 });
+      emit({ phase: "cleanup", message: "Cleanup complete" });
+      return { started: true };
+    });
+
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    await handleSync(ctx, {}, { mcpReq: { _meta: { progressToken: "tok-1" }, notify } } as any);
+
+    const params = notifiedParams(notify);
+    expect(params.map((param) => param.progress)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expectIncreasing(params);
+    // The counted runs keep their own denominators, offset by what came before.
+    expect(params[2]).toMatchObject({ progress: 3, total: 5 });
+    expect(params[8]).toMatchObject({ progress: 9, total: 9 });
+  });
+
+  // The stream git really produces: four transfer stages, each opening on
+  // `0% (0/n)` and closing on a 100% line git prints twice (once plain, once
+  // with ", done."). Counting those as items reported the same progress twice —
+  // and made a three-branch sync of a 1200-object repository end in the
+  // thousands, with the client's bar filling and resetting once per stage.
+  it("keeps progress increasing across a real git transfer stream", async () => {
+    const { ctx, service } = makeCtx({});
+    const emit = wireProgress(service);
+    // Built by the handler the git clients actually run, so the events carry
+    // whatever shape it really produces.
+    const transferred: ProgressEvent[] = [];
+    const objects = 1200;
+    const gitProgress = makeGitProgressHandler(createMockLogger, (event) => transferred.push(event));
+    for (const stage of ["counting", "compressing", "receiving", "resolving"]) {
+      for (const percent of [0, 25, 50, 75, 100, 100]) {
+        gitProgress({
+          method: "clone",
+          stage,
+          progress: percent,
+          processed: Math.round((objects * percent) / 100),
+          total: objects,
+        } as SimpleGitProgressEvent);
+      }
+    }
+    expect(transferred).toHaveLength(24);
+
+    service.sync.mockImplementation(async () => {
+      emit({ phase: "fetch", message: "Fetching latest data from remote" });
+      for (const event of transferred) emit(event);
+      emit({ phase: "create", message: "Creating worktrees for new branches" });
+      for (const processed of [1, 2, 3]) {
+        emit({ phase: "create", message: `Creating worktrees: 'b${processed}' (${processed}/3)`, processed, total: 3 });
+      }
+      return { started: true };
+    });
+
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    await handleSync(ctx, {}, { mcpReq: { _meta: { progressToken: "tok-1" }, notify } } as any);
+
+    const params = notifiedParams(notify);
+    expectIncreasing(params);
+    // A transfer event is one tick: its percentage is already in the message,
+    // and its object count is not a count of anything the sync is working
+    // through. 1 fetch + 24 transfer + 1 create = 26 ticks before the items.
+    expect(params.map((param) => param.progress)).toEqual(
+      [...Array(26).keys()].map((index) => index + 1).concat([27, 28, 29]),
+    );
+    expect(params.slice(0, 26).every((param) => param.total === undefined)).toBe(true);
+    expect(params.at(-1)).toMatchObject({ progress: 29, total: 29 });
+  });
+
+  // A stage that never reaches its total — an attempt that failed part way and
+  // was retried — must not leave the next stage reporting a smaller total.
+  it("never reports a total below the one already sent", async () => {
+    const { ctx, service } = makeCtx({});
+    const emit = wireProgress(service);
+    service.sync.mockImplementation(async () => {
+      emit({ phase: "update", message: "Checking worktrees for updates: 'a' (1/1000)", processed: 1, total: 1000 });
+      emit({ phase: "update", message: "Checking worktrees for updates: 'b' (2/1000)", processed: 2, total: 1000 });
+      // The attempt was abandoned there; the retry plans far fewer items.
+      emit({ phase: "update", message: "Checking worktrees for updates: 'a' (1/4)", processed: 1, total: 4 });
+      emit({ phase: "update", message: "Checking worktrees for updates: 'b' (2/4)", processed: 2, total: 4 });
+      return { started: true };
+    });
+
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    await handleSync(ctx, {}, { mcpReq: { _meta: { progressToken: "tok-1" }, notify } } as any);
+
+    const params = notifiedParams(notify);
+    expectIncreasing(params);
+    const totals = params.map((param) => param.total!);
+    expect(totals).toEqual([...totals].sort((a, b) => a - b));
+    expect(totals).toEqual([1000, 1000, 1000, 1000]);
   });
 
   it("unsubscribes progress listener even when sync throws", async () => {

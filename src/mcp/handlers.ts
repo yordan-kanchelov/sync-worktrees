@@ -652,6 +652,61 @@ export async function handleSetCurrentRepository(
   });
 }
 
+// A progressToken's `progress` "MUST increase with each notification, even if
+// the total is unknown" (MCP spec, notifications/progress). The SDK does not
+// enforce it — it handles the notification with a bare `break` — so keeping
+// that promise is on this side.
+//
+// Only a phase's item count drives the arithmetic, and those counts do not
+// increase on their own: they restart at 1 in every phase, and in every stage
+// of a phase (the prune checks, then the removals that passed them). So each
+// counted run is carried on top of everything reported before it — `progress`
+// is that offset plus the event's `processed`.
+//
+// Everything else is one tick, git's transfer events included. Those carry a
+// percentage their message already spells out, and they count objects rather
+// than items: a 1200-object clone would otherwise add 1200 to a sync of three
+// branches, once per transfer stage, leaving a client's bar to fill and reset
+// five times over one sync. They also open every stage on `0% (0/1200)`, which
+// as a counted run reports the progress before it a second time and breaks the
+// one rule this function exists to keep.
+function createProgressSequencer(): (event: ProgressEvent) => { progress: number; total?: number } {
+  let progress = 0;
+  let offset = 0;
+  let lastProcessed = 0;
+  let lastTotal: number | undefined;
+  let lastSentTotal = 0;
+
+  return (event: ProgressEvent): { progress: number; total?: number } => {
+    // `progress` is a percentage, which only a git transfer event carries.
+    const counted = event.progress === undefined && event.processed !== undefined && event.processed > 0;
+    if (!counted) {
+      progress += 1;
+      offset = progress;
+      lastProcessed = 0;
+      lastTotal = undefined;
+      return { progress };
+    }
+
+    const processed = event.processed!;
+    // A restart — a new phase, the next stage of the same phase, or a total
+    // that changed under it — begins a run of its own above what was reported.
+    if (event.total !== lastTotal || processed <= lastProcessed) offset = progress;
+    lastProcessed = processed;
+    lastTotal = event.total;
+    progress = offset + processed;
+
+    // A denominator the progress does not fit inside says nothing, so it is
+    // left out rather than sent as a number already overshot.
+    if (event.total === undefined || event.total < processed) return { progress };
+    // Separately: a run abandoned before it reached its total would leave the
+    // next run's denominator below the one already sent — a total that shrinks
+    // under a client mid-sync. The last one sent is a floor.
+    lastSentTotal = Math.max(lastSentTotal, offset + event.total);
+    return { progress, total: lastSentTotal };
+  };
+}
+
 function attachProgressReporter(
   service: {
     onProgress?: (listener: (event: ProgressEvent) => void) => () => void;
@@ -662,15 +717,16 @@ function attachProgressReporter(
   if (token === undefined || !handlerContext) return () => {};
   if (!service.onProgress) return () => {};
 
-  let progressCounter = 0;
+  const nextProgress = createProgressSequencer();
   const unsubscribe = service.onProgress((event) => {
-    progressCounter++;
+    const { progress, total } = nextProgress(event);
     void handlerContext.mcpReq
       .notify({
         method: "notifications/progress",
         params: {
           progressToken: token,
-          progress: progressCounter,
+          progress,
+          ...(total !== undefined && { total }),
           message: `[${event.phase}] ${event.message}`,
         },
       })
