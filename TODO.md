@@ -117,7 +117,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T78** — Dead and silently broken git wrappers: `localBranchExists` always returns true and
   `hasDivergedHistory` always returns false (simple-git swallows silent exit-1); several other exports
   are unused
-- [ ] **T81** — An interrupted bare clone (SIGKILL/power loss) leaves a HEAD-less bareRepoDir that
+- [x] **T81** — An interrupted bare clone (SIGKILL/power loss) leaves a HEAD-less bareRepoDir that
   makes every later initialize fail with git's 'destination path already exists' and no recovery path
 - [ ] **T64** — Sparse reconcile (Step 5) is not idempotent for includes with a trailing slash:
   re-applies patterns and runs `git checkout HEAD` on every worktree every sync
@@ -3351,7 +3351,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `sparse-checkout set` time (sparse-checkout.service.ts:69-80), which runs inside every worktree
   creation.
 
-### [ ] T81. An interrupted bare clone (SIGKILL/power loss) leaves a HEAD-less bareRepoDir that makes every later initialize fail with git's 'destination path already exists' and no recovery path
+### [x] T81. An interrupted bare clone (SIGKILL/power loss) leaves a HEAD-less bareRepoDir that makes every later initialize fail with git's 'destination path already exists' and no recovery path
 
 - **Category**: guardrail · **Subsystem**: git
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

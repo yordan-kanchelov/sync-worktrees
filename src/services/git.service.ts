@@ -3,7 +3,7 @@ import * as path from "path";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
-import { probePathExists } from "../utils/file-exists";
+import { fileExists, probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { isGitLfsInstalled, isLfsSmudgeSkippedByEnv, warnGitLfsMissingOnce } from "../utils/git-lfs-probe";
 import { makeGitProgressHandler } from "../utils/git-progress";
@@ -25,6 +25,14 @@ import type { GitProgressEmitter } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export type RemoteRelationship = "up_to_date" | "fast_forward" | "local_ahead" | "diverged" | "indeterminate_shallow";
+
+// What the bare clone's destination was verified to be. The first three are
+// positive verdicts — the path is provably absent, provably an empty
+// directory, or a marked leftover this tool just removed — and only those let
+// the clone claim the destination with a pending marker. "unverifiable" is
+// every outcome the probes could not settle; it is cloned into, but never
+// claimed, so a failed clone leaves nothing that would authorize a deletion.
+type BareCloneDestination = "missing" | "empty" | "recovered" | "unverifiable";
 
 // What updateWorktree did: `updated` is whether the fast-forward moved HEAD;
 // `before` and `after` are HEAD on either side of it (equal for a no-op).
@@ -239,17 +247,42 @@ export class GitService {
     }
 
     if (bareRepoExists) {
+      // A marker next to a repository that has a HEAD is stale (a clone that
+      // landed but whose marker removal did not): the repository is complete,
+      // so only the marker goes — nothing here may delete a directory.
+      await this.clearBareClonePendingMarker();
       await this.assertBareRepoOriginMatches(this.getCachedGit(this.bareRepoPath));
     } else {
+      const destination = await this.prepareBareCloneDestination();
       // Clone as bare repository
       this.logger.info(`Cloning from "${redactRepoUrl(repoUrl)}" as bare repository into "${this.bareRepoPath}"...`);
       await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
+      // The marker authorizes a later init to DELETE this directory, so only a
+      // destination positively verified as ours may carry one. A destination
+      // that could not be verified is cloned into without a marker: the clone
+      // reports whatever is wrong with it, and nothing is left behind that
+      // would license deleting someone else's data on the next run.
+      if (destination !== "unverifiable") await this.writeBareClonePendingMarker();
       const cloneGit = createGitClient(
         undefined,
         this.isLfsSkipEnabled() ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {},
         this.buildSimpleGitOptions(this.getCloneTimeoutMs()),
       );
-      await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare", "--progress"]);
+      try {
+        await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare", "--progress"]);
+      } catch (error) {
+        // git removes the destination it created when a clone fails, so the
+        // authorization must end with the clone that earned it: it survives
+        // only while a partial directory actually remains.
+        await this.releaseBareClonePendingMarkerAfterFailure();
+        throw error;
+      }
+      // A clone git reported as successful always wrote HEAD, so ownership
+      // ends here, before the post-clone steps. Those are deliberately not
+      // covered by it: dropClonedBranchCopies is best-effort and must never
+      // run against an adopted repository, whose refs/heads can hold real
+      // local-only commits.
+      await this.clearBareClonePendingMarker();
       this.logger.info("✅ Clone successful.");
       await this.dropClonedBranchCopies(this.getCachedGit(this.bareRepoPath));
     }
@@ -374,6 +407,135 @@ export class GitService {
       );
     }
     return created;
+  }
+
+  // Where the "a bare clone into this directory is in flight" marker lives.
+  // Next to the bare repository, never inside it: `git clone` refuses any
+  // destination directory that is not empty — dotfiles count — so a marker
+  // written inside would break the very clone it guards. It is named after the
+  // directory it belongs to, so repositories sharing a `.bare/` parent each get
+  // their own.
+  private getBareClonePendingMarkerPath(): string {
+    const resolved = path.resolve(this.bareRepoPath);
+    return path.join(
+      path.dirname(resolved),
+      `${path.basename(resolved)}${PATH_CONSTANTS.BARE_CLONE_PENDING_MARKER_SUFFIX}`,
+    );
+  }
+
+  private async writeBareClonePendingMarker(): Promise<void> {
+    try {
+      await fs.writeFile(this.getBareClonePendingMarkerPath(), new Date().toISOString());
+    } catch (error) {
+      // Best effort, like clone mode's init marker: without it an interrupted
+      // clone only falls back to the old manual-cleanup behaviour.
+      this.logger.warn(`Could not write the bare-clone pending marker: ${getErrorMessage(error)}`);
+    }
+  }
+
+  private async clearBareClonePendingMarker(): Promise<void> {
+    const markerPath = this.getBareClonePendingMarkerPath();
+    if (!(await fileExists(markerPath))) return;
+    try {
+      await fs.unlink(markerPath);
+    } catch (error) {
+      // A marker left behind is harmless while HEAD exists: every later init
+      // clears it again and never deletes a repository that has a HEAD.
+      this.logger.debug(`Could not remove the bare-clone pending marker at '${markerPath}': ${getErrorMessage(error)}`);
+    }
+  }
+
+  // The marker's authorization is scoped to the clone that wrote it. git
+  // removes the destination directory it created when a clone fails, so once
+  // the failure is in hand the marker is dropped again unless a partial
+  // directory really is left on disk — an unverifiable destination keeps it,
+  // since "cannot tell" must not silently disown a directory we did create.
+  private async releaseBareClonePendingMarkerAfterFailure(): Promise<void> {
+    const probe = await probePathExists(this.bareRepoPath);
+    if (probe === "unknown") return;
+    if (probe === "exists" && (await this.listBareRepoDir()).entries?.length !== 0) return;
+    await this.clearBareClonePendingMarker();
+  }
+
+  // Decides what `git clone --bare` may be pointed at, and whether the clone
+  // may claim the destination as its own (see the caller: only a verified
+  // verdict gets a marker).
+  //
+  // A `git clone --bare` writes HEAD almost immediately — it runs `init_db`
+  // before any transfer — so a HEAD-less `bareRepoDir` is not the normal
+  // residue of a killed clone; it is what a half-finished cleanup, a partially
+  // deleted directory or external damage leaves. However it arose, "bare repo
+  // exists" is decided by `<bare>/HEAD`, so initialize() kept re-issuing the
+  // clone into that directory and git kept refusing it ("destination path
+  // already exists and is not an empty directory"), with nothing in the log
+  // naming the fix.
+  //
+  // The marker is what tells such a leftover apart: it is written only for a
+  // destination this tool verified and claimed, so a marked one is ours to
+  // delete and clone again. Everything else — a non-empty directory, a path
+  // that is not a directory, a directory whose contents cannot be listed — is
+  // never deleted and gets a named, actionable error instead. Only ever
+  // reached when `<bare>/HEAD` is missing, so a working repository is out of
+  // scope by construction.
+  private async prepareBareCloneDestination(): Promise<BareCloneDestination> {
+    const probe = await probePathExists(this.bareRepoPath);
+    if (probe === "missing") return "missing";
+    // "unknown" means the path itself could not be probed (EACCES on a parent,
+    // EIO): it may or may not exist, so nothing may be deleted, nothing may be
+    // claimed, and the clone below reports the real problem.
+    if (probe === "unknown") return "unverifiable";
+
+    const bareRepoPath = path.resolve(this.bareRepoPath);
+    if (await fileExists(this.getBareClonePendingMarkerPath())) {
+      this.logger.warn(
+        `Bare repository at '${bareRepoPath}' has no HEAD and still carries this tool's clone-in-progress marker ` +
+          `(a leftover of an interrupted initialization). Removing it and cloning again.`,
+      );
+      try {
+        await fs.rm(this.bareRepoPath, { recursive: true, force: true });
+      } catch (error) {
+        throw new GitOperationError(
+          "clone",
+          `could not remove the interrupted bare clone at '${bareRepoPath}': ${getErrorMessage(error)}. ` +
+            `Remove the directory manually and run again.`,
+          error instanceof Error ? error : undefined,
+        );
+      }
+      return "recovered";
+    }
+
+    const { entries, error } = await this.listBareRepoDir();
+    if (!entries) {
+      // The directory vanished between the two probes: a fresh clone again.
+      if (error?.code === "ENOENT") return "missing";
+      // Anything else (ENOTDIR — the path is a file — EACCES, EMFILE) is a
+      // destination we cannot judge. Never clone into it hoping for the best:
+      // that is how a failed clone would leave a marker on a path holding
+      // someone's data, licensing its deletion on the next run.
+      throw new ConfigError(
+        `Cannot clone into '${bareRepoPath}': it already exists and could not be inspected ` +
+          `(${getErrorMessage(error)}). Remove it, or point bareRepoDir at a fresh path.`,
+        "BARE_DESTINATION_UNREADABLE",
+      );
+    }
+
+    if (entries.length > 0) {
+      throw new ConfigError(
+        `Cannot clone into '${bareRepoPath}': the directory exists, has no HEAD (it is not a git repository) ` +
+          `and was not created by sync-worktrees. Inspect it and remove it, or point bareRepoDir at a fresh path.`,
+        "BARE_DESTINATION_NOT_EMPTY",
+      );
+    }
+    return "empty";
+  }
+
+  // `entries` is null exactly when the listing failed; `error` says why.
+  private async listBareRepoDir(): Promise<{ entries: string[] | null; error?: NodeJS.ErrnoException }> {
+    try {
+      return { entries: await fs.readdir(this.bareRepoPath) };
+    } catch (error) {
+      return { entries: null, error: error as NodeJS.ErrnoException };
+    }
   }
 
   // An existing bare repo is found by path alone, and the default bareRepoDir

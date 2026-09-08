@@ -14,7 +14,7 @@ import {
   createWorktreeListOutput,
   setEnvVar,
 } from "../../__tests__/test-utils";
-import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../../constants";
 import { ConfigError, WorktreeNotCleanError } from "../../errors";
 import { GIT_UNSAFE_ALLOWANCES } from "../../utils/git-env";
 import { GIT_LFS_MISSING_WARNING, resetGitLfsProbeForTests } from "../../utils/git-lfs-probe";
@@ -768,6 +768,247 @@ describe("GitService", () => {
           `Could not read 'origin' remote URL from existing bare repository at '${bareRepoPath}'.`,
         );
         expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
+      });
+    });
+    // `git clone --bare` runs init_db before any transfer, so HEAD exists
+    // within milliseconds and a HEAD-less bareRepoDir is a leftover of a
+    // half-finished cleanup or external damage rather than of a killed clone.
+    // However it arose, "bare repo exists" is decided by `<bare>/HEAD`, so
+    // every later initialize() re-ran `git clone --bare` into that directory
+    // and git refused it ("destination path already exists and is not an empty
+    // directory") until someone deleted it by hand. The pending marker records
+    // that such a leftover is one this tool made — and it is written only for a
+    // destination verified as absent or empty, so nothing else is ever deleted.
+    describe("interrupted bare clone recovery", () => {
+      const bareRepoPath = path.resolve(".bare/repo");
+      const markerPath = path.join(
+        path.dirname(bareRepoPath),
+        `repo${PATH_CONSTANTS.BARE_CLONE_PENDING_MARKER_SUFFIX}`,
+      );
+      const mainWorktreeList = createWorktreeListOutput([
+        { path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" },
+      ]);
+
+      const fsError = (code: string, message: string): NodeJS.ErrnoException =>
+        Object.assign(new Error(message), { code });
+      const enoent = (): NodeJS.ErrnoException => fsError("ENOENT", "ENOENT: no such file or directory");
+
+      // fs stand-in keyed by path: only `<bare>/HEAD`, the bare directory and
+      // the marker answer differently, every other probe reports "exists". The
+      // marker is tracked for real — written by fs.writeFile, cleared by
+      // fs.unlink — so the order the code writes and clears it in is observable,
+      // and `setDir` lets a failing clone leave a partial directory behind.
+      const mockBareRepoState = (opts: {
+        head: boolean;
+        marker: boolean;
+        dir: boolean;
+        entries?: string[];
+        readdirError?: NodeJS.ErrnoException;
+      }): {
+        markerExists: () => boolean;
+        setDir: (exists: boolean) => void;
+        setReaddirError: (error: NodeJS.ErrnoException | undefined) => void;
+      } => {
+        let markerExists = opts.marker;
+        let dirExists = opts.dir;
+        let readdirError = opts.readdirError;
+        (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+          const target = String(p);
+          if (target === path.join(".bare/repo", "HEAD") && !opts.head) throw enoent();
+          if (target === markerPath && !markerExists) throw enoent();
+          if (target === ".bare/repo" && !dirExists) throw enoent();
+        });
+        (fs.readdir as Mock<any>).mockImplementation(async () => {
+          if (readdirError) throw readdirError;
+          return opts.entries ?? [];
+        });
+        (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+        (fs.rm as Mock<any>).mockResolvedValue(undefined);
+        (fs.writeFile as Mock<any>).mockImplementation(async (p: unknown) => {
+          if (String(p) === markerPath) markerExists = true;
+        });
+        (fs.unlink as Mock<any>).mockImplementation(async (p: unknown) => {
+          if (String(p) === markerPath) markerExists = false;
+        });
+        return {
+          markerExists: () => markerExists,
+          setDir: (exists: boolean) => {
+            dirExists = exists;
+          },
+          setReaddirError: (error: NodeJS.ErrnoException | undefined) => {
+            readdirError = error;
+          },
+        };
+      };
+
+      const invocationOrderOf = (mock: Mock, target: string): number => {
+        const index = mock.mock.calls.findIndex((call) => String(call[0]) === target);
+        expect(index).toBeGreaterThanOrEqual(0);
+        return mock.mock.invocationCallOrder[index];
+      };
+
+      it("removes a marked HEAD-less directory and clones again", async () => {
+        mockInitializeGit({ local: false, remote: true });
+        const marker = mockBareRepoState({ head: false, marker: true, dir: true, entries: ["objects", "config"] });
+
+        await gitService.initialize();
+
+        expect(fs.rm).toHaveBeenCalledWith(".bare/repo", { recursive: true, force: true });
+        expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare", "--progress"]);
+        expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining(bareRepoPath));
+        // The retry re-arms the marker before cloning and settles it after, so
+        // a kill during the retry is recoverable too and a later init adopts.
+        const cloneOrder = (mockGit.clone as Mock).mock.invocationCallOrder[0];
+        expect(invocationOrderOf(fs.rm as Mock, ".bare/repo")).toBeLessThan(cloneOrder);
+        expect(invocationOrderOf(fs.writeFile as Mock, markerPath)).toBeLessThan(cloneOrder);
+        expect(invocationOrderOf(fs.unlink as Mock, markerPath)).toBeGreaterThan(cloneOrder);
+        expect(marker.markerExists()).toBe(false);
+      });
+
+      it("refuses an unmarked HEAD-less directory, names it, and deletes nothing", async () => {
+        mockInitializeGit({ local: false, remote: true });
+        mockBareRepoState({ head: false, marker: false, dir: true, entries: ["objects", "config"] });
+
+        const error = await gitService.initialize().catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as ConfigError).code).toBe("CONFIG_BARE_DESTINATION_NOT_EMPTY");
+        expect((error as Error).message).toContain(bareRepoPath);
+        expect((error as Error).message).toContain("point bareRepoDir at a fresh path");
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(mockGit.clone).not.toHaveBeenCalled();
+        expect(gitService.isInitialized()).toBe(false);
+      });
+
+      it("clears a stale marker next to a bare repo that has a HEAD, and clones nothing", async () => {
+        const marker = mockBareRepoState({ head: true, marker: true, dir: true });
+        mockGit.raw
+          .mockResolvedValueOnce(TEST_URLS.github as any) // remote get-url origin
+          .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+          .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
+          .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+
+        await expect(gitService.initialize()).resolves.toBe(mockGit);
+
+        expect(mockGit.clone).not.toHaveBeenCalled();
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(fs.unlink).toHaveBeenCalledWith(markerPath);
+        expect(marker.markerExists()).toBe(false);
+      });
+
+      it("leaves an unmarked bare repo with a HEAD completely alone", async () => {
+        mockBareRepoState({ head: true, marker: false, dir: true });
+        mockGit.raw
+          .mockResolvedValueOnce(TEST_URLS.github as any)
+          .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any)
+          .mockResolvedValueOnce("refs/remotes/origin/main\n" as any)
+          .mockResolvedValueOnce(mainWorktreeList as any);
+
+        await expect(gitService.initialize()).resolves.toBe(mockGit);
+
+        expect(mockGit.clone).not.toHaveBeenCalled();
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(fs.unlink).not.toHaveBeenCalled();
+        expect(fs.writeFile).not.toHaveBeenCalledWith(markerPath, expect.anything());
+      });
+
+      it("marks a first-run clone into a missing directory and settles the marker after it", async () => {
+        mockInitializeGit({ local: false, remote: true });
+        const marker = mockBareRepoState({ head: false, marker: false, dir: false });
+
+        await gitService.initialize();
+
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare", "--progress"]);
+        const cloneOrder = (mockGit.clone as Mock).mock.invocationCallOrder[0];
+        expect(invocationOrderOf(fs.writeFile as Mock, markerPath)).toBeLessThan(cloneOrder);
+        expect(invocationOrderOf(fs.unlink as Mock, markerPath)).toBeGreaterThan(cloneOrder);
+        expect(marker.markerExists()).toBe(false);
+      });
+
+      // The marker authorizes a deletion, so it may only ever be written for a
+      // destination that was positively verified. A destination that exists but
+      // cannot be listed — a transient EMFILE, or a path that is a file and not
+      // a directory — is neither claimed nor cloned into: claiming it would
+      // license deleting whatever is really there on the next run.
+      it.each([
+        ["the listing fails transiently", fsError("EMFILE", "EMFILE: too many open files, scandir")],
+        ["the destination is a file, not a directory", fsError("ENOTDIR", "ENOTDIR: not a directory, scandir")],
+      ])("refuses to claim or clone a destination that exists but cannot be inspected when %s", async (_case, err) => {
+        mockInitializeGit({ local: false, remote: true });
+        mockBareRepoState({ head: false, marker: false, dir: true, readdirError: err });
+
+        const error = await gitService.initialize().catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as ConfigError).code).toBe("CONFIG_BARE_DESTINATION_UNREADABLE");
+        expect((error as Error).message).toContain(bareRepoPath);
+        expect((error as Error).message).toContain(err.message);
+        expect(fs.writeFile).not.toHaveBeenCalledWith(markerPath, expect.anything());
+        expect(mockGit.clone).not.toHaveBeenCalled();
+
+        // The next run finds the same directory, still unclaimed: it must not
+        // delete it either.
+        const second = new GitService(createMockConfig(), mockLogger);
+        await expect(second.initialize()).rejects.toBeInstanceOf(ConfigError);
+        expect(fs.rm).not.toHaveBeenCalled();
+      });
+
+      // The same sequence end to end: one transient listing failure over a
+      // pre-existing user directory must not leave anything behind that lets
+      // the next run — whose listing works again — delete it.
+      it("does not let a transient listing failure authorize deleting a user directory later", async () => {
+        mockInitializeGit({ local: false, remote: true });
+        const state = mockBareRepoState({
+          head: false,
+          marker: false,
+          dir: true,
+          entries: ["notes.txt"],
+          readdirError: fsError("EMFILE", "EMFILE: too many open files, scandir"),
+        });
+
+        await expect(gitService.initialize()).rejects.toMatchObject({ code: "CONFIG_BARE_DESTINATION_UNREADABLE" });
+
+        state.setReaddirError(undefined);
+        const second = new GitService(createMockConfig(), mockLogger);
+        const error = await second.initialize().catch((e: unknown) => e);
+
+        expect((error as ConfigError).code).toBe("CONFIG_BARE_DESTINATION_NOT_EMPTY");
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(fs.writeFile).not.toHaveBeenCalledWith(markerPath, expect.anything());
+        expect(state.markerExists()).toBe(false);
+      });
+
+      // Same rule one step later: the clone itself can fail (auth, network) on
+      // a destination we did claim. git removes the directory it created, so
+      // the authorization must go with it.
+      it("drops the marker when a failed clone left no directory behind", async () => {
+        mockInitializeGit({ local: false, remote: true });
+        const marker = mockBareRepoState({ head: false, marker: false, dir: false });
+        mockGit.clone.mockRejectedValueOnce(new Error("fatal: could not read Username for 'https://github.com'"));
+
+        await expect(gitService.initialize()).rejects.toThrow("could not read Username");
+
+        expect(invocationOrderOf(fs.writeFile as Mock, markerPath)).toBeLessThan(
+          (mockGit.clone as Mock).mock.invocationCallOrder[0],
+        );
+        expect(fs.unlink).toHaveBeenCalledWith(markerPath);
+        expect(marker.markerExists()).toBe(false);
+      });
+
+      it("keeps the marker when a failed clone left a partial directory behind", async () => {
+        mockInitializeGit({ local: false, remote: true });
+        const marker = mockBareRepoState({ head: false, marker: false, dir: false, entries: ["objects"] });
+        (mockGit.clone as Mock).mockImplementationOnce(async () => {
+          marker.setDir(true);
+          throw new Error("fatal: the remote end hung up unexpectedly");
+        });
+
+        await expect(gitService.initialize()).rejects.toThrow("the remote end hung up");
+
+        // Still claimed, so the next run recovers it instead of erroring out.
+        expect(fs.unlink).not.toHaveBeenCalledWith(markerPath);
+        expect(marker.markerExists()).toBe(true);
       });
     });
   });

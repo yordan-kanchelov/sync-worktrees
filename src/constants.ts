@@ -122,6 +122,14 @@ export const PATH_CONSTANTS = {
    * copy lands — its presence marks a tool-created clone whose init was
    * interrupted and still owes the copy. */
   CLONE_INIT_PENDING_MARKER: ".sync-worktrees-clone-init.pending",
+  /** Worktree mode's counterpart, appended to the bare repository's directory
+   * name and written in its parent (never inside: `git clone` refuses a
+   * non-empty destination). Written only for a destination verified to be
+   * absent or empty, and dropped again as soon as the clone ends — on success,
+   * and on failure once the destination is verifiably gone or empty. So a
+   * HEAD-less directory next to this marker is a leftover of this tool's own
+   * initialization, the only one initialize() may delete. */
+  BARE_CLONE_PENDING_MARKER_SUFFIX: ".sync-worktrees-bare-clone.pending",
   /** Directory next to (never inside) a worktreeDir that holds its cross-process lock file. */
   LOCK_DIR_NAME: ".sync-worktrees-locks",
 } as const;
