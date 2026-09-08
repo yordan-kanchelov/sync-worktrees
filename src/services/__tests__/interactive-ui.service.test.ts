@@ -8,7 +8,7 @@ import { calculateDirectorySize, formatBytes } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
 
 import type { Config } from "../../types";
-import type { WorktreeSyncService } from "../worktree-sync.service";
+import { WorktreeSyncService } from "../worktree-sync.service";
 import type * as ChildProcessModule from "child_process";
 import type * as FsModule from "fs";
 import type * as cron from "node-cron";
@@ -1411,12 +1411,18 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockSyncService], "/test/config.js");
 
-        mockWorktreeSyncServiceInstance.updateLogger.mockClear();
+        const constructed = vi.mocked(WorktreeSyncService);
+        constructed.mockClear();
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        expect(mockWorktreeSyncServiceInstance.updateLogger).toHaveBeenCalled();
+        // The reloaded services are built with the panel logger already in
+        // their config, rather than constructed on the console default and
+        // corrected afterwards -- initialize() logs before any correction
+        // could run.
+        expect(constructed).toHaveBeenCalledTimes(1);
+        expect(constructed.mock.calls[0][0].logger).toBeDefined();
 
         void service.destroy();
       });

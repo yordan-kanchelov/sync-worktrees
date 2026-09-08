@@ -117,17 +117,21 @@ export class InteractiveUIService {
     };
   }
 
+  // The logger a service the UI owns must be built with: while Ink holds the
+  // alternate screen a console line is written over the interface instead of
+  // into the log panel, so it belongs in the config before the service (and
+  // every sub-service that copies it) exists — see handleReload.
+  private createServiceLogger(config: RepositoryConfig): Logger {
+    return new Logger({
+      repoName: config.name,
+      debug: config.debug,
+      outputFn: this.createOutputFn(),
+    });
+  }
+
   private injectLoggersIntoServices(): void {
-    const outputFn = this.createOutputFn();
     for (const service of this.syncServices) {
-      const config = service.config as RepositoryConfig;
-      service.updateLogger(
-        new Logger({
-          repoName: config.name,
-          debug: config.debug,
-          outputFn,
-        }),
-      );
+      service.updateLogger(this.createServiceLogger(service.config as RepositoryConfig));
     }
   }
 
@@ -283,6 +287,10 @@ export class InteractiveUIService {
       const initResults = await Promise.allSettled(
         repositories.map((repoConfig) =>
           this.limit(async () => {
+            // Before construction, not after: initialize() logs (fetch
+            // progress, metadata repair, status probe failures) through the
+            // logger each sub-service was handed when it was built.
+            repoConfig.logger = this.createServiceLogger(repoConfig);
             const service = new WorktreeSyncService(repoConfig);
             await service.initialize();
             return {
@@ -318,7 +326,11 @@ export class InteractiveUIService {
       this.syncServices = newServices;
       this.repositoryCount = this.syncServices.length;
       this.subscribeToServiceProgress();
-      this.injectLoggersIntoServices();
+      // Not injectLoggersIntoServices(): these services were built with their
+      // panel logger already in config, above. Injecting again would build a
+      // second Logger per repository and leave config.logger pointing at the
+      // first, dead one. Startup still needs the injection, because there the
+      // services exist before the UI that owns the panel does.
 
       const uniqueSchedules = [...new Set(this.syncServices.map((s) => s.config.cronSchedule))];
       this.cronSchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;

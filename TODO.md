@@ -128,7 +128,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   but every getFullWorktreeStatus spawns 6 git processes in parallel (240 at default settings)
 - [x] **T54** — `update_check_failed` skip and its log line carry no branch or path, so the user
   cannot tell which of N worktrees failed the probe
-- [ ] **T55** — GitService.updateLogger does not reach WorktreeStatusService/WorktreeMetadataService
+- [x] **T55** — GitService.updateLogger does not reach WorktreeStatusService/WorktreeMetadataService
   or cached progress handlers, so in the TUI their log lines bypass the log panel and go to the raw
   console
 - [ ] **T56** — Per-worktree simple-git client caches are never evicted (GitService ×2 variants +
@@ -2514,7 +2514,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   without branch or path, unlike the prune path”. Guards checked: The prune path already solves it
   with Object.assign; the update path predates that and its test only checks kind/reason.
 
-### [ ] T55. GitService.updateLogger does not reach WorktreeStatusService/WorktreeMetadataService or cached progress handlers, so in the TUI their log lines bypass the log panel and go to the raw console
+### [x] T55. GitService.updateLogger does not reach WorktreeStatusService/WorktreeMetadataService or cached progress handlers, so in the TUI their log lines bypass the log panel and go to the raw console
 
 - **Category**: workflow · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

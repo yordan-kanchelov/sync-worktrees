@@ -242,14 +242,22 @@ export class GitService {
   // kill at all (local commands, and the unit-test shortcut).
   private buildSimpleGitOptions(blockMs: number): Partial<SimpleGitOptions> {
     const options: Partial<SimpleGitOptions> = {
-      progress: makeGitProgressHandler(this.logger, (event) => this.progressEmitter?.(event)),
+      progress: makeGitProgressHandler(
+        () => this.logger,
+        (event) => this.progressEmitter?.(event),
+      ),
     };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;
   }
 
+  // Every logger-holding object this service owns, or its lines keep going to
+  // the console the TUI has taken over. Cached clients need no rebuild: their
+  // progress handlers read `this.logger` per event.
   updateLogger(logger: Logger): void {
     this.logger = logger;
+    this.metadataService.updateLogger(logger);
+    this.statusService.updateLogger(logger);
     this.sparseCheckoutService.updateLogger(logger);
   }
 

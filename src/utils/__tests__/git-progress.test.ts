@@ -27,14 +27,14 @@ describe("makeGitProgressHandler", () => {
   });
 
   it("filters out events for non-clone/fetch/pull methods", () => {
-    const handler = makeGitProgressHandler(logger);
+    const handler = makeGitProgressHandler(() => logger);
     handler(makeEvent("push", "Counting", 50));
     expect(infoSpy).not.toHaveBeenCalled();
     expect(debugSpy).not.toHaveBeenCalled();
   });
 
   it.each(["clone", "fetch", "pull"] as const)("emits debug logs for method '%s'", (method) => {
-    const handler = makeGitProgressHandler(logger);
+    const handler = makeGitProgressHandler(() => logger);
     handler(makeEvent(method, "Receiving objects", 100));
     expect(infoSpy).not.toHaveBeenCalled();
     expect(debugSpy).toHaveBeenCalledTimes(1);
@@ -42,7 +42,7 @@ describe("makeGitProgressHandler", () => {
   });
 
   it("emits at most once per (method,stage) bucket of PROGRESS_BUCKET_PERCENT (25%)", () => {
-    const handler = makeGitProgressHandler(logger);
+    const handler = makeGitProgressHandler(() => logger);
     handler(makeEvent("fetch", "Compressing", 10));
     handler(makeEvent("fetch", "Compressing", 20));
     handler(makeEvent("fetch", "Compressing", 24));
@@ -50,7 +50,7 @@ describe("makeGitProgressHandler", () => {
   });
 
   it("emits on bucket boundary crossings", () => {
-    const handler = makeGitProgressHandler(logger);
+    const handler = makeGitProgressHandler(() => logger);
     handler(makeEvent("fetch", "Compressing", 10));
     handler(makeEvent("fetch", "Compressing", 30));
     handler(makeEvent("fetch", "Compressing", 55));
@@ -59,7 +59,7 @@ describe("makeGitProgressHandler", () => {
   });
 
   it("always emits at 100% even if already emitted in the same bucket", () => {
-    const handler = makeGitProgressHandler(logger);
+    const handler = makeGitProgressHandler(() => logger);
     handler(makeEvent("clone", "Receiving objects", 76));
     handler(makeEvent("clone", "Receiving objects", 100));
     expect(debugSpy).toHaveBeenCalledTimes(2);
@@ -67,7 +67,7 @@ describe("makeGitProgressHandler", () => {
   });
 
   it("resets bucket on stage restart (bucket regression) so the new run logs from scratch", () => {
-    const handler = makeGitProgressHandler(logger);
+    const handler = makeGitProgressHandler(() => logger);
     handler(makeEvent("fetch", "Receiving objects", 100));
     debugSpy.mockClear();
 
@@ -78,27 +78,27 @@ describe("makeGitProgressHandler", () => {
   });
 
   it("tracks buckets independently per (method,stage) key", () => {
-    const handler = makeGitProgressHandler(logger);
+    const handler = makeGitProgressHandler(() => logger);
     handler(makeEvent("fetch", "Counting objects", 50));
     handler(makeEvent("fetch", "Compressing objects", 50));
     expect(debugSpy).toHaveBeenCalledTimes(2);
   });
 
   it("renders 'processed/total' when total > 0", () => {
-    const handler = makeGitProgressHandler(logger);
+    const handler = makeGitProgressHandler(() => logger);
     handler(makeEvent("fetch", "Counting objects", 50, 500, 1000));
     expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("(500/1000)"));
   });
 
   it("renders 'processed' alone when total is 0", () => {
-    const handler = makeGitProgressHandler(logger);
+    const handler = makeGitProgressHandler(() => logger);
     handler(makeEvent("fetch", "Resolving deltas", 50, 7, 0));
     expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("(7)"));
   });
 
   it("forwards throttled progress events to the optional emitter", () => {
     const emitProgress = vi.fn();
-    const handler = makeGitProgressHandler(logger, emitProgress);
+    const handler = makeGitProgressHandler(() => logger, emitProgress);
 
     handler(makeEvent("clone", "Receiving objects", 25, 5, 20));
 
@@ -111,10 +111,24 @@ describe("makeGitProgressHandler", () => {
     });
   });
 
+  it("reads the logger per event, so a swapped-in logger takes over", () => {
+    const replacementDebug = vi.fn();
+    let current = logger;
+    const handler = makeGitProgressHandler(() => current);
+
+    handler(makeEvent("fetch", "Receiving objects", 25));
+    current = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: replacementDebug } as unknown as Logger;
+    handler(makeEvent("fetch", "Receiving objects", 100));
+
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+    expect(replacementDebug).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps default logs quiet while still forwarding structured progress", () => {
     const output = vi.fn();
     const emitProgress = vi.fn();
-    const handler = makeGitProgressHandler(new Logger({ outputFn: output }), emitProgress);
+    const quietLogger = new Logger({ outputFn: output });
+    const handler = makeGitProgressHandler(() => quietLogger, emitProgress);
 
     handler(makeEvent("fetch", "Receiving objects", 25, 5, 20));
 

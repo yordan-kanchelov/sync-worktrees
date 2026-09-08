@@ -115,7 +115,10 @@ export class CloneSyncService {
   // unsafe-env allowances every client needs.
   private buildGitOptions(blockMs: number): Partial<SimpleGitOptions> {
     const options: Partial<SimpleGitOptions> = {
-      progress: makeGitProgressHandler(this.logger, (event) => this.emitProgress(event)),
+      progress: makeGitProgressHandler(
+        () => this.logger,
+        (event) => this.emitProgress(event),
+      ),
     };
     if (blockMs > 0) options.timeout = { block: blockMs };
     return options;

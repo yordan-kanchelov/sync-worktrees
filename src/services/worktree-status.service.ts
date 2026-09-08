@@ -156,6 +156,10 @@ export class WorktreeStatusService {
     );
   }
 
+  updateLogger(logger: Logger): void {
+    this.logger = logger;
+  }
+
   /** Runs one git command against the shared process budget. */
   private runGit<T>(command: () => Promise<T>): Promise<T> {
     return this.gitBudget(command);

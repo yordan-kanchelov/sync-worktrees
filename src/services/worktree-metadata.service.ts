@@ -16,6 +16,10 @@ export class WorktreeMetadataService {
     this.logger = logger ?? Logger.createDefault();
   }
 
+  updateLogger(logger: Logger): void {
+    this.logger = logger;
+  }
+
   /**
    * Metadata is keyed by worktree path basename. Branch names are sanitized
    * into unique basenames before worktrees are created.
