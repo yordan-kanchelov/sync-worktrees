@@ -5,6 +5,16 @@ import { GIT_UNSAFE_ALLOWANCES, sanitizeGitEnv } from "./git-env";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 /**
+ * Concurrent git processes one simple-git client will run. Its scheduler is
+ * per-client and no client here overrides `maxConcurrentProcesses`, so this is
+ * simple-git's default. It bounds nothing across clients — each worktree gets
+ * its own — but every call that shares a single cached client (branch fetches
+ * through the anchor worktree, `worktree add`/`remove` through the bare repo)
+ * is capped here no matter what concurrency the caller asks for.
+ */
+export const SIMPLE_GIT_CLIENT_CONCURRENCY = 5;
+
+/**
  * Options every simple-git client is constructed with: the caller's options
  * (progress handler, block timeout, ...) plus the centralized unsafe-env
  * allowances. Callers must never construct a client without them — every

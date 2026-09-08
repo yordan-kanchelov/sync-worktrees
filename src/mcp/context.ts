@@ -205,6 +205,7 @@ export class RepositoryContext {
         configDir,
         configFile.retry,
         configFile.repositories,
+        configFile.parallelism,
       );
       resolvedAll.push(resolved);
     }

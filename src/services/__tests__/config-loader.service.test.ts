@@ -4,8 +4,10 @@ import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
+import { DEFAULT_CONFIG } from "../../constants";
 import { ConfigError, ConfigValidationError } from "../../errors";
-import { ConfigLoaderService } from "../config-loader.service";
+import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../../utils/git-client";
+import { ConfigLoaderService, computeParallelismPeak } from "../config-loader.service";
 
 import type { RepositoryConfig } from "../../types";
 
@@ -1308,6 +1310,184 @@ describe("ConfigLoaderService", () => {
       expect(config.parallelism).toBeDefined();
     });
 
+    // The peak is what the guardrail is for: a status check is not one git
+    // process, and the phases it used to be summed with never run alongside it.
+    it("reports the shipped defaults' peak as 40 concurrent git processes", () => {
+      const peak = computeParallelismPeak();
+
+      expect(peak.perRepository).toBe(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+      expect(peak.total).toBe(
+        DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES * DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS,
+      );
+      expect(peak.total).toBe(40);
+      expect(peak.widestPhase.field).toBe("maxStatusChecks");
+    });
+
+    it("takes the widest phase rather than the sum of phases that never overlap", () => {
+      const peak = computeParallelismPeak({
+        maxRepositories: 2,
+        maxWorktreeCreation: 4,
+        maxWorktreeUpdates: 6,
+        maxWorktreeRemoval: 5,
+        maxStatusChecks: 9,
+        maxBranchFetches: 7,
+      });
+
+      expect(peak.perRepository).toBe(9);
+      expect(peak.total).toBe(18);
+    });
+
+    it("should accept a config that only exceeds the limit when phases are summed", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      // Summed: 5 × (6 + 5 + 5 + 5) = 105 — over the old limit. Per phase:
+      // 5 × 6 = 30, because creation, update, prune and status never overlap.
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 5,
+            maxWorktreeCreation: 6,
+            maxWorktreeUpdates: 5,
+            maxWorktreeRemoval: 5,
+            maxStatusChecks: 5
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+      expect(config.parallelism?.maxWorktreeCreation).toBe(6);
+    });
+
+    it("should name the widest phase and count status checks as git processes", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 6,
+            maxStatusChecks: 20
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(120\) exceeds safe limit \(100\)/,
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/maxStatusChecks: 20/);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/Consider reducing maxRepositories/);
+    });
+
+    // Every branch fetch goes through the anchor worktree's one git client,
+    // whose scheduler stops at 5 — measured: 40 concurrent fetches through one
+    // cached client peak at 9 processes, never 40. Rejecting this config would
+    // break a working setup over processes that cannot be spawned.
+    it("should accept a maxBranchFetches the shared fetch client cannot reach", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 2,
+            maxBranchFetches: 200
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+      expect(config.parallelism?.maxBranchFetches).toBe(200);
+    });
+
+    it("leaves the branch-fetch fallback out of the peak entirely", () => {
+      const peak = computeParallelismPeak({ maxRepositories: 1, maxBranchFetches: 1000 });
+
+      expect(peak.widestPhase.field).toBe("maxStatusChecks");
+      expect(peak.total).toBe(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+    });
+
+    // `git worktree add` and `git worktree remove` both run on the bare
+    // repository's single client, so these settings cannot reach their
+    // configured width either.
+    it("caps phases that share one git client at that client's concurrency", () => {
+      const peak = computeParallelismPeak({
+        maxRepositories: 1,
+        maxWorktreeCreation: 50,
+        maxWorktreeRemoval: 50,
+        maxWorktreeUpdates: 1,
+        maxStatusChecks: 1,
+      });
+
+      expect(peak.perRepository).toBe(SIMPLE_GIT_CLIENT_CONCURRENCY);
+      expect(peak.total).toBe(SIMPLE_GIT_CLIENT_CONCURRENCY);
+    });
+
+    it("should accept per-client-capped phases that the raw numbers would reject", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      // 20 × 50 = 1000 raw, but creation and removal top out at 5 apiece, so
+      // the real widest phase is the 20 status checks: 20 × 20 = 400. Still
+      // over the limit, and the message must name maxStatusChecks, not creation.
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 20,
+            maxWorktreeCreation: 50,
+            maxWorktreeRemoval: 50
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /widest phase \(status checks, maxStatusChecks: 20\) = 400 git processes/,
+      );
+    });
+
+    // The phase advice has to solve for the phase at the *configured* number of
+    // repositories: at 3 repositories, 100 status checks is still 300 processes.
+    it("should size the phase advice against the configured maxRepositories", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 3,
+            maxStatusChecks: 150
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Even one repository exceeds the limit at maxStatusChecks: 150\./,
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /With maxRepositories at 3, maxStatusChecks must be 33 or less/,
+      );
+    });
+
     it("should validate parallelism in defaults", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
@@ -1352,6 +1532,53 @@ describe("ConfigLoaderService", () => {
       expect(resolved.parallelism).toEqual({
         maxWorktreeCreation: 2,
         maxWorktreeUpdates: 5,
+      });
+    });
+
+    // The placement the example config and README show. It used to be dropped
+    // on the floor: only defaults.parallelism and repo.parallelism were merged,
+    // so a top-level block silently left every per-repo limit at its default.
+    it("should apply a top-level parallelism block to every repository", async () => {
+      const configPath = path.join(tempDir, "toplevel.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default {
+          parallelism: { maxStatusChecks: 4 },
+          repositories: [
+            { name: "one", repoUrl: "${TEST_URLS.github}", worktreeDir: "./w1" },
+            { name: "two", repoUrl: "${TEST_URLS.github}", worktreeDir: "./w2" }
+          ]
+        };`,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories.map((repo) => repo.parallelism?.maxStatusChecks)).toEqual([4, 4]);
+    });
+
+    it("should let defaults and a repository override the top-level block", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        parallelism: { maxStatusChecks: 3 },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(
+        repo,
+        { parallelism: { maxStatusChecks: 6, maxWorktreeUpdates: 9 } },
+        tempDir,
+        undefined,
+        undefined,
+        { maxStatusChecks: 12, maxWorktreeUpdates: 12, maxWorktreeRemoval: 7 },
+      );
+
+      expect(resolved.parallelism).toEqual({
+        maxStatusChecks: 3,
+        maxWorktreeUpdates: 9,
+        maxWorktreeRemoval: 7,
       });
     });
 

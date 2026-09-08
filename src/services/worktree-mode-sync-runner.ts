@@ -663,7 +663,11 @@ export class WorktreeModeSyncRunner {
       this.logger.info(`Step 3: Checking ${checks.length} stale worktrees to prune...`);
 
       // Two-phase approach: First check status in parallel (read-only, safe),
-      // then remove worktrees in parallel (mutation, needs lower concurrency)
+      // then remove worktrees in parallel (mutation, needs lower concurrency).
+      // This limit bounds the checks in flight; the git processes they fan out
+      // to are bounded by the status service's own budget of the same size, so
+      // a tick that turns up hundreds of prune candidates still peaks at
+      // maxStatusChecks git processes.
       const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
       const limit = pLimit(maxConcurrent);
 

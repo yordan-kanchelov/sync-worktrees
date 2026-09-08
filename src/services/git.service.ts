@@ -145,6 +145,7 @@ export type GitServiceOptions = Pick<
   | "sparseCheckout"
   | "fetchTimeoutMs"
   | "cloneTimeoutMs"
+  | "parallelism"
 >;
 
 export class GitService {
@@ -170,7 +171,17 @@ export class GitService {
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, GIT_CONSTANTS.DEFAULT_BRANCH); // Temporary, will be updated
     this.metadataService = new WorktreeMetadataService(this.logger);
-    this.statusService = new WorktreeStatusService({ skipLfs: this.config.skipLfs }, this.logger);
+    // `maxStatusChecks` is a ceiling on git processes, not on worktrees: the
+    // status service shares one budget of that size across every worktree it is
+    // asked about, so the prune phase peaks at that many git processes however
+    // many stale worktrees a tick turns up.
+    this.statusService = new WorktreeStatusService(
+      {
+        skipLfs: this.config.skipLfs,
+        maxConcurrentGitProcesses: this.config.parallelism?.maxStatusChecks,
+      },
+      this.logger,
+    );
     this.sparseCheckoutService = new SparseCheckoutService(this.logger);
   }
 

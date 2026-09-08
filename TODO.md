@@ -124,7 +124,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T2** — Update phase spawns ~6 git processes per worktree every tick (4 + 6W per sync)
   including a full `git status` scan before the cheap tip comparison; one `for-each-ref` already
   answers 'nothing changed'
-- [ ] **T53** — MAX_SAFE_TOTAL_CONCURRENT_OPS validation counts each status check as one process,
+- [x] **T53** — MAX_SAFE_TOTAL_CONCURRENT_OPS validation counts each status check as one process,
   but every getFullWorktreeStatus spawns 6 git processes in parallel (240 at default settings)
 - [ ] **T54** — `update_check_failed` skip and its log line carry no branch or path, so the user
   cannot tell which of N worktrees failed the probe
@@ -2457,7 +2457,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 
 ## Low severity
 
-### [ ] T53. MAX_SAFE_TOTAL_CONCURRENT_OPS validation counts each status check as one process, but every getFullWorktreeStatus spawns 6 git processes in parallel (240 at default settings)
+### [x] T53. MAX_SAFE_TOTAL_CONCURRENT_OPS validation counts each status check as one process, but every getFullWorktreeStatus spawns 6 git processes in parallel (240 at default settings)
 
 - **Category**: guardrail · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

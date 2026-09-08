@@ -61,24 +61,40 @@ const config = {
   // retry: { initialDelayMs: 5000 },              // Start with 5 second delay
   // retry: { jitterMs: 1000 },                    // Add up to 1s random jitter for concurrent ops
 
-  // Parallelism configuration for performance tuning (optional)
+  // Parallelism configuration for performance tuning (optional).
+  // Every limit below counts git processes. This block may also go under
+  // `defaults:` or on a single repository, which override it in that order.
   parallelism: {
     maxRepositories: 2, // Max concurrent repositories to sync (default: 2)
     maxWorktreeCreation: 1, // Max concurrent worktree creations (default: 1 - KEEP LOW!)
     maxWorktreeUpdates: 3, // Max concurrent worktree updates (default: 3)
     maxWorktreeRemoval: 3, // Max concurrent worktree removals (default: 3)
-    maxStatusChecks: 20, // Max concurrent status checks (default: 20)
+    maxStatusChecks: 20, // Max concurrent git processes for status probes (default: 20)
+    maxBranchFetches: 3, // Max concurrent per-branch fetches, bulk-fetch fallback (default: 3)
   },
 
   // Performance tuning tips:
   // - maxWorktreeCreation: Keep at 1 to avoid Git lock contention issues
-  // - maxStatusChecks: Safe to increase (20-50) since they're read-only
-  // - maxWorktreeUpdates & maxWorktreeRemoval: Can safely increase to 5-10 on fast systems
+  // - maxStatusChecks: Safe to increase (20-50) since they're read-only. One
+  //   status check of a worktree runs up to ten git commands (status, branch,
+  //   branch -r, stash list and submodule status at once, then rev-parse and
+  //   rev-list probes, then check-ignore); they all share this one budget, so
+  //   it caps git processes, not worktrees. Git's own children are extra:
+  //   `git submodule status` runs a helper script and a child per submodule,
+  //   about 3 processes per call on an 8-submodule superproject.
+  // - maxWorktreeUpdates: Can safely increase to 5-10 on fast systems
+  // - maxWorktreeCreation, maxWorktreeRemoval and maxBranchFetches each run
+  //   their main git command through one shared client that stops at 5
+  //   concurrent processes, so raising them far above 5 buys little: fetches
+  //   stop at 5 outright, while creation and removal grow a little past it for
+  //   the few commands they run on each worktree's own client
   // - maxRepositories: Higher values speed up multi-repo syncs but use more resources
-  // - Total concurrent operations = maxRepositories × per-repo limits (must be ≤ 100)
+  // - A repository's phases run one after another (create, then prune, then
+  //   update), so peak git processes = maxRepositories × the widest single
+  //   limit — never their sum. That peak must be ≤ 100.
   // - On powerful machines with SSDs, you can increase these values for better performance
   // - Use jitterMs in retry config to prevent all concurrent operations from retrying at once
-  // - Example safe config: maxRepositories=2, maxStatusChecks=20 = ~54 total operations
+  // - Example safe config: maxRepositories=2, maxStatusChecks=20 = a peak of 40 git processes
 
   // Array of repository configurations
   repositories: [

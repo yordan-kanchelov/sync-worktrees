@@ -11,12 +11,146 @@ import { parseDuration } from "../utils/date-filter";
 import { fileExists } from "../utils/file-exists";
 import { getDefaultBareRepoDir, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
 import { isPathEqualOrInside, isPathStrictlyInside, normalizePathForCompare, pathsEqual } from "../utils/path-compare";
+import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../utils/git-client";
 import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 
-import type { Config, ConfigFile, RepositoryConfig, RepositoryMode } from "../types";
+import type { Config, ConfigFile, ParallelismConfig, RepositoryConfig, RepositoryMode } from "../types";
 
 const require = createRequire(import.meta.url);
+
+/**
+ * How wide a phase can actually run, in git processes.
+ *
+ * `asConfigured` is a phase whose units each get their own git client, so it
+ * runs at exactly the configured width. `cappedByOneClient` is a phase whose
+ * git-command *unit* goes through a single cached simple-git client, whose
+ * scheduler caps it at SIMPLE_GIT_CLIENT_CONCURRENCY however high the setting
+ * is — measured: 40 concurrent branch fetches through the anchor worktree's
+ * client peak at 5 fetches (9 processes counting git's transport helpers), not
+ * 40. Creation and removal are capped this way for their `worktree add` and
+ * `worktree remove` calls, but each unit also runs a few commands on the new
+ * worktree's own client, outside that cap: `maxWorktreeCreation: 40` measured
+ * at a peak of 15 processes rather than 5, so the cap bounds the phase's growth
+ * rather than pinning it exactly.
+ */
+const asConfigured = (configured: number): number => configured;
+const cappedByOneClient = (configured: number): number => Math.min(configured, SIMPLE_GIT_CLIENT_CONCURRENCY);
+/**
+ * The branch-by-branch fetch is a fallback that only runs when a bulk fetch
+ * failed on LFS errors, and it goes through the anchor worktree's one client,
+ * so it can never exceed SIMPLE_GIT_CLIENT_CONCURRENCY however high
+ * `maxBranchFetches` is set. It is left out of the peak entirely rather than
+ * counted at that ceiling, because counting it -- even at 5 -- would newly
+ * reject configs that load today: 21 to 25 repositories with every other limit
+ * at 1 sum to 84-100 under the old rule but reach 105-125 at 5 per repository.
+ * Leaving it out is what makes "no config that loads today is rejected" hold
+ * for every input rather than merely for the ones we swept.
+ *
+ * This is a deliberate hole, not an impossibility: `maxRepositories` repos can
+ * each run 5 concurrent fallback fetches, so a config the peak reports as 42
+ * can spawn ~105 fetch processes if every repository hits the LFS fallback at
+ * once. The fallback has one call site and is gated on an LFS failure, so that
+ * is a narrow path. The setting is still validated as a positive integer.
+ */
+const notCounted = (): number => 0;
+
+/**
+ * Every per-repository parallelism setting: the phase it bounds, and the git
+ * processes that phase can really run at once. The phases run one after another
+ * — create, then prune, then update — so a repository's peak is the widest
+ * single phase, never the sum of all of them. (The update phase runs its
+ * read-only probes under its own `maxStatusChecks`-wide limiter and its
+ * fast-forwards under `maxWorktreeUpdates`, one after the other, so both are
+ * already covered by taking the maximum.)
+ *
+ * This table is the one place a parallelism setting is declared: it drives the
+ * positive-integer validation as well as the peak, so a phase added here cannot
+ * reach the arithmetic unvalidated.
+ *
+ * Counts are git processes this tool spawns. Git's own children are outside the
+ * model: `git submodule status` runs a `git-submodule`/`git-sh-i18n` helper and
+ * a child per submodule, measured on git 2.43 at ~1.5 git processes and ~3
+ * processes in total per call on an 8-submodule superproject (7 for a single
+ * probe with nothing else running), so a budget spent entirely on superproject
+ * probes costs roughly three times its size in processes.
+ */
+const PARALLELISM_PHASES = [
+  {
+    field: "maxWorktreeCreation",
+    label: "worktree creation",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION,
+    // `git worktree add` on the bare repository's one client.
+    concurrentProcesses: cappedByOneClient,
+  },
+  {
+    field: "maxWorktreeUpdates",
+    label: "worktree updates",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES,
+    // Each fast-forward runs on its own worktree's client, one command at a time.
+    concurrentProcesses: asConfigured,
+  },
+  {
+    field: "maxWorktreeRemoval",
+    label: "worktree removal",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL,
+    // `git worktree remove` on the bare repository's one client.
+    concurrentProcesses: cappedByOneClient,
+  },
+  {
+    field: "maxStatusChecks",
+    label: "status checks",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS,
+    // Enforced exactly by WorktreeStatusService's shared process budget.
+    concurrentProcesses: asConfigured,
+  },
+  {
+    field: "maxBranchFetches",
+    label: "branch fetches",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_BRANCH_FETCHES,
+    concurrentProcesses: notCounted,
+  },
+] as const satisfies ReadonlyArray<{
+  field: keyof ParallelismConfig;
+  label: string;
+  default: number;
+  concurrentProcesses: (configured: number) => number;
+}>;
+
+/** Every parallelism setting that must be a positive integer. */
+const PARALLELISM_INT_FIELDS: ReadonlyArray<keyof ParallelismConfig> = [
+  "maxRepositories",
+  ...PARALLELISM_PHASES.map((phase) => phase.field),
+];
+
+export interface ParallelismPeak {
+  /** Git processes the widest phase of a single repository runs at once. */
+  perRepository: number;
+  /** `maxRepositories` × `perRepository`: the whole run's peak. */
+  total: number;
+  /** The setting that decides `perRepository`, and how it reads in a message. */
+  widestPhase: { field: keyof ParallelismConfig; label: string; value: number };
+}
+
+/**
+ * Peak concurrent git processes a parallelism config allows. The shipped
+ * defaults come to 2 repositories × 20 status checks = 40.
+ */
+export function computeParallelismPeak(parallelism: ParallelismConfig = {}): ParallelismPeak {
+  const phases = PARALLELISM_PHASES.map((phase) => ({
+    field: phase.field,
+    label: phase.label,
+    value: phase.concurrentProcesses(parallelism[phase.field] ?? phase.default),
+  }));
+  const widestPhase = phases.reduce((widest, phase) => (phase.value > widest.value ? phase : widest));
+  const maxRepositories = parallelism.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+
+  return {
+    perRepository: widestPhase.value,
+    total: maxRepositories * widestPhase.value,
+    widestPhase,
+  };
+}
 
 const CLONE_MODE_CONFLICTING_FIELDS = [
   "branchInclude",
@@ -417,38 +551,42 @@ export class ConfigLoaderService {
 
     const config = parallelism as Record<string, unknown>;
 
-    const positiveIntFields = [
-      "maxRepositories",
-      "maxWorktreeCreation",
-      "maxWorktreeUpdates",
-      "maxWorktreeRemoval",
-      "maxStatusChecks",
-      "maxBranchFetches",
-    ] as const;
-
-    for (const field of positiveIntFields) {
+    // Validating into a typed object keeps the peak arithmetic from ever seeing
+    // a value this loop did not check: both read the same field list.
+    const validated: ParallelismConfig = {};
+    for (const field of PARALLELISM_INT_FIELDS) {
       const value = config[field];
-      if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)) {
+      if (value === undefined) continue;
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
         throw new ConfigValidationError(`${context} parallelism.${field}`, "must be a positive integer");
       }
+      validated[field] = value;
     }
 
-    const maxRepos = (config.maxRepositories as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
-    const maxCreation = (config.maxWorktreeCreation as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
-    const maxUpdates = (config.maxWorktreeUpdates as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES;
-    const maxRemoval = (config.maxWorktreeRemoval as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL;
-    const maxStatus = (config.maxStatusChecks as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+    const maxRepos = validated.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+    const peak = computeParallelismPeak(validated);
+    const limit = DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS;
 
-    const maxPerRepoOps = maxCreation + maxUpdates + maxRemoval + maxStatus;
-    const totalMaxConcurrent = maxRepos * maxPerRepoOps;
-
-    if (totalMaxConcurrent > DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS) {
-      const safeMaxRepos = Math.floor(DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS / maxPerRepoOps);
+    if (peak.total > limit) {
+      const { field, label, value } = peak.widestPhase;
+      // Both ways out of the failure, each solving for the other side: how many
+      // repositories fit at this phase width, and how wide the phase may be at
+      // this repository count. Either can come out below 1, in which case that
+      // half of the advice would be nonsense and is left out.
+      const safeMaxRepos = Math.floor(limit / peak.perRepository);
+      const safePhaseValue = Math.floor(limit / maxRepos);
+      const headroom =
+        safeMaxRepos >= 1
+          ? `With ${field} at ${value}, maximum safe maxRepositories is ${safeMaxRepos}.`
+          : `Even one repository exceeds the limit at ${field}: ${value}.`;
+      const phaseAdvice =
+        safePhaseValue >= 1 ? ` With maxRepositories at ${maxRepos}, ${field} must be ${safePhaseValue} or less.` : "";
       throw new Error(
-        `Total concurrent operations (${totalMaxConcurrent}) exceeds safe limit (${DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS}). ` +
-          `With current per-repository limits (creation: ${maxCreation}, updates: ${maxUpdates}, removal: ${maxRemoval}, status: ${maxStatus}), ` +
-          `maximum safe maxRepositories is ${safeMaxRepos}. ` +
-          `Consider reducing maxRepositories or lowering per-operation limits.`,
+        `Peak concurrent git processes (${peak.total}) exceeds safe limit (${limit}). ` +
+          `Sync phases run one after another, so the peak is ${maxRepos} ` +
+          `${maxRepos === 1 ? "repository" : "repositories"} × the widest phase ` +
+          `(${label}, ${field}: ${value}) = ${peak.total} git processes. ` +
+          `${headroom}${phaseAdvice} Consider reducing maxRepositories or lowering ${field}.`,
       );
     }
   }
@@ -612,6 +750,7 @@ export class ConfigLoaderService {
     configDir?: string,
     globalRetry?: Config["retry"],
     allRepositories?: RepositoryConfig[],
+    globalParallelism?: Config["parallelism"],
   ): RepositoryConfig {
     const mode: RepositoryMode = repo.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
 
@@ -675,8 +814,13 @@ export class ConfigLoaderService {
       };
     }
 
-    if (repo.parallelism || defaults?.parallelism) {
+    // Top level, then defaults, then the repository — the same precedence as
+    // retry above. Without the top-level layer a `parallelism` block written
+    // where the example config shows it (and where `retry` works) reached no
+    // repository at all, so per-repo limits silently stayed at their defaults.
+    if (repo.parallelism || defaults?.parallelism || globalParallelism) {
       resolved.parallelism = {
+        ...(globalParallelism || {}),
         ...(defaults?.parallelism || {}),
         ...(repo.parallelism || {}),
       };
@@ -854,7 +998,14 @@ export class ConfigLoaderService {
     const configDir = path.dirname(path.resolve(configPath));
 
     let repositories = configFile.repositories.map((repo) =>
-      this.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry, configFile.repositories),
+      this.resolveRepositoryConfig(
+        repo,
+        configFile.defaults,
+        configDir,
+        configFile.retry,
+        configFile.repositories,
+        configFile.parallelism,
+      ),
     );
 
     this.detectPathCollisions(repositories);

@@ -60,8 +60,16 @@ export const DEFAULT_CONFIG = {
     MAX_WORKTREE_CREATION: 1,
     MAX_WORKTREE_UPDATES: 3,
     MAX_WORKTREE_REMOVAL: 3,
+    // Also the size of WorktreeStatusService's shared process budget: every
+    // status probe of a repository runs through it, so this bounds git
+    // processes rather than worktrees.
     MAX_STATUS_CHECKS: 20,
     MAX_BRANCH_FETCHES: 3,
+    // Ceiling on concurrent git processes across the whole run, checked by the
+    // config loader as maxRepositories × the widest sync phase (phases run one
+    // after another, so their limits are never summed, and a phase that shares
+    // one git client counts only what that client's scheduler allows). The
+    // shipped defaults peak at 2 × 20 = 40.
     MAX_SAFE_TOTAL_CONCURRENT_OPS: 100,
   },
   UPDATE_EXISTING_WORKTREES: true,

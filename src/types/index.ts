@@ -46,8 +46,14 @@ export interface SparseCheckoutConfig {
  * Lower values reduce resource usage but increase total sync time.
  * Higher values speed up syncs but may cause lock contention or resource exhaustion.
  *
- * Note: Total concurrent operations can be maxRepositories × per-repo limits.
- * Tune these values based on your system resources and repository count.
+ * Every limit below counts git processes. A repository's phases run one after
+ * another (create, then prune, then update; the per-branch fetch only as a
+ * fallback), so a run peaks at `maxRepositories × the widest single limit` —
+ * they are never summed. The config loader rejects a config whose peak exceeds
+ * 100; the defaults peak at 2 × 20 = 40.
+ *
+ * May be set at the top level of the config file, under `defaults`, or on a
+ * single repository; each layer overrides the one before it.
  */
 export interface ParallelismConfig {
   /** Max concurrent repositories to sync (default: 2) */
@@ -55,16 +61,43 @@ export interface ParallelismConfig {
   /**
    * Max concurrent worktree creations (default: 1).
    * WARNING: Git's worktree.lock file makes parallel creation unsafe.
-   * Only increase if you understand the race condition risks.
+   * Only increase if you understand the race condition risks. `git worktree
+   * add` runs on the bare repository's one git client, whose scheduler stops
+   * at 5, so raising this far above 5 mostly does not widen the phase -- each
+   * creation also runs a few commands on the new worktree's own client, so the
+   * phase grows a little past 5 rather than stopping dead there.
    */
   maxWorktreeCreation?: number;
   /** Max concurrent worktree updates (default: 3) */
   maxWorktreeUpdates?: number;
-  /** Max concurrent worktree removals (default: 3) */
+  /**
+   * Max concurrent worktree removals (default: 3). `git worktree remove` runs
+   * on the bare repository's one git client, whose scheduler stops at 5, so
+   * raising this far above 5 mostly does not widen the phase -- each removal
+   * also runs a few commands on the worktree's own client.
+   */
   maxWorktreeRemoval?: number;
-  /** Max concurrent status checks (default: 20) */
+  /**
+   * Max concurrent git processes spent on read-only status probes (default: 20).
+   *
+   * One status check of a worktree runs up to ten git commands (`status`,
+   * `branch`, `branch -r`, `stash list` and `submodule status` at once, then up
+   * to four `rev-parse`/`rev-list` probes, then `check-ignore`). They share this
+   * one budget across all worktrees, so it is a ceiling on git processes, not on
+   * worktrees in flight.
+   *
+   * Git's own children are extra: `git submodule status` runs a helper script
+   * and a child per submodule, measured on git 2.43 at ~1.5 git processes and
+   * ~3 processes in total per call on an eight-submodule superproject.
+   */
   maxStatusChecks?: number;
-  /** Max concurrent per-branch fetches when falling back from bulk fetch (default: 3) */
+  /**
+   * Max concurrent per-branch fetches when falling back from bulk fetch
+   * (default: 3). Every fetch goes through the anchor worktree's one git
+   * client, whose scheduler stops at 5, so values above 5 have no effect. This
+   * fallback is left out of the configured peak entirely; see
+   * PARALLELISM_PHASES for why, and for the hole that leaves.
+   */
   maxBranchFetches?: number;
 }
 

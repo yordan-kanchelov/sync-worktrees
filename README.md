@@ -608,6 +608,27 @@ Notes:
 - A failure to move a directory into trash (e.g. trash on a different filesystem) skips the removal entirely — the worktree stays in place.
 - Worktrees containing submodules are preserved byte-for-byte; nested submodule state is restored as-is but submodules are not re-registered automatically.
 
+### Parallelism
+
+`parallelism` bounds concurrent **git processes**, not worktrees. It can sit at the top level (as below), under `defaults`, or on a single repository — each layer overrides the one before it:
+
+```javascript
+parallelism: {
+  maxRepositories: 2,      // repositories synced at once
+  maxWorktreeCreation: 1,  // keep at 1 — git's worktree.lock makes parallel creation unsafe
+  maxWorktreeUpdates: 3,
+  maxWorktreeRemoval: 3,
+  maxStatusChecks: 20,     // git processes spent on read-only status probes
+  maxBranchFetches: 3,     // per-branch fetches, used only as a bulk-fetch fallback
+}
+```
+
+One status check of a worktree runs up to ten git commands: `status`, `branch`, `branch -r`, `stash list` and `submodule status` all at once, then up to four `rev-parse`/`rev-list` probes together, then a `check-ignore` if anything is untracked. All of them share a single `maxStatusChecks`-wide budget per repository, so a prune of 200 stale worktrees still peaks at `maxStatusChecks` git processes.
+
+Two things sit outside that count. Git spawns children of its own — `git submodule status` runs a helper script and a child per submodule, measured on git 2.43 at roughly 1.5 git processes and 3 processes in total per call on an eight-submodule superproject — so a budget spent entirely on superproject probes costs about three times its size. And `maxWorktreeCreation`, `maxWorktreeRemoval` and `maxBranchFetches` each run their main git command through a single shared client whose scheduler stops at 5, so setting them higher than 5 buys little: the per-branch fetch fallback stops at 5 outright, while creation and removal grow a little past it for the few commands each unit runs on the worktree's own client. That fetch fallback only runs when a bulk fetch fails on LFS errors, and is left out of the peak entirely, so a config the loader reports as well inside the limit can still spawn about five fetches per repository if every repository hits the fallback at once.
+
+A repository's phases run one after another — create, then prune, then update — so the whole run peaks at `maxRepositories × the widest single limit`, never their sum. The config loader rejects a config whose peak exceeds 100 git processes and names the setting to lower. The defaults peak at 2 × 20 = 40.
+
 ### Retry and LFS
 
 The tool retries network errors (timeouts, DNS failures, access issues) and filesystem race conditions automatically:
