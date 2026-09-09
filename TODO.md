@@ -150,7 +150,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T14** — LFS smudge failure during clone-mode ff-merge: retry policy's LFS-skip override is
   never honored by clone-mode git clients, and the failed merge leaves stray files that turn every
   later tick into a permanent `dirty_tree` skip
-- [ ] **T15** — `fetch --unshallow` is the only fetch without `--progress`; with stderr piped it is
+- [x] **T15** — `fetch --unshallow` is the only fetch without `--progress`; with stderr piped it is
   silent until completion, so simple-git's 300 s inactivity timeout kills any unshallow that takes
   longer — the repo can never unshallow and every tick hard-fails
 - [ ] **T16** — TUI branch-creation wizard cannot create branches for clone-mode repos:
@@ -1031,7 +1031,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   retries with LFS still enabled. Also reported as: “Retry policy's LFS-skip override never reaches
   clone-mode git clients, so the documented 'retry with LFS disabled' cannot succeed in clone mode”.
 
-### [ ] T15. `fetch --unshallow` is the only fetch without `--progress`; with stderr piped it is silent until completion, so simple-git's 300 s inactivity timeout kills any unshallow that takes longer — the repo can never unshallow and every tick hard-fails
+### [x] T15. `fetch --unshallow` is the only fetch without `--progress`; with stderr piped it is silent until completion, so simple-git's 300 s inactivity timeout kills any unshallow that takes longer — the repo can never unshallow and every tick hard-fails
 
 - **Category**: correctness · **Subsystem**: clone-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

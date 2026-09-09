@@ -25,13 +25,15 @@ const config = {
     // Auto-update worktrees that are behind upstream (optional)
     // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
     // Inactivity timeouts for the git commands that talk to the remote
-    // (fetch, push, ls-remote, remote set-head) and for the initial clone.
-    // Each one kills its command when no output arrives for that long, so it
-    // ends a stalled connection instead of hanging the sync forever. Local
-    // commands (worktree add, merge, checkout, status) are never killed this
-    // way — a large checkout is silent for minutes by design. Set 0 to disable.
+    // (fetch, push, ls-remote, remote set-head) and for the clone-sized ones:
+    // the initial clone, plus the `fetch --unshallow` that pulls a clone-mode
+    // repository's full history once `depth` is removed. Each one kills its
+    // command when no output arrives for that long, so it ends a stalled
+    // connection instead of hanging the sync forever. Local commands (worktree
+    // add, merge, checkout, status) are never killed this way — a large
+    // checkout is silent for minutes by design. Set 0 to disable.
     // fetchTimeoutMs: 300000,   // Default: 300000 (5 min)
-    // cloneTimeoutMs: 900000,   // Default: 900000 (15 min); raise for huge first clones
+    // cloneTimeoutMs: 900000,   // Default: 900000 (15 min); raise for huge first clones and unshallows
     // Periodic `git gc` of the object store (optional, applies to both modes).
     // Reclaims unreachable objects and consolidates packs. Runs at the tail of a
     // successful sync, throttled by `interval`, under the repo operation lock.

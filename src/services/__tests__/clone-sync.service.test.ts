@@ -1150,7 +1150,7 @@ describe("CloneSyncService", () => {
 
       await service.checkoutBranch("feature/new");
 
-      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow", "--no-tags"]);
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow", "--no-tags", "--progress"]);
       expect(gitMock.fetch).toHaveBeenNthCalledWith(2, [
         "origin",
         "--prune",
@@ -1233,7 +1233,7 @@ describe("CloneSyncService", () => {
 
       await service.runSyncAttempt();
 
-      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow", "--no-tags"]);
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow", "--no-tags", "--progress"]);
       expect(gitMock.fetch).toHaveBeenNthCalledWith(2, [
         "origin",
         "--prune",

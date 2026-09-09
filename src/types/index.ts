@@ -264,12 +264,16 @@ export interface Config {
    * `fetch`, `push`, `ls-remote` and `remote set-head`. Triggers when no
    * stdout/stderr data arrives within the window, killing the command.
    * Local commands (worktree add, merge, checkout, status, ...) never carry
-   * it — they are legitimately silent while a large checkout runs.
+   * it — they are legitimately silent while a large checkout runs. The one
+   * fetch it does not cover is the unshallow, which is sized by
+   * cloneTimeoutMs instead.
    * Default: 300_000 (5 min). Set 0 to disable.
    */
   fetchTimeoutMs?: number;
   /**
-   * Inactivity timeout (ms) for `git clone`. Larger than fetch because
+   * Inactivity timeout (ms) for `git clone` and for the `fetch --unshallow`
+   * that pulls a clone-mode repository's full history once `depth` is removed
+   * — clone-sized work reached through a fetch. Larger than fetch because
    * server-side pack resolution can be silent for several minutes on big repos.
    * Default: 900_000 (15 min). Set 0 to disable.
    */

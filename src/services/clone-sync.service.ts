@@ -89,8 +89,10 @@ interface MutatingGitClients {
   readonly [PRIMARY_CHECKOUT_VERIFIED]: true;
   /** Local commands (config, update-ref, switch, merge). */
   readonly git: SimpleGit;
-  /** Network commands (fetch), killed after fetchTimeoutMs of silence. */
+  /** Network commands (fetch) other than the unshallow, killed after fetchTimeoutMs of silence. */
   readonly networkGit: SimpleGit;
+  /** The unshallow fetch alone, killed after cloneTimeoutMs of silence — see unshallowClientFor. */
+  readonly unshallowGit: SimpleGit;
 }
 
 export type CloneSkipReason =
@@ -265,6 +267,22 @@ export class CloneSyncService {
     return createGitClient(dir, this.buildGitEnv(), this.buildGitOptions(this.getFetchTimeoutMs()));
   }
 
+  // Client for the unshallow fetch. Same kind of network command as
+  // networkClientFor, on the clone budget instead of the fetch one: it
+  // transfers every commit the shallow clone skipped, which is the work the
+  // initial clone would have done, not the work of an incremental fetch. The
+  // budget is an inactivity window, and `--progress` keeps it fed for the whole
+  // streaming phase; what it has to cover are the phases git runs silently at
+  // either end — the server computing the shallow boundary and enumerating
+  // objects before the first progress byte, and the connectivity check after
+  // the last one — and both scale with total history, not with what changed.
+  // That last part is reasoning about what those phases do, not a measurement:
+  // an unshallow big enough to spend minutes in them is not something a local
+  // `file://` remote can stage (one over 1200 commits was done in 176 ms).
+  private unshallowClientFor(dir: string): SimpleGit {
+    return createGitClient(dir, this.buildGitEnv(), this.buildGitOptions(this.getCloneTimeoutMs()));
+  }
+
   // The single choke point for every write path. `worktreeDir` may be a
   // directory a user pointed us at rather than one we cloned, and a checkout
   // whose `.git` is a gitdir pointer — a linked worktree from `git worktree
@@ -281,6 +299,7 @@ export class CloneSyncService {
       [PRIMARY_CHECKOUT_VERIFIED]: true,
       git: this.localClientFor(worktreeDir),
       networkGit: this.networkClientFor(worktreeDir),
+      unshallowGit: this.unshallowClientFor(worktreeDir),
     };
   }
 
@@ -544,7 +563,16 @@ export class CloneSyncService {
     this.logger.info(
       `[deepen] Existing shallow clone for '${this.repoName}' has no configured depth; fetching full history...`,
     );
-    await clients.networkGit.fetch(["--unshallow", "--no-tags"]);
+    this.emitProgress({ phase: "fetch", message: `Fetching full history for '${this.repoName}'` });
+    // `--progress` is what keeps simple-git's inactivity timer alive across the
+    // transfer: it only resets on stdout/stderr data, and with stderr piped git
+    // suppresses every transfer and delta line and asks the server for
+    // `no-progress` — verified on git 2.43, where the same unshallow wrote 131
+    // stderr chunks with the flag and zero bytes without it. simple-git's own
+    // progress plugin appends the flag to any command whose first token is
+    // `fetch`, so it was already reaching git; spelling it out keeps the argv
+    // ours rather than the plugin's, and matches every other fetch here.
+    await clients.unshallowGit.fetch(["--unshallow", "--no-tags", "--progress"]);
   }
 
   private getDeepenTargets(): readonly number[] {
