@@ -238,7 +238,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T35** — Config hot-reload is stale for ESM configs that import sibling modules: only the
   top-level module is cache-busted, so TUI `r` and MCP `load_config` keep the first-loaded values of
   `./repos.js`-style imports
-- [~] **T36** — Daemon/TUI mode never syncs at startup and no CLI/config option restores it:
+- [ ] **T36** — Daemon/TUI mode never syncs at startup and no CLI/config option restores it:
   `--sync-on-start` was removed in 4.0.0 without a replacement, while README says the bare command
   'starts syncing'
 - [ ] **T91** — Load-time validation gaps with runtime consequences: `branchInclude: [""]` prunes
@@ -272,7 +272,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T37** — create_worktree silently creates worktrees the next sync will move to trash:
   branches excluded by branchInclude/branchExclude/branchMaxAge, and push:false local-only branches
   (whose local branch ref is deleted too)
-- [~] **T39** — Tool input schemas are non-strict: unknown/misspelled arguments (repo_name,
+- [ ] **T39** — Tool input schemas are non-strict: unknown/misspelled arguments (repo_name,
   include_status, branch_name…) are silently stripped, so calls run against the wrong repo or with
   defaults instead of failing
 - [ ] **T97** — Auto-detect derives worktreeDir as dirname(current worktree); from inside the
@@ -300,7 +300,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T105** — MCP handler tests never exercise RepositoryContext and handlers together; the
   ctx/service contract is fully mocked, so state-machine regressions (capability bypass, membership
   cache drift) are invisible
-- [~] **T59** — No dry-run/plan surface: the planner is pure but there is no CLI or MCP way to
+- [-] **T59** — No dry-run/plan surface: the planner is pure but there is no CLI or MCP way to
   preview what a sync will create, prune or update before it mutates
 
 ### Batch 7 — TUI and process lifecycle
@@ -361,7 +361,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T117** — Reload/cancel stops cron tasks with `stop()` but never `destroy()`s them; node-cron
   v4's module-level registry retains every stopped task (and, through its closure, every previous
   generation of WorktreeSyncService instances) for the life of the daemon
-- [~] **T48** — Docs drift: README says hooks/file copy run for every newly created worktree and
+- [ ] **T48** — Docs drift: README says hooks/file copy run for every newly created worktree and
   that copy globs resolve relative to the config directory; in code both fire only from the TUI branch
   wizard, and the TUI copies from the base-branch worktree (clone mode: config dir) — sync- and
   MCP-created worktrees never get either
@@ -402,7 +402,7 @@ T28, T11) and several make the tool silently do less than it reports (T38, T10, 
   them (T48).
 
 **Quick wins** (small diffs, high value): T1, T5, T8, T10, T19, T20, T30, T31, T38, T49, T50, T51,
-T52. **Product decisions first**: T36, T39, T48, T59.
+T52. **Product decisions**: settled -- T36 syncs on start by default (opt out via `defaults.syncOnStart`), T39 makes every MCP tool schema strict, T48 corrects the docs rather than widening hooks/file-copy to unattended syncs, T59 is declined.
 
 **Caveat.** This is an automated multi-agent audit. Every item was de-duplicated and re-read by the
 coordinating reviewer against the cited code, but the three cross-cutting sweeps (documentation
@@ -1834,7 +1834,9 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   module; its static imports of sibling files are resolved by URL and stay cached for the process
   lifetime.
 
-### [~] T36. Daemon/TUI mode never syncs at startup and no CLI/config option restores it: `--sync-on-start` was removed in 4.0.0 without a replacement, while README says the bare command 'starts syncing'
+### [ ] T36. Daemon/TUI mode never syncs at startup
+
+- **Decision**: add `defaults.syncOnStart`, **default true**, triggering a non-blocking initial sync once the UI is rendered. README lines 89/92 must match. Behaviour change for existing daemon users: a restart now syncs immediately instead of waiting for the next tick. and no CLI/config option restores it: `--sync-on-start` was removed in 4.0.0 without a replacement, while README says the bare command 'starts syncing'
 
 - **Category**: workflow · **Subsystem**: config
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
@@ -1942,7 +1944,9 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Re-verified: `handleSync` (handlers.ts:447-455) returns `success: true`
   unconditionally; the CLI maps `counts.failed > 0` to exit code 1 (index.ts:126-133, 157-176).
 
-### [~] T39. Tool input schemas are non-strict: unknown/misspelled arguments (repo_name, include_status, branch_name…) are silently stripped, so calls run against the wrong repo or with defaults instead of failing
+### [ ] T39. Tool input schemas are non-strict
+
+- **Decision**: make **every** tool input a `z.strictObject`, so an unrecognized key is an InvalidParams error naming it. Accepted cost: an agent that today sends an extra key and appears to succeed will start getting an error.: unknown/misspelled arguments (repo_name, include_status, branch_name…) are silently stripped, so calls run against the wrong repo or with defaults instead of failing
 
 - **Category**: workflow · **Subsystem**: mcp
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
@@ -2302,7 +2306,9 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   (already used for the audit log) or next to the target directory, and use `~/.local/state` rather
   than `~/.cache` for the fallback.
 
-### [~] T48. Docs drift: README says hooks/file copy run for every newly created worktree and that copy globs resolve relative to the config directory; in code both fire only from the TUI branch wizard, and the TUI copies from the base-branch worktree (clone mode: config dir) — sync- and MCP-created worktrees never get either
+### [ ] T48. Docs drift
+
+- **Decision**: **correct the documentation to match the code** rather than widening the feature -- running user shell commands unattended on every cron tick and over MCP is a materially different security posture than running them when a person clicks. Also log when a copy pass matches zero files, so the misconfiguration stops being silent.: README says hooks/file copy run for every newly created worktree and that copy globs resolve relative to the config directory; in code both fire only from the TUI branch wizard, and the TUI copies from the base-branch worktree (clone mode: config dir) — sync- and MCP-created worktrees never get either
 
 - **Category**: docs · **Subsystem**: process
 - **Severity**: Medium · **Verification**: finder's evidence and code citations, not independently
@@ -2633,7 +2639,9 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `isPathInsideBaseDir` (62-71), called per registered worktree from the runner (line 67) and from
   trash restore (trash.service.ts:395).
 
-### [~] T59. No dry-run/plan surface: the planner is pure but there is no CLI or MCP way to preview what a sync will create, prune or update before it mutates
+### [-] T59. No dry-run/plan surface
+
+- **Decision**: **declined** -- not implementing. Trash already makes a mistaken prune recoverable, so a preview surface is not worth the CLI/MCP surface area it would add.: the planner is pure but there is no CLI or MCP way to preview what a sync will create, prune or update before it mutates
 
 - **Category**: workflow · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
