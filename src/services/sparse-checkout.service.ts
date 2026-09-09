@@ -108,7 +108,17 @@ export class SparseCheckoutService {
     return path.posix.normalize(withoutTrailingSlash);
   }
 
-  async applyToWorktree(worktreePath: string, cfg: SparseCheckoutConfig): Promise<void> {
+  /**
+   * `init` and `set` are the only commands here that touch the working tree:
+   * `set` materializes everything the new pattern list brings into the cone,
+   * which runs the smudge filter over those paths. A caller whose checkout
+   * only succeeded with LFS smudging disabled must therefore run this step the
+   * same way, or it dies on the objects that checkout just skipped and leaves
+   * a half-narrowed tree behind — so it may pass the client to use. Everything
+   * else in this service only reads config and patterns, and keeps the
+   * service's own factory.
+   */
+  async applyToWorktree(worktreePath: string, cfg: SparseCheckoutConfig, gitOverride?: SimpleGit): Promise<void> {
     const mode = this.resolveMode(cfg);
     const patterns = this.buildPatternsForMode(cfg, mode);
 
@@ -116,7 +126,7 @@ export class SparseCheckoutService {
       throw new Error("sparseCheckout produced no patterns; refusing to apply empty config");
     }
 
-    const git = this.gitFactory(worktreePath);
+    const git = gitOverride ?? this.gitFactory(worktreePath);
     await git.raw(["sparse-checkout", "init", mode === "cone" ? "--cone" : "--no-cone"]);
     await git.raw(["sparse-checkout", "set", mode === "cone" ? "--cone" : "--no-cone", ...patterns]);
   }

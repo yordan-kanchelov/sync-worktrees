@@ -144,7 +144,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 - [x] **T12** — Adopting a directory whose `.git` is a gitdir pointer (linked worktree / submodule)
   rewrites the PARENT repository's fetch refspec and deletes its remote-tracking refs
-- [ ] **T13** — A clone that fails after fetch ("Clone succeeded, but checkout failed", e.g. LFS
+- [x] **T13** — A clone that fails after fetch ("Clone succeeded, but checkout failed", e.g. LFS
   smudge error) is left in place and silently adopted as a valid clone on the next run; sync then
   reports `dirty_tree` forever
 - [ ] **T14** — LFS smudge failure during clone-mode ff-merge: retry policy's LFS-skip override is
@@ -935,7 +935,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   FILE (linked worktree or submodule gitdir pointer) as well as a directory; every later git command
   then resolves to the parent repository.
 
-### [ ] T13. A clone that fails after fetch ("Clone succeeded, but checkout failed", e.g. LFS smudge error) is left in place and silently adopted as a valid clone on the next run; sync then reports `dirty_tree` forever
+### [x] T13. A clone that fails after fetch ("Clone succeeded, but checkout failed", e.g. LFS smudge error) is left in place and silently adopted as a valid clone on the next run; sync then reports `dirty_tree` forever
 
 - **Category**: correctness · **Subsystem**: clone-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

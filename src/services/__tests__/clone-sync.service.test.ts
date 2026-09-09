@@ -96,6 +96,15 @@ describe("CloneSyncService", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks only drops call history, so an implementation set by one
+    // test outlives it: a later test then passes (or fails) on a filesystem
+    // some earlier test described. These three decide which branch of
+    // initialize() runs — what the destination holds, whether a marker is
+    // there, what the gitdir pointer says — so each test states its own, and
+    // the baseline here is the automock's (every call resolves undefined).
+    (fs.readdir as unknown as Mock).mockReset();
+    (fs.access as unknown as Mock).mockReset();
+    (fs.readFile as unknown as Mock).mockReset();
     gitMock = buildGitMock();
     (simpleGit as unknown as Mock).mockReturnValue(gitMock);
     (fs.lstat as unknown as Mock).mockResolvedValue(buildFsStats("directory"));
@@ -561,6 +570,193 @@ describe("CloneSyncService", () => {
       await expect(service.initialize()).rejects.toBeInstanceOf(GitOperationError);
       expect(gitMock.clone).not.toHaveBeenCalled();
       expect(fs.rm).not.toHaveBeenCalled();
+    });
+
+    // A clone that fails AFTER its objects land ("Clone succeeded, but
+    // checkout failed") leaves a complete `.git` on the tracked branch next to
+    // a half-written tree. Nothing on disk tells that apart from a clone the
+    // user made, so it used to be adopted as one and reported `dirty_tree`
+    // forever at info level, with the run exiting 0.
+    describe("clone that fails after its objects land (#T13)", () => {
+      // ENOENT probe, git leaves `.git/HEAD` behind, nothing else exists.
+      function mockFailedCheckoutClone(cloneError: Error): void {
+        (fs.readdir as unknown as Mock).mockRejectedValueOnce(enoent());
+        (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+        (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+        (fs.access as unknown as Mock).mockImplementation(async (p: unknown) => {
+          if (String(p).endsWith(`.git/HEAD`)) return;
+          throw enoent();
+        });
+        gitMock.clone.mockRejectedValueOnce(cloneError);
+      }
+
+      function enoent(): NodeJS.ErrnoException {
+        return Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+
+      const INCOMPLETE_MARKER = "/tmp/clone-demo/.git/.sync-worktrees-clone-incomplete";
+
+      it("marks the directory instead of leaving it adoptable when the checkout cannot be repaired", async () => {
+        const cloneError = new Error(
+          "Cloning into '/tmp/clone-demo'...\nfatal: a.bin: smudge filter lfs failed\n" +
+            "warning: Clone succeeded, but checkout failed.\n",
+        );
+        mockFailedCheckoutClone(cloneError);
+        gitMock.raw.mockImplementation(async (args: string[]) => {
+          const key = args.join(" ");
+          if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+          if (key === "checkout -f HEAD") throw new Error("fatal: a.bin: smudge filter lfs failed");
+          return "";
+        });
+
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expect(service.initialize()).rejects.toBe(cloneError);
+        // The marker carries the failing line so the next run can quote it.
+        expect(fs.writeFile).toHaveBeenCalledWith(
+          INCOMPLETE_MARKER,
+          expect.stringContaining("fatal: a.bin: smudge filter lfs failed"),
+        );
+        // A directory holding a fetched `.git` is never deleted, only marked.
+        expect(fs.rm).not.toHaveBeenCalledWith("/tmp/clone-demo", expect.anything());
+      });
+
+      it("refuses to adopt a marked directory instead of syncing it as a user's own clone", async () => {
+        // Both initialize() calls below describe the same on-disk state, so
+        // this stub is not a `...Once`: a second call falling through to the
+        // automock would prove nothing about the refusal.
+        (fs.readdir as unknown as Mock).mockResolvedValue([".git", "README"]);
+        (fs.readFile as unknown as Mock).mockImplementation(async (p: unknown) => {
+          if (String(p) === INCOMPLETE_MARKER) {
+            return "2026-01-01T00:00:00.000Z\nfatal: a.bin: smudge filter lfs failed\nfull git output\n";
+          }
+          throw enoent();
+        });
+
+        const skips: CloneSkipReason[] = [];
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger, {
+          onSkip: (reason) => skips.push(reason),
+        });
+
+        await expect(service.initialize()).rejects.toThrow(
+          /previous clone of '\/tmp\/clone-demo' did not complete \(fatal: a\.bin: smudge filter lfs failed\)/,
+        );
+        await expect(service.initialize()).rejects.toBeInstanceOf(GitOperationError);
+        // Loud, not a soft skip: no dirty_tree, no branch_mismatch, and the
+        // run must not report the repo as merely skipped.
+        expect(skips).toEqual([]);
+        expect(service.isInitialized()).toBe(false);
+        // Nothing was written to the refused directory.
+        expect(gitMock.raw).not.toHaveBeenCalledWith(
+          expect.arrayContaining(["config", "--replace-all", "remote.origin.fetch"]),
+        );
+      });
+
+      it("retries the checkout with LFS smudging disabled and finishes the init", async () => {
+        mockFailedCheckoutClone(new Error("fatal: a.bin: smudge filter lfs failed"));
+        const gitService = buildGitService();
+        const branchCreatedActions = new BranchCreatedActionsService();
+        const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: ["CLAUDE.md"] }),
+          gitService,
+          logger,
+          { branchCreatedActions },
+        );
+
+        await expect(service.initialize()).resolves.toBeUndefined();
+
+        expect(gitMock.raw).toHaveBeenCalledWith(["checkout", "-f", "HEAD"]);
+        expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+        // The marker is written before the retry (a kill mid-retry must still
+        // leave the directory unadoptable) and removed once it succeeds.
+        expect(fs.writeFile).toHaveBeenCalledWith(INCOMPLETE_MARKER, expect.any(String));
+        expect(fs.rm).toHaveBeenCalledWith(INCOMPLETE_MARKER, { force: true });
+        // The post-clone steps a silently adopted clone never got.
+        expect(gitService.verifyLfs).toHaveBeenCalledWith("/tmp/clone-demo", "main");
+        expect(copyFilesSpy).toHaveBeenCalledTimes(1);
+        expect(service.isInitialized()).toBe(true);
+      });
+
+      it("applies sparse-checkout with LFS smudging disabled after a recovered clone", async () => {
+        mockFailedCheckoutClone(new Error("fatal: a.bin: smudge filter lfs failed"));
+        const gitService = buildGitService();
+
+        const service = new CloneSyncService(makeConfig({ sparseCheckout: { include: ["src"] } }), gitService, logger);
+
+        await expect(service.initialize()).resolves.toBeUndefined();
+
+        // `sparse-checkout set` materializes everything the cone brings in, so
+        // it runs the smudge filter too: handed the default client it would
+        // die on the objects the retry just skipped, one statement before the
+        // trailing checkout, and leave a half-narrowed tree behind.
+        const sparseService = gitService.getSparseCheckoutService();
+        const call = (sparseService.applyToWorktree as Mock).mock.calls.at(-1);
+        expect(call?.[0]).toBe("/tmp/clone-demo");
+        expect(call?.[1]).toEqual({ include: ["src"] });
+        // A client must be handed over, and it must be one built with smudging
+        // off: `expect.anything()` alone would pass for the default client,
+        // which is the bug this test exists for.
+        expect(call?.[2]).toBeDefined();
+        expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+      });
+
+      // The marker is the only thing that tells a clone of ours that never
+      // finished from a clone the user made, so "cannot read it" must never
+      // resolve to "there is no marker" — that is the adoption this guard
+      // exists to prevent.
+      it("fails closed when the marker cannot be read rather than adopting the clone", async () => {
+        (fs.readdir as unknown as Mock).mockResolvedValue([".git", "README"]);
+        (fs.readFile as unknown as Mock).mockImplementation(async (p: unknown) => {
+          if (String(p) === INCOMPLETE_MARKER) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+          throw enoent();
+        });
+
+        const skips: CloneSkipReason[] = [];
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger, {
+          onSkip: (reason) => skips.push(reason),
+        });
+
+        await expect(service.initialize()).rejects.toThrow(/could not be read \(permission denied\)/);
+        expect(skips).toEqual([]);
+        expect(service.isInitialized()).toBe(false);
+      });
+
+      // The other half of the same rule: maybeCleanupPartialClone's rm -rf arm
+      // is live for a directory this init created, so a HEAD probe that merely
+      // failed must not be read as "nothing was fetched here".
+      it("marks rather than deletes when the '.git/HEAD' probe itself fails", async () => {
+        const cloneError = new Error("fatal: a.bin: smudge filter lfs failed");
+        mockFailedCheckoutClone(cloneError);
+        (fs.access as unknown as Mock).mockImplementation(async (p: unknown) => {
+          if (String(p).endsWith(`.git/HEAD`)) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+          throw enoent();
+        });
+
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expect(service.initialize()).rejects.toBe(cloneError);
+        expect(fs.rm).not.toHaveBeenCalledWith("/tmp/clone-demo", expect.anything());
+        expect(fs.writeFile).toHaveBeenCalledWith(INCOMPLETE_MARKER, expect.any(String));
+        // Nothing may be checked out into a directory we cannot even probe.
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["checkout", "-f", "HEAD"]);
+      });
+
+      it("does not retry the checkout when the failure is not an LFS error", async () => {
+        const cloneError = new Error("fatal: unable to write file README: No space left on device");
+        mockFailedCheckoutClone(cloneError);
+
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expect(service.initialize()).rejects.toBe(cloneError);
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["checkout", "-f", "HEAD"]);
+        expect(fs.writeFile).toHaveBeenCalledWith(
+          INCOMPLETE_MARKER,
+          expect.stringContaining("No space left on device"),
+        );
+      });
     });
 
     it("completes an interrupted init's pending file copy when adopting the existing clone (#review)", async () => {
@@ -1643,7 +1839,12 @@ describe("CloneSyncService", () => {
     it("names the gitdir pointer when '.git' is a linked worktree's file", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
       (fs.lstat as unknown as Mock).mockResolvedValue(buildFsStats("file"));
-      (fs.readFile as unknown as Mock).mockResolvedValue(`gitdir: ${OWNING_GIT_DIR}/worktrees/app-main\n`);
+      // Only '.git' itself reads back: it is a file here, so nothing else in
+      // this checkout's git directory can be read at all.
+      (fs.readFile as unknown as Mock).mockImplementation(async (p: unknown) => {
+        if (String(p) === "/tmp/clone-demo/.git") return `gitdir: ${OWNING_GIT_DIR}/worktrees/app-main\n`;
+        throw Object.assign(new Error("ENOTDIR"), { code: "ENOTDIR" });
+      });
       mockRaw(adoptedDirectoryWith(LINKED_GIT_DIRS));
 
       const service = new CloneSyncService(makeConfig(), buildGitService(), logger);

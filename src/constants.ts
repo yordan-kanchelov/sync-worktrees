@@ -130,6 +130,12 @@ export const PATH_CONSTANTS = {
    * copy lands — its presence marks a tool-created clone whose init was
    * interrupted and still owes the copy. */
   CLONE_INIT_PENDING_MARKER: ".sync-worktrees-clone-init.pending",
+  /** Written when a clone this tool started fetched its objects but failed to
+   * check out a working tree (git's "Clone succeeded, but checkout failed").
+   * Such a directory validates like a user's own clone, so the marker is the
+   * only thing that tells the two apart: while it is there the clone is ours
+   * and unfinished, and initialize() refuses to adopt it. */
+  CLONE_INCOMPLETE_MARKER: ".sync-worktrees-clone-incomplete",
   /** Worktree mode's counterpart, appended to the bare repository's directory
    * name and written in its parent (never inside: `git clone` refuses a
    * non-empty destination). Written only for a destination verified to be

@@ -183,7 +183,16 @@ export class GitService {
       },
       this.logger,
     );
-    this.sparseCheckoutService = new SparseCheckoutService(this.logger);
+    // `sparse-checkout set` re-materializes everything the pattern list brings
+    // into the cone, so it runs the smudge filter just like a checkout does.
+    // The service's default factory builds a client with no environment at
+    // all, which made `skipLfs: true` (and the per-sync LFS fallback) stop at
+    // the sparse step: the very repositories that need LFS skipped failed
+    // there instead. Its clients now carry the same LFS setting as every other
+    // local command's, resolved per call so the per-sync override counts.
+    this.sparseCheckoutService = new SparseCheckoutService(this.logger, (worktreePath) =>
+      this.getCachedGit(worktreePath, this.isLfsSkipEnabled()),
+    );
   }
 
   getSparseCheckoutService(): SparseCheckoutService {

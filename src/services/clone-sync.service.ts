@@ -3,11 +3,11 @@ import * as path from "path";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../errors";
-import { fileExists } from "../utils/file-exists";
+import { fileExists, probePathExists } from "../utils/file-exists";
 import { appendGitAuthHint } from "../utils/git-auth-error";
 import { createGitClient } from "../utils/git-client";
 import { makeGitProgressHandler } from "../utils/git-progress";
-import { normalizeRepoUrlForComparison, redactRepoUrl } from "../utils/git-url";
+import { normalizeRepoUrlForComparison, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
 import { getErrorMessage, isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
@@ -23,6 +23,25 @@ import type { Stats } from "fs";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 const SHALLOW_RELATION_DEEPEN_TARGETS = [50, 200, 1000] as const;
+
+// Longest failure summary kept on the incomplete-clone marker's first content
+// line; the untruncated message follows it in the same file.
+const CLONE_FAILURE_SUMMARY_LIMIT = 200;
+
+// git's stderr condensed to the one line that says why. A clone failure
+// carries the whole transfer log — progress lines, separated by carriage
+// returns, included — and the verdict is its last 'fatal:'/'error:' line.
+function summarizeGitFailure(message: string): string {
+  const lines = message
+    .split(/[\r\n]+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const verdict = [...lines].reverse().find((line) => line.startsWith("fatal:") || line.startsWith("error:"));
+  const summary = verdict ?? lines[lines.length - 1] ?? "";
+  return summary.length > CLONE_FAILURE_SUMMARY_LIMIT
+    ? `${summary.slice(0, CLONE_FAILURE_SUMMARY_LIMIT - 3)}...`
+    : summary;
+}
 
 // Brand carried by a clients pair whose directory has been verified as a
 // primary, non-linked checkout. Only mutatingClientsFor() can produce one, and
@@ -781,6 +800,12 @@ export class CloneSyncService {
     }
 
     if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) {
+      // Before anything treats this directory as a clone somebody else made:
+      // one of ours that never finished checking out must never be adopted.
+      // First, and not after validateExistingClone, because that path answers
+      // with soft skips — a wrong branch or a changed origin would return
+      // early and the real problem would never be reported at all.
+      await this.assertPreviousCloneCompleted(worktreeDir);
       this.emitProgress({ phase: "clone", message: `Validating existing clone for '${this.repoName}'` });
       const result = await this.validateExistingClone(branch);
       if (!result.valid) {
@@ -831,26 +856,36 @@ export class CloneSyncService {
 
     const cloneClient = createGitClient(undefined, this.buildGitEnv(), this.buildGitOptions(this.getCloneTimeoutMs()));
 
+    let checkoutRecovered = false;
     try {
       await cloneClient.clone(this.config.repoUrl, worktreeDir, this.buildCloneArgs(branch));
     } catch (error) {
-      await this.maybeCleanupPartialClone(worktreeDir, cloneCreatedDir);
-      // The outcome is what the MCP `sync` result and the run summary show, so
-      // carry the credential hint there too (the thrown error gets it at the
-      // WorktreeSyncService funnel).
-      this.outcomeAccumulator?.recordFailed("repo", appendGitAuthHint(getErrorMessage(error)), {
-        reason: "clone_failed",
-        branch,
-        path: worktreeDir,
-      });
-      throw error;
+      checkoutRecovered = await this.settleFailedClone(worktreeDir, cloneCreatedDir, error);
+      if (!checkoutRecovered) {
+        // The outcome is what the MCP `sync` result and the run summary show, so
+        // carry the credential hint there too (the thrown error gets it at the
+        // WorktreeSyncService funnel).
+        this.outcomeAccumulator?.recordFailed("repo", appendGitAuthHint(getErrorMessage(error)), {
+          reason: "clone_failed",
+          branch,
+          path: worktreeDir,
+        });
+        throw error;
+      }
     }
 
     const freshClients = await this.mutatingClientsFor(worktreeDir);
     await this.configureSingleBranchRemote(freshClients, branch);
 
-    this.logger.info(`✅ Clone successful.`);
-    this.emitProgress({ phase: "clone", message: `Clone successful for '${this.repoName}'` });
+    // The progress stream carries the same nuance as the log: a TUI showing
+    // "Clone successful" for a tree that holds pointer files is not the truth.
+    this.logger.info(checkoutRecovered ? `✅ Clone completed (LFS content skipped).` : `✅ Clone successful.`);
+    this.emitProgress({
+      phase: "clone",
+      message: checkoutRecovered
+        ? `Clone completed for '${this.repoName}' with LFS content skipped`
+        : `Clone successful for '${this.repoName}'`,
+    });
 
     // From here to the end of runInitialFileCopy any failure or kill leaves a
     // valid-looking clone that the next init adopts via the existing-clone
@@ -866,8 +901,18 @@ export class CloneSyncService {
       this.logger.info(`Applying sparse-checkout patterns to '${worktreeDir}'...`);
       this.emitProgress({ phase: "sparse_checkout", message: `Applying sparse-checkout for '${this.repoName}'` });
       const sparseService = this.gitService.getSparseCheckoutService();
-      await sparseService.applyToWorktree(worktreeDir, this.config.sparseCheckout);
-      await freshClients.git.raw(["checkout", "HEAD"]);
+      // Both halves of the narrowing run with the environment the clone's own
+      // checkout finally needed. `sparse-checkout set` materializes everything
+      // the cone brings in, so after an LFS-skipped recovery it smudges the
+      // objects the retry skipped and dies exactly as the clone did — leaving
+      // a half-narrowed tree that `git status` calls clean and the next run
+      // adopts. The trailing checkout follows for the same reason.
+      // Only a recovered clone needs a client of its own; otherwise the sparse
+      // service keeps its own factory, whose clients already carry the
+      // configured LFS setting.
+      const recoveredGit = checkoutRecovered ? this.lfsSkipCheckoutClient(freshClients, worktreeDir) : undefined;
+      await sparseService.applyToWorktree(worktreeDir, this.config.sparseCheckout, recoveredGit);
+      await (recoveredGit ?? freshClients.git).raw(["checkout", "HEAD"]);
       this.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout applied for '${this.repoName}'` });
     }
 
@@ -959,6 +1004,103 @@ export class CloneSyncService {
     return { valid: true };
   }
 
+  // A failed clone leaves the destination in one of two shapes, and each has
+  // its own settlement. A clone that never got as far as writing HEAD leaves
+  // rubbish maybeCleanupPartialClone removes when we created the directory. A
+  // clone that fetched every object and then failed to check out ("Clone
+  // succeeded, but checkout failed", exit 128 — a missing LFS object is the
+  // usual cause) leaves a complete `.git` on the tracked branch next to a
+  // half-written tree, and nothing on disk tells that apart from a clone the
+  // user made: validateExistingClone passes it, so the next run adopted it as
+  // a pre-existing clone — no checkout retry, no sparse setup, no LFS verify,
+  // no file copy — and every sync after that recorded `dirty_tree` at info
+  // level while the run exited 0.
+  //
+  // Everything under that path is this clone's own work: the destination was
+  // verified absent or empty before it started (a directory that is neither
+  // never reaches the clone). So the checkout may be retried in place, and
+  // when it cannot be, the directory is marked as ours-and-unfinished so the
+  // next init refuses to adopt it. Returns true when the working tree was
+  // repaired and the caller may continue with the post-clone steps.
+  //
+  // Known limit: this runs only once `git clone` has returned, so a process
+  // killed mid-checkout still leaves an unmarked half-written clone that the
+  // next init adopts. Closing that needs the bare-clone shape — a marker
+  // written in the PARENT before the clone starts (`git clone` refuses a
+  // destination holding one) — and then a rule for resolving it afterwards,
+  // where "the clone was interrupted" and "the user edited their tree" look
+  // the same on disk. Not worth trading a rare silent adoption for a possible
+  // false hard refusal until that case is shown to matter.
+  private async settleFailedClone(worktreeDir: string, cloneCreatedDir: boolean, cause: unknown): Promise<boolean> {
+    // Only a definitively absent HEAD may reach maybeCleanupPartialClone: its
+    // rm -rf arm is live for a directory this init created, and a probe that
+    // merely failed (EACCES on the destination, EMFILE under load) must never
+    // read as "nothing was fetched here". An unverifiable one is marked like a
+    // fetched clone instead — marking deletes nothing, and refusing to adopt a
+    // directory that turns out to be fine costs an error the user can clear.
+    const headProbe = await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, "HEAD"));
+    if (headProbe === "missing") {
+      await this.maybeCleanupPartialClone(worktreeDir, cloneCreatedDir);
+      return false;
+    }
+
+    const message = getErrorMessage(cause);
+    // Marked before the retry, never after: a process killed in the middle of
+    // the retry must still leave a directory the next run refuses to adopt.
+    await this.writeIncompleteCloneMarker(worktreeDir, message);
+
+    if (headProbe !== "exists" || !isLfsError(message) || !(await this.retryCheckoutWithLfsSkipped(worktreeDir))) {
+      this.logger.warn(
+        `Clone of '${this.repoName}' fetched its objects but left the working tree unfinished; leaving ` +
+          `'${worktreeDir}' for manual inspection. The next run will refuse to adopt it until it is removed.`,
+      );
+      return false;
+    }
+
+    await this.clearIncompleteCloneMarker(worktreeDir);
+    this.logger.warn(
+      `⚠️  '${this.repoName}' was checked out with LFS smudging disabled: its LFS paths hold pointer files ` +
+        `until 'git lfs pull' succeeds there.`,
+    );
+    return true;
+  }
+
+  // Retries only the checkout half of a clone whose objects already landed,
+  // with LFS smudging forced off — the same recovery fetchWithRecovery applies
+  // to a fetch, and the same one worktree mode applies to a `worktree add`.
+  // Reports success rather than throwing: the caller is already holding the
+  // clone's failure and must report that one, not this one.
+  private async retryCheckoutWithLfsSkipped(worktreeDir: string): Promise<boolean> {
+    this.logger.info(`⚠️  LFS error during clone of '${this.repoName}'; retrying the checkout with LFS disabled.`);
+    this.emitProgress({ phase: "clone", message: `Retrying checkout for '${this.repoName}' with LFS disabled` });
+    try {
+      // `checkout -f HEAD` is a write, so it goes through the primary-checkout
+      // guard like every other one — even here, where the directory is one
+      // this init just cloned into.
+      const clients = await this.mutatingClientsFor(worktreeDir);
+      await this.lfsSkipCheckoutClient(clients, worktreeDir).raw(["checkout", "-f", "HEAD"]);
+      return true;
+    } catch (error) {
+      this.logger.warn(`Checkout retry with LFS disabled failed for '${this.repoName}': ${getErrorMessage(error)}`);
+      return false;
+    }
+  }
+
+  // The client for a checkout this init must run with LFS smudging forced off.
+  // Built here rather than taken from the branded pair, whose clients carry
+  // the configured environment; it runs in the directory that pair has already
+  // proved is a primary checkout, the arrangement fetchWithRecovery's LFS
+  // retry uses. No inactivity timeout, for the reason localClientFor gives:
+  // git is legitimately silent while it materializes a tree.
+  //
+  // `_clients` is unused on purpose and must stay: requiring the brand is what
+  // keeps the writes this client performs behind the primary-checkout guard,
+  // exactly like the helpers that do use their pair. Deleting the parameter
+  // would let a future caller reach a checkout this tool must not touch.
+  private lfsSkipCheckoutClient(_clients: MutatingGitClients, worktreeDir: string): SimpleGit {
+    return createGitClient(worktreeDir, this.buildGitEnv({ forceLfsSkip: true }), this.buildGitOptions(0));
+  }
+
   private async maybeCleanupPartialClone(worktreeDir: string, cloneCreatedDir: boolean): Promise<void> {
     if (!cloneCreatedDir) {
       this.logger.warn(
@@ -999,6 +1141,99 @@ export class CloneSyncService {
 
   private getInitPendingMarkerPath(worktreeDir: string): string {
     return path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, PATH_CONSTANTS.CLONE_INIT_PENDING_MARKER);
+  }
+
+  // Inside `.git`, like the init markers: a marker in the working tree would
+  // show up as an untracked file in every status this tool takes.
+  private getIncompleteCloneMarkerPath(worktreeDir: string): string {
+    return path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, PATH_CONSTANTS.CLONE_INCOMPLETE_MARKER);
+  }
+
+  private async writeIncompleteCloneMarker(worktreeDir: string, failure: string): Promise<void> {
+    // Line 1 when the clone failed, line 2 what the refusal quotes, then git's
+    // untruncated stderr for whoever opens the file. Redacted on the way in
+    // like every other string this file surfaces: a repoUrl carrying a token
+    // reaches git's own output, and this one is written to disk and read back
+    // into an error message on every later run.
+    const recorded = redactSecretsInText(failure);
+    const contents = `${new Date().toISOString()}\n${summarizeGitFailure(recorded)}\n${recorded}\n`;
+    try {
+      await fs.writeFile(this.getIncompleteCloneMarkerPath(worktreeDir), contents);
+    } catch (error) {
+      // Best effort, like the init pending marker: without it the next run
+      // falls back to the old behaviour of adopting the unfinished clone.
+      this.logger.warn(`Could not write the incomplete-clone marker: ${getErrorMessage(error)}`);
+    }
+  }
+
+  private async clearIncompleteCloneMarker(worktreeDir: string): Promise<void> {
+    try {
+      await fs.rm(this.getIncompleteCloneMarkerPath(worktreeDir), { force: true });
+    } catch (error) {
+      // A marker left behind on a repaired clone costs a hard error on the
+      // next run, which names the file and how to remove it.
+      this.logger.warn(`Could not remove the incomplete-clone marker: ${getErrorMessage(error)}`);
+    }
+  }
+
+  // Read rather than probed for existence: the marker's second line is why the
+  // clone failed, and that is what the refusal quotes.
+  //
+  // Three answers, never two. This marker is the only thing that tells a clone
+  // of ours that never finished from a clone the user made, so "the file could
+  // not be read" must not collapse into "there is no such file" — the same
+  // rule probePathExists states for removal decisions. Only ENOENT (and
+  // ENOTDIR, a `.git` that is not a directory) prove absence; EACCES, EIO or
+  // an EISDIR marker leave the question open, and the caller fails closed.
+  private async readIncompleteCloneMarker(
+    worktreeDir: string,
+  ): Promise<{ status: "absent" } | { status: "present"; cause: string } | { status: "unreadable"; detail: string }> {
+    let contents: string | undefined;
+    try {
+      contents = await fs.readFile(this.getIncompleteCloneMarkerPath(worktreeDir), "utf-8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return { status: "absent" };
+      return { status: "unreadable", detail: getErrorMessage(error) };
+    }
+    // Same normalization lstatOrNull and realPathOrNull apply: an answer that
+    // is not the shape the API promises is not passed on as a verdict.
+    if (typeof contents !== "string") return { status: "absent" };
+    const cause = contents.split(/\r?\n/)[1]?.trim();
+    return { status: "present", cause: cause && cause.length > 0 ? cause : "reason not recorded" };
+  }
+
+  // A clone this tool started and could not finish is not a clone it may
+  // adopt: its working tree was never fully written, so every sync would find
+  // staged deletions plus untracked files and soft-skip with `dirty_tree` — an
+  // info-level line and exit 0 — for a directory the user never touched.
+  //
+  // A GitOperationError rather than the ConfigError the primary-checkout guard
+  // raises: nothing is wrong with the configuration — worktreeDir is a path
+  // this tool owns and may clone into — what failed is a git operation on it,
+  // and the remedy is on disk. It also matches the GitOperationError this same
+  // init throws when it cannot inspect the destination.
+  private async assertPreviousCloneCompleted(worktreeDir: string): Promise<void> {
+    const marker = await this.readIncompleteCloneMarker(worktreeDir);
+    if (marker.status === "absent") return;
+
+    if (marker.status === "unreadable") {
+      throw new GitOperationError(
+        "clone-init",
+        `cannot tell whether the clone of '${worktreeDir}' completed: its incomplete-clone marker ` +
+          `'${this.getIncompleteCloneMarkerPath(worktreeDir)}' could not be read (${marker.detail}). Adopting the ` +
+          `clone without that answer would sync a working tree that may never have been checked out; make the ` +
+          `file readable, or remove the directory and let the next run clone again.`,
+      );
+    }
+
+    throw new GitOperationError(
+      "clone-init",
+      `previous clone of '${worktreeDir}' did not complete (${marker.cause}); its working tree was never fully checked ` +
+        `out, so syncing it would report local changes on every run. Remove the directory and let the next run ` +
+        `clone again, or fix the cause, run 'git -C ${worktreeDir} checkout -f HEAD' and delete ` +
+        `'${this.getIncompleteCloneMarkerPath(worktreeDir)}'.`,
+    );
   }
 
   private async runInitialFileCopy(worktreeDir: string, branch: string): Promise<void> {
