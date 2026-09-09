@@ -147,7 +147,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T13** — A clone that fails after fetch ("Clone succeeded, but checkout failed", e.g. LFS
   smudge error) is left in place and silently adopted as a valid clone on the next run; sync then
   reports `dirty_tree` forever
-- [ ] **T14** — LFS smudge failure during clone-mode ff-merge: retry policy's LFS-skip override is
+- [x] **T14** — LFS smudge failure during clone-mode ff-merge: retry policy's LFS-skip override is
   never honored by clone-mode git clients, and the failed merge leaves stray files that turn every
   later tick into a permanent `dirty_tree` skip
 - [ ] **T15** — `fetch --unshallow` is the only fetch without `--progress`; with stderr piped it is
@@ -982,7 +982,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   (763-795), and the next init adopts it through `validateExistingClone`, which only checks origin
   URL and current branch.
 
-### [ ] T14. LFS smudge failure during clone-mode ff-merge: retry policy's LFS-skip override is never honored by clone-mode git clients, and the failed merge leaves stray files that turn every later tick into a permanent `dirty_tree` skip
+### [x] T14. LFS smudge failure during clone-mode ff-merge: retry policy's LFS-skip override is never honored by clone-mode git clients, and the failed merge leaves stray files that turn every later tick into a permanent `dirty_tree` skip
 
 - **Category**: correctness · **Subsystem**: clone-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

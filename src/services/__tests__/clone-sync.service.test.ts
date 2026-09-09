@@ -43,6 +43,7 @@ interface FakeGitClient {
   merge: Mock;
   env: Mock;
   branch: Mock;
+  status: Mock;
 }
 
 function buildGitMock(rawMap: Record<string, string> = {}): FakeGitClient {
@@ -64,6 +65,9 @@ function buildGitMock(rawMap: Record<string, string> = {}): FakeGitClient {
     merge: vi.fn().mockResolvedValue(undefined),
     env: env as Mock,
     branch: vi.fn().mockResolvedValue({ current: "main", all: [] }),
+    // A clean tree: only the rejected-fast-forward cleanup reads it, and only
+    // what git reports as deviating from HEAD can ever be a candidate there.
+    status: vi.fn().mockResolvedValue({ not_added: [], modified: [], deleted: [] }),
   };
   env.mockReturnValue(client);
   return client;
@@ -85,9 +89,24 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     getSparseCheckoutService: vi.fn().mockReturnValue(sparseService),
     checkWorktreeStatus: vi.fn().mockResolvedValue(true),
     classifyRemoteRelationship: vi.fn().mockResolvedValue("fast_forward"),
+    isLfsSkipEnabled: vi.fn().mockReturnValue(false),
+    setLfsSkipEnabled: vi.fn(),
     ...overrides,
   };
   return stub as unknown as GitService;
+}
+
+// The GitService half of the per-sync LFS fallback: SyncRetryPolicy calls
+// setLfsSkipEnabled(true) between attempts and every client built afterwards
+// is supposed to see it.
+function buildLfsAwareGitService(): GitService {
+  let lfsSkipEnabled = false;
+  return buildGitService({
+    setLfsSkipEnabled: vi.fn((value: boolean) => {
+      lfsSkipEnabled = value;
+    }) as unknown as Mock,
+    isLfsSkipEnabled: vi.fn(() => lfsSkipEnabled) as unknown as Mock,
+  });
 }
 
 describe("CloneSyncService", () => {
@@ -1671,6 +1690,329 @@ describe("CloneSyncService", () => {
 
       expect(skips).toEqual([]);
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+    });
+
+    describe("rejected fast-forward", () => {
+      const LFS_MERGE_FAILURE = "fatal: assets/big.bin: smudge filter lfs failed";
+      const HEAD_BEFORE_MERGE = "1111111111111111111111111111111111111111";
+      const HEAD_AFTER_MERGE = "2222222222222222222222222222222222222222";
+      const BLOB_ATTRIBUTES = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const BLOB_POINTER = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      const BLOB_LATE = "cccccccccccccccccccccccccccccccccccccccc";
+      const BLOB_SOMEONE_ELSE = "dddddddddddddddddddddddddddddddddddddddd";
+      const BLOB_LINK = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+      // What git leaves behind when it rejects a `merge --ff-only`: HEAD and
+      // the index still on the old commit, the paths that sort before the one
+      // it could not write already updated on disk.
+      function mockRejectedFastForward(options: {
+        headAfterMerge?: string;
+        mergePaths: string[];
+        // path -> object id, optionally with the tree mode a symlink carries.
+        remoteBlobs: Record<string, string | { mode: string; id: string }>;
+        worktreeHashes: Record<string, string>;
+        // What lstat finds on disk; anything unlisted is a regular file.
+        worktreeKinds?: Record<string, "symlink" | "directory">;
+        // Symlink targets readlink answers with, and the blob contents cat-file
+        // prints for an object id.
+        linkTargets?: Record<string, string>;
+        blobContents?: Record<string, string>;
+        // Paths `hash-object` refuses, the way it does for a dangling symlink
+        // or an unreadable file — one bad path fails the whole invocation.
+        unhashable?: string[];
+        status: { not_added?: string[]; modified?: string[]; deleted?: string[] };
+      }): void {
+        const headAfterMerge = options.headAfterMerge ?? HEAD_BEFORE_MERGE;
+        let headReads = 0;
+        gitMock.raw.mockImplementation(async (args: string[]) => {
+          const key = args.join(" ");
+          if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+          if (key === "rev-parse --abbrev-ref HEAD") return "main";
+          if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+          if (key === "rev-parse HEAD") return `${headReads++ === 0 ? HEAD_BEFORE_MERGE : headAfterMerge}\n`;
+          if (key === "diff --name-only -z HEAD refs/remotes/origin/main") {
+            return options.mergePaths.map((mergePath) => `${mergePath}\0`).join("");
+          }
+          if (args[0] === "ls-tree") {
+            return (
+              args
+                .slice(4)
+                // Real git is handed `:(literal)<path>` so a name starting with
+                // ':' is not read as pathspec magic; answer for the bare path.
+                .map((pathspec) => pathspec.replace(/^:\(literal\)/, ""))
+                .filter((treePath) => options.remoteBlobs[treePath] !== undefined)
+                .map((treePath) => {
+                  const entry = options.remoteBlobs[treePath];
+                  const { mode, id } = typeof entry === "string" ? { mode: "100644", id: entry } : entry;
+                  return `${mode} blob ${id}\t${treePath}\0`;
+                })
+                .join("")
+            );
+          }
+          if (args[0] === "hash-object") {
+            const paths = args.slice(2);
+            const refused = paths.find((filePath) => options.unhashable?.includes(filePath));
+            if (refused !== undefined) {
+              throw new Error(`fatal: could not open '${refused}' for reading: No such file or directory`);
+            }
+            return paths.map((filePath) => options.worktreeHashes[filePath] ?? BLOB_SOMEONE_ELSE).join("\n");
+          }
+          if (args[0] === "cat-file") return options.blobContents?.[args[2]] ?? "";
+          return "";
+        });
+        gitMock.status.mockResolvedValue({ not_added: [], modified: [], deleted: [], ...options.status });
+        // `.git` stays a directory for the primary-checkout guard; every
+        // candidate is a regular file unless the test says otherwise.
+        (fs.lstat as unknown as Mock).mockImplementation(async (target: unknown) => {
+          const relative = String(target).replace("/tmp/clone-demo/", "");
+          return buildFsStats(options.worktreeKinds?.[relative] ?? (relative === ".git" ? "directory" : "file"));
+        });
+        (fs.readlink as unknown as Mock).mockImplementation(async (target: unknown) => {
+          const relative = String(target).replace("/tmp/clone-demo/", "");
+          const linkTarget = options.linkTargets?.[relative];
+          if (linkTarget === undefined) throw new Error("EINVAL: not a symlink");
+          return linkTarget;
+        });
+      }
+
+      function rawCommands(): string[][] {
+        return gitMock.raw.mock.calls.map(([args]) => args as string[]);
+      }
+
+      // The retry policy logs "Temporarily disabling LFS downloads" and sets
+      // the override on GitService. Clone mode built every client from
+      // `config.skipLfs` alone, so the retry's merge ran with the identical
+      // environment and died on the object the attempt before it had.
+      it("runs the retry's ff-merge with LFS smudging disabled once the sync override is set (#T14)", async () => {
+        const gitService = buildLfsAwareGitService();
+        const { service } = buildServiceWithSkips(gitService);
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+        expect(gitMock.env).not.toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+
+        gitService.setLfsSkipEnabled(true);
+        gitMock.env.mockClear();
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.merge).toHaveBeenCalledTimes(2);
+        expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+        // Not one client but all of them: the retry's fetch runs in the same
+        // attempt as its merge and has to skip smudging too.
+        const envs = gitMock.env.mock.calls.map(([env]) => env as NodeJS.ProcessEnv);
+        expect(envs.length).toBeGreaterThan(0);
+        expect(envs.every((env) => env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] === "1")).toBe(true);
+      });
+
+      // git's checkout half writes in path order and stops at the first path it
+      // cannot produce, so the rejection leaves the earlier ones on disk and the
+      // later ones untouched. Until that is undone every following tick reports
+      // dirty_tree at info level and exits 0 — for good, because git then
+      // refuses to overwrite the untracked files the first attempt left.
+      it("undoes the half-applied checkout when the ff-merge is rejected (#T14)", async () => {
+        const { service, skips } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "assets/big.bin", "docs/removed.md", "src/late.ts"],
+          remoteBlobs: {
+            ".gitattributes": BLOB_ATTRIBUTES,
+            "assets/big.bin": BLOB_POINTER,
+            "src/late.ts": BLOB_LATE,
+          },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          status: { not_added: [".gitattributes"], deleted: ["docs/removed.md"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(gitMock.raw).toHaveBeenCalledWith(["diff", "--name-only", "-z", "HEAD", "refs/remotes/origin/main"]);
+        // Only the dirty half of the merge's path set is ever weighed: the
+        // paths git never got to are not on disk to compare.
+        expect(gitMock.raw).toHaveBeenCalledWith(["hash-object", "--", ".gitattributes"]);
+        // Untracked and byte-identical to what origin/main holds for it, so the
+        // next fast-forward writes it back unchanged.
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/.gitattributes", { force: true });
+        // Deleted by the merge; restoring writes only what HEAD already holds,
+        // and only into the working tree — the index the merge never reached.
+        expect(gitMock.raw).toHaveBeenCalledWith([
+          "restore",
+          "--source=HEAD",
+          "--worktree",
+          "--",
+          ":(literal)docs/removed.md",
+        ]);
+        // The merge failure is still the caller's to handle, and it is not a skip.
+        expect(skips).toEqual([]);
+      });
+
+      // The tree was verified clean before the merge, but the relationship
+      // classification, up to three deepening fetches and the merge itself sit
+      // in that window — minutes in a large repository. A file that appears in
+      // it hashes to something other than the blob origin/main holds for that
+      // path, and is left where it is.
+      it("leaves a file that is not what origin/<branch> holds where it is (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "assets/big.bin"],
+          remoteBlobs: { ".gitattributes": BLOB_ATTRIBUTES, "assets/big.bin": BLOB_POINTER },
+          worktreeHashes: { ".gitattributes": BLOB_SOMEONE_ELSE },
+          status: { not_added: [".gitattributes"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(rawCommands().some((command) => command[0] === "restore")).toBe(false);
+      });
+
+      // A dirty path the incoming commit does not touch is somebody's own work,
+      // and never becomes a candidate — which is what keeps dirty_tree meaning
+      // what it says on the next tick.
+      it("never weighs a dirty path the merge would not have written (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: ["assets/big.bin"],
+          remoteBlobs: { "assets/big.bin": BLOB_POINTER },
+          worktreeHashes: {},
+          status: { not_added: ["scratch.txt"], modified: ["src/app.ts"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(rawCommands().some((command) => command[0] === "hash-object")).toBe(false);
+        expect(rawCommands().some((command) => command[0] === "restore")).toBe(false);
+      });
+
+      // A merge that moved HEAD wrote those files on purpose; undoing them
+      // would throw away the update that had just landed.
+      it("touches nothing when HEAD moved despite the merge failing (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          headAfterMerge: HEAD_AFTER_MERGE,
+          mergePaths: [".gitattributes"],
+          remoteBlobs: { ".gitattributes": BLOB_ATTRIBUTES },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          status: { not_added: [".gitattributes"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error("error: post-checkout hook exited with 1"));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("post-checkout hook");
+
+        expect(gitMock.status).not.toHaveBeenCalled();
+        expect(fs.rm).not.toHaveBeenCalled();
+      });
+
+      // `git hash-object` FOLLOWS a symlink and hashes the file at the other
+      // end, while git stores a symlink as a blob holding the target path — so
+      // a symlink the merge wrote never matched, stayed behind, and wedged
+      // every later tick exactly the way this cleanup exists to prevent.
+      it("proves a symlink by its target rather than hashing what it points at (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: ["0-link.md", "assets/big.bin"],
+          remoteBlobs: {
+            "0-link.md": { mode: "120000", id: BLOB_LINK },
+            "assets/big.bin": BLOB_POINTER,
+          },
+          // What hash-object would have answered: the hash of README.md's
+          // contents, which is not the symlink's blob and must not be consulted.
+          worktreeHashes: { "0-link.md": BLOB_SOMEONE_ELSE },
+          worktreeKinds: { "0-link.md": "symlink" },
+          linkTargets: { "0-link.md": "README.md" },
+          blobContents: { [BLOB_LINK]: "README.md" },
+          status: { not_added: ["0-link.md"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(gitMock.raw).toHaveBeenCalledWith(["cat-file", "blob", BLOB_LINK]);
+        expect(rawCommands().some((command) => command[0] === "hash-object")).toBe(false);
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/0-link.md", { force: true });
+      });
+
+      // A symlink whose target the merge never got to write is dangling, and
+      // `hash-object` dies on it. Batched with 199 others that would have
+      // disqualified every one of them — so a link the merge wrote is proved
+      // without hash-object at all, and a file that cannot be hashed
+      // disqualifies only itself.
+      it("keeps cleaning the rest when one file cannot be hashed (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "0-dangling.md", "0-unreadable.txt", "assets/big.bin"],
+          remoteBlobs: {
+            ".gitattributes": BLOB_ATTRIBUTES,
+            "0-dangling.md": { mode: "120000", id: BLOB_LINK },
+            "0-unreadable.txt": BLOB_LATE,
+            "assets/big.bin": BLOB_POINTER,
+          },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          worktreeKinds: { "0-dangling.md": "symlink" },
+          linkTargets: { "0-dangling.md": "missing/target" },
+          blobContents: { [BLOB_LINK]: "missing/target" },
+          unhashable: ["0-unreadable.txt"],
+          status: { not_added: [".gitattributes", "0-dangling.md", "0-unreadable.txt"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        // The batch died on the unreadable path, so each was asked for again
+        // on its own.
+        expect(gitMock.raw).toHaveBeenCalledWith(["hash-object", "--", ".gitattributes", "0-unreadable.txt"]);
+        expect(gitMock.raw).toHaveBeenCalledWith(["hash-object", "--", ".gitattributes"]);
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/.gitattributes", { force: true });
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/0-dangling.md", { force: true });
+        // Nothing could be established about it, so it is left where it is.
+        expect(fs.rm).not.toHaveBeenCalledWith("/tmp/clone-demo/0-unreadable.txt", { force: true });
+      });
+
+      // The merge deletes a path only when the incoming commit no longer has
+      // it. A path origin/<branch> still carries went missing some other way —
+      // somebody's own `rm` inside the window — and restoring it from HEAD
+      // would silently undo that.
+      it("leaves a missing path alone when origin/<branch> still holds it (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "assets/big.bin", "zz-old.md"],
+          remoteBlobs: {
+            ".gitattributes": BLOB_ATTRIBUTES,
+            "assets/big.bin": BLOB_POINTER,
+            // Modified upstream, not deleted: still in the incoming tree.
+            "zz-old.md": BLOB_LATE,
+          },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          status: { not_added: [".gitattributes"], deleted: ["zz-old.md"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/.gitattributes", { force: true });
+        expect(rawCommands().some((command) => command[0] === "restore")).toBe(false);
+      });
+
+      // Nothing here is LFS-specific: any rejection that stopped the checkout
+      // half-way leaves the same wedge, and the same per-path proof decides
+      // what may be undone.
+      it("undoes the half-applied checkout after a non-LFS rejection too (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "src/gen.ts"],
+          remoteBlobs: { ".gitattributes": BLOB_ATTRIBUTES, "src/gen.ts": BLOB_LATE },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          status: { not_added: [".gitattributes"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error("error: unable to write file src/gen.ts: Permission denied"));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("Permission denied");
+
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/.gitattributes", { force: true });
+      });
     });
   });
 

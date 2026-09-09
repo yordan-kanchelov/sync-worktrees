@@ -58,6 +58,9 @@ describe("CloneSyncService git client timeouts", () => {
       getSparseCheckoutService: vi.fn().mockReturnValue({ applyToWorktree: vi.fn(), needsUpdate: vi.fn() }),
       checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
       classifyRemoteRelationship: vi.fn<any>().mockResolvedValue("fast_forward"),
+      // Read whenever this service builds a client: clone mode layers the
+      // per-sync LFS override onto its own environment.
+      isLfsSkipEnabled: vi.fn<any>().mockReturnValue(false),
     }) as unknown as GitService;
 
   const rawOutput = (args: string[]): string => {

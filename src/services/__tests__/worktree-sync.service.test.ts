@@ -72,6 +72,9 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
       getGit: vi.fn<any>(),
       setLfsSkipEnabled: vi.fn(),
+      // Clone mode reads it back on every client it builds, so the per-sync
+      // LFS fallback reaches its fetch and its merge too.
+      isLfsSkipEnabled: vi.fn<any>().mockReturnValue(false),
       compareTreeContent: vi.fn<any>().mockResolvedValue(false),
       resetToUpstream: vi.fn<any>().mockResolvedValue(true),
       // The one probe the update phase runs per worktree, and the one diverged

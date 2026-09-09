@@ -1885,7 +1885,15 @@ export class GitService {
     this.lfsSkipOverride = value;
   }
 
-  private isLfsSkipEnabled(): boolean {
+  /**
+   * The configured `skipLfs` plus the per-sync override setLfsSkipEnabled
+   * installs after an attempt died on an LFS error. Public because clone mode
+   * builds its own git clients and has to layer the same setting onto them:
+   * reading only `config.skipLfs` there ran the LFS retry with the identical
+   * environment, so the attempt announced as "retrying with LFS skipped"
+   * smudged exactly like the one that had just failed.
+   */
+  isLfsSkipEnabled(): boolean {
     return this.config.skipLfs || this.lfsSkipOverride;
   }
 
