@@ -113,7 +113,10 @@ describe("CLI refuses an existing bare repo whose origin is not the configured r
     expect(second.status, secondOutput).toBe(1);
     expect(second.stderr).toContain("Failed to initialize repository");
     expect(second.stderr).toContain(`has origin '${urlA}', expected '${urlB}'`);
-    expect(second.stderr).toContain(`git -C "${bareRepoDir}" remote set-url origin "${urlB}"`);
+    // The remedy names the configured repoUrl rather than echoing it, because
+    // a URL carrying credentials is redacted in this message and pasting the
+    // redacted form would set an origin that cannot fetch.
+    expect(second.stderr).toContain(`git -C "${bareRepoDir}" remote set-url origin <the repoUrl configured`);
     expect(second.stdout).toContain("0 synced");
     expect(second.stdout).toContain("1 failed");
     // Nothing was fetched from either remote and the bare repo was left as it was.
