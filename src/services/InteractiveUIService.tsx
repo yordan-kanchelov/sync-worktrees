@@ -525,14 +525,30 @@ export class InteractiveUIService {
     }
   }
 
-  public getDefaultBranchForRepo(repoIndex: number): string {
+  public async getDefaultBranchForRepo(repoIndex: number): Promise<string> {
     if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
       throw new Error(`Invalid repository index: ${repoIndex}`);
     }
 
-    const service = this.syncServices[repoIndex];
-    const gitService = service.getGitService();
-    return gitService.getDefaultBranch();
+    // Clone mode never runs GitService.initialize(), so GitService's default
+    // branch is still the 'main' its constructor set, whatever the clone
+    // actually tracks — the wizard would pre-select and label a branch the
+    // repository does not follow and create from the wrong base. The sync
+    // service's accessor is clone-aware: the configured branch, or the
+    // remote's HEAD (resolved once, then cached) when none is configured.
+    try {
+      return await this.syncServices[repoIndex].getDefaultBranch();
+    } catch (error) {
+      // The wizard drops this to keep its branch list on screen, so say why
+      // here or the reason is lost: resolving an unconfigured branch asks the
+      // remote, and its message is the one that tells the user to set
+      // `branch` explicitly.
+      this.addLog(
+        `Could not resolve the default branch for '${this.getRepoName(repoIndex)}': ${getErrorMessage(error)}`,
+        "warn",
+      );
+      throw error;
+    }
   }
 
   public async fetchForRepo(repoIndex: number): Promise<void> {

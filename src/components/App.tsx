@@ -34,7 +34,7 @@ export interface AppProps {
   getRepositoryList: () => RepositoryListEntry[];
   getRepositoryDiskUsage?: (index: number) => Promise<RepositoryDiskUsage>;
   getBranchesForRepo: (index: number) => Promise<string[]>;
-  getDefaultBranchForRepo: (index: number) => string;
+  getDefaultBranchForRepo: (index: number) => Promise<string>;
   fetchForRepo?: (index: number) => Promise<void>;
   createAndPushBranch: (
     repoIndex: number,

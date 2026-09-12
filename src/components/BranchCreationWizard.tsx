@@ -9,7 +9,7 @@ type WizardStep = "SELECT_PROJECT" | "SELECT_BRANCH" | "ENTER_NAME" | "CREATING"
 export interface BranchCreationWizardProps {
   repositories: Array<{ index: number; name: string; repoUrl: string }>;
   getBranchesForRepo: (index: number) => Promise<string[]>;
-  getDefaultBranchForRepo: (index: number) => string;
+  getDefaultBranchForRepo: (index: number) => Promise<string>;
   fetchForRepo?: (index: number) => Promise<void>;
   createAndPushBranch: (
     repoIndex: number,
@@ -86,7 +86,16 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
           branchList = await getBranchesForRepo(repoIndex);
         }
 
-        const defaultBr = getDefaultBranchForRepo(repoIndex);
+        // The default branch only pre-selects and labels an entry; clone mode
+        // resolves it from the remote when no branch is configured, and that
+        // can fail. Losing the hint must not blank a branch list that loaded
+        // fine — no marker beats a marker on the wrong branch.
+        let defaultBr = "";
+        try {
+          defaultBr = await getDefaultBranchForRepo(repoIndex);
+        } catch {
+          defaultBr = "";
+        }
         setBranches(branchList);
         setDefaultBranch(defaultBr);
         const defaultIndex = branchList.indexOf(defaultBr);

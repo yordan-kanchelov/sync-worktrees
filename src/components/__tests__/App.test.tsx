@@ -26,7 +26,7 @@ describe("App", () => {
         .fn()
         .mockReturnValue([{ index: 0, name: "test-repo", repoUrl: "https://example.com/repo.git" }]),
       getBranchesForRepo: vi.fn().mockResolvedValue(["main", "develop"]),
-      getDefaultBranchForRepo: vi.fn().mockReturnValue("main"),
+      getDefaultBranchForRepo: vi.fn().mockResolvedValue("main"),
       createAndPushBranch: vi.fn().mockResolvedValue({ success: true, finalName: "test-branch" }),
       getWorktreesForRepo: vi.fn().mockResolvedValue([{ path: "/worktrees/main", branch: "main" }]),
       openEditorInWorktree: vi.fn().mockReturnValue({ success: true }),

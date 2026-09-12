@@ -143,6 +143,7 @@ describe("InteractiveUIService", () => {
       isCloneMode: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
       getRemoteBranches: vi.fn<any>(),
+      getDefaultBranch: vi.fn<any>().mockResolvedValue("main"),
       checkoutBranch: vi.fn<any>().mockResolvedValue(undefined),
       createAndPushBranch: vi.fn<any>().mockResolvedValue(undefined),
       runQueuedRepoOperation: vi
@@ -1723,21 +1724,37 @@ describe("InteractiveUIService", () => {
     });
 
     describe("getDefaultBranchForRepo", () => {
-      it("should return default branch for valid repo index", () => {
+      it("should return default branch for valid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        const branch = service.getDefaultBranchForRepo(0);
+        const branch = await service.getDefaultBranchForRepo(0);
 
         expect(branch).toBe("main");
-        expect(mockGitService.getDefaultBranch).toHaveBeenCalled();
+        expect(mockSyncService.getDefaultBranch).toHaveBeenCalled();
 
         void service.destroy();
       });
 
-      it("should throw error for invalid repo index", () => {
+      it("should return the tracked branch for a clone-mode repo, not GitService's constant", async () => {
+        // GitService.initialize() never runs in clone mode, so its default
+        // branch is the 'main' the constructor set. Reading it here made the
+        // wizard pre-select and label a branch the clone does not track.
+        mockSyncService.isCloneMode.mockReturnValue(true);
+        mockSyncService.getDefaultBranch.mockResolvedValue("develop");
         const service = new InteractiveUIService([mockSyncService]);
 
-        expect(() => service.getDefaultBranchForRepo(-1)).toThrow("Invalid repository index: -1");
-        expect(() => service.getDefaultBranchForRepo(5)).toThrow("Invalid repository index: 5");
+        const branch = await service.getDefaultBranchForRepo(0);
+
+        expect(branch).toBe("develop");
+        expect(mockGitService.getDefaultBranch).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it("should throw error for invalid repo index", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.getDefaultBranchForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
+        await expect(service.getDefaultBranchForRepo(5)).rejects.toThrow("Invalid repository index: 5");
 
         void service.destroy();
       });

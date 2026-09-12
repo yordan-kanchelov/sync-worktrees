@@ -156,7 +156,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T16** — TUI branch-creation wizard cannot create branches for clone-mode repos:
   createAndPushBranch targets a nonexistent bare repo path, so clone-mode branch switching (CHANGELOG
   5.0.0) is unreachable
-- [ ] **T72** — TUI reports the worktree-mode constant 'main' as the default branch of clone-mode
+- [x] **T72** — TUI reports the worktree-mode constant 'main' as the default branch of clone-mode
   repos (F10 fix incomplete: only the MCP handler was corrected)
 - [ ] **T73** — checkoutBranch on a shallow clone throws FastForwardError when merge-base is merely
   indeterminate (duplicated, diverging fast-forward logic vs classifyRemoteRelationship)
@@ -3083,7 +3083,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   them green). Not described as intended in CHANGELOG 5.2.0/5.3.1 (those entries concern
   removal-side status checks with --ignore-submodules=none).
 
-### [ ] T72. TUI reports the worktree-mode constant 'main' as the default branch of clone-mode repos (F10 fix incomplete: only the MCP handler was corrected)
+### [x] T72. TUI reports the worktree-mode constant 'main' as the default branch of clone-mode repos (F10 fix incomplete: only the MCP handler was corrected)
 
 - **Category**: correctness · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
