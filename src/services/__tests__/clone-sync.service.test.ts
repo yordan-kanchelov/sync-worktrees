@@ -39,6 +39,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
 interface FakeGitClient {
   clone: Mock;
   fetch: Mock;
+  push: Mock;
   raw: Mock;
   merge: Mock;
   env: Mock;
@@ -51,6 +52,7 @@ function buildGitMock(rawMap: Record<string, string> = {}): FakeGitClient {
   const client: FakeGitClient = {
     clone: vi.fn().mockResolvedValue(undefined),
     fetch: vi.fn().mockResolvedValue(undefined),
+    push: vi.fn().mockResolvedValue(undefined),
     raw: vi.fn().mockImplementation(async (args: string[]) => {
       const key = Array.isArray(args) ? args.join(" ") : String(args);
       if (rawMap[key] !== undefined) return rawMap[key];
@@ -1158,6 +1160,252 @@ describe("CloneSyncService", () => {
         "--progress",
         "+refs/heads/feature/new:refs/remotes/origin/feature/new",
       ]);
+    });
+  });
+
+  // The TUI branch wizard's clone-mode half. Its worktree-mode counterpart
+  // (GitService.createBranch + pushBranch) runs in a bare repository that does
+  // not exist here, so every command below has to land in the clone instead.
+  describe("createAndPushBranch", () => {
+    const CREATED_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const NEW_BRANCH = "feature/new";
+    const NEW_BRANCH_REF = `refs/heads/${NEW_BRANCH}`;
+
+    // A clone that tracks 'main', has no local 'feature/new', and a remote that
+    // has not got one either.
+    function mockWizardRaw(overrides: (key: string) => string | undefined = () => undefined): void {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = Array.isArray(args) ? args.join(" ") : String(args);
+        const override = overrides(key);
+        if (override !== undefined) return override;
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === `show-ref --verify ${NEW_BRANCH_REF}`) throw new Error("missing local branch");
+        if (key === `ls-remote --heads origin ${NEW_BRANCH_REF}`) return "";
+        if (key === `rev-parse --verify ${NEW_BRANCH_REF}`) return `${CREATED_SHA}\n`;
+        return "";
+      });
+    }
+
+    function buildWizardService(gitService = buildGitService()): CloneSyncService {
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), gitService, logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      return service;
+    }
+
+    function branchAndPushCalls(): string[][] {
+      return gitMock.raw.mock.calls
+        .map((call) => (Array.isArray(call[0]) ? (call[0] as string[]) : []))
+        .filter((args) => args[0] === "branch");
+    }
+
+    it("creates the branch from origin/<base> and publishes it from the clone", async () => {
+      mockWizardRaw();
+      const service = buildWizardService();
+
+      await service.createAndPushBranch("main", NEW_BRANCH);
+
+      // The base branch is refreshed with the clone's own narrowed refspec —
+      // origin/main is usually not even present under single-branch tracking.
+      expect(gitMock.fetch).toHaveBeenCalledWith([
+        "origin",
+        "--prune",
+        "--no-tags",
+        "--progress",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["branch", "--no-track", NEW_BRANCH, "origin/main"]);
+      expect(gitMock.push).toHaveBeenCalledWith([
+        "origin",
+        `${NEW_BRANCH_REF}:${NEW_BRANCH_REF}`,
+        "-u",
+        `--force-with-lease=${NEW_BRANCH_REF}:`,
+      ]);
+      // In the clone, with the locale git's error classification depends on.
+      expect(simpleGit).toHaveBeenCalledWith("/tmp/clone-demo", expect.anything());
+      expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ LC_ALL: "C", LANG: "C" }));
+    });
+
+    it("keeps the configured shallow depth on the base-branch fetch", async () => {
+      mockWizardRaw((key) => (key === "rev-parse --is-shallow-repository" ? "true" : undefined));
+      const service = new CloneSyncService(makeConfig({ branch: "main", depth: 1 }), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+
+      await service.createAndPushBranch("main", NEW_BRANCH);
+
+      expect(gitMock.fetch).toHaveBeenCalledWith([
+        "origin",
+        "--prune",
+        "--no-tags",
+        "--progress",
+        "--depth",
+        "1",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ]);
+      expect(gitMock.push).toHaveBeenCalledTimes(1);
+    });
+
+    it("deletes the branch it created when the push is rejected", async () => {
+      mockWizardRaw();
+      gitMock.push.mockRejectedValueOnce(new Error("! [remote rejected] feature/new (pre-receive hook declined)"));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("pre-receive hook declined"),
+      });
+
+      // Compare-and-swap on the commit it was created at, so a ref something
+      // else moved meanwhile survives.
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", NEW_BRANCH_REF, CREATED_SHA]);
+    });
+
+    it("names the leftover branch when the rollback itself fails", async () => {
+      mockWizardRaw((key) => {
+        if (key === `update-ref -d ${NEW_BRANCH_REF} ${CREATED_SHA}`) throw new Error("ref lock held");
+        return undefined;
+      });
+      gitMock.push.mockRejectedValueOnce(new Error("remote: permission denied"));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        message: expect.stringContaining(`branch -D ${NEW_BRANCH}`),
+      });
+    });
+
+    it("refuses a name the remote already has, in the wording the wizard suffixes on", async () => {
+      mockWizardRaw((key) =>
+        key === `ls-remote --heads origin ${NEW_BRANCH_REF}` ? `${CREATED_SHA}\t${NEW_BRANCH_REF}\n` : undefined,
+      );
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("already exists on the remote"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it("refuses a name the clone already has", async () => {
+      mockWizardRaw((key) => (key === `show-ref --verify ${NEW_BRANCH_REF}` ? "" : undefined));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("already exists in the clone at '/tmp/clone-demo'"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+    });
+
+    it("refuses a dirty checkout before anything is created or pushed", async () => {
+      mockWizardRaw();
+      const service = buildWizardService(
+        buildGitService({ checkWorktreeStatus: vi.fn().mockResolvedValue(false) as unknown as Mock }),
+      );
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: WorktreeNotCleanError,
+        message: expect.stringContaining("has local changes"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    // Same class as the dirty-tree refusal: checkoutBranch refuses a detached
+    // HEAD, so publishing first strands a branch nobody can switch to.
+    it("refuses a detached HEAD before anything reaches the remote", async () => {
+      mockWizardRaw((key) => (key === "rev-parse --abbrev-ref HEAD" ? "HEAD" : undefined));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("detached HEAD"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    // 'feat' already existing makes 'feat/sub' impossible. Git says so, but the
+    // wizard only suffix-retries on "already exists", and a bare git message
+    // names no repository.
+    it("reports a name that collides with an existing branch path in the wizard's own wording", async () => {
+      mockWizardRaw();
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = Array.isArray(args) ? args.join(" ") : String(args);
+        if (key.startsWith("branch --no-track")) {
+          throw new Error(
+            `fatal: cannot lock ref 'refs/heads/${NEW_BRANCH}': 'refs/heads/feat' exists; cannot create '${NEW_BRANCH}'`,
+          );
+        }
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === `show-ref --verify ${NEW_BRANCH_REF}`) throw new Error("missing local branch");
+        if (key === `ls-remote --heads origin ${NEW_BRANCH_REF}`) return "";
+        return "";
+      });
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("already exists"),
+      });
+
+      expect(gitMock.push).not.toHaveBeenCalled();
+    });
+
+    it("reports a base branch that is gone from the remote instead of creating anything", async () => {
+      mockWizardRaw();
+      gitMock.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/main"));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("origin/main is missing on the remote"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+    });
+
+    it("refuses to write into a checkout another repository owns", async () => {
+      mockWizardRaw((key) =>
+        key === PRIMARY_CHECKOUT_GIT_DIR_PROBE ? "/other/repo/.git/worktrees/app-main\n/other/repo/.git\n" : undefined,
+      );
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: ConfigError,
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it("names the repository instead of letting simple-git report a missing directory", async () => {
+      mockWizardRaw();
+      (fs.access as unknown as Mock).mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: ConfigError,
+        code: "CONFIG_CLONE_DESTINATION_MISSING",
+        message: expect.stringContaining("is not a git clone"),
+      });
     });
   });
 

@@ -144,6 +144,7 @@ describe("InteractiveUIService", () => {
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
       getRemoteBranches: vi.fn<any>(),
       checkoutBranch: vi.fn<any>().mockResolvedValue(undefined),
+      createAndPushBranch: vi.fn<any>().mockResolvedValue(undefined),
       runQueuedRepoOperation: vi
         .fn<any>()
         .mockImplementation(async (op: any) => ({ started: true, value: await op() })),
@@ -1812,6 +1813,75 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toMatch(/repository lock/i);
         expect(mockGitService.createBranch).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      // Clone-mode repositories have no bare repository, and GitService's
+      // createBranch/pushBranch both run in one — through `bareRepoPath`,
+      // which falls back to the RELATIVE '.bare/<repo name>' when bareRepoDir
+      // is undefined, as it deliberately is in clone mode. That path is either
+      // missing (simple-git's constructor: "Cannot use simple-git on a
+      // directory that does not exist") or, under a working directory holding
+      // a bare store of the same repository name, somebody else's refs.
+      it("creates the branch inside the clone for clone-mode repositories", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          isCloneMode: vi.fn().mockReturnValue(true),
+          createAndPushBranch: vi.fn().mockResolvedValue(undefined),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result).toEqual({ success: true, finalName: "feature/x" });
+        expect(cloneService.createAndPushBranch).toHaveBeenCalledWith("main", "feature/x");
+        expect(mockGitService.createBranch).not.toHaveBeenCalled();
+        expect(mockGitService.pushBranch).not.toHaveBeenCalled();
+
+        // ...and the wizard's follow-up switches the clone in place rather
+        // than adding a worktree — the branch it just pushed is now real.
+        await service.createWorktreeForBranch(0, "feature/x");
+        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/x", { allowConfigDrift: true });
+        expect(mockGitService.addWorktree).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it("suffixes the name when the clone-mode path reports a collision", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          isCloneMode: vi.fn().mockReturnValue(true),
+          createAndPushBranch: vi
+            .fn()
+            .mockRejectedValueOnce(new Error("branch 'feature/x' already exists on the remote of 'app'"))
+            .mockResolvedValueOnce(undefined),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result).toEqual({ success: true, finalName: "feature/x-1" });
+        expect(cloneService.createAndPushBranch).toHaveBeenNthCalledWith(2, "main", "feature/x-1");
+
+        void service.destroy();
+      });
+
+      it("surfaces the clone-mode failure message unchanged", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          isCloneMode: vi.fn().mockReturnValue(true),
+          createAndPushBranch: vi
+            .fn()
+            .mockRejectedValue(new Error("Cannot create 'feature/x' in 'app': '/srv/app' is not a git clone.")),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("'app'");
+        expect(result.error).not.toContain("simple-git");
 
         void service.destroy();
       });

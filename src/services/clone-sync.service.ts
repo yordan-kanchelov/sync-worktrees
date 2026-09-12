@@ -836,6 +836,215 @@ export class CloneSyncService {
     this.warnConfigDriftAfterCheckout(branch, targetBranch);
   }
 
+  // The clone-mode half of the TUI's branch wizard. Worktree mode creates the
+  // branch in the bare repository; a clone-mode repo has none, and GitService's
+  // `bareRepoPath` falls back to the RELATIVE '.bare/<repo name>' there — a
+  // directory that does not exist (simple-git's constructor then reports only
+  // "Cannot use simple-git on a directory that does not exist") or, when the
+  // daemon runs from a directory that happens to hold a bare store of the same
+  // repository NAME, another repository's refs, which the branch is then
+  // created in and pushed to while the wizard reports success. So the branch is
+  // created and published from the clone itself, which is also the only place
+  // that can afterwards check it out.
+  //
+  // Publishing transfers no objects: the new branch points at the tip of
+  // origin/<baseBranch>, which the remote already has, so a shallow clone can
+  // create and push it exactly like a full one (verified on git 2.43 against a
+  // depth-1 clone) and a sparse one is untouched — neither command reads the
+  // working tree. The caller follows with checkoutBranch(branchName, {
+  // allowConfigDrift: true }), which is where the tree actually switches and
+  // where shallow state converges.
+  async createAndPushBranch(baseBranch: string, branchName: string): Promise<void> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const worktreeDir = this.config.worktreeDir;
+    await this.assertCloneDirectoryPresent(worktreeDir, branchName);
+
+    const readGit = this.localClientFor(worktreeDir);
+    const originMismatch = await this.evaluateOriginMatch(readGit, worktreeDir);
+    if (originMismatch) {
+      throw new ConfigError(
+        `Cannot create '${branchName}' in '${this.repoName}': ${originMismatch.progressDetail}.`,
+        "ORIGIN_MISMATCH",
+      );
+    }
+
+    // checkoutBranch refuses a dirty tree, so a branch created now could never
+    // be switched to. Refuse here instead, before anything reaches the remote:
+    // the alternative leaves a published branch the user cannot move to.
+    if (!(await this.gitService.checkWorktreeStatus(worktreeDir))) {
+      throw new WorktreeNotCleanError(worktreeDir, [
+        `'${this.repoName}' has local changes; commit or stash them before creating '${branchName}'`,
+      ]);
+    }
+
+    // Same reason: checkoutBranch refuses a detached HEAD, so publishing first
+    // would leave a branch on the remote that the switch afterwards cannot
+    // move to.
+    if ((await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim() === "HEAD") {
+      throw new GitOperationError(
+        "branch",
+        `Cannot create '${branchName}' in '${this.repoName}': it is on a detached HEAD; check out a branch manually (preserving any local commits) first`,
+      );
+    }
+
+    // Both collision checks say "already exists": the TUI retries the whole
+    // call with a '-1', '-2', ... suffix on exactly that wording, which is how
+    // worktree mode has always behaved. The remote is asked as well as the
+    // clone — a clone tracks one branch, so its refs cannot answer for a name
+    // somebody else already pushed, and a plain push would quietly
+    // fast-forward such a branch whenever it is an ancestor of the base.
+    if (await this.localBranchExists(readGit, branchName)) {
+      throw new GitOperationError(
+        "branch",
+        `branch '${branchName}' already exists in the clone at '${path.resolve(worktreeDir)}' for ` +
+          `'${this.repoName}'; choose another name, or delete it with ` +
+          `\`git -C "${path.resolve(worktreeDir)}" branch -D ${branchName}\``,
+      );
+    }
+    if (await this.remoteBranchExists(worktreeDir, branchName)) {
+      throw new GitOperationError(
+        "branch",
+        `branch '${branchName}' already exists on the remote of '${this.repoName}'; choose another name`,
+      );
+    }
+
+    // Nothing above this line writes; everything below does. Refuse a linked
+    // worktree or submodule here, before the fetch's refs land in the
+    // repository that actually owns this directory's git dir.
+    const clients = await this.mutatingClientsFor(worktreeDir);
+
+    // The clone tracks a single branch, so origin/<baseBranch> is usually not
+    // present at all, and when it is it is only as fresh as the last sync.
+    // Fetch it with the same narrowed refspec — and the same shallow depth — a
+    // sync would use, so the branch starts at the tip the user picked. The
+    // stray origin/<baseBranch> this leaves behind is cleaned up by the
+    // configureSingleBranchRemote that ends the checkout.
+    const fetchArgs = await this.buildFetchArgs(clients.git, baseBranch);
+    if ((await this.fetchWithRecovery(clients, fetchArgs, worktreeDir, baseBranch, false)).skipped) {
+      throw new GitOperationError(
+        "branch",
+        `cannot create '${branchName}' in '${this.repoName}': origin/${baseBranch} is missing on the remote`,
+      );
+    }
+    if (!(await this.hasRemoteBranch(clients.git, baseBranch))) {
+      throw new GitOperationError(
+        "branch",
+        `cannot create '${branchName}' in '${this.repoName}': origin/${baseBranch} did not materialize after fetch`,
+      );
+    }
+
+    try {
+      await clients.git.raw(["branch", "--no-track", branchName, `origin/${baseBranch}`]);
+    } catch (error) {
+      // The commonest failure here is a directory/file ref conflict -- 'feat'
+      // already exists, so 'feat/sub' cannot be created. Say "already exists"
+      // so the wizard suffixes and retries, which does resolve it, rather than
+      // handing the user a bare git message with no repository in it.
+      throw new GitOperationError(
+        "branch",
+        `cannot create '${branchName}' in '${this.repoName}': the name conflicts with a branch that ` +
+          `already exists there (${summarizeGitFailure(getErrorMessage(error))}); choose another name`,
+      );
+    }
+    const createdAt = await this.readBranchCommit(clients.git, branchName);
+    this.logger.info(`Created branch '${branchName}' from 'origin/${baseBranch}' in '${this.repoName}'`);
+
+    try {
+      // `--force-with-lease` with an empty expected value is git's create-only
+      // push: it requires the remote ref not to exist, closing the window
+      // between the ls-remote above and this push. It can never force-update
+      // anything — an existing ref is rejected with "stale info" instead
+      // (both directions verified on git 2.43).
+      await clients.networkGit.push([
+        "origin",
+        `refs/heads/${branchName}:refs/heads/${branchName}`,
+        "-u",
+        `--force-with-lease=refs/heads/${branchName}:`,
+      ]);
+    } catch (error) {
+      await this.rollbackCreatedBranch(clients, worktreeDir, branchName, createdAt, error);
+    }
+    this.logger.info(`Pushed branch '${branchName}' to the remote of '${this.repoName}'`);
+  }
+
+  // Every client below is built on this directory, and simple-git's
+  // constructor rejects a missing one with "Cannot use simple-git on a
+  // directory that does not exist" — a message that names neither the
+  // repository nor a remedy. The absence is reported here instead.
+  private async assertCloneDirectoryPresent(worktreeDir: string, branchName: string): Promise<void> {
+    const probe = await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR));
+    if (probe === "exists") return;
+    throw new ConfigError(
+      `Cannot create '${branchName}' in '${this.repoName}': '${path.resolve(worktreeDir)}' ` +
+        `${probe === "missing" ? "is not a git clone" : "could not be inspected"}. Sync this repository once so ` +
+        `the clone exists, then create the branch again.`,
+      "CLONE_DESTINATION_MISSING",
+    );
+  }
+
+  // A fully-qualified `ls-remote` pattern matches that one ref and nothing that
+  // merely starts with it, so this answers for exactly <branch>.
+  private async remoteBranchExists(worktreeDir: string, branch: string): Promise<boolean> {
+    const output = await this.networkClientFor(path.resolve(worktreeDir)).raw([
+      "ls-remote",
+      "--heads",
+      "origin",
+      `refs/heads/${branch}`,
+    ]);
+    return this.parseLsRemoteHeads(output).includes(branch);
+  }
+
+  private async readBranchCommit(git: SimpleGit, branch: string): Promise<string | null> {
+    try {
+      const sha = (await git.raw(["rev-parse", "--verify", `refs/heads/${branch}`])).trim();
+      return sha.length > 0 ? sha : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // A push that never landed must not leave the local branch behind: the
+  // wizard reports the failure and offers the same name again, and the next
+  // attempt would then collide with this repository's own leftover. The delete
+  // is a compare-and-swap on the commit the branch was created at, so a ref
+  // something else moved in the meantime is left alone — and a leftover that
+  // could not be removed is named in the error rather than passed over.
+  private async rollbackCreatedBranch(
+    clients: MutatingGitClients,
+    worktreeDir: string,
+    branchName: string,
+    createdAt: string | null,
+    pushError: unknown,
+  ): Promise<never> {
+    const message = redactSecretsInText(getErrorMessage(pushError));
+    // "stale info" is how the create-only lease reports a ref that appeared
+    // between the ls-remote and the push; it reads as a collision, not as a
+    // stale remote-tracking ref, so it is phrased as one — and the "already
+    // exists" wording sends the TUI round again with a suffixed name.
+    const detail = message.includes("stale info")
+      ? `branch '${branchName}' already exists on the remote of '${this.repoName}' — it was pushed while this one ` +
+        `was being prepared; choose another name`
+      : `could not push '${branchName}' to the remote of '${this.repoName}': ${appendGitAuthHint(message)}`;
+
+    let leftover = "";
+    try {
+      if (createdAt === null) {
+        throw new Error("the commit it was created at could not be read");
+      }
+      await clients.git.raw(["update-ref", "-d", `refs/heads/${branchName}`, createdAt]);
+    } catch (deleteError) {
+      leftover =
+        ` The local branch '${branchName}' is still in the clone — removing it failed ` +
+        `(${getErrorMessage(deleteError)}); delete it with ` +
+        `\`git -C "${path.resolve(worktreeDir)}" branch -D ${branchName}\`.`;
+    }
+
+    throw new GitOperationError("push", `${detail}.${leftover}`, pushError instanceof Error ? pushError : undefined);
+  }
+
   // resolvedBranch keeps in-session syncs on the new branch, but the config
   // file still names the old one: the next process start will soft-skip with
   // branch_mismatch on every tick until the config is updated.

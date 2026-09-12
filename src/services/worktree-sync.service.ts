@@ -168,6 +168,16 @@ export class WorktreeSyncService {
     await this.cloneSyncService.checkoutBranch(branchName, options);
   }
 
+  // Clone mode's answer to GitService.createBranch + pushBranch, which have no
+  // bare repository to run in here. The TUI's branch wizard calls this and then
+  // checkoutBranch(branchName, { allowConfigDrift: true }) to switch to it.
+  async createAndPushBranch(baseBranch: string, branchName: string): Promise<void> {
+    if (!this.cloneSyncService) {
+      throw new ConfigError("createAndPushBranch is only available for clone-mode repositories", "CLONE_MODE_REQUIRED");
+    }
+    await this.cloneSyncService.createAndPushBranch(baseBranch, branchName);
+  }
+
   async initialize(): Promise<void> {
     if (this.isInitialized()) return;
     const result = await this.runExclusiveRepoOperation(() => this.initializeUnlocked());

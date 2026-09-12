@@ -581,6 +581,17 @@ export class InteractiveUIService {
     const service = this.syncServices[repoIndex];
     const gitService = service.getGitService();
 
+    // A clone-mode repo has no bare repository, and GitService's write helpers
+    // all run in one — falling back to the relative '.bare/<repo name>', which
+    // is either missing or another repository's store. Clone mode creates and
+    // publishes the branch inside the clone itself instead.
+    const createAndPush = service.isCloneMode()
+      ? (name: string): Promise<void> => service.createAndPushBranch(baseBranch, name)
+      : async (name: string): Promise<void> => {
+          await gitService.createBranch(name, baseBranch);
+          await gitService.pushBranch(name);
+        };
+
     // Serialize branch+push behind any in-flight sync so it can't race git's
     // index/refs. addWorktree (createWorktreeForBranch) is a separate queued op.
     const result = await service.runQueuedRepoOperation(async () => {
@@ -590,8 +601,7 @@ export class InteractiveUIService {
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
-          await gitService.createBranch(finalName, baseBranch);
-          await gitService.pushBranch(finalName);
+          await createAndPush(finalName);
           return { success: true, finalName };
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);

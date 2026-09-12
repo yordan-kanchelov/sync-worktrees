@@ -153,7 +153,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T15** — `fetch --unshallow` is the only fetch without `--progress`; with stderr piped it is
   silent until completion, so simple-git's 300 s inactivity timeout kills any unshallow that takes
   longer — the repo can never unshallow and every tick hard-fails
-- [ ] **T16** — TUI branch-creation wizard cannot create branches for clone-mode repos:
+- [x] **T16** — TUI branch-creation wizard cannot create branches for clone-mode repos:
   createAndPushBranch targets a nonexistent bare repo path, so clone-mode branch switching (CHANGELOG
   5.0.0) is unreachable
 - [ ] **T72** — TUI reports the worktree-mode constant 'main' as the default branch of clone-mode
@@ -1068,7 +1068,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   the only fetch without `--progress`, and `clientFor` applies the inactivity `timeout.block` of
   `fetchTimeoutMs` (5 min default).
 
-### [ ] T16. TUI branch-creation wizard cannot create branches for clone-mode repos: createAndPushBranch targets a nonexistent bare repo path, so clone-mode branch switching (CHANGELOG 5.0.0) is unreachable
+### [x] T16. TUI branch-creation wizard cannot create branches for clone-mode repos: createAndPushBranch targets a nonexistent bare repo path, so clone-mode branch switching (CHANGELOG 5.0.0) is unreachable
 
 - **Category**: correctness · **Subsystem**: clone-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
