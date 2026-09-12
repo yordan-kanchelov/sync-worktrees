@@ -1995,24 +1995,41 @@ export class GitService {
     return { updated, before, after };
   }
 
-  async classifyRemoteRelationship(worktreePath: string, branch: string): Promise<RemoteRelationship> {
+  // The one place a local ref's relationship to its remote counterpart is
+  // derived, so the two callers cannot drift apart on what 'fast-forwardable'
+  // means. `localRef` is the local side of the comparison: a sync tick asks
+  // about the checkout it is standing in (HEAD), while clone mode's branch
+  // switch asks about a branch it has not switched to yet and names
+  // `refs/heads/<branch>` instead.
+  //
+  // Deliberately not `merge-base --is-ancestor`, which would answer in one
+  // spawn rather than three: it reports through its exit code and writes
+  // nothing to stderr either way, and simple-git only fails a task whose exit
+  // code is non-zero AND whose stderr is non-empty — so 'is an ancestor' and
+  // 'is not' both arrive here as an empty string and cannot be told apart.
+  async classifyRemoteRelationship(
+    worktreePath: string,
+    branch: string,
+    localRef = "HEAD",
+  ): Promise<RemoteRelationship> {
     const worktreeGit = this.getCachedGit(worktreePath);
+    const remoteRef = `refs/remotes/origin/${branch}`;
 
-    let headSha: string;
+    let localSha: string;
     let remoteSha: string;
     try {
-      headSha = (await worktreeGit.revparse(["HEAD"])).trim();
-      remoteSha = (await worktreeGit.revparse([`refs/remotes/origin/${branch}`])).trim();
+      localSha = (await worktreeGit.revparse([localRef])).trim();
+      remoteSha = (await worktreeGit.revparse([remoteRef])).trim();
     } catch {
       return "diverged";
     }
 
-    if (headSha === remoteSha) return "up_to_date";
+    if (localSha === remoteSha) return "up_to_date";
 
     let mergeBase = "";
     let mergeBaseFailed = false;
     try {
-      mergeBase = (await worktreeGit.raw(["merge-base", "HEAD", `origin/${branch}`])).trim();
+      mergeBase = (await worktreeGit.raw(["merge-base", localRef, remoteRef])).trim();
     } catch {
       mergeBaseFailed = true;
     }
@@ -2021,7 +2038,7 @@ export class GitService {
       if (await this.isShallowRepository(worktreeGit)) return "indeterminate_shallow";
       return "diverged";
     }
-    if (mergeBase === headSha) return "fast_forward";
+    if (mergeBase === localSha) return "fast_forward";
     if (mergeBase === remoteSha) return "local_ahead";
     return "diverged";
   }

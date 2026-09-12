@@ -158,7 +158,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   5.0.0) is unreachable
 - [x] **T72** — TUI reports the worktree-mode constant 'main' as the default branch of clone-mode
   repos (F10 fix incomplete: only the MCP handler was corrected)
-- [ ] **T73** — checkoutBranch on a shallow clone throws FastForwardError when merge-base is merely
+- [x] **T73** — checkoutBranch on a shallow clone throws FastForwardError when merge-base is merely
   indeterminate (duplicated, diverging fast-forward logic vs classifyRemoteRelationship)
 - [ ] **T67** — Clone-init pending marker is written after `configureSingleBranchRemote`, so a crash
   in that window leaves a marker-less valid clone whose file copy is silently dropped forever
@@ -3118,7 +3118,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   and its test (interactive-ui.service.test.ts:1677-1686) asserts that call on a worktree-mode mock,
   so the clone-mode value is untested.
 
-### [ ] T73. checkoutBranch on a shallow clone throws FastForwardError when merge-base is merely indeterminate (duplicated, diverging fast-forward logic vs classifyRemoteRelationship)
+### [x] T73. checkoutBranch on a shallow clone throws FastForwardError when merge-base is merely indeterminate (duplicated, diverging fast-forward logic vs classifyRemoteRelationship)
 
 - **Category**: correctness · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

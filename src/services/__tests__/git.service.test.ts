@@ -3083,6 +3083,57 @@ locked
       expect(result).toBe("diverged");
     });
 
+    // Clone mode's branch switch asks about a branch it has not switched to
+    // yet, so the local side of the comparison is named rather than implied.
+    it("compares the named local ref instead of HEAD", async () => {
+      const client = buildClient({ headSha: "branchtip", remoteSha: "tip", mergeBase: "branchtip" });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship(
+        "/test/worktrees/feature-1",
+        "feature-1",
+        "refs/heads/feature-1",
+      );
+
+      expect(result).toBe("fast_forward");
+      expect(client.revparse).toHaveBeenNthCalledWith(1, ["refs/heads/feature-1"]);
+      expect(client.revparse).toHaveBeenNthCalledWith(2, ["refs/remotes/origin/feature-1"]);
+      expect(client.raw).toHaveBeenCalledWith(["merge-base", "refs/heads/feature-1", "refs/remotes/origin/feature-1"]);
+    });
+
+    it("returns indeterminate_shallow for a named local ref a shallow clone cannot reach", async () => {
+      const client = buildClient({ headSha: "branchtip", remoteSha: "tip", mergeBase: "", isShallow: "true" });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship(
+        "/test/worktrees/feature-1",
+        "feature-1",
+        "refs/heads/feature-1",
+      );
+
+      expect(result).toBe("indeterminate_shallow");
+      expect(client.raw).toHaveBeenCalledWith(["merge-base", "refs/heads/feature-1", "refs/remotes/origin/feature-1"]);
+    });
+
+    it("returns diverged for a named local ref whose merge-base is a third commit", async () => {
+      const client = buildClient({
+        headSha: "branchtip",
+        remoteSha: "tip",
+        mergeBase: "ancestor",
+        isShallow: "true",
+      });
+      (simpleGit as unknown as Mock).mockReturnValue(client);
+
+      const result = await gitService.classifyRemoteRelationship(
+        "/test/worktrees/feature-1",
+        "feature-1",
+        "refs/heads/feature-1",
+      );
+
+      expect(result).toBe("diverged");
+      expect(client.raw).toHaveBeenCalledWith(["merge-base", "refs/heads/feature-1", "refs/remotes/origin/feature-1"]);
+    });
+
     it("returns diverged when revparse of HEAD or remote fails", async () => {
       const client = {
         revparse: vi.fn<any>().mockRejectedValue(new Error("bad ref")),

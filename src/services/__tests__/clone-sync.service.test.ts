@@ -1028,27 +1028,98 @@ describe("CloneSyncService", () => {
       expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/feature/new"]);
     });
 
-    it("does not switch to an existing local branch that cannot fast-forward to origin", async () => {
-      const service = new CloneSyncService(makeConfig({ branch: "feature/existing" }), buildGitService(), logger);
-      (service as unknown as { initialized: boolean }).initialized = true;
-      gitMock.raw.mockImplementation(async (args: string[]) => {
+    // A clone standing on 'main' that already carries a local
+    // 'feature/existing', with nothing else to report.
+    const existingLocalBranchRaw =
+      (isShallow: string) =>
+      async (args: string[]): Promise<string> => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === "rev-parse --is-shallow-repository") return isShallow;
         if (key === "show-ref --verify refs/heads/feature/existing") return "";
-        if (key === "rev-parse refs/heads/feature/existing") return "1111111";
-        if (key === "rev-parse refs/remotes/origin/feature/existing") return "2222222";
-        if (key === "merge-base refs/heads/feature/existing refs/remotes/origin/feature/existing") return "3333333";
         return "";
-      });
+      };
+
+    const deepenFetchArgs = (depth: number): string[] => [
+      "origin",
+      "--depth",
+      String(depth),
+      "--prune",
+      "--no-tags",
+      "--progress",
+      "+refs/heads/feature/existing:refs/remotes/origin/feature/existing",
+    ];
+
+    // The switch asks the same classifier a sync tick asks, about
+    // 'refs/heads/<branch>' rather than HEAD — the branch is not checked out
+    // yet. It used to run a second, shorter implementation of its own whose
+    // only verdicts were 'can' and 'cannot'.
+    it.each([["diverged"], ["local_ahead"]])(
+      "does not switch to an existing local branch classified as %s",
+      async (relationship) => {
+        const classify = vi.fn().mockResolvedValue(relationship);
+        const service = new CloneSyncService(
+          makeConfig({ branch: "feature/existing" }),
+          buildGitService({ classifyRemoteRelationship: classify }),
+          logger,
+        );
+        (service as unknown as { initialized: boolean }).initialized = true;
+        gitMock.raw.mockImplementation(existingLocalBranchRaw("false"));
+
+        await expect(service.checkoutBranch("feature/existing")).rejects.toMatchObject({
+          constructor: FastForwardError,
+          branchName: "feature/existing",
+        });
+
+        expect(classify).toHaveBeenCalledWith("/tmp/clone-demo", "feature/existing", "refs/heads/feature/existing");
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/existing"]);
+        expect(gitMock.merge).not.toHaveBeenCalled();
+      },
+    );
+
+    // The reported defect: a `depth: N` clone whose remote moved more than N
+    // commits ahead cannot answer from what it fetched, and the switch used to
+    // read that silence as 'cannot fast-forward' for a branch that was a plain
+    // fast-forward.
+    it("deepens a shallow clone that cannot classify the branch, then fast-forwards it", async () => {
+      const classify = vi.fn().mockResolvedValueOnce("indeterminate_shallow").mockResolvedValueOnce("fast_forward");
+      const service = new CloneSyncService(
+        makeConfig({ branch: "feature/existing", depth: 1 }),
+        buildGitService({ classifyRemoteRelationship: classify }),
+        logger,
+      );
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(existingLocalBranchRaw("true"));
+
+      await service.checkoutBranch("feature/existing");
+
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(2, deepenFetchArgs(50));
+      expect(gitMock.fetch).toHaveBeenCalledTimes(2);
+      expect(classify).toHaveBeenCalledTimes(2);
+      expect(gitMock.raw).toHaveBeenCalledWith(["switch", "feature/existing"]);
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/feature/existing", "--ff-only"]);
+    });
+
+    it("reports the exhausted depth budget instead of refusing the branch as un-fast-forwardable", async () => {
+      const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
+      const service = new CloneSyncService(
+        makeConfig({ branch: "feature/existing", depth: 1 }),
+        buildGitService({ classifyRemoteRelationship: classify }),
+        logger,
+      );
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(existingLocalBranchRaw("true"));
 
       await expect(service.checkoutBranch("feature/existing")).rejects.toMatchObject({
-        constructor: FastForwardError,
-        branchName: "feature/existing",
+        constructor: GitOperationError,
+        message: expect.stringContaining("deepening to 1000 commits"),
       });
 
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(2, deepenFetchArgs(50));
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(3, deepenFetchArgs(200));
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(4, deepenFetchArgs(1000));
       expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/existing"]);
       expect(gitMock.merge).not.toHaveBeenCalled();
     });
@@ -1056,18 +1127,7 @@ describe("CloneSyncService", () => {
     it("restores the previous branch when merge fails after switching to an existing local branch", async () => {
       const service = new CloneSyncService(makeConfig({ branch: "feature/existing" }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "false";
-        if (key === "show-ref --verify refs/heads/feature/existing") return "";
-        if (key === "rev-parse refs/heads/feature/existing") return "1111111";
-        if (key === "rev-parse refs/remotes/origin/feature/existing") return "2222222";
-        if (key === "merge-base refs/heads/feature/existing refs/remotes/origin/feature/existing") return "1111111";
-        return "";
-      });
+      gitMock.raw.mockImplementation(existingLocalBranchRaw("false"));
       gitMock.merge.mockRejectedValueOnce(new Error("Not possible to fast-forward"));
 
       await expect(service.checkoutBranch("feature/existing")).rejects.toThrow("Not possible to fast-forward");

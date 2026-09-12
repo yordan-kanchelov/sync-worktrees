@@ -14,7 +14,7 @@ import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { cloneSkipToOutcomeAction } from "./sync-outcome";
 
-import type { GitService } from "./git.service";
+import type { GitService, RemoteRelationship } from "./git.service";
 import type { Logger } from "./logger.service";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
 import type { Config, RepositoryConfig } from "../types";
@@ -48,6 +48,15 @@ const SYMLINK_TREE_MODE = "120000";
 // half's "origin no longer holds it" proof into no proof at all. `:(literal)`
 // makes git match the name exactly.
 const asLiteralPathspec = (candidate: string): string => `:(literal)${candidate}`;
+
+// How far the deepening got, for the two messages that have to say why the
+// relationship is still unknown. `null` is "none was attempted at all", which
+// happens when the configured depth already sits at or above every target.
+function describeDeepenAttempt(deepenedTo: number | null): string {
+  return deepenedTo === null
+    ? "no deepening attempted (configured depth already at or above all deepen targets)"
+    : `deepening to ${deepenedTo} commits`;
+}
 
 interface RemoteTreeEntry {
   readonly mode: string;
@@ -607,6 +616,36 @@ export class CloneSyncService {
     ]);
   }
 
+  // The relationship classification both the sync tick and the branch switch
+  // decide on, with the deepening budget both are allowed to spend on it. A
+  // shallow clone can be too short to answer at all: the `--depth N` fetch cuts
+  // history under a tip the remote moved more than N commits past, so
+  // merge-base has nothing to walk and the classifier says
+  // `indeterminate_shallow` rather than guessing. Each target is fetched in
+  // turn and the first decisive answer wins, so the common case costs one extra
+  // fetch and only a genuinely unrelated history spends the whole budget.
+  //
+  // `localRef` names the local side: the tick asks about HEAD (its default),
+  // the branch switch about a branch it has not switched to yet.
+  private async classifyWithDeepening(
+    clients: MutatingGitClients,
+    worktreeDir: string,
+    branch: string,
+    localRef?: string,
+  ): Promise<{ relationship: RemoteRelationship; deepenedTo: number | null }> {
+    let relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch, localRef);
+    if (relationship !== "indeterminate_shallow") return { relationship, deepenedTo: null };
+
+    let deepenedTo: number | null = null;
+    for (const target of this.getDeepenTargets()) {
+      await this.deepenShallowHistoryToDepth(clients, branch, target);
+      deepenedTo = target;
+      relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch, localRef);
+      if (relationship !== "indeterminate_shallow") break;
+    }
+    return { relationship, deepenedTo };
+  }
+
   async resolveBranch(): Promise<string> {
     if (this.resolvedBranch) return this.resolvedBranch;
     if (this.config.branch) {
@@ -645,28 +684,6 @@ export class CloneSyncService {
     try {
       await git.raw(["show-ref", "--verify", `refs/heads/${branch}`]);
       return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async localBranchCanFastForward(git: SimpleGit, branch: string): Promise<boolean> {
-    const localRef = `refs/heads/${branch}`;
-    const remoteRef = `refs/remotes/origin/${branch}`;
-    let localSha: string;
-    let remoteSha: string;
-    try {
-      localSha = (await git.raw(["rev-parse", localRef])).trim();
-      remoteSha = (await git.raw(["rev-parse", remoteRef])).trim();
-    } catch {
-      return false;
-    }
-
-    if (localSha === remoteSha) return true;
-
-    try {
-      const mergeBase = (await git.raw(["merge-base", localRef, remoteRef])).trim();
-      return mergeBase === localSha;
     } catch {
       return false;
     }
@@ -803,7 +820,32 @@ export class CloneSyncService {
     }
 
     if (await this.localBranchExists(clients.git, branch)) {
-      if (!(await this.localBranchCanFastForward(clients.git, branch))) {
+      // The same classification, and the same deepening budget, a sync tick
+      // spends on this branch — asked about `refs/heads/<branch>` because the
+      // switch has not happened yet. This used to be a second, shorter
+      // implementation that read merge-base's silence on a shallow clone as
+      // 'cannot fast-forward': a `depth: N` clone whose remote moved more than
+      // N commits ahead refused a switch that was a plain fast-forward, and
+      // said so in terms that named the branch rather than the depth that
+      // actually caused it.
+      const { relationship, deepenedTo } = await this.classifyWithDeepening(
+        clients,
+        worktreeDir,
+        branch,
+        `refs/heads/${branch}`,
+      );
+      if (relationship === "indeterminate_shallow") {
+        // Not a FastForwardError: nothing was established about the two
+        // histories, and 'cannot fast-forward' is exactly the wrong thing to
+        // tell a user whose branch may well be fast-forwardable.
+        throw new GitOperationError(
+          "checkout",
+          `cannot tell whether '${branch}' fast-forwards to origin/${branch} in '${this.repoName}': the clone is ` +
+            `shallow and the histories do not meet after ${describeDeepenAttempt(deepenedTo)}. ` +
+            `${deepenedTo === null ? "Remove" : "Remove or raise"} 'depth' in the config, then switch again`,
+        );
+      }
+      if (relationship !== "up_to_date" && relationship !== "fast_forward") {
         throw new FastForwardError(branch);
       }
 
@@ -1676,16 +1718,7 @@ export class CloneSyncService {
       return;
     }
 
-    let relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch);
-    let lastDeepenedTo: number | null = null;
-    if (relationship === "indeterminate_shallow") {
-      for (const target of this.getDeepenTargets()) {
-        await this.deepenShallowHistoryToDepth(clients, branch, target);
-        lastDeepenedTo = target;
-        relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch);
-        if (relationship !== "indeterminate_shallow") break;
-      }
-    }
+    const { relationship, deepenedTo: lastDeepenedTo } = await this.classifyWithDeepening(clients, worktreeDir, branch);
 
     if (relationship === "up_to_date") {
       this.logger.info(`'${this.repoName}' already up to date with origin/${branch}.`);
@@ -1710,10 +1743,7 @@ export class CloneSyncService {
           "info",
         );
       } else if (relationship === "indeterminate_shallow") {
-        const detail =
-          lastDeepenedTo === null
-            ? `no deepening attempted (configured depth already at or above all deepen targets)`
-            : `deepening to ${lastDeepenedTo} commits`;
+        const detail = describeDeepenAttempt(lastDeepenedTo);
         const progressDetail =
           lastDeepenedTo === null
             ? `no deepening attempted (configured depth at/above limits)`
