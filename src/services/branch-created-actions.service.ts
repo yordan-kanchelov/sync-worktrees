@@ -47,7 +47,7 @@ export class BranchCreatedActionsService {
         }
       }
     } catch (error) {
-      logger.error(`Failed to copy files to '${branchName}': ${error}`);
+      logger.error(`Failed to copy files to '${branchName}': ${String(error)}`);
     }
   }
 

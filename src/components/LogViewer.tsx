@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { LogEntry } from "./App";
+import type { LogEntry } from "./App";
 
 export interface LogViewerProps {
   logs: LogEntry[];

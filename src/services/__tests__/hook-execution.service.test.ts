@@ -93,6 +93,21 @@ describe("HookExecutionService", () => {
       expect(stdoutCallback).toHaveBeenCalledWith("feature/test-branch,test-repo,main");
     });
 
+    it("hands hooks the working repository URL, credentials included, via the environment", async () => {
+      const stdoutCallback = vi.fn();
+      const tokenUrl = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+
+      await runAndWait(
+        {
+          onBranchCreated: [nodeScript(`process.stdout.write(process.env['${HOOK_CONSTANTS.ENV_VARS.REPO_URL}'])`)],
+        },
+        { ...mockContext, repoUrl: tokenUrl },
+        { onStdout: stdoutCallback },
+      );
+
+      expect(stdoutCallback).toHaveBeenCalledWith(tokenUrl);
+    });
+
     it.each([
       {
         desc: "two placeholders",

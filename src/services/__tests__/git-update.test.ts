@@ -29,6 +29,7 @@ describe("GitService - Update Methods", () => {
       branch: vi.fn(),
       raw: vi.fn(),
       merge: vi.fn(),
+      revparse: vi.fn(),
       env: vi.fn().mockReturnThis(),
     } as any;
 
@@ -37,119 +38,141 @@ describe("GitService - Update Methods", () => {
     service = new GitService(mockConfig);
   });
 
-  describe("isWorktreeBehind", () => {
-    it("should return true when worktree is behind upstream", async () => {
-      mockGit.branch.mockResolvedValue({
-        current: "feature-branch",
-        all: ["feature-branch", "main"],
-        branches: {},
-        detached: false,
-      } as any);
+  describe("getAheadBehindCounts", () => {
+    // One explicit-ref probe answers the whole classification. The remote ref
+    // comes from the branch argument, never from `<branch>@{upstream}`, so a
+    // worktree whose branch has no upstream configured (trash restore,
+    // create_worktree push:false, the no-tracking fallback) is classified
+    // exactly like a tracking one — and no `git branch` is spawned to find out
+    // which branch is checked out.
+    it("reads both sides of one left-right rev-list against refs/remotes/origin/<branch>", async () => {
+      mockGit.raw.mockResolvedValueOnce("2\t3\n");
 
-      // Mock upstream exists
-      mockGit.raw.mockResolvedValueOnce("origin/feature-branch\n");
-
-      // Mock 3 commits behind
-      mockGit.raw.mockResolvedValueOnce("3\n");
-
-      const result = await service.isWorktreeBehind("/test/worktrees/feature");
-
-      expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", "feature-branch@{upstream}"]);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD..origin/feature-branch"]);
+      await expect(service.getAheadBehindCounts("/test/worktrees/feature", "feature-branch")).resolves.toEqual({
+        ahead: 2,
+        behind: 3,
+      });
+      expect(mockGit.raw).toHaveBeenCalledTimes(1);
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "rev-list",
+        "--left-right",
+        "--count",
+        "HEAD...refs/remotes/origin/feature-branch",
+      ]);
+      expect(mockGit.branch).not.toHaveBeenCalled();
     });
 
-    it("should return false when worktree is up to date", async () => {
-      mockGit.branch.mockResolvedValue({
-        current: "main",
-        all: ["main"],
-        branches: {},
-        detached: false,
-      } as any);
+    it("is up to date when HEAD equals the remote tip", async () => {
+      mockGit.raw.mockResolvedValueOnce("0\t0\n");
 
-      // Mock upstream exists
-      mockGit.raw.mockResolvedValueOnce("origin/main\n");
-
-      // Mock 0 commits behind
-      mockGit.raw.mockResolvedValueOnce("0\n");
-
-      const result = await service.isWorktreeBehind("/test/worktrees/main");
-
-      expect(result).toBe(false);
+      await expect(service.getAheadBehindCounts("/test/worktrees/main", "main")).resolves.toEqual({
+        ahead: 0,
+        behind: 0,
+      });
     });
 
-    it("should return false when no upstream is configured", async () => {
-      mockGit.branch.mockResolvedValue({
-        current: "local-only",
-        all: ["local-only"],
-        branches: {},
-        detached: false,
-      } as any);
+    // Unrelated histories are no error to rev-list: every commit lands on one
+    // side or the other, which is the genuine diverged shape.
+    it("counts unrelated histories on both sides", async () => {
+      mockGit.raw.mockResolvedValueOnce("1\t1\n");
 
-      // Mock no upstream
-      mockGit.raw.mockResolvedValueOnce("");
-
-      const result = await service.isWorktreeBehind("/test/worktrees/local-only");
-
-      expect(result).toBe(false);
-      expect(mockGit.raw).toHaveBeenCalledTimes(1); // Only upstream check, no commit count
+      await expect(service.getAheadBehindCounts("/test/worktrees/feature", "feature-branch")).resolves.toEqual({
+        ahead: 1,
+        behind: 1,
+      });
     });
 
-    it("should return false when error occurs", async () => {
-      mockGit.branch.mockRejectedValue(new Error("Git error"));
+    it("throws when the probe fails instead of answering", async () => {
+      mockGit.raw.mockRejectedValueOnce(
+        new Error("fatal: ambiguous argument 'HEAD...refs/remotes/origin/feature-branch': unknown revision"),
+      );
 
-      const result = await service.isWorktreeBehind("/test/worktrees/error");
+      await expect(service.getAheadBehindCounts("/test/worktrees/feature", "feature-branch")).rejects.toThrow(
+        "unknown revision",
+      );
+    });
 
-      expect(result).toBe(false);
+    it("throws on output it cannot read as an ahead/behind pair", async () => {
+      mockGit.raw.mockResolvedValueOnce("\n");
+
+      await expect(service.getAheadBehindCounts("/test/worktrees/feature", "feature-branch")).rejects.toThrow(
+        /unexpected ahead\/behind output for 'feature-branch' in '\/test\/worktrees\/feature'/,
+      );
     });
   });
 
   describe("updateWorktree", () => {
-    it("should perform fast-forward merge", async () => {
-      mockGit.branch.mockResolvedValue({
-        current: "feature-branch",
-        all: ["feature-branch"],
-        branches: {},
-        detached: false,
-      } as any);
+    // The metadata service is stubbed so its "no metadata yet" fallback does
+    // not read HEAD on its own; what it is told is asserted directly.
+    let updateLastSync: Mock;
+    const stubMetadata = (): void => {
+      updateLastSync = vi.fn().mockResolvedValue(undefined);
+      (service as any).metadataService = { updateLastSyncFromPath: updateLastSync };
+    };
+    beforeEach(stubMetadata);
 
+    it("fast-forwards to origin/<branch> and reports the HEAD move from the shas around the merge", async () => {
+      mockGit.revparse.mockResolvedValueOnce("aaa111\n").mockResolvedValueOnce("bbb222\n");
       mockGit.merge.mockResolvedValue({} as any);
 
-      await service.updateWorktree("/test/worktrees/feature");
+      const result = await service.updateWorktree("/test/worktrees/feature", "feature-branch");
 
       expect(mockGit.merge).toHaveBeenCalledWith(["origin/feature-branch", "--ff-only"]);
+      // The branch comes from the caller's registration: no `git branch` is
+      // spawned just to re-derive a name the caller already holds.
+      expect(mockGit.branch).not.toHaveBeenCalled();
+      expect(result).toEqual({ updated: true, before: "aaa111", after: "bbb222" });
+      // HEAD is read once on each side of the merge.
+      expect(mockGit.revparse).toHaveBeenCalledTimes(2);
+      expect(mockGit.revparse).toHaveBeenCalledWith(["HEAD"]);
+      const [beforeRead, afterRead] = mockGit.revparse.mock.invocationCallOrder;
+      const [mergeCall] = mockGit.merge.mock.invocationCallOrder;
+      expect(beforeRead).toBeLessThan(mergeCall);
+      expect(mergeCall).toBeLessThan(afterRead);
+      // The sync metadata records the commit HEAD moved to.
+      expect(updateLastSync).toHaveBeenCalledWith(
+        expect.any(String),
+        "/test/worktrees/feature",
+        "bbb222",
+        "updated",
+        expect.any(String),
+      );
+    });
+
+    it("reports updated:false with equal shas, and writes no metadata, when the fast-forward had nothing to merge", async () => {
+      mockGit.revparse.mockResolvedValue("ccc333\n");
+      mockGit.merge.mockResolvedValue({} as any);
+
+      const result = await service.updateWorktree("/test/worktrees/feature", "feature-branch");
+
+      expect(mockGit.merge).toHaveBeenCalledWith(["origin/feature-branch", "--ff-only"]);
+      expect(result).toEqual({ updated: false, before: "ccc333", after: "ccc333" });
+      expect(updateLastSync).not.toHaveBeenCalled();
     });
 
     it("should use LFS skip when configured", async () => {
       mockConfig.skipLfs = true;
       service = new GitService(mockConfig);
+      stubMetadata();
 
-      mockGit.branch.mockResolvedValue({
-        current: "main",
-        all: ["main"],
-        branches: {},
-        detached: false,
-      } as any);
-
+      mockGit.revparse.mockResolvedValueOnce("aaa111\n").mockResolvedValueOnce("bbb222\n");
       mockGit.merge.mockResolvedValue({} as any);
 
-      await service.updateWorktree("/test/worktrees/main");
+      await service.updateWorktree("/test/worktrees/main", "main");
 
       expect(mockGit.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
       expect(mockGit.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
 
     it("should throw error when fast-forward merge fails", async () => {
-      mockGit.branch.mockResolvedValue({
-        current: "diverged-branch",
-        all: ["diverged-branch"],
-        branches: {},
-        detached: false,
-      } as any);
-
+      mockGit.revparse.mockResolvedValue("aaa111\n");
       mockGit.merge.mockRejectedValue(new Error("Not possible to fast-forward"));
 
-      await expect(service.updateWorktree("/test/worktrees/diverged")).rejects.toThrow("Not possible to fast-forward");
+      await expect(service.updateWorktree("/test/worktrees/diverged", "diverged-branch")).rejects.toThrow(
+        "Not possible to fast-forward",
+      );
+      // HEAD was read before the merge only; nothing is reported for a failed one.
+      expect(mockGit.revparse).toHaveBeenCalledTimes(1);
     });
   });
 

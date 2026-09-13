@@ -150,14 +150,12 @@ export class TrashReaperService {
       }
 
       if (entry.manifest.pinRef) {
-        await this.gitService
-          .deleteRef(entry.manifest.pinRef)
-          .catch((error: unknown) => {
-            result.errors.push(`${entry.manifest.pinRef}: ${getErrorMessage(error)}`);
-            this.logger.warn(
-              `⚠️ Trash reaper: failed to delete pin ref '${entry.manifest.pinRef}': ${getErrorMessage(error)}`,
-            );
-          });
+        await this.gitService.deleteRef(entry.manifest.pinRef).catch((error: unknown) => {
+          result.errors.push(`${entry.manifest.pinRef}: ${getErrorMessage(error)}`);
+          this.logger.warn(
+            `⚠️ Trash reaper: failed to delete pin ref '${entry.manifest.pinRef}': ${getErrorMessage(error)}`,
+          );
+        });
       }
 
       reapedIds.add(entry.manifest.id);

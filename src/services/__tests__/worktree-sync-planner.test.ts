@@ -82,6 +82,63 @@ describe("worktree sync planner", () => {
 
       expect(actions).toEqual([{ kind: "check-prune", branch: "feature/stale", path: wtPath("feature/stale") }]);
     });
+
+    // `git worktree remove` refuses a locked worktree, so planning it as a
+    // prune candidate would spend a status probe, a size scan and two renames
+    // on it every tick only to be refused.
+    it("plans a locked worktree as a deliberate skip instead of a prune check", () => {
+      const actions = planPruneActions(
+        makeInventory({
+          remoteBranches: ["main"],
+          existingWorktrees: [
+            { path: wtPath("feature/locked"), branch: "feature/locked", locked: true, lockReason: "demo box" },
+            { path: wtPath("feature/stale"), branch: "feature/stale" },
+          ],
+        }),
+      );
+
+      expect(actions).toEqual([
+        {
+          kind: "skip-prune",
+          branch: "feature/locked",
+          path: wtPath("feature/locked"),
+          reason: "locked",
+          lockReason: "demo box",
+        },
+        { kind: "check-prune", branch: "feature/stale", path: wtPath("feature/stale") },
+      ]);
+    });
+
+    it("plans a lock without a reason as a skip that carries no reason", () => {
+      const actions = planPruneActions(
+        makeInventory({
+          remoteBranches: ["main"],
+          existingWorktrees: [{ path: wtPath("feature/locked"), branch: "feature/locked", locked: true }],
+        }),
+      );
+
+      expect(actions).toEqual([
+        { kind: "skip-prune", branch: "feature/locked", path: wtPath("feature/locked"), reason: "locked" },
+      ]);
+    });
+
+    // The prune plan is only ever as good as the inventory it reads: names the
+    // remote listing loses (a branch ending in "/HEAD", one carrying "|", one
+    // literally named "origin") used to arrive here as unknown branches and be
+    // trashed. Whatever their shape, a branch that is on the remote is never a
+    // prune candidate.
+    it("never plans a worktree whose branch is still on the remote, whatever its name", () => {
+      const branches = ["feature/HEAD", "feature|wip", "origin", "release/2.0"];
+
+      const actions = planPruneActions(
+        makeInventory({
+          remoteBranches: ["main", ...branches],
+          existingWorktrees: branches.map((branch) => ({ path: wtPath(branch), branch })),
+        }),
+      );
+
+      expect(actions).toEqual([]);
+    });
   });
 
   describe("update planning", () => {

@@ -7,8 +7,8 @@
  * for automatic Git worktree synchronization.
  */
 
-import os from 'os';
-import path from 'path';
+import os from "os";
+import path from "path";
 
 /** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
 const config = {
@@ -24,6 +24,16 @@ const config = {
     // skipLfs: true,  // Skip downloading large files tracked by Git LFS
     // Auto-update worktrees that are behind upstream (optional)
     // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
+    // Inactivity timeouts for the git commands that talk to the remote
+    // (fetch, push, ls-remote, remote set-head) and for the clone-sized ones:
+    // the initial clone, plus the `fetch --unshallow` that pulls a clone-mode
+    // repository's full history once `depth` is removed. Each one kills its
+    // command when no output arrives for that long, so it ends a stalled
+    // connection instead of hanging the sync forever. Local commands (worktree
+    // add, merge, checkout, status) are never killed this way — a large
+    // checkout is silent for minutes by design. Set 0 to disable.
+    // fetchTimeoutMs: 300000,   // Default: 300000 (5 min)
+    // cloneTimeoutMs: 900000,   // Default: 900000 (15 min); raise for huge first clones and unshallows
     // Periodic `git gc` of the object store (optional, applies to both modes).
     // Reclaims unreachable objects and consolidates packs. Runs at the tail of a
     // successful sync, throttled by `interval`, under the repo operation lock.
@@ -34,15 +44,15 @@ const config = {
     //                         // 2-week grace and prunes recently-unreachable objects now).
     // },
   },
-  
+
   // Retry configuration for handling transient errors (optional)
   retry: {
-    maxAttempts: 'unlimited', // Maximum retry attempts ('unlimited' or number)
-    maxLfsRetries: 2,         // Maximum retry attempts for LFS errors (default: 2)
-    initialDelayMs: 1000,     // Initial delay: 1 second
-    maxDelayMs: 600000,       // Maximum delay: 10 minutes
-    backoffMultiplier: 2,     // Doubles delay each retry (1s, 2s, 4s, 8s...)
-    jitterMs: 500             // Random jitter (0-500ms) to prevent thundering herd (default: 0)
+    maxAttempts: "unlimited", // Maximum retry attempts ('unlimited' or number)
+    maxLfsRetries: 2, // Maximum retry attempts for LFS errors (default: 2)
+    initialDelayMs: 1000, // Initial delay: 1 second
+    maxDelayMs: 600000, // Maximum delay: 10 minutes
+    backoffMultiplier: 2, // Doubles delay each retry (1s, 2s, 4s, 8s...)
+    jitterMs: 500, // Random jitter (0-500ms) to prevent thundering herd (default: 0)
   },
 
   // Simple retry presets (uncomment one):
@@ -53,63 +63,79 @@ const config = {
   // retry: { initialDelayMs: 5000 },              // Start with 5 second delay
   // retry: { jitterMs: 1000 },                    // Add up to 1s random jitter for concurrent ops
 
-  // Parallelism configuration for performance tuning (optional)
+  // Parallelism configuration for performance tuning (optional).
+  // Every limit below counts git processes. This block may also go under
+  // `defaults:` or on a single repository, which override it in that order.
   parallelism: {
-    maxRepositories: 2,       // Max concurrent repositories to sync (default: 2)
-    maxWorktreeCreation: 1,   // Max concurrent worktree creations (default: 1 - KEEP LOW!)
-    maxWorktreeUpdates: 3,    // Max concurrent worktree updates (default: 3)
-    maxWorktreeRemoval: 3,    // Max concurrent worktree removals (default: 3)
-    maxStatusChecks: 20       // Max concurrent status checks (default: 20)
+    maxRepositories: 2, // Max concurrent repositories to sync (default: 2)
+    maxWorktreeCreation: 1, // Max concurrent worktree creations (default: 1 - KEEP LOW!)
+    maxWorktreeUpdates: 3, // Max concurrent worktree updates (default: 3)
+    maxWorktreeRemoval: 3, // Max concurrent worktree removals (default: 3)
+    maxStatusChecks: 20, // Max concurrent git processes for status probes (default: 20)
+    maxBranchFetches: 3, // Max concurrent per-branch fetches, bulk-fetch fallback (default: 3)
   },
 
   // Performance tuning tips:
   // - maxWorktreeCreation: Keep at 1 to avoid Git lock contention issues
-  // - maxStatusChecks: Safe to increase (20-50) since they're read-only
-  // - maxWorktreeUpdates & maxWorktreeRemoval: Can safely increase to 5-10 on fast systems
+  // - maxStatusChecks: Safe to increase (20-50) since they're read-only. One
+  //   status check of a worktree runs up to nine git commands (status, branch,
+  //   branch -r, stash list and submodule status at once, then rev-parse and
+  //   rev-list probes); they all share this one budget, so it caps git
+  //   processes, not worktrees. Git's own children are extra:
+  //   `git submodule status` runs a helper script and a child per submodule,
+  //   about 3 processes per call on an 8-submodule superproject.
+  // - maxWorktreeUpdates: Can safely increase to 5-10 on fast systems
+  // - maxWorktreeCreation, maxWorktreeRemoval and maxBranchFetches each run
+  //   their main git command through one shared client that stops at 5
+  //   concurrent processes, so raising them far above 5 buys little: fetches
+  //   stop at 5 outright, while creation and removal grow a little past it for
+  //   the few commands they run on each worktree's own client
   // - maxRepositories: Higher values speed up multi-repo syncs but use more resources
-  // - Total concurrent operations = maxRepositories × per-repo limits (must be ≤ 100)
+  // - A repository's phases run one after another (create, then prune, then
+  //   update), so peak git processes = maxRepositories × the widest single
+  //   limit — never their sum. That peak must be ≤ 100.
   // - On powerful machines with SSDs, you can increase these values for better performance
   // - Use jitterMs in retry config to prevent all concurrent operations from retrying at once
-  // - Example safe config: maxRepositories=2, maxStatusChecks=20 = ~54 total operations
-  
+  // - Example safe config: maxRepositories=2, maxStatusChecks=20 = a peak of 40 git processes
+
   // Array of repository configurations
   repositories: [
     {
       // Unique name for this repository configuration
       name: "my-main-project",
-      
+
       // Git repository URL (required)
       repoUrl: "https://github.com/user/my-main-project.git",
-      
+
       // Directory where worktrees will be created
       worktreeDir: path.join(os.homedir(), "projects", "my-main-project-worktrees"),
-      
+
       // Override default schedule for this repo (every 15 minutes)
-      cronSchedule: "*/15 * * * *"
+      cronSchedule: "*/15 * * * *",
     },
-    
+
     {
       name: "work-project",
-      
+
       // Using environment variables for sensitive data
       repoUrl: process.env.WORK_REPO_URL || "git@github.com:company/work-project.git",
-      
+
       // Relative paths are resolved from the config file location
       worktreeDir: "./worktrees/work-project",
-      
+
       // Only sync during business hours on weekdays
-      cronSchedule: "0 9-17 * * 1-5"
+      cronSchedule: "0 9-17 * * 1-5",
     },
-    
+
     {
       name: "documentation",
-      
+
       repoUrl: "https://github.com/user/documentation.git",
       worktreeDir: "/home/user/docs/docs-worktrees",
-      
+
       // Uses global defaults for cronSchedule and runOnce
     },
-    
+
     {
       name: "experimental-features",
 
@@ -124,43 +150,43 @@ const config = {
 
       // Repository-specific retry configuration (overrides global)
       retry: {
-        maxAttempts: 10,        // Try 10 times for experimental repo
-        initialDelayMs: 2000    // Start with 2 second delay
+        maxAttempts: 10, // Try 10 times for experimental repo
+        initialDelayMs: 2000, // Start with 2 second delay
       },
 
       // Repository-specific parallelism configuration (overrides global)
       parallelism: {
-        maxStatusChecks: 50,    // This repo has many branches, check them faster
-        maxWorktreeUpdates: 5   // Can handle more concurrent updates
-      }
+        maxStatusChecks: 50, // This repo has many branches, check them faster
+        maxWorktreeUpdates: 5, // Can handle more concurrent updates
+      },
     },
-    
+
     {
       name: "active-development",
-      
+
       repoUrl: "https://github.com/user/active-dev.git",
       worktreeDir: "./worktrees/active-dev",
-      
+
       // Only sync branches that have been active in the last 2 weeks
       branchMaxAge: "14d",
-      
+
       // Check for updates every 30 minutes
-      cronSchedule: "*/30 * * * *"
+      cronSchedule: "*/30 * * * *",
     },
-    
+
     {
       name: "legacy-project",
-      
+
       repoUrl: "https://github.com/user/legacy.git",
       worktreeDir: "./worktrees/legacy",
-      
+
       // For legacy projects, only sync branches active in last 6 months
       branchMaxAge: "6m",
-      
+
       // Check less frequently - once per day
-      cronSchedule: "0 0 * * *"
+      cronSchedule: "0 0 * * *",
     },
-    
+
     {
       name: "filtered-branches",
 
@@ -174,7 +200,7 @@ const config = {
       branchExclude: ["feature/wip-*"],
 
       // Can combine with age filtering - name filter runs first
-      branchMaxAge: "30d"
+      branchMaxAge: "30d",
     },
 
     {
@@ -187,7 +213,7 @@ const config = {
       skipLfs: true,
 
       // Still check regularly for code changes
-      cronSchedule: "0 * * * *"
+      cronSchedule: "0 * * * *",
     },
 
     // Sparse-checkout: clone only a subset of folders from a monorepo.
@@ -199,8 +225,8 @@ const config = {
       worktreeDir: "/Users/me/game-clients/roulette",
       sparseCheckout: {
         // Cone mode (default): pass folder names; fast and recommended
-        include: ["game-client"]
-      }
+        include: ["game-client"],
+      },
     },
     {
       name: "monorepo-autocue",
@@ -220,10 +246,10 @@ const config = {
         // No-cone mode: gitignore-style patterns, supports !-negation.
         // Setting `exclude` auto-promotes mode to "no-cone".
         include: ["/*"],
-        exclude: ["docs", "vendor"]
-      }
+        exclude: ["docs", "vendor"],
+      },
     },
-    
+
     {
       name: "read-only-reference",
 
@@ -234,7 +260,7 @@ const config = {
       updateExistingWorktrees: false,
 
       // Check less frequently since we won't update
-      cronSchedule: "0 0 * * 0"  // Once per week
+      cronSchedule: "0 0 * * 0", // Once per week
     },
 
     {
@@ -269,8 +295,8 @@ const config = {
 
           // Run a custom setup script using environment variables
           // "cd $SYNC_WORKTREES_WORKTREE_PATH && ./setup-dev.sh"
-        ]
-      }
+        ],
+      },
     },
 
     // Clone mode: one checked-out branch directly into worktreeDir (no worktreeDir/<branch> subfolder).
@@ -319,8 +345,8 @@ const config = {
       worktreeDir: "./slots/communicator-base",
       mode: "clone",
       // No branch → resolves to remote HEAD at clone time.
-    }
-  ]
+    },
+  ],
 };
 
 export default config;

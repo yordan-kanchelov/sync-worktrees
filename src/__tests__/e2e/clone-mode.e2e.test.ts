@@ -394,6 +394,64 @@ export default {
     expect(localHead).toBe(newRemoteHead);
   }, 120000);
 
+  // A directory whose `.git` is a gitdir pointer (a linked worktree, or a
+  // submodule) shares the config and refs of the repository that owns it, so
+  // clone mode's refspec narrowing and stale-ref deletion would land in THAT
+  // repository — and repeat on every tick.
+  it("refuses a linked worktree and leaves the parent repository's refspec and refs untouched", async () => {
+    const remoteBare = await createLocalRemote("linked-worktree");
+    const seedDir = path.join(tmpBase, "linked-worktree-seed");
+    execSync(`git -C "${seedDir}" switch -c "feat/other"`, { encoding: "utf-8" });
+    await fs.writeFile(path.join(seedDir, "other.txt"), "other\n");
+    execSync(`git -C "${seedDir}" add other.txt`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" commit -m "Add other"`, { encoding: "utf-8" });
+    execSync(`git -C "${seedDir}" push origin "feat/other"`, { encoding: "utf-8" });
+
+    const baseDir = path.join(tmpBase, "linked-worktree");
+    const primaryDir = path.join(baseDir, "primary");
+    const linkedDir = path.join(baseDir, "linked");
+    await fs.mkdir(baseDir, { recursive: true });
+    execSync(`git clone "file://${remoteBare}" "${primaryDir}"`, { encoding: "utf-8" });
+    // Frees 'main' for the linked worktree — a branch can only be checked out once.
+    execSync(`git -C "${primaryDir}" switch "feat/other"`, { encoding: "utf-8" });
+    execSync(`git -C "${primaryDir}" worktree add "${linkedDir}" main`, { encoding: "utf-8" });
+
+    const readPrimary = (): { refspec: string; refs: string } => ({
+      refspec: execSync(`git -C "${primaryDir}" config --get-all remote.origin.fetch`, { encoding: "utf-8" }).trim(),
+      refs: execSync(`git -C "${primaryDir}" for-each-ref --format="%(refname)" refs/remotes/origin`, {
+        encoding: "utf-8",
+      }).trim(),
+    });
+    const before = readPrimary();
+    // Without a second remote-tracking ref to lose, the assertions below would
+    // pass even with the guard removed.
+    expect(before.refs).toContain("refs/remotes/origin/feat/other");
+    expect(before.refspec).toBe("+refs/heads/*:refs/remotes/origin/*");
+    const gitFile = await fs.readFile(path.join(linkedDir, ".git"), "utf-8");
+    expect(gitFile).toMatch(/^gitdir: /);
+
+    const configPath = await writeSingleCloneConfig("linked", `file://${remoteBare}`, linkedDir, "main");
+
+    let status: number | undefined = 0;
+    let output: string;
+    try {
+      output = execSync(`node "${cliPath}" --config "${configPath}"`, {
+        encoding: "utf-8",
+        timeout: 60000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      const err = error as { status?: number; stderr?: Buffer | string; stdout?: Buffer | string };
+      status = err.status;
+      output = String(err.stdout ?? "") + String(err.stderr ?? "");
+    }
+
+    expect(status).not.toBe(0);
+    expect(output).toContain("CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT");
+    expect(output).toContain(path.join(primaryDir, ".git"));
+    expect(readPrimary()).toEqual(before);
+  }, 60000);
+
   it("rejects clone mode combined with branchInclude (validation error)", async () => {
     const configPath = path.join(tmpBase, "bad-config.config.js");
     const configContent = `

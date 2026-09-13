@@ -127,7 +127,7 @@ Install the sync-worktrees MCP server with your client.
 }
 ```
 
-If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require a loaded config (or call `load_config` at runtime).
+If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require the repository to be listed in a loaded config (or call `load_config` at runtime); they stay unavailable for auto-detected repositories no matter which other tools have run.
 
 <details>
 <summary>Claude Code</summary>
@@ -264,8 +264,8 @@ Open `Settings` → `AI` → `Manage MCP Servers` → `+ Add` (see [Warp MCP doc
 | `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
 | `get_worktree_status`    | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress).                                                                                                                                 |
 | `create_worktree`        | Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`.                                                                                  |
-| `update_worktree`        | Fast-forward one worktree to match upstream.                                                                                                                                                                                      |
-| `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications.                                                                                                                                  |
+| `update_worktree`        | Fast-forward one worktree to match upstream. `updated` is false when there was nothing to merge.                                                                                                                                  |
+| `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. `success` is false (with `failed`/`failures` listed) when any action failed, matching the CLI's exit code 1.                     |
 | `initialize`             | Clone the bare repo and create the main worktree. Requires config. Streams progress.                                                                                                                                              |
 | `load_config`            | Load or reload a config file at runtime.                                                                                                                                                                                          |
 | `set_current_repository` | Select the active repo when multiple are configured.                                                                                                                                                                              |
@@ -275,7 +275,7 @@ All tools that target a single repo accept an optional `repoName`. When omitted,
 ### Safety
 
 - The MCP surface exposes no removal or trash operations — an agent cannot delete a worktree or touch the trash through it. Removal happens via sync's own safety-gated pruning or manual git commands.
-- `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk.
+- `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk, and errors with code `TARGET_EXISTS` when its target directory already exists but is not a registered worktree — it never moves an existing directory to trash or deletes it (clean the path up manually or let `sync` reconcile it).
 - Branches created by sync-worktrees use `--no-track` first, then publish with `git push -u origin <branch>`, so they do not inherit `origin/main` as their upstream.
 - Path-targeted tools verify the supplied path is a registered worktree of the selected repository.
 
@@ -403,7 +403,16 @@ export default config;
 Notes:
 
 - `bareRepoDir` defaults to `.bare/<repo-name>` if not specified.
+- If the bare repository at `bareRepoDir` already exists, its `origin` must be `repoUrl` (compared ignoring `.git`, a trailing slash and scheme/host case); otherwise initialization fails naming both URLs. Run `git -C <bareRepoDir> remote set-url origin <repoUrl>` or point `bareRepoDir` at a fresh directory.
+- Every entry needs its own directories: two entries that resolve to the same `worktreeDir` (in either mode) or the same `bareRepoDir`, or whose `worktreeDir` sits at or inside another entry's `bareRepoDir` (or vice versa), are rejected when the config loads, naming both entries and the path. A `worktreeDir` nested inside another entry's `worktreeDir` loads with a warning.
 - Repository-specific settings override `defaults`.
+
+### Authentication
+
+sync-worktrees runs every git command non-interactively — as a daemon, a cron tick, the MCP server or the TUI, nobody can answer a prompt — so it sets `GIT_TERMINAL_PROMPT=0` — unless you have exported that variable yourself, which is left alone so `--runOnce` in a terminal can still prompt. Credentials must come from a source that needs no prompt:
+
+- **HTTPS** — a git credential helper (`git config --global credential.helper <helper>`, or your platform's keychain / credential manager) that already holds credentials for the remote. An askpass program (`GIT_ASKPASS`, `core.askPass`) keeps working. A remote that would prompt fails within a second with git's message plus a hint naming the fix, and that failure is not retried.
+- **SSH** — a key loaded into `ssh-agent` (or one without a passphrase) and the host already present in `~/.ssh/known_hosts`. A key the remote rejects or a host key that does not match fails at once with a hint and is not retried. Known limitation: `GIT_TERMINAL_PROMPT=0` covers git's own prompts only; ssh reads a key passphrase or an unknown-host confirmation from the terminal itself, so a passphrase-protected key without an agent or a host missing from `known_hosts` still blocks until the fetch inactivity timeout (unchanged from earlier releases). sync-worktrees does not set `GIT_SSH_COMMAND`, because git gives it precedence over the `core.sshCommand` config key; a `core.sshCommand`-aware `BatchMode` wrapper is a follow-up.
 
 ### Clone mode
 
@@ -483,6 +492,14 @@ defaults: {
 - **`aggressive: false`** (default) runs plain `git gc`, which honors Git's two-week grace period — recently-unreachable objects (and anything reachable from a branch, tag, stash, or reflog) are always preserved.
 - **`aggressive: true`** runs `git gc --prune=now`, pruning recently-unreachable objects immediately. Use it only for explicit reclamation; the default is the safe choice. The repository operation lock only serializes sync-worktrees' own operations — `--prune=now` can still race manual `git` work happening in the checkout outside the daemon, so avoid enabling it on repositories you also edit by hand concurrently.
 - A maintenance failure is logged as a warning and never fails the sync. The attempt is still timestamped, so a broken `gc` is throttled instead of retried every tick.
+
+### Locking
+
+Every sync runs under a cross-process repository lock, so a cron daemon, a `--runOnce` from a shell and the MCP server never operate on the same checkout at once. A run that finds the lock held is skipped with a warning; a run that cannot create or take the lock fails and names the path and errno.
+
+The lock file lives next to the checkout, in `<parent of worktreeDir>/.sync-worktrees-locks/<hash>.lock`, with `worktreeDir` resolved through symlinks first. Nothing in the environment feeds into that path: a daemon started by systemd, launchd or cron with a minimal environment, a shell whose dotfiles export `XDG_STATE_HOME`, and `sudo` with or without `-E` all contend for the same file as long as they point at the same `worktreeDir`. Worktree-mode repositories additionally lock the bare repository directory. Locks are never placed under `~/.cache` or inside `worktreeDir` itself.
+
+`SYNC_WORKTREES_LOCK_DIR` moves the lock files to another directory — for a checkout whose parent directory is read-only, for instance. It is an escape hatch, not a preference: give it the same absolute path in every process that syncs the same `worktreeDir`, otherwise those processes stop contending for one lock.
 
 ### Branch filtering
 
@@ -591,6 +608,27 @@ Notes:
 - A failure to move a directory into trash (e.g. trash on a different filesystem) skips the removal entirely — the worktree stays in place.
 - Worktrees containing submodules are preserved byte-for-byte; nested submodule state is restored as-is but submodules are not re-registered automatically.
 
+### Parallelism
+
+`parallelism` bounds concurrent **git processes**, not worktrees. It can sit at the top level (as below), under `defaults`, or on a single repository — each layer overrides the one before it:
+
+```javascript
+parallelism: {
+  maxRepositories: 2,      // repositories synced at once
+  maxWorktreeCreation: 1,  // keep at 1 — git's worktree.lock makes parallel creation unsafe
+  maxWorktreeUpdates: 3,
+  maxWorktreeRemoval: 3,
+  maxStatusChecks: 20,     // git processes spent on read-only status probes
+  maxBranchFetches: 3,     // per-branch fetches, used only as a bulk-fetch fallback
+}
+```
+
+One status check of a worktree runs up to nine git commands: `status`, `branch`, `branch -r`, `stash list` and `submodule status` all at once, then up to four `rev-parse`/`rev-list` probes together. All of them share a single `maxStatusChecks`-wide budget per repository, so a prune of 200 stale worktrees still peaks at `maxStatusChecks` git processes.
+
+Two things sit outside that count. Git spawns children of its own — `git submodule status` runs a helper script and a child per submodule, measured on git 2.43 at roughly 1.5 git processes and 3 processes in total per call on an eight-submodule superproject — so a budget spent entirely on superproject probes costs about three times its size. And `maxWorktreeCreation`, `maxWorktreeRemoval` and `maxBranchFetches` each run their main git command through a single shared client whose scheduler stops at 5, so setting them higher than 5 buys little: the per-branch fetch fallback stops at 5 outright, while creation and removal grow a little past it for the few commands each unit runs on the worktree's own client. That fetch fallback only runs when a bulk fetch fails on LFS errors, and is left out of the peak entirely, so a config the loader reports as well inside the limit can still spawn about five fetches per repository if every repository hits the fallback at once.
+
+A repository's phases run one after another — create, then prune, then update — so the whole run peaks at `maxRepositories × the widest single limit`, never their sum. The config loader rejects a config whose peak exceeds 100 git processes and names the setting to lower. The defaults peak at 2 × 20 = 40.
+
 ### Retry and LFS
 
 The tool retries network errors (timeouts, DNS failures, access issues) and filesystem race conditions automatically:
@@ -607,7 +645,9 @@ retry: {
 } // cap retry delay at 1 minute
 ```
 
-For repositories with Git LFS issues or large files you don't need, set `skipLfs: true` in `defaults` or per repository. The tool also retries LFS-specific failures with LFS disabled (configurable via `retry.maxLfsRetries`).
+Two inactivity timeouts guard the git commands that talk to the remote: `fetchTimeoutMs` (default 5 minutes — `fetch`, `push`, `ls-remote`, `remote set-head`) and `cloneTimeoutMs` (default 15 minutes — the initial clone, and the `fetch --unshallow` that pulls a clone-mode repository's full history after `depth` is removed, which moves the same bytes a clone would). Each kills its command when no output arrives inside the window, so a stalled connection ends the attempt instead of hanging the sync forever; `0` disables one. Local commands never carry them: `git worktree add` prints nothing while it checks out a large repository, and killing it there would fail a creation that only needed more time. Both knobs are documented in [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js).
+
+For repositories with Git LFS issues or large files you don't need, set `skipLfs: true` in `defaults` or per repository. The tool also falls back to LFS-free operation on LFS-specific failures: a worktree checkout that fails its smudge filter (`git worktree add`) is retried once with LFS downloads disabled for the rest of that sync, and an LFS failure that ends the whole sync attempt is retried the same way up to `retry.maxLfsRetries` times.
 
 ### Hooks and file copying
 

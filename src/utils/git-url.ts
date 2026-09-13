@@ -40,7 +40,36 @@ export function extractRepoNameFromUrl(gitUrl: string): string {
     return fileMatch[1];
   }
 
-  throw new Error(`Invalid Git URL format: ${gitUrl}`);
+  throw new Error(`Invalid Git URL format: ${redactSecretsInText(gitUrl)}`);
+}
+
+// `scheme://userinfo@` — the userinfo part of an RFC 3986 URL. Only the
+// prefix is matched, so the host (IPv6 literals and ports included) and the
+// path are left as they are. Userinfo cannot contain `/`, `@` or whitespace,
+// which is what keeps a match from running past its own URL.
+// The lookbehind anchors the scheme so long runs of scheme characters without "://" stay linear.
+const URL_USERINFO_PATTERN = /(?<![a-zA-Z0-9+.-])([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^\s/@]+)@/g;
+const REDACTED_USERINFO = "***";
+
+/**
+ * Strips the credentials from a repository URL for display. `https://user:token@host/repo.git`
+ * becomes `https://***@host/repo.git`; a bare username is redacted too because
+ * forges accept access tokens in the username position. scp-style remotes
+ * (`git@host:path`) and local paths carry no secret and are returned unchanged.
+ * Never feed the result to git — it is for logs, messages and API responses only.
+ */
+export function redactRepoUrl(url: string): string {
+  return url.replace(/^(\s*[a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^\s/@]+)@/, `$1${REDACTED_USERINFO}@`);
+}
+
+/**
+ * Scrubs every `scheme://userinfo@` occurrence inside free text (git's own
+ * error output, log lines, messages that embed one or more URLs), so a
+ * credential-bearing remote URL never reaches a terminal or an API client.
+ * Text without such URLs is returned unchanged.
+ */
+export function redactSecretsInText(text: string): string {
+  return text.replace(URL_USERINFO_PATTERN, `$1${REDACTED_USERINFO}@`);
 }
 
 /**

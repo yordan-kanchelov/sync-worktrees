@@ -68,7 +68,7 @@ describe("WorktreeSyncService retry outcomes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    mocks.acquire.mockResolvedValue(mocks.release);
+    mocks.acquire.mockResolvedValue({ acquired: true, release: mocks.release });
     mocks.release.mockResolvedValue(undefined);
     mocks.retry.mockImplementation(async (fn: () => Promise<void>, options: { onRetry?: (...args: any[]) => void }) => {
       try {

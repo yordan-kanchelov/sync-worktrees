@@ -3,13 +3,16 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { ENV_CONSTANTS, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
+import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, TrashOperationError } from "../errors";
+import { withGitAuthHint } from "../utils/git-auth-error";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
+import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { retry } from "../utils/retry";
 import { PhaseTimer, Timer, formatTimingTable } from "../utils/timing";
+import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { type CloneSkipReason, CloneSyncService } from "./clone-sync.service";
 import { GitMaintenanceService } from "./git-maintenance.service";
@@ -26,20 +29,41 @@ import { TrashService } from "./trash.service";
 import { WorktreeModeSyncRunner } from "./worktree-mode-sync-runner";
 
 import type { ProgressEvent, ProgressListener } from "./progress-emitter";
-import type { RepoLockRelease } from "./repo-operation-lock";
 import type { TrashEntry, TrashManifest } from "./trash.service";
-import type { Config, ForceCleanPreview, ForceCleanResult, SyncOutcome, SyncResult } from "../types";
+import type {
+  Config,
+  ForceCleanPreview,
+  ForceCleanResult,
+  RepoOperationNotStarted,
+  SyncOutcome,
+  SyncResult,
+} from "../types";
 import type { LfsErrorContext } from "../utils/retry";
 
 export type { ProgressEvent, ProgressListener } from "./progress-emitter";
-export type { SyncOutcome, SyncOutcomeAction, SyncOutcomeCounts, SyncResult } from "../types";
+export type {
+  RepoLockUnavailable,
+  RepoOperationNotStarted,
+  SyncOutcome,
+  SyncOutcomeAction,
+  SyncOutcomeCounts,
+  SyncResult,
+} from "../types";
 
-export type ExclusiveRepoOperationResult<T> =
-  | { started: true; value: T }
-  | {
-      started: false;
-      reason: "in_progress" | "locked";
-    };
+export type ExclusiveRepoOperationResult<T> = { started: true; value: T } | RepoOperationNotStarted;
+
+// Why an operation did not start, for callers that turn that into an error.
+// Only `lock_unavailable` names a cause; the other two are contention.
+function describeNotStarted(result: RepoOperationNotStarted): string {
+  switch (result.reason) {
+    case "in_progress":
+      return "another repository operation is in progress";
+    case "locked":
+      return "another process holds the repository lock";
+    case "lock_unavailable":
+      return formatRepoLockUnavailable(result);
+  }
+}
 
 export class WorktreeSyncService {
   private gitService: GitService;
@@ -144,10 +168,24 @@ export class WorktreeSyncService {
     await this.cloneSyncService.checkoutBranch(branchName, options);
   }
 
+  // Clone mode's answer to GitService.createBranch + pushBranch, which have no
+  // bare repository to run in here. The TUI's branch wizard calls this and then
+  // checkoutBranch(branchName, { allowConfigDrift: true }) to switch to it.
+  async createAndPushBranch(baseBranch: string, branchName: string): Promise<void> {
+    if (!this.cloneSyncService) {
+      throw new ConfigError("createAndPushBranch is only available for clone-mode repositories", "CLONE_MODE_REQUIRED");
+    }
+    await this.cloneSyncService.createAndPushBranch(baseBranch, branchName);
+  }
+
   async initialize(): Promise<void> {
     if (this.isInitialized()) return;
     const result = await this.runExclusiveRepoOperation(() => this.initializeUnlocked());
     if (!result.started) {
+      if (result.reason === "lock_unavailable") {
+        this.logger.error(`❌ Initialize not run: ${formatRepoLockUnavailable(result)}`);
+        return;
+      }
       const reason = result.reason === "in_progress" ? "operation in progress" : "another process holds the lock";
       this.logger.warn(`⚠️  Initialize skipped: ${reason}`);
     }
@@ -155,10 +193,17 @@ export class WorktreeSyncService {
 
   async initializeUnlocked(outcome?: SyncOutcomeAccumulator): Promise<void> {
     this.emitProgress({ phase: "initialize", message: "Initializing repository" });
-    if (this.cloneSyncService) {
-      await this.cloneSyncService.initialize(outcome);
-    } else {
-      await this.gitService.initialize();
+    try {
+      if (this.cloneSyncService) {
+        await this.cloneSyncService.initialize(outcome);
+      } else {
+        await this.gitService.initialize();
+      }
+    } catch (error) {
+      // Every consumer (run-once, cron, the TUI, the MCP server) reports the
+      // rejection's message, so a credential / ssh failure gets its remedy
+      // hint attached here, once, on the way out.
+      throw withGitAuthHint(error);
     }
     this.emitProgress({ phase: "initialize", message: "Repository initialized" });
   }
@@ -192,10 +237,7 @@ export class WorktreeSyncService {
   async restoreFromTrash(id: string): Promise<TrashManifest> {
     const result = await this.runExclusiveRepoOperation(() => this.trashService.restore(id), { wait: true });
     if (!result.started) {
-      throw new TrashOperationError(
-        "restore",
-        `cannot restore trash entry '${id}': another process holds the repo lock`,
-      );
+      throw new TrashOperationError("restore", `cannot restore trash entry '${id}': ${describeNotStarted(result)}`);
     }
     return result.value;
   }
@@ -276,7 +318,7 @@ export class WorktreeSyncService {
       },
       { wait: true },
     );
-    if (!result.started) throw new Error("Cannot force clean while another process holds the repository lock");
+    if (!result.started) throw new Error(`Cannot force clean: ${describeNotStarted(result)}`);
     return result.value;
   }
 
@@ -340,7 +382,7 @@ export class WorktreeSyncService {
       },
       { wait: true },
     );
-    if (!result.started) throw new Error("Cannot delete keep ref while another process holds the lock");
+    if (!result.started) throw new Error(`Cannot delete keep ref: ${describeNotStarted(result)}`);
   }
 
   async discardDivergedDirectory(targetPath: string, keepRef?: string): Promise<void> {
@@ -374,7 +416,7 @@ export class WorktreeSyncService {
       },
       { wait: true },
     );
-    if (!result.started) throw new Error("Cannot discard diverged directory while another process holds the lock");
+    if (!result.started) throw new Error(`Cannot discard diverged directory: ${describeNotStarted(result)}`);
   }
 
   updateLogger(logger: Logger): void {
@@ -392,10 +434,11 @@ export class WorktreeSyncService {
 
   // Runs git gc when due, inside the already-held repo lock (mirrors
   // initializeUnlocked — must NOT re-acquire runExclusiveRepoOperation or it
-  // would self-deadlock/skip). Skipped under NODE_ENV=test so unit suites don't
-  // shell out to real git; GitMaintenanceService is covered by its own tests.
+  // would self-deadlock/skip). Skipped under the unit-test shortcut so unit
+  // suites don't shell out to real git; GitMaintenanceService is covered by
+  // its own tests.
   private async runMaintenanceIfDueUnlocked(): Promise<void> {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
+    if (isUnitTestShortcutEnabled()) {
       return;
     }
     await this.maintenanceService.runIfDueUnlocked();
@@ -405,7 +448,7 @@ export class WorktreeSyncService {
   // inside the held lock, never fails the sync. Runs before gc so freshly
   // reaped pin refs can be collected in the same maintenance window.
   private async runTrashMaintenanceUnlocked(): Promise<void> {
-    if (process.env.NODE_ENV === ENV_CONSTANTS.NODE_ENV_TEST) {
+    if (isUnitTestShortcutEnabled()) {
       return;
     }
     if (this.cloneSyncService) {
@@ -438,17 +481,24 @@ export class WorktreeSyncService {
     }
 
     return this.repoMutex(async (): Promise<ExclusiveRepoOperationResult<T>> => {
-      const release: RepoLockRelease | null = await this.repoOperationLock.acquire();
-      if (release === null) {
-        this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
-        return { started: false, reason: "locked" };
+      const lock = await this.repoOperationLock.acquire();
+      if (!lock.acquired) {
+        if (lock.reason === "locked") {
+          this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
+          return { started: false, reason: "locked" };
+        }
+        // Not contention: the lock could not be prepared or taken at all, so
+        // the operation did not run. That is a failure of this run with a
+        // cause worth naming, never a skip that blames another process.
+        this.logger.error(`❌ Operation not run: ${formatRepoLockUnavailable(lock)}`);
+        return { started: false, reason: "lock_unavailable", path: lock.path, code: lock.code, error: lock.error };
       }
 
       try {
         return { started: true, value: await operation() };
       } finally {
         try {
-          await release();
+          await lock.release();
         } catch (releaseError) {
           this.logger.warn(`Failed to release sync lock: ${getErrorMessage(releaseError)}`);
         }
@@ -512,7 +562,10 @@ export class WorktreeSyncService {
             retryOptionsWithOutcomeReset,
           );
         }
-      } catch (error) {
+      } catch (rawError) {
+        // A credential / ssh failure carries its remedy hint from here on:
+        // the outcome, this log line and the rejection every consumer reports.
+        const error = withGitAuthHint(rawError);
         if (outcome.getCounts().failed === 0) {
           outcome.recordFailed("repo", getErrorMessage(error), { reason: "sync_failed" });
         }

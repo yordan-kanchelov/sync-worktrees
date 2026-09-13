@@ -1,4 +1,4 @@
-import simpleGit from "simple-git";
+import { createGitClient } from "../utils/git-client";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
 
@@ -44,7 +44,7 @@ export function deriveSafeToRemove(status: WorktreeStatusResult): SafeToRemove {
 
 export async function getDivergence(worktreePath: string): Promise<Divergence | null> {
   try {
-    const git = simpleGit(worktreePath);
+    const git = createGitClient(worktreePath);
     const output = await git.raw(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]);
     const [aheadStr, behindStr] = output.trim().split(/\s+/);
     return { ahead: parseInt(aheadStr, 10), behind: parseInt(behindStr, 10) };

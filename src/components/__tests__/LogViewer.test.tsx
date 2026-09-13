@@ -2,8 +2,9 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-import LogViewer, { LogViewerProps } from "../LogViewer";
-import { LogEntry } from "../App";
+import type { LogViewerProps } from "../LogViewer";
+import LogViewer from "../LogViewer";
+import type { LogEntry } from "../App";
 
 describe("LogViewer", () => {
   let defaultProps: LogViewerProps;

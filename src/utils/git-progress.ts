@@ -25,9 +25,14 @@ export type GitProgressEmitter = (event: GitProgressEvent) => void;
  * State (the bucket map) is closure-local — pass one handler per SimpleGit
  * client. Keep progress logs at debug level so normal logs can stay readable
  * while interactive surfaces and MCP notifications consume structured events.
+ *
+ * The logger is read per event through `getLogger`, never captured: clients are
+ * cached for the life of the service and the TUI swaps its owner's logger in
+ * afterwards (updateLogger), so a captured one would keep writing to the
+ * console under Ink's alternate screen instead of the log panel.
  */
 export function makeGitProgressHandler(
-  logger: Logger,
+  getLogger: () => Logger,
   emitProgress?: GitProgressEmitter,
 ): (event: SimpleGitProgressEvent) => void {
   const lastBucket = new Map<string, number>();
@@ -41,7 +46,7 @@ export function makeGitProgressHandler(
     lastBucket.set(key, bucket);
     const total = event.total > 0 ? `${event.processed}/${event.total}` : `${event.processed}`;
     const message = `${event.method} ${event.stage}: ${event.progress}% (${total})`;
-    logger.debug(`  ↳ ${message}`);
+    getLogger().debug(`  ↳ ${message}`);
     emitProgress?.({
       phase: event.method,
       message,

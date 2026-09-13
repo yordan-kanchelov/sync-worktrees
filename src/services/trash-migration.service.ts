@@ -92,7 +92,14 @@ export class TrashMigrationService {
       // that can never be listed, restored, or reaped.
       const hasOriginalBranch = typeof info?.originalBranch === "string" && info.originalBranch.length > 0;
       const hasValidLocalCommit = info?.localCommit == null || typeof info.localCommit === "string";
-      if (!info || !hasOriginalBranch || !hasOriginalPath || !hasValidLocalCommit || !quarantinedAt || Number.isNaN(quarantinedAt.getTime())) {
+      if (
+        !info ||
+        !hasOriginalBranch ||
+        !hasOriginalPath ||
+        !hasValidLocalCommit ||
+        !quarantinedAt ||
+        Number.isNaN(quarantinedAt.getTime())
+      ) {
         this.logger.warn(
           `⚠️ Leaving entry '${name}' in ${GIT_CONSTANTS.DIVERGED_DIR_NAME}/ alone (no parseable ${METADATA_CONSTANTS.DIVERGED_INFO_FILE})`,
         );

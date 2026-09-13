@@ -161,6 +161,57 @@ describe("runMultipleRepositories", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it("counts a repo whose lock could not be taken as failed and names it in the summary", async () => {
+    // Not contention: the state directory is a file / unwritable, so nothing
+    // synced this repo and nothing will. A green exit here would let a CI
+    // pipeline pass without a single clone, worktree or fetch.
+    mocks.sync.mockResolvedValue({
+      started: false,
+      reason: "lock_unavailable",
+      path: "/state/sync-worktrees/locks",
+      code: "ENOTDIR",
+      error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+    });
+
+    await runMultipleRepositories(configFile, [repo]);
+
+    const summaryCall = mocks.logger.info.mock.calls.find(
+      (args) => typeof args[0] === "string" && (args[0] as string).includes("Processed"),
+    );
+    const summary = summaryCall?.[0] as string | undefined;
+    expect(summary).toBeDefined();
+    expect(summary).toContain("0 synced");
+    expect(summary).toMatch(/0 (skipped|with clone-mode skips)/);
+    expect(summary).toContain("1 failed (1 lock unavailable)");
+    expect(process.exitCode).toBe(1);
+
+    const everyLine = [
+      ...mocks.logger.info.mock.calls,
+      ...mocks.logger.warn.mock.calls,
+      ...mocks.logger.error.mock.calls,
+    ]
+      .map((args) => args[0])
+      .filter((arg): arg is string => typeof arg === "string");
+    expect(everyLine.join("\n")).not.toMatch(/another process holds/i);
+  });
+
+  it("keeps a contended lock as a skip with a clean exit status", async () => {
+    mocks.sync.mockResolvedValue({ started: false, reason: "locked" });
+
+    await runMultipleRepositories(configFile, [repo]);
+
+    const summaryCall = mocks.logger.info.mock.calls.find(
+      (args) => typeof args[0] === "string" && (args[0] as string).includes("Processed"),
+    );
+    const summary = summaryCall?.[0] as string | undefined;
+    expect(summary).toBeDefined();
+    expect(summary).toContain("0 synced");
+    expect(summary).toContain("1 skipped");
+    expect(summary).toContain("0 failed");
+    expect(summary).not.toContain("lock unavailable");
+    expect(process.exitCode).toBeUndefined();
+  });
+
   it("counts a rejected sync as failed even when the repo recorded a soft skip first", async () => {
     mocks.getRecordedSkips.mockReturnValue([{ kind: "dirty_tree", worktreePath: "/tmp/repo-a" }]);
     mocks.sync.mockRejectedValue(new Error("network failed"));
@@ -170,5 +221,26 @@ describe("runMultipleRepositories", () => {
     expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("1 failed"));
     expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("0 skipped"));
     expect(process.exitCode).toBe(1);
+  });
+
+  it("prints the run-once banner with credentials stripped from the repository URL", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+    const tokenRepo: RepositoryConfig = { ...repo, repoUrl: "https://ci-bot:s3cr3t-token@example.com/r.git" };
+
+    await runMultipleRepositories(configFile, [tokenRepo]);
+
+    expect(mocks.logger.info).toHaveBeenCalledWith("   URL: https://***@example.com/r.git");
+    const everything = [
+      ...mocks.logger.info.mock.calls,
+      ...mocks.logger.warn.mock.calls,
+      ...mocks.logger.error.mock.calls,
+    ]
+      .flat()
+      .map(String)
+      .join("\n");
+    expect(everything).not.toContain("s3cr3t-token");
   });
 });

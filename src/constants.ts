@@ -11,10 +11,22 @@ export const GIT_CONSTANTS = {
   TRASH_REF_PREFIX: "refs/sync-worktrees/trash/",
   KEEP_REF_PREFIX: "refs/sync-worktrees/keep/",
   LFS_HEADER: "version https://git-lfs.github.com/spec/",
-  SUBMODULE_STATUS_ADDED: "+",
-  SUBMODULE_STATUS_REMOVED: "-",
+  // Column-0 prefixes of `git submodule status`: " " in sync, "-" not
+  // initialized, "+" the checked-out commit differs from the superproject's
+  // index, "U" merge conflicts. Only "+" and "U" mean the worktree holds
+  // submodule state that could be lost — "-" is what `git worktree add` always
+  // leaves behind, since it never initializes submodules.
+  SUBMODULE_STATUS_OUT_OF_SYNC: "+",
+  SUBMODULE_STATUS_CONFLICTED: "U",
   GITDIR_PREFIX: "gitdir:",
-  GIT_CHECK_IGNORE_NO_MATCH: "exit code: 1",
+  // simple-git validates baseDir when a client is constructed and rejects with
+  // this text; like `spawn git ENOENT` from an already-built client, it means
+  // the working directory is gone.
+  MISSING_BASE_DIR_ERROR: "Cannot use simple-git on a directory that does not exist",
+  // simple-git's message fragment for a git command that exited 1. `git grep`
+  // uses that exit code for "nothing matched", which is an answer rather than
+  // a failure.
+  GIT_NO_MATCH_EXIT: "exit code: 1",
   REFS: {
     HEADS: "refs/heads/",
     REMOTES: "refs/remotes/origin",
@@ -48,8 +60,16 @@ export const DEFAULT_CONFIG = {
     MAX_WORKTREE_CREATION: 1,
     MAX_WORKTREE_UPDATES: 3,
     MAX_WORKTREE_REMOVAL: 3,
+    // Also the size of WorktreeStatusService's shared process budget: every
+    // status probe of a repository runs through it, so this bounds git
+    // processes rather than worktrees.
     MAX_STATUS_CHECKS: 20,
     MAX_BRANCH_FETCHES: 3,
+    // Ceiling on concurrent git processes across the whole run, checked by the
+    // config loader as maxRepositories × the widest sync phase (phases run one
+    // after another, so their limits are never summed, and a phase that shares
+    // one git client counts only what that client's scheduler allows). The
+    // shipped defaults peak at 2 × 20 = 40.
     MAX_SAFE_TOTAL_CONCURRENT_OPS: 100,
   },
   UPDATE_EXISTING_WORKTREES: true,
@@ -58,7 +78,6 @@ export const DEFAULT_CONFIG = {
   CLONE_TIMEOUT_MS: 900_000,
   LOCK_STALE_MS: 600_000,
   LOCK_UPDATE_MS: 30_000,
-  LFS_VERIFICATION_MAX_RETRIES: 30,
   MAINTENANCE: {
     ENABLED: true,
     INTERVAL: "7d",
@@ -96,17 +115,37 @@ export const TEST_TIMEOUT = {
 export const ENV_CONSTANTS = {
   GIT_LFS_SKIP_SMUDGE: "GIT_LFS_SKIP_SMUDGE",
   GIT_ATTR_SOURCE: "GIT_ATTR_SOURCE",
-  NODE_ENV_TEST: "test",
+  /** Set by src/__tests__/setup.ts to the vitest worker's pid; see src/utils/unit-test-shortcut.ts. */
+  UNIT_TEST_SHORTCUT: "SYNC_WORKTREES_UNIT_TEST",
+  /** Escape hatch that moves the repo lock files out of `<parent of worktreeDir>/.sync-worktrees-locks`;
+   * must be set identically for every process sharing a worktreeDir. See src/utils/lock-path.ts. */
+  LOCK_DIR: "SYNC_WORKTREES_LOCK_DIR",
 } as const;
 
 export const PATH_CONSTANTS = {
   GIT_DIR: ".git",
   README: "README",
   CLONE_INIT_MARKER: ".sync-worktrees-clone-init",
-  /** Written right after a successful clone, removed once the initial file
-   * copy lands — its presence marks a tool-created clone whose init was
-   * interrupted and still owes the copy. */
+  /** Written the moment the clone resolves, before any post-clone step, and
+   * removed once the initial file copy lands — its presence marks a
+   * tool-created clone whose init was interrupted and still owes the copy. */
   CLONE_INIT_PENDING_MARKER: ".sync-worktrees-clone-init.pending",
+  /** Written when a clone this tool started fetched its objects but failed to
+   * check out a working tree (git's "Clone succeeded, but checkout failed").
+   * Such a directory validates like a user's own clone, so the marker is the
+   * only thing that tells the two apart: while it is there the clone is ours
+   * and unfinished, and initialize() refuses to adopt it. */
+  CLONE_INCOMPLETE_MARKER: ".sync-worktrees-clone-incomplete",
+  /** Worktree mode's counterpart, appended to the bare repository's directory
+   * name and written in its parent (never inside: `git clone` refuses a
+   * non-empty destination). Written only for a destination verified to be
+   * absent or empty, and dropped again as soon as the clone ends — on success,
+   * and on failure once the destination is verifiably gone or empty. So a
+   * HEAD-less directory next to this marker is a leftover of this tool's own
+   * initialization, the only one initialize() may delete. */
+  BARE_CLONE_PENDING_MARKER_SUFFIX: ".sync-worktrees-bare-clone.pending",
+  /** Directory next to (never inside) a worktreeDir that holds its cross-process lock file. */
+  LOCK_DIR_NAME: ".sync-worktrees-locks",
 } as const;
 
 export const CONFIG_FILE_NAMES = [

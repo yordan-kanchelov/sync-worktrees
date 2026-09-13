@@ -1,0 +1,5 @@
+---
+"sync-worktrees": patch
+---
+
+Worktree status checks no longer run `git check-ignore` after `git status`. `git status --porcelain -u` never reports an ignored path as untracked, so re-checking each untracked path was a spawn that could not change the answer — and it passed every untracked path on one command line, so a worktree holding a large untracked build directory that nothing gitignores (a few tens of thousands of files is enough to pass the kernel's `ARG_MAX`) made the spawn fail with `E2BIG`: the check threw and the update phase skipped that worktree as `update_check_failed` on every tick instead of reporting the dirty worktree it had. Dropping it also closes a way a dirty worktree could be reported clean: the status parser trims each line, so a filename with a trailing space reached `check-ignore` mangled, and a `.gitignore` rule matching the trimmed name removed a genuinely untracked file from the list. Ignored files are still ignored, exactly as git decides; a status check of a worktree now costs up to nine git commands rather than ten.

@@ -1,10 +1,12 @@
 import React from "react";
 import * as path from "path";
-import { render, Instance } from "ink";
+import type { Instance } from "ink";
+import { render } from "ink";
 import * as cron from "node-cron";
 import pLimit from "p-limit";
 import { spawn, spawnSync } from "child_process";
 import { existsSync } from "fs";
+import type { Dirent } from "fs";
 import App from "../components/App";
 import { DEFAULT_CONFIG } from "../constants";
 import { WorktreeSyncService } from "./worktree-sync.service";
@@ -12,9 +14,11 @@ import { ConfigLoaderService } from "./config-loader.service";
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { HookExecutionService } from "./hook-execution.service";
 import { PathResolutionService } from "./path-resolution.service";
-import { Logger, LogOutputFn, LogLevel } from "./logger.service";
+import type { LogOutputFn, LogLevel } from "./logger.service";
+import { Logger } from "./logger.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/lfs-error";
+import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
@@ -26,6 +30,7 @@ import { formatDuration } from "../utils/timing";
 import { GIT_CONSTANTS, METADATA_CONSTANTS, TERMINAL_CONSTANTS } from "../constants";
 import type {
   RepositoryConfig,
+  RepoOperationNotStarted,
   HookContext,
   WorktreeStatusEntry,
   DivergedDirectoryInfo,
@@ -112,17 +117,21 @@ export class InteractiveUIService {
     };
   }
 
+  // The logger a service the UI owns must be built with: while Ink holds the
+  // alternate screen a console line is written over the interface instead of
+  // into the log panel, so it belongs in the config before the service (and
+  // every sub-service that copies it) exists — see handleReload.
+  private createServiceLogger(config: RepositoryConfig): Logger {
+    return new Logger({
+      repoName: config.name,
+      debug: config.debug,
+      outputFn: this.createOutputFn(),
+    });
+  }
+
   private injectLoggersIntoServices(): void {
-    const outputFn = this.createOutputFn();
     for (const service of this.syncServices) {
-      const config = service.config as RepositoryConfig;
-      service.updateLogger(
-        new Logger({
-          repoName: config.name,
-          debug: config.debug,
-          outputFn,
-        }),
-      );
+      service.updateLogger(this.createServiceLogger(service.config as RepositoryConfig));
     }
   }
 
@@ -187,7 +196,7 @@ export class InteractiveUIService {
 
   private cancelCronJobs(): void {
     for (const job of this.cronJobs) {
-      job.stop();
+      void job.stop();
     }
     this.cronJobs = [];
   }
@@ -278,6 +287,10 @@ export class InteractiveUIService {
       const initResults = await Promise.allSettled(
         repositories.map((repoConfig) =>
           this.limit(async () => {
+            // Before construction, not after: initialize() logs (fetch
+            // progress, metadata repair, status probe failures) through the
+            // logger each sub-service was handed when it was built.
+            repoConfig.logger = this.createServiceLogger(repoConfig);
             const service = new WorktreeSyncService(repoConfig);
             await service.initialize();
             return {
@@ -313,7 +326,11 @@ export class InteractiveUIService {
       this.syncServices = newServices;
       this.repositoryCount = this.syncServices.length;
       this.subscribeToServiceProgress();
-      this.injectLoggersIntoServices();
+      // Not injectLoggersIntoServices(): these services were built with their
+      // panel logger already in config, above. Injecting again would build a
+      // second Logger per repository and leave config.logger pointing at the
+      // first, dead one. Startup still needs the injection, because there the
+      // services exist before the UI that owns the panel does.
 
       const uniqueSchedules = [...new Set(this.syncServices.map((s) => s.config.cronSchedule))];
       this.cronSchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
@@ -508,14 +525,30 @@ export class InteractiveUIService {
     }
   }
 
-  public getDefaultBranchForRepo(repoIndex: number): string {
+  public async getDefaultBranchForRepo(repoIndex: number): Promise<string> {
     if (repoIndex < 0 || repoIndex >= this.syncServices.length) {
       throw new Error(`Invalid repository index: ${repoIndex}`);
     }
 
-    const service = this.syncServices[repoIndex];
-    const gitService = service.getGitService();
-    return gitService.getDefaultBranch();
+    // Clone mode never runs GitService.initialize(), so GitService's default
+    // branch is still the 'main' its constructor set, whatever the clone
+    // actually tracks — the wizard would pre-select and label a branch the
+    // repository does not follow and create from the wrong base. The sync
+    // service's accessor is clone-aware: the configured branch, or the
+    // remote's HEAD (resolved once, then cached) when none is configured.
+    try {
+      return await this.syncServices[repoIndex].getDefaultBranch();
+    } catch (error) {
+      // The wizard drops this to keep its branch list on screen, so say why
+      // here or the reason is lost: resolving an unconfigured branch asks the
+      // remote, and its message is the one that tells the user to set
+      // `branch` explicitly.
+      this.addLog(
+        `Could not resolve the default branch for '${this.getRepoName(repoIndex)}': ${getErrorMessage(error)}`,
+        "warn",
+      );
+      throw error;
+    }
   }
 
   public async fetchForRepo(repoIndex: number): Promise<void> {
@@ -538,8 +571,18 @@ export class InteractiveUIService {
       await service.getGitService().fetchAll();
     });
     if (!result.started) {
-      throw new Error("Another process holds the repository lock; fetch skipped. Try again.");
+      throw new Error(this.describeNotStarted(result, "fetch skipped"));
     }
+  }
+
+  // Interactive operations queue behind in-flight work, so a result that did
+  // not start means the cross-process lock: contention is worth retrying, an
+  // unavailable lock is not and must name its cause instead.
+  private describeNotStarted(result: RepoOperationNotStarted, consequence: string): string {
+    if (result.reason === "lock_unavailable") {
+      return `${formatRepoLockUnavailable(result)}; ${consequence}.`;
+    }
+    return `Another process holds the repository lock; ${consequence}. Try again.`;
   }
 
   public async createAndPushBranch(
@@ -554,6 +597,17 @@ export class InteractiveUIService {
     const service = this.syncServices[repoIndex];
     const gitService = service.getGitService();
 
+    // A clone-mode repo has no bare repository, and GitService's write helpers
+    // all run in one — falling back to the relative '.bare/<repo name>', which
+    // is either missing or another repository's store. Clone mode creates and
+    // publishes the branch inside the clone itself instead.
+    const createAndPush = service.isCloneMode()
+      ? (name: string): Promise<void> => service.createAndPushBranch(baseBranch, name)
+      : async (name: string): Promise<void> => {
+          await gitService.createBranch(name, baseBranch);
+          await gitService.pushBranch(name);
+        };
+
     // Serialize branch+push behind any in-flight sync so it can't race git's
     // index/refs. addWorktree (createWorktreeForBranch) is a separate queued op.
     const result = await service.runQueuedRepoOperation(async () => {
@@ -563,8 +617,7 @@ export class InteractiveUIService {
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
-          await gitService.createBranch(finalName, baseBranch);
-          await gitService.pushBranch(finalName);
+          await createAndPush(finalName);
           return { success: true, finalName };
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
@@ -584,7 +637,7 @@ export class InteractiveUIService {
       return {
         success: false,
         finalName: branchName,
-        error: "Another process holds the repository lock; branch not created. Try again.",
+        error: this.describeNotStarted(result, "branch not created"),
       };
     }
     return result.value;
@@ -641,7 +694,7 @@ export class InteractiveUIService {
     const worktreeDir = service.config.worktreeDir;
     const divergedDir = path.join(worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
 
-    let dirEntries: import("fs").Dirent[];
+    let dirEntries: Dirent[];
     try {
       dirEntries = await fs.readdir(divergedDir, { withFileTypes: true, encoding: "utf-8" });
     } catch {
@@ -661,7 +714,7 @@ export class InteractiveUIService {
 
         try {
           const infoContent = await fs.readFile(infoFilePath, "utf-8");
-          const info = JSON.parse(infoContent);
+          const info = JSON.parse(infoContent) as Record<string, unknown>;
           if (typeof info.originalBranch === "string") originalBranch = info.originalBranch;
           if (typeof info.divergedAt === "string") divergedAt = info.divergedAt;
           if (typeof info.keepRef === "string") keepRef = info.keepRef;
@@ -716,7 +769,9 @@ export class InteractiveUIService {
 
     let keepRef: string | undefined;
     try {
-      const info = JSON.parse(await fs.readFile(path.join(targetPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE), "utf-8"));
+      const info = JSON.parse(
+        await fs.readFile(path.join(targetPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE), "utf-8"),
+      ) as Record<string, unknown>;
       if (typeof info.keepRef === "string") keepRef = info.keepRef;
     } catch {
       // Legacy entries have no keep ref metadata.
@@ -792,7 +847,7 @@ export class InteractiveUIService {
       await gitService.addWorktree(branchName, worktreePath);
     });
     if (!result.started) {
-      throw new Error("Another process holds the repository lock; worktree not created. Try again.");
+      throw new Error(this.describeNotStarted(result, "worktree not created"));
     }
   }
 
@@ -1018,7 +1073,13 @@ export class InteractiveUIService {
         const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
         failures.push({ repo: fallbackName, error: errorMessage });
       } else if (result.value.result && result.value.result.started === false) {
-        skipped.push({ repo: repoName, reason: `sync skipped: ${result.value.result.reason}` });
+        const notStarted = result.value.result;
+        if (notStarted.reason === "lock_unavailable") {
+          // Not a skip: nothing synced this repo and no other process will.
+          failures.push({ repo: repoName, error: formatRepoLockUnavailable(notStarted) });
+        } else {
+          skipped.push({ repo: repoName, reason: `sync skipped: ${notStarted.reason}` });
+        }
       } else if (result.status === "fulfilled" && result.value.result?.started === true) {
         const outcome = result.value.result.outcome;
         if (outcome?.counts.failed) {

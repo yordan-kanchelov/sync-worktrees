@@ -2,7 +2,8 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-import LogPanel, { LogPanelProps } from "../LogPanel";
+import type { LogPanelProps } from "../LogPanel";
+import LogPanel from "../LogPanel";
 import type { LogEntry } from "../App";
 
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
@@ -47,10 +48,7 @@ describe("LogPanel", () => {
     it("should render log messages", () => {
       const props = {
         ...defaultProps,
-        logs: [
-          createLog("1", "First log message"),
-          createLog("2", "Second log message"),
-        ],
+        logs: [createLog("1", "First log message"), createLog("2", "Second log message")],
       };
       const { lastFrame } = render(<LogPanel {...props} />);
       expect(lastFrame()).toContain("First log message");
@@ -174,9 +172,7 @@ describe("LogPanel", () => {
     // maximum shows a part-empty panel the reader cannot scroll further down
     // from, in a window that is now tall enough to show everything below it.
     it("keeps a parked offset within range when the panel grows", async () => {
-      const { stdin, lastFrame, rerender } = render(
-        <LogPanel {...defaultProps} logs={manyLogs()} height={10} />,
-      );
+      const { stdin, lastFrame, rerender } = render(<LogPanel {...defaultProps} logs={manyLogs()} height={10} />);
       await waitForStateUpdate();
 
       stdin.write(wheelUp);

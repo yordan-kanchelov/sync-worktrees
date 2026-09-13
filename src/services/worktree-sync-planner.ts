@@ -14,15 +14,27 @@ export interface WorktreeInventory {
 export interface WorktreeEntry {
   path: string;
   branch: string;
+  /** git refuses to remove a locked worktree, so it is never planned for prune. */
+  locked?: boolean;
+  /** Reason recorded with the lock, when git has one. */
+  lockReason?: string;
+  /** The worktree's HEAD oid as git listed it; absent when the listing had none. */
+  head?: string;
 }
 
 export type CreateAction =
   | { kind: "create"; branch: string; path: string }
   | { kind: "skip-create"; branch: string; path: string; reason: "path-collision"; conflictingBranch: string };
 
-export type PruneAction = { kind: "check-prune"; branch: string; path: string };
+export type PruneAction =
+  | { kind: "check-prune"; branch: string; path: string }
+  | { kind: "skip-prune"; branch: string; path: string; reason: "locked"; lockReason?: string };
 
-export type UpdateAction = { kind: "update-candidate"; branch: string; path: string };
+// `head` is what the registration listing said this worktree's HEAD was. The
+// update phase compares it against origin/<branch>'s tip to answer "nothing
+// changed" without spawning anything per worktree, so it is carried through the
+// plan rather than probed again.
+export type UpdateAction = { kind: "update-candidate"; branch: string; path: string; head?: string };
 
 export type SparseAction =
   | { kind: "check-sparse"; branch: string; path: string }
@@ -94,14 +106,33 @@ export function planPruneActions(inventory: WorktreeInventory): PruneAction[] {
   const remoteBranches = new Set(inventory.remoteBranches);
   return inventory.existingWorktrees
     .filter((worktree) => !remoteBranches.has(worktree.branch))
-    .map((worktree) => ({ kind: "check-prune", branch: worktree.branch, path: worktree.path }));
+    .map((worktree) =>
+      // A locked worktree is one the user told git to protect. Planning it as a
+      // prune candidate would spend a status probe, a `du` size scan and two
+      // renames on it every tick and end in git's refusal anyway, so it is
+      // planned as a deliberate skip instead.
+      worktree.locked
+        ? ({
+            kind: "skip-prune",
+            branch: worktree.branch,
+            path: worktree.path,
+            reason: "locked",
+            ...(worktree.lockReason !== undefined && { lockReason: worktree.lockReason }),
+          } as const)
+        : ({ kind: "check-prune", branch: worktree.branch, path: worktree.path } as const),
+    );
 }
 
 export function planUpdateActions(inventory: WorktreeInventory): UpdateAction[] {
   const remoteBranches = new Set(inventory.remoteBranches);
   return inventory.existingWorktrees
     .filter((worktree) => remoteBranches.has(worktree.branch))
-    .map((worktree) => ({ kind: "update-candidate", branch: worktree.branch, path: worktree.path }));
+    .map((worktree) => ({
+      kind: "update-candidate",
+      branch: worktree.branch,
+      path: worktree.path,
+      ...(worktree.head !== undefined && { head: worktree.head }),
+    }));
 }
 
 export function planSparseActions(inventory: WorktreeInventory, sparseCheckout?: SparseCheckoutConfig): SparseAction[] {

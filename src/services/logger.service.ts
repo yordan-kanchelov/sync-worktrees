@@ -1,3 +1,7 @@
+import { inspect } from "util";
+
+import { redactSecretsInText } from "../utils/git-url";
+
 export type LogLevel = "info" | "warn" | "error" | "debug";
 export type LogOutputFn = (message: string, level: LogLevel) => void;
 
@@ -8,6 +12,12 @@ export interface LoggerOptions {
   outputFn?: LogOutputFn;
 }
 
+/**
+ * Every line leaves through {@link redactSecretsInText}: repository URLs with
+ * embedded credentials (`https://user:token@host/...`) are common in CI and
+ * show up in clone/fetch messages, git's own error text and the run banner,
+ * so the logger scrubs them centrally instead of trusting each call site.
+ */
 export class Logger {
   private repoName?: string;
   private debugEnabled: boolean;
@@ -25,7 +35,7 @@ export class Logger {
 
   debug(message: string, ...args: unknown[]): void {
     if (!this.debugEnabled) return;
-    const formattedMessage = this.prefix() + this.formatMessage(message, args);
+    const formattedMessage = redactSecretsInText(this.prefix() + this.formatMessage(message, args));
     if (this.outputFn) {
       this.outputFn(formattedMessage, "debug");
     } else {
@@ -34,7 +44,7 @@ export class Logger {
   }
 
   info(message: string, ...args: unknown[]): void {
-    const formattedMessage = this.prefix() + this.formatMessage(message, args);
+    const formattedMessage = redactSecretsInText(this.prefix() + this.formatMessage(message, args));
     if (this.outputFn) {
       this.outputFn(formattedMessage, "info");
     } else {
@@ -43,7 +53,7 @@ export class Logger {
   }
 
   warn(message: string, ...args: unknown[]): void {
-    const formattedMessage = this.prefix() + this.formatMessage(message, args);
+    const formattedMessage = redactSecretsInText(this.prefix() + this.formatMessage(message, args));
     if (this.outputFn) {
       this.outputFn(formattedMessage, "warn");
     } else {
@@ -51,28 +61,30 @@ export class Logger {
     }
   }
 
-  error(message: string, error?: Error | unknown): void {
+  error(message: string, error?: unknown): void {
     let formattedMessage = this.prefix() + message;
     if (error instanceof Error) {
       formattedMessage += ` ${error.message}`;
     } else if (error) {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- non-Error values are logged in their default string form
       formattedMessage += ` ${String(error)}`;
     }
+    formattedMessage = redactSecretsInText(formattedMessage);
     if (this.outputFn) {
       this.outputFn(formattedMessage, "error");
+    } else if (error) {
+      // console.error(message, error) would hand the raw value to util.inspect,
+      // whose output (message, stack, simple-git's `task.commands`, ...) can
+      // carry a credential-bearing URL. Inspect it here so it can be scrubbed.
+      const detail = typeof error === "string" ? error : inspect(error);
+      console.error(redactSecretsInText(`${this.prefix()}${message} ${detail}`));
     } else {
-      if (error instanceof Error) {
-        console.error(this.prefix() + message, error);
-      } else if (error) {
-        console.error(this.prefix() + message, error);
-      } else {
-        console.error(this.prefix() + message);
-      }
+      console.error(redactSecretsInText(this.prefix() + message));
     }
   }
 
   table(content: string): void {
-    const formattedMessage = "\n" + content + "\n";
+    const formattedMessage = redactSecretsInText("\n" + content + "\n");
     if (this.outputFn) {
       this.outputFn(formattedMessage, "info");
     } else {

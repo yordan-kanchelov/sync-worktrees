@@ -3,6 +3,7 @@
 import { realpathSync } from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { inspect } from "util";
 
 import { input } from "@inquirer/prompts";
 import pLimit from "p-limit";
@@ -17,9 +18,11 @@ import { CLI_COMMANDS, parseArguments } from "./utils/cli";
 import { formatCloneSkipReason } from "./utils/clone-skip-format";
 import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
 import { fileExists } from "./utils/file-exists";
+import { redactRepoUrl, redactSecretsInText } from "./utils/git-url";
 import { promptForInitConfig } from "./utils/interactive";
 import { maybeRegisterMcpClients } from "./utils/mcp-registration";
 import { setupSignalHandlers } from "./utils/signal-handlers";
+import { warnIfUnitTestShortcutEnabled } from "./utils/unit-test-shortcut";
 
 import type { CloneSkipReason } from "./services/clone-sync.service";
 import type { ConfigFile, RepositoryConfig } from "./types";
@@ -64,7 +67,7 @@ export async function runMultipleRepositories(
           const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug);
 
           repoLogger.info(`\n📦 Repository: ${repoConfig.name}`);
-          repoLogger.info(`   URL: ${repoConfig.repoUrl}`);
+          repoLogger.info(`   URL: ${redactRepoUrl(repoConfig.repoUrl)}`);
           repoLogger.info(`   Worktrees: ${repoConfig.worktreeDir}`);
           if (repoConfig.bareRepoDir) {
             repoLogger.info(`   Bare repo: ${repoConfig.bareRepoDir}`);
@@ -107,6 +110,7 @@ export async function runMultipleRepositories(
 
     const skipsByRepo: Array<{ repo: string; reasons: readonly CloneSkipReason[] }> = [];
     const skippedNames = new Set<string>();
+    const lockUnavailableNames = new Set<string>();
     const outcomeFailedNames = new Set<string>();
     const partialSkipNames = new Set<string>();
     for (let i = 0; i < servicesToSync.length; i++) {
@@ -119,7 +123,14 @@ export async function runMultipleRepositories(
 
       if (result.status === "fulfilled") {
         if (!result.value.started) {
-          skippedNames.add(name);
+          // Contention (another process or operation) is a skip: the repo will
+          // be synced by whoever holds the lock. An unavailable lock is not —
+          // nothing synced it and nothing will — so it fails the run.
+          if (result.value.reason === "lock_unavailable") {
+            lockUnavailableNames.add(name);
+          } else {
+            skippedNames.add(name);
+          }
           continue;
         }
 
@@ -154,7 +165,7 @@ export async function runMultipleRepositories(
 
     const initFailures = initResults.filter((result) => result.status === "rejected").length;
     const syncFailures = syncResults.filter((result) => result.status === "rejected").length;
-    const failedCount = initFailures + syncFailures + outcomeFailedNames.size;
+    const failedCount = initFailures + syncFailures + outcomeFailedNames.size + lockUnavailableNames.size;
     const skippedCount = skippedNames.size;
     const successCount = syncResults.filter((result, index) => {
       const repoName = servicesToSync[index].name;
@@ -168,8 +179,9 @@ export async function runMultipleRepositories(
     const processedRepoWord = repositories.length === 1 ? "repo" : "repos";
     const skipSummaryLabel = skippedNames.size === skipsByRepo.length ? "with clone-mode skips" : "skipped";
     const partialSuffix = partialSkipNames.size > 0 ? ` (${partialSkipNames.size} with partial skips)` : "";
+    const failedSuffix = lockUnavailableNames.size > 0 ? ` (${lockUnavailableNames.size} lock unavailable)` : "";
     globalLogger.info(
-      `\n📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced${partialSuffix}, ${skippedCount} ${skipSummaryLabel}, ${failedCount} failed`,
+      `\n📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced${partialSuffix}, ${skippedCount} ${skipSummaryLabel}, ${failedCount} failed${failedSuffix}`,
     );
 
     if (failedCount > 0) {
@@ -220,7 +232,7 @@ async function runList(configPath: string, filter?: string): Promise<void> {
 
     repositories.forEach((repo, index) => {
       console.log(`${index + 1}. ${repo.name}`);
-      console.log(`   URL: ${repo.repoUrl}`);
+      console.log(`   URL: ${redactRepoUrl(repo.repoUrl)}`);
       console.log(`   Worktrees: ${repo.worktreeDir}`);
       console.log(`   Schedule: ${repo.cronSchedule}`);
       console.log(`   Run Once: ${repo.runOnce}`);
@@ -349,6 +361,7 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
 
 export async function main(): Promise<void> {
   const options = parseArguments();
+  warnIfUnitTestShortcutEnabled((message) => console.warn(message));
 
   switch (options.command) {
     case CLI_COMMANDS.INIT:
@@ -384,8 +397,10 @@ function isMainEntrypoint(): boolean {
 }
 
 if (isMainEntrypoint()) {
-  main().catch((error) => {
-    console.error("❌ Unhandled error:", error);
+  main().catch((error: unknown) => {
+    // Inspect before printing so a git error that quotes a credential-bearing
+    // remote URL can be scrubbed; console.error(msg, error) would print it raw.
+    console.error("❌ Unhandled error:", redactSecretsInText(typeof error === "string" ? error : inspect(error)));
     process.exit(1);
   });
 }

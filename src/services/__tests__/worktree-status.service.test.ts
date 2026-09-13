@@ -2,9 +2,11 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import simpleGit from "simple-git";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorktreeNotCleanError } from "../../errors";
+import { setEnvVar } from "../../__tests__/test-utils";
+import { GIT_UNSAFE_ALLOWANCES } from "../../utils/git-env";
 import { WorktreeStatusService } from "../worktree-status.service";
 
 import type { SimpleGit } from "simple-git";
@@ -39,6 +41,21 @@ describe("WorktreeStatusService", () => {
     (simpleGit as unknown as Mock).mockReturnValue(mockGit);
   });
 
+  // The revision every `rev-list --count <rev> --not --remotes` probe was
+  // spawned with. Git resolves a bare name through refs/tags/<name> before
+  // refs/heads/<name>, so the probe must never name the branch that way.
+  const unpushedProbeRevisions = (): string[] =>
+    (mockGit.raw as Mock).mock.calls
+      .map((call: any[]) => (Array.isArray(call[0]) ? (call[0] as string[]) : (call as string[])))
+      .filter((args: string[]) => args[0] === "rev-list" && args.includes("--remotes"))
+      .map((args: string[]) => args[2]);
+
+  // Every `git.raw` subcommand the service spawned, in call order.
+  const gitSubcommands = (): string[] =>
+    (mockGit.raw as Mock).mock.calls
+      .map((call: any[]) => (Array.isArray(call[0]) ? (call[0] as string[]) : (call as string[])))
+      .map((args: string[]) => args[0]);
+
   describe("checkWorktreeStatus", () => {
     it("should return true for clean worktree", async () => {
       mockGit.status.mockResolvedValue({
@@ -53,7 +70,10 @@ describe("WorktreeStatusService", () => {
       const result = await service.checkWorktreeStatus("/test/worktree");
 
       expect(result).toBe(true);
-      expect(simpleGit).toHaveBeenCalledWith("/test/worktree");
+      expect(simpleGit).toHaveBeenCalledWith(
+        "/test/worktree",
+        expect.objectContaining({ unsafe: GIT_UNSAFE_ALLOWANCES }),
+      );
     });
 
     // This gate only decides whether to fast-forward, which never touches a
@@ -91,70 +111,49 @@ describe("WorktreeStatusService", () => {
       expect(result).toBe(false);
     });
 
-    it("should return true when only gitignored untracked files exist", async () => {
+    // `git status --porcelain -u` never lists an ignored path: the `??` lines
+    // simple-git parses into `not_added` are by definition the paths no exclude
+    // rule matched, and `--ignored` (which nothing here passes) reports ignored
+    // paths on separate `!!` lines that land in `status.ignored`. The service
+    // used to re-check `not_added` with `git check-ignore -- <every path>`,
+    // a spawn that could never remove anything.
+    it("takes status.not_added as the untracked-not-ignored list, without a second git command", async () => {
       mockGit.status.mockResolvedValue({
         modified: [],
         deleted: [],
         renamed: [],
         created: [],
         conflicted: [],
-        not_added: [".DS_Store", "node_modules/file.js"],
+        not_added: ["new-file.ts", "docs/notes.md"],
       } as any);
-      mockGit.raw.mockResolvedValue(".DS_Store\nnode_modules/file.js\n");
-
-      const result = await service.checkWorktreeStatus("/test/worktree");
-
-      expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["check-ignore", "--", ".DS_Store", "node_modules/file.js"]);
-    });
-
-    it("should return false when untracked files are not gitignored", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: ["new-file.ts", ".DS_Store"],
-      } as any);
-      mockGit.raw.mockResolvedValue(".DS_Store\n");
 
       const result = await service.checkWorktreeStatus("/test/worktree");
 
       expect(result).toBe(false);
-      expect(mockGit.raw).toHaveBeenCalledWith(["check-ignore", "--", "new-file.ts", ".DS_Store"]);
+      expect(gitSubcommands()).toEqual([]);
     });
 
-    it("should handle git check-ignore returning all files not ignored", async () => {
+    // A worktree holding a large untracked output directory that nothing
+    // gitignores used to hand `check-ignore` an argv of every path in it; past
+    // the kernel's ARG_MAX the spawn failed with E2BIG, checkWorktreeStatus
+    // threw, and the update phase recorded `update_check_failed` for that
+    // worktree every tick instead of the correct "dirty worktree".
+    it("answers for a worktree with tens of thousands of untracked files", async () => {
+      const generated = Array.from(
+        { length: 20_000 },
+        (_, index) => `dist/webpack-cache/client-production/chunk-${index}.module.js`,
+      );
       mockGit.status.mockResolvedValue({
         modified: [],
         deleted: [],
         renamed: [],
         created: [],
         conflicted: [],
-        not_added: ["file1.ts", "file2.ts"],
+        not_added: generated,
       } as any);
-      mockGit.raw.mockRejectedValue(new Error("Command failed: exit code: 1"));
 
-      const result = await service.checkWorktreeStatus("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should handle git check-ignore errors gracefully", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: ["file.txt"],
-      } as any);
-      mockGit.raw.mockRejectedValue(new Error("check-ignore failed"));
-      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      await expect(service.checkWorktreeStatus("/test/worktree")).rejects.toThrow("check-ignore failed");
-      consoleSpy.mockRestore();
+      await expect(service.checkWorktreeStatus("/test/worktree")).resolves.toBe(false);
+      expect(gitSubcommands()).toEqual([]);
     });
   });
 
@@ -288,6 +287,9 @@ describe("WorktreeStatusService", () => {
       expect(result.reasons).toEqual(["stashed changes"]);
     });
 
+    // git has already dropped every ignored path before simple-git parses the
+    // status, so a worktree holding nothing but `.DS_Store` reports no `??`
+    // lines at all — and the snapshot spends no second command confirming it.
     it("should treat worktree as clean when only gitignored files exist", async () => {
       mockGit.status.mockResolvedValue({
         modified: [],
@@ -295,11 +297,10 @@ describe("WorktreeStatusService", () => {
         renamed: [],
         created: [],
         conflicted: [],
-        not_added: [".DS_Store"],
+        not_added: [],
       } as any);
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "check-ignore") return ".DS_Store\n";
         if (firstArg[0] === "submodule") return "";
         return "0\n";
       }) as any);
@@ -313,6 +314,139 @@ describe("WorktreeStatusService", () => {
       expect(result.isClean).toBe(true);
       expect(result.canRemove).toBe(true);
       expect(result.reasons).toEqual([]);
+      expect(gitSubcommands()).not.toContain("check-ignore");
+    });
+
+    // The other half: what status does report as untracked is a real change,
+    // listed verbatim, and still costs no extra git command.
+    it("should report status.not_added verbatim as the untracked changes", async () => {
+      mockGit.status.mockResolvedValue({
+        modified: [],
+        deleted: [],
+        renamed: [],
+        created: [],
+        conflicted: [],
+        not_added: ["src/scratch.ts", "notes.md"],
+      } as any);
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "submodule") return "";
+        return "0\n";
+      }) as any);
+      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
+
+      const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+      expect(result.isClean).toBe(false);
+      expect(result.canRemove).toBe(false);
+      expect(result.reasons).toEqual(["uncommitted changes"]);
+      expect(result.details?.untrackedFiles).toBe(2);
+      expect(result.details?.untrackedFilesList).toEqual(["src/scratch.ts", "notes.md"]);
+      expect(gitSubcommands()).not.toContain("check-ignore");
+    });
+
+    // `git worktree add` never initializes submodules, so `git submodule status`
+    // prints "-<oid> <path>" for every submodule of every worktree this tool
+    // creates. Counting that "not initialized" marker as a modification made
+    // canRemove permanently false for such repos: the branch was never pruned,
+    // sparse narrowing was skipped and the TUI flagged ⊞ forever.
+    describe("submodule status prefixes", () => {
+      const setupCleanWorktree = (submoduleStatus: string): void => {
+        mockGit.status.mockResolvedValue({
+          modified: [],
+          deleted: [],
+          renamed: [],
+          created: [],
+          conflicted: [],
+          not_added: [],
+        } as any);
+        mockGit.raw.mockImplementation((async (...args: any[]) => {
+          const firstArg = Array.isArray(args[0]) ? args[0] : args;
+          if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
+            return "origin/main\n";
+          }
+          if (firstArg[0] === "submodule") {
+            return submoduleStatus;
+          }
+          return "0\n";
+        }) as any);
+        mockGit.branch.mockImplementation((async (...args: any[]) => {
+          const firstArg = Array.isArray(args[0]) ? args[0] : args;
+          if (firstArg && firstArg[0] === "-r") {
+            return { all: ["origin/main"] } as any;
+          }
+          return { current: "main", detached: false } as any;
+        }) as any);
+        mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+        (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (target === "/test/worktree") return undefined;
+          throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
+        });
+      };
+
+      it("treats an uninitialized submodule as removable", async () => {
+        setupCleanWorktree("-6f73556 libs/sub\n");
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.hasModifiedSubmodules).toBe(false);
+        expect(result.canRemove).toBe(true);
+        expect(result.reasons).toEqual([]);
+        expect(result.details?.modifiedSubmodules).toBeUndefined();
+      });
+
+      it("treats an in-sync submodule as removable", async () => {
+        setupCleanWorktree(" 6f73556 libs/sub (heads/main)\n");
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.hasModifiedSubmodules).toBe(false);
+        expect(result.canRemove).toBe(true);
+        expect(result.details?.modifiedSubmodules).toBeUndefined();
+      });
+
+      it("blocks removal when a submodule's checked-out commit differs", async () => {
+        setupCleanWorktree("+6f73556 libs/sub (heads/main)\n");
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.hasModifiedSubmodules).toBe(true);
+        expect(result.canRemove).toBe(false);
+        expect(result.reasons).toContain("modified submodules");
+        expect(result.details?.modifiedSubmodules).toEqual(["libs/sub"]);
+      });
+
+      it("blocks removal when a submodule has merge conflicts", async () => {
+        setupCleanWorktree("U6f73556 libs/sub (heads/main)\n");
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.hasModifiedSubmodules).toBe(true);
+        expect(result.canRemove).toBe(false);
+        expect(result.reasons).toContain("modified submodules");
+        expect(result.details?.modifiedSubmodules).toEqual(["libs/sub"]);
+      });
+
+      // The details list used to capture the object id, because the old regex
+      // grabbed the first \S+ run after the prefix.
+      it("reports submodule paths — including paths with spaces — not object ids", async () => {
+        setupCleanWorktree(
+          [
+            "-6f73556 libs/untouched",
+            "+1e24239 libs/my sub (v1.0-1-g1e24239)",
+            " abc1234 libs/in-sync (heads/main)",
+            "",
+          ].join("\n"),
+        );
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.details?.modifiedSubmodules).toEqual(["libs/my sub"]);
+      });
     });
   });
 
@@ -331,7 +465,7 @@ describe("WorktreeStatusService", () => {
       const result = await service.hasUnpushedCommits("/test/worktree");
 
       expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "main", "--not", "--remotes"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
     });
 
     it("should also check lastSyncCommit in addition to the any-remote check", async () => {
@@ -344,8 +478,21 @@ describe("WorktreeStatusService", () => {
       const result = await service.hasUnpushedCommits("/test/worktree", "abc123");
 
       expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "main", "--not", "--remotes"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
+    });
+
+    // A branch cut from a same-named tag (`git checkout -b 1.4.2 1.4.2`) is a
+    // normal hotfix workflow. Passing the bare name lets the tag answer for the
+    // branch — git only warns on stderr and exits 0 — so unpushed work reads as
+    // zero and the prune pipeline removes the worktree.
+    it("must probe the worktree's HEAD, never the bare branch name", async () => {
+      mockGit.branch.mockResolvedValue({ current: "release-1", detached: false } as any);
+
+      await service.hasUnpushedCommits("/test/worktree");
+
+      expect(unpushedProbeRevisions()).toEqual(["HEAD"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
     });
 
     it("should return true on error (conservative)", async () => {
@@ -443,6 +590,25 @@ describe("WorktreeStatusService", () => {
 
     it("should return false for clean submodules", async () => {
       mockGit.raw.mockResolvedValue(" abc123 submodule1\n abc456 submodule2");
+
+      const result = await service.hasModifiedSubmodules("/test/worktree");
+
+      expect(result).toBe(false);
+    });
+
+    it("should return true for conflicted submodules", async () => {
+      mockGit.raw.mockResolvedValue("U6f73556 libs/sub (heads/main)");
+
+      const result = await service.hasModifiedSubmodules("/test/worktree");
+
+      expect(result).toBe(true);
+    });
+
+    // What every worktree `git worktree add` builds looks like: git does not
+    // initialize submodules for a new worktree, and an uninitialized submodule
+    // has no working tree that could be holding local work.
+    it("should return false for uninitialized submodules", async () => {
+      mockGit.raw.mockResolvedValue("-6f73556 libs/sub\n-6f73556 libs/other");
 
       const result = await service.hasModifiedSubmodules("/test/worktree");
 
@@ -577,17 +743,17 @@ describe("WorktreeStatusService", () => {
     });
 
     it("should not throw for worktree with only gitignored files", async () => {
+      // git filtered `.DS_Store` out of the status itself; nothing re-checks it.
       mockGit.status.mockResolvedValue({
         modified: [],
         deleted: [],
         renamed: [],
         created: [],
         conflicted: [],
-        not_added: [".DS_Store"],
+        not_added: [],
       } as any);
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "check-ignore") return ".DS_Store\n";
         if (firstArg[0] === "submodule") return "";
         return "0\n";
       }) as any);
@@ -780,9 +946,25 @@ describe("WorktreeStatusService", () => {
 
       const status = await service.getFullWorktreeStatus("/test/worktree", false, "headCommitSha");
 
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "main", "--not", "--remotes"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
       expect(status.hasUnpushedCommits).toBe(true);
       expect(status.canRemove).toBe(false);
+    });
+
+    it("must probe the worktree's HEAD, never the bare branch name, for unpushed commits", async () => {
+      setupCleanWorktreeMocks();
+      mockGit.branch.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg && firstArg[0] === "-r") {
+          return { all: ["origin/main"] } as any;
+        }
+        return { current: "release-1", detached: false } as any;
+      }) as any);
+
+      await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(unpushedProbeRevisions()).toEqual(["HEAD"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
     });
 
     it("must report an operation in progress when operation-file probes fail with EMFILE", async () => {
@@ -950,6 +1132,72 @@ describe("WorktreeStatusService", () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
 
       await expect(service.validateWorktreeForRemoval("/test/worktree")).rejects.toThrow(WorktreeNotCleanError);
+    });
+  });
+
+  // simple-git's .env() replaces the child environment wholesale. The LFS-skip
+  // client used for every status probe must therefore carry the (sanitized)
+  // process environment with it: without HOME / XDG_CONFIG_HOME git never reads
+  // the global excludes file, so a `.DS_Store` ignored there reports as an
+  // untracked change and the worktree is neither updated nor pruned; without
+  // PATH the spawn can fail outright.
+  describe("skipLfs git environment", () => {
+    const previous = {
+      HOME: process.env.HOME,
+      EDITOR: process.env.EDITOR,
+      GIT_EDITOR: process.env.GIT_EDITOR,
+    };
+
+    beforeEach(() => {
+      setEnvVar("HOME", "/home/probe-user");
+      setEnvVar("EDITOR", "vim");
+      setEnvVar("GIT_EDITOR", "nano");
+    });
+
+    afterEach(() => {
+      setEnvVar("HOME", previous.HOME);
+      setEnvVar("EDITOR", previous.EDITOR);
+      setEnvVar("GIT_EDITOR", previous.GIT_EDITOR);
+    });
+
+    it("forwards the sanitized process environment alongside GIT_LFS_SKIP_SMUDGE", async () => {
+      const lfsService = new WorktreeStatusService({ skipLfs: true });
+
+      await expect(lfsService.checkWorktreeStatus("/test/worktree")).resolves.toBe(true);
+
+      expect(mockGit.env).toHaveBeenCalledTimes(1);
+      const env = mockGit.env.mock.calls[0][0] as NodeJS.ProcessEnv;
+      expect(process.env.PATH).toBeTruthy();
+      expect(env).toMatchObject({
+        PATH: process.env.PATH,
+        HOME: "/home/probe-user",
+        GIT_LFS_SKIP_SMUDGE: "1",
+      });
+      expect(env).not.toHaveProperty("EDITOR");
+      expect(env).not.toHaveProperty("GIT_EDITOR");
+    });
+
+    it("keeps parity with default env inheritance for the unsafe-env validation", async () => {
+      const lfsService = new WorktreeStatusService({ skipLfs: true });
+
+      await lfsService.checkWorktreeStatus("/test/worktree");
+
+      expect(simpleGit).toHaveBeenCalledWith(
+        "/test/worktree",
+        expect.objectContaining({ unsafe: GIT_UNSAFE_ALLOWANCES }),
+      );
+    });
+
+    it("runs the default client non-interactively without the LFS skip when skipLfs is off", async () => {
+      await service.checkWorktreeStatus("/test/worktree");
+
+      expect(simpleGit).toHaveBeenCalledWith(
+        "/test/worktree",
+        expect.objectContaining({ unsafe: GIT_UNSAFE_ALLOWANCES }),
+      );
+      const env = (mockGit.env as Mock).mock.calls[0]?.[0] as NodeJS.ProcessEnv;
+      expect(env).toMatchObject({ PATH: process.env.PATH, GIT_TERMINAL_PROMPT: "0" });
+      expect(env).not.toHaveProperty("GIT_LFS_SKIP_SMUDGE");
     });
   });
 });

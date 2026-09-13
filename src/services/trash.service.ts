@@ -3,7 +3,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { DEFAULT_CONFIG, GIT_CONSTANTS, PATH_CONSTANTS, TRASH_CONSTANTS } from "../constants";
-import { TrashOperationError } from "../errors";
+import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { atomicWriteFile } from "../utils/atomic-write";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
@@ -309,6 +309,17 @@ export class TrashService {
     return { entries, invalid };
   }
 
+  private async assertNotLocked(dirPath: string): Promise<void> {
+    const lock = await this.gitService.getWorktreeLock(dirPath);
+    if (!lock.locked) return;
+
+    const target = path.resolve(dirPath);
+    const because = lock.reason !== undefined ? `: ${lock.reason}` : "";
+    throw new WorktreeNotCleanError(target, [
+      `the worktree is locked${because}; unlock it first with 'git worktree unlock ${target}'`,
+    ]);
+  }
+
   // The full reversible-removal sequence shared by prune and manual removal:
   // payload to trash, dangling registration cleared, branch ref deleted.
   // A ref-delete failure is a hygiene problem, not a failed removal — the
@@ -320,6 +331,11 @@ export class TrashService {
     reason: TrashReason;
     keepPinOnReap?: boolean;
   }): Promise<{ entry: TrashEntry; branchRefError?: string }> {
+    // Before anything moves: git refuses to unregister a locked worktree even
+    // with --force, so trashing one would size-scan it, rename the whole
+    // directory into .trash/ and rename it straight back on every tick. Refuse
+    // up front and leave the worktree untouched.
+    await this.assertNotLocked(options.dirPath);
     const entry = await this.trashDirectory(options);
     // force is safe here: the directory was already moved to trash, so only
     // the dangling registration is being cleared.
@@ -455,9 +471,7 @@ export class TrashService {
     return manifest;
   }
 
-  async deleteTrashedBranchRef(
-    manifest: Pick<TrashManifest, "branch" | "id" | "pinRef" | "headOid">,
-  ): Promise<void> {
+  async deleteTrashedBranchRef(manifest: Pick<TrashManifest, "branch" | "id" | "pinRef" | "headOid">): Promise<void> {
     if (!manifest.branch) return;
     // Without a pin the branch ref may be the last thing keeping the trashed
     // commits out of gc — leave it as a hygiene problem rather than risk them.
@@ -518,6 +532,14 @@ export class TrashService {
         await this.gitService
           .getSparseCheckoutService()
           .applyToWorktree(manifest.originalPath, this.config.sparseCheckout);
+      }
+      // `git branch <name> <sha>` set no upstream; point the branch at
+      // origin/<branch> when it is known so pull/status work as before.
+      // Best-effort: the worktree is complete either way.
+      try {
+        await this.gitService.trackRemoteBranchIfExists(branch, manifest.originalPath);
+      } catch (upstreamError) {
+        this.logger.warn(`⚠️ Could not set the upstream of restored '${branch}': ${getErrorMessage(upstreamError)}`);
       }
     } catch (error) {
       await this.gitService
