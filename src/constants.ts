@@ -126,9 +126,9 @@ export const PATH_CONSTANTS = {
   GIT_DIR: ".git",
   README: "README",
   CLONE_INIT_MARKER: ".sync-worktrees-clone-init",
-  /** Written right after a successful clone, removed once the initial file
-   * copy lands — its presence marks a tool-created clone whose init was
-   * interrupted and still owes the copy. */
+  /** Written the moment the clone resolves, before any post-clone step, and
+   * removed once the initial file copy lands — its presence marks a
+   * tool-created clone whose init was interrupted and still owes the copy. */
   CLONE_INIT_PENDING_MARKER: ".sync-worktrees-clone-init.pending",
   /** Written when a clone this tool started fetched its objects but failed to
    * check out a working tree (git's "Clone succeeded, but checkout failed").

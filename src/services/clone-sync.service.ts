@@ -1151,10 +1151,11 @@ export class CloneSyncService {
       // was interrupted after the clone — finish the post-clone steps now.
       // Sparse setup is re-run too (idempotent), so an init that died inside
       // it does not leave the clone permanently un-narrowed. The marker is
-      // deliberately written BEFORE the sparse step: written after it, a
-      // sparse failure would leave no marker and the file copy would be
-      // silently dropped forever. Pre-existing user clones never carry the
-      // marker and are left alone.
+      // deliberately written before every one of those steps, the refspec
+      // narrowing above included: written after any of them, a failure there
+      // would leave no marker and the file copy would be silently dropped
+      // forever. Pre-existing user clones never carry the marker and are left
+      // alone.
       if (await fileExists(this.getInitPendingMarkerPath(worktreeDir))) {
         this.logger.info(`Completing interrupted initialization for '${this.repoName}'...`);
         if (this.config.sparseCheckout) {
@@ -1202,6 +1203,25 @@ export class CloneSyncService {
       }
     }
 
+    // The clone is on disk from here on, and every step that follows can fail
+    // or be killed — leaving a valid-looking clone that the next init adopts
+    // via the existing-clone path, which runs the file copy only for a clone
+    // carrying this marker. So the marker goes down first, before the refspec
+    // narrowing (which the adoption path re-runs anyway) and before anything
+    // else touches the clone: written later, each step in between is a window
+    // where a kill drops the copy silently and for good, because nothing else
+    // ever notices a clone that never got one.
+    //
+    // It does not close that window, it shortens it — `clone` returning and
+    // this write are two operations and no ordering here makes them one — but
+    // what is left is a single file write rather than the four-plus git
+    // subprocesses the narrowing spawns.
+    try {
+      await fs.writeFile(this.getInitPendingMarkerPath(worktreeDir), new Date().toISOString());
+    } catch (error) {
+      this.logger.warn(`Could not write clone-init pending marker: ${getErrorMessage(error)}`);
+    }
+
     const freshClients = await this.mutatingClientsFor(worktreeDir);
     await this.configureSingleBranchRemote(freshClients, branch);
 
@@ -1214,16 +1234,6 @@ export class CloneSyncService {
         ? `Clone completed for '${this.repoName}' with LFS content skipped`
         : `Clone successful for '${this.repoName}'`,
     });
-
-    // From here to the end of runInitialFileCopy any failure or kill leaves a
-    // valid-looking clone that the next init adopts via the existing-clone
-    // path, which never runs the file copy. The pending marker records the
-    // debt so that path can settle it.
-    try {
-      await fs.writeFile(this.getInitPendingMarkerPath(worktreeDir), new Date().toISOString());
-    } catch (error) {
-      this.logger.warn(`Could not write clone-init pending marker: ${getErrorMessage(error)}`);
-    }
 
     if (this.config.sparseCheckout) {
       this.logger.info(`Applying sparse-checkout patterns to '${worktreeDir}'...`);

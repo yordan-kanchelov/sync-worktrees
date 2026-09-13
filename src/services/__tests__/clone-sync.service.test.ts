@@ -840,6 +840,138 @@ describe("CloneSyncService", () => {
       expect(sparseService.applyToWorktree).toHaveBeenCalledTimes(1);
       expect(copyFilesSpy).toHaveBeenCalledTimes(1);
     });
+
+    // The pending marker is the only record that a finished clone still owes
+    // its initial file copy: the existing-clone path runs the copy only when
+    // the marker is there, and nothing else ever notices a clone that never
+    // got one. So every step between the clone finishing and the marker
+    // landing is a window in which a kill costs the copy permanently.
+    describe("clone-init pending marker window (#T67)", () => {
+      const PENDING_MARKER = "/tmp/clone-demo/.git/.sync-worktrees-clone-init.pending";
+
+      function enoent(): NodeJS.ErrnoException {
+        return Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+
+      function mockFreshClone(): void {
+        (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+        (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+        (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+        (fs.access as unknown as Mock).mockRejectedValue(enoent());
+      }
+
+      it("writes the marker before the first git write of the post-clone setup", async () => {
+        mockFreshClone();
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: [".env.local"] }),
+          buildGitService(),
+          logger,
+        );
+
+        await service.initialize();
+
+        const markerIndex = (fs.writeFile as unknown as Mock).mock.calls.findIndex(
+          ([target]) => String(target) === PENDING_MARKER,
+        );
+        expect(markerIndex).toBeGreaterThanOrEqual(0);
+        const refspecIndex = gitMock.raw.mock.calls.findIndex(([args]) =>
+          (args as string[]).join(" ").startsWith("config --replace-all remote.origin.fetch"),
+        );
+        expect(refspecIndex).toBeGreaterThanOrEqual(0);
+        expect((fs.writeFile as unknown as Mock).mock.invocationCallOrder[markerIndex]).toBeLessThan(
+          gitMock.raw.mock.invocationCallOrder[refspecIndex],
+        );
+      });
+
+      // The kill, simulated at the one point in the window the code can
+      // observe: the first git write after the clone never comes back. What
+      // is on disk by then — a complete, adoptable clone — is the same thing
+      // a SIGKILL there would leave, so the only question is whether the
+      // marker landed before it.
+      it("leaves the marker behind when the post-clone remote narrowing dies", async () => {
+        mockFreshClone();
+        const killed = new Error("fatal: the process went away");
+        gitMock.raw.mockImplementation(async (args: string[]) => {
+          const key = args.join(" ");
+          if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+          if (key.startsWith("config --replace-all remote.origin.fetch")) throw killed;
+          return "";
+        });
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: [".env.local"] }),
+          buildGitService(),
+          logger,
+        );
+
+        await expect(service.initialize()).rejects.toBe(killed);
+        expect(fs.writeFile).toHaveBeenCalledWith(PENDING_MARKER, expect.any(String));
+      });
+
+      // Why the window costs the copy for good rather than a retry: an
+      // unmarked clone is indistinguishable from one the user made, and
+      // adoption is silent about it.
+      it("adopts an unmarked clone without copying anything or warning", async () => {
+        (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+        (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+        (fs.readFile as unknown as Mock).mockRejectedValue(enoent());
+        (fs.access as unknown as Mock).mockRejectedValue(enoent());
+
+        const branchCreatedActions = new BranchCreatedActionsService();
+        const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+        const warnSpy = vi.spyOn(logger, "warn");
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: [".env.local"] }),
+          buildGitService(),
+          logger,
+          { branchCreatedActions },
+        );
+
+        await service.initialize();
+
+        expect(service.isInitialized()).toBe(true);
+        expect(copyFilesSpy).not.toHaveBeenCalled();
+        expect(warnSpy).not.toHaveBeenCalled();
+      });
+
+      // The two markers answer different questions — the incomplete one
+      // whether this clone may be adopted at all, the pending one what an
+      // adopted clone still owes — and they can only coexist when a recovered
+      // clone's incomplete marker could not be removed. The refusal wins:
+      // nothing is copied into a working tree that was never fully written.
+      it("refuses the clone when an incomplete marker sits next to the pending one", async () => {
+        (fs.readdir as unknown as Mock).mockResolvedValue([".git", "README"]);
+        (fs.readFile as unknown as Mock).mockImplementation(async (target: unknown) => {
+          if (String(target).endsWith(".sync-worktrees-clone-incomplete")) {
+            return "2026-01-01T00:00:00.000Z\nfatal: a.bin: smudge filter lfs failed\nfull git output\n";
+          }
+          throw enoent();
+        });
+        (fs.access as unknown as Mock).mockImplementation(async (target: unknown) => {
+          if (String(target) === PENDING_MARKER) return;
+          throw enoent();
+        });
+
+        const branchCreatedActions = new BranchCreatedActionsService();
+        const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: [".env.local"] }),
+          buildGitService(),
+          logger,
+          { branchCreatedActions },
+        );
+
+        await expect(service.initialize()).rejects.toThrow(
+          /did not complete \(fatal: a\.bin: smudge filter lfs failed\)/,
+        );
+        expect(copyFilesSpy).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe("getWorktrees", () => {

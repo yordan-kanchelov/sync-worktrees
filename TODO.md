@@ -160,7 +160,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   repos (F10 fix incomplete: only the MCP handler was corrected)
 - [x] **T73** — checkoutBranch on a shallow clone throws FastForwardError when merge-base is merely
   indeterminate (duplicated, diverging fast-forward logic vs classifyRemoteRelationship)
-- [ ] **T67** — Clone-init pending marker is written after `configureSingleBranchRemote`, so a crash
+- [x] **T67** — Clone-init pending marker is written after `configureSingleBranchRemote`, so a crash
   in that window leaves a marker-less valid clone whose file copy is silently dropped forever
   (contradicting the comment at 659-662)
 - [ ] **T68** — Clone-mode sparse re-apply skips the README's "narrowing safety" check and does not
@@ -2902,7 +2902,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   425 says sync fetches "keep only the tracked branch at the configured depth", so this is partly a
   design choice — reported as performance, not correctness.
 
-### [ ] T67. Clone-init pending marker is written after `configureSingleBranchRemote`, so a crash in that window leaves a marker-less valid clone whose file copy is silently dropped forever (contradicting the comment at 659-662)
+### [x] T67. Clone-init pending marker is written after `configureSingleBranchRemote`, so a crash in that window leaves a marker-less valid clone whose file copy is silently dropped forever (contradicting the comment at 659-662)
 
 - **Category**: correctness · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
