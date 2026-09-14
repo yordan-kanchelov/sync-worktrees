@@ -19,10 +19,36 @@ import type { Logger } from "./logger.service";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
 import type { Config, RepositoryConfig, SparseCheckoutConfig } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
+import type { PhaseTimer } from "../utils/timing";
 import type { Stats } from "fs";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 const SHALLOW_RELATION_DEEPEN_TARGETS = [50, 200, 1000] as const;
+
+// The phases a sync tick is broken into for `--debug`'s timing table, in the
+// order they run. The names follow worktree mode's ('Phase N: X', in
+// WorktreeModeSyncRunner) so that output is one format to learn rather than
+// two, and the numbers are fixed labels rather than positions in the printed
+// table: a phase this tick never reached leaves a visible gap instead of
+// renumbering the rows under it.
+//
+// A phase has a row if and only if it ran. Since a tick classifies before it
+// reads the working tree, most ticks end at Classify and print no Status row at
+// all, and Sparse only appears where `sparseCheckout` is configured — the same
+// way worktree mode prints no 'Phase 4: Update' row when updates are off. The
+// alternative, a zero-duration row for work that never happened, would read as
+// a scan that cost nothing rather than a scan that was skipped.
+export const CLONE_SYNC_PHASES = {
+  VALIDATE: "Phase 1: Validate",
+  UNSHALLOW: "Phase 2: Unshallow",
+  REMOTE_CONFIG: "Phase 3: Remote config",
+  FETCH: "Phase 4: Fetch",
+  VERIFY_REF: "Phase 5: Verify ref",
+  SPARSE: "Phase 6: Sparse",
+  CLASSIFY: "Phase 7: Classify",
+  STATUS: "Phase 8: Status",
+  MERGE: "Phase 9: Merge",
+} as const;
 
 // The two keys configureSingleBranchRemote converges, as one `git config
 // --get-regexp` pattern so reading them costs a single git process. Anchored
@@ -912,18 +938,23 @@ export class CloneSyncService {
     worktreeDir: string,
     branch: string,
     localRef?: string,
-  ): Promise<{ relationship: RemoteRelationship; deepenedTo: number | null }> {
+  ): Promise<{ relationship: RemoteRelationship; deepenedTo: number | null; deepenFetches: number }> {
     let relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch, localRef);
-    if (relationship !== "indeterminate_shallow") return { relationship, deepenedTo: null };
+    if (relationship !== "indeterminate_shallow") return { relationship, deepenedTo: null, deepenFetches: 0 };
 
     let deepenedTo: number | null = null;
+    // `deepenedTo` says how deep the budget got, which is what the skip
+    // messages need; `deepenFetches` says how many fetches that took, which is
+    // what the tick's timing table counts.
+    let deepenFetches = 0;
     for (const target of this.getDeepenTargets()) {
       await this.deepenShallowHistoryToDepth(clients, branch, target);
       deepenedTo = target;
+      deepenFetches++;
       relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch, localRef);
       if (relationship !== "indeterminate_shallow") break;
     }
-    return { relationship, deepenedTo };
+    return { relationship, deepenedTo, deepenFetches };
   }
 
   async resolveBranch(): Promise<string> {
@@ -2033,11 +2064,37 @@ export class CloneSyncService {
     }
   }
 
-  async runSyncAttempt(outcome?: SyncOutcomeAccumulator): Promise<void> {
-    return this.withOutcome(outcome, () => this.runSyncAttemptInternal());
+  // `phaseTimer` is instrumentation and nothing else: what the tick does is
+  // identical either way. It is not conditional on `--debug`.
+  // WorktreeSyncService.sync() builds one PhaseTimer — the same one the
+  // worktree-mode runner is given, so both modes print one table in one
+  // format — and hands it to every tick it runs, whichever caller asked for the
+  // sync: the CLI, the MCP server and the TUI all reach a tick through sync().
+  // `debug` gates the table alone — whether it is built and printed once the
+  // sync is over — so the phase bookkeeping happens on an ordinary run too. The
+  // parameter stays optional for the callers that reach this method directly
+  // rather than through sync() (a test, an embedder); with no timer every
+  // bracket below is a plain call.
+  async runSyncAttempt(outcome?: SyncOutcomeAccumulator, phaseTimer?: PhaseTimer): Promise<void> {
+    return this.withOutcome(outcome, () => this.runSyncAttemptInternal(phaseTimer));
   }
 
-  private async runSyncAttemptInternal(): Promise<void> {
+  // Brackets one phase of the tick. The phase is closed in a `finally`, so an
+  // early return or a throw inside `run` still closes it — an open phase would
+  // keep running until the table is rendered and silently swallow the rest of
+  // the tick, which is the one way timing here could lie. With no timer this is
+  // a plain call: nothing is allocated and nothing new can throw.
+  private async timePhase<T>(phaseTimer: PhaseTimer | undefined, name: string, run: () => Promise<T>): Promise<T> {
+    if (!phaseTimer) return run();
+    phaseTimer.startPhase(name);
+    try {
+      return await run();
+    } finally {
+      phaseTimer.endPhase();
+    }
+  }
+
+  private async runSyncAttemptInternal(phaseTimer?: PhaseTimer): Promise<void> {
     if (!this.initialized) {
       await this.initialize();
       // init ran here and recorded any skip itself; no duplicate to suppress.
@@ -2053,57 +2110,71 @@ export class CloneSyncService {
       return;
     }
 
-    const branch = await this.resolveBranch();
     const worktreeDir = this.config.worktreeDir;
-    const readGit = this.localClientFor(worktreeDir);
 
-    let currentBranch: string;
-    try {
-      currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-    } catch (error) {
-      const errorMessage = getErrorMessage(error);
-      this.recordSkip(
-        { kind: "head_unreadable", phase: "sync", error: errorMessage },
-        `Could not read current branch from '${worktreeDir}': ${errorMessage}`,
-        `Skipping '${this.repoName}': could not read current branch`,
-      );
-      return;
-    }
+    // Everything up to the first write: which branch this clone is meant to
+    // track, which one it is on, which remote it points at, and the
+    // primary-checkout guard. All three of its skips leave the tick, so the
+    // phase is closed by timePhase's `finally` rather than by each return path;
+    // `null` is that exit, with the skip already recorded.
+    const validated = await this.timePhase(
+      phaseTimer,
+      CLONE_SYNC_PHASES.VALIDATE,
+      async (): Promise<{ branch: string; clients: MutatingGitClients } | null> => {
+        const branch = await this.resolveBranch();
+        const readGit = this.localClientFor(worktreeDir);
 
-    if (currentBranch !== branch) {
-      this.recordSkip(
-        { kind: "branch_mismatch", phase: "sync", currentBranch, expectedBranch: branch },
-        `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge. ` +
-          `Update 'branch' in the config or switch the clone back.`,
-        `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
-      );
-      return;
-    }
+        let currentBranch: string;
+        try {
+          currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+        } catch (error) {
+          const errorMessage = getErrorMessage(error);
+          this.recordSkip(
+            { kind: "head_unreadable", phase: "sync", error: errorMessage },
+            `Could not read current branch from '${worktreeDir}': ${errorMessage}`,
+            `Skipping '${this.repoName}': could not read current branch`,
+          );
+          return null;
+        }
 
-    // Re-check every tick (not just at init): the daemon reuses this service, so
-    // a clone whose origin no longer matches repoUrl must keep being skipped
-    // rather than fetching from the wrong remote.
-    const originMismatch = await this.evaluateOriginMatch(readGit, worktreeDir);
-    if (originMismatch) {
-      this.recordSkip(
-        originMismatch.skip,
-        originMismatch.warnMessage,
-        `Skipping '${this.repoName}': ${originMismatch.progressDetail}`,
-      );
-      return;
-    }
+        if (currentBranch !== branch) {
+          this.recordSkip(
+            { kind: "branch_mismatch", phase: "sync", currentBranch, expectedBranch: branch },
+            `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge. ` +
+              `Update 'branch' in the config or switch the clone back.`,
+            `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
+          );
+          return null;
+        }
 
-    // Every step from here on writes to the repository, and this runs again on
-    // every tick — so the primary-checkout guard has to be inside the tick, not
-    // only in initialize().
-    const clients = await this.mutatingClientsFor(worktreeDir);
+        // Re-check every tick (not just at init): the daemon reuses this service, so
+        // a clone whose origin no longer matches repoUrl must keep being skipped
+        // rather than fetching from the wrong remote.
+        const originMismatch = await this.evaluateOriginMatch(readGit, worktreeDir);
+        if (originMismatch) {
+          this.recordSkip(
+            originMismatch.skip,
+            originMismatch.warnMessage,
+            `Skipping '${this.repoName}': ${originMismatch.progressDetail}`,
+          );
+          return null;
+        }
+
+        // Every step from here on writes to the repository, and this runs again on
+        // every tick — so the primary-checkout guard has to be inside the tick, not
+        // only in initialize().
+        return { branch, clients: await this.mutatingClientsFor(worktreeDir) };
+      },
+    );
+    if (!validated) return;
+    const { branch, clients } = validated;
 
     // The unshallow fetch uses the already-narrowed refspec, so a deleted
     // tracked branch fails it exactly like the branch fetch below — classify
     // it into the same soft skip instead of letting it escape as a hard
     // failure that only shallow clones would hit.
     try {
-      await this.unshallowIfDepthRemoved(clients);
+      await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.UNSHALLOW, () => this.unshallowIfDepthRemoved(clients));
     } catch (error) {
       if (isMissingRemoteRefError(getErrorMessage(error))) {
         this.recordMissingRemoteRefSkip(branch);
@@ -2112,16 +2183,27 @@ export class CloneSyncService {
       throw error;
     }
 
-    await this.configureSingleBranchRemote(clients, branch);
+    // Its own phase rather than part of the fetch: on the call that narrows the
+    // refspec this is also where the stale remote-tracking refs are swept, and
+    // a legacy all-branches clone has thousands of them.
+    await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.REMOTE_CONFIG, () =>
+      this.configureSingleBranchRemote(clients, branch),
+    );
 
-    const fetchArgs = await this.buildSyncFetchArgs(clients.git, branch);
-    this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
-    if ((await this.fetchWithRecovery(clients, fetchArgs, worktreeDir, branch)).skipped) {
+    const fetched = await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.FETCH, async () => {
+      const fetchArgs = await this.buildSyncFetchArgs(clients.git, branch);
+      this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
+      return this.fetchWithRecovery(clients, fetchArgs, worktreeDir, branch);
+    });
+    if (fetched.skipped) {
       return;
     }
     this.emitProgress({ phase: "fetch", message: `Fetched origin/${branch} for '${this.repoName}'` });
 
-    if (!(await this.hasRemoteBranch(clients.git, branch))) {
+    const remoteBranchPresent = await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.VERIFY_REF, () =>
+      this.hasRemoteBranch(clients.git, branch),
+    );
+    if (!remoteBranchPresent) {
       this.recordSkip(
         { kind: "missing_remote_ref", branch, source: "post_fetch_verify" },
         `Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`,
@@ -2130,8 +2212,11 @@ export class CloneSyncService {
       return;
     }
 
-    if (this.config.sparseCheckout) {
-      await this.reapplySparseCheckout(worktreeDir, branch, this.config.sparseCheckout);
+    const sparseConfig = this.config.sparseCheckout;
+    if (sparseConfig) {
+      await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.SPARSE, () =>
+        this.reapplySparseCheckout(worktreeDir, branch, sparseConfig),
+      );
     }
 
     // The relationship first, the working tree only if it turns out to matter.
@@ -2176,7 +2261,24 @@ export class CloneSyncService {
     // it is what turns 'working tree has local changes' — which says nothing
     // about why the clone cannot advance — into the `indeterminate_shallow`
     // skip that names `depth` as the remedy.
-    const { relationship, deepenedTo: lastDeepenedTo } = await this.classifyWithDeepening(clients, worktreeDir, branch);
+    //
+    // For the timing table that order is why the status scan is the one phase
+    // that is usually absent: it runs on the fast-forward path alone.
+    const {
+      relationship,
+      deepenedTo: lastDeepenedTo,
+      deepenFetches,
+    } = await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.CLASSIFY, () =>
+      this.classifyWithDeepening(clients, worktreeDir, branch),
+    );
+    // The deepen fetches interleave with the classification reads they exist to
+    // feed — fetch, ask again, fetch — so they are this phase's count rather
+    // than a phase of their own, which is also the only shape PhaseTimer can
+    // hold: it tracks one open phase, so a nested one would close this one and
+    // lose the reads around it.
+    if (deepenFetches > 0) {
+      phaseTimer?.setPhaseCount(CLONE_SYNC_PHASES.CLASSIFY, deepenFetches);
+    }
 
     if (relationship === "up_to_date") {
       this.logger.info(`'${this.repoName}' already up to date with origin/${branch}.`);
@@ -2224,7 +2326,9 @@ export class CloneSyncService {
       return;
     }
 
-    const isClean = await this.gitService.checkWorktreeStatus(worktreeDir);
+    const isClean = await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.STATUS, () =>
+      this.gitService.checkWorktreeStatus(worktreeDir),
+    );
     if (!isClean) {
       this.recordSkip(
         { kind: "dirty_tree" },
@@ -2237,16 +2341,18 @@ export class CloneSyncService {
 
     this.logger.info(`Fast-forwarding '${this.repoName}' to origin/${branch}...`);
     this.emitProgress({ phase: "merge", message: `Fast-forwarding '${this.repoName}' to origin/${branch}` });
-    // Read before the merge rather than derived from it afterwards: the
-    // cleanup below only runs on a commit that provably did not move, and
-    // "could not read HEAD" must not pass for that proof.
-    const headBeforeMerge = await this.readHeadCommit(clients.git);
-    try {
-      await clients.git.merge([`origin/${branch}`, "--ff-only"]);
-    } catch (mergeError) {
-      await this.undoRejectedFastForward(clients, worktreeDir, branch, headBeforeMerge);
-      throw mergeError;
-    }
+    await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.MERGE, async () => {
+      // Read before the merge rather than derived from it afterwards: the
+      // cleanup below only runs on a commit that provably did not move, and
+      // "could not read HEAD" must not pass for that proof.
+      const headBeforeMerge = await this.readHeadCommit(clients.git);
+      try {
+        await clients.git.merge([`origin/${branch}`, "--ff-only"]);
+      } catch (mergeError) {
+        await this.undoRejectedFastForward(clients, worktreeDir, branch, headBeforeMerge);
+        throw mergeError;
+      }
+    });
     this.logger.info(`✅ Updated '${this.repoName}' to origin/${branch}.`);
     this.emitProgress({ phase: "merge", message: `Updated '${this.repoName}' to origin/${branch}` });
     this.outcomeAccumulator?.recordUpdated(branch, worktreeDir, "fast_forward");

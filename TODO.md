@@ -174,7 +174,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   every sync tick although the fetch never uses the stored refspec
 - [x] **T75** — Stale remote-tracking refs are deleted one `git update-ref -d` process per ref
   instead of a single batched `update-ref --stdin`
-- [ ] **T76** — Clone-mode syncs produce no per-phase timing in --debug (PhaseTimer is only wired
+- [x] **T76** — Clone-mode syncs produce no per-phase timing in --debug (PhaseTimer is only wired
   into the worktree-mode runner)
 - [ ] **T65** — `sanitizeGitEnv` forwards repository-discovery variables (`GIT_DIR`,
   `GIT_WORK_TREE`, `GIT_INDEX_FILE`, ...); when sync-worktrees is launched from a git hook,
@@ -3217,7 +3217,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: No batching exists; tests assert per-ref `update-ref -d` calls
   (checkoutBranch test lines 674-716), which pins the N+1 shape.
 
-### [ ] T76. Clone-mode syncs produce no per-phase timing in --debug (PhaseTimer is only wired into the worktree-mode runner)
+### [x] T76. Clone-mode syncs produce no per-phase timing in --debug (PhaseTimer is only wired into the worktree-mode runner)
 
 - **Category**: workflow · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

@@ -577,7 +577,9 @@ export class WorktreeSyncService {
           if (clonedThisOperation) {
             this.logger.info("Clone was created by this run; it is at the tracked remote tip, so no fetch is needed.");
           } else {
-            await retry(() => cloneSync.runSyncAttempt(outcome), retryOptionsWithOutcomeReset);
+            // Same timer the worktree-mode runner is given, so `debug` prints
+            // one table in one format whichever mode the repository is in.
+            await retry(() => cloneSync.runSyncAttempt(outcome, phaseTimer), retryOptionsWithOutcomeReset);
           }
         } else {
           await retry(
