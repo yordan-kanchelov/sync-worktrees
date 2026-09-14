@@ -3184,13 +3184,21 @@ describe("CloneSyncService", () => {
     // not remove by failing the process it was asked in, and the refs in the
     // batches after it still have to be tried. The sweep is cleanup — the
     // tick that owns it narrows the refspec and syncs regardless.
-    it("keeps sweeping after a batch git refuses, and still narrows the refspec", async () => {
+    // How much of a refused batch git removed is version-dependent (2.43 kept
+    // going, 2.55 rolled the whole batch back), so the refused batch is retried
+    // one ref at a time rather than trusting either answer.
+    it("retries a refused batch one ref at a time, and still narrows the refspec", async () => {
       const stale = Array.from({ length: 250 }, (_, index) => `refs/remotes/origin/feat/b${index}`);
       mockTickRaw(configReadOutput([["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]]), stale);
       const tickRaw = gitMock.raw.getMockImplementation() as (args: string[]) => Promise<string>;
       let batches = 0;
       gitMock.raw.mockImplementation(async (args: string[]) => {
-        if (args[0] === "branch" && ++batches === 1) {
+        // Only the first multi-ref batch is refused; the per-ref retries that
+        // follow it are allowed through, except the one ref git really holds.
+        if (args[0] === "branch" && args.length > 4 && ++batches === 1) {
+          throw new Error("error: cannot lock ref 'refs/remotes/origin/feat/b7': Unable to create lock file");
+        }
+        if (args[0] === "branch" && args[3] === "origin/feat/b7") {
           throw new Error("error: cannot lock ref 'refs/remotes/origin/feat/b7': Unable to create lock file");
         }
         return tickRaw(args);
@@ -3199,7 +3207,13 @@ describe("CloneSyncService", () => {
 
       await service.runSyncAttempt();
 
-      expect(staleRefDeleteCalls().map((args) => args.length - 3)).toEqual([200, 50]);
+      const deletes = staleRefDeleteCalls();
+      // The refused batch of 200, then 200 single-ref retries, then the
+      // untouched second batch of 50.
+      expect(deletes.map((args) => args.length - 3)).toEqual([200, ...Array.from({ length: 200 }, () => 1), 50]);
+      const retried = deletes.filter((args) => args.length === 4).map((args) => args[3]);
+      expect(retried).toContain("origin/feat/b7");
+      expect(new Set(retried).size).toBe(200);
       expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });

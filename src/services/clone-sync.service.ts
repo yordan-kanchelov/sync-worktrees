@@ -1031,15 +1031,27 @@ export class CloneSyncService {
       try {
         await clients.git.raw(["branch", "-r", "-D", ...batch]);
       } catch (error) {
-        // Stale remote refs are best-effort cleanup; sync correctness comes
-        // from the narrowed refspec. A batch reports the refs it could not
-        // remove by failing as a whole, so what it did remove is not knowable
-        // here — the git message names them.
+        // How much of a refused batch git deleted is version-dependent, so
+        // neither answer can be relied on: on git 2.43 a batch holding one
+        // locked ref removed all the others, and on 2.55 it removed none of
+        // them. Stale refs are best-effort cleanup — sync correctness comes
+        // from the narrowed refspec — but "best effort" has to mean the same
+        // thing on every git, so a refused batch is retried one ref at a
+        // time. That is the old per-ref cost, paid only on the batch that
+        // failed, and it leaves exactly the refs git genuinely refuses.
         this.logger.debug(
-          `A batch of ${batch.length} stale remote-tracking ref(s) in '${this.repoName}' did not delete ` +
-            `cleanly (git names the ones it could not remove; the rest of the batch is gone): ` +
-            `${summarizeGitFailure(getErrorMessage(error))}`,
+          `A batch of ${batch.length} stale remote-tracking ref(s) in '${this.repoName}' was refused; ` +
+            `retrying them one at a time: ${summarizeGitFailure(getErrorMessage(error))}`,
         );
+        for (const name of batch) {
+          try {
+            await clients.git.raw(["branch", "-r", "-D", name]);
+          } catch {
+            // The ref git actually refuses. Left in place: it is stale
+            // cleanup, and the narrowed refspec already keeps it out of every
+            // fetch.
+          }
+        }
       }
     }
   }
