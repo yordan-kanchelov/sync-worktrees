@@ -67,7 +67,14 @@ describe("TrashReaperService", () => {
 
   async function makeEntry(
     name: string,
-    options: { ageDays: number; branch?: string; keepPinOnReap?: boolean; reason?: TrashReason },
+    options: {
+      ageDays: number;
+      branch?: string;
+      keepPinOnReap?: boolean;
+      reason?: TrashReason;
+      /** Rewrite the pin ref into the flat layout shipped before pins were namespaced. */
+      legacyFlatPinRef?: boolean;
+    },
   ): Promise<TrashEntry> {
     const dir = path.join(worktreeDir, name);
     await fs.mkdir(dir, { recursive: true });
@@ -84,8 +91,18 @@ describe("TrashReaperService", () => {
     const deletedAt = new Date(Date.now() - options.ageDays * DAY_MS);
     entry.manifest.deletedAt = deletedAt.toISOString();
     entry.manifest.expiresAt = new Date(deletedAt.getTime() + trashService.getRetentionDays() * DAY_MS).toISOString();
+    if (options.legacyFlatPinRef) {
+      entry.manifest.pinRef = `refs/sync-worktrees/trash/${entry.manifest.id}`;
+    }
     await fs.writeFile(path.join(entry.containerPath, "manifest.json"), JSON.stringify(entry.manifest, null, 2));
     return entry;
+  }
+
+  function warningsMatching(pattern: RegExp): string[] {
+    return vi
+      .mocked(logger.warn)
+      .mock.calls.map((call) => String(call[0]))
+      .filter((message) => pattern.test(message));
   }
 
   const rootHash = (root: string): string => createHash("sha256").update(path.resolve(root)).digest("hex").slice(0, 16);
@@ -201,6 +218,83 @@ describe("TrashReaperService", () => {
     expect(gitStub.deleteRef).not.toHaveBeenCalledWith(`${foreignPrefix}foreign-entry-id`);
     expect(gitStub.deleteRef).not.toHaveBeenCalledWith("refs/sync-worktrees/trash/legacy-flat-id");
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("legacy flat trash pin refs"));
+  });
+
+  // The sweep deliberately never deletes a flat ref: it cannot tell one of its
+  // own from another config sharing the bare repo. Convergence for our own
+  // legacy entries therefore has to come from the manifest, which names the
+  // exact ref the entry owns — without it the pin outlives the payload forever.
+  it("reaps a legacy flat-pinned entry and releases its pin through the manifest, leaving unowned flat refs alone", async () => {
+    const legacy = await makeEntry("legacy-expired", {
+      ageDays: 31,
+      branch: "legacy-expired",
+      legacyFlatPinRef: true,
+    });
+    const legacyPinRef = `refs/sync-worktrees/trash/${legacy.manifest.id}`;
+    gitStub.listRefs.mockResolvedValue([legacyPinRef, "refs/sync-worktrees/trash/unowned-flat-id"]);
+
+    const result = await reaper.reapExpiredUnlocked();
+
+    expect(result.deleted).toBe(1);
+    expect(result.errors).toEqual([]);
+    await expect(fs.access(legacy.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(legacyPinRef);
+    expect(gitStub.deleteRef).not.toHaveBeenCalledWith("refs/sync-worktrees/trash/unowned-flat-id");
+    expect(result.orphanedRefsDeleted).toBe(0);
+  });
+
+  // The legacy shape that matters most: an entry whose commits were never
+  // pushed, so the pin is the only thing holding them. Reaping it has to build
+  // the permanent keep ref from the entry's id AND release the flat pin named
+  // in its manifest — the two behaviours are covered apart, and this is the
+  // one case where getting the order wrong loses the only copy.
+  it("keeps a legacy flat-pinned entry's commits alive when it reaps it", async () => {
+    const legacy = await makeEntry("legacy-keep", {
+      ageDays: 31,
+      branch: "legacy-keep",
+      keepPinOnReap: true,
+      legacyFlatPinRef: true,
+    });
+    const legacyPinRef = `refs/sync-worktrees/trash/${legacy.manifest.id}`;
+
+    const result = await reaper.reapExpiredUnlocked();
+
+    expect(result.deleted).toBe(1);
+    expect(result.errors).toEqual([]);
+    // The commits survive the payload: keep ref created from the head the
+    // manifest recorded, before anything was deleted.
+    expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${legacy.manifest.id}`, "abc123");
+    // And the flat pin is released, so it is the keep ref holding them now.
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(legacyPinRef);
+  });
+
+  // Both situations are steady states the reaper never acts on. Repeating them
+  // on an hourly tick buries the lines that do need attention.
+  it("warns once per process about unrecognized content and legacy flat refs, and again only when they change", async () => {
+    const junkDir = path.join(trashService.getTrashRoot(), "manually-placed");
+    await fs.mkdir(junkDir, { recursive: true });
+    gitStub.listRefs.mockResolvedValue(["refs/sync-worktrees/trash/legacy-flat-id"]);
+
+    await reaper.reapExpiredUnlocked();
+    await reaper.reapExpiredUnlocked();
+
+    expect(warningsMatching(/leaving unrecognized entry/)).toHaveLength(1);
+    expect(warningsMatching(/legacy flat trash pin refs/)).toHaveLength(1);
+
+    const secondJunkDir = path.join(trashService.getTrashRoot(), "another-manually-placed");
+    await fs.mkdir(secondJunkDir, { recursive: true });
+    await reaper.reapExpiredUnlocked();
+
+    expect(warningsMatching(/another-manually-placed/)).toHaveLength(1);
+    expect(warningsMatching(/leaving unrecognized entry/)).toHaveLength(2);
+
+    // Repaired and broken again is a new situation, not a suppressed one.
+    await fs.rm(junkDir, { recursive: true, force: true });
+    await reaper.reapExpiredUnlocked();
+    await fs.mkdir(junkDir, { recursive: true });
+    await reaper.reapExpiredUnlocked();
+
+    expect(warningsMatching(/'.*manually-placed'/)).toHaveLength(3);
   });
 
   it("protects a pin ref behind any dirent name, even a non-directory — unpinning is irreversible, a ref is cheap", async () => {

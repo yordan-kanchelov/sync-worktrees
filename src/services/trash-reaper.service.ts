@@ -25,6 +25,15 @@ export interface TrashReapResult {
 // only manifested entries whose realpath stays under the trash root, and only
 // after the attempt is durably recorded in the audit log.
 export class TrashReaperService {
+  // Unrecognized containers and legacy flat pin refs are steady states the
+  // reaper deliberately never acts on, so repeating the warning on every tick
+  // (hourly, for as long as the process lives) is noise that buries the lines
+  // that do need attention. Warn when the situation first appears and stay
+  // quiet until it changes; the trash listing and the force-clean preview
+  // report invalid entries independently, so nothing becomes invisible.
+  private warnedInvalidPaths = new Set<string>();
+  private warnedLegacyFlatRefs = false;
+
   constructor(
     private readonly config: Config,
     private readonly trashService: TrashService,
@@ -71,8 +80,12 @@ export class TrashReaperService {
 
     const { entries, invalid } = await this.trashService.listEntries();
     for (const invalidPath of invalid) {
+      if (this.warnedInvalidPaths.has(invalidPath)) continue;
       this.logger.warn(`⚠️ Trash reaper: leaving unrecognized entry '${invalidPath}' alone (no valid manifest)`);
     }
+    // Rebuilt rather than added to, so an entry that is repaired and later
+    // breaks again is reported again instead of staying silently suppressed.
+    this.warnedInvalidPaths = new Set(invalid);
 
     const reapedIds = new Set<string>();
     for (const entry of entries) {
@@ -214,15 +227,16 @@ export class TrashReaperService {
     }
 
     const ownPrefix = `${GIT_CONSTANTS.TRASH_REF_PREFIX}${this.getTrashRootHash()}/`;
-    let warnedLegacy = false;
 
     for (const ref of refs) {
       if (!ref.startsWith(GIT_CONSTANTS.TRASH_REF_PREFIX)) continue;
       if (!ref.startsWith(ownPrefix)) {
         const suffix = ref.slice(GIT_CONSTANTS.TRASH_REF_PREFIX.length);
-        if (suffix.length > 0 && !suffix.includes("/") && !warnedLegacy) {
-          this.logger.warn("⚠️ Trash reaper: leaving legacy flat trash pin refs alone");
-          warnedLegacy = true;
+        if (suffix.length > 0 && !suffix.includes("/") && !this.warnedLegacyFlatRefs) {
+          this.logger.warn(
+            "⚠️ Trash reaper: leaving legacy flat trash pin refs alone; each is released when its own trash entry is restored or reaped",
+          );
+          this.warnedLegacyFlatRefs = true;
         }
         continue;
       }

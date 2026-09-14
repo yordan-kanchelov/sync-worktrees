@@ -187,7 +187,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 ### Batch 4 — trash, diverged and removal safety
 
-- [ ] **T26** — F7 fix incomplete: trash entries written by 5.0.x/5.1.0 (flat pin refs) are rejected
+- [x] **T26** — F7 fix incomplete: trash entries written by 5.0.x/5.1.0 (flat pin refs) are rejected
   as invalid manifests forever — never listed, never restorable, never reaped, pin refs never released
 - [ ] **T27** — A partially failed `fs.rm` of a trash container deletes manifest.json first and
   leaves an unrecognized, unreapable container whose pin ref is then kept forever
@@ -1441,7 +1441,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   worktree launched simultaneously (thousands on large repos), unlike the sync path which caps
   status checks at maxStatusChecks”.
 
-### [ ] T26. F7 fix incomplete: trash entries written by 5.0.x/5.1.0 (flat pin refs) are rejected as invalid manifests forever — never listed, never restorable, never reaped, pin refs never released
+### [x] T26. F7 fix incomplete: trash entries written by 5.0.x/5.1.0 (flat pin refs) are rejected as invalid manifests forever — never listed, never restorable, never reaped, pin refs never released
 
 - **Category**: correctness · **Subsystem**: trash
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

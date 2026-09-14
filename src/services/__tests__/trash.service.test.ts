@@ -14,6 +14,8 @@ import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
 
 const DAY_MS = 86_400_000;
+const PREFIX = GIT_CONSTANTS.TRASH_REF_PREFIX;
+const HASH = "0123456789abcdef";
 
 function makeGitStub() {
   return {
@@ -324,16 +326,64 @@ describe("TrashService", () => {
       );
     });
 
-    it("rejects a manifest whose pin ref escapes this entry's namespace", async () => {
+    // A pin ref is what the reaper and restore hand to `git update-ref -d`, so
+    // every shape that does not end at this entry's own id has to be refused —
+    // otherwise a hand-edited or corrupted manifest picks the delete target.
+    it.each([
+      { scenario: "a branch ref", pinRef: () => "refs/heads/main" },
+      {
+        // Padded so the root-hash slice lands on real hex even without the
+        // prefix check: the whole string is still a branch ref.
+        scenario: "a branch ref padded to the trash prefix's length",
+        pinRef: (id: string) => `refs/heads/${"x".repeat(PREFIX.length - "refs/heads/".length)}${HASH}/${id}`,
+      },
+      { scenario: "a traversal out of the namespace", pinRef: (id: string) => `${PREFIX}../../heads/${id}` },
+      { scenario: "a flat ref naming a different entry", pinRef: (id: string) => `${PREFIX}other-${id}` },
+      { scenario: "a flat ref naming a longer id", pinRef: (id: string) => `${PREFIX}${id}-extra` },
+      { scenario: "a hashed ref naming a different entry", pinRef: (id: string) => `${PREFIX}${HASH}/other-${id}` },
+      { scenario: "a hashed ref with a short root hash", pinRef: (id: string) => `${PREFIX}deadbeef/${id}` },
+      { scenario: "a hashed ref not joined by a slash", pinRef: (id: string) => `${PREFIX}${HASH}-${id}` },
+      { scenario: "a nested path below this entry", pinRef: (id: string) => `${PREFIX}${HASH}/${id}/child` },
+      { scenario: "the bare trash prefix", pinRef: () => PREFIX },
+      { scenario: "an empty string", pinRef: () => "" },
+      { scenario: "a non-string", pinRef: () => 17 },
+    ])("rejects a manifest whose pin ref is $scenario", async ({ pinRef }) => {
       const source = await makeSourceDir("bad-pin");
       const entry = await service.trashDirectory({ dirPath: source, branch: "bad-pin", reason: "manual" });
       const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
-      await fs.writeFile(manifestPath, JSON.stringify({ ...entry.manifest, pinRef: "refs/heads/main" }));
+      await fs.writeFile(manifestPath, JSON.stringify({ ...entry.manifest, pinRef: pinRef(entry.manifest.id) }));
 
       const listed = await service.listEntries();
 
       expect(listed.entries).toEqual([]);
       expect(listed.invalid).toEqual([entry.containerPath]);
+    });
+
+    it("rejects a manifest with no pinRef key at all — absence is not the same as an unpinned entry", async () => {
+      const source = await makeSourceDir("absent-pin");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "absent-pin", reason: "manual" });
+      const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
+      const { pinRef: _dropped, ...withoutPinRef } = entry.manifest;
+      await fs.writeFile(manifestPath, JSON.stringify(withoutPinRef));
+
+      await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [entry.containerPath] });
+    });
+
+    // Trash shipped writing flat pin refs (`<prefix><id>`) before they were
+    // namespaced per trash root. Refusing that layout stranded every entry made
+    // before the upgrade: hidden from the listing, unrestorable, never reaped,
+    // and its pin held through every gc forever.
+    it("accepts the legacy flat pin ref layout so entries written before the namespacing still list", async () => {
+      const source = await makeSourceDir("legacy-flat");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "legacy-flat", reason: "prune" });
+      const legacyPinRef = `${PREFIX}${entry.manifest.id}`;
+      const manifestPath = path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME);
+      await fs.writeFile(manifestPath, JSON.stringify({ ...entry.manifest, pinRef: legacyPinRef }));
+
+      const listed = await service.listEntries();
+
+      expect(listed.invalid).toEqual([]);
+      expect(listed.entries.map((candidate) => candidate.manifest.pinRef)).toEqual([legacyPinRef]);
     });
 
     it("rejects keep-on-reap manifests without a pinned HEAD", async () => {
@@ -468,6 +518,31 @@ describe("TrashService", () => {
       await expect(fs.readFile(path.join(source, ".git"), "utf-8")).resolves.toBe("gitdir: /fresh/admin");
       expect(gitStub.deleteRef).toHaveBeenCalledWith(manifest.pinRef);
       expect(restored.branch).toBe("feature-y");
+      await expect(service.listEntries()).resolves.toMatchObject({ entries: [] });
+    });
+
+    it("restores an entry pinned in the legacy flat layout and releases that flat ref", async () => {
+      const source = await makeSourceDir("legacy-restore", { "work.txt": "uncommitted work" });
+      const { manifest, containerPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "legacy-restore",
+        reason: "prune",
+      });
+      const legacyPinRef = `${PREFIX}${manifest.id}`;
+      await fs.writeFile(
+        path.join(containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME),
+        JSON.stringify({ ...manifest, pinRef: legacyPinRef }),
+      );
+      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
+        await fs.mkdir(args[1] as string, { recursive: true });
+      });
+
+      const restored = await service.restore(manifest.id);
+
+      expect(restored.pinRef).toBe(legacyPinRef);
+      expect(gitStub.createBranchAt).toHaveBeenCalledWith("legacy-restore", "abc123");
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      expect(gitStub.deleteRef).toHaveBeenCalledWith(legacyPinRef);
       await expect(service.listEntries()).resolves.toMatchObject({ entries: [] });
     });
 

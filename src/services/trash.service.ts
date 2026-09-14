@@ -654,13 +654,20 @@ export class TrashService {
   }
 
   // A pin ref must belong to this entry, so a hand-edited manifest can never
-  // aim the reaper's deleteRef at something like refs/heads/main. The root-hash
-  // segment is checked for shape only, not for equality with the current trash
-  // root: relocating worktreeDir must not turn every existing entry into
-  // unrecognized content that is never reaped and never releases its pin.
+  // aim the reaper's deleteRef at something like refs/heads/main. Two layouts
+  // are accepted: `<prefix><rootHash>/<id>` as written today, and the flat
+  // `<prefix><id>` written before pins were namespaced per trash root —
+  // rejecting the flat one stranded every entry made before that upgrade as
+  // unrecognized content, never listed, restored or reaped. Both end at this
+  // entry's own id, which is a single directory name read out of the trash
+  // root and so contains no separator: the ref can never leave the trash
+  // namespace. The root-hash segment is checked for shape only, not for
+  // equality with the current trash root: relocating worktreeDir must not turn
+  // every existing entry into unrecognized content either.
   private isOwnPinRef(pinRef: unknown, id: string): boolean {
     if (pinRef === null) return true;
     if (typeof pinRef !== "string") return false;
+    if (pinRef === `${GIT_CONSTANTS.TRASH_REF_PREFIX}${id}`) return true;
     const suffix = `/${id}`;
     if (!pinRef.startsWith(GIT_CONSTANTS.TRASH_REF_PREFIX) || !pinRef.endsWith(suffix)) return false;
     const rootHash = pinRef.slice(GIT_CONSTANTS.TRASH_REF_PREFIX.length, pinRef.length - suffix.length);

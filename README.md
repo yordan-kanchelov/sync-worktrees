@@ -615,7 +615,7 @@ Notes:
 
 - Trash applies to worktree mode only; clone mode never removes its checkout.
 - Anything in `.trash/` without a valid manifest is left alone by the reaper and reported, never deleted.
-- Pin refs whose trash entry is gone (e.g. a failed cleanup, a manually emptied `.trash/`) are swept by the reaper on the next sync, so nothing stays pinned forever.
+- Pin refs whose trash entry is gone (e.g. a failed cleanup, a manually emptied `.trash/`) are swept by the reaper on the next sync, so nothing stays pinned forever. The sweep only touches its own `<workspace-hash>/` namespace. Entries made before pins carried that namespace keep a flat `refs/sync-worktrees/trash/<id>` pin, which their own manifest still releases when the entry is restored or reaped; a flat pin whose entry was already gone by then is left alone — nothing distinguishes it from another workspace's — and has to be dropped by hand with `git update-ref -d`.
 - A failure to move a directory into trash (e.g. trash on a different filesystem) skips the removal entirely — the worktree stays in place.
 - Worktrees containing submodules are preserved byte-for-byte; nested submodule state is restored as-is but submodules are not re-registered automatically.
 
