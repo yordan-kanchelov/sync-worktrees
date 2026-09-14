@@ -189,7 +189,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 - [x] **T26** — F7 fix incomplete: trash entries written by 5.0.x/5.1.0 (flat pin refs) are rejected
   as invalid manifests forever — never listed, never restorable, never reaped, pin refs never released
-- [ ] **T27** — A partially failed `fs.rm` of a trash container deletes manifest.json first and
+- [x] **T27** — A partially failed `fs.rm` of a trash container deletes manifest.json first and
   leaves an unrecognized, unreapable container whose pin ref is then kept forever
 - [ ] **T28** — TUI force clean purges trash entries created after the confirmation preview: a cron
   sync that starts while the modal is open can trash worktrees that are then destroyed with gc
@@ -1487,7 +1487,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   nothing ever releases them. F7's spec called for both layouts to stay resolvable during the
   transition.
 
-### [ ] T27. A partially failed `fs.rm` of a trash container deletes manifest.json first and leaves an unrecognized, unreapable container whose pin ref is then kept forever
+### [x] T27. A partially failed `fs.rm` of a trash container deletes manifest.json first and leaves an unrecognized, unreapable container whose pin ref is then kept forever
 
 - **Category**: correctness · **Subsystem**: trash
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

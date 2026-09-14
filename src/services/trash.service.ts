@@ -9,6 +9,7 @@ import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { filenameTimestamp } from "../utils/filename-timestamp";
 import { getErrorMessage } from "../utils/lfs-error";
+import { hasPayloadPendingDeletion, removeTrashContainer, trashDeleteHint } from "../utils/trash-container";
 import { computeTrashRootHash } from "../utils/trash-root-hash";
 
 import { PathResolutionService } from "./path-resolution.service";
@@ -416,6 +417,15 @@ export class TrashService {
     }
 
     if ((await probePathExists(payloadPath)) !== "exists") {
+      // A reap that already set the payload aside has committed this entry to
+      // deletion; it is finishable, not restorable, and saying so beats
+      // "missing" for a user who can still see files under the container.
+      if (await hasPayloadPendingDeletion(containerPath)) {
+        throw new TrashOperationError(
+          "restore",
+          `entry '${id}' is already being deleted: its payload has been set aside and a later run finishes it. Copy anything you still need out of '${containerPath}' by hand`,
+        );
+      }
       throw new TrashOperationError("restore", `payload missing or unverifiable for '${id}' at '${payloadPath}'`);
     }
     const destinationProbe = await probePathExists(manifest.originalPath);
@@ -442,12 +452,13 @@ export class TrashService {
     }
 
     // The payload is back in place — from here on, cleanup failures must not
-    // fail the restore (a rejected retry would see "payload missing").
-    await fs
-      .rm(containerPath, { recursive: true, force: true })
-      .catch((error: unknown) =>
-        this.logger.warn(`⚠️ Failed to remove restored trash container '${containerPath}': ${getErrorMessage(error)}`),
-      );
+    // fail the restore (a rejected retry would see "payload missing"). A
+    // worktree restore copies the payload out rather than moving it, so this
+    // is a real recursive delete and takes the same ordering as the reaper's.
+    await removeTrashContainer(containerPath).catch((error: unknown) => {
+      this.logger.warn(`⚠️ Failed to remove restored trash container '${containerPath}': ${getErrorMessage(error)}`);
+      this.logger.warn(`   ${trashDeleteHint(containerPath)}`);
+    });
     if (manifest.pinRef) {
       await this.gitService
         .deleteRef(manifest.pinRef)
@@ -675,7 +686,15 @@ export class TrashService {
   }
 
   private async undoPartialTrash(containerPath: string, pinRef: string | null): Promise<void> {
-    await fs.rm(containerPath, { recursive: true, force: true }).catch(() => undefined);
+    // Same ordering as the reaper's, for the same reason: a refused delete
+    // here must leave a container that still reads as a trash entry — one that
+    // lists, reports its size and ages out — rather than unrecognized content
+    // that nothing ever comes back for.
+    await removeTrashContainer(containerPath).catch((error: unknown) =>
+      this.logger.warn(
+        `⚠️ Could not clean up the trash container '${containerPath}'; it keeps its manifest and ages out with the retention window: ${getErrorMessage(error)}`,
+      ),
+    );
     if (pinRef) {
       await this.gitService.deleteRef(pinRef).catch(() => undefined);
     }

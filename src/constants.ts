@@ -164,6 +164,8 @@ export const TRASH_CONSTANTS = {
   MANIFEST_FILENAME: "manifest.json",
   PAYLOAD_DIRNAME: "payload",
   BUNDLE_FILENAME: "commits.bundle",
+  /** Prefix of a payload that has been set aside for deletion — see src/utils/trash-container.ts. */
+  DELETING_PREFIX: "payload.deleting-",
   SCHEMA_VERSION: 1,
 } as const;
 

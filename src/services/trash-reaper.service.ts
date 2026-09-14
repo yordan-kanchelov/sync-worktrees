@@ -4,6 +4,7 @@ import * as path from "path";
 import { GIT_CONSTANTS } from "../constants";
 import { formatBytes } from "../utils/disk-space";
 import { getErrorMessage } from "../utils/lfs-error";
+import { removeEmptiedTrashContainer, removeTrashPayload, trashDeleteHint } from "../utils/trash-container";
 import { computeTrashRootHash } from "../utils/trash-root-hash";
 
 import { summarizeTrashEntries } from "./trash.service";
@@ -145,23 +146,20 @@ export class TrashReaperService {
         continue;
       }
 
+      // Payload first (see removeTrashPayload): a refusal here leaves the
+      // manifest in place, so the entry stays listed and expired — this run
+      // reports it with a hint, the next one retries it.
       try {
-        await fs.rm(entry.containerPath, { recursive: true, force: true });
+        await removeTrashPayload(entry.containerPath);
       } catch (error) {
-        this.logger.warn(`⚠️ Trash reaper: failed to delete '${entry.manifest.id}': ${getErrorMessage(error)}`);
-        result.errors.push(`${entry.manifest.id}: ${getErrorMessage(error)}`);
-        await this.removalAudit
-          .record({
-            action: auditAction,
-            result: "failure",
-            path: entry.manifest.originalPath,
-            trashId: entry.manifest.id,
-            error: getErrorMessage(error),
-          })
-          .catch(() => undefined);
+        await this.reportDeleteFailure(entry, auditAction, error, result.errors);
         continue;
       }
 
+      // The pin outlives the payload only until here. Releasing it before the
+      // manifest goes means a refused container delete can no longer strand a
+      // ref that nothing would come back for: the sweep below keys on the
+      // container name, which still exists.
       if (entry.manifest.pinRef) {
         await this.gitService.deleteRef(entry.manifest.pinRef).catch((error: unknown) => {
           result.errors.push(`${entry.manifest.pinRef}: ${getErrorMessage(error)}`);
@@ -169,6 +167,13 @@ export class TrashReaperService {
             `⚠️ Trash reaper: failed to delete pin ref '${entry.manifest.pinRef}': ${getErrorMessage(error)}`,
           );
         });
+      }
+
+      try {
+        await removeEmptiedTrashContainer(entry.containerPath);
+      } catch (error) {
+        await this.reportDeleteFailure(entry, auditAction, error, result.errors);
+        continue;
       }
 
       reapedIds.add(entry.manifest.id);
@@ -207,6 +212,27 @@ export class TrashReaperService {
 
     this.warnIfOverThreshold(entries.filter((entry) => !reapedIds.has(entry.manifest.id)));
     return result;
+  }
+
+  private async reportDeleteFailure(
+    entry: TrashEntry,
+    auditAction: "trash_reap" | "trash_purge",
+    error: unknown,
+    errors: string[],
+  ): Promise<void> {
+    const message = getErrorMessage(error);
+    this.logger.warn(`⚠️ Trash reaper: failed to delete '${entry.manifest.id}': ${message}`);
+    this.logger.warn(`   ${trashDeleteHint(entry.containerPath)}`);
+    errors.push(`${entry.manifest.id}: ${message}`);
+    await this.removalAudit
+      .record({
+        action: auditAction,
+        result: "failure",
+        path: entry.manifest.originalPath,
+        trashId: entry.manifest.id,
+        error: message,
+      })
+      .catch(() => undefined);
   }
 
   // Pin refs whose trash container is gone would pin objects forever (failed

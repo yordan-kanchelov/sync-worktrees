@@ -3,15 +3,25 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { allowDeletion, mockUndeletableFile } from "../../__tests__/helpers/undeletable-file";
 import { cleanupTempDirectories, createMockLogger, createTempDirectory } from "../../__tests__/test-utils";
 import { GIT_CONSTANTS, TRASH_CONSTANTS } from "../../constants";
 import { TrashOperationError } from "../../errors";
 import { TrashService, summarizeTrashEntries } from "../trash.service";
 
+import type * as FsPromises from "fs/promises";
 import type { Config } from "../../types";
 import type { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
+
+// Real filesystem everywhere except the one path a test declares undeletable:
+// an ESM namespace export cannot be spied on, so `rm` is replaceable only by
+// way of a partial module mock.
+vi.mock("fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return { ...actual, default: actual, rm: vi.fn(actual.rm) };
+});
 
 const DAY_MS = 86_400_000;
 const PREFIX = GIT_CONSTANTS.TRASH_REF_PREFIX;
@@ -62,6 +72,9 @@ describe("TrashService", () => {
   });
 
   afterEach(async () => {
+    // Before the cleanup below: it deletes the temp trees with the very fs.rm
+    // some of these tests replace.
+    allowDeletion();
     await cleanupTempDirectories();
   });
 
@@ -149,6 +162,23 @@ describe("TrashService", () => {
       const trashContents = await fs.readdir(service.getTrashRoot()).catch(() => []);
       expect(trashContents).toEqual([]);
       expect(gitStub.deleteRef).toHaveBeenCalledWith(expect.stringContaining(GIT_CONSTANTS.TRASH_REF_PREFIX));
+    });
+
+    // The rollback of a half-made entry is a delete like any other: when it is
+    // refused, what stays behind has to be something the pipeline can still
+    // see and finish — a payload-less entry that lists and ages out.
+    it("leaves a listable entry behind, and says so, when the rollback delete is refused", async () => {
+      const missingSource = path.join(worktreeDir, "does-not-exist");
+      await mockUndeletableFile(TRASH_CONSTANTS.MANIFEST_FILENAME);
+
+      await expect(
+        service.trashDirectory({ dirPath: missingSource, branch: "ghost", reason: "prune" }),
+      ).rejects.toBeInstanceOf(TrashOperationError);
+
+      const { entries, invalid } = await service.listEntries();
+      expect(entries).toHaveLength(1);
+      expect(invalid).toEqual([]);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("ages out with the retention window"));
     });
 
     it("aborts and rolls back when HEAD moves between resolution and the payload move (commit made mid-trash)", async () => {
@@ -654,6 +684,58 @@ describe("TrashService", () => {
 
       expect(gitStub.deleteLocalBranch).toHaveBeenCalledWith("feature-fail");
       await expect(fs.access(payloadPath)).resolves.toBeUndefined();
+    });
+
+    // A reap that already set the payload aside has committed the entry to
+    // deletion. "Payload missing" reads like corruption for a user who can
+    // still see the files sitting under the container.
+    it("tells a user that a mid-delete entry is finishing, not that its payload went missing", async () => {
+      const source = await makeSourceDir("mid-delete");
+      const { manifest, containerPath } = await service.trashDirectory({ dirPath: source, reason: "orphan" });
+      await fs.rename(
+        path.join(containerPath, TRASH_CONSTANTS.PAYLOAD_DIRNAME),
+        path.join(containerPath, `${TRASH_CONSTANTS.DELETING_PREFIX}2026-01-01T00-00-00-000Z`),
+      );
+
+      await expect(service.restore(manifest.id)).rejects.toThrow(/already being deleted/);
+    });
+
+    it("still reports a payload that simply vanished as missing", async () => {
+      const source = await makeSourceDir("vanished-payload");
+      const { manifest, containerPath } = await service.trashDirectory({ dirPath: source, reason: "orphan" });
+      await fs.rm(path.join(containerPath, TRASH_CONSTANTS.PAYLOAD_DIRNAME), { recursive: true, force: true });
+
+      await expect(service.restore(manifest.id)).rejects.toThrow(/payload missing or unverifiable/);
+    });
+
+    // A worktree restore copies the payload out instead of moving it, so the
+    // cleanup is a real recursive delete over the user's files and takes the
+    // reaper's ordering: what it cannot delete must stay a listed entry the
+    // reaper will finish, never unrecognized content nothing comes back for.
+    it("leaves a restored entry listable when its payload cannot be deleted", async () => {
+      const source = await makeSourceDir("feature-cleanup", {
+        "work.txt": "uncommitted work",
+        "root-built.js": "written by a root container",
+      });
+      const { manifest } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-cleanup",
+        reason: "prune",
+      });
+      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
+        await fs.mkdir(args[1] as string, { recursive: true });
+      });
+      await mockUndeletableFile("root-built.js");
+
+      const restored = await service.restore(manifest.id);
+
+      expect(restored.branch).toBe("feature-cleanup");
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      const { entries, invalid } = await service.listEntries();
+      expect(entries.map((entry) => entry.manifest.id)).toEqual([manifest.id]);
+      expect(invalid).toEqual([]);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Failed to remove restored trash container"));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("chattr -i"));
     });
 
     it("rejects unknown ids", async () => {

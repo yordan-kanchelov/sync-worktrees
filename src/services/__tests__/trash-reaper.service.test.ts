@@ -4,15 +4,26 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { allowDeletion, mockUndeletableFile } from "../../__tests__/helpers/undeletable-file";
 import { cleanupTempDirectories, createMockLogger, createTempDirectory } from "../../__tests__/test-utils";
+import { TRASH_CONSTANTS } from "../../constants";
 import { TrashReaperService } from "../trash-reaper.service";
 import { TrashService } from "../trash.service";
 
+import type * as FsPromises from "fs/promises";
 import type { Config } from "../../types";
 import type { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
 import type { TrashEntry, TrashReason } from "../trash.service";
+
+// Real filesystem everywhere except the one path a test declares undeletable:
+// an ESM namespace export cannot be spied on, so `rm` is replaceable only by
+// way of a partial module mock.
+vi.mock("fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return { ...actual, default: actual, rm: vi.fn(actual.rm), rename: vi.fn(actual.rename) };
+});
 
 const DAY_MS = 86_400_000;
 
@@ -62,6 +73,10 @@ describe("TrashReaperService", () => {
   });
 
   afterEach(async () => {
+    // Before the cleanup below: it deletes the temp trees with the very fs.rm
+    // and fs.rename some of these tests replace.
+    vi.mocked(fs.rm).mockReset();
+    vi.mocked(fs.rename).mockReset();
     await cleanupTempDirectories();
   });
 
@@ -378,6 +393,123 @@ describe("TrashReaperService", () => {
     await reaper.reapExpiredUnlocked();
 
     expect(gitStub.deleteRef).not.toHaveBeenCalledWith("refs/sync-worktrees/keep/some-old-id");
+  });
+
+  // The shape T27 was filed for: `fs.rm(container, {recursive:true})` reaches
+  // manifest.json before whatever deep in the payload it cannot unlink, and
+  // what it leaves is neither a listed entry nor a deleted one — invisible to
+  // the CLI, never retried, holding its disk and its pin forever.
+  it("leaves the manifest in place when the payload resists deletion, and finishes the entry on the next run", async () => {
+    const expired = await makeEntry("stuck", { ageDays: 31, branch: "stuck" });
+    await fs.mkdir(path.join(expired.payloadPath, "dist"));
+    await fs.writeFile(path.join(expired.payloadPath, "dist", "root-built.js"), "written by a root container");
+    await mockUndeletableFile("root-built.js");
+
+    const first = await reaper.reapExpiredUnlocked();
+
+    expect(first.deleted).toBe(0);
+    expect(first.errors).toHaveLength(1);
+    const afterFailure = await trashService.listEntries();
+    expect(afterFailure.entries.map((entry) => entry.manifest.id)).toEqual([expired.manifest.id]);
+    expect(afterFailure.invalid).toEqual([]);
+    expect(gitStub.deleteRef).not.toHaveBeenCalled();
+    // The user is told which path refused and what to do about it.
+    expect(warningsMatching(/root-built\.js/)).toHaveLength(1);
+    expect(warningsMatching(/chattr -i/)).toHaveLength(1);
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "trash_reap", result: "failure", trashId: expired.manifest.id }),
+    );
+
+    // The user takes ownership of the file / clears the attribute.
+    allowDeletion();
+    const second = await reaper.reapExpiredUnlocked();
+
+    expect(second.deleted).toBe(1);
+    await expect(fs.access(expired.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
+  });
+
+  // A run killed between the rename and the delete leaves the payload under
+  // its set-aside name. Nothing else ever comes back for it, so the next reap
+  // has to — and has to do it before the manifest, or the interruption has
+  // simply moved the stuck container one step later.
+  it("finishes a payload an interrupted run already set aside, without putting the manifest in the delete's path", async () => {
+    const expired = await makeEntry("interrupted", { ageDays: 31, branch: "interrupted" });
+    const setAside = path.join(expired.containerPath, `${TRASH_CONSTANTS.DELETING_PREFIX}2026-01-01T00-00-00-000Z`);
+    await fs.rename(expired.payloadPath, setAside);
+    await fs.writeFile(path.join(setAside, "root-built.js"), "written by a root container");
+    await mockUndeletableFile("root-built.js");
+
+    const first = await reaper.reapExpiredUnlocked();
+
+    expect(first.deleted).toBe(0);
+    const afterFailure = await trashService.listEntries();
+    expect(afterFailure.entries.map((entry) => entry.manifest.id)).toEqual([expired.manifest.id]);
+    expect(afterFailure.invalid).toEqual([]);
+
+    allowDeletion();
+    const second = await reaper.reapExpiredUnlocked();
+
+    expect(second.deleted).toBe(1);
+    await expect(fs.access(expired.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
+  });
+
+  // The payload is gone, so the pin protects nothing restorable any more. A
+  // container that then refuses to go (a read-only trash root, an immutable
+  // manifest) must not take the ref down with it: the orphan sweep keys on the
+  // container name, which is still there, so nothing would ever release it.
+  it("releases the pin once the payload is gone, even when the container itself cannot be deleted", async () => {
+    const expired = await makeEntry("refused-container", { ageDays: 31, branch: "refused-container" });
+    await mockUndeletableFile(TRASH_CONSTANTS.MANIFEST_FILENAME);
+
+    const result = await reaper.reapExpiredUnlocked();
+
+    expect(result.deleted).toBe(0);
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
+    await expect(fs.access(expired.payloadPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const { entries, invalid } = await trashService.listEntries();
+    expect(entries.map((entry) => entry.manifest.id)).toEqual([expired.manifest.id]);
+    expect(invalid).toEqual([]);
+    expect(warningsMatching(/manifest\.json/)).toHaveLength(1);
+  });
+
+  it("deletes nothing at all when the payload cannot even be set aside", async () => {
+    const expired = await makeEntry("locked-payload", { ageDays: 31, branch: "locked-payload" });
+    vi.mocked(fs.rename).mockRejectedValue(
+      Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" }),
+    );
+
+    const result = await reaper.reapExpiredUnlocked();
+
+    expect(result.deleted).toBe(0);
+    expect(fs.rm).not.toHaveBeenCalled();
+    await expect(fs.access(path.join(expired.payloadPath, "file.txt"))).resolves.toBeUndefined();
+    expect(gitStub.deleteRef).not.toHaveBeenCalled();
+    expect(warningsMatching(/cannot set the payload/)).toHaveLength(1);
+    expect((await trashService.listEntries()).entries).toHaveLength(1);
+  });
+
+  // A regular file sitting on the set-aside name makes rename(dir, file) fail
+  // with ENOTDIR while `payload/` stays exactly where it was. Tolerating that
+  // errno would let the sweep unlink the file, report the payload gone, and
+  // hand a container that still holds `payload/` to the recursive delete — the
+  // manifest-first delete this whole ordering exists to prevent.
+  it("refuses to report the payload gone when a file blocks the set-aside name", async () => {
+    const expired = await makeEntry("blocked-setaside", { ageDays: 31, branch: "blocked-setaside" });
+    vi.mocked(fs.rename).mockRejectedValue(
+      Object.assign(new Error("ENOTDIR: not a directory, rename"), { code: "ENOTDIR" }),
+    );
+
+    const result = await reaper.reapExpiredUnlocked();
+
+    expect(result.deleted).toBe(0);
+    // The payload is untouched and the manifest still describes it, so the
+    // entry stays listed and every later run retries it.
+    await expect(fs.access(path.join(expired.payloadPath, "file.txt"))).resolves.toBeUndefined();
+    expect(gitStub.deleteRef).not.toHaveBeenCalled();
+    expect(warningsMatching(/cannot set the payload/)).toHaveLength(1);
+    expect((await trashService.listEntries()).entries).toHaveLength(1);
   });
 
   it("skips entries whose expiry is unparseable instead of guessing", async () => {
