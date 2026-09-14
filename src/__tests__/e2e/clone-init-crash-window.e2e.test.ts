@@ -22,9 +22,10 @@ interface CliRun {
 // one, and nothing is logged about it.
 //
 // The kill is delivered by a `git` shim on PATH that kills its parent (the CLI)
-// the moment git is asked to narrow `remote.origin.fetch` — the first git write
-// of the post-clone setup. That is a genuine SIGKILL of the real CLI at a real
-// point inside the window, not a mocked failure.
+// the moment git is asked about `remote.origin.fetch` — the first command of
+// the post-clone narrowing, which reads the key before deciding whether it has
+// to write it. That is a genuine SIGKILL of the real CLI at a real point inside
+// the window, not a mocked failure.
 describe("CLI survives a kill between the clone and the clone-init marker", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   // Resolved lazily: at collection time a missing git would error the whole
@@ -88,13 +89,16 @@ describe("CLI survives a kill between the clone and the clone-init marker", () =
 
     // `exec`s the real git for everything else, so the clone itself and every
     // later command are ordinary git. Only the refspec narrowing is replaced,
-    // by a kill of the CLI that asked for it.
+    // by a kill of the CLI that asked for it — at its read (`--get-regexp`,
+    // the only one the CLI issues) as well as at the write it may not reach,
+    // since a clone git just made with `--single-branch --no-tags` already
+    // holds the narrowed values and is converged without being written to.
     await fs.mkdir(shimDir);
     await fs.writeFile(
       path.join(shimDir, "git"),
       `#!/bin/sh
 case " $* " in
-  *" --replace-all remote.origin.fetch "*)
+  *" --get-regexp "*|*" --replace-all remote.origin.fetch "*)
     kill -9 "$PPID"
     exit 0
     ;;

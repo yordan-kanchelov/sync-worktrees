@@ -41,14 +41,17 @@ const FORBIDDEN_TARBALL_PREFIXES = ["src/", "scripts/", ".pnpmfile.cjs"];
 // the tarball means one of those was switched back on, or dist/ still holds
 // output from an earlier build (tsc does not delete files it no longer emits).
 const FORBIDDEN_TARBALL_SUFFIXES = [".map"];
-// Ceilings so that tarball growth is noticed rather than shipped. At the time
-// of writing `npm pack` reports 80 files and ~0.95 MB unpacked: the two esbuild
-// bundles (~0.8 MB), one .d.ts per source module (~0.1 MB) and the README. The
-// limits leave room for ordinary growth (about 40 more modules, 300 kB more
-// bundle) but trip on a dependency that stops being `external` in esbuild, or
-// on maps coming back, both of which add hundreds of kB in one step.
+// Ceilings so that tarball growth is noticed rather than shipped. `npm pack`
+// reports 86 files and ~1.26 MB unpacked: the two esbuild bundles (~1.07 MB),
+// one .d.ts per source module (~0.14 MB) and the README. The bundles are not
+// minified, so the source comments are shipped with them and ordinary work on
+// this codebase moves the total by single-digit kB at a time — the byte
+// ceiling is sized to absorb that (~140 kB of headroom) while still tripping
+// on the step changes it is for: a dependency that stops being `external` in
+// esbuild, or source maps coming back, either of which adds hundreds of kB at
+// once. Raise it when it is ordinary growth that reached it, and say so.
 const MAX_TARBALL_FILES = 120;
-const MAX_TARBALL_UNPACKED_BYTES = 1_250_000;
+const MAX_TARBALL_UNPACKED_BYTES = 1_400_000;
 const STEP_TIMEOUT_MS = 10_000;
 
 class SmokeFailure extends Error {}

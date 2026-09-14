@@ -24,6 +24,11 @@ import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 const SHALLOW_RELATION_DEEPEN_TARGETS = [50, 200, 1000] as const;
 
+// The two keys configureSingleBranchRemote converges, as one `git config
+// --get-regexp` pattern so reading them costs a single git process. Anchored
+// so it matches those two keys and nothing that merely contains them.
+const REMOTE_ORIGIN_CONFIG_KEY_PATTERN = "^remote\\.origin\\.(fetch|tagOpt)$";
+
 // Longest failure summary kept on the incomplete-clone marker's first content
 // line; the untruncated message follows it in the same file.
 const CLONE_FAILURE_SUMMARY_LIMIT = 200;
@@ -297,8 +302,11 @@ export class CloneSyncService {
   // whose `.git` is a gitdir pointer — a linked worktree from `git worktree
   // add`, or a submodule — shares the config and refs of the repository that
   // owns it. Narrowing `remote.origin.fetch`, deleting `refs/remotes/origin/*`
-  // and fetching with `--prune` there rewrite THAT repository, not this one,
-  // and repeat on every tick. Read paths (getWorktrees, the origin/HEAD
+  // and fetching with `--prune` there rewrite THAT repository, not this one.
+  // The `--prune` fetch repeats on every tick; the narrowing and the ref
+  // delete land whenever that repository's config reads unconverged, which for
+  // a worktree-mode parent is every run, since its own init re-adds the wide
+  // `+refs/heads/*` refspec. Read paths (getWorktrees, the origin/HEAD
   // probes) keep using localClientFor and still work on such a directory; only
   // writes go through here, and the branded return type is the only thing the
   // write helpers accept, so a mutation added later cannot skip the check.
@@ -434,7 +442,8 @@ export class CloneSyncService {
       `Cannot manage '${worktreeDir}' as a clone-mode repository for '${this.repoName}': it is not a primary ` +
         `checkout — ${detail}.${owner} Clone mode would narrow 'remote.origin.fetch', delete ` +
         `'refs/remotes/origin/*' and fetch with --prune there — in the repository that owns that git directory, ` +
-        `not in this one — on every sync. Point 'worktreeDir' at a path this tool owns: an empty directory it ` +
+        `not in this one — the fetch on every sync, the rest whenever that repository's remote config does not ` +
+        `already read as clone mode leaves it. Point 'worktreeDir' at a path this tool owns: an empty directory it ` +
         `can clone into, or a standalone clone of '${redactRepoUrl(this.config.repoUrl)}' whose '.git' is a ` +
         `directory in the checkout itself. A checkout whose git directory lives elsewhere — cloned with ` +
         `--separate-git-dir, or with '.git' symlinked away — is refused as well, because nothing distinguishes ` +
@@ -642,10 +651,91 @@ export class CloneSyncService {
     return args;
   }
 
-  private async configureSingleBranchRemote(clients: MutatingGitClients, branch: string): Promise<void> {
-    await clients.git.raw(["config", "--replace-all", "remote.origin.fetch", this.getBranchRefspec(branch)]);
-    await clients.git.raw(["config", "--replace-all", "remote.origin.tagOpt", "--no-tags"]);
-    await this.deleteStaleRemoteTrackingRefs(clients, branch);
+  // The single-branch shape every clone-mode remote is held to: one fetch
+  // refspec naming the tracked branch, tags off, and no remote-tracking ref
+  // besides that branch's. Init, the branch switch and every sync tick call
+  // it, and it writes only what is not already that shape.
+  //
+  // It has to read first because `git config --replace-all` is not a no-op on
+  // an unchanged value: it renames a fresh config.lock over .git/config, so
+  // the file lands on a new inode and mtime every time (git 2.43). On a tick
+  // that is churn for nothing — the sync fetch carries its refspec on the
+  // command line (buildSyncFetchArgs), and the one fetch that reads the stored
+  // one, the `--unshallow`, runs before this call.
+  //
+  // It stays in the tick rather than moving to init for the reason the origin
+  // URL is re-checked there: a daemon holds one clone for weeks, and `git
+  // remote set-branches --all` or an editor is enough to widen a refspec that
+  // was converged at adoption.
+  private async configureSingleBranchRemote(
+    clients: MutatingGitClients,
+    branch: string,
+    options: { sweepStaleRefs?: "always" } = {},
+  ): Promise<void> {
+    const refspec = this.getBranchRefspec(branch);
+    const current = await this.readRemoteConfigValues(clients.git);
+    const holds = (key: string, value: string): boolean => {
+      const values = current?.get(key);
+      return values !== undefined && values.length === 1 && values[0] === value;
+    };
+    const refspecConverged = holds("remote.origin.fetch", refspec);
+    const tagOptConverged = holds("remote.origin.tagopt", "--no-tags");
+
+    // Stale refs are what a wide refspec fetched, so they are swept on the
+    // call that narrows it — and before that write, not after: the two are not
+    // one operation, and this order leaves a kill in between with the wide
+    // refspec that makes the next call redo both. The other order leaves a
+    // narrow refspec with stale refs behind it, which reads as converged and
+    // would never be swept.
+    if (!refspecConverged || options.sweepStaleRefs === "always") {
+      await this.deleteStaleRemoteTrackingRefs(clients, branch);
+    }
+    if (!refspecConverged) {
+      await clients.git.raw(["config", "--replace-all", "remote.origin.fetch", refspec]);
+    }
+    if (!tagOptConverged) {
+      await clients.git.raw(["config", "--replace-all", "remote.origin.tagOpt", "--no-tags"]);
+    }
+  }
+
+  // Both keys in one spawn, as `key\nvalue` records separated by NUL. The
+  // caller treats anything this cannot positively prove as drift, and that is
+  // the whole design: `git config` reports a key it does not hold with exit
+  // code 1 and an empty stderr, and simple-git fails a task only when the exit
+  // code is non-zero AND stderr is non-empty, so "unset" arrives as the empty
+  // string — exactly like a read that failed silently. Believing such an
+  // answer would skip the write forever and leave the clone un-narrowed, which
+  // is worse than the churn this replaces; reading wrong costs one redundant
+  // write.
+  //
+  // `--local` is the scope `--replace-all` writes to, so the read answers
+  // about the file the write would change; a value inherited from ~/.gitconfig
+  // is left to git to merge, as before. `-z` keeps a value containing a
+  // newline from forging a second entry.
+  private async readRemoteConfigValues(git: SimpleGit): Promise<Map<string, string[]> | null> {
+    // The parse is inside the guard with the spawn: this function's contract is
+    // that it fails to null and the caller then writes, so a surprise from the
+    // parse (a raw that is not a string, from a double or a future simple-git)
+    // must not escape and fail the whole tick from the one place built to fail
+    // safe.
+    try {
+      const raw = await git.raw(["config", "--local", "-z", "--get-regexp", REMOTE_ORIGIN_CONFIG_KEY_PATTERN]);
+      const values = new Map<string, string[]>();
+      for (const record of raw.split("\0")) {
+        if (record.length === 0) continue;
+        const separator = record.indexOf("\n");
+        // git lower-cases the key it prints, and a key set without a value is
+        // printed on its own with no newline after it.
+        const key = (separator === -1 ? record : record.slice(0, separator)).toLowerCase();
+        const value = separator === -1 ? "" : record.slice(separator + 1);
+        const existing = values.get(key);
+        if (existing) existing.push(value);
+        else values.set(key, [value]);
+      }
+      return values;
+    } catch {
+      return null;
+    }
   }
 
   private recordMissingRemoteRefSkip(branch: string): void {
@@ -869,6 +959,13 @@ export class CloneSyncService {
     }
   }
 
+  // The refs a wider refspec left behind, swept where the `for-each-ref` can
+  // find something: on the call that narrows the refspec, and on adoption,
+  // where the clone came from outside and nothing is known about its refs. A
+  // tick over an already-narrowed clone does not sweep — its fetch is
+  // `--prune` with an explicit single-branch refspec, which can neither create
+  // nor prune any other origin/* ref, so the only refs a sweep could find
+  // there arrived out of band.
   private async deleteStaleRemoteTrackingRefs(clients: MutatingGitClients, branch: string): Promise<void> {
     let refsOutput: string;
     try {
@@ -1101,7 +1198,8 @@ export class CloneSyncService {
     // Same reason: checkoutBranch refuses a detached HEAD, so publishing first
     // would leave a branch on the remote that the switch afterwards cannot
     // move to.
-    if ((await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim() === "HEAD") {
+    const currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    if (currentBranch === "HEAD") {
       throw new GitOperationError(
         "branch",
         `Cannot create '${branchName}' in '${this.repoName}': it is on a detached HEAD; check out a branch manually (preserving any local commits) first`,
@@ -1143,7 +1241,7 @@ export class CloneSyncService {
     // lands on history the clone holds: it re-cuts the clone to the configured
     // depth, or deepens it to a raised one — see buildUntrackedBranchFetchArgs
     // for the measurements. The stray origin/<baseBranch> this leaves behind is
-    // cleaned up by the configureSingleBranchRemote that ends the checkout.
+    // dropped below, as soon as the new branch holds its tip.
     const fetchArgs = await this.buildUntrackedBranchFetchArgs(clients.git, baseBranch);
     if ((await this.fetchWithRecovery(clients, fetchArgs, worktreeDir, baseBranch, false)).skipped) {
       throw new GitOperationError(
@@ -1173,6 +1271,20 @@ export class CloneSyncService {
     }
     const createdAt = await this.readBranchCommit(clients.git, branchName);
     this.logger.info(`Created branch '${branchName}' from 'origin/${baseBranch}' in '${this.repoName}'`);
+
+    // The one ref this call added to a single-branch clone, dropped here
+    // rather than by a sweep on some later tick: the local branch now holds
+    // that tip, so nothing becomes unreachable, and every way out from here (a
+    // failed push and its rollback included) leaves the clone with the one
+    // remote-tracking ref it should have. The ref to keep is the TRACKED
+    // branch's, which is what the refspec maintains — not the checked-out
+    // one. They differ on a clone someone switched by hand, and guarding on
+    // the checkout there would delete origin/<tracked>, the single ref the
+    // refspec keeps.
+    const trackedBranch = this.resolvedBranch ?? this.config.branch;
+    if (baseBranch !== trackedBranch && baseBranch !== currentBranch) {
+      await this.deleteRemoteTrackingRef(clients, `refs/remotes/origin/${baseBranch}`);
+    }
 
     try {
       // `--force-with-lease` with an empty expected value is git's create-only
@@ -1326,7 +1438,12 @@ export class CloneSyncService {
       // its refspec, deleting its stale remote-tracking refs — starts here, so
       // this is where a non-primary checkout has to be refused.
       const clients = await this.mutatingClientsFor(worktreeDir);
-      await this.configureSingleBranchRemote(clients, branch);
+      // The one call that sweeps stale refs whether or not it had to touch the
+      // refspec: this directory is a clone somebody else made, or one an older
+      // version of this tool left behind, so a refspec that already reads
+      // narrow proves nothing about the refs sitting next to it. It runs once
+      // per process, not once per tick.
+      await this.configureSingleBranchRemote(clients, branch, { sweepStaleRefs: "always" });
       // A pending marker means this clone was created by an init of ours that
       // was interrupted after the clone — finish the post-clone steps now.
       // Sparse setup is re-run too (idempotent), so an init that died inside

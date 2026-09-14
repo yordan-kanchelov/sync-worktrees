@@ -1684,6 +1684,43 @@ describe("CloneSyncService", () => {
         message: expect.stringContaining("is not a git clone"),
       });
     });
+
+    // The base fetch leaves origin/<base> in a clone that is supposed to hold
+    // exactly one remote-tracking ref. It used to be swept away by the next
+    // sync tick's unconditional narrowing; that narrowing now writes only when
+    // the refspec actually drifted, so the ref is removed here, by the call
+    // that fetched it.
+    it("drops the origin/<base> ref its own fetch created", async () => {
+      mockWizardRaw();
+      const service = buildWizardService();
+
+      await service.createAndPushBranch("release/1.x", NEW_BRANCH);
+
+      expect(gitMock.raw).toHaveBeenCalledWith(["branch", "--no-track", NEW_BRANCH, "origin/release/1.x"]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/release/1.x"]);
+    });
+
+    it("keeps origin/<base> when the base is the branch the clone stands on", async () => {
+      mockWizardRaw();
+      const service = buildWizardService();
+
+      await service.createAndPushBranch("main", NEW_BRANCH);
+
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/main"]);
+    });
+
+    // A push that never landed takes the branch it created with it, so the
+    // ref this call fetched must not outlive that either.
+    it("drops it even when the push is rejected", async () => {
+      mockWizardRaw();
+      gitMock.push.mockRejectedValueOnce(new Error("! [remote rejected] feature/new (pre-receive hook declined)"));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("release/1.x", NEW_BRANCH)).rejects.toThrow("pre-receive hook declined");
+
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/release/1.x"]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", NEW_BRANCH_REF, CREATED_SHA]);
+    });
   });
 
   describe("runSyncAttempt", () => {
@@ -2969,6 +3006,210 @@ describe("CloneSyncService", () => {
 
         expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/.gitattributes", { force: true });
       });
+    });
+  });
+
+  // `git config --replace-all` rewrites .git/config whether or not the value
+  // changes, and the tick used to run two of them plus a `for-each-ref` over
+  // every origin ref — converging a remote that nothing in the tick had moved.
+  // The tick now reads the two keys in one process and writes only on drift.
+  describe("single-branch remote convergence", () => {
+    // The one read that decides it, as the mock sees it.
+    const CONFIG_READ = ["config", "--local", "-z", "--get-regexp", "^remote\\.origin\\.(fetch|tagOpt)$"];
+    const CONFIG_READ_KEY = CONFIG_READ.join(" ");
+    const NARROW_REFSPEC = "+refs/heads/main:refs/remotes/origin/main";
+    const WRITE_REFSPEC = ["config", "--replace-all", "remote.origin.fetch", NARROW_REFSPEC];
+    const WRITE_TAG_OPT = ["config", "--replace-all", "remote.origin.tagOpt", "--no-tags"];
+    const SCAN_REFS = ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"];
+
+    // `git config -z` answers with `key\nvalue` records separated by NUL, and
+    // lower-cases the key it prints.
+    function configReadOutput(entries: Array<[string, string]>): string {
+      return entries.map(([key, value]) => `${key}\n${value}\0`).join("");
+    }
+
+    const CONVERGED = configReadOutput([
+      ["remote.origin.fetch", NARROW_REFSPEC],
+      ["remote.origin.tagopt", "--no-tags"],
+    ]);
+
+    function mockTickRaw(configRead: string | (() => never), staleRefs: string[] = []): void {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === SCAN_REFS.join(" ")) return ["refs/remotes/origin/main", ...staleRefs].join("\n");
+        if (key === CONFIG_READ_KEY) {
+          return typeof configRead === "string" ? configRead : configRead();
+        }
+        return "";
+      });
+    }
+
+    function buildTickService(): CloneSyncService {
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      (service as unknown as { resolvedBranch: string }).resolvedBranch = "main";
+      return service;
+    }
+
+    function rawCalls(): string[][] {
+      return gitMock.raw.mock.calls.map((call) => (Array.isArray(call[0]) ? (call[0] as string[]) : []));
+    }
+
+    it("reads the remote config once and writes nothing when it is already narrowed", async () => {
+      mockTickRaw(CONVERGED);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      // The tick still merged, so this is a full steady-state tick, not one
+      // that returned early.
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      expect(rawCalls()).not.toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
+      expect(rawCalls()).not.toContainEqual(SCAN_REFS);
+      expect(rawCalls().filter((args) => args[0] === "config")).toEqual([CONFIG_READ]);
+    });
+
+    // The spawn budget of the commonest thing this tool does: one tick over a
+    // clone that is already narrowed and one commit behind. Every entry is a
+    // git process this service starts, so a new one added to this path has to
+    // be justified here. The relationship classification is GitService's and
+    // is stubbed out in this harness, so its own reads are not in the list.
+    it("spends a fixed set of git processes on a steady-state tick", async () => {
+      mockTickRaw(CONVERGED);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls().map((args) => args.join(" "))).toEqual([
+        // The tick's own gates: the branch it stands on, the origin it points
+        // at, and the primary-checkout guard every write path goes through.
+        "rev-parse --abbrev-ref HEAD",
+        "remote get-url origin",
+        PRIMARY_CHECKOUT_GIT_DIR_PROBE,
+        // Shallow state, then the remote-config read that replaced the two
+        // writes and the ref scan.
+        "rev-parse --is-shallow-repository",
+        CONFIG_READ_KEY,
+        // Post-fetch: the ref materialized, and the commit the merge starts
+        // from.
+        "show-ref --verify refs/remotes/origin/main",
+        "rev-parse HEAD",
+      ]);
+      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("narrows a widened refspec on the tick, and sweeps the refs it fetched", async () => {
+      mockTickRaw(
+        configReadOutput([
+          ["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+          ["remote.origin.tagopt", "--no-tags"],
+        ]),
+        ["refs/remotes/origin/HEAD", "refs/remotes/origin/feat/other"],
+      );
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).toContainEqual(SCAN_REFS);
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/feat/other"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/main"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/HEAD"]);
+      // Only what drifted: tagOpt already said --no-tags.
+      expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
+    });
+
+    // The sweep runs before the write it belongs to, so a process killed
+    // between them leaves the wide refspec that makes the next tick redo both.
+    it("sweeps the stale refs before narrowing the refspec", async () => {
+      mockTickRaw(configReadOutput([["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]]), [
+        "refs/remotes/origin/feat/other",
+      ]);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      const keys = rawCalls().map((args) => args.join(" "));
+      expect(keys.indexOf(SCAN_REFS.join(" "))).toBeLessThan(keys.indexOf(WRITE_REFSPEC.join(" ")));
+    });
+
+    it("writes tagOpt alone when only tagOpt drifted, and leaves the refs alone", async () => {
+      mockTickRaw(
+        configReadOutput([
+          ["remote.origin.fetch", NARROW_REFSPEC],
+          ["remote.origin.tagopt", "--tags"],
+        ]),
+        ["refs/remotes/origin/feat/other"],
+      );
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls()).toContainEqual(WRITE_TAG_OPT);
+      expect(rawCalls()).not.toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).not.toContainEqual(SCAN_REFS);
+    });
+
+    // `git config` reports a key it does not hold with exit code 1 and an
+    // empty stderr, which simple-git resolves with "" instead of rejecting —
+    // the same answer a read that genuinely failed gives. Both have to write:
+    // a read believed on the strength of silence would leave a clone
+    // un-narrowed for as long as the daemon runs.
+    it.each([
+      ["the keys are unset", ""],
+      ["the read reports only one of the two", configReadOutput([["remote.origin.tagopt", "--no-tags"]])],
+      [
+        "the refspec is one of several values",
+        configReadOutput([
+          ["remote.origin.fetch", NARROW_REFSPEC],
+          ["remote.origin.fetch", "+refs/pull/*/head:refs/remotes/origin/pr/*"],
+        ]),
+      ],
+    ])("converges the remote when %s", async (_case, output) => {
+      mockTickRaw(output);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).toContainEqual(SCAN_REFS);
+    });
+
+    it("converges the remote when the read itself fails", async () => {
+      mockTickRaw(() => {
+        throw new Error("fatal: bad config line 4 in file .git/config");
+      });
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).toContainEqual(WRITE_TAG_OPT);
+      expect(rawCalls()).toContainEqual(SCAN_REFS);
+    });
+
+    // Adoption is the one call that sweeps whatever it finds: the directory
+    // is a clone somebody else made, so a refspec that already reads narrow
+    // says nothing about the refs lying next to it. It happens once per
+    // process, not once per tick.
+    it("still sweeps stale refs when adopting a clone whose config is already narrowed", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
+      (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
+      (fs.access as unknown as Mock).mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+      mockTickRaw(CONVERGED, ["refs/remotes/origin/feat/other"]);
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(rawCalls()).toContainEqual(SCAN_REFS);
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/feat/other"]);
+      expect(rawCalls()).not.toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
     });
   });
 

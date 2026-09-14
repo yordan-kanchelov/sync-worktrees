@@ -170,7 +170,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   commit) is indeterminate and costs a 50-commit deepen fetch, then is thrown away
 - [x] **T71** — Clone-mode sync runs a full `git status` scan every tick before learning the clone
   is already up to date; a dirty but current clone is reported as a skip instead of up-to-date
-- [ ] **T74** — configureSingleBranchRemote rewrites .git/config twice and scans remote refs on
+- [x] **T74** — configureSingleBranchRemote rewrites .git/config twice and scans remote refs on
   every sync tick although the fetch never uses the stored refspec
 - [ ] **T75** — Stale remote-tracking refs are deleted one `git update-ref -d` process per ref
   instead of a single batched `update-ref --stdin`
@@ -3158,7 +3158,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   an existing local branch that cannot fast-forward' only cover a real divergence (distinct
   merge-base sha).
 
-### [ ] T74. configureSingleBranchRemote rewrites .git/config twice and scans remote refs on every sync tick although the fetch never uses the stored refspec
+### [x] T74. configureSingleBranchRemote rewrites .git/config twice and scans remote refs on every sync tick although the fetch never uses the stored refspec
 
 - **Category**: performance · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
