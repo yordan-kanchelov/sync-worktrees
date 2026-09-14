@@ -538,8 +538,27 @@ export class WorktreeSyncService {
       let durationMs: number | undefined;
 
       try {
+        let clonedThisOperation = false;
         if (!this.isInitialized()) {
           await this.initializeUnlocked(outcome);
+          // `outcome` was constructed a few lines up and nothing else has
+          // written to it, so a `created` action in it can only be the clone
+          // this init just made — not an adopted existing clone, which records
+          // nothing, and not a worktree-mode init, which is handed no
+          // accumulator at all. That clone came from `origin` at the tracked
+          // branch, so the sync attempt below would fetch a ref it already has
+          // and scan a working tree git checked out moments ago. The check is
+          // deliberately scoped to an init that ran *inside this operation*:
+          // a standalone `initialize()` (the run-once CLI, the TUI, the MCP
+          // `initialize` tool) can be followed by a sync at any distance, and
+          // a flag carried across that boundary cannot tell a sync a second
+          // later from one an hour later — a sync that silently does nothing
+          // is a worse defect than the tick this saves. What that leaves on
+          // the table is small: since CloneSyncService classifies before it
+          // reads the working tree, a post-clone tick ends `up_to_date`
+          // without a status scan, so what those callers still pay for is one
+          // no-op fetch.
+          clonedThisOperation = this.cloneSyncService !== undefined && outcome.getCounts().created > 0;
         }
 
         this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
@@ -555,7 +574,11 @@ export class WorktreeSyncService {
 
         const cloneSync = this.cloneSyncService;
         if (cloneSync) {
-          await retry(() => cloneSync.runSyncAttempt(outcome), retryOptionsWithOutcomeReset);
+          if (clonedThisOperation) {
+            this.logger.info("Clone was created by this run; it is at the tracked remote tip, so no fetch is needed.");
+          } else {
+            await retry(() => cloneSync.runSyncAttempt(outcome), retryOptionsWithOutcomeReset);
+          }
         } else {
           await retry(
             () => this.worktreeModeSyncRunner.runSyncAttempt(phaseTimer, syncContext, outcome),

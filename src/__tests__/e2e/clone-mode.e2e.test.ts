@@ -230,6 +230,52 @@ export default {
     expect(isShallow).toBe("true");
   }, 60000);
 
+  // A clone somebody is working in is not a reason to call the repository
+  // out of sync: with nothing to merge, a dirty tree changes nothing about
+  // where the clone stands relative to origin. It used to be asked first, so
+  // every tick of a current-but-dirty clone printed a skip and the run summary
+  // counted the repo as "with clone-mode skips" instead of synced (#T71).
+  it("reports a dirty clone that is already at origin as up to date, and skips it once it could merge", async () => {
+    const remoteBare = await createLocalRemote("dirty-current-remote");
+    const configDir = path.join(tmpBase, "dirty-current");
+    const worktreeDir = path.join(configDir, "wt");
+    const configPath = path.join(configDir, "dirty-current.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir);
+    const command = `node "${cliPath}" --config "${configPath}" 2>&1`;
+    const run = (): string =>
+      execSync(command, { encoding: "utf-8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] });
+
+    run();
+
+    // Both kinds of local change `checkWorktreeStatus` looks for: a modified
+    // tracked file and an untracked one.
+    await fs.writeFile(path.join(worktreeDir, "README.md"), "# Locally edited\n");
+    await fs.writeFile(path.join(worktreeDir, "scratch.txt"), "wip\n");
+    const headBeforeTick = execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+
+    const dirtyButCurrent = run();
+
+    expect(dirtyButCurrent).toContain("already up to date with origin/main");
+    expect(dirtyButCurrent).not.toContain("working tree has local changes");
+    expect(dirtyButCurrent).not.toContain("Clone-mode skips");
+    expect(dirtyButCurrent).toMatch(/Processed 1 repo: 1 synced, 0 with clone-mode skips, 0 failed/);
+    // Nothing was touched: the edits are still there and HEAD did not move.
+    expect(await fs.readFile(path.join(worktreeDir, "README.md"), "utf-8")).toBe("# Locally edited\n");
+    expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeTick);
+
+    // And the case the dirty check is actually for: once origin moves ahead,
+    // the same dirty tree does block the fast-forward, and says so.
+    await pushCommit(remoteBare, "dirty-current", "three.txt", "Add three");
+
+    const dirtyAndBehind = run();
+
+    expect(dirtyAndBehind).toContain("working tree has local changes");
+    expect(dirtyAndBehind).toContain("Clone-mode skips");
+    expect(dirtyAndBehind).toMatch(/Processed 1 repo: 0 synced, 1 with clone-mode skips, 0 failed/);
+    expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeTick);
+  }, 90000);
+
   it("narrows legacy all-branches clone refspecs and deletes stale remote refs", async () => {
     const remoteBare = await createLocalRemote("legacy-remote-branches");
     const seedDir = path.join(tmpBase, "legacy-remote-branches-seed");
@@ -567,9 +613,13 @@ export default {
   // `depth: 1` clone took all 197 commits of the rewritten tip in a 201-object
   // pack uncapped, against 1 commit in a 3-object pack capped, and classified
   // `indeterminate_shallow` either way.
-  // The worktree is left dirty on purpose: the tick then stops right after the
-  // fetch, before the deepen budget can pull more, so what origin/main holds is
-  // exactly what the sync fetch asked for.
+  // The device that lets the tick be observed: the clone is deepened first, by
+  // an ordinary advance, so that the tick after the force-push can classify at
+  // all. A decisive verdict — `diverged` here — ends the tick right after the
+  // fetch, so what origin/main holds is exactly what the sync fetch asked for.
+  // A one-commit clone cannot do that: it has no ancestry for merge-base to
+  // answer with, so the tick spends the deepen budget instead and the budget's
+  // own fetches overwrite the evidence.
   it("caps the sync fetch when the remote force-pushes off the clone's history", async () => {
     const remoteBare = await createLocalRemote("shallow-forcepush-remote");
     const configDir = path.join(tmpBase, "shallow-forcepush-config");
@@ -577,16 +627,30 @@ export default {
     const configPath = path.join(configDir, "shallow-forcepush.config.js");
     await fs.mkdir(configDir, { recursive: true });
 
-    // Grow the remote so the rewritten ancestry is clearly bigger than the cap.
-    const pushDir = await growRemote(remoteBare, "shallow-forcepush", 9);
+    const countRemoteRef = (): number =>
+      Number(
+        execSync(`git -C "${worktreeDir}" rev-list --count refs/remotes/origin/main`, { encoding: "utf-8" }).trim(),
+      );
+
+    // Grow the remote well past the first deepen target, so the rewritten
+    // ancestry is clearly bigger than the window the clone ends up holding.
+    const pushDir = await growRemote(remoteBare, "shallow-forcepush", 60);
 
     await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir, ",\n      depth: 1");
     execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
     expect(execSync(`git -C "${worktreeDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim()).toBe("1");
 
-    // Dirty: the tick fetches, then skips the merge — and so never reaches the
-    // deepen budget, which would fetch more history on its own.
-    await fs.writeFile(path.join(worktreeDir, "README.md"), "# Locally edited\n");
+    // One ordinary advance: the one-commit clone cannot classify it, the first
+    // deepen target answers it, and the merge leaves HEAD on the fetched tip
+    // with a window the ratchet will hold from here on.
+    execSync(`git -C "${pushDir}" commit -q --allow-empty -m "Advance"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" push -q origin main`, { encoding: "utf-8" });
+    const deepenRun = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+    // Also the first proof that the sync fetch is capped: without `--depth` it
+    // would have pulled the tip's whole ancestry and had no need to deepen.
+    expect(deepenRun.match(/\[deepen]/g) ?? []).toHaveLength(1);
+    const windowAfterDeepen = countRemoteRef();
+    expect(windowAfterDeepen).toBe(50);
 
     execSync(`git -C "${pushDir}" reset --hard HEAD~3`, { encoding: "utf-8" });
     await fs.writeFile(path.join(pushDir, "rewritten.txt"), "rewritten\n");
@@ -596,36 +660,32 @@ export default {
     const rewrittenAncestry = Number(
       execSync(`git -C "${pushDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim(),
     );
-    expect(rewrittenAncestry).toBe(10);
+    expect(rewrittenAncestry).toBeGreaterThan(windowAfterDeepen);
 
     const secondRun = execSync(`node "${cliPath}" --config "${configPath}"`, {
       encoding: "utf-8",
       timeout: 60000,
     });
 
-    expect(secondRun).toContain("working tree has local changes");
+    // The tick can tell what happened — the histories still meet, three commits
+    // down — so it skips without spending the budget.
+    expect(secondRun).toContain("has diverged from origin/main");
     expect(secondRun).not.toContain("[deepen]");
-    // The cap held: one commit fetched, not the rewritten tip's ten.
-    const fetchedAncestry = Number(
-      execSync(`git -C "${worktreeDir}" rev-list --count refs/remotes/origin/main`, { encoding: "utf-8" }).trim(),
-    );
-    expect(fetchedAncestry).toBe(1);
-    expect(fetchedAncestry).toBeLessThan(rewrittenAncestry);
+    // The cap held: the window the ratchet asks for, not the rewritten tip's
+    // whole ancestry.
+    expect(countRemoteRef()).toBe(windowAfterDeepen);
+    expect(countRemoteRef()).toBeLessThan(rewrittenAncestry);
 
-    // A second tick on the same dirty worktree: the cap is measured from the
-    // ref it caps, which now holds the rewritten tip, so it neither pulls the
-    // ancestry the first tick refused nor cuts what was fetched.
+    // A second tick on the same divergence: the cap is measured from the ref it
+    // caps, which now holds the rewritten tip, so it neither pulls the ancestry
+    // the first tick refused nor cuts what was fetched.
     const thirdRun = execSync(`node "${cliPath}" --config "${configPath}"`, {
       encoding: "utf-8",
       timeout: 60000,
     });
-    expect(thirdRun).toContain("working tree has local changes");
+    expect(thirdRun).toContain("has diverged from origin/main");
     expect(thirdRun).not.toContain("[deepen]");
-    expect(
-      Number(
-        execSync(`git -C "${worktreeDir}" rev-list --count refs/remotes/origin/main`, { encoding: "utf-8" }).trim(),
-      ),
-    ).toBe(1);
+    expect(countRemoteRef()).toBe(windowAfterDeepen);
   }, 240000);
 
   // The ratchet measures the ref the fetch re-applies its depth to —

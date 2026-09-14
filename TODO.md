@@ -168,7 +168,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T66** — With a small configured `depth`, every routine sync re-passes `--depth N` and
   re-shortens the history the previous tick deepened; at `depth: 1` every remote advance (even +1
   commit) is indeterminate and costs a 50-commit deepen fetch, then is thrown away
-- [ ] **T71** — Clone-mode sync runs a full `git status` scan every tick before learning the clone
+- [x] **T71** — Clone-mode sync runs a full `git status` scan every tick before learning the clone
   is already up to date; a dirty but current clone is reported as a skip instead of up-to-date
 - [ ] **T74** — configureSingleBranchRemote rewrites .git/config twice and scans remote refs on
   every sync tick although the fetch never uses the stored refspec
@@ -3024,7 +3024,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `maybeCleanupPartialClone`, `Cleaned up incomplete` — only lines 471, 478, 499, 506 reference
   `fs.rm`, none for the worktreeDir removal.
 
-### [ ] T71. Clone-mode sync runs a full `git status` scan every tick before learning the clone is already up to date; a dirty but current clone is reported as a skip instead of up-to-date
+### [x] T71. Clone-mode sync runs a full `git status` scan every tick before learning the clone is already up to date; a dirty but current clone is reported as a skip instead of up-to-date
 
 - **Category**: performance · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

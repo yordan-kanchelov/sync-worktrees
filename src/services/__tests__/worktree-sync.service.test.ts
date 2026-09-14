@@ -14,6 +14,7 @@ import {
 } from "../../__tests__/test-utils";
 import { ENV_CONSTANTS } from "../../constants";
 import { ConfigError, WorktreeNotCleanError } from "../../errors";
+import { CloneSyncService } from "../clone-sync.service";
 import { GitMaintenanceService } from "../git-maintenance.service";
 import { PathResolutionService } from "../path-resolution.service";
 import { RepoOperationLock } from "../repo-operation-lock";
@@ -30,6 +31,7 @@ import type { Config } from "../../types";
 import type { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
+import type { SyncOutcomeAccumulator } from "../sync-outcome";
 import type { Mock, Mocked } from "vitest";
 
 // Use vi.hoisted to create mock instance that can be accessed in both factory and tests
@@ -238,6 +240,67 @@ describe("WorktreeSyncService", () => {
 
       service.clearRecordedSkips();
       expect(service.getRecordedSkips()).toEqual([]);
+    });
+  });
+
+  // A clone lands at origin/<branch> by construction, so the sync attempt that
+  // used to follow it re-fetched a ref the clone already had and ran `git
+  // status` over a working tree git had checked out seconds earlier (#T71).
+  describe("clone mode: the sync that performed the clone", () => {
+    const cloneConfig = (): Config => ({ ...mockConfig, mode: "clone", branch: "main" });
+
+    // Stands in for initialize(): `created` in the operation's own accumulator
+    // is what marks a clone this init made, as opposed to one it adopted.
+    function stubInitialize(recordCreated: boolean): void {
+      vi.spyOn(CloneSyncService.prototype, "initialize").mockImplementation(async function (
+        this: unknown,
+        outcome?: SyncOutcomeAccumulator,
+      ): Promise<void> {
+        const internals = this as { initialized: boolean; resolvedBranch: string };
+        internals.initialized = true;
+        internals.resolvedBranch = "main";
+        if (recordCreated) outcome?.recordCreated("main", "/test/worktrees");
+      });
+    }
+
+    it("does not run a sync attempt on the tick that cloned", async () => {
+      stubInitialize(true);
+      const runSyncAttempt = vi.spyOn(CloneSyncService.prototype, "runSyncAttempt").mockResolvedValue(undefined);
+      vi.spyOn(WorktreeSyncService.prototype, "isInitialized").mockReturnValueOnce(false);
+
+      service = new WorktreeSyncService(cloneConfig());
+      const result = await service.sync();
+
+      expect(runSyncAttempt).not.toHaveBeenCalled();
+      expect(result.started).toBe(true);
+      expect(result.started && result.outcome.counts).toMatchObject({ created: 1, skipped: 0, noop: 0, failed: 0 });
+    });
+
+    // An existing clone this init only adopted records nothing, and is exactly
+    // the case a sync tick is for.
+    it("runs a sync attempt when init adopted an existing clone", async () => {
+      stubInitialize(false);
+      const runSyncAttempt = vi.spyOn(CloneSyncService.prototype, "runSyncAttempt").mockResolvedValue(undefined);
+      vi.spyOn(WorktreeSyncService.prototype, "isInitialized").mockReturnValueOnce(false);
+
+      service = new WorktreeSyncService(cloneConfig());
+      await service.sync();
+
+      expect(runSyncAttempt).toHaveBeenCalledTimes(1);
+    });
+
+    // And the tick after it is an ordinary one: the suppression is scoped to
+    // the operation that cloned, not remembered past it.
+    it("runs a sync attempt on the next tick", async () => {
+      stubInitialize(true);
+      const runSyncAttempt = vi.spyOn(CloneSyncService.prototype, "runSyncAttempt").mockResolvedValue(undefined);
+      vi.spyOn(WorktreeSyncService.prototype, "isInitialized").mockReturnValueOnce(false);
+
+      service = new WorktreeSyncService(cloneConfig());
+      await service.sync();
+      await service.sync();
+
+      expect(runSyncAttempt).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -1946,17 +1946,48 @@ export class CloneSyncService {
       await this.reapplySparseCheckout(worktreeDir, branch, this.config.sparseCheckout);
     }
 
-    const isClean = await this.gitService.checkWorktreeStatus(worktreeDir);
-    if (!isClean) {
-      this.recordSkip(
-        { kind: "dirty_tree" },
-        `⏭️  Skipping ff-merge for '${this.repoName}' — working tree has local changes.`,
-        `Skipping merge for '${this.repoName}': working tree has local changes`,
-        "info",
-      );
-      return;
-    }
-
+    // The relationship first, the working tree only if it turns out to matter.
+    // Both halves of that order are deliberate.
+    //
+    // Cost: classification is ref reads (`rev-parse` twice, `merge-base`),
+    // bounded by history; `checkWorktreeStatus` runs `git status`, which
+    // refreshes the index and walks the whole working tree for untracked
+    // files, and is therefore the one command in a tick that scales with how
+    // many files the checkout holds — on a monorepo, seconds, and under the
+    // repo lock. The overwhelmingly common daemon tick ends `up_to_date`,
+    // where nothing is going to be written and the scan bought nothing.
+    //
+    // Meaning: a clone with uncommitted edits that is *already at*
+    // origin/<branch> has nothing to merge, so answering "dirty" there
+    // reported a skip — every tick, in the run summary and the TUI — for a
+    // repository that was in fact up to date. The dirty check belongs where a
+    // dirty tree actually changes the decision: the fast-forward path.
+    //
+    // Nothing load-bearing is lost by not scanning on the other paths. The
+    // tick's own `rev-parse --abbrev-ref HEAD` gate above already refuses a
+    // detached HEAD (a rebase or bisect in progress) and a branch switched
+    // underneath us, and none of the paths that now return without a scan
+    // write to the working tree — a conflicted merge left in progress on the
+    // branch (which does not detach HEAD) is now named by its relationship to
+    // origin rather than as `dirty_tree` when the tick could not have merged
+    // anyway, and is still caught by the scan on the one path that would
+    // have. What the scan never diagnosed in the first place is the
+    // half-written checkout of the 'Known limit' above: `git status` reports
+    // the missing files as deletions, which read as an ordinary dirty tree, so
+    // losing the scan here loses no diagnosis that existed. The only path that
+    // writes is the merge below, and it still reads the tree immediately
+    // before doing so —
+    // now with the deepening fetches on the near side of the check rather than
+    // between it and the merge.
+    //
+    // What this order does cost: a shallow clone too short to classify now
+    // spends its deepen budget on a tick whose tree turns out to be dirty,
+    // where the old order returned before asking. That is the same budget a
+    // clean tick in the same state already spent every tick, the history it
+    // buys is ratcheted and kept by the next fetch rather than discarded, and
+    // it is what turns 'working tree has local changes' — which says nothing
+    // about why the clone cannot advance — into the `indeterminate_shallow`
+    // skip that names `depth` as the remedy.
     const { relationship, deepenedTo: lastDeepenedTo } = await this.classifyWithDeepening(clients, worktreeDir, branch);
 
     if (relationship === "up_to_date") {
@@ -2005,6 +2036,17 @@ export class CloneSyncService {
       return;
     }
 
+    const isClean = await this.gitService.checkWorktreeStatus(worktreeDir);
+    if (!isClean) {
+      this.recordSkip(
+        { kind: "dirty_tree" },
+        `⏭️  Skipping ff-merge for '${this.repoName}' — working tree has local changes.`,
+        `Skipping merge for '${this.repoName}': working tree has local changes`,
+        "info",
+      );
+      return;
+    }
+
     this.logger.info(`Fast-forwarding '${this.repoName}' to origin/${branch}...`);
     this.emitProgress({ phase: "merge", message: `Fast-forwarding '${this.repoName}' to origin/${branch}` });
     // Read before the merge rather than derived from it afterwards: the
@@ -2043,10 +2085,11 @@ export class CloneSyncService {
   // next tick — able to run at all.
   //
   // What makes that safe is not that the tree was clean a moment earlier: the
-  // relationship classification, up to three deepening fetches and the merge
-  // itself sit between that check and this point, and together they can run
-  // for minutes. Each path is proved on its own instead, against what
-  // origin/<branch> holds for it:
+  // merge itself sits between that check and this point on a sync tick, and a
+  // branch switch adds the unshallow, the branch fetch, the relationship
+  // classification with up to three deepening fetches and the switch on top —
+  // together they can run for minutes. Each path is proved on its own instead,
+  // against what origin/<branch> holds for it:
   //
   //   present on disk — removed or restored only when its contents are what
   //     that ref holds for that path. Whoever put them there, they are the

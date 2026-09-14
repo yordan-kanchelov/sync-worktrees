@@ -2534,6 +2534,120 @@ describe("CloneSyncService", () => {
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
 
+    // The order inside a tick is the point of these, not just the verdict:
+    // `checkWorktreeStatus` is `git status`, an index refresh plus an
+    // untracked-file walk of the whole checkout, and it is the only command in
+    // a steady-state tick whose cost scales with how many files the clone
+    // holds. The classification that decides whether anything will be written
+    // is three ref reads. So a tick that ends 'up to date' — the overwhelmingly
+    // common daemon tick — must not pay for the walk at all (#T71).
+    it("does not read the working tree on an up-to-date tick", async () => {
+      const checkWorktreeStatus = vi.fn().mockResolvedValue(true);
+      const gitService = buildGitService({
+        checkWorktreeStatus,
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("up_to_date"),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+
+      await service.runSyncAttempt(outcome);
+
+      expect(checkWorktreeStatus).not.toHaveBeenCalled();
+      expect(skips).toEqual([]);
+      expect(gitMock.merge).not.toHaveBeenCalled();
+      expect(outcome.toOutcome().actions).toEqual([
+        expect.objectContaining({ kind: "noop", scope: "repo", reason: "already_up_to_date" }),
+      ]);
+    });
+
+    // Same for every other verdict that cannot end in a merge. Each one used to
+    // be reachable only through the dirty gate, so a dirty clone was reported
+    // as 'working tree has local changes' whatever its actual relationship to
+    // origin was; now the skip names the relationship, which is what the user
+    // has to act on.
+    const NON_MERGING_VERDICTS: Array<[string, CloneSkipReason]> = [
+      ["local_ahead", { kind: "ahead_unpushed", branch: "main" }],
+      ["diverged", { kind: "diverged", branch: "main" }],
+      ["indeterminate_shallow", { kind: "indeterminate_shallow", branch: "main", deepenedTo: null }],
+    ];
+    for (const [relationship, expected] of NON_MERGING_VERDICTS) {
+      it(`does not read the working tree when the relationship is ${relationship}`, async () => {
+        const checkWorktreeStatus = vi.fn().mockResolvedValue(false);
+        const gitService = buildGitService({
+          checkWorktreeStatus,
+          classifyRemoteRelationship: vi.fn().mockResolvedValue(relationship),
+        });
+        const { service, skips } = buildServiceWithSkips(gitService);
+
+        await service.runSyncAttempt();
+
+        expect(checkWorktreeStatus).not.toHaveBeenCalled();
+        expect(skips).toEqual([expected]);
+        expect(gitMock.merge).not.toHaveBeenCalled();
+      });
+    }
+
+    // The other half of the order: the merge is the one thing in a tick that
+    // writes to the working tree, and it is still gated on a status scan taken
+    // immediately before it — after the classification (and any deepening
+    // fetches) rather than before them.
+    it("reads the working tree between classifying and fast-forwarding", async () => {
+      const order: string[] = [];
+      const gitService = buildGitService({
+        checkWorktreeStatus: vi.fn().mockImplementation(async () => {
+          order.push("status");
+          return true;
+        }),
+        classifyRemoteRelationship: vi.fn().mockImplementation(async () => {
+          order.push("classify");
+          return "fast_forward";
+        }),
+      });
+      gitMock.merge.mockImplementation(async () => {
+        order.push("merge");
+      });
+      const { service } = buildServiceWithSkips(gitService);
+
+      await service.runSyncAttempt();
+
+      expect(order).toEqual(["classify", "status", "merge"]);
+    });
+
+    // The user-visible half of the reorder: a clone somebody is working in that
+    // is already at origin/<branch> has nothing to merge, so it is up to date —
+    // not a skip in the run summary, the MCP sync result and the TUI, every
+    // tick, for a repository that needed nothing done to it.
+    it("reports a dirty clone that is already at origin as up to date, not a skip", async () => {
+      const gitService = buildGitService({
+        checkWorktreeStatus: vi.fn().mockResolvedValue(false),
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("up_to_date"),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+
+      await service.runSyncAttempt(outcome);
+
+      expect(skips).toEqual([]);
+      expect(outcome.toOutcome().counts.skipped).toBe(0);
+      expect(outcome.toOutcome().counts.noop).toBe(1);
+    });
+
+    // And the case the dirty gate is actually for: a fast-forward would write
+    // over the user's edits, so it is still refused, and still reported as
+    // dirty_tree.
+    it("still records dirty_tree when a dirty clone could otherwise fast-forward", async () => {
+      const gitService = buildGitService({
+        checkWorktreeStatus: vi.fn().mockResolvedValue(false),
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("fast_forward"),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([{ kind: "dirty_tree" }]);
+      expect(gitMock.merge).not.toHaveBeenCalled();
+    });
+
     describe("rejected fast-forward", () => {
       const LFS_MERGE_FAILURE = "fatal: assets/big.bin: smudge filter lfs failed";
       const HEAD_BEFORE_MERGE = "1111111111111111111111111111111111111111";
