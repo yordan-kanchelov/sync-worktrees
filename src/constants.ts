@@ -146,6 +146,8 @@ export const PATH_CONSTANTS = {
   BARE_CLONE_PENDING_MARKER_SUFFIX: ".sync-worktrees-bare-clone.pending",
   /** Directory next to (never inside) a worktreeDir that holds its cross-process lock file. */
   LOCK_DIR_NAME: ".sync-worktrees-locks",
+  /** Directory under the config file's directory that holds per-config state (removal audit logs). */
+  STATE_DIR_NAME: ".sync-worktrees-state",
 } as const;
 
 export const CONFIG_FILE_NAMES = [

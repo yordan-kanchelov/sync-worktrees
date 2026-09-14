@@ -180,7 +180,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   `GIT_WORK_TREE`, `GIT_INDEX_FILE`, ...); when sync-worktrees is launched from a git hook,
   clone-mode's config rewrites, ref deletions and merges target the hook's repository instead of
   `worktreeDir`
-- [ ] **T69** — `filesToCopyOnBranchCreate` globs walk every sibling repository checkout under the
+- [x] **T69** — `filesToCopyOnBranchCreate` globs walk every sibling repository checkout under the
   config directory and copy their files into the new clone
 - [ ] **T70** — The destructive `rm -rf` branch of `maybeCleanupPartialClone` has no test; only the
   negative (EACCES) case asserts `fs.rm` is not called
@@ -2963,7 +2963,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   worktree-mode-sync-runner.ts:137); outcome recording around the clone-mode sparse block (none);
   README qualification for clone mode (none at 466).
 
-### [ ] T69. `filesToCopyOnBranchCreate` globs walk every sibling repository checkout under the config directory and copy their files into the new clone
+### [x] T69. `filesToCopyOnBranchCreate` globs walk every sibling repository checkout under the config directory and copy their files into the new clone
 
 - **Category**: guardrail · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

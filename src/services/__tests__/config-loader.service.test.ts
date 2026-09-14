@@ -2246,6 +2246,72 @@ describe("ConfigLoaderService", () => {
     });
   });
 
+  describe("resolveRepositoryConfig - __configuredRepoDirs", () => {
+    function makeRepo(name: string, overrides: Record<string, unknown> = {}) {
+      return {
+        name,
+        repoUrl: `https://github.com/acme/${name}.git`,
+        worktreeDir: name,
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        ...overrides,
+      };
+    }
+
+    it("carries every entry's resolved worktreeDir and bareRepoDir, its own first", () => {
+      const all = [
+        makeRepo("api", { mode: "clone" }),
+        makeRepo("web", { mode: "clone" }),
+        makeRepo("trees", { mode: "worktree" }),
+      ];
+
+      const resolved = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
+
+      expect(resolved.__configuredRepoDirs).toEqual(["/cfg/web", "/cfg/api", "/cfg/trees", "/cfg/.bare/trees"]);
+    });
+
+    it("resolves a relative worktreeDir against the config directory and keeps an absolute one", () => {
+      const all = [
+        makeRepo("api", { mode: "clone", worktreeDir: "./checkouts/api" }),
+        makeRepo("web", { mode: "clone", worktreeDir: "/elsewhere/web" }),
+      ];
+
+      const resolved = configLoader.resolveRepositoryConfig(all[0], undefined, "/cfg", undefined, all);
+
+      expect(resolved.__configuredRepoDirs).toEqual(["/cfg/checkouts/api", "/elsewhere/web"]);
+    });
+
+    it("falls back to the entry's own directories when the repository list is not supplied", () => {
+      const resolved = configLoader.resolveRepositoryConfig(makeRepo("api", { mode: "clone" }), undefined, "/cfg");
+
+      expect(resolved.__configuredRepoDirs).toEqual(["/cfg/api"]);
+    });
+
+    it("skips a sibling whose own name cannot be made into a path segment", () => {
+      const url = "https://github.com/acme/monorepo.git";
+      const all = [
+        makeRepo("first", { repoUrl: url }),
+        makeRepo("...", { repoUrl: url, worktreeDir: "broken" }),
+        makeRepo("third", { repoUrl: url, worktreeDir: "third" }),
+      ];
+
+      // 'first' still resolves; the unusable name only fails when it is that
+      // entry's turn.
+      const resolved = configLoader.resolveRepositoryConfig(all[0], undefined, "/cfg", undefined, all);
+
+      // '/cfg/broken' is absent: only the entry that cannot be resolved is left out.
+      expect(resolved.__configuredRepoDirs).toEqual([
+        "/cfg/first",
+        "/cfg/.bare/monorepo",
+        "/cfg/third",
+        "/cfg/.bare/third",
+      ]);
+      expect(() => configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all)).toThrow(
+        /empty path segment/,
+      );
+    });
+  });
+
   describe("detectPathCollisions", () => {
     const originalPlatform = process.platform;
 

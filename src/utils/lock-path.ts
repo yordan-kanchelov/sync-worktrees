@@ -79,7 +79,7 @@ export function getRemovalAuditLogPath(config: Config): string {
   if (configDir) {
     return path.join(
       configDir,
-      ".sync-worktrees-state",
+      PATH_CONSTANTS.STATE_DIR_NAME,
       `${sanitizeNameForPath(name ?? "repo", "removal audit log name")}-${hash}-removals.jsonl`,
     );
   }

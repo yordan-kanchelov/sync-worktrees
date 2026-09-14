@@ -31,7 +31,8 @@ type DefaultsOnlyConfigKeys = "runOnce";
 type DiscriminantConfigKeys = "mode";
 type BaseIdentityConfigKeys = "repoUrl" | "worktreeDir";
 // Set internally or read only at runtime — intentionally absent from the public input surface.
-type InternalOnlyConfigKeys = "logger" | "__configFileDir" | "fetchTimeoutMs" | "cloneTimeoutMs";
+type InternalOnlyConfigKeys =
+  "logger" | "__configFileDir" | "__configuredRepoDirs" | "fetchTimeoutMs" | "cloneTimeoutMs";
 
 type ClassifiedConfigKeys =
   | CommonConfigKeys

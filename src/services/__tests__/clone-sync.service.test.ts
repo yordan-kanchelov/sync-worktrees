@@ -13,6 +13,7 @@ import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../../errors";
 import { BranchCreatedActionsService } from "../branch-created-actions.service";
 import { CloneSyncService } from "../clone-sync.service";
+import { FileCopyService } from "../file-copy.service";
 import { Logger } from "../logger.service";
 import { SyncOutcomeAccumulator } from "../sync-outcome";
 
@@ -643,6 +644,69 @@ describe("CloneSyncService", () => {
 
       expect(copyFilesSpy).toHaveBeenCalledTimes(1);
       expect(runHooksSpy).not.toHaveBeenCalled();
+    });
+
+    it("keeps the initial file copy out of every other checkout the config names", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+
+      const fileCopyService = new FileCopyService();
+      const copySpy = vi.spyOn(fileCopyService, "copyFiles").mockResolvedValue({
+        copied: [],
+        skipped: [],
+        errors: [],
+      });
+      const branchCreatedActions = new BranchCreatedActionsService(fileCopyService);
+
+      const config = makeConfig({
+        worktreeDir: "/ws/web",
+        __configFileDir: "/ws",
+        __configuredRepoDirs: ["/ws/web", "/ws/api", "/ws/trees", "/ws/.bare/tools"],
+        filesToCopyOnBranchCreate: ["**/.env.local"],
+      });
+      const service = new CloneSyncService(config, buildGitService(), logger, { branchCreatedActions });
+
+      await service.initialize();
+
+      expect(copySpy).toHaveBeenCalledTimes(1);
+      const [sourceDir, destDir, patterns, options] = copySpy.mock.calls[0];
+      expect(sourceDir).toBe("/ws");
+      expect(destDir).toBe("/ws/web");
+      expect(patterns).toEqual(["**/.env.local"]);
+      // The destination, and every worktreeDir/bareRepoDir in the config file.
+      expect(options?.excludeDirs).toEqual(["/ws/web", "/ws/api", "/ws/trees", "/ws/.bare/tools"]);
+    });
+
+    it("falls back to its own directories when the config carries no repository list", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+
+      const fileCopyService = new FileCopyService();
+      const copySpy = vi.spyOn(fileCopyService, "copyFiles").mockResolvedValue({
+        copied: [],
+        skipped: [],
+        errors: [],
+      });
+      const branchCreatedActions = new BranchCreatedActionsService(fileCopyService);
+
+      const service = new CloneSyncService(
+        makeConfig({
+          worktreeDir: "/ws/web",
+          __configFileDir: "/ws",
+          filesToCopyOnBranchCreate: ["**/.env.local"],
+        }),
+        buildGitService(),
+        logger,
+        { branchCreatedActions },
+      );
+
+      await service.initialize();
+
+      expect(copySpy.mock.calls[0][3]?.excludeDirs).toEqual(["/ws/web"]);
     });
 
     it("skips file copy when the clone-init marker already exists", async () => {

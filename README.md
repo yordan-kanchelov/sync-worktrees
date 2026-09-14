@@ -665,7 +665,7 @@ For repositories with Git LFS issues or large files you don't need, set `skipLfs
 Two lifecycle hooks the example config covers in depth:
 
 - `hooks.onBranchCreated` — array of shell commands run after a new branch's worktree is created. Placeholders: `{BRANCH_NAME}`, `{WORKTREE_PATH}`, `{REPO_NAME}`, `{BASE_BRANCH}`, `{REPO_URL}`. Fire-and-forget.
-- `filesToCopyOnBranchCreate` — paths copied into every newly created worktree (e.g. `.env.local`, `.npmrc`). Glob patterns are resolved relative to the config file's directory.
+- `filesToCopyOnBranchCreate` — paths copied into every newly created worktree (e.g. `.env.local`, `.npmrc`). Glob patterns are resolved relative to the config file's directory. That directory is normally the parent of every checkout, so a recursive pattern would otherwise read out of the other repositories: the expansion skips every `worktreeDir` and `bareRepoDir` the config file names (the destination included) — reached by that name, or under any other name in the source that resolves to the same directory, through however many symlinks — and skips `node_modules`, `.git`, `dist`, `build`, `.next`, `coverage`, and this tool's own `.bare/`, `.trash/`, `.removed/`, `.diverged/`, `.sync-worktrees-state/` and `.sync-worktrees-locks/`.
 
 In clone mode, `filesToCopyOnBranchCreate` fires once on the initial clone, and `hooks.onBranchCreated` fires only for TUI-initiated branch creation (clone mode tracks a single fixed branch with no later branch-creation events).
 

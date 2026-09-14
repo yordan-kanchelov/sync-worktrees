@@ -299,6 +299,20 @@ export interface Config {
    */
   __configFileDir?: string;
   /**
+   * Internal: the resolved worktreeDir (and bareRepoDir, in worktree mode) of
+   * every repository in the same config file, this one included. Populated by
+   * ConfigLoaderService.resolveRepositoryConfig when it is given the full
+   * repository list — not a user-facing field.
+   *
+   * Its one consumer is the `filesToCopyOnBranchCreate` expansion, which globs
+   * the config file's directory and must not read out of another repository's
+   * checkout; see FileCopyOptions.excludeDirs. A config the loader cannot see
+   * the whole of (a hand-built Config, a single repository resolved on its own)
+   * leaves this unset, and the copy falls back to excluding the destination and
+   * this repository's own directories, plus the name-based defaults.
+   */
+  __configuredRepoDirs?: string[];
+  /**
    * Inactivity timeout (ms) for the git commands that talk to the remote:
    * `fetch`, `push`, `ls-remote` and `remote set-head`. Triggers when no
    * stdout/stderr data arrives within the window, killing the command.

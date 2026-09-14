@@ -4,7 +4,7 @@ import { pathToFileURL } from "url";
 
 import * as cron from "node-cron";
 
-import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
+import { CONFIG_FILE_NAMES, DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
 import { parseDuration } from "../utils/date-filter";
@@ -744,6 +744,67 @@ export class ConfigLoaderService {
     }
   }
 
+  /**
+   * The on-disk directories one repository entry owns, resolved against the
+   * config file's directory. Split out of resolveRepositoryConfig so the same
+   * derivation — including the `.bare/<name>` fallback for duplicate repoUrls —
+   * answers both for the entry being resolved and for each of its siblings.
+   */
+  private resolveRepoDirs(
+    repo: RepositoryConfig,
+    defaults: Partial<Config> | undefined,
+    configDir: string | undefined,
+    allRepositories: RepositoryConfig[] | undefined,
+  ): { worktreeDir: string; bareRepoDir?: string } {
+    const mode: RepositoryMode = repo.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
+    const worktreeDir = this.resolvePath(repo.worktreeDir, configDir);
+
+    if (mode === REPOSITORY_MODES.CLONE) {
+      return { worktreeDir };
+    }
+    if (repo.bareRepoDir) {
+      return { worktreeDir, bareRepoDir: this.resolvePath(repo.bareRepoDir, configDir) };
+    }
+    if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories, defaults)) {
+      const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
+      return { worktreeDir, bareRepoDir: this.resolvePath(`${GIT_CONSTANTS.BARE_DIR_NAME}/${sanitized}`, configDir) };
+    }
+    return { worktreeDir, bareRepoDir: this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir) };
+  }
+
+  /**
+   * Every directory the config file hands to a repository, this entry's own
+   * included. See Config.__configuredRepoDirs for what reads it.
+   *
+   * A sibling whose own resolution throws (a name that cannot be made into a
+   * path segment) is skipped rather than allowed to fail this entry: the throw
+   * still happens, unchanged, when that sibling's turn comes, and until then a
+   * missing exclusion is the safer failure than a misattributed error.
+   */
+  private collectConfiguredRepoDirs(
+    repo: RepositoryConfig,
+    ownDirs: { worktreeDir: string; bareRepoDir?: string },
+    defaults: Partial<Config> | undefined,
+    configDir: string | undefined,
+    allRepositories: RepositoryConfig[] | undefined,
+  ): string[] {
+    const dirs = new Set<string>([ownDirs.worktreeDir]);
+    if (ownDirs.bareRepoDir) dirs.add(ownDirs.bareRepoDir);
+
+    for (const sibling of allRepositories ?? []) {
+      if (sibling === repo) continue;
+      try {
+        const siblingDirs = this.resolveRepoDirs(sibling, defaults, configDir, allRepositories);
+        dirs.add(siblingDirs.worktreeDir);
+        if (siblingDirs.bareRepoDir) dirs.add(siblingDirs.bareRepoDir);
+      } catch {
+        // Left to the sibling's own resolveRepositoryConfig call.
+      }
+    }
+
+    return Array.from(dirs);
+  }
+
   resolveRepositoryConfig(
     repo: RepositoryConfig,
     defaults?: Partial<Config>,
@@ -754,10 +815,12 @@ export class ConfigLoaderService {
   ): RepositoryConfig {
     const mode: RepositoryMode = repo.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
 
+    const ownDirs = this.resolveRepoDirs(repo, defaults, configDir, allRepositories);
+
     const resolved: RepositoryConfig = {
       name: repo.name,
       repoUrl: repo.repoUrl,
-      worktreeDir: this.resolvePath(repo.worktreeDir, configDir),
+      worktreeDir: ownDirs.worktreeDir,
       cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? DEFAULT_CONFIG.CRON_SCHEDULE,
       runOnce: defaults?.runOnce ?? false,
       debug: repo.debug ?? defaults?.debug,
@@ -768,6 +831,8 @@ export class ConfigLoaderService {
       resolved.__configFileDir = configDir;
     }
 
+    resolved.__configuredRepoDirs = this.collectConfiguredRepoDirs(repo, ownDirs, defaults, configDir, allRepositories);
+
     if (mode === REPOSITORY_MODES.CLONE) {
       if (repo.branch ?? defaults?.branch) {
         resolved.branch = repo.branch ?? defaults?.branch;
@@ -776,14 +841,7 @@ export class ConfigLoaderService {
         resolved.depth = repo.depth ?? defaults?.depth;
       }
     } else {
-      if (repo.bareRepoDir) {
-        resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
-      } else if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories, defaults)) {
-        const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
-        resolved.bareRepoDir = this.resolvePath(`.bare/${sanitized}`, configDir);
-      } else {
-        resolved.bareRepoDir = this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir);
-      }
+      resolved.bareRepoDir = ownDirs.bareRepoDir;
 
       if (repo.branchMaxAge || defaults?.branchMaxAge) {
         resolved.branchMaxAge = repo.branchMaxAge ?? defaults?.branchMaxAge;

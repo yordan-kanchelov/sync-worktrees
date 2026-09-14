@@ -5,7 +5,7 @@ import type { Logger } from "./logger.service";
 import type { Config, HookContext } from "../types";
 
 export interface CopyFilesParams {
-  config: Pick<Config, "filesToCopyOnBranchCreate">;
+  config: Pick<Config, "filesToCopyOnBranchCreate" | "worktreeDir" | "bareRepoDir" | "__configuredRepoDirs">;
   branchName: string;
   worktreePath: string;
   sourceDir: string;
@@ -35,7 +35,9 @@ export class BranchCreatedActionsService {
     if (!patterns?.length) return;
 
     try {
-      const result = await this.fileCopyService.copyFiles(sourceDir, worktreePath, patterns);
+      const result = await this.fileCopyService.copyFiles(sourceDir, worktreePath, patterns, {
+        excludeDirs: this.buildExcludeDirs(config, worktreePath),
+      });
 
       if (result.copied.length > 0) {
         logger.info(`📋 Copied ${result.copied.length} file(s) to '${branchName}': ${result.copied.join(", ")}`);
@@ -49,6 +51,27 @@ export class BranchCreatedActionsService {
     } catch (error) {
       logger.error(`Failed to copy files to '${branchName}': ${String(error)}`);
     }
+  }
+
+  /**
+   * The directories the copy must never read out of: the checkout being filled,
+   * and every checkout the config file hands to a repository. Both callers
+   * reach this through copyFiles, so clone mode (source: the config file's
+   * directory, which the documented layout makes the parent of every checkout)
+   * and worktree mode (source: an existing worktree, which sits inside this
+   * repository's own worktreeDir, so what it has to keep out is the other
+   * repositories' checkouts and any worktreeDir a config nests inside this
+   * one's — allowed, with a warning, by detectPathCollisions) are covered by
+   * one rule. FileCopyOptions.excludeDirs says what happens to an entry that
+   * lies outside the source or contains it; this list does not have to
+   * pre-filter.
+   */
+  private buildExcludeDirs(config: CopyFilesParams["config"], worktreePath: string): string[] {
+    const configured = config.__configuredRepoDirs ?? [config.worktreeDir, config.bareRepoDir];
+    const dirs = [worktreePath, ...configured].filter(
+      (dir): dir is string => typeof dir === "string" && dir.length > 0,
+    );
+    return Array.from(new Set(dirs));
   }
 
   runHooks(params: RunHooksParams): void {
