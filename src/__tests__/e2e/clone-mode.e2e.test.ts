@@ -308,6 +308,44 @@ export default {
     expect(remoteBranches).not.toContain("origin/feat/cloudflare-deploys");
   }, 60000);
 
+  // The sweep deletes in batches, and a batch has to stay best-effort: one ref
+  // git refuses must not take the others down with it. A ref lock left behind
+  // by a crashed git is the way that happens in the wild, and it is also what
+  // separates the batch this ships from the single-transaction
+  // `update-ref --stdin` — the measurement behind that choice is stated once,
+  // beside the sweep in clone-sync.service.ts, and not repeated here.
+  // Whether the locked ref itself survives is left unasserted:
+  // it depends on where this git stores it — an entry in `packed-refs` is
+  // removed by the transaction that rewrites that file, a loose ref is not.
+  it("deletes the other stale remote refs when one of them is locked", async () => {
+    const remoteBare = await createLocalRemote("locked-stale-ref");
+    const seedDir = path.join(tmpBase, "locked-stale-ref-seed");
+    for (const branch of ["stale-a", "stale-b", "stale-c"]) {
+      execSync(`git -C "${seedDir}" push origin "main:${branch}"`, { encoding: "utf-8" });
+    }
+
+    const worktreeDir = path.join(tmpBase, "locked-stale-ref", "wt");
+    execSync(`git clone --branch main "file://${remoteBare}" "${worktreeDir}"`, { encoding: "utf-8" });
+    const lockDir = path.join(worktreeDir, ".git", "refs", "remotes", "origin");
+    await fs.mkdir(lockDir, { recursive: true });
+    await fs.writeFile(path.join(lockDir, "stale-b.lock"), "");
+
+    const configPath = path.join(tmpBase, "locked-stale-ref", "locked.config.js");
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir);
+
+    const output = execSync(`node "${cliPath}" --config "${configPath}" 2>&1`, {
+      encoding: "utf-8",
+      timeout: 60000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const remoteBranches = execSync(`git -C "${worktreeDir}" branch -r --list`, { encoding: "utf-8" });
+    expect(output).toMatch(/Processed 1 repo: 1 synced, 0 with clone-mode skips, 0 failed/);
+    expect(remoteBranches).not.toContain("origin/stale-a");
+    expect(remoteBranches).not.toContain("origin/stale-c");
+    expect(remoteBranches).toContain("origin/main");
+  }, 60000);
+
   itNetwork(
     "is idempotent on subsequent runs (no re-clone, fetch-only sync)",
     async () => {

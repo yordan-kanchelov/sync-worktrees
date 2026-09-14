@@ -43,6 +43,20 @@ const MERGE_CLEANUP_PATH_BATCH = 200;
 // How many of those paths the summary line names before it starts counting.
 const MERGE_CLEANUP_LOG_PATH_LIMIT = 5;
 
+// The namespace every remote-tracking ref of this clone lives in, and the
+// prefix `git branch -r` strips from a ref to name it (`refs/remotes/origin/x`
+// is `origin/x` there).
+const REMOTE_TRACKING_REF_PREFIX = "refs/remotes/";
+const ORIGIN_REF_PREFIX = `${REMOTE_TRACKING_REF_PREFIX}origin/`;
+
+// How many remote-tracking refs one `git branch -r -D` names while the stale
+// ones a wider refspec left behind are swept. A legacy all-branches clone of a
+// busy repository holds thousands of them, and the only reason not to name
+// them all in one command line is that it has to fit the platform's argument
+// limit; the bound costs one git process per 200 refs, against the one per ref
+// this replaces.
+const STALE_REF_DELETE_BATCH = 200;
+
 // `ls-tree`'s mode for a symlink, whose blob holds the target path rather than
 // any file's contents.
 const SYMLINK_TREE_MODE = "120000";
@@ -69,10 +83,14 @@ interface RemoteTreeEntry {
   readonly id: string;
 }
 
-function batchPaths(paths: readonly string[]): string[][] {
+function inBatches(items: readonly string[], limit: number): string[][] {
+  // Floored at 1: the callers all pass a positive constant, but a zero or
+  // negative one would spin here forever rather than fail, and the narrower
+  // helper this replaced could not be called wrongly at all.
+  const size = Math.max(1, Math.floor(limit));
   const batches: string[][] = [];
-  for (let start = 0; start < paths.length; start += MERGE_CLEANUP_PATH_BATCH) {
-    batches.push(paths.slice(start, start + MERGE_CLEANUP_PATH_BATCH));
+  for (let start = 0; start < items.length; start += size) {
+    batches.push(items.slice(start, start + size));
   }
   return batches;
 }
@@ -966,6 +984,34 @@ export class CloneSyncService {
   // `--prune` with an explicit single-branch refspec, which can neither create
   // nor prune any other origin/* ref, so the only refs a sweep could find
   // there arrived out of band.
+  //
+  // The deletion is batched, and `git branch -r -D` is what batches it rather
+  // than the `update-ref --stdin` that reads like the obvious answer. Two
+  // reasons, in this order:
+  //
+  //  - Semantics. `update-ref --stdin` is ONE transaction: on git 2.43 a
+  //    single ref whose lock is held (a concurrent git in the same clone) ends
+  //    it with exit 128 and nothing deleted at all, which would turn one
+  //    unremovable ref into a sweep that silently did nothing. `git branch -D`
+  //    is per-ref best-effort like the loop this replaces — the refs it can
+  //    remove are removed, the ones it cannot are named on stderr, and it
+  //    exits non-zero — so the batch is never worse than deleting one at a
+  //    time, and over packed refs it is better: the packed-refs entry goes
+  //    even for the ref whose loose lock is held.
+  //  - Reach. simple-git 3.36 offers no way to write a child process's stdin:
+  //    there is no `stdin` option, `outputHandler` hands over stdout and
+  //    stderr only, its plugin list is built internally from known config
+  //    keys so none of ours can be registered, and `spawnOptions` is typed
+  //    down to `uid`/`gid`, so `stdio` cannot be set either. Feeding `--stdin`
+  //    anything would mean spawning git outside the client factory, past the
+  //    sanitized environment and past the primary-checkout guard every write
+  //    here goes through.
+  //
+  // `git branch -r` addresses a ref by the part after 'refs/remotes/', so the
+  // refs are filtered on that exact prefix and only ever shortened, never
+  // rebuilt: nothing outside `refs/remotes/origin/` can be named, and a name
+  // shortened this way always starts with 'origin/' and so can never be read
+  // as an option.
   private async deleteStaleRemoteTrackingRefs(clients: MutatingGitClients, branch: string): Promise<void> {
     let refsOutput: string;
     try {
@@ -974,14 +1020,27 @@ export class CloneSyncService {
       return;
     }
 
-    const keepRef = `refs/remotes/origin/${branch}`;
-    const refsToDelete = refsOutput
+    const keepRef = `${ORIGIN_REF_PREFIX}${branch}`;
+    const namesToDelete = refsOutput
       .split(/\r?\n/)
       .map((ref) => ref.trim())
-      .filter((ref) => ref && ref !== keepRef && ref !== "refs/remotes/origin/HEAD");
+      .filter((ref) => ref.startsWith(ORIGIN_REF_PREFIX) && ref !== keepRef && ref !== `${ORIGIN_REF_PREFIX}HEAD`)
+      .map((ref) => ref.slice(REMOTE_TRACKING_REF_PREFIX.length));
 
-    for (const ref of refsToDelete) {
-      await this.deleteRemoteTrackingRef(clients, ref);
+    for (const batch of inBatches(namesToDelete, STALE_REF_DELETE_BATCH)) {
+      try {
+        await clients.git.raw(["branch", "-r", "-D", ...batch]);
+      } catch (error) {
+        // Stale remote refs are best-effort cleanup; sync correctness comes
+        // from the narrowed refspec. A batch reports the refs it could not
+        // remove by failing as a whole, so what it did remove is not knowable
+        // here — the git message names them.
+        this.logger.debug(
+          `A batch of ${batch.length} stale remote-tracking ref(s) in '${this.repoName}' did not delete ` +
+            `cleanly (git names the ones it could not remove; the rest of the batch is gone): ` +
+            `${summarizeGitFailure(getErrorMessage(error))}`,
+        );
+      }
     }
   }
 
@@ -2377,7 +2436,7 @@ export class CloneSyncService {
     paths: string[],
   ): Promise<Map<string, RemoteTreeEntry> | null> {
     const entries = new Map<string, RemoteTreeEntry>();
-    for (const batch of batchPaths(paths)) {
+    for (const batch of inBatches(paths, MERGE_CLEANUP_PATH_BATCH)) {
       let output: string;
       try {
         output = await git.raw([
@@ -2411,7 +2470,7 @@ export class CloneSyncService {
   // one nothing may be concluded about, so it is simply never acted on.
   private async hashWorktreeFiles(git: SimpleGit, paths: string[]): Promise<Map<string, string>> {
     const hashes = new Map<string, string>();
-    for (const batch of batchPaths(paths)) {
+    for (const batch of inBatches(paths, MERGE_CLEANUP_PATH_BATCH)) {
       const batched = await this.hashFileBatch(git, batch);
       if (batched !== null) {
         batch.forEach((batchPath, index) => hashes.set(batchPath, batched[index]));
@@ -2485,7 +2544,7 @@ export class CloneSyncService {
   // `--` git reads that as one more path to restore.
   private async restoreFilesFromHead(clients: MutatingGitClients, paths: string[]): Promise<string[]> {
     const restored: string[] = [];
-    for (const batch of batchPaths(paths)) {
+    for (const batch of inBatches(paths, MERGE_CLEANUP_PATH_BATCH)) {
       try {
         await clients.git.raw(["restore", "--source=HEAD", "--worktree", "--", ...batch.map(asLiteralPathspec)]);
         restored.push(...batch);

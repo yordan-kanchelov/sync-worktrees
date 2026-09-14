@@ -172,7 +172,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   is already up to date; a dirty but current clone is reported as a skip instead of up-to-date
 - [x] **T74** — configureSingleBranchRemote rewrites .git/config twice and scans remote refs on
   every sync tick although the fetch never uses the stored refspec
-- [ ] **T75** — Stale remote-tracking refs are deleted one `git update-ref -d` process per ref
+- [x] **T75** — Stale remote-tracking refs are deleted one `git update-ref -d` process per ref
   instead of a single batched `update-ref --stdin`
 - [ ] **T76** — Clone-mode syncs produce no per-phase timing in --debug (PhaseTimer is only wired
   into the worktree-mode runner)
@@ -3192,7 +3192,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   882-884 justifies re-checking origin each tick but not rewriting config. Not described in
   CHANGELOG 5.2.0/5.3.1.
 
-### [ ] T75. Stale remote-tracking refs are deleted one `git update-ref -d` process per ref instead of a single batched `update-ref --stdin`
+### [x] T75. Stale remote-tracking refs are deleted one `git update-ref -d` process per ref instead of a single batched `update-ref --stdin`
 
 - **Category**: performance · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

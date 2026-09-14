@@ -206,6 +206,26 @@ describe("CloneSyncService", () => {
     logger = Logger.createDefault();
   });
 
+  // Every argv this service handed `git.raw`, in order.
+  function rawCalls(): string[][] {
+    return gitMock.raw.mock.calls.map((call) => (Array.isArray(call[0]) ? (call[0] as string[]) : []));
+  }
+
+  // The stale-ref sweep's deletions, as argv: one `git branch -r -D` naming a
+  // whole batch of refs. Tests assert on these rather than on a per-ref call,
+  // which is the shape the sweep must not go back to.
+  function staleRefDeleteCalls(): string[][] {
+    return gitMock.raw.mock.calls
+      .map((call) => (Array.isArray(call[0]) ? (call[0] as string[]) : []))
+      .filter((args) => args[0] === "branch" && args[1] === "-r" && args[2] === "-D");
+  }
+
+  // Every ref named across those calls, in the order git was asked to delete
+  // them.
+  function sweptRefNames(): string[] {
+    return staleRefDeleteCalls().flatMap((args) => args.slice(3));
+  }
+
   describe("inactivity timeouts", () => {
     const originalShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
     const originalNodeEnv = process.env.NODE_ENV;
@@ -1230,10 +1250,13 @@ describe("CloneSyncService", () => {
         "remote.origin.fetch",
         "+refs/heads/feature/new:refs/remotes/origin/feature/new",
       ]);
-      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/main"]);
-      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/old"]);
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/HEAD"]);
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/feature/new"]);
+      // Four refs listed — HEAD, the branch being switched to, and two stale
+      // ones — go out as ONE delete naming exactly the two stale ones. A
+      // process per ref is what this must not be.
+      expect(staleRefDeleteCalls()).toEqual([["branch", "-r", "-D", "origin/main", "origin/old"]]);
+      expect(rawCalls().some((args) => args[0] === "update-ref" && args[1] === "-d")).toBe(false);
+      expect(sweptRefNames()).not.toContain("origin/HEAD");
+      expect(sweptRefNames()).not.toContain("origin/feature/new");
     });
 
     // A clone standing on 'main' that already carries a local
@@ -3055,10 +3078,6 @@ describe("CloneSyncService", () => {
       return service;
     }
 
-    function rawCalls(): string[][] {
-      return gitMock.raw.mock.calls.map((call) => (Array.isArray(call[0]) ? (call[0] as string[]) : []));
-    }
-
     it("reads the remote config once and writes nothing when it is already narrowed", async () => {
       mockTickRaw(CONVERGED);
       const service = buildTickService();
@@ -3117,11 +3136,72 @@ describe("CloneSyncService", () => {
 
       expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
       expect(rawCalls()).toContainEqual(SCAN_REFS);
-      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/feat/other"]);
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/main"]);
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/HEAD"]);
+      expect(staleRefDeleteCalls()).toEqual([["branch", "-r", "-D", "origin/feat/other"]]);
       // Only what drifted: tagOpt already said --no-tags.
       expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
+    });
+
+    // The shape a legacy all-branches clone arrives in: the scan answers with
+    // HEAD, the tracked branch and everything the wide refspec fetched. One
+    // process deletes the stale ones, and the two refs that must survive are
+    // not named in it.
+    it("deletes every stale ref in a single git process", async () => {
+      mockTickRaw(configReadOutput([["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]]), [
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/a",
+        "refs/remotes/origin/b",
+      ]);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(staleRefDeleteCalls()).toEqual([["branch", "-r", "-D", "origin/a", "origin/b"]]);
+      expect(rawCalls().filter((args) => args[0] === "update-ref")).toEqual([]);
+      expect(sweptRefNames()).toEqual(["origin/a", "origin/b"]);
+    });
+
+    // The only bound left on the batch is the length of one command line, so
+    // a clone with thousands of stale refs still spends a handful of
+    // processes rather than one per ref — and every ref is named exactly once
+    // across them.
+    it("splits a large sweep into bounded batches instead of one process per ref", async () => {
+      const stale = Array.from({ length: 450 }, (_, index) => `refs/remotes/origin/feat/b${index}`);
+      mockTickRaw(configReadOutput([["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]]), stale);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(staleRefDeleteCalls().map((args) => args.slice(0, 3))).toEqual([
+        ["branch", "-r", "-D"],
+        ["branch", "-r", "-D"],
+        ["branch", "-r", "-D"],
+      ]);
+      expect(staleRefDeleteCalls().map((args) => args.length - 3)).toEqual([200, 200, 50]);
+      expect(sweptRefNames()).toEqual(stale.map((ref) => ref.slice("refs/remotes/".length)));
+    });
+
+    // Best-effort, batch by batch: `git branch -D` reports the refs it could
+    // not remove by failing the process it was asked in, and the refs in the
+    // batches after it still have to be tried. The sweep is cleanup — the
+    // tick that owns it narrows the refspec and syncs regardless.
+    it("keeps sweeping after a batch git refuses, and still narrows the refspec", async () => {
+      const stale = Array.from({ length: 250 }, (_, index) => `refs/remotes/origin/feat/b${index}`);
+      mockTickRaw(configReadOutput([["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]]), stale);
+      const tickRaw = gitMock.raw.getMockImplementation() as (args: string[]) => Promise<string>;
+      let batches = 0;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        if (args[0] === "branch" && ++batches === 1) {
+          throw new Error("error: cannot lock ref 'refs/remotes/origin/feat/b7': Unable to create lock file");
+        }
+        return tickRaw(args);
+      });
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(staleRefDeleteCalls().map((args) => args.length - 3)).toEqual([200, 50]);
+      expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
 
     // The sweep runs before the write it belongs to, so a process killed
@@ -3136,6 +3216,8 @@ describe("CloneSyncService", () => {
 
       const keys = rawCalls().map((args) => args.join(" "));
       expect(keys.indexOf(SCAN_REFS.join(" "))).toBeLessThan(keys.indexOf(WRITE_REFSPEC.join(" ")));
+      expect(keys.indexOf("branch -r -D origin/feat/other")).toBeGreaterThan(-1);
+      expect(keys.indexOf("branch -r -D origin/feat/other")).toBeLessThan(keys.indexOf(WRITE_REFSPEC.join(" ")));
     });
 
     it("writes tagOpt alone when only tagOpt drifted, and leaves the refs alone", async () => {
@@ -3207,7 +3289,7 @@ describe("CloneSyncService", () => {
       await service.initialize();
 
       expect(rawCalls()).toContainEqual(SCAN_REFS);
-      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/feat/other"]);
+      expect(staleRefDeleteCalls()).toEqual([["branch", "-r", "-D", "origin/feat/other"]]);
       expect(rawCalls()).not.toContainEqual(WRITE_REFSPEC);
       expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
     });
@@ -3331,6 +3413,9 @@ describe("CloneSyncService", () => {
           (args) =>
             (args[0] === "config" && args[1] === "--replace-all") ||
             (args[0] === "update-ref" && args[1] === "-d") ||
+            // The stale-ref sweep's batched delete, and the wizard's branch
+            // creation: both write refs into whatever repository they reach.
+            args[0] === "branch" ||
             args[0] === "switch" ||
             args[0] === "remote",
         )
