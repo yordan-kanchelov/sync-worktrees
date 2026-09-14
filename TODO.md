@@ -182,7 +182,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   `worktreeDir`
 - [x] **T69** — `filesToCopyOnBranchCreate` globs walk every sibling repository checkout under the
   config directory and copy their files into the new clone
-- [ ] **T70** — The destructive `rm -rf` branch of `maybeCleanupPartialClone` has no test; only the
+- [x] **T70** — The destructive `rm -rf` branch of `maybeCleanupPartialClone` has no test; only the
   negative (EACCES) case asserts `fs.rm` is not called
 
 ### Batch 4 — trash, diverged and removal safety
@@ -2995,7 +2995,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   true` and an ignore list that covers node_modules/.git/dist/build but not the sibling checkouts
   that live under the config directory (file-copy.service.ts:8-15, 77-98).
 
-### [ ] T70. The destructive `rm -rf` branch of `maybeCleanupPartialClone` has no test; only the negative (EACCES) case asserts `fs.rm` is not called
+### [x] T70. The destructive `rm -rf` branch of `maybeCleanupPartialClone` has no test; only the negative (EACCES) case asserts `fs.rm` is not called
 
 - **Category**: testing · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

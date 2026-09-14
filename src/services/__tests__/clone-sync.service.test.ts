@@ -935,6 +935,224 @@ describe("CloneSyncService", () => {
       });
     });
 
+    // `maybeCleanupPartialClone` is this subsystem's only recursive delete,
+    // and three conditions stand between a failed clone and it: the directory
+    // must be one this init created, everything left in it must be
+    // dot-prefixed, and there must be no usable `.git/HEAD`. Each test below
+    // moves exactly one of them and leaves the rest of the on-disk picture
+    // alone, so dropping a single condition fails a test of its own rather
+    // than passing a suite that never reached the delete at all.
+    describe("cleanup of a clone that failed before writing HEAD (#T70)", () => {
+      const WORKTREE_DIR = "/tmp/clone-demo";
+      const HEAD_PATH = `${WORKTREE_DIR}/.git/HEAD`;
+      const RM_ARGS = { recursive: true, force: true };
+
+      function enoent(): NodeJS.ErrnoException {
+        return Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+
+      function eacces(message: string): NodeJS.ErrnoException {
+        return Object.assign(new Error(message), { code: "EACCES" });
+      }
+
+      // A clone that dies before git writes `.git/HEAD`. `before` is what the
+      // pre-clone probe of the destination sees — null for ENOENT, the only
+      // answer that makes what lands there this init's own to delete — and
+      // `after` what the post-failure listing sees, or the error it fails
+      // with. `.git/HEAD` is absent throughout unless `headTurnsUpAfterProbe`
+      // makes it appear between the settle probe and the cleanup's own check.
+      function mockCloneFailingBeforeHead(opts: {
+        before: string[] | null;
+        after?: string[] | NodeJS.ErrnoException;
+        headTurnsUpAfterProbe?: boolean;
+      }): Error {
+        const readdir = fs.readdir as unknown as Mock;
+        if (opts.before === null) {
+          readdir.mockRejectedValueOnce(enoent());
+        } else {
+          readdir.mockResolvedValueOnce(opts.before);
+        }
+        const after = opts.after ?? [".git"];
+        if (Array.isArray(after)) {
+          readdir.mockResolvedValue(after);
+        } else {
+          readdir.mockRejectedValue(after);
+        }
+
+        let headProbes = 0;
+        (fs.access as unknown as Mock).mockImplementation(async (target: unknown) => {
+          if (String(target) === HEAD_PATH) {
+            headProbes += 1;
+            if (opts.headTurnsUpAfterProbe && headProbes > 1) return;
+          }
+          throw enoent();
+        });
+        (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+        (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+
+        const cloneError = new Error("fatal: unable to access 'https://github.com/example/repo.git/': HTTP 502\n");
+        gitMock.clone.mockRejectedValueOnce(cloneError);
+        return cloneError;
+      }
+
+      // Only the deletes aimed at the destination itself: the marker removals
+      // go through the same mock and are not what these tests are about.
+      function worktreeRemovals(): unknown[][] {
+        return (fs.rm as unknown as Mock).mock.calls.filter((call) => call[0] === WORKTREE_DIR);
+      }
+
+      // Every recursive delete, wherever it is aimed. The filtered helper above
+      // answers "did it remove the destination"; this one answers "did it
+      // remove anything at all", which is the question a leave-in-place test
+      // has to ask — a filtered assertion cannot see a delete pointed at the
+      // parent directory, and would call that clean.
+      function recursiveRemovals(): unknown[][] {
+        return (fs.rm as unknown as Mock).mock.calls.filter(
+          (call) => (call[1] as { recursive?: boolean } | undefined)?.recursive === true,
+        );
+      }
+
+      // Whichever way the cleanup settles, the init fails with git's own
+      // error and the run reports the repository as a clone failure.
+      async function expectCloneFailureOutcome(service: CloneSyncService, cloneError: Error): Promise<void> {
+        const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+
+        await expect(service.initialize(outcome)).rejects.toBe(cloneError);
+
+        expect(outcome.toOutcome().counts).toMatchObject({ failed: 1, created: 0 });
+        expect(outcome.toOutcome().actions).toEqual([
+          expect.objectContaining({ kind: "failed", reason: "clone_failed", branch: "main", path: WORKTREE_DIR }),
+        ]);
+        expect(service.isInitialized()).toBe(false);
+      }
+
+      it("deletes the directory this init created when the failed clone left nothing usable in it", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git"] });
+        const infoSpy = vi.spyOn(logger, "info");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([[WORKTREE_DIR, RM_ARGS]]);
+        expect(infoSpy).toHaveBeenCalledWith(`Cleaned up incomplete clone at '${WORKTREE_DIR}'.`);
+        // A directory that is being deleted is never also marked unadoptable.
+        expect(fs.writeFile).not.toHaveBeenCalled();
+      });
+
+      it("leaves a destination that existed before the clone attempt in place", async () => {
+        // The single difference from the test above: the destination was
+        // already there (empty) when init looked at it, so nothing in it is
+        // this init's to delete. What the failed clone left behind is
+        // identical.
+        const cloneError = mockCloneFailingBeforeHead({ before: [], after: [".git"] });
+        const warnSpy = vi.spyOn(logger, "warn");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([]);
+        expect(recursiveRemovals()).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          `Clone failed; leaving '${WORKTREE_DIR}' for manual inspection (directory existed before clone attempt).`,
+        );
+        // Refused on ownership alone — the contents are never even listed.
+        expect(fs.readdir).toHaveBeenCalledTimes(1);
+      });
+
+      it("leaves a destination holding a checked-out file in place", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git", "README.md"] });
+        const warnSpy = vi.spyOn(logger, "warn");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([]);
+        expect(recursiveRemovals()).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          `Clone failed; leaving '${WORKTREE_DIR}' for manual inspection (post-failure contents do not look like an ` +
+            `empty incomplete clone).`,
+        );
+      });
+
+      it("leaves the destination alone when a usable '.git/HEAD' turns up after the settle probe", async () => {
+        // The third condition, reachable only through the interleaving that
+        // can still contradict settleFailedClone's "HEAD is missing": HEAD
+        // landing between that read and this one. It is the last thing
+        // standing between the delete and a `.git` whose objects are all
+        // there — the "Clone succeeded, but checkout failed" shape, which is
+        // marked for inspection and never removed.
+        const cloneError = mockCloneFailingBeforeHead({
+          before: null,
+          after: [".git"],
+          headTurnsUpAfterProbe: true,
+        });
+        const warnSpy = vi.spyOn(logger, "warn");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([]);
+        expect(recursiveRemovals()).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          `Clone failed; leaving '${WORKTREE_DIR}' for manual inspection (post-failure contents do not look like an ` +
+            `empty incomplete clone).`,
+        );
+      });
+
+      it("deletes nothing when the post-failure listing itself fails", async () => {
+        // A directory that could not be read is not a directory known to hold
+        // nothing: EACCES here must not settle as "every entry is dotted".
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: eacces("permission denied") });
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        // The listing was attempted (pre-clone probe, then this one) and its
+        // failure is what stopped the delete — not some earlier return.
+        expect(fs.readdir).toHaveBeenCalledTimes(2);
+        expect(worktreeRemovals()).toEqual([]);
+        expect(recursiveRemovals()).toEqual([]);
+      });
+
+      // `[].every(...)` is true, so an empty listing takes the delete arm. That
+      // is the right answer — a destination this init created and git left with
+      // nothing in it is exactly what there is to clean up — but nothing pinned
+      // it, and a plausible-looking `entries.length > 0 &&` guard would silently
+      // start leaving empty directories behind while logging that their
+      // contents do not look empty.
+      it("deletes a destination this init created that the failed clone left completely empty", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [] });
+        const infoSpy = vi.spyOn(logger, "info");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([[WORKTREE_DIR, RM_ARGS]]);
+        expect(infoSpy).toHaveBeenCalledWith(`Cleaned up incomplete clone at '${WORKTREE_DIR}'.`);
+      });
+
+      it("reports the clone failure, not the cleanup failure, when the delete cannot be done", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git"] });
+        (fs.rm as unknown as Mock).mockRejectedValue(eacces("permission denied"));
+        const warnSpy = vi.spyOn(logger, "warn");
+        const infoSpy = vi.spyOn(logger, "info");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        // The user is owed the reason the clone failed; a tidy-up that also
+        // failed is a warning next to it, not a replacement for it.
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([[WORKTREE_DIR, RM_ARGS]]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          `Failed to clean up incomplete clone at '${WORKTREE_DIR}': permission denied`,
+        );
+        // And it must not have announced the cleanup it did not manage: the
+        // success line belongs after the delete returns, not before it.
+        expect(infoSpy).not.toHaveBeenCalledWith(`Cleaned up incomplete clone at '${WORKTREE_DIR}'.`);
+      });
+    });
+
     it("completes an interrupted init's pending file copy when adopting the existing clone (#review)", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
       (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
