@@ -18,6 +18,8 @@ import type { Config } from "../types";
 export interface TrashReapResult {
   deleted: number;
   orphanedRefsDeleted: number;
+  /** Entries present on disk that the caller's purge selection did not name. */
+  skippedNotSelected: number;
   errors: string[];
 }
 
@@ -50,15 +52,21 @@ export class TrashReaperService {
   // Disabled trash means "don't touch my trash" — existing entries are left
   // alone rather than aged out behind the user's back.
   async reapExpiredUnlocked(now: Date = new Date()): Promise<TrashReapResult> {
-    return this.reapUnlocked(now, false);
+    return this.reapUnlocked(now, null);
   }
 
-  async purgeAllUnlocked(): Promise<TrashReapResult> {
-    return this.reapUnlocked(new Date(), true);
+  // Purges exactly the entries named by `entryIds` — the set a force-clean
+  // confirmation was shown — regardless of expiry. Ids whose entry is no longer
+  // there (reaped since, or half-deleted so its manifest no longer parses) are
+  // simply not found among the listed entries and cost nothing; entries that
+  // are there but unnamed are left alone and counted in `skippedNotSelected`.
+  async purgeAllUnlocked(entryIds: readonly string[]): Promise<TrashReapResult> {
+    return this.reapUnlocked(new Date(), new Set(entryIds));
   }
 
-  private async reapUnlocked(now: Date, purgeAll: boolean): Promise<TrashReapResult> {
-    const result: TrashReapResult = { deleted: 0, orphanedRefsDeleted: 0, errors: [] };
+  private async reapUnlocked(now: Date, purgeIds: ReadonlySet<string> | null): Promise<TrashReapResult> {
+    const purgeAll = purgeIds !== null;
+    const result: TrashReapResult = { deleted: 0, orphanedRefsDeleted: 0, skippedNotSelected: 0, errors: [] };
     if (!purgeAll && !this.trashService.isEnabled()) return result;
 
     let realRoot: string;
@@ -90,6 +98,10 @@ export class TrashReaperService {
 
     const reapedIds = new Set<string>();
     for (const entry of entries) {
+      if (purgeIds !== null && !purgeIds.has(entry.manifest.id)) {
+        result.skippedNotSelected++;
+        continue;
+      }
       const expiresAt = new Date(entry.manifest.expiresAt);
       if (Number.isNaN(expiresAt.getTime())) {
         this.logger.warn(`⚠️ Trash reaper: entry '${entry.manifest.id}' has an unparseable expiry; skipping`);

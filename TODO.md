@@ -191,7 +191,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   as invalid manifests forever — never listed, never restorable, never reaped, pin refs never released
 - [x] **T27** — A partially failed `fs.rm` of a trash container deletes manifest.json first and
   leaves an unrecognized, unreapable container whose pin ref is then kept forever
-- [ ] **T28** — TUI force clean purges trash entries created after the confirmation preview: a cron
+- [x] **T28** — TUI force clean purges trash entries created after the confirmation preview: a cron
   sync that starts while the modal is open can trash worktrees that are then destroyed with gc
   --prune=now without ever being shown to the user
 - [ ] **T11** — fs.cp in the cross-device diverged path (and trash restore) rewrites relative
@@ -1529,7 +1529,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   'unrecognized' forever and its pin ref survives the orphan sweep because the container name still
   exists (line 237).
 
-### [ ] T28. TUI force clean purges trash entries created after the confirmation preview: a cron sync that starts while the modal is open can trash worktrees that are then destroyed with gc --prune=now without ever being shown to the user
+### [x] T28. TUI force clean purges trash entries created after the confirmation preview: a cron sync that starts while the modal is open can trash worktrees that are then destroyed with gc --prune=now without ever being shown to the user
 
 - **Category**: guardrail · **Subsystem**: trash
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

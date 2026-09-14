@@ -38,6 +38,7 @@ import type {
   RepositoryDiskUsage,
   ForceCleanRepositoryPreview,
   ForceCleanRepositoryResult,
+  ForceCleanRepositorySelection,
 } from "../types";
 
 const WAIT_SYNC_FAST_TIMEOUT_MS = 2000;
@@ -232,7 +233,7 @@ export class InteractiveUIService {
         getDivergedDirectoriesForRepo={(index: number) => this.getDivergedDirectoriesForRepo(index)}
         deleteDivergedDirectory={(repoIndex: number, name: string) => this.deleteDivergedDirectory(repoIndex, name)}
         getForceCleanPreview={() => this.getForceCleanPreview()}
-        forceClean={(repoIndexes?: number[]) => this.forceClean(repoIndexes)}
+        forceClean={(selections: ForceCleanRepositorySelection[]) => this.forceClean(selections)}
         openEditorInWorktree={(path: string) => this.openEditorInWorktree(path)}
         openTerminalInWorktree={(repoIndex: number, path: string, branchName: string) =>
           this.openTerminalInWorktree(repoIndex, path, branchName)
@@ -795,23 +796,31 @@ export class InteractiveUIService {
     );
   }
 
-  // `repoIndexes` is what the confirmation actually showed. A repo whose preview
-  // failed is not in that list and is skipped: purging it would destroy content
-  // the user was never shown a count for.
-  public async forceClean(repoIndexes?: number[]): Promise<ForceCleanRepositoryResult[]> {
-    const selected = repoIndexes ? new Set(repoIndexes) : null;
+  // `selections` is what the confirmation actually showed, per repo: the trash
+  // entry ids and recovery ref names behind the counts. A repo whose preview
+  // failed has no selection and is skipped — purging it would destroy content
+  // the user was never shown a count for — and within a selected repo the
+  // service purges only these names.
+  public async forceClean(selections: ForceCleanRepositorySelection[]): Promise<ForceCleanRepositoryResult[]> {
+    const selected = new Map(selections.map((selection) => [selection.repoIndex, selection]));
     const results = await Promise.all(
       this.syncServices.map((service, repoIndex) =>
         this.limit(async () => {
           const repoName = this.getRepoName(repoIndex);
-          if (selected && !selected.has(repoIndex)) {
+          const selection = selected.get(repoIndex);
+          if (!selection) {
             return { repoIndex, repoName, error: "skipped: cleanup preview was unavailable" };
           }
           try {
-            const result = await service.forceClean();
-            const level = result.errors.length > 0 ? "warn" : "info";
+            const result = await service.forceClean(selection);
+            const leftBehind = result.skippedNewEntries + result.skippedNewKeepRefs;
+            const level = result.errors.length > 0 || leftBehind > 0 ? "warn" : "info";
+            const skipped =
+              leftBehind > 0
+                ? `; left ${result.skippedNewEntries} trash entries and ${result.skippedNewKeepRefs} recovery refs added after the preview`
+                : "";
             this.addLog(
-              `🧹 Force clean ${repoName}: deleted ${result.trashDeleted} trash entries and ${result.keepRefsDeleted} recovery refs; GC ${result.gcSucceeded ? "complete" : "failed"}`,
+              `🧹 Force clean ${repoName}: deleted ${result.trashDeleted} trash entries and ${result.keepRefsDeleted} recovery refs; GC ${result.gcSucceeded ? "complete" : "failed"}${skipped}`,
               level,
             );
             return { repoIndex, repoName, result };

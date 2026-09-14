@@ -151,7 +151,7 @@ describe("TrashReaperService", () => {
     await fs.writeFile(path.join(junkDir, "precious.txt"), "keep");
     gitStub.updateRef.mockClear();
 
-    const result = await reaper.purgeAllUnlocked();
+    const result = await reaper.purgeAllUnlocked([fresh.manifest.id]);
 
     expect(result.deleted).toBe(1);
     await expect(fs.access(fresh.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -164,6 +164,57 @@ describe("TrashReaperService", () => {
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({ action: "trash_purge", result: "success", trashId: fresh.manifest.id }),
     );
+  });
+
+  // The force-clean confirmation names a set. Anything trashed after the
+  // preview was never on screen, so it stays — and says so, because a purge
+  // that quietly leaves things behind is its own surprise.
+  it("purges only the entries the confirmation named and reports the rest", async () => {
+    const shownA = await makeEntry("shown-a", { ageDays: 1, branch: "shown-a" });
+    const shownB = await makeEntry("shown-b", { ageDays: 1, branch: "shown-b" });
+    const trashedAfterPreview = await makeEntry("unseen-c", { ageDays: 1, branch: "unseen-c", keepPinOnReap: true });
+    // Two, not one: with a single unselected entry the reported count cannot be
+    // told apart from a hard-coded 1.
+    const alsoTrashedAfterPreview = await makeEntry("unseen-d", { ageDays: 1, branch: "unseen-d" });
+
+    const result = await reaper.purgeAllUnlocked([shownA.manifest.id, shownB.manifest.id]);
+
+    expect(result.deleted).toBe(2);
+    expect(result.skippedNotSelected).toBe(2);
+    await expect(fs.access(alsoTrashedAfterPreview.containerPath)).resolves.toBeUndefined();
+    expect(result.errors).toEqual([]);
+    await expect(fs.access(shownA.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(shownB.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(trashedAfterPreview.containerPath)).resolves.toBeUndefined();
+    // Its pin is what keeps the commits out of the `gc --prune=now` that force
+    // clean runs next; the orphaned-pin sweep must not take it either.
+    expect(gitStub.deleteRef).not.toHaveBeenCalledWith(trashedAfterPreview.manifest.pinRef);
+    expect(result.orphanedRefsDeleted).toBe(0);
+  });
+
+  // Between preview and purge the entry can go: the expiry reaper on the sync
+  // that ran in between takes it, or a delete is halfway through and the
+  // manifest no longer parses. Neither is a reason to fail the whole run.
+  it("tolerates named entries that are already gone or half-deleted", async () => {
+    const survivor = await makeEntry("still-here", { ageDays: 1, branch: "still-here" });
+    const reapedMeanwhile = await makeEntry("gone-already", { ageDays: 1, branch: "gone-already" });
+    const halfDeleted = await makeEntry("mid-delete", { ageDays: 1, branch: "mid-delete" });
+    await fs.rm(reapedMeanwhile.containerPath, { recursive: true, force: true });
+    await fs.rm(path.join(halfDeleted.containerPath, "manifest.json"));
+
+    const result = await reaper.purgeAllUnlocked([
+      survivor.manifest.id,
+      reapedMeanwhile.manifest.id,
+      halfDeleted.manifest.id,
+    ]);
+
+    expect(result.deleted).toBe(1);
+    expect(result.errors).toEqual([]);
+    expect(result.skippedNotSelected).toBe(0);
+    await expect(fs.access(survivor.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    // An unreadable manifest means the reaper cannot prove what it would be
+    // deleting, so the payload stays exactly as the invalid-entry rule says.
+    await expect(fs.access(halfDeleted.payloadPath)).resolves.toBeUndefined();
   });
 
   it("blocks the delete when the audit attempt cannot be recorded — same gate as the prune flow", async () => {

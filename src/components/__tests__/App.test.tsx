@@ -43,6 +43,8 @@ describe("App", () => {
             unknownTrashSizes: 0,
             invalidTrashEntries: 1,
             keepRefs: 1,
+            trashEntryIds: ["entry-a", "entry-b"],
+            keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
           },
         },
       ]),
@@ -56,8 +58,13 @@ describe("App", () => {
             unknownTrashSizes: 0,
             invalidTrashEntries: 1,
             keepRefs: 0,
+            trashEntryIds: [],
+            keepRefNames: [],
             trashDeleted: 2,
             keepRefsDeleted: 1,
+            keepRefsRetained: 0,
+            skippedNewEntries: 0,
+            skippedNewKeepRefs: 0,
             gcSucceeded: true,
             errors: [],
           },
@@ -367,6 +374,15 @@ describe("App", () => {
       await waitForStateUpdate();
 
       expect(defaultProps.forceClean).toHaveBeenCalledTimes(1);
+      // `y` authorizes the set behind the counts it just read out, so that is
+      // what reaches the service — not "whatever is in the trash by then".
+      expect(defaultProps.forceClean).toHaveBeenCalledWith([
+        {
+          repoIndex: 0,
+          trashEntryIds: ["entry-a", "entry-b"],
+          keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
+        },
+      ]);
       expect(lastFrame()).toContain("deleted 2 trash and 1 refs");
     });
 

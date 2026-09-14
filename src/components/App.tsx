@@ -19,6 +19,7 @@ import type {
   RepositoryDiskUsage,
   ForceCleanRepositoryPreview,
   ForceCleanRepositoryResult,
+  ForceCleanRepositorySelection,
 } from "../types";
 
 export type { HookContext, WorktreeStatusEntry };
@@ -55,7 +56,7 @@ export interface AppProps {
   getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
   deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
   getForceCleanPreview?: () => Promise<ForceCleanRepositoryPreview[]>;
-  forceClean?: (repoIndexes: number[]) => Promise<ForceCleanRepositoryResult[]>;
+  forceClean?: (selections: ForceCleanRepositorySelection[]) => Promise<ForceCleanRepositoryResult[]>;
 }
 
 export interface LogEntry {

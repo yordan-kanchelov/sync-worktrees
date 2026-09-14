@@ -13,6 +13,8 @@ import {
   setEnvVar,
 } from "../../__tests__/test-utils";
 import { ENV_CONSTANTS } from "../../constants";
+
+import type { ForceCleanResult, ForceCleanSelection } from "../../types";
 import { ConfigError, WorktreeNotCleanError } from "../../errors";
 import { CloneSyncService } from "../clone-sync.service";
 import { GitMaintenanceService } from "../git-maintenance.service";
@@ -332,6 +334,7 @@ describe("WorktreeSyncService", () => {
       vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
         deleted: 1,
         orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
         errors: [],
       });
       vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -340,7 +343,10 @@ describe("WorktreeSyncService", () => {
         .mockResolvedValueOnce([]);
       (fs.readdir as Mock<any>).mockResolvedValue([]);
 
-      const result = await service.forceClean();
+      const result = await service.forceClean({
+        trashEntryIds: ["trash-entry"],
+        keepRefNames: ["refs/sync-worktrees/keep/preserved-entry"],
+      });
 
       expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/preserved-entry");
       expect(result).toMatchObject({
@@ -363,6 +369,7 @@ describe("WorktreeSyncService", () => {
       vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
         deleted: 0,
         orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
         errors: [],
       });
       vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -374,11 +381,80 @@ describe("WorktreeSyncService", () => {
         String(dirPath).endsWith(".diverged") ? [divergedName] : [],
       );
 
-      const result = await service.forceClean();
+      const result = await service.forceClean({
+        trashEntryIds: [],
+        keepRefNames: [`refs/sync-worktrees/keep/${divergedName}`, "refs/sync-worktrees/keep/orphaned-entry"],
+      });
 
       expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/orphaned-entry");
       expect(mockGitService.deleteRef).not.toHaveBeenCalledWith(`refs/sync-worktrees/keep/${divergedName}`);
       expect(result).toMatchObject({ keepRefsDeleted: 1, keepRefsRetained: 1 });
+    });
+
+    // The other half of the confirmation: a recovery ref minted between the
+    // preview and the keypress — a diverged-replace during the cron tick that
+    // ran while the modal was open — holds commits that are on no remote. It
+    // was never counted on screen, so `gc --prune=now` must not be allowed to
+    // reach behind it.
+    it("purges the named entries and refs, leaving ones that appeared after the preview", async () => {
+      const shown = { manifest: { id: "shown-entry", sizeBytes: 1024 } } as any;
+      const trashedAfterPreview = { manifest: { id: "unseen-entry", sizeBytes: 2048 } } as any;
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({
+        entries: [shown, trashedAfterPreview],
+        invalid: [],
+      });
+      const purge = vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
+        deleted: 1,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 1,
+        errors: [],
+      });
+      vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
+      mockGitService.listRefs.mockResolvedValue([
+        "refs/sync-worktrees/keep/shown-ref",
+        "refs/sync-worktrees/keep/minted-after-preview",
+      ]);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+
+      const result = await service.forceClean({
+        trashEntryIds: ["shown-entry"],
+        keepRefNames: ["refs/sync-worktrees/keep/shown-ref"],
+      });
+
+      expect(purge).toHaveBeenCalledWith(["shown-entry"]);
+      expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/shown-ref");
+      expect(mockGitService.deleteRef).not.toHaveBeenCalledWith("refs/sync-worktrees/keep/minted-after-preview");
+      expect(result).toMatchObject({
+        trashDeleted: 1,
+        keepRefsDeleted: 1,
+        skippedNewEntries: 1,
+        skippedNewKeepRefs: 1,
+      });
+    });
+
+    // A named ref can be gone by the time the purge runs (an explicit
+    // `deleteKeepRef`, or the diverged directory it backed being discarded).
+    // Intersecting the live listing with the selection means nothing is
+    // attempted for it, so there is no error to report.
+    it("does not attempt a named keep ref that no longer exists", async () => {
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [], invalid: [] });
+      vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
+        deleted: 0,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
+        errors: [],
+      });
+      vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
+      mockGitService.listRefs.mockResolvedValue([]);
+      (fs.readdir as Mock<any>).mockResolvedValue([]);
+
+      const result = await service.forceClean({
+        trashEntryIds: [],
+        keepRefNames: ["refs/sync-worktrees/keep/deleted-meanwhile"],
+      });
+
+      expect(mockGitService.deleteRef).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ keepRefsDeleted: 0, skippedNewKeepRefs: 0, errors: [] });
     });
 
     // Before this branch the diverge flow minted `keep/diverged-<ts>-<branch>`
@@ -393,6 +469,7 @@ describe("WorktreeSyncService", () => {
       vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
         deleted: 0,
         orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
         errors: [],
       });
       vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -404,7 +481,10 @@ describe("WorktreeSyncService", () => {
         String(dirPath).endsWith(".diverged") ? [divergedName] : [],
       );
 
-      const result = await service.forceClean();
+      const result = await service.forceClean({
+        trashEntryIds: [],
+        keepRefNames: [legacyRef, "refs/sync-worktrees/keep/diverged-m9x1a2b3-gone-00000000"],
+      });
 
       expect(mockGitService.deleteRef).not.toHaveBeenCalledWith(legacyRef);
       expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/diverged-m9x1a2b3-gone-00000000");
@@ -2041,7 +2121,7 @@ describe("WorktreeSyncService", () => {
       migrationSpy = vi.spyOn(TrashMigrationService.prototype, "migrateLegacyUnlocked").mockResolvedValue(undefined);
       reaperSpy = vi
         .spyOn(TrashReaperService.prototype, "reapExpiredUnlocked")
-        .mockResolvedValue({ deleted: 0, orphanedRefsDeleted: 0, errors: [] });
+        .mockResolvedValue({ deleted: 0, orphanedRefsDeleted: 0, skippedNotSelected: 0, errors: [] });
     });
 
     afterEach(() => {
@@ -2921,3 +3001,12 @@ describe("WorktreeSyncService", () => {
     });
   });
 });
+
+// A force-clean result names counts, never a set to act on. Its entry ids
+// would be the survivors of the purge that produced it, so letting one stand in
+// for a selection would aim the next purge at exactly what the last one was
+// asked to spare. Pinned at compile time: restore the inheritance and this
+// directive becomes unused, which fails `pnpm typecheck`.
+type AssertTrue<T extends true> = T;
+type ForceCleanResultIsNotASelection = AssertTrue<ForceCleanResult extends ForceCleanSelection ? false : true>;
+export type { ForceCleanResultIsNotASelection };

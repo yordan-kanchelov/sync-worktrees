@@ -4,11 +4,16 @@ import { isMouseSequence } from "../utils/mouse";
 
 import { formatBytes } from "../utils/disk-space";
 
-import type { ForceCleanRepositoryPreview, ForceCleanRepositoryResult } from "../types";
+import type {
+  ForceCleanPreview,
+  ForceCleanRepositoryPreview,
+  ForceCleanRepositoryResult,
+  ForceCleanRepositorySelection,
+} from "../types";
 
 export interface ForceCleanModalProps {
   getPreview: () => Promise<ForceCleanRepositoryPreview[]>;
-  forceClean: (repoIndexes: number[]) => Promise<ForceCleanRepositoryResult[]>;
+  forceClean: (selections: ForceCleanRepositorySelection[]) => Promise<ForceCleanRepositoryResult[]>;
   onClose: () => void;
 }
 
@@ -65,8 +70,21 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
     } else if ((input === "y" || input === "Y") && !loading && !error) {
       setCleaning(true);
       // Only the repos whose counts are on screen — a repo whose preview failed
-      // was never shown a number, so it must not be purged on this confirmation.
-      forceClean(previews.filter((row) => row.preview).map((row) => row.repoIndex))
+      // was never shown a number, so it must not be purged on this
+      // confirmation — and inside each of those, only the entries and refs
+      // those counts were computed from. A sync can trash more while this modal
+      // waits for a keypress; the extra entries are not part of what was shown.
+      forceClean(
+        previews
+          .filter(
+            (row): row is ForceCleanRepositoryPreview & { preview: ForceCleanPreview } => row.preview !== undefined,
+          )
+          .map((row) => ({
+            repoIndex: row.repoIndex,
+            trashEntryIds: row.preview.trashEntryIds,
+            keepRefNames: row.preview.keepRefNames,
+          })),
+      )
         .then(setResults)
         .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
         .finally(() => setCleaning(false));
@@ -110,11 +128,21 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
           {cleaning && <Text color="yellow">Cleaning repositories...</Text>}
           {results?.map((row) =>
             row.result ? (
-              <Text key={row.repoIndex} color={row.result.errors.length > 0 ? "yellow" : "green"}>
+              <Text
+                key={row.repoIndex}
+                color={
+                  row.result.errors.length > 0 || row.result.skippedNewEntries > 0 || row.result.skippedNewKeepRefs > 0
+                    ? "yellow"
+                    : "green"
+                }
+              >
                 {row.repoName}: deleted {row.result.trashDeleted} trash and {row.result.keepRefsDeleted} refs; GC{" "}
                 {row.result.gcSucceeded ? "complete" : "failed"}
                 {row.result.keepRefsRetained > 0
                   ? `; kept ${row.result.keepRefsRetained} ref(s) still backing a .diverged copy`
+                  : ""}
+                {row.result.skippedNewEntries > 0 || row.result.skippedNewKeepRefs > 0
+                  ? `; left ${row.result.skippedNewEntries} trash and ${row.result.skippedNewKeepRefs} ref(s) added after this preview`
                   : ""}
                 {row.result.errors.length > 0 ? ` (${row.result.errors.join("; ")})` : ""}
               </Text>

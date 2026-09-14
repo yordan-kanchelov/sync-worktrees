@@ -1,0 +1,122 @@
+import React from "react";
+import { render, cleanup } from "ink-testing-library";
+import { describe, it, expect, vi, afterEach } from "vitest";
+
+import ForceCleanModal from "../ForceCleanModal";
+
+import type { ForceCleanPreview, ForceCleanRepositoryPreview, ForceCleanRepositoryResult } from "../../types";
+
+const settle = (): Promise<unknown> => new Promise((resolve) => setTimeout(resolve, 100));
+
+function preview(overrides: Partial<ForceCleanPreview> = {}): ForceCleanPreview {
+  return {
+    trashEntries: 2,
+    trashBytes: 1024,
+    unknownTrashSizes: 0,
+    invalidTrashEntries: 0,
+    keepRefs: 1,
+    trashEntryIds: ["entry-a", "entry-b"],
+    keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
+    ...overrides,
+  };
+}
+
+function result(overrides: Partial<ForceCleanRepositoryResult["result"]> = {}): ForceCleanRepositoryResult {
+  return {
+    repoIndex: 0,
+    repoName: "app",
+    result: {
+      ...preview({ trashEntries: 0, trashBytes: 0, keepRefs: 0, trashEntryIds: [], keepRefNames: [] }),
+      trashDeleted: 2,
+      keepRefsDeleted: 1,
+      keepRefsRetained: 0,
+      skippedNewEntries: 0,
+      skippedNewKeepRefs: 0,
+      gcSucceeded: true,
+      errors: [],
+      ...overrides,
+    },
+  };
+}
+
+describe("ForceCleanModal", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  // The modal is the consent record: the ids behind the counts it rendered are
+  // what `y` authorizes, no matter how long the user takes to press it or what
+  // a cron sync trashes in between.
+  it("confirms with the ids it displayed, not the ones a later preview would return", async () => {
+    const rows: ForceCleanRepositoryPreview[] = [{ repoIndex: 0, repoName: "app", preview: preview() }];
+    const getPreview = vi.fn<() => Promise<ForceCleanRepositoryPreview[]>>().mockResolvedValue(rows);
+    const forceClean = vi.fn().mockResolvedValue([result()]);
+    const { stdin, lastFrame } = render(
+      <ForceCleanModal getPreview={getPreview} forceClean={forceClean} onClose={vi.fn()} />,
+    );
+
+    await settle();
+    expect(lastFrame()).toContain("2 trash");
+
+    // A sync runs while the modal waits for a keypress and trashes another
+    // worktree; every fresh look at the repo would now report three.
+    getPreview.mockResolvedValue([
+      {
+        repoIndex: 0,
+        repoName: "app",
+        preview: preview({ trashEntries: 3, trashEntryIds: ["entry-a", "entry-b", "entry-c"] }),
+      },
+    ]);
+
+    stdin.write("y");
+    await settle();
+
+    expect(forceClean).toHaveBeenCalledWith([
+      {
+        repoIndex: 0,
+        trashEntryIds: ["entry-a", "entry-b"],
+        keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
+      },
+    ]);
+  });
+
+  // A repo whose preview failed shows no counts, so it contributes no
+  // selection — the service then has nothing to purge there.
+  it("sends no selection for a repository whose preview failed", async () => {
+    const forceClean = vi.fn().mockResolvedValue([]);
+    const { stdin } = render(
+      <ForceCleanModal
+        getPreview={vi.fn().mockResolvedValue([
+          { repoIndex: 0, repoName: "app", preview: preview() },
+          { repoIndex: 1, repoName: "other", error: "not initialized" },
+        ])}
+        forceClean={forceClean}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await settle();
+    stdin.write("y");
+    await settle();
+
+    expect(forceClean).toHaveBeenCalledWith([expect.objectContaining({ repoIndex: 0 })]);
+  });
+
+  it("reports what the purge left behind because it was not previewed", async () => {
+    const { stdin, lastFrame } = render(
+      <ForceCleanModal
+        getPreview={vi.fn().mockResolvedValue([{ repoIndex: 0, repoName: "app", preview: preview() }])}
+        forceClean={vi.fn().mockResolvedValue([result({ skippedNewEntries: 1, skippedNewKeepRefs: 2 })])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await settle();
+    stdin.write("y");
+    await settle();
+
+    // The box wraps at 78 columns, so match the phrase either side of the seam.
+    expect(lastFrame()).toContain("left 1 trash and 2 ref(s)");
+    expect(lastFrame()).toContain("added after this preview");
+  });
+});

@@ -589,7 +589,7 @@ defaults: {
 
 Trash entries are deliberately not exposed through the MCP server — listing, restoring, and purging are human operations.
 
-In the TUI, press `x` to preview a force clean across every configured repository. Confirming with `y` immediately deletes every valid trash entry and all permanent `refs/sync-worktrees/keep/*` recovery refs, then runs `git gc --prune=now`. This is irreversible; active worktrees and unrecognized trash content are left untouched.
+In the TUI, press `x` to preview a force clean across every configured repository. Confirming with `y` deletes exactly the trash entries and permanent `refs/sync-worktrees/keep/*` recovery refs that preview counted, then runs `git gc --prune=now`. This is irreversible; active worktrees, unrecognized trash content, and anything a sync trashed while the preview was on screen are left untouched — the last of these is reported in the result line.
 
 ```bash
 sync-worktrees trash --filter <repository-name>

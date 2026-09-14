@@ -34,6 +34,7 @@ import type {
   Config,
   ForceCleanPreview,
   ForceCleanResult,
+  ForceCleanSelection,
   RepoOperationNotStarted,
   SyncOutcome,
   SyncResult,
@@ -253,7 +254,15 @@ export class WorktreeSyncService {
   async getForceCleanPreview(): Promise<ForceCleanPreview> {
     await this.requireForceCleanTarget();
     if (this.cloneSyncService) {
-      return { trashEntries: 0, trashBytes: 0, unknownTrashSizes: 0, invalidTrashEntries: 0, keepRefs: 0 };
+      return {
+        trashEntries: 0,
+        trashBytes: 0,
+        unknownTrashSizes: 0,
+        invalidTrashEntries: 0,
+        keepRefs: 0,
+        trashEntryIds: [],
+        keepRefNames: [],
+      };
     }
     const [{ entries, invalid }, keepRefs] = await Promise.all([this.trashService.listEntries(), this.listKeepRefs()]);
     return {
@@ -262,16 +271,27 @@ export class WorktreeSyncService {
       unknownTrashSizes: entries.filter((entry) => entry.manifest.sizeBytes === null).length,
       invalidTrashEntries: invalid.length,
       keepRefs: keepRefs.length,
+      trashEntryIds: entries.map((entry) => entry.manifest.id),
+      keepRefNames: [...keepRefs],
     };
   }
 
-  async forceClean(): Promise<ForceCleanResult> {
+  // `selection` is what the confirmation actually showed: the entry ids and ref
+  // names behind the counts, not the counts themselves. The preview runs
+  // outside the repo mutex and this runs inside it, an unbounded human pause
+  // later, so a sync in between can (and does) add trash entries and keep refs.
+  // Purging "everything present now" would destroy those without ever naming
+  // them — some hold the only copy of never-pushed commits, and `gc
+  // --prune=now` at the end makes that final. Anything not in the selection is
+  // left in place and reported.
+  async forceClean(selection: ForceCleanSelection): Promise<ForceCleanResult> {
     await this.requireForceCleanTarget();
+    const selectedKeepRefs = new Set(selection.keepRefNames);
     const result = await this.runExclusiveRepoOperation(
       async () => {
         const reap = this.cloneSyncService
-          ? { deleted: 0, orphanedRefsDeleted: 0, errors: [] }
-          : await this.trashReaper.purgeAllUnlocked();
+          ? { deleted: 0, orphanedRefsDeleted: 0, skippedNotSelected: 0, errors: [] }
+          : await this.trashReaper.purgeAllUnlocked(selection.trashEntryIds);
         const errors = [...reap.errors];
         const keepRefs = this.cloneSyncService ? [] : await this.listKeepRefs();
         // A `.diverged/<name>` directory and `keep/<name>` are the two halves of
@@ -282,8 +302,16 @@ export class WorktreeSyncService {
         const reservedNames = this.cloneSyncService ? new Set<string>() : await this.getDivergedDirectoryNames();
         let keepRefsDeleted = 0;
         let keepRefsRetained = 0;
+        let skippedNewKeepRefs = 0;
 
         for (const ref of keepRefs) {
+          // Intersecting the live listing with the selection also covers the
+          // other direction: a selected ref that is gone by now never shows up
+          // here, so nothing is attempted for it.
+          if (!selectedKeepRefs.has(ref)) {
+            skippedNewKeepRefs++;
+            continue;
+          }
           if (this.isKeepRefReserved(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length), reservedNames)) {
             keepRefsRetained++;
             continue;
@@ -304,7 +332,9 @@ export class WorktreeSyncService {
 
         const gcSucceeded = await this.maintenanceService.runNowUnlocked();
         if (!gcSucceeded) errors.push("git gc --prune=now failed");
-        const after = await this.getForceCleanPreview();
+        // The survivors' ids are dropped: a result names counts, never a set to
+        // act on — see ForceCleanResult.
+        const { trashEntryIds: _ids, keepRefNames: _refs, ...after } = await this.getForceCleanPreview();
         return {
           ...after,
           // The reaper's own count, not a before/after difference: a re-scan
@@ -312,6 +342,8 @@ export class WorktreeSyncService {
           trashDeleted: reap.deleted,
           keepRefsDeleted,
           keepRefsRetained,
+          skippedNewEntries: reap.skippedNotSelected,
+          skippedNewKeepRefs,
           gcSucceeded,
           errors,
         };

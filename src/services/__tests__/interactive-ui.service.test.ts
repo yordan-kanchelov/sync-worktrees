@@ -156,6 +156,8 @@ describe("InteractiveUIService", () => {
         unknownTrashSizes: 0,
         invalidTrashEntries: 0,
         keepRefs: 1,
+        trashEntryIds: ["entry-a"],
+        keepRefNames: ["refs/sync-worktrees/keep/entry-a"],
       }),
       forceClean: vi.fn<any>().mockResolvedValue({
         trashEntries: 0,
@@ -163,8 +165,13 @@ describe("InteractiveUIService", () => {
         unknownTrashSizes: 0,
         invalidTrashEntries: 0,
         keepRefs: 0,
+        trashEntryIds: [],
+        keepRefNames: [],
         trashDeleted: 1,
         keepRefsDeleted: 1,
+        keepRefsRetained: 0,
+        skippedNewEntries: 0,
+        skippedNewKeepRefs: 0,
         gcSucceeded: true,
         errors: [],
       }),
@@ -2486,7 +2493,15 @@ describe("InteractiveUIService", () => {
             maxConcurrent = Math.max(maxConcurrent, concurrent);
             await new Promise((resolve) => setTimeout(resolve, 10));
             concurrent--;
-            return { trashEntries: 0, trashBytes: 0, unknownTrashSizes: 0, invalidTrashEntries: 0, keepRefs: 0 };
+            return {
+              trashEntries: 0,
+              trashBytes: 0,
+              unknownTrashSizes: 0,
+              invalidTrashEntries: 0,
+              keepRefs: 0,
+              trashEntryIds: [],
+              keepRefNames: [],
+            };
           }),
         }));
         const ui = new InteractiveUIService(services as any, undefined, undefined, 1);
@@ -2494,6 +2509,61 @@ describe("InteractiveUIService", () => {
         await ui.getForceCleanPreview();
 
         expect(maxConcurrent).toBe(1);
+        void ui.destroy();
+      });
+
+      it("skips a repository the confirmation did not name and passes each selection through", async () => {
+        const second = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: "repo-2" },
+          forceClean: vi.fn<any>(),
+        } as any;
+        const ui = new InteractiveUIService([mockSyncService, second]);
+
+        const results = await ui.forceClean([
+          { repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: ["refs/sync-worktrees/keep/ref-a"] },
+        ]);
+
+        expect(mockSyncService.forceClean).toHaveBeenCalledWith({
+          repoIndex: 0,
+          trashEntryIds: ["entry-a"],
+          keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
+        });
+        expect(second.forceClean).not.toHaveBeenCalled();
+        expect(results[1]).toMatchObject({ repoIndex: 1, error: "skipped: cleanup preview was unavailable" });
+
+        void ui.destroy();
+      });
+
+      it("logs what a purge left behind because the preview never showed it", async () => {
+        const ui = new InteractiveUIService([mockSyncService]);
+        mockSyncService.forceClean.mockResolvedValue({
+          trashEntries: 1,
+          trashBytes: 0,
+          unknownTrashSizes: 0,
+          invalidTrashEntries: 0,
+          keepRefs: 1,
+          trashDeleted: 1,
+          keepRefsDeleted: 1,
+          keepRefsRetained: 0,
+          skippedNewEntries: 1,
+          skippedNewKeepRefs: 1,
+          gcSucceeded: true,
+          errors: [],
+        });
+        const logs: Array<{ message: string; level: string }> = [];
+        ui.getEvents().on("addLog", (entry: { message: string; level: string }) => logs.push(entry));
+        ui.getEvents().emit("uiReady");
+
+        await ui.forceClean([{ repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] }]);
+
+        expect(logs).toContainEqual(
+          expect.objectContaining({
+            level: "warn",
+            message: expect.stringContaining("left 1 trash entries and 1 recovery refs added after the preview"),
+          }),
+        );
+
         void ui.destroy();
       });
 
@@ -2507,7 +2577,12 @@ describe("InteractiveUIService", () => {
         const ui = new InteractiveUIService([mockSyncService, failingService]);
 
         const preview = await ui.getForceCleanPreview();
-        const result = await ui.forceClean();
+        // Both repos are named in the confirmation here, so repo-2's own
+        // failure — not a missing selection — is what has to survive.
+        const result = await ui.forceClean([
+          { repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] },
+          { repoIndex: 1, trashEntryIds: [], keepRefNames: [] },
+        ]);
 
         expect(preview).toEqual([
           expect.objectContaining({ repoIndex: 0, preview: expect.objectContaining({ trashEntries: 1 }) }),

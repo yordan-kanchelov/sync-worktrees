@@ -399,7 +399,20 @@ export interface DivergedDirectoryInfo {
   keepRef?: string;
 }
 
-export interface ForceCleanPreview {
+/**
+ * The exact set a force-clean confirmation refers to. A preview is taken
+ * outside the repo mutex and confirmed by a human an unbounded time later, so
+ * the counts on screen are only a summary of these names — the purge deletes
+ * these and nothing else.
+ */
+export interface ForceCleanSelection {
+  /** Trash entry ids (`TrashManifest.id`) the preview counted. */
+  trashEntryIds: string[];
+  /** Full recovery ref names (`refs/.../keep/<name>`) the preview counted. */
+  keepRefNames: string[];
+}
+
+export interface ForceCleanPreview extends ForceCleanSelection {
   trashEntries: number;
   trashBytes: number;
   unknownTrashSizes: number;
@@ -407,11 +420,21 @@ export interface ForceCleanPreview {
   keepRefs: number;
 }
 
-export interface ForceCleanResult extends ForceCleanPreview {
+/**
+ * Deliberately NOT a {@link ForceCleanSelection}. A result's counts describe
+ * what is left AFTER the purge, so its entry ids would name the survivors —
+ * exactly what the run was asked to spare. Inheriting the selection fields
+ * would let `forceClean(lastResult)` type-check and destroy them.
+ */
+export interface ForceCleanResult extends Omit<ForceCleanPreview, keyof ForceCleanSelection> {
   trashDeleted: number;
   keepRefsDeleted: number;
   /** Recovery refs left alone because a `.diverged/` directory still relies on them. */
   keepRefsRetained: number;
+  /** Trash entries present at purge time but absent from the confirmed selection. */
+  skippedNewEntries: number;
+  /** Recovery refs present at purge time but absent from the confirmed selection. */
+  skippedNewKeepRefs: number;
   gcSucceeded: boolean;
   errors: string[];
 }
@@ -421,6 +444,10 @@ export interface ForceCleanRepositoryPreview {
   repoName: string;
   preview?: ForceCleanPreview;
   error?: string;
+}
+
+export interface ForceCleanRepositorySelection extends ForceCleanSelection {
+  repoIndex: number;
 }
 
 export interface ForceCleanRepositoryResult {
