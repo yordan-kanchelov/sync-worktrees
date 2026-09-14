@@ -163,7 +163,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T67** — Clone-init pending marker is written after `configureSingleBranchRemote`, so a crash
   in that window leaves a marker-less valid clone whose file copy is silently dropped forever
   (contradicting the comment at 659-662)
-- [ ] **T68** — Clone-mode sparse re-apply skips the README's "narrowing safety" check and does not
+- [x] **T68** — Clone-mode sparse re-apply skips the README's "narrowing safety" check and does not
   record failures/skips in the sync outcome, unlike worktree mode
 - [ ] **T66** — With a small configured `depth`, every routine sync re-passes `--depth N` and
   re-shortens the history the previous tick deepened; at `depth: 1` every remote advance (even +1
@@ -2928,7 +2928,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   marker in the adoption path). CHANGELOG 5.3.1 "resume an interrupted clone init's file copy via a
   pending marker" describes the mechanism but the window before the marker is uncovered.
 
-### [ ] T68. Clone-mode sparse re-apply skips the README's "narrowing safety" check and does not record failures/skips in the sync outcome, unlike worktree mode
+### [x] T68. Clone-mode sparse re-apply skips the README's "narrowing safety" check and does not record failures/skips in the sync outcome, unlike worktree mode
 
 - **Category**: docs · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

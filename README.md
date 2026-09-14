@@ -472,7 +472,7 @@ If you set `exclude` or `!`-prefixed patterns while `mode: "cone"` is explicit, 
 
 **Duplicate `repoUrl` handling:** The first entry per `repoUrl` keeps the URL-derived bare path (`.bare/<repo-slug>`). Subsequent duplicate entries auto-derive `bareRepoDir` from `name` (`.bare/<name>`). Pin `bareRepoDir` explicitly on duplicate entries if you want config order to be irrelevant.
 
-**Narrowing safety:** When a sync would narrow an existing worktree's sparse patterns (remove a previously included path), it first checks the worktree is clean. If there are uncommitted changes, unpushed commits, or in-progress operations, the sparse update is skipped with a warning.
+**Narrowing safety:** When a sync would narrow an existing worktree's sparse patterns (remove a previously included path), it first checks the worktree is clean. If there are uncommitted changes, unpushed commits, or in-progress operations, the sparse update is skipped with a warning and reattempted on the next sync. Clone mode applies the same uncommitted-and-untracked-changes check that gates its fast-forward; unpushed commits are reported there as a skip of their own. The check compares the new patterns against the ones already in force, so it does not apply to a checkout that is not sparse yet — giving an existing full checkout a `sparseCheckout` block narrows it on the next sync whether or not the tree is clean, in both modes. If Git rejects the pattern list outright, the sparse step is recorded as a failed action, so a `--runOnce` run exits non-zero rather than warning and moving on — unless the tree was dirty and the change narrows, in which case the skip above comes first and the rejection is not discovered until a run finds the tree clean.
 
 ### Maintenance
 

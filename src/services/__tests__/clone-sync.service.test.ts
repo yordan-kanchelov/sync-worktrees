@@ -1972,6 +1972,88 @@ describe("CloneSyncService", () => {
       expect(sparseService.needsUpdate).toHaveBeenCalledWith(config.worktreeDir, config.sparseCheckout);
       expect(sparseService.applyToWorktree).not.toHaveBeenCalled();
     });
+
+    // README's narrowing-safety paragraph promises the tool checks the tree is
+    // clean before it drops paths out of the cone. Worktree mode always did;
+    // clone mode narrowed regardless and left git to print a warning of its
+    // own (#T68).
+    it("skips a narrowing sparse update while the tree is dirty", async () => {
+      const gitService = buildGitService({ checkWorktreeStatus: vi.fn().mockResolvedValue(false) });
+      const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+      (sparseService.readCurrent as Mock).mockResolvedValue(["other", "pkg"]);
+      (sparseService.buildPatterns as Mock).mockReturnValue(["pkg"]);
+      (sparseService.isNarrowing as Mock).mockReturnValue(true);
+
+      const config = makeConfig({ sparseCheckout: { include: ["pkg"] } });
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+      const service = new CloneSyncService(config, gitService, logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt(outcome);
+
+      expect(sparseService.isNarrowing).toHaveBeenCalledWith(["other", "pkg"], ["pkg"]);
+      expect(sparseService.applyToWorktree).not.toHaveBeenCalled();
+      expect(outcome.toOutcome().actions).toContainEqual(
+        expect.objectContaining({
+          kind: "skipped",
+          scope: "sparse-checkout",
+          reason: "sparse_narrowing_unsafe",
+          branch: "main",
+          path: config.worktreeDir,
+        }),
+      );
+    });
+
+    // The deferral is only a deferral: the same narrowing applies on the first
+    // tick that finds the tree clean.
+    it("applies a narrowing sparse update once the tree is clean", async () => {
+      const gitService = buildGitService();
+      const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+      (sparseService.readCurrent as Mock).mockResolvedValue(["other", "pkg"]);
+      (sparseService.buildPatterns as Mock).mockReturnValue(["pkg"]);
+      (sparseService.isNarrowing as Mock).mockReturnValue(true);
+
+      const config = makeConfig({ sparseCheckout: { include: ["pkg"] } });
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+      const service = new CloneSyncService(config, gitService, logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt(outcome);
+
+      expect(sparseService.applyToWorktree).toHaveBeenCalledWith(config.worktreeDir, config.sparseCheckout);
+      expect(outcome.toOutcome().counts.skipped).toBe(0);
+    });
+
+    // A sparse config git rejects used to warn and exit 0 on every tick, so
+    // nothing watching the run ever learned it was broken (#T68).
+    it("records a failed action when the sparse re-apply throws", async () => {
+      const gitService = buildGitService();
+      const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+      (sparseService.applyToWorktree as Mock).mockRejectedValue(
+        new Error("fatal: specify directories rather than patterns (no leading slash)"),
+      );
+
+      const config = makeConfig({ sparseCheckout: { include: ["/pkg"] } });
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+      const service = new CloneSyncService(config, gitService, logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt(outcome);
+
+      expect(outcome.toOutcome().counts.failed).toBe(1);
+      expect(outcome.toOutcome().actions).toContainEqual(
+        expect.objectContaining({
+          kind: "failed",
+          scope: "sparse-checkout",
+          reason: "sparse_checkout_failed",
+          error: expect.stringContaining("no leading slash"),
+          branch: "main",
+          path: config.worktreeDir,
+        }),
+      );
+      // Still not fatal: the fast-forward the sync exists for runs anyway.
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+    });
   });
 
   describe("runSyncAttempt skip reasons", () => {

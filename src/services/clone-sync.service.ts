@@ -17,7 +17,7 @@ import { cloneSkipToOutcomeAction } from "./sync-outcome";
 import type { GitService, RemoteRelationship } from "./git.service";
 import type { Logger } from "./logger.service";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
-import type { Config, RepositoryConfig } from "../types";
+import type { Config, RepositoryConfig, SparseCheckoutConfig } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { Stats } from "fs";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
@@ -1604,6 +1604,67 @@ export class CloneSyncService {
     }
   }
 
+  // Reconciles the clone's sparse patterns with the config, the same three
+  // steps worktree mode runs over every worktree it manages: is an update
+  // needed, is that update a narrowing one, and is the tree clean enough to
+  // take it.
+  //
+  // `sparse-checkout set` writes core.sparseCheckout to the repository config,
+  // so it is a mutation too — it takes a path, not a client, and stays correct
+  // only because the primary-checkout guard in the caller already ran.
+  private async reapplySparseCheckout(worktreeDir: string, branch: string, cfg: SparseCheckoutConfig): Promise<void> {
+    const sparseService = this.gitService.getSparseCheckoutService();
+
+    try {
+      if (!(await sparseService.needsUpdate(worktreeDir, cfg))) return;
+
+      // Narrowing drops paths out of the cone, and git then has to decide what
+      // to do with whatever the user left in them. It keeps modified, staged
+      // and untracked files: they stay on disk, and git warns about it on its
+      // own stderr, which simple-git captures and this tool never prints — so
+      // the preservation is real but silent. This gate is therefore not what
+      // stands between the user and data loss — README's
+      // narrowing-safety paragraph is the tool's promise to skip rather than
+      // git's promise to preserve, and worktree mode has always kept it. The
+      // deferred narrowing lands on the first tick that finds a clean tree.
+      const current = await sparseService.readCurrent(worktreeDir);
+      if (sparseService.isNarrowing(current, sparseService.buildPatterns(cfg))) {
+        // The same notion of "clean" the ff-merge gate below uses: uncommitted
+        // and untracked changes. Unpushed commits are a clone-mode skip of
+        // their own and their content is safe in the object store either way.
+        if (!(await this.gitService.checkWorktreeStatus(worktreeDir))) {
+          const message = "working tree has local changes";
+          this.logger.warn(`⏭️  Skipping sparse-checkout narrowing for '${this.repoName}' — ${message}.`);
+          this.emitProgress({
+            phase: "sparse_checkout",
+            message: `Skipping sparse-checkout narrowing for '${this.repoName}': ${message}`,
+          });
+          this.outcomeAccumulator?.recordSkipped("sparse-checkout", "sparse_narrowing_unsafe", {
+            branch,
+            path: worktreeDir,
+            message,
+          });
+          return;
+        }
+      }
+
+      this.emitProgress({ phase: "sparse_checkout", message: `Updating sparse-checkout for '${this.repoName}'` });
+      await sparseService.applyToWorktree(worktreeDir, cfg);
+      this.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout updated for '${this.repoName}'` });
+    } catch (error) {
+      // Not fatal — the fetch and merge below are what the sync is for, and a
+      // stale pattern list does not block them. But it is recorded: warning and
+      // exiting 0 on every tick is how a sparse config that git rejects stays
+      // broken for weeks, because nothing watching the run ever learns.
+      this.logger.warn(`Failed to reapply sparse-checkout for '${this.repoName}': ${getErrorMessage(error)}`);
+      this.outcomeAccumulator?.recordFailed("sparse-checkout", getErrorMessage(error), {
+        reason: "sparse_checkout_failed",
+        branch,
+        path: worktreeDir,
+      });
+    }
+  }
+
   async runSyncAttempt(outcome?: SyncOutcomeAccumulator): Promise<void> {
     return this.withOutcome(outcome, () => this.runSyncAttemptInternal());
   }
@@ -1701,20 +1762,8 @@ export class CloneSyncService {
       return;
     }
 
-    // `sparse-checkout set` writes core.sparseCheckout to the repository
-    // config, so it is a mutation too — it takes a path, not a client, and
-    // stays correct only because the primary-checkout guard above already ran.
     if (this.config.sparseCheckout) {
-      const sparseService = this.gitService.getSparseCheckoutService();
-      try {
-        if (await sparseService.needsUpdate(worktreeDir, this.config.sparseCheckout)) {
-          this.emitProgress({ phase: "sparse_checkout", message: `Updating sparse-checkout for '${this.repoName}'` });
-          await sparseService.applyToWorktree(worktreeDir, this.config.sparseCheckout);
-          this.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout updated for '${this.repoName}'` });
-        }
-      } catch (error) {
-        this.logger.warn(`Failed to reapply sparse-checkout for '${this.repoName}': ${getErrorMessage(error)}`);
-      }
+      await this.reapplySparseCheckout(worktreeDir, branch, this.config.sparseCheckout);
     }
 
     const isClean = await this.gitService.checkWorktreeStatus(worktreeDir);
