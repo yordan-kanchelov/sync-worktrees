@@ -669,6 +669,8 @@ Two lifecycle hooks the example config covers in depth:
 
 In clone mode, `filesToCopyOnBranchCreate` fires once on the initial clone, and `hooks.onBranchCreated` fires only for TUI-initiated branch creation (clone mode tracks a single fixed branch with no later branch-creation events).
 
+Hook commands run with the new worktree as their working directory, and with the variables git uses to name a repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, ...) removed from their environment. Those variables outrank a working directory, so an inherited one would point a hook's `git` at that repository instead of the worktree — and git hands its own `GIT_DIR` to hooks run inside a linked worktree, so a run started from one inherits it with nothing exported by hand. Pass one explicitly in the command itself if a hook really does want it.
+
 For every knob (timeouts, parallelism, jitter, sparse-update behavior, retry tuning), see [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js).
 
 ## CLI options

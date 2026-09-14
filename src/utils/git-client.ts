@@ -28,9 +28,12 @@ export function buildGitClientOptions(options: Partial<SimpleGitOptions> = {}): 
 /**
  * The single way to build a simple-git client. The client runs git with the
  * sanitized parent environment (non-interactive: GIT_TERMINAL_PROMPT=0, no
- * editor) plus the caller's per-client additions such as GIT_LFS_SKIP_SMUDGE
- * or GIT_ATTR_SOURCE. `baseDir` undefined builds a client without a working
- * directory (clone, ls-remote against a URL).
+ * editor, no inherited repository-selection variable that would outrank
+ * `baseDir` — see sanitizeGitEnv) plus the caller's per-client additions such
+ * as GIT_LFS_SKIP_SMUDGE or GIT_ATTR_SOURCE. Those additions are merged last,
+ * so a variable this tool passes on purpose still reaches git. `baseDir`
+ * undefined builds a client without a working directory (clone, ls-remote
+ * against a URL).
  */
 export function createGitClient(
   baseDir?: string,

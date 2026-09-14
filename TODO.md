@@ -176,7 +176,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   instead of a single batched `update-ref --stdin`
 - [x] **T76** — Clone-mode syncs produce no per-phase timing in --debug (PhaseTimer is only wired
   into the worktree-mode runner)
-- [ ] **T65** — `sanitizeGitEnv` forwards repository-discovery variables (`GIT_DIR`,
+- [x] **T65** — `sanitizeGitEnv` forwards repository-discovery variables (`GIT_DIR`,
   `GIT_WORK_TREE`, `GIT_INDEX_FILE`, ...); when sync-worktrees is launched from a git hook,
   clone-mode's config rewrites, ref deletions and merges target the hook's repository instead of
   `worktreeDir`
@@ -2821,7 +2821,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   cone directories without a trailing slash, so an include written as `dir/` can never compare
   equal.
 
-### [ ] T65. `sanitizeGitEnv` forwards repository-discovery variables (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, ...); when sync-worktrees is launched from a git hook, clone-mode's config rewrites, ref deletions and merges target the hook's repository instead of `worktreeDir`
+### [x] T65. `sanitizeGitEnv` forwards repository-discovery variables (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, ...); when sync-worktrees is launched from a git hook, clone-mode's config rewrites, ref deletions and merges target the hook's repository instead of `worktreeDir`
 
 - **Category**: guardrail · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
