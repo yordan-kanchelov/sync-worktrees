@@ -71,6 +71,55 @@ describeOrSkip("Clone-mode E2E tests", () => {
     return execSync(`git -C "${pushDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
   }
 
+  // Pushes `commits` extra commits onto main. Empty commits keep it cheap: what
+  // the shallow-depth tests need is history length, not content. Returns the
+  // working clone it pushed from, so a test can go on to rewrite that history.
+  async function growRemote(remoteBare: string, name: string, commits: number): Promise<string> {
+    const pushDir = path.join(tmpBase, `${name}-grow`);
+    await fs.rm(pushDir, { recursive: true, force: true });
+    execSync(`git clone "${remoteBare}" "${pushDir}"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.name "Test User"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.email "test@example.com"`, { encoding: "utf-8" });
+    execSync(`for i in $(seq 1 ${commits}); do git commit -q --allow-empty -m "Grow $i"; done`, {
+      encoding: "utf-8",
+      cwd: pushDir,
+    });
+    execSync(`git -C "${pushDir}" push origin main`, { encoding: "utf-8" });
+    return pushDir;
+  }
+
+  // Grows main by `rounds` merged pull requests: a two-commit side branch off
+  // main, merged back with `--no-ff`. That is the commonest shape a real main
+  // branch has, and the one that separates the two units `--depth` could be
+  // ratcheted in: each round adds three commits but only one ancestry level.
+  // Returns the working clone it pushed from, so a caller can keep growing it.
+  async function growRemoteWithMerges(remoteBare: string, name: string, rounds: number): Promise<string> {
+    const pushDir = path.join(tmpBase, `${name}-merge-grow`);
+    await fs.rm(pushDir, { recursive: true, force: true });
+    execSync(`git clone "${remoteBare}" "${pushDir}"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.name "Test User"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.email "test@example.com"`, { encoding: "utf-8" });
+    pushMergeRounds(pushDir, `${name}-r`, rounds);
+    return pushDir;
+  }
+
+  // One round of the same, pushed from an existing working clone.
+  function pushMergeRounds(pushDir: string, prefix: string, rounds: number): void {
+    execSync(
+      `set -e
+       for i in $(seq 1 ${rounds}); do
+         git checkout -q -b "${prefix}$i"
+         echo "$i" > "${prefix}$i-a.txt" && git add -A && git commit -q -m "${prefix}$i a"
+         echo "$i" > "${prefix}$i-b.txt" && git add -A && git commit -q -m "${prefix}$i b"
+         git checkout -q main
+         git merge -q --no-ff -m "Merge ${prefix}$i" "${prefix}$i"
+         git branch -q -D "${prefix}$i"
+       done
+       git push -q origin main`,
+      { encoding: "utf-8", cwd: pushDir, shell: "/bin/bash" },
+    );
+  }
+
   async function writeSingleCloneConfig(
     name: string,
     repoUrl: string,
@@ -364,13 +413,36 @@ export default {
     expect(commitCount).toBeGreaterThan(1);
   }, 120000);
 
-  it("deepens shallow clone history when remote is multiple commits ahead", async () => {
+  // The sync fetch caps itself at `max(configured depth, the depth the clone
+  // already has)`, so it bounds the transfer without ever asking for a shorter
+  // window than the one the clone holds. Passing the configured depth on every
+  // tick re-truncated instead: it re-grafted the tip it fetched, which cut the
+  // parent link `merge-base HEAD origin/main` needs, so every remote advance
+  // classified as indeterminate and bought the answer back with a 50-commit
+  // deepen fetch that the next tick threw away again. What this pins is that
+  // the deepen happens at most once: after it, the ratchet keeps asking for the
+  // clone's own depth, so merge-base answers and the fast-forward path is
+  // reached on the first try. The remote is grown past the first deepen target
+  // on purpose — a remote shorter than 50 commits is completed by that deepen,
+  // and a clone that is no longer shallow is not the case under test.
+  it("deepens a shallow clone once and then fast-forwards later ticks without re-deepening", async () => {
     const remoteBare = await createLocalRemote("shallow-multi-commit-remote");
+    await growRemote(remoteBare, "shallow-multi-commit", 60);
     const configDir = path.join(tmpBase, "shallow-multi-commit-config");
     const worktreeDir = path.join(configDir, "clone");
     const configPath = path.join(configDir, "shallow-multi-commit.config.js");
     const repoUrl = `file://${remoteBare}`;
     await fs.mkdir(configDir, { recursive: true });
+
+    const countHead = (): number =>
+      Number(execSync(`git -C "${worktreeDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim());
+    const countRemoteRef = (): number =>
+      Number(
+        execSync(`git -C "${worktreeDir}" rev-list --count refs/remotes/origin/main`, { encoding: "utf-8" }).trim(),
+      );
+    const readHead = (): string => execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+    const isShallow = (): string =>
+      execSync(`git -C "${worktreeDir}" rev-parse --is-shallow-repository`, { encoding: "utf-8" }).trim();
 
     await writeCloneDepthConfig(configPath, repoUrl, worktreeDir, ",\n      depth: 1");
 
@@ -378,20 +450,379 @@ export default {
       encoding: "utf-8",
       timeout: 60000,
     });
+    expect(countHead()).toBe(1);
+    expect(isShallow()).toBe("true");
 
     await pushCommit(remoteBare, "shallow-multi-commit", "three.txt", "Add three");
     await pushCommit(remoteBare, "shallow-multi-commit", "four.txt", "Add four");
-    const newRemoteHead = await pushCommit(remoteBare, "shallow-multi-commit", "five.txt", "Add five");
+    const headAfterThreePushes = await pushCommit(remoteBare, "shallow-multi-commit", "five.txt", "Add five");
 
     const secondRun = execSync(`node "${cliPath}" --config "${configPath}"`, {
       encoding: "utf-8",
       timeout: 60000,
     });
 
-    const localHead = execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
-    expect(secondRun).toContain("[deepen]");
+    // A one-commit clone cannot classify anything: the remote moved past the
+    // only commit it holds, so this tick does spend a deepen — once.
+    expect(secondRun.match(/\[deepen]/g)).toHaveLength(1);
+    expect(secondRun).toContain("refetching to depth 50 before deciding");
     expect(secondRun).not.toContain("Clone-mode skips");
-    expect(localHead).toBe(newRemoteHead);
+    expect(readHead()).toBe(headAfterThreePushes);
+    const countAfterSecondRun = countHead();
+    expect(countAfterSecondRun).toBe(50);
+    // The deepen bought a bounded amount of history, not the whole remote.
+    expect(isShallow()).toBe("true");
+
+    // Every later tick asks for the window the fetched ref holds, so merge-base
+    // keeps answering and the deepen never repeats. Two more ticks, because the
+    // reported defect was a deepen on *every* tick with new commits.
+    let previousCount = countAfterSecondRun;
+    for (const [index, file] of ["six.txt", "seven.txt"].entries()) {
+      const pushedHead = await pushCommit(remoteBare, "shallow-multi-commit", file, `Add ${file}`);
+      const run = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+
+      expect(run, `tick ${index + 3}`).not.toContain("[deepen]");
+      expect(run, `tick ${index + 3}`).not.toContain("Clone-mode skips");
+      expect(readHead()).toBe(pushedHead);
+      // The history the deepen paid for is never handed back. Both refs are
+      // checked: these ticks end in a fast-forward, so HEAD is the fetched tip
+      // here, and it is the fetched ref that the cap is measured from.
+      expect(countHead(), `tick ${index + 3}`).toBeGreaterThanOrEqual(previousCount);
+      expect(countRemoteRef(), `tick ${index + 3}`).toBeGreaterThanOrEqual(previousCount);
+      expect(isShallow()).toBe("true");
+      previousCount = countHead();
+    }
+  }, 300000);
+
+  // The unit the cap is ratcheted in, end to end. `git fetch --depth N` counts N
+  // ancestry *levels* from the fetched tip, and on a history built from merges a
+  // level holds several commits — so a commit count is a much larger number than
+  // the depth it was taken from. Feeding that back as the next `--depth` walks
+  // the boundary deeper every tick until the clone holds the whole repository
+  // and stops being shallow at all, at which point `depth` no longer bounds
+  // anything: measured on git 2.43 over a 601-commit remote of merged
+  // two-commit pull requests, a `depth: 1` clone ratcheted on `rev-list --count
+  // HEAD` went 1 -> 147 -> 438 -> 610 commits in three ticks. Measuring levels
+  // makes the cap a fixed point instead — the window a `--depth D` fetch
+  // produced measures back as exactly D — which is what this pins: after the one
+  // deepen the clone stops growing, and stays shallow.
+  it("holds a merge-heavy shallow clone at the depth it deepened to", async () => {
+    const remoteBare = await createLocalRemote("shallow-merge-growth-remote");
+    const configDir = path.join(tmpBase, "shallow-merge-growth-config");
+    const worktreeDir = path.join(configDir, "clone");
+    const configPath = path.join(configDir, "shallow-merge-growth.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+
+    // Deeper than the first deepen target on purpose: a remote inside 50 levels
+    // would be completed by that deepen, and a clone that is no longer shallow
+    // is not the case under test.
+    const pushDir = await growRemoteWithMerges(remoteBare, "shallow-merge-growth", 120);
+    const remoteTotal = Number(execSync(`git -C "${pushDir}" rev-list --count main`, { encoding: "utf-8" }).trim());
+    expect(remoteTotal).toBe(363);
+
+    const countHead = (): number =>
+      Number(execSync(`git -C "${worktreeDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim());
+    const isShallow = (): string =>
+      execSync(`git -C "${worktreeDir}" rev-parse --is-shallow-repository`, { encoding: "utf-8" }).trim();
+    const readHead = (): string => execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir, ",\n      depth: 1");
+    execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+    expect(countHead()).toBe(1);
+
+    // Tick 2: the remote lands another pull request, the one-commit clone cannot
+    // classify it, and the budget's first target resolves it — once.
+    pushMergeRounds(pushDir, "shallow-merge-growth-t2", 1);
+    const secondRun = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+    expect(secondRun.match(/\[deepen]/g)).toHaveLength(1);
+    expect(secondRun).not.toContain("Clone-mode skips");
+    const countAfterDeepen = countHead();
+    expect(isShallow()).toBe("true");
+    // 50 levels of this history is 147 commits — the two units are not the same
+    // number — and still well under half the remote.
+    expect(countAfterDeepen).toBeGreaterThan(50);
+    expect(countAfterDeepen).toBeLessThan(remoteTotal / 2);
+
+    // Three more pull requests, one per tick. Each one is a fast-forward on the
+    // first classification, and leaves the clone exactly where the deepen put
+    // it: no further deepening, no growth, still shallow.
+    for (const tick of [3, 4, 5]) {
+      pushMergeRounds(pushDir, `shallow-merge-growth-t${tick}`, 1);
+      const remoteHead = execSync(`git -C "${pushDir}" rev-parse main`, { encoding: "utf-8" }).trim();
+      const run = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+
+      expect(run, `tick ${tick}`).not.toContain("[deepen]");
+      expect(run, `tick ${tick}`).not.toContain("Clone-mode skips");
+      expect(readHead(), `tick ${tick}`).toBe(remoteHead);
+      expect(countHead(), `tick ${tick}`).toBe(countAfterDeepen);
+      expect(isShallow(), `tick ${tick}`).toBe("true");
+    }
+  }, 300000);
+
+  // The regression the cap exists for, end to end: a remote tip that is not a
+  // descendant of the clone's tip. A shallow clone has no ancestors to offer as
+  // `have`s, so an uncapped fetch has to pack the rewritten tip's whole
+  // ancestry — measured on git 2.43 against a 199-commit remote of empty
+  // commits force-pushed with `reset --hard HEAD~3` plus one commit, a
+  // `depth: 1` clone took all 197 commits of the rewritten tip in a 201-object
+  // pack uncapped, against 1 commit in a 3-object pack capped, and classified
+  // `indeterminate_shallow` either way.
+  // The worktree is left dirty on purpose: the tick then stops right after the
+  // fetch, before the deepen budget can pull more, so what origin/main holds is
+  // exactly what the sync fetch asked for.
+  it("caps the sync fetch when the remote force-pushes off the clone's history", async () => {
+    const remoteBare = await createLocalRemote("shallow-forcepush-remote");
+    const configDir = path.join(tmpBase, "shallow-forcepush-config");
+    const worktreeDir = path.join(configDir, "clone");
+    const configPath = path.join(configDir, "shallow-forcepush.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+
+    // Grow the remote so the rewritten ancestry is clearly bigger than the cap.
+    const pushDir = await growRemote(remoteBare, "shallow-forcepush", 9);
+
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir, ",\n      depth: 1");
+    execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+    expect(execSync(`git -C "${worktreeDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim()).toBe("1");
+
+    // Dirty: the tick fetches, then skips the merge — and so never reaches the
+    // deepen budget, which would fetch more history on its own.
+    await fs.writeFile(path.join(worktreeDir, "README.md"), "# Locally edited\n");
+
+    execSync(`git -C "${pushDir}" reset --hard HEAD~3`, { encoding: "utf-8" });
+    await fs.writeFile(path.join(pushDir, "rewritten.txt"), "rewritten\n");
+    execSync(`git -C "${pushDir}" add rewritten.txt`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" commit -m "Rewrite history"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" push --force origin main`, { encoding: "utf-8" });
+    const rewrittenAncestry = Number(
+      execSync(`git -C "${pushDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim(),
+    );
+    expect(rewrittenAncestry).toBe(10);
+
+    const secondRun = execSync(`node "${cliPath}" --config "${configPath}"`, {
+      encoding: "utf-8",
+      timeout: 60000,
+    });
+
+    expect(secondRun).toContain("working tree has local changes");
+    expect(secondRun).not.toContain("[deepen]");
+    // The cap held: one commit fetched, not the rewritten tip's ten.
+    const fetchedAncestry = Number(
+      execSync(`git -C "${worktreeDir}" rev-list --count refs/remotes/origin/main`, { encoding: "utf-8" }).trim(),
+    );
+    expect(fetchedAncestry).toBe(1);
+    expect(fetchedAncestry).toBeLessThan(rewrittenAncestry);
+
+    // A second tick on the same dirty worktree: the cap is measured from the
+    // ref it caps, which now holds the rewritten tip, so it neither pulls the
+    // ancestry the first tick refused nor cuts what was fetched.
+    const thirdRun = execSync(`node "${cliPath}" --config "${configPath}"`, {
+      encoding: "utf-8",
+      timeout: 60000,
+    });
+    expect(thirdRun).toContain("working tree has local changes");
+    expect(thirdRun).not.toContain("[deepen]");
+    expect(
+      Number(
+        execSync(`git -C "${worktreeDir}" rev-list --count refs/remotes/origin/main`, { encoding: "utf-8" }).trim(),
+      ),
+    ).toBe(1);
+  }, 240000);
+
+  // The ratchet measures the ref the fetch re-applies its depth to —
+  // origin/<branch> — and not HEAD. The two are the same commit only on a tick
+  // that ends in a fast-forward; a tick that fetches and then skips the merge
+  // (a dirty tree here, but unpushed commits, a divergence or a tip too shallow
+  // to classify do it too) leaves HEAD behind the fetched tip. Measuring HEAD
+  // there reports less than the clone holds, so the cap asks for less than the
+  // last fetch produced and the window shrinks — and shrinks further every
+  // tick, because each truncation makes the next measurement smaller still.
+  // Measured on git 2.43 against this shape, a HEAD-measured ratchet sent
+  // `--depth` 50, 47, 41, 32, 20 and then 5 on successive dirty ticks, and
+  // cleaning the tree afterwards cost a second deepen to buy the window back.
+  it("holds the fetched window across ticks that fetch and skip the merge", async () => {
+    const remoteBare = await createLocalRemote("shallow-dirty-window-remote");
+    await growRemote(remoteBare, "shallow-dirty-window", 60);
+    const configDir = path.join(tmpBase, "shallow-dirty-window-config");
+    const worktreeDir = path.join(configDir, "clone");
+    const configPath = path.join(configDir, "shallow-dirty-window.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+
+    const countRef = (ref: string): number =>
+      Number(execSync(`git -C "${worktreeDir}" rev-list --count ${ref}`, { encoding: "utf-8" }).trim());
+    const isShallow = (): string =>
+      execSync(`git -C "${worktreeDir}" rev-parse --is-shallow-repository`, { encoding: "utf-8" }).trim();
+
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir, ",\n      depth: 1");
+    execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+    expect(countRef("HEAD")).toBe(1);
+
+    // Tick 2 buys the window: the one-commit clone cannot classify the advance,
+    // the budget's first target answers it, and the merge moves HEAD up to the
+    // fetched tip.
+    await growRemote(remoteBare, "shallow-dirty-window", 3);
+    const deepenRun = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+    expect(deepenRun.match(/\[deepen]/g)).toHaveLength(1);
+    const windowAfterDeepen = countRef("refs/remotes/origin/main");
+    expect(windowAfterDeepen).toBe(50);
+
+    // From here the worktree is dirty, so every tick fetches and stops before
+    // the merge, leaving HEAD further behind the tip each time.
+    await fs.writeFile(path.join(worktreeDir, "README.md"), "# Locally edited\n");
+
+    for (const tick of [3, 4, 5]) {
+      await growRemote(remoteBare, "shallow-dirty-window", 3);
+      const run = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+
+      expect(run, `tick ${tick}`).toContain("working tree has local changes");
+      expect(run, `tick ${tick}`).not.toContain("[deepen]");
+      // The window the deepen paid for is still there, undiminished, even
+      // though HEAD has fallen behind it.
+      expect(countRef("refs/remotes/origin/main"), `tick ${tick}`).toBe(windowAfterDeepen);
+      expect(countRef("HEAD"), `tick ${tick}`).toBeLessThan(windowAfterDeepen);
+      expect(isShallow(), `tick ${tick}`).toBe("true");
+    }
+
+    // And because the window held, the tick that finds the tree clean again
+    // fast-forwards on the first classification instead of paying for a second
+    // deepen.
+    execSync(`git -C "${worktreeDir}" checkout -- README.md`, { encoding: "utf-8" });
+    const cleanRun = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+
+    expect(cleanRun).not.toContain("[deepen]");
+    expect(cleanRun).not.toContain("Clone-mode skips");
+    expect(countRef("refs/remotes/origin/main")).toBe(windowAfterDeepen);
+    expect(countRef("HEAD")).toBe(windowAfterDeepen);
+    expect(isShallow()).toBe("true");
+  }, 300000);
+
+  // The deepen budget is still spent for the case it exists for: a remote whose
+  // branch was rewritten past the clone's shallow boundary, where the local tip
+  // is no longer reachable from origin/main and merge-base cannot answer. The
+  // deepening cannot un-graft a local tip the rewritten branch no longer
+  // contains, so this one ends in the indeterminate skip — what it pins is that
+  // the budget still runs, and that the clone is left exactly where it was.
+  it("spends the deepen budget and skips when the remote branch was rewritten", async () => {
+    const remoteBare = await createLocalRemote("shallow-rewritten-remote");
+    const configDir = path.join(tmpBase, "shallow-rewritten-config");
+    const worktreeDir = path.join(configDir, "clone");
+    const configPath = path.join(configDir, "shallow-rewritten.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir, ",\n      depth: 1");
+    execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+
+    // Drop the two commits the clone's boundary sits on and build a different
+    // history in their place.
+    const pushDir = path.join(tmpBase, "shallow-rewritten-push");
+    execSync(`git clone "${remoteBare}" "${pushDir}"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.name "Test User"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.email "test@example.com"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" reset --hard HEAD~2`, { encoding: "utf-8" });
+    await fs.writeFile(path.join(pushDir, "rewritten.txt"), "rewritten\n");
+    execSync(`git -C "${pushDir}" add rewritten.txt`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" commit -m "Rewrite history"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" push --force origin main`, { encoding: "utf-8" });
+
+    const headBeforeSecondRun = execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+    const secondRun = execSync(`node "${cliPath}" --config "${configPath}"`, {
+      encoding: "utf-8",
+      timeout: 60000,
+    });
+
+    expect(secondRun).toContain("refetching to depth 50 before deciding");
+    expect(secondRun).toContain("could not classify origin/main");
+    expect(secondRun).not.toContain("Fast-forwarding");
+    expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeSecondRun);
+  }, 120000);
+
+  // A merge is the case a capped fetch cannot classify on its own. The clone
+  // never advertised the commits on the merged-in side, and the cap stops the
+  // fetch from walking past the merge commit to reach the history the clone
+  // does hold, so the tick starts out `indeterminate_shallow` where a linear
+  // advance would have gone straight to `fast_forward`. What resolves it is the
+  // deepen budget, and that is the point: the extra history comes in one
+  // bounded 50-commit step, chosen by the budget, instead of being dragged in
+  // by an uncapped fetch that follows the merged-in side down to wherever it
+  // forked. This test pins the whole sequence so the README/changeset wording
+  // cannot drift away from the behaviour.
+  it("classifies a merge through the bounded deepen rather than an uncapped fetch", async () => {
+    const remoteBare = await createLocalRemote("shallow-merge-remote");
+    const configDir = path.join(tmpBase, "shallow-merge-config");
+    const worktreeDir = path.join(configDir, "clone");
+    const configPath = path.join(configDir, "shallow-merge.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+
+    // Build this topology on the remote, with `side` forked below the commits
+    // the clone's boundary will sit on:
+    //   c1 - c2 - c3 - c4 - c5        <- main at clone time (boundary: c5)
+    //         \
+    //          s1 - s2                <- side
+    const pushDir = path.join(tmpBase, "shallow-merge-push");
+    execSync(`git clone "${remoteBare}" "${pushDir}"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.name "Test User"`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" config user.email "test@example.com"`, { encoding: "utf-8" });
+    const gitRev = (ref: string): string =>
+      execSync(`git -C "${pushDir}" rev-parse ${ref}`, { encoding: "utf-8" }).trim();
+    const forkPoint = gitRev("HEAD~1");
+    const commitOn = async (branchFile: string, message: string): Promise<void> => {
+      await fs.writeFile(path.join(pushDir, branchFile), `${message}\n`);
+      execSync(`git -C "${pushDir}" add "${branchFile}"`, { encoding: "utf-8" });
+      execSync(`git -C "${pushDir}" commit -m "${message}"`, { encoding: "utf-8" });
+    };
+    await commitOn("four.txt", "Add four");
+    await commitOn("five.txt", "Add five");
+    execSync(`git -C "${pushDir}" push origin main`, { encoding: "utf-8" });
+    // c4 and c3: the mainline commits that sit under the clone's shallow
+    // boundary, so neither the clone nor the capped fetch has them.
+    const cutMainlineCommits = [gitRev("HEAD~1"), gitRev("HEAD~2")];
+    execSync(`git -C "${pushDir}" checkout -b side ${forkPoint}`, { encoding: "utf-8" });
+    await commitOn("side-one.txt", "Add side one");
+    await commitOn("side-two.txt", "Add side two");
+    execSync(`git -C "${pushDir}" push origin side`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" checkout main`, { encoding: "utf-8" });
+
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir, ",\n      depth: 1");
+    execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+    const countAfterClone = Number(
+      execSync(`git -C "${worktreeDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim(),
+    );
+    expect(countAfterClone).toBe(1);
+
+    execSync(`git -C "${pushDir}" merge --no-ff -m "Merge side" side`, { encoding: "utf-8" });
+    execSync(`git -C "${pushDir}" push origin main`, { encoding: "utf-8" });
+    const mergeCommit = gitRev("HEAD");
+    const remoteTotal = Number(execSync(`git -C "${pushDir}" rev-list --count main`, { encoding: "utf-8" }).trim());
+    expect(remoteTotal).toBe(8);
+
+    const secondRun = execSync(`node "${cliPath}" --config "${configPath}"`, {
+      encoding: "utf-8",
+      timeout: 60000,
+    });
+
+    // The capped fetch brought the merge commit and nothing under it, so
+    // merge-base could not answer and the budget's first target resolved it.
+    expect(secondRun).toContain("[deepen]");
+    expect(secondRun.match(/\[deepen]/g)).toHaveLength(1);
+    expect(secondRun).toContain("refetching to depth 50 before deciding");
+    expect(secondRun).not.toContain("Clone-mode skips");
+    expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(mergeCommit);
+
+    // One deepen to 50 over an eight-commit remote completes the clone: the
+    // merged-in side, the fork point, and the two mainline commits that sat
+    // under the old boundary all arrive together, and git drops the shallow
+    // marker because nothing is left cut. A repository bigger than the target
+    // would stop at 50 commits and stay shallow — the transfer is bounded by
+    // the target either way, which is what the cap on the fetch preserves.
+    const countAfterMerge = Number(
+      execSync(`git -C "${worktreeDir}" rev-list --count HEAD`, { encoding: "utf-8" }).trim(),
+    );
+    expect(countAfterMerge).toBe(remoteTotal);
+    for (const restored of cutMainlineCommits) {
+      expect(() => execSync(`git -C "${worktreeDir}" cat-file -e ${restored}`, { stdio: "ignore" })).not.toThrow();
+    }
+    expect(execSync(`git -C "${worktreeDir}" rev-parse --is-shallow-repository`, { encoding: "utf-8" }).trim()).toBe(
+      "false",
+    );
   }, 120000);
 
   // A directory whose `.git` is a gitdir pointer (a linked worktree, or a

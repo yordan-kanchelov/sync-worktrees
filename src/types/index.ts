@@ -249,8 +249,47 @@ export interface Config {
   branch?: string;
   /**
    * Shallow clone depth for config-file clone-mode repositories. Maps to
-   * `git clone --single-branch --no-tags --depth <N>` on initial clone and
-   * keeps shallow sync fetches for the tracked branch at the configured depth.
+   * `git clone --single-branch --no-tags --depth <N>` on the initial clone.
+   *
+   * Routine sync fetches keep a `--depth` cap — without one, a remote tip that
+   * is not a descendant of the clone's tip (a force-push, a rebase) costs the
+   * new tip's whole ancestry, because a shallow clone has no ancestors to
+   * offer the server as `have`s — but the cap is ratcheted to
+   * `max(depth, the window the clone already holds under origin/<branch>)`, so
+   * it can never ask for a shorter window than the ref it caps holds.
+   * `git fetch --depth N` re-applies N to the ref it fetches rather than
+   * capping at it, so this value passed verbatim cut the clone back to it on
+   * every tick and made each remote advance unclassifiable.
+   *
+   * Both are depths in git's unit, counted from the ref the fetch re-applies
+   * them to: `--depth N` keeps every commit within N parent steps of the
+   * fetched tip, so one level of a merge-built history holds several commits.
+   * The clone is measured the same way — a local
+   * `git rev-list --topo-order --parents refs/remotes/origin/<branch>` walk —
+   * rather than counted in commits, which is the larger number and would push
+   * the boundary deeper every tick until nothing was bounded. The walk starts
+   * at the remote-tracking tip and not at HEAD because that is the ref
+   * `--depth` is re-applied from; a tick that fetches without merging (dirty
+   * worktree, unpushed commits, a divergence) leaves HEAD behind it, and a cap
+   * measured there shortens the clone instead of holding it. From the fetched
+   * ref the cap is a fixed point: the window a `--depth D` fetch produced
+   * measures back as D. HEAD is the fallback only for a first sync, before the
+   * remote-tracking ref exists, and a non-shallow clone gets no `--depth`.
+   *
+   * Editing this value reaches the sync path, asymmetrically. Raising it raises
+   * the cap, so the next sync fetch deepens a shorter clone up to the new value
+   * — and shrinks the deepen budget at the same time, because only targets
+   * above `depth` are used: at 1000 or more there is no budget left, and an
+   * unclassifiable clone can then only be skipped. Lowering it cannot shorten
+   * an existing clone through the sync fetch. Two other fetches do re-apply it
+   * verbatim: the in-sync deepen budget (`--depth 50/200/1000`), and the fetch
+   * used when switching the clone to another branch or creating a branch from a
+   * base branch — that one re-applies this value to whatever ref it names,
+   * often the tracked branch itself since the wizard offers it as a base, and
+   * because the shallow boundary is repository-wide it can re-cut the clone
+   * back to this depth or deepen it to a raised one. Removing `depth` is the
+   * one edit that predictably changes an existing clone: the next sync
+   * unshallows it. README.md has the measurements behind all of this.
    */
   depth?: number;
   /**

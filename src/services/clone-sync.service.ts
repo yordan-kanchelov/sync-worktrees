@@ -467,7 +467,173 @@ export class CloneSyncService {
     return `+refs/heads/${branch}:refs/remotes/origin/${branch}`;
   }
 
-  private async buildFetchArgs(git: SimpleGit, branch: string): Promise<string[]> {
+  // The routine sync fetch keeps a `--depth` cap, ratcheted so it can only ever
+  // grow: `max(configured depth, the window the clone holds under the ref the
+  // fetch re-applies it to)`. README.md carries the measurements in full.
+  //
+  // The cap has to stay. `--depth` is what bounds the transfer when the remote
+  // tip is *not* a descendant of the clone's tip — a force-push or a rebase on
+  // the feature branches clone mode tracks. A shallow clone advertises its
+  // grafted tip and has no ancestors to offer as `have`s, so the server has to
+  // pack the new tip's whole ancestry: measured on git 2.43, a 199-commit
+  // remote of empty commits force-pushed with `reset --hard HEAD~3` plus one
+  // commit (a 197-commit tip), `depth: 1` clone, the capped fetch took 1 commit
+  // in a 3-object pack against all 197 in a 201-object pack uncapped — and both
+  // classified `indeterminate_shallow`, so the uncapped download bought nothing
+  // and the deepen budget ran anyway.
+  //
+  // Passing the *configured* depth is what was wrong. `git fetch --depth N`
+  // re-applies N to the ref it fetches rather than capping it, so after a
+  // deepen-to-50 and a fast-forward the next tick's `--depth 1` cut the clone
+  // back to one commit; `merge-base HEAD origin/<branch>` then had nothing to
+  // walk even for a one-commit advance, the tick reported
+  // `indeterminate_shallow`, and the budget bought the same 50 commits again —
+  // every tick, discarded every time.
+  //
+  // Two things about the ratchet are easy to get wrong, and both were.
+  //
+  // The unit. `--depth N` counts N ancestry *levels* from the fetched tip, not
+  // N commits, so on a merge-built history one level holds several commits (on
+  // git 2.43, a `--depth 50` fetch of a remote of merged two-commit pull
+  // requests produced a 147-commit clone). Ratcheting on `rev-list --count
+  // HEAD` feeds git a number in the wrong unit, always larger than the depth it
+  // came from, so the boundary goes deeper every tick: 1 -> 147 -> 438 -> 610
+  // commits in three ticks of a 601-commit remote, after which the clone held
+  // everything, was no longer shallow, and `--depth` was never sent again.
+  // `--count --first-parent HEAD` is closer and still not the unit — a history
+  // whose branches fork below the tip shortcuts the walk, and the same run grew
+  // a 495-commit clone to the whole 1201-commit remote in one tick.
+  //
+  // The ref. `--depth` is re-applied from the *fetched tip*, and HEAD is that
+  // commit only on a tick that ends in a fast-forward. Every tick that fetches
+  // and does not merge — dirty tree, unpushed commits, a divergence, a tip too
+  // shallow to classify — leaves HEAD behind it, and a walk from there reports
+  // less than the clone holds, so the cap re-truncates; each truncation makes
+  // the next measurement smaller still, so it runs away downwards. Measured on
+  // git 2.43, 120-commit remote advancing three commits a tick, `depth: 1`,
+  // worktree left dirty after the first deepen: measuring HEAD sent 50, 47, 41,
+  // 32, 20, 5 and the window the deepen paid for was gone in five ticks, with
+  // the first clean tick paying for a second deepen; measuring origin/main sent
+  // 50 every tick, held the window at 50, and fast-forwarded with no deepen at
+  // all. The *union* of the two (`rev-list HEAD origin/<branch>`) is not enough
+  // either: a union walk gives each commit its shortest distance from *either*
+  // tip, which under-reports once HEAD sits off to the side of the fetched tip.
+  // Over a 400-commit remote force-pushed at the second tick, the union sent
+  // 50, 50, 49, 45, 38 and let the window shrink to 28 in five ticks, where the
+  // fetched ref alone sent 50 every time and held it.
+  //
+  // So the ratchet measures the remote-tracking tip, with HEAD as the fallback
+  // for a first sync that has no such ref yet. Every commit the clone holds
+  // under that ref is within the number the walk returns, so re-asking for it
+  // truncates nothing there, and it is a fixed point: a window `--depth D`
+  // produced measures back as exactly D. History widens only when something
+  // deliberately widens it — the deepen budget, or a raised `depth`.
+  //
+  // What it does not claim is that nothing ever falls off the bottom. A remote
+  // that advanced by k levels pushes the oldest k levels past the boundary (the
+  // window keeps its size and slides), and a local tip a force-push moved off
+  // the fetched ref's ancestry cannot be held inside it by any depth.
+  //
+  // Two edges, both resolved toward keeping a cap:
+  //   - A non-shallow clone gets no `--depth` at all: the flag would *make* the
+  //     repository shallow (on git 2.43, `--depth 5` on a full 199-commit clone
+  //     left 5 commits and `--is-shallow-repository` true).
+  //   - If neither walk yields a depth — the remote-tracking ref missing on a
+  //     first sync (`rev-list` rejects an unknown ref, which is why the HEAD
+  //     walk backs it up), an unborn HEAD, or the empty string simple-git
+  //     resolves with when git exits non-zero without writing to stderr — the
+  //     cap falls back to the configured depth rather than to no cap: a
+  //     re-truncation is something the deepen budget can undo, an uncapped
+  //     transfer is not.
+  private async buildSyncFetchArgs(git: SimpleGit, branch: string): Promise<string[]> {
+    const args = ["origin", "--prune", "--no-tags", "--progress"];
+    const depth = await this.resolveSyncFetchDepth(git, branch);
+    if (depth !== null) {
+      args.push("--depth", String(depth));
+    }
+    args.push(this.getBranchRefspec(branch));
+    return args;
+  }
+
+  private async resolveSyncFetchDepth(git: SimpleGit, branch: string): Promise<number | null> {
+    const configuredDepth = this.config.depth;
+    if (configuredDepth === undefined) return null;
+    if (!(await this.isShallowRepository(git))) return null;
+    const localDepth =
+      (await this.measureLocalHistoryDepth(git, `refs/remotes/origin/${branch}`)) ??
+      (await this.measureLocalHistoryDepth(git, "HEAD"));
+    if (localDepth === null) return configuredDepth;
+    return Math.max(configuredDepth, localDepth);
+  }
+
+  // The depth the clone holds under `startRef`, in the unit `git fetch --depth`
+  // uses: one plus the longest shortest-path from that ref to a local commit.
+  // git assigns a commit the *smallest* number of parent edges that reaches it
+  // from the tip and cuts the history where that number reaches `--depth`, so
+  // this is the same measurement read back off the clone.
+  //
+  // `rev-list --topo-order` never prints a parent before all of its children,
+  // so one forward pass over `--parents` output settles every distance: by the
+  // time a commit is read, every child that could shorten its path has already
+  // relaxed it. The walk is local and bounded by what the clone holds, and
+  // grafted boundary commits are printed without parents, so it stops there.
+  //
+  // Returns null for anything that is not a usable answer: a rejection (which
+  // is what an unknown ref gives), and the empty string simple-git resolves
+  // with when git exits non-zero without writing to stderr.
+  private async measureLocalHistoryDepth(git: SimpleGit, startRef: string): Promise<number | null> {
+    let output: string;
+    try {
+      output = await git.raw(["rev-list", "--topo-order", "--parents", startRef]);
+    } catch {
+      return null;
+    }
+
+    const depthByCommit = new Map<string, number>();
+    let deepest = -1;
+    for (const line of output.split("\n")) {
+      const ids = line.trim().split(" ");
+      const commit = ids[0];
+      if (!commit) continue;
+      // The first line is the start ref itself, which nothing has relaxed:
+      // depth 0.
+      const depth = depthByCommit.get(commit) ?? 0;
+      if (depth > deepest) deepest = depth;
+      for (let i = 1; i < ids.length; i++) {
+        const parent = ids[i];
+        const known = depthByCommit.get(parent);
+        if (known === undefined || known > depth + 1) depthByCommit.set(parent, depth + 1);
+      }
+    }
+    return deepest < 0 ? null : deepest + 1;
+  }
+
+  // The TUI branch switch and the branch wizard's base-branch fetch. Both keep
+  // `--depth`, and what the flag does here is broader than "bound a branch this
+  // clone has never seen": it re-applies the configured depth to whatever ref
+  // it names, and the shallow boundary is repository-wide, so this fetch can
+  // shorten *or* deepen the clone — including when `depth` was never edited.
+  // Its commonest case is in fact a ref the clone does hold, since the wizard
+  // offers the tracked branch among the bases: measured on git 2.43 on a
+  // `depth: 1` clone the deepen budget had grown to 50 commits, a `--depth 1`
+  // fetch of the tracked branch put it back to 1, and with `depth` raised to 10
+  // the same fetch took a one-commit clone to 10. The sync fetch above does not
+  // do that because it ratchets its cap up to the window the fetched ref
+  // already holds; this one does not ratchet, because the ref it names is
+  // usually not the one the clone's window was measured over.
+  //
+  // The flag stays because dropping it is ruinous for the case it exists for, a
+  // ref with a tip of its own that the clone has never seen — it costs the
+  // branch's whole ancestry instead of one commit. README's `depth` section
+  // carries that measurement with the harness shape it was taken over; object
+  // counts are shape-dependent, so it is stated in one place rather than
+  // restated here, where a later re-measurement would not reach it.
+  // Whether it also shortens the tracked branch depends on what the ref shares
+  // with it — a side branch with a tip of its own left a 20-commit clone at 20,
+  // a `release` ref pointing at `main~5` took it to 6 — and both callers are
+  // about to leave the old branch behind anyway: checkoutBranch ends by
+  // re-narrowing the remote to the new branch and deleting the old origin/* ref.
+  private async buildUntrackedBranchFetchArgs(git: SimpleGit, branch: string): Promise<string[]> {
     const args = ["origin", "--prune", "--no-tags", "--progress"];
     if (this.config.depth !== undefined && (await this.isShallowRepository(git))) {
       args.push("--depth", String(this.config.depth));
@@ -589,6 +755,12 @@ export class CloneSyncService {
     if (configuredDepth === undefined) return [];
     // `git fetch --depth N` can shorten a shallow repo if N is below current depth.
     // Skip targets at or below the configured depth — they would never widen history.
+    // Note the direction this gives `depth`: raising it can only *remove*
+    // targets, and a depth at or above the largest one leaves no budget at all.
+    // The sync fetch's ratcheted cap does widen a shorter clone toward a raised
+    // `depth` (it takes the larger of the two), but it cannot go past it, so
+    // once a clone is at `depth` and still unclassifiable the only remedy left
+    // is removing `depth`, which unshallows via unshallowIfDepthRemoved.
     return SHALLOW_RELATION_DEEPEN_TARGETS.filter((target) => target > configuredDepth);
   }
 
@@ -618,8 +790,8 @@ export class CloneSyncService {
 
   // The relationship classification both the sync tick and the branch switch
   // decide on, with the deepening budget both are allowed to spend on it. A
-  // shallow clone can be too short to answer at all: the `--depth N` fetch cuts
-  // history under a tip the remote moved more than N commits past, so
+  // shallow clone can be too short to answer at all: the `--depth N` clone cut
+  // history under a tip the remote has since moved more than N commits past, so
   // merge-base has nothing to walk and the classifier says
   // `indeterminate_shallow` rather than guessing. Each target is fetched in
   // turn and the first decisive answer wins, so the common case costs one extra
@@ -805,7 +977,11 @@ export class CloneSyncService {
       throw error;
     }
 
-    const fetchArgs = await this.buildFetchArgs(clients.git, branch);
+    // `branch` is not always one the clone has never seen — localBranchExists
+    // below has a path for a branch it already holds — so this fetch's `--depth`
+    // can re-cut or deepen the clone rather than merely bound a new ref. See
+    // buildUntrackedBranchFetchArgs.
+    const fetchArgs = await this.buildUntrackedBranchFetchArgs(clients.git, branch);
     if ((await this.fetchWithRecovery(clients, fetchArgs, worktreeDir, branch, false)).skipped) {
       throw new GitOperationError("checkout", `origin/${branch} is missing for '${this.repoName}'`);
     }
@@ -842,7 +1018,7 @@ export class CloneSyncService {
           "checkout",
           `cannot tell whether '${branch}' fast-forwards to origin/${branch} in '${this.repoName}': the clone is ` +
             `shallow and the histories do not meet after ${describeDeepenAttempt(deepenedTo)}. ` +
-            `${deepenedTo === null ? "Remove" : "Remove or raise"} 'depth' in the config, then switch again`,
+            `Remove 'depth' from the config to unshallow the clone, then switch again`,
         );
       }
       if (relationship !== "up_to_date" && relationship !== "fast_forward") {
@@ -958,13 +1134,17 @@ export class CloneSyncService {
     // repository that actually owns this directory's git dir.
     const clients = await this.mutatingClientsFor(worktreeDir);
 
-    // The clone tracks a single branch, so origin/<baseBranch> is usually not
+    // The clone tracks a single branch, so origin/<baseBranch> is often not
     // present at all, and when it is it is only as fresh as the last sync.
     // Fetch it with the same narrowed refspec — and the same shallow depth — a
-    // sync would use, so the branch starts at the tip the user picked. The
-    // stray origin/<baseBranch> this leaves behind is cleaned up by the
-    // configureSingleBranchRemote that ends the checkout.
-    const fetchArgs = await this.buildFetchArgs(clients.git, baseBranch);
+    // sync's initial clone would use, so the branch starts at the tip the user
+    // picked without dragging that branch's whole history in. The wizard lists
+    // the tracked branch among the bases, and that is the pick where `--depth`
+    // lands on history the clone holds: it re-cuts the clone to the configured
+    // depth, or deepens it to a raised one — see buildUntrackedBranchFetchArgs
+    // for the measurements. The stray origin/<baseBranch> this leaves behind is
+    // cleaned up by the configureSingleBranchRemote that ends the checkout.
+    const fetchArgs = await this.buildUntrackedBranchFetchArgs(clients.git, baseBranch);
     if ((await this.fetchWithRecovery(clients, fetchArgs, worktreeDir, baseBranch, false)).skipped) {
       throw new GitOperationError(
         "branch",
@@ -1746,7 +1926,7 @@ export class CloneSyncService {
 
     await this.configureSingleBranchRemote(clients, branch);
 
-    const fetchArgs = await this.buildFetchArgs(clients.git, branch);
+    const fetchArgs = await this.buildSyncFetchArgs(clients.git, branch);
     this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
     if ((await this.fetchWithRecovery(clients, fetchArgs, worktreeDir, branch)).skipped) {
       return;
@@ -1810,7 +1990,7 @@ export class CloneSyncService {
         this.recordSkip(
           { kind: "indeterminate_shallow", branch, deepenedTo: lastDeepenedTo },
           `⏭️  '${this.repoName}' could not classify origin/${branch} after ${detail}. ` +
-            `Skipping merge — consider removing or raising 'depth' to unshallow.`,
+            `Skipping merge — remove 'depth' from the config to unshallow the clone.`,
           `Skipping merge for '${this.repoName}': ${progressDetail}`,
           "info",
         );

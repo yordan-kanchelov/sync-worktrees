@@ -307,10 +307,40 @@ const config = {
     // - origin tracks only the checked-out branch. Branch discovery uses remote
     //   metadata instead of materializing every origin/* ref locally.
     // - depth is optional and config-file only; it maps to `git clone --depth <N>` on the
-    //   initial single-branch clone. Sync fetches keep using depth while the repository
-    //   is already shallow, but do not convert an existing full clone into a shallow one.
-    //   If depth is later removed, an existing shallow clone is automatically unshallowed
-    //   before normal sync. Clone-mode clone/fetch operations also use --no-tags.
+    //   initial single-branch clone. Routine sync fetches keep a --depth cap, because a
+    //   shallow clone has no ancestors to offer the server: the moment the remote tip is
+    //   not a descendant of the clone's tip (a force-push, a rebase) an uncapped fetch has
+    //   to pack the new tip's whole ancestry. The cap is ratcheted to
+    //   max(depth, the window the clone already holds under origin/<branch>), so it can
+    //   never ask for a shorter window than the ref it caps holds — `git fetch --depth N`
+    //   re-applies N to the ref it fetches rather than capping at it, and passing the
+    //   configured value unratcheted re-cut the clone on every tick.
+    //   Both are depths in git's unit, counted from the ref the fetch re-applies them to:
+    //   --depth N keeps every commit within N parent steps of the fetched tip, so one level
+    //   of a merge-built history holds several commits, and the clone's depth is measured
+    //   the same way rather than counted in commits — a count is the larger number, and
+    //   ratcheting on it would push the boundary deeper every tick until the clone held the
+    //   whole repository and depth bounded nothing. The measurement walks origin/<branch>
+    //   rather than HEAD, which is the commit --depth is re-applied from only on a tick
+    //   that ends in a fast-forward: a tick that fetches and skips the merge (dirty
+    //   worktree, unpushed commits, a divergence) leaves HEAD behind the tip, and a cap
+    //   measured there shortens the clone on every tick instead of holding it. Measured
+    //   from the fetched ref the cap is a fixed point, so a clone stays at the depth its
+    //   last deepen left it, and an existing full clone is never converted into a shallow
+    //   one.
+    //   Raising depth raises the cap, so the next sync fetch deepens a shorter clone up to
+    //   the new value — and it shrinks the deepen budget below at the same time, since only
+    //   targets above depth are used (at 1000 or more nothing is left). Lowering depth
+    //   cannot shorten an existing clone through the sync fetch. Two other fetches re-apply
+    //   it verbatim: the
+    //   in-sync deepen budget (--depth 50/200/1000), and the fetch used when switching the
+    //   clone to another branch or creating a branch from a base branch, which re-applies
+    //   the configured value to whatever ref it names — often the tracked branch itself,
+    //   since the wizard offers it as a base — and because the shallow boundary is
+    //   repository-wide it can re-cut the clone back to that depth or deepen it to a raised
+    //   one. If depth is later removed, an existing shallow clone is automatically
+    //   unshallowed before normal sync.
+    //   Clone-mode clone/fetch operations also use --no-tags.
     // - Conflicts with branchInclude / branchExclude / branchMaxAge / updateExistingWorktrees /
     //   bareRepoDir — setting any of these on a clone-mode repo (or via defaults inherited into it)
     //   is a validation error.

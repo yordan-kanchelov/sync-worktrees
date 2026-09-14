@@ -24,6 +24,12 @@ import type { Mock } from "vitest";
 vi.mock("fs/promises");
 vi.mock("simple-git");
 
+// The local history walks the sync fetch's depth ratchet measures the clone
+// with: the remote-tracking tip `git fetch --depth` re-applies its depth from,
+// and HEAD as the fallback for a clone that has no such ref yet.
+const REMOTE_HISTORY_WALK = "rev-list --topo-order --parents refs/remotes/origin/main";
+const HEAD_HISTORY_WALK = "rev-list --topo-order --parents HEAD";
+
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return {
     repoUrl: "https://github.com/example/repo.git",
@@ -96,6 +102,71 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     ...overrides,
   };
   return stub as unknown as GitService;
+}
+
+// `git rev-list --topo-order --parents <ref>` output for a linear history of
+// `commits` commits — as many ancestry levels as commits.
+function linearHistory(commits: number): string {
+  const lines: string[] = [];
+  for (let i = commits; i >= 1; i--) {
+    lines.push(i === 1 ? "c1" : `c${i} c${i - 1}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+// The same output for a history of `merges` merge commits, each landing a
+// two-commit side branch with `--no-ff` — the shape a repository takes when
+// pull requests land as merge commits. It holds `3 * merges + 1` commits, but
+// only `merges + 2` ancestry levels (the mainline, plus the two commits of the
+// oldest side branch hanging below its merge base), which is why the two units
+// cannot be swapped for each other.
+function mergeHistory(merges: number): string {
+  const lines: string[] = [];
+  for (let i = merges; i >= 1; i--) {
+    lines.push(`m${i} m${i - 1} b${i}`, `b${i} a${i}`, `a${i} m${i - 1}`);
+  }
+  lines.push("m0");
+  return `${lines.join("\n")}\n`;
+}
+
+// The probes a sync tick makes before its fetch: the primary-checkout guard,
+// the origin URL, the current branch, whether the clone is shallow — and, for
+// the sync fetch's depth ratchet, the local history walk it measures the
+// clone's current depth with.
+//
+// `history` is what the walk from origin/main returns, which is the one the
+// ratchet asks for: `headHistory` stands in for a HEAD the last tick left
+// behind the fetched tip, and defaults to the same graph for the ticks where
+// the two coincide. `missingRemoteRef` makes the origin/main walk reject the
+// way `git rev-list` rejects an unknown ref, which is the first sync.
+function buildSyncRawMock(opts: {
+  shallow: boolean;
+  history?: string | (() => string);
+  headHistory?: string | (() => string);
+  historyError?: Error;
+  missingRemoteRef?: boolean;
+}): (args: string[]) => Promise<string> {
+  const resolve = (source: string | (() => string) | undefined): string =>
+    typeof source === "function" ? source() : (source ?? "");
+  return async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+    if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+    if (key === "rev-parse --abbrev-ref HEAD") return "main";
+    if (key === "rev-parse --is-shallow-repository") return opts.shallow ? "true" : "false";
+    if (key === REMOTE_HISTORY_WALK) {
+      if (opts.historyError) throw opts.historyError;
+      if (opts.missingRemoteRef) {
+        throw new Error("fatal: ambiguous argument 'refs/remotes/origin/main': unknown revision");
+      }
+      return resolve(opts.history);
+    }
+    if (key === HEAD_HISTORY_WALK) {
+      if (opts.historyError) throw opts.historyError;
+      return resolve(opts.headHistory ?? opts.history);
+    }
+    return "";
+  };
 }
 
 // The GitService half of the per-sync LFS fallback: SyncRetryPolicy calls
@@ -1138,6 +1209,11 @@ describe("CloneSyncService", () => {
 
       await service.checkoutBranch("feature/new");
 
+      // Without the flag the switch would download that branch's history down
+      // to the repository root. `--depth` is not free here either — the
+      // shallow boundary is repository-wide, so a fetched ref that shares the
+      // tracked branch's history can shorten it — but the switch is about to
+      // leave the old branch behind, so the flag stays.
       expect(gitMock.fetch).toHaveBeenCalledWith([
         "origin",
         "--prune",
@@ -1420,6 +1496,15 @@ describe("CloneSyncService", () => {
       expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ LC_ALL: "C", LANG: "C" }));
     });
 
+    // This fetch keeps the configured depth: for a base branch the clone has
+    // never seen, dropping the flag would pull that branch's history down to
+    // the repository root. The flag is not free, and this test's own case is
+    // the expensive one — the base is "main", the configured tracked branch,
+    // so `--depth 1` re-applies to history the clone already holds and re-cuts
+    // it back to one commit (and would deepen it, had `depth` been raised).
+    // The wizard offers the tracked branch as a base like any other, so that
+    // is the common case rather than the exception; the flag stays because the
+    // alternative is downloading a long-lived base branch in full.
     it("keeps the configured shallow depth on the base-branch fetch", async () => {
       mockWizardRaw((key) => (key === "rev-parse --is-shallow-repository" ? "true" : undefined));
       const service = new CloneSyncService(makeConfig({ branch: "main", depth: 1 }), buildGitService(), logger);
@@ -1709,52 +1794,245 @@ describe("CloneSyncService", () => {
       expect(gitMock.merge).not.toHaveBeenCalled();
     });
 
-    it("does not unshallow when depth is configured", async () => {
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "true";
-        return "";
-      });
-      const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
-      setInitialized(service);
-
-      await service.runSyncAttempt();
-
-      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
-      expect(gitMock.fetch).toHaveBeenCalledWith([
+    // `git fetch --depth N` re-applies N to the ref it fetches rather than
+    // capping history at N, so passing the configured depth on every tick cut
+    // the clone back to it and made the next advance unclassifiable. The cap
+    // itself has to stay — a remote tip that is not a descendant of the clone's
+    // tip costs the whole ancestry without one — so the sync fetch ratchets it:
+    // `max(configured depth, the depth the clone already has)`, which can only
+    // ever grow.
+    //
+    // `--depth` counts ancestry *levels*, so the ratchet measures levels too. A
+    // commit count would be a different, always-larger number on any history
+    // with merges, and feeding it back as a depth walks the boundary deeper
+    // every tick until the clone holds the whole repository.
+    describe("sync fetch depth ratchet", () => {
+      const syncFetchArgs = (depth?: string): string[] => [
         "origin",
         "--prune",
         "--no-tags",
         "--progress",
-        "--depth",
-        "1",
+        ...(depth === undefined ? [] : ["--depth", depth]),
         "+refs/heads/main:refs/remotes/origin/main",
-      ]);
-    });
+      ];
 
-    it("does not make a full existing clone shallow when depth is configured", async () => {
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "false";
-        return "";
+      it("raises --depth to the depth the clone holds under the fetched ref", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: linearHistory(31) }));
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("31"));
       });
-      const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
-      setInitialized(service);
 
-      await service.runSyncAttempt();
+      it("keeps the configured depth when the clone is shallower than it", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: linearHistory(3) }));
+        const service = new CloneSyncService(makeConfig({ depth: 50 }), buildGitService(), logger);
+        setInitialized(service);
 
-      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
-      expect(gitMock.fetch).toHaveBeenCalledWith([
-        "origin",
-        "--prune",
-        "--no-tags",
-        "--progress",
-        "+refs/heads/main:refs/remotes/origin/main",
-      ]);
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("50"));
+      });
+
+      // The ref the depth is measured from, pinned. `git fetch --depth N`
+      // re-applies N from the fetched tip, so HEAD is the right ref only on a
+      // tick that ends in a fast-forward. Any tick that fetches and does not
+      // merge — a dirty tree, unpushed commits, a divergence, a tip too shallow
+      // to classify — leaves HEAD behind, and measuring it there asks for less
+      // than the clone holds, which re-truncates: measured on git 2.43 over a
+      // worktree left dirty, a HEAD-measured ratchet sent 50, 47, 41, 32, 20, 5
+      // on successive ticks and the window the deepen paid for was gone in
+      // five.
+      it("measures the fetched ref, not a HEAD an unmerged tick left behind", async () => {
+        gitMock.raw.mockImplementation(
+          buildSyncRawMock({ shallow: true, history: linearHistory(50), headHistory: linearHistory(35) }),
+        );
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("50"));
+        // Not the 35 levels HEAD can still reach, and not measured from HEAD at
+        // all while origin/main answers.
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["rev-list", "--topo-order", "--parents", "HEAD"]);
+      });
+
+      // First sync of a clone whose remote-tracking ref is not there yet: the
+      // walk rejects, and HEAD is what the clone holds, so it stands in.
+      it("falls back to the HEAD walk when the remote-tracking ref is missing", async () => {
+        gitMock.raw.mockImplementation(
+          buildSyncRawMock({ shallow: true, missingRemoteRef: true, headHistory: linearHistory(12) }),
+        );
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.raw).toHaveBeenCalledWith(["rev-list", "--topo-order", "--parents", "HEAD"]);
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("12"));
+      });
+
+      // The unit, pinned. Ten merged two-commit pull requests are 31 commits in
+      // 12 ancestry levels; `--depth` speaks levels, so the cap is 12. Sending
+      // the commit count instead would ask for a boundary nearly three times
+      // deeper than the one the clone has, and repeating that every tick is how
+      // a `depth: 1` clone walks itself up to full history.
+      it("measures ancestry levels, not commits, on a history of merges", async () => {
+        const history = mergeHistory(10);
+        expect(history.trim().split("\n")).toHaveLength(31);
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history }));
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("12"));
+      });
+
+      // The fixed point the ratchet depends on: a clone that `--depth 12`
+      // produced measures back as 12, so the next tick asks for 12 again rather
+      // than for something deeper. Two ticks over an unchanged clone therefore
+      // send the same cap twice.
+      it("asks for the same depth again when the clone has not changed", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: mergeHistory(10) }));
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+        await service.runSyncAttempt();
+
+        const syncDepths = gitMock.fetch.mock.calls
+          .map((call) => call[0] as string[])
+          .filter((args) => args.includes("+refs/heads/main:refs/remotes/origin/main"))
+          .map((args) => args[args.indexOf("--depth") + 1]);
+        expect(syncDepths).toEqual(["12", "12"]);
+      });
+
+      // The same fixed point across ticks that never merge: the window the
+      // fetched ref holds does not change, so neither does the cap. A ratchet
+      // measured from HEAD would send a smaller number on every one of these.
+      it("holds the cap across ticks that fetch and skip the merge", async () => {
+        // HEAD falls further behind on every tick; origin/main keeps its 50.
+        const headReach = [50, 47, 44];
+        let tick = 0;
+        gitMock.raw.mockImplementation(
+          buildSyncRawMock({
+            shallow: true,
+            history: linearHistory(50),
+            headHistory: () => linearHistory(headReach[Math.min(tick, headReach.length - 1)]),
+          }),
+        );
+        const service = new CloneSyncService(
+          makeConfig({ depth: 1 }),
+          buildGitService({ checkWorktreeStatus: vi.fn().mockResolvedValue(false) }),
+          logger,
+        );
+        setInitialized(service);
+
+        for (; tick < 3; tick++) {
+          await service.runSyncAttempt();
+        }
+
+        const syncDepths = gitMock.fetch.mock.calls
+          .map((call) => call[0] as string[])
+          .filter((args) => args.includes("+refs/heads/main:refs/remotes/origin/main"))
+          .map((args) => args[args.indexOf("--depth") + 1]);
+        expect(syncDepths).toEqual(["50", "50", "50"]);
+        expect(gitMock.merge).not.toHaveBeenCalled();
+      });
+
+      // On a full clone the flag has no ratchet to sit under: `--depth` would
+      // *make* the repository shallow, so there is none, and the clone is not
+      // even walked.
+      it("sends no --depth on a full clone, and does not measure its depth", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: false, history: linearHistory(199) }));
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs());
+        expect(gitMock.raw).not.toHaveBeenCalledWith([
+          "rev-list",
+          "--topo-order",
+          "--parents",
+          "refs/remotes/origin/main",
+        ]);
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["rev-list", "--topo-order", "--parents", "HEAD"]);
+      });
+
+      it("sends no --depth when no depth is configured", async () => {
+        // Shallow with no configured depth is the unshallow path, so this one
+        // is a full clone: nothing to cap, nothing to unshallow.
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: false, history: linearHistory(199) }));
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs());
+      });
+
+      // Both directions of an unreadable walk fall back to the configured depth
+      // rather than to no cap: a re-truncation is something the deepen budget
+      // can still undo, an uncapped transfer is not. simple-git resolves with ""
+      // when git exits non-zero without writing to stderr, so the silent form
+      // has to be handled as well as the rejection — and "" is also what an
+      // unborn HEAD leaves, where the configured depth is not merely the lesser
+      // evil but exactly right.
+      it("falls back to the configured depth when both history walks reject", async () => {
+        gitMock.raw.mockImplementation(
+          buildSyncRawMock({ shallow: true, historyError: new Error("fatal: bad revision 'HEAD'") }),
+        );
+        const service = new CloneSyncService(makeConfig({ depth: 7 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("7"));
+      });
+
+      it.each([
+        ["an empty walk (unborn HEAD)", ""],
+        ["a blank-line-only walk", "\n\n"],
+      ])("falls back to the configured depth on %s", async (_label, history) => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history }));
+        const service = new CloneSyncService(makeConfig({ depth: 7 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("7"));
+      });
+
+      // The regression this cap exists for. A shallow clone has no ancestors to
+      // offer as `have`s, so when the remote tip stops being a descendant of
+      // its tip — a force-push or a rebase, routine on the branches clone mode
+      // tracks — an uncapped fetch packs the new tip's whole ancestry.
+      // Measured on git 2.43 against a 199-commit remote of empty commits
+      // force-pushed to a 197-commit tip (`reset --hard HEAD~3` plus one
+      // commit), a `depth: 1` clone: capped, origin/main stayed at 1 commit for
+      // a 3-object pack; uncapped, all 197 commits in a 201-object pack.
+      // The clone-mode e2e pins the same thing end to end.
+      it("still caps the fetch when the clone holds a single commit", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: linearHistory(1) }));
+        const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
+        const service = new CloneSyncService(
+          makeConfig({ depth: 1 }),
+          buildGitService({ classifyRemoteRelationship: classify }),
+          logger,
+        );
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenNthCalledWith(1, syncFetchArgs("1"));
+      });
     });
 
     it("does not unshallow full repositories without configured depth", async () => {
@@ -1793,13 +2071,9 @@ describe("CloneSyncService", () => {
     });
 
     it("deepens a shallow configured clone before classifying as fast-forward", async () => {
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "true";
-        return "";
-      });
+      // A one-commit clone: the ratchet leaves the sync fetch at the configured
+      // depth, which is too little to classify, so the budget is spent.
+      gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: linearHistory(1) }));
       const classify = vi.fn().mockResolvedValueOnce("indeterminate_shallow").mockResolvedValueOnce("fast_forward");
       const gitService = buildGitService({ classifyRemoteRelationship: classify });
       const service = new CloneSyncService(makeConfig({ depth: 1 }), gitService, logger);
@@ -1829,6 +2103,49 @@ describe("CloneSyncService", () => {
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
 
+    // The churn the ratchet exists to stop. Passing the *configured* depth on
+    // every tick threw away the history the deepen above just paid for and
+    // re-grafted the tip it fetched, so the next remote advance was
+    // indeterminate again — one 50-commit deepen fetch per tick, forever, with
+    // `fast_forward` never reached on the first classification. With the
+    // ratchet the second tick asks for the clone's own size instead, so the
+    // deepen happens once.
+    it("does not re-shorten the deepened history on the next sync of a depth: 1 clone", async () => {
+      // The clone holds one commit until the first tick's deepen-to-50 and
+      // fast-forward; from then on it holds 50.
+      let history = linearHistory(1);
+      gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: () => history }));
+      const classify = vi
+        .fn()
+        .mockResolvedValueOnce("indeterminate_shallow")
+        .mockResolvedValueOnce("fast_forward")
+        .mockResolvedValue("fast_forward");
+      const service = new CloneSyncService(
+        makeConfig({ depth: 1 }),
+        buildGitService({ classifyRemoteRelationship: classify }),
+        logger,
+      );
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+      const fetchesAfterFirstTick = gitMock.fetch.mock.calls.length;
+      history = linearHistory(50);
+      await service.runSyncAttempt();
+
+      // The second tick fetches once, at the depth the clone now holds rather
+      // than the configured 1: the boundary the deepen established is left
+      // where it is, so merge-base still has something to walk and no second
+      // deepen is bought.
+      const secondTickFetches = gitMock.fetch.mock.calls
+        .slice(fetchesAfterFirstTick)
+        .map((call) => call[0] as string[]);
+      expect(secondTickFetches).toEqual([
+        ["origin", "--prune", "--no-tags", "--progress", "--depth", "50", "+refs/heads/main:refs/remotes/origin/main"],
+      ]);
+      expect(classify).toHaveBeenCalledTimes(3);
+      expect(gitMock.merge).toHaveBeenCalledTimes(2);
+    });
+
     it("walks 50 -> 200 -> 1000 depth targets before giving up on a shallow indeterminate clone", async () => {
       const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
       const skips: CloneSkipReason[] = [];
@@ -1840,7 +2157,10 @@ describe("CloneSyncService", () => {
 
       await service.runSyncAttempt();
 
+      // Everything after the sync fetch, which now carries a ratcheted
+      // `--depth` of its own.
       const depthArgs = gitMock.fetch.mock.calls
+        .slice(1)
         .map((call) => call[0] as string[])
         .filter((args) => args[1] === "--depth" && args.includes("+refs/heads/main:refs/remotes/origin/main"))
         .map((args) => Number(args[args.indexOf("--depth") + 1]));

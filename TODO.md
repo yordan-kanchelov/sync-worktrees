@@ -165,7 +165,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   (contradicting the comment at 659-662)
 - [x] **T68** — Clone-mode sparse re-apply skips the README's "narrowing safety" check and does not
   record failures/skips in the sync outcome, unlike worktree mode
-- [ ] **T66** — With a small configured `depth`, every routine sync re-passes `--depth N` and
+- [x] **T66** — With a small configured `depth`, every routine sync re-passes `--depth N` and
   re-shortens the history the previous tick deepened; at `depth: 1` every remote advance (even +1
   commit) is indeterminate and costs a 50-commit deepen fetch, then is thrown away
 - [ ] **T71** — Clone-mode sync runs a full `git status` scan every tick before learning the clone
@@ -2864,7 +2864,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   from the parent, redirecting every clone-mode git command to another repository when the tool runs
   from a git hook or a shell that exports GIT_DIR”.
 
-### [ ] T66. With a small configured `depth`, every routine sync re-passes `--depth N` and re-shortens the history the previous tick deepened; at `depth: 1` every remote advance (even +1 commit) is indeterminate and costs a 50-commit deepen fetch, then is thrown away
+### [x] T66. With a small configured `depth`, every routine sync re-passes `--depth N` and re-shortens the history the previous tick deepened; at `depth: 1` every remote advance (even +1 commit) is indeterminate and costs a 50-commit deepen fetch, then is thrown away
 
 - **Category**: performance · **Subsystem**: clone-sync
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
