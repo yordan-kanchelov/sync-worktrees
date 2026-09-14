@@ -3,6 +3,7 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { symlinksSupported } from "../../__tests__/helpers/symlink-support";
 import { allowDeletion, mockUndeletableFile } from "../../__tests__/helpers/undeletable-file";
 import { cleanupTempDirectories, createMockLogger, createTempDirectory } from "../../__tests__/test-utils";
 import { GIT_CONSTANTS, TRASH_CONSTANTS } from "../../constants";
@@ -549,6 +550,38 @@ describe("TrashService", () => {
       expect(gitStub.deleteRef).toHaveBeenCalledWith(manifest.pinRef);
       expect(restored.branch).toBe("feature-y");
       await expect(service.listEntries()).resolves.toMatchObject({ entries: [] });
+    });
+
+    // Restore overlays by copy and then deletes the container it copied from,
+    // which is what copyTreePreservingSymlinks exists for. Nothing may be
+    // asserted until that container is gone: a link rewritten to a path under
+    // `.trash/` still resolves while it is there and would prove nothing.
+    it("restores relative symlinks intact, resolvable after the trash container is deleted", async (ctx) => {
+      if (!(await symlinksSupported())) {
+        ctx.skip("this host cannot create symlinks");
+        return;
+      }
+      const source = await makeSourceDir("feature-links", { "work.txt": "uncommitted work" });
+      const binDir = path.join(source, "node_modules", ".bin");
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.mkdir(path.join(source, "node_modules", "pkg"), { recursive: true });
+      await fs.writeFile(path.join(source, "node_modules", "pkg", "cli.js"), "#!/usr/bin/env node\n");
+      await fs.symlink(path.join("..", "pkg", "cli.js"), path.join(binDir, "tool"));
+      const { manifest, containerPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-links",
+        reason: "prune",
+      });
+      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
+        await fs.mkdir(args[1] as string, { recursive: true });
+      });
+
+      await service.restore(manifest.id);
+
+      await expect(fs.access(containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+      const restoredLink = path.join(source, "node_modules", ".bin", "tool");
+      await expect(fs.readlink(restoredLink)).resolves.toBe(path.join("..", "pkg", "cli.js"));
+      await expect(fs.readFile(restoredLink, "utf-8")).resolves.toBe("#!/usr/bin/env node\n");
     });
 
     it("restores an entry pinned in the legacy flat layout and releases that flat ref", async () => {

@@ -9,6 +9,7 @@ import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { filenameTimestamp } from "../utils/filename-timestamp";
 import { getErrorMessage } from "../utils/lfs-error";
+import { copyTreePreservingSymlinks } from "../utils/preserving-copy";
 import { hasPayloadPendingDeletion, removeTrashContainer, trashDeleteHint } from "../utils/trash-container";
 import { computeTrashRootHash } from "../utils/trash-root-hash";
 
@@ -576,8 +577,7 @@ export class TrashService {
   // The payload's top-level .git link points at a pruned admin dir; the fresh
   // one written by `worktree add --no-checkout` must survive the overlay.
   private async copyPayloadOver(payloadPath: string, destination: string): Promise<void> {
-    await fs.cp(payloadPath, destination, {
-      recursive: true,
+    await copyTreePreservingSymlinks(payloadPath, destination, {
       force: true,
       filter: (source) => !(path.dirname(source) === payloadPath && path.basename(source) === PATH_CONSTANTS.GIT_DIR),
     });

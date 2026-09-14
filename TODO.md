@@ -194,7 +194,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T28** — TUI force clean purges trash entries created after the confirmation preview: a cron
   sync that starts while the modal is open can trash worktrees that are then destroyed with gc
   --prune=now without ever being shown to the user
-- [ ] **T11** — fs.cp in the cross-device diverged path (and trash restore) rewrites relative
+- [x] **T11** — fs.cp in the cross-device diverged path (and trash restore) rewrites relative
   symlinks to absolute source paths that are then deleted, leaving dangling links in the
   preserved/restored copy
 - [ ] **T7** — Trash moves run `du` over the whole worktree (node_modules included) under the repo
@@ -858,7 +858,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   lock' and returns `{started:false, reason:'locked'}` (worktree-sync.service.ts:441-445);
   `runMultipleRepositories` counts that as skipped and exits 0 (index.ts:121-123, 157-176).
 
-### [ ] T11. fs.cp in the cross-device diverged path (and trash restore) rewrites relative symlinks to absolute source paths that are then deleted, leaving dangling links in the preserved/restored copy
+### [x] T11. fs.cp in the cross-device diverged path (and trash restore) rewrites relative symlinks to absolute source paths that are then deleted, leaving dangling links in the preserved/restored copy
 
 - **Category**: correctness · **Subsystem**: worktree-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

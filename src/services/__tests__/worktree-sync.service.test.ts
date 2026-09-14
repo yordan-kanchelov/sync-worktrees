@@ -1,9 +1,11 @@
 import * as fs from "fs/promises";
+import * as os from "os";
 import * as path from "path";
 
 import simpleGit from "simple-git";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { symlinksSupported } from "../../__tests__/helpers/symlink-support";
 import {
   PRIMARY_CHECKOUT_GIT_DIRS,
   PRIMARY_CHECKOUT_GIT_DIR_PROBE,
@@ -2291,16 +2293,58 @@ describe("WorktreeSyncService", () => {
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
       mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
 
+      // The fallback is the only thing in this file that runs against a real
+      // filesystem: the production option object drives a real `fs.cp` over a
+      // real tree holding a relative symlink, and production's own `fs.rm`
+      // then really deletes the source — which is what turns a link rewritten
+      // to an absolute path into a dangling one. Asserting before that delete
+      // would prove nothing, since such a link still resolves until then.
+      const realFs = await vi.importActual<typeof fs>("fs/promises");
+      const scratch = await realFs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-exdev-"));
+      onTestFinished(async () => {
+        // vi.clearAllMocks() keeps implementations, and these two reach a real
+        // filesystem — they must not survive into the rest of the file.
+        vi.mocked(fs.cp).mockReset();
+        vi.mocked(fs.rm).mockReset();
+        await realFs.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+      });
+      const realWorktree = path.join(scratch, "feature-1");
+      const realDiverged = path.join(scratch, "diverged");
+      const linkSupported = await symlinksSupported();
+      await realFs.mkdir(path.join(realWorktree, "node_modules", ".bin"), { recursive: true });
+      await realFs.mkdir(path.join(realWorktree, "node_modules", "pkg"), { recursive: true });
+      await realFs.writeFile(path.join(realWorktree, "node_modules", "pkg", "cli.js"), "#!/usr/bin/env node\n");
+      if (linkSupported) {
+        await realFs.symlink(path.join("..", "pkg", "cli.js"), path.join(realWorktree, "node_modules", ".bin", "tool"));
+      }
+
       (fs.rename as Mock<any>).mockRejectedValue(
         Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" }),
       );
-      (fs.cp as Mock<any>).mockResolvedValue(undefined);
-      (fs.rm as Mock<any>).mockResolvedValue(undefined);
+      (fs.cp as Mock<any>).mockImplementation(async (...args: unknown[]) =>
+        realFs.cp(realWorktree, realDiverged, args[2] as Parameters<typeof realFs.cp>[2]),
+      );
+      (fs.rm as Mock<any>).mockImplementation(async (...args: unknown[]) => {
+        if (args[0] === "/test/worktrees/feature-1") {
+          await realFs.rm(realWorktree, args[1] as Parameters<typeof realFs.rm>[1]);
+        }
+      });
 
       await service.sync();
 
+      // What the user is left with, asserted first and on the real tree.
+      await expect(realFs.access(realWorktree)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(realFs.readFile(path.join(realDiverged, "node_modules", "pkg", "cli.js"), "utf-8")).resolves.toBe(
+        "#!/usr/bin/env node\n",
+      );
+      if (linkSupported) {
+        const preservedLink = path.join(realDiverged, "node_modules", ".bin", "tool");
+        await expect(realFs.readlink(preservedLink)).resolves.toBe(path.join("..", "pkg", "cli.js"));
+        await expect(realFs.readFile(preservedLink, "utf-8")).resolves.toBe("#!/usr/bin/env node\n");
+      }
       expect(fs.cp).toHaveBeenCalledWith("/test/worktrees/feature-1", expect.stringContaining(".diverged"), {
         recursive: true,
+        verbatimSymlinks: true,
       });
       expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/feature-1", { force: true });

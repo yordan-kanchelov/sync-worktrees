@@ -10,6 +10,7 @@ import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { probePathExists } from "../utils/file-exists";
 import { getErrorMessage, isLfsError } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
+import { copyTreePreservingSymlinks } from "../utils/preserving-copy";
 
 import { PathResolutionService } from "./path-resolution.service";
 import { trackPhaseItems } from "./progress-emitter";
@@ -1500,7 +1501,7 @@ export class WorktreeModeSyncRunner {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== ERROR_MESSAGES.EXDEV) throw error;
         crossDeviceCopyStarted = true;
-        await fs.cp(worktreePath, divergedPath, { recursive: true });
+        await copyTreePreservingSymlinks(worktreePath, divergedPath);
         await fs.rm(worktreePath, { recursive: true, force: true });
       }
       moved = true;
