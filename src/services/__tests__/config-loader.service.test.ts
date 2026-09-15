@@ -2959,6 +2959,119 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       expect(repositories[0].bareRepoDir).toBe(path.join(tempDir, ".bare", "repo"));
     });
 
+    // T79: each of these validated (or, for the scp form, did not) under the
+    // loader's own URL regexes while the extractor disagreed, so a repoUrl
+    // without an explicit bareRepoDir either died in getDefaultBareRepoDir with
+    // "Invalid Git URL format" right after validation passed, or was refused
+    // outright although git takes it. The entry is deliberately named something
+    // other than "repo": `.bare/repo` can then only come from the URL, not from
+    // the name-based fallback resolveRepoDirs uses for duplicate repoUrls.
+    it.each([
+      ["git://", "git://git.example.com/org/repo.git"],
+      ["https with a trailing slash", "https://github.com/org/repo.git/"],
+      ["scp with a non-git user", "deploy@git.example.com:org/repo.git"],
+    ])("derives .bare/repo from a %s repoUrl with no bareRepoDir", async (_label, repoUrl) => {
+      const configPath = path.join(tempDir, "shared-grammar.config.js");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            repositories: [{
+              name: "entry-named-something-else",
+              repoUrl: "${repoUrl}",
+              worktreeDir: "./worktrees"
+            }]
+          };
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories[0].repoUrl).toBe(repoUrl);
+      expect(repositories[0].bareRepoDir).toBe(path.join(tempDir, ".bare", "repo"));
+    });
+
+    // The other half of one grammar. A repoUrl with no repository path segment
+    // used to validate and then fail at bare-repo resolution with a message
+    // contradicting the validation. Which of the two questions it fails now
+    // depends on whether git can use it at all:
+    //
+    //  - `https://git.example.com` is a repository served at a web root, which
+    //    git clones. It is not refused; it just cannot name `.bare/<name>`, so
+    //    it loads with an explicit bareRepoDir and is refused without one, by a
+    //    message that says which entry and what to do about it.
+    //  - `ssh://git@host`, `git://host` and `file://` git cannot dial at all
+    //    (`fatal: no path specified`), so those stay refused as repoUrls.
+    it("loads a path-less http repoUrl when bareRepoDir is explicit", async () => {
+      const configPath = path.join(tempDir, "web-root-pinned.config.js");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            repositories: [{
+              name: "web-root",
+              repoUrl: "https://git.example.com",
+              worktreeDir: "./worktrees",
+              bareRepoDir: "./bare/web-root"
+            }]
+          };
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories[0].repoUrl).toBe("https://git.example.com");
+      expect(repositories[0].bareRepoDir).toBe(path.join(tempDir, "bare", "web-root"));
+    });
+
+    it("tells an entry with a path-less http repoUrl and no bareRepoDir what to set", async () => {
+      const configPath = path.join(tempDir, "web-root-unpinned.config.js");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            repositories: [{
+              name: "web-root",
+              repoUrl: "https://git.example.com",
+              worktreeDir: "./worktrees"
+            }]
+          };
+        `,
+      );
+
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(
+        "Repository 'web-root' needs an explicit 'bareRepoDir': no directory name can be derived from " +
+          "'https://git.example.com', which has no repository path segment",
+      );
+    });
+
+    it.each([
+      // The ssh row keeps its `git@`, which redaction rewrites in the message:
+      // a userinfo field is a credential position wherever it appears.
+      ["ssh://", "ssh://git@git.example.com", "ssh://***@git.example.com"],
+      ["git://", "git://git.example.com", "git://git.example.com"],
+      ["file://", "file://", "file://"],
+    ])("still refuses a path-less %s repoUrl outright, bareRepoDir or not", async (_label, repoUrl, shown) => {
+      const configPath = path.join(tempDir, "no-path-at-all.config.js");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            repositories: [{
+              name: "host-only",
+              repoUrl: ${JSON.stringify(repoUrl)},
+              worktreeDir: "./worktrees",
+              bareRepoDir: "./bare/host-only"
+            }]
+          };
+        `,
+      );
+
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(
+        `Repository 'host-only' has invalid 'repoUrl': '${shown}'`,
+      );
+    });
+
     it("should not set hooks when neither repo nor defaults have hooks", () => {
       const repo = {
         name: "test",

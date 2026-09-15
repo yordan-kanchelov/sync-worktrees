@@ -258,7 +258,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   per-repo parallelism or ESM-split reload case, runOnce init-rejection and locked-skip accounting
   untested, daemon branch of runMultipleRepositories untested, init round-trip only covers the happy
   path
-- [ ] **T79** — F9(3) incomplete: `extractRepoNameFromUrl` still rejects URL shapes `isValidGitUrl`
+- [x] **T79** — F9(3) incomplete: `extractRepoNameFromUrl` still rejects URL shapes `isValidGitUrl`
   accepts (`git://`, https with trailing slash), and the validator rejects legal scp URLs with a
   non-`git` user
 - [ ] **T80** — Sparse-checkout patterns are not validated at load time; cone-mode includes with a
@@ -3298,7 +3298,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   and in worktree-status.service.ts:273-274, but these two methods predate that and have no tests.
   Verified with simple-git 3.36 in scratch exp4.
 
-### [ ] T79. F9(3) incomplete: `extractRepoNameFromUrl` still rejects URL shapes `isValidGitUrl` accepts (`git://`, https with trailing slash), and the validator rejects legal scp URLs with a non-`git` user
+### [x] T79. F9(3) incomplete: `extractRepoNameFromUrl` still rejects URL shapes `isValidGitUrl` accepts (`git://`, https with trailing slash), and the validator rejects legal scp URLs with a non-`git` user
 
 - **Category**: correctness · **Subsystem**: git
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

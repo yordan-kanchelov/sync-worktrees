@@ -10,7 +10,13 @@ import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } fr
 import { matchesPattern } from "../utils/branch-filter";
 import { parseDuration } from "../utils/date-filter";
 import { fileExists } from "../utils/file-exists";
-import { getDefaultBareRepoDir, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
+import {
+  getDefaultBareRepoDir,
+  isValidGitUrl,
+  parseGitUrl,
+  redactRepoUrl,
+  redactSecretsInText,
+} from "../utils/git-url";
 import { isPathEqualOrInside, isPathStrictlyInside, normalizePathForCompare, pathsEqual } from "../utils/path-compare";
 import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../utils/git-client";
 import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
@@ -548,10 +554,12 @@ export class ConfigLoaderService {
         throw new Error(`Repository '${repoObj.name}' must have a 'repoUrl' property`);
       }
 
-      if (!this.isValidGitUrl(repoObj.repoUrl)) {
+      if (!isValidGitUrl(repoObj.repoUrl)) {
         throw new Error(
           `Repository '${repoObj.name}' has invalid 'repoUrl': '${redactSecretsInText(repoObj.repoUrl)}'. ` +
-            `Expected an HTTP(S), SSH, Git protocol URL, or a local/file path (file://, absolute filesystem path)`,
+            `Expected an HTTP(S), SSH, Git protocol or file:// URL, an scp-style 'user@host:path/repo.git', or an ` +
+            `absolute filesystem path. All but HTTP(S) must name the repository's own path segment; an HTTP(S) ` +
+            `URL may stop at the host, but then the entry needs an explicit 'bareRepoDir'`,
         );
       }
 
@@ -1272,6 +1280,21 @@ export class ConfigLoaderService {
       const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
       return { worktreeDir, bareRepoDir: this.resolvePath(`${GIT_CONSTANTS.BARE_DIR_NAME}/${sanitized}`, configDir) };
     }
+    // The only place a repository *name* is needed rather than a usable remote.
+    // `https://git.example.com` — a repository served at a web root — is a URL
+    // git clones but cannot be named after, so it is refused here, where the
+    // fix is, rather than at the repoUrl check, where refusing it would block a
+    // configuration that works.
+    // An unparseable repoUrl cannot reach here — validateConfig refuses it
+    // first — so this checks only for the parse that succeeds without a name,
+    // and leaves every other outcome to getDefaultBareRepoDir exactly as before.
+    const parsed = parseGitUrl(repo.repoUrl);
+    if (parsed && parsed.repoName === null) {
+      throw new Error(
+        `Repository '${repo.name}' needs an explicit 'bareRepoDir': no directory name can be derived from ` +
+          `'${redactSecretsInText(repo.repoUrl)}', which has no repository path segment`,
+      );
+    }
     return { worktreeDir, bareRepoDir: this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir) };
   }
 
@@ -1530,18 +1553,6 @@ export class ConfigLoaderService {
         `A remote branch of '${outer.name}' whose directory name matches would move '${inner.name}' to trash. ` +
         `Give each repository its own worktreeDir.`,
     );
-  }
-
-  private isValidGitUrl(url: string): boolean {
-    // HTTP(S) URLs
-    if (/^https?:\/\/.+/.test(url)) return true;
-    // SSH URLs (git@host:path or ssh://...)
-    if (/^(ssh:\/\/|git@).+/.test(url)) return true;
-    // Git protocol
-    if (/^git:\/\/.+/.test(url)) return true;
-    // Local file paths (absolute)
-    if (/^(file:\/\/|\/|[A-Za-z]:\\)/.test(url)) return true;
-    return false;
   }
 
   private resolvePath(inputPath: string, baseDir?: string): string {
