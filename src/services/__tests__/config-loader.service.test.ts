@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import pLimit from "p-limit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
@@ -1665,6 +1666,404 @@ describe("ConfigLoaderService", () => {
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
         "Invalid configuration for 'defaults parallelism.maxRepositories': must be a positive integer",
+      );
+    });
+
+    // A repository entry may carry its own `parallelism` block -- the shipped
+    // example config documents one -- and nothing validated it. The merged
+    // number reaches `pLimit()` at the start of a sync phase, where p-limit
+    // throws a TypeError mid-sync, after the fetch, on every run, while the
+    // config file loads clean and `list` reports it as valid.
+    it.each([
+      { field: "maxStatusChecks", literal: "0", label: "zero" },
+      { field: "maxStatusChecks", literal: "-1", label: "a negative" },
+      { field: "maxStatusChecks", literal: "1.5", label: "a fraction" },
+      { field: "maxStatusChecks", literal: "NaN", label: "NaN" },
+      { field: "maxStatusChecks", literal: 'Number("not-a-number")', label: "a NaN from a bad env var" },
+      { field: "maxStatusChecks", literal: '"50"', label: "a string" },
+      { field: "maxStatusChecks", literal: "Infinity", label: "Infinity" },
+      { field: "maxRepositories", literal: "0", label: "zero" },
+      { field: "maxWorktreeCreation", literal: "0", label: "zero" },
+      { field: "maxWorktreeUpdates", literal: "-2", label: "a negative" },
+      { field: "maxWorktreeRemoval", literal: "2.5", label: "a fraction" },
+      { field: "maxBranchFetches", literal: '"3"', label: "a string" },
+    ])("should reject $label for repository-level parallelism.$field", async ({ field, literal }) => {
+      const configPath = path.join(tempDir, `repo-parallelism-${field}-${literal}.config.js`);
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "big",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            parallelism: { ${field}: ${literal} }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(ConfigValidationError);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        `Invalid configuration for 'Repository 'big' parallelism.${field}': must be a positive integer`,
+      );
+    });
+
+    // The rule is p-limit's, so pin it to p-limit rather than to a list of
+    // values someone believed it rejects. Infinity is the one deliberate
+    // divergence: p-limit takes it as "unbounded", and an unbounded phase has
+    // no peak to weigh against the safe-total limit.
+    it("rejects the values p-limit itself refuses, and Infinity on purpose", async () => {
+      for (const value of [0, -1, 1.5, Number.NaN, "50" as unknown as number]) {
+        expect(() => pLimit(value)).toThrow("Expected `concurrency` to be a number from 1 and up");
+      }
+      expect(() => pLimit(Number.POSITIVE_INFINITY)).not.toThrow();
+
+      const configPath = path.join(tempDir, "repo-parallelism-infinity.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "big", repoUrl: "${TEST_URLS.github}", worktreeDir: "./w", parallelism: { maxStatusChecks: Infinity } }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'big' parallelism.maxStatusChecks': must be a positive integer",
+      );
+    });
+
+    it.each([{ literal: '"invalid"' }, { literal: "null" }, { literal: "42" }])(
+      "should reject a repository-level parallelism that is not an object ($literal)",
+      async ({ literal }) => {
+        const configPath = path.join(tempDir, `repo-parallelism-shape-${literal}.config.js`);
+        const configContent = `
+        export default {
+          repositories: [{
+            name: "big",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            parallelism: ${literal}
+          }]
+        };
+      `;
+        await fs.writeFile(configPath, configContent);
+
+        await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+          "'parallelism' in Repository 'big' must be an object",
+        );
+      },
+    );
+
+    it("should still resolve a valid repository-level override over defaults and global", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: { maxBranchFetches: 7 },
+          defaults: { parallelism: { maxStatusChecks: 8, maxWorktreeUpdates: 9 } },
+          repositories: [{
+            name: "big",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            parallelism: { maxStatusChecks: 12 }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories[0].parallelism).toEqual({
+        maxBranchFetches: 7,
+        maxStatusChecks: 12,
+        maxWorktreeUpdates: 9,
+      });
+    });
+  });
+
+  /**
+   * The safe-total guard used to see one level at a time, each against the
+   * built-in defaults for whatever it left out -- so a repository's own block,
+   * which is merged over the global and `defaults` ones before it reaches
+   * p-limit, was weighed against nothing.
+   */
+  describe("parallelism safe-total guard across merged levels", () => {
+    const repoEntry = (name: string, parallelism?: string): string =>
+      `{ name: "${name}", repoUrl: "https://github.com/test/${name}.git", worktreeDir: "./wt-${name}"` +
+      `${parallelism ? `, parallelism: ${parallelism}` : ""} }`;
+
+    const writeConfig = async (fileName: string, body: string): Promise<string> => {
+      const configPath = path.join(tempDir, fileName);
+      await fs.writeFile(configPath, `export default {${body}};`);
+      return configPath;
+    };
+
+    it("rejects a repository override that pushes the run over the safe total", async () => {
+      // Global alone is 3 x 20 = 60 and loads today; merged, the wide entry
+      // runs 70 of its own beside two 20s.
+      const configPath = await writeConfig(
+        "over.config.js",
+        `
+          parallelism: { maxRepositories: 3, maxStatusChecks: 20 },
+          repositories: [
+            ${repoEntry("wide", "{ maxStatusChecks: 70 }")},
+            ${repoEntry("narrow-a")},
+            ${repoEntry("narrow-b")}
+          ],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(110\) exceeds safe limit \(100\)/,
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "the widest phase of each of the 3 repositories that can sync at once (maxRepositories: 3): " +
+          "'wide' (status checks, maxStatusChecks: 70) + 'narrow-a' (status checks, maxStatusChecks: 20) + " +
+          "'narrow-b' (status checks, maxStatusChecks: 20) = 110 git processes",
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Consider reducing maxRepositories or lowering maxStatusChecks\./,
+      );
+    });
+
+    // Which repositories share the slots is scheduling, not file order, so the
+    // worst case is the widest ones -- wherever they sit in the file.
+    it("fills the slots with the widest repositories, not the first ones", async () => {
+      const configPath = await writeConfig(
+        "widest-in-slots.config.js",
+        `
+          parallelism: { maxRepositories: 2, maxStatusChecks: 20 },
+          repositories: [
+            ${repoEntry("narrow-a")},
+            ${repoEntry("narrow-b")},
+            ${repoEntry("wide", "{ maxStatusChecks: 90 }")}
+          ],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(110\) exceeds safe limit \(100\)/,
+      );
+      // Three repositories, two slots: the count in the message is the slots,
+      // not the file's repository count, or it contradicts the number beside it.
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "the widest phase of each of the 2 repositories that can sync at once (maxRepositories: 2): " +
+          "'wide' (status checks, maxStatusChecks: 90) + 'narrow-a' (status checks, maxStatusChecks: 20) = 110",
+      );
+    });
+
+    // The failure this guard was written for: a repository block and nothing
+    // else, which is how the example config documents a per-repository override.
+    it("weighs a repository override with no global or defaults block above it", async () => {
+      const configPath = await writeConfig(
+        "repo-only.config.js",
+        `repositories: [${repoEntry("big", "{ maxStatusChecks: 101 }")}],`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(101\) exceeds safe limit \(100\)/,
+      );
+    });
+
+    // A repository-level `maxRepositories` is validated as a positive integer,
+    // but it bounds nothing: runMultipleRepositories reads the global or
+    // `defaults` one and nothing else. Counting it here would reject a config
+    // that runs three repositories two at a time perfectly safely.
+    it("ignores a repository-level maxRepositories, which bounds nothing", async () => {
+      const configPath = await writeConfig(
+        "repo-max-repositories.config.js",
+        `
+          parallelism: { maxStatusChecks: 40 },
+          repositories: [
+            ${repoEntry("a", "{ maxRepositories: 50 }")},
+            ${repoEntry("b")},
+            ${repoEntry("c")}
+          ],
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories).toHaveLength(3);
+      expect(repositories[0].parallelism?.maxRepositories).toBe(50);
+    });
+
+    // One repository can exceed the ceiling by itself, and then the count in
+    // the message is the repositories there are, not the slots there are.
+    it("rejects a single repository that exceeds the ceiling on its own", async () => {
+      const configPath = await writeConfig(
+        "single-over.config.js",
+        `
+          parallelism: { maxRepositories: 5 },
+          repositories: [${repoEntry("only", "{ maxStatusChecks: 101 }")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "the widest phase of each of the 1 repository that can sync at once (maxRepositories: 5): " +
+          "'only' (status checks, maxStatusChecks: 101) = 101 git processes",
+      );
+    });
+
+    // runMultipleRepositories reads maxRepositories global-first, unlike every
+    // other setting, where `defaults` wins. The guard has to read it the same
+    // way or it weighs a width the run will never reach: here only one
+    // repository ever syncs at a time, so the peak is 25, not 5 x 25.
+    it("reads maxRepositories global-first, the way the runner does", async () => {
+      const configPath = await writeConfig(
+        "max-repos-precedence.config.js",
+        `
+          parallelism: { maxRepositories: 1, maxStatusChecks: 25 },
+          defaults: { parallelism: { maxRepositories: 5 } },
+          repositories: [
+            ${repoEntry("a")}, ${repoEntry("b")}, ${repoEntry("c")}, ${repoEntry("d")}, ${repoEntry("e")}
+          ],
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories).toHaveLength(5);
+      expect(repositories[0].parallelism?.maxStatusChecks).toBe(25);
+    });
+
+    // The peak is the sum of the repositories that can sync at once, not
+    // maxRepositories x the single widest one: one wide repository beside
+    // narrow ones never runs its width three times over, and rejecting it
+    // would fail a setup that works today.
+    it("accepts a wide repository whose slot-mates are narrow", async () => {
+      const configPath = await writeConfig(
+        "wide-beside-narrow.config.js",
+        `
+          parallelism: { maxRepositories: 3, maxStatusChecks: 20 },
+          repositories: [
+            ${repoEntry("wide", "{ maxStatusChecks: 50 }")},
+            ${repoEntry("narrow-a")},
+            ${repoEntry("narrow-b")}
+          ],
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories.map((repo) => repo.parallelism?.maxStatusChecks)).toEqual([50, 20, 20]);
+    });
+
+    // Only as many repositories as exist can occupy the slots.
+    it("counts at most as many repositories as the file defines", async () => {
+      const configPath = await writeConfig(
+        "one-repo.config.js",
+        `
+          parallelism: { maxRepositories: 5, maxStatusChecks: 20 },
+          repositories: [${repoEntry("only", "{ maxStatusChecks: 90 }")}],
+        `,
+      );
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.repositories[0].parallelism?.maxStatusChecks).toBe(90);
+    });
+
+    // Neither level is over the limit on its own -- 5 x 20 = 100 and 2 x 21 =
+    // 42 -- but `defaults` overrides the global block for every repository, so
+    // the run really peaks at 5 x 21.
+    it("weighs the global and defaults blocks against each other", async () => {
+      const configPath = await writeConfig(
+        "global-plus-defaults.config.js",
+        `
+          parallelism: { maxRepositories: 5 },
+          defaults: { parallelism: { maxStatusChecks: 21 } },
+          repositories: [
+            ${repoEntry("a")}, ${repoEntry("b")}, ${repoEntry("c")}, ${repoEntry("d")}, ${repoEntry("e")}
+          ],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(105\) exceeds safe limit \(100\)/,
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/maxRepositories: 5/);
+    });
+
+    // Without per-repository overrides the sum is exactly maxRepositories x the
+    // widest phase, so a config that loads today keeps loading: 2 x 50 = 100 is
+    // at the limit, not over it, however many repositories the file lists.
+    it("gives a config without overrides the same verdict as the per-level check", async () => {
+      const configPath = await writeConfig(
+        "no-overrides.config.js",
+        `
+          parallelism: { maxRepositories: 2, maxStatusChecks: 50 },
+          repositories: [${repoEntry("a")}, ${repoEntry("b")}, ${repoEntry("c")}, ${repoEntry("d")}],
+        `,
+      );
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.parallelism?.maxStatusChecks).toBe(50);
+    });
+
+    it("lists the widest slot-mates and sums the rest", async () => {
+      const wide = (name: string): string => repoEntry(name, "{ maxStatusChecks: 25 }");
+      const configPath = await writeConfig(
+        "breakdown.config.js",
+        `
+          parallelism: { maxRepositories: 5, maxStatusChecks: 20 },
+          repositories: [${wide("a")}, ${wide("b")}, ${wide("c")}, ${wide("d")}, ${wide("e")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/\+ 2 more = 125 git processes/);
+    });
+
+    // A repository that overrides nothing runs the global block's widths, not
+    // the built-in defaults. Every case above happens to set the global
+    // maxStatusChecks to 20, which is also the built-in default, so dropping the
+    // global layer from the merge changes none of their numbers. Here it does:
+    // 51 + 50 is over, 51 + the built-in 20 would not be.
+    it("counts the global block for a repository that overrides nothing", async () => {
+      const configPath = await writeConfig(
+        "global-inherited.config.js",
+        `
+          parallelism: { maxRepositories: 2, maxStatusChecks: 50 },
+          repositories: [${repoEntry("a", "{ maxStatusChecks: 51 }")}, ${repoEntry("b")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'a' (status checks, maxStatusChecks: 51) + 'b' (status checks, maxStatusChecks: 50) = 101 git processes",
+      );
+    });
+
+    // The closing advice names the setting worth lowering, which is the widest
+    // repository's phase and not the narrowest's. They are the same field
+    // wherever every entry peaks on maxStatusChecks; here they are not.
+    it("names the widest repository's phase in the advice, not a slot-mate's", async () => {
+      const configPath = await writeConfig(
+        "advice-field.config.js",
+        `
+          parallelism: { maxRepositories: 2 },
+          repositories: [${repoEntry("updates-heavy", "{ maxWorktreeUpdates: 90 }")}, ${repoEntry("plain")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'updates-heavy' (worktree updates, maxWorktreeUpdates: 90) + 'plain' (status checks, maxStatusChecks: 20) = " +
+          "110 git processes. Consider reducing maxRepositories or lowering maxWorktreeUpdates.",
+      );
+    });
+
+    // The per-level check still runs on `defaults`, and the merged guard is not
+    // it in disguise: the per-level one weighs maxRepositories against the
+    // built-in defaults however many repositories the file lists, so one
+    // repository is enough for it to fire where the merged guard — one slot, 50
+    // processes — sees nothing to complain about.
+    it("still weighs a defaults block on its own, with its own message", async () => {
+      const configPath = await writeConfig(
+        "defaults-alone.config.js",
+        `
+          defaults: { parallelism: { maxRepositories: 5, maxStatusChecks: 50 } },
+          repositories: [${repoEntry("only")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Peak concurrent git processes (250) exceeds safe limit (100). Sync phases run one after another, so the " +
+          "peak is 5 repositories × the widest phase (status checks, maxStatusChecks: 50) = 250 git processes.",
       );
     });
   });

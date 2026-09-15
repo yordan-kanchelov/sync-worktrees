@@ -226,7 +226,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 - [x] **T31** — The shipped sync-worktrees.config.example.js fails validation
   ('experimental-features' sets runOnce) — the README's reference for 'every knob' cannot be loaded
-- [ ] **T32** — Per-repository `parallelism` is never validated (F9 fix only covered
+- [x] **T32** — Per-repository `parallelism` is never validated (F9 fix only covered
   global/defaults): a non-positive-integer value passes load and makes every sync throw TypeError from
   p-limit
 - [x] **T33** — `fetchTimeoutMs` / `cloneTimeoutMs` are documented on Config and promised by README
@@ -1690,7 +1690,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: tsconfig includes only src/, `pnpm lint` runs eslint without type
   information, and no test loads the example file, so the F6 change never surfaced the drift.
 
-### [ ] T32. Per-repository `parallelism` is never validated (F9 fix only covered global/defaults): a non-positive-integer value passes load and makes every sync throw TypeError from p-limit
+### [x] T32. Per-repository `parallelism` is never validated (F9 fix only covered global/defaults): a non-positive-integer value passes load and makes every sync throw TypeError from p-limit
 
 - **Category**: correctness · **Subsystem**: config
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

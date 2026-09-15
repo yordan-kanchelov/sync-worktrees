@@ -237,6 +237,7 @@ export class ConfigLoaderService {
     }
 
     const seenNames = new Set<string>();
+    const repositoryParallelism: Array<{ name: string; parallelism: ParallelismConfig }> = [];
 
     configObj.repositories.forEach((repo: unknown, index: number) => {
       if (!repo || typeof repo !== "object") {
@@ -322,6 +323,13 @@ export class ConfigLoaderService {
       this.validateDepth(repoObj.depth, `Repository '${repoObj.name}' depth`);
       this.validateTimeoutMs(repoObj.fetchTimeoutMs, `Repository '${repoObj.name}' fetchTimeoutMs`);
       this.validateTimeoutMs(repoObj.cloneTimeoutMs, `Repository '${repoObj.name}' cloneTimeoutMs`);
+      repositoryParallelism.push({
+        name: repoObj.name,
+        parallelism:
+          repoObj.parallelism === undefined
+            ? {}
+            : this.parseParallelismConfig(repoObj.parallelism, `Repository '${repoObj.name}'`),
+      });
       this.validateRepositoryMode(repoObj, configObj.defaults as Record<string, unknown> | undefined);
     });
 
@@ -394,16 +402,20 @@ export class ConfigLoaderService {
       this.validateRetryConfig(configObj.retry, "retry config");
     }
 
+    let globalParallelism: ParallelismConfig = {};
     if (configObj.parallelism !== undefined) {
-      this.validateParallelismConfig(configObj.parallelism, "global");
+      globalParallelism = this.validateParallelismConfig(configObj.parallelism, "global");
     }
 
+    let defaultsParallelism: ParallelismConfig = {};
     if (configObj.defaults && typeof configObj.defaults === "object") {
       const defaults = configObj.defaults as Record<string, unknown>;
       if (defaults.parallelism !== undefined) {
-        this.validateParallelismConfig(defaults.parallelism, "defaults");
+        defaultsParallelism = this.validateParallelismConfig(defaults.parallelism, "defaults");
       }
     }
+
+    this.validateMergedParallelismPeak(globalParallelism, defaultsParallelism, repositoryParallelism);
   }
 
   private clearRequireCacheSubtree(configPath: string): void {
@@ -569,15 +581,30 @@ export class ConfigLoaderService {
     }
   }
 
-  private validateParallelismConfig(parallelism: unknown, context: string): void {
+  /**
+   * Field validation for one `parallelism` block, at any level. Returns the
+   * block as a typed object carrying only the fields it checked, so the peak
+   * arithmetic never sees a value this loop did not validate: both read the
+   * same field list.
+   *
+   * Every one of these numbers reaches `pLimit()` at the start of a sync phase,
+   * and p-limit throws `TypeError: Expected \`concurrency\` to be a number from
+   * 1 and up` for 0, a negative, a fraction, a NaN or a string — mid-sync,
+   * after the fetch, on every run, and not retryable. That is why the check is
+   * a load-time error rather than a clamp.
+   *
+   * `Number.isSafeInteger` also rejects `Infinity`, which p-limit itself allows
+   * as "unbounded". Keeping it rejected is deliberate: an unbounded phase has
+   * no peak to weigh against MAX_SAFE_TOTAL_CONCURRENT_OPS, and bounding git
+   * processes is the whole point of these settings.
+   */
+  private parseParallelismConfig(parallelism: unknown, context: string): ParallelismConfig {
     if (typeof parallelism !== "object" || parallelism === null) {
       throw new Error(`'parallelism' in ${context} must be an object`);
     }
 
     const config = parallelism as Record<string, unknown>;
 
-    // Validating into a typed object keeps the peak arithmetic from ever seeing
-    // a value this loop did not check: both read the same field list.
     const validated: ParallelismConfig = {};
     for (const field of PARALLELISM_INT_FIELDS) {
       const value = config[field];
@@ -587,6 +614,20 @@ export class ConfigLoaderService {
       }
       validated[field] = value;
     }
+
+    return validated;
+  }
+
+  /**
+   * One level's block, checked on its own against the built-in defaults for
+   * whatever it leaves out. Repository entries deliberately do not go through
+   * here: their block is only half a configuration (a repository that sets
+   * `maxStatusChecks` still inherits `maxRepositories` from above), so judging
+   * it in isolation would reject safe configs. They are weighed merged instead,
+   * in validateMergedParallelismPeak.
+   */
+  private validateParallelismConfig(parallelism: unknown, context: string): ParallelismConfig {
+    const validated = this.parseParallelismConfig(parallelism, context);
 
     const maxRepos = validated.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
     const peak = computeParallelismPeak(validated);
@@ -614,6 +655,73 @@ export class ConfigLoaderService {
           `${headroom}${phaseAdvice} Consider reducing maxRepositories or lowering ${field}.`,
       );
     }
+
+    return validated;
+  }
+
+  /**
+   * The same ceiling, applied to what each repository will actually run.
+   *
+   * validateParallelismConfig only ever sees one level at a time, so nothing
+   * weighed a repository's own block — which resolveRepositoryConfig merges
+   * over the global and `defaults` ones — against `maxRepositories`, and
+   * nothing weighed the global and `defaults` blocks against each other
+   * either. This is that check, and it is additive: every message the
+   * per-level checks produce is still produced first.
+   *
+   * Only `maxRepositories` repositories sync at once and each runs its own
+   * widest phase, so the peak is the sum of the widest phases of the
+   * `maxRepositories` widest repositories — not `maxRepositories` × the single
+   * widest one, which would reject a wide entry that only ever syncs beside
+   * narrow ones (3 repositories peaking at 40/20/20 run 60 processes across two
+   * slots, not 120). With no per-repository overrides every repository merges
+   * to the same block and that sum collapses to `maxRepositories` × the widest
+   * phase, exactly what the per-level check already computes.
+   *
+   * `maxRepositories` is read global-first, the way runMultipleRepositories
+   * reads it. A repository-level `maxRepositories` is still validated as a
+   * positive integer, but it bounds nothing: nothing consumes it there.
+   */
+  private validateMergedParallelismPeak(
+    global: ParallelismConfig,
+    defaults: ParallelismConfig,
+    repositories: ReadonlyArray<{ name: string; parallelism: ParallelismConfig }>,
+  ): void {
+    const maxRepos = global.maxRepositories ?? defaults.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+
+    const peaks = repositories
+      .map((repo) => ({
+        name: repo.name,
+        peak: computeParallelismPeak({ ...global, ...defaults, ...repo.parallelism }),
+      }))
+      .sort((a, b) => b.peak.perRepository - a.peak.perRepository);
+
+    const concurrent = peaks.slice(0, maxRepos);
+    const total = concurrent.reduce((sum, repo) => sum + repo.peak.perRepository, 0);
+    const limit = DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS;
+
+    if (total <= limit) return;
+
+    // Enough of the sum to see where it comes from, without pasting fifty
+    // repositories into one error message.
+    const listed = 3;
+    const shown = concurrent
+      .slice(0, listed)
+      .map(
+        ({ name, peak }) =>
+          `'${name}' (${peak.widestPhase.label}, ${peak.widestPhase.field}: ${peak.widestPhase.value})`,
+      );
+    const rest = concurrent.length - shown.length;
+    const breakdown = rest > 0 ? `${shown.join(" + ")} + ${rest} more` : shown.join(" + ");
+    const widestField = concurrent[0].peak.widestPhase.field;
+
+    throw new Error(
+      `Peak concurrent git processes (${total}) exceeds safe limit (${limit}) once global, defaults and ` +
+        `per-repository parallelism are merged. Sync phases run one after another, so the peak is the widest ` +
+        `phase of each of the ${concurrent.length} ${concurrent.length === 1 ? "repository" : "repositories"} ` +
+        `that can sync at once (maxRepositories: ${maxRepos}): ${breakdown} = ${total} git processes. ` +
+        `Consider reducing maxRepositories or lowering ${widestField}.`,
+    );
   }
 
   private validateFilesToCopyConfig(filesToCopy: unknown, context: string): void {
