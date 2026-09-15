@@ -24,19 +24,20 @@ const config = {
     // skipLfs: true,  // Skip downloading large files tracked by Git LFS
     // Auto-update worktrees that are behind upstream (optional)
     // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
-    // Inactivity timeouts, for reference — NOT config-file settings.
-    // `fetchTimeoutMs` (300000 ms = 5 min) covers the git commands that talk to
-    // the remote (fetch, push, ls-remote, remote set-head); `cloneTimeoutMs`
-    // (900000 ms = 15 min) covers the clone-sized ones: the initial clone, plus
-    // the `fetch --unshallow` that pulls a clone-mode repository's full history
-    // once `depth` is removed. Each kills its command when no output arrives for
-    // that long, so a stalled connection ends the attempt instead of hanging the
-    // sync forever. Local commands (worktree add, merge, checkout, status) are
-    // never killed this way — a large checkout is silent for minutes by design.
-    // Neither one is part of SyncWorktreesConfig, and the config loader does not
-    // carry them from `defaults` or from a repository entry into the resolved
-    // repository config, so writing them here has no effect: every config-file
-    // run uses the two values above.
+    // Inactivity timeouts (optional) for the git commands that talk to the
+    // remote. Each kills its command when no output arrives inside its window,
+    // so a stalled connection ends the attempt instead of hanging the sync
+    // forever; `0` disables one. Local commands (worktree add, merge, checkout,
+    // status) never carry them — a large checkout is silent for minutes by
+    // design, and killing it there would fail a creation that only needed more
+    // time. Settable here and on a single repository, which overrides this.
+    //   fetchTimeoutMs covers fetch, push, ls-remote and remote set-head.
+    //   cloneTimeoutMs covers the initial clone and the `fetch --unshallow` that
+    //   pulls a clone-mode repository's full history once `depth` is removed —
+    //   clone-sized work reached through a fetch, which is why it is the larger
+    //   of the two.
+    // fetchTimeoutMs: 300000, // Default: 300000 ms = 5 min.
+    // cloneTimeoutMs: 900000, // Default: 900000 ms = 15 min.
     // Periodic `git gc` of the object store (optional, applies to both modes).
     // Reclaims unreachable objects and consolidates packs. Runs at the tail of a
     // successful sync, throttled by `interval`, under the repo operation lock.
@@ -237,6 +238,11 @@ const config = {
       // Skip downloading LFS files to save bandwidth and disk space
       skipLfs: true,
 
+      // This remote is slow to enumerate objects for a repository this size, and
+      // those phases are silent: allow 15 minutes of quiet per fetch instead of
+      // the default 5. Set 0 here to disable the inactivity kill for this repo.
+      fetchTimeoutMs: 900000,
+
       // Still check regularly for code changes
       cronSchedule: "0 * * * *",
     },
@@ -402,6 +408,9 @@ const config = {
       mode: "clone",
       branch: "main",
       depth: 1,
+      // Sized for the initial clone and for the `fetch --unshallow` that runs
+      // once `depth` is removed from this entry; both move the whole history.
+      cloneTimeoutMs: 1800000,
     },
     {
       name: "base-slot",

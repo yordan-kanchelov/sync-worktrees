@@ -148,6 +148,38 @@ describe("CloneSyncService git client timeouts", () => {
     expect(onlyClientThatRan("config", "--replace-all", "remote.origin.fetch").options.timeout).toBeUndefined();
   });
 
+  // 0 is the documented way to turn an inactivity kill off, and it is falsy.
+  // Both windows are read through `config.<x> ?? DEFAULT_CONFIG.<X>`; a `||`
+  // there would hand a repository that asked for no kill the 5- and 15-minute
+  // built-ins instead, and nothing would say the setting had been ignored. The
+  // client must end up with no `timeout` option at all, which is what makes 0
+  // a disable rather than an instant abort — simple-git only installs its
+  // timeout plugin for a positive block.
+  it("fetches with no timeout at all when fetchTimeoutMs is 0", async () => {
+    (fs.readdir as unknown as Mock).mockResolvedValue([".git"]);
+    (fs.access as unknown as Mock).mockResolvedValue(undefined);
+    const service = new CloneSyncService(makeConfig({ fetchTimeoutMs: 0 }), buildGitService(), logger);
+
+    await service.initialize();
+    await service.runSyncAttempt();
+
+    expect(onlyClientThatRan("fetch").options.timeout).toBeUndefined();
+  });
+
+  it("clones with no timeout at all when cloneTimeoutMs is 0", async () => {
+    (fs.readdir as unknown as Mock).mockRejectedValue(
+      Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }),
+    );
+    (fs.access as unknown as Mock).mockResolvedValue(undefined);
+    (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+    (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+    const service = new CloneSyncService(makeConfig({ cloneTimeoutMs: 0 }), buildGitService(), logger);
+
+    await service.initialize();
+
+    expect(onlyClientThatRan("clone").options.timeout).toBeUndefined();
+  });
+
   it("runs ls-remote with the block timeout", async () => {
     (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
     const service = new CloneSyncService(makeConfig(), buildGitService(), logger);

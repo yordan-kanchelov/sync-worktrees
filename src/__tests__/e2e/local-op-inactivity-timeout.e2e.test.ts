@@ -7,6 +7,7 @@ import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ENV_CONSTANTS } from "../../constants";
+import { ConfigLoaderService } from "../../services/config-loader.service";
 import { GitService } from "../../services/git.service";
 import { createMockLogger, setEnvVar } from "../test-utils";
 
@@ -129,5 +130,89 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
     // initialize() reaches `git fetch --all` on the bare repository — a network
     // command, so the inactivity kill is still armed there.
     await expect(gitService.initialize()).rejects.toThrow(/block timeout reached/i);
+  });
+
+  /**
+   * Everything above hands GitService a Config built in the test. That is how
+   * both timeouts were only ever exercised, and it is why nobody noticed that
+   * resolveRepositoryConfig rebuilt the repository config from an allowlist
+   * that named neither of them: a config file could say anything it liked and
+   * every run still used the 5- and 15-minute built-ins. These go through the
+   * real loader instead, so the window under test is the one a written config
+   * file actually produces.
+   */
+  describe("configured through a config file", () => {
+    // Builds the service the CLI would build: a config file on disk, resolved
+    // by ConfigLoaderService, and the resolved repository handed straight to
+    // GitService the way WorktreeSyncService does.
+    const serviceFromConfigFile = async (options: {
+      defaults?: string;
+      repo?: string;
+      bareRepoDirOverride?: string;
+    }): Promise<GitService> => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default {\n` +
+          `  ${options.defaults ?? ""}repositories: [\n` +
+          `    {\n` +
+          `      name: "app",\n` +
+          `      repoUrl: ${JSON.stringify(`file://${remote}`)},\n` +
+          `      worktreeDir: ${JSON.stringify(worktreeDir)},\n` +
+          `      bareRepoDir: ${JSON.stringify(options.bareRepoDirOverride ?? bareRepoDir)},\n` +
+          `      skipLfs: true,\n` +
+          `      ${options.repo ?? ""}\n` +
+          `    },\n` +
+          `  ],\n` +
+          `};\n`,
+      );
+
+      const { repositories } = await new ConfigLoaderService().buildRepositories(configPath);
+      expect(repositories).toHaveLength(1);
+      return new GitService(repositories[0], logger);
+    };
+
+    it("kills a silent fetch at the fetchTimeoutMs written on the repository entry", async () => {
+      const service = await serviceFromConfigFile({ repo: `fetchTimeoutMs: ${FETCH_TIMEOUT_MS},` });
+      useSlowGit();
+
+      await expect(service.initialize()).rejects.toThrow(/block timeout reached/i);
+    });
+
+    it("kills a silent fetch at a fetchTimeoutMs inherited from defaults", async () => {
+      const service = await serviceFromConfigFile({
+        defaults: `defaults: { fetchTimeoutMs: ${FETCH_TIMEOUT_MS} },\n  `,
+      });
+      useSlowGit();
+
+      await expect(service.initialize()).rejects.toThrow(/block timeout reached/i);
+    });
+
+    it("disables the kill entirely at fetchTimeoutMs 0, which beats a defaults value", async () => {
+      // 0 has to mean "no inactivity kill", not "kill immediately": simple-git
+      // only installs its timeout plugin for a positive block, and so do both
+      // services. With the same 400 ms of silence that fails the two tests
+      // above, this one has to get all the way through initialize().
+      const service = await serviceFromConfigFile({
+        defaults: `defaults: { fetchTimeoutMs: ${FETCH_TIMEOUT_MS} },\n  `,
+        repo: "fetchTimeoutMs: 0,",
+      });
+      useSlowGit();
+
+      await expect(service.initialize()).resolves.toBeDefined();
+    });
+
+    it("kills the silent bare clone at the cloneTimeoutMs written in defaults", async () => {
+      // A bare repository that does not exist yet, so initialize() clones it —
+      // the one command on the clone budget. fetchTimeoutMs is disabled here so
+      // that nothing else in the run can produce a block timeout.
+      const service = await serviceFromConfigFile({
+        defaults: `defaults: { fetchTimeoutMs: 0, cloneTimeoutMs: ${FETCH_TIMEOUT_MS} },\n  `,
+        bareRepoDirOverride: path.join(tempDir, ".bare", "fresh-clone"),
+      });
+      useSlowGit();
+
+      await expect(service.initialize()).rejects.toThrow(/block timeout reached/i);
+    });
   });
 });

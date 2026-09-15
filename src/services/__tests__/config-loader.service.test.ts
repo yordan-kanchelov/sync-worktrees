@@ -640,6 +640,163 @@ describe("ConfigLoaderService", () => {
     });
   });
 
+  /**
+   * `fetchTimeoutMs` and `cloneTimeoutMs` are read by GitService (the bare
+   * clone, fetch, push, ls-remote, `remote set-head`) and by CloneSyncService
+   * (the clone, the branch fetches, the unshallow), and `Config` has documented
+   * them as user knobs with a "set 0 to disable" gloss since they existed — but
+   * resolveRepositoryConfig rebuilt the repository config from an explicit
+   * allowlist that never named them, so every config-file run silently used the
+   * 5- and 15-minute built-ins however the file was written.
+   */
+  describe("inactivity timeout configuration", () => {
+    const baseRepo = {
+      name: "test",
+      repoUrl: TEST_URLS.github,
+      worktreeDir: "/worktrees",
+      cronSchedule: "0 * * * *",
+      runOnce: false,
+    };
+
+    async function loadWith(entry: string, defaults = ""): Promise<unknown> {
+      const configPath = path.join(tempDir, "timeouts.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { ${defaults}repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", ` +
+          `worktreeDir: "/wt"${entry} }] };`,
+      );
+      return configLoader.loadConfigFile(configPath);
+    }
+
+    it("carries both timeouts from a repository entry into the resolved config", () => {
+      const resolved = configLoader.resolveRepositoryConfig({ ...baseRepo, fetchTimeoutMs: 0, cloneTimeoutMs: 60_000 });
+
+      expect(resolved.fetchTimeoutMs).toBe(0);
+      expect(resolved.cloneTimeoutMs).toBe(60_000);
+      // Presence matters on its own: `undefined` would let the service fall
+      // back to the built-in default, which is what a dropped key looked like.
+      expect("fetchTimeoutMs" in resolved).toBe(true);
+      expect("cloneTimeoutMs" in resolved).toBe(true);
+    });
+
+    it("inherits both timeouts from defaults when the repository sets neither", () => {
+      const resolved = configLoader.resolveRepositoryConfig(baseRepo, {
+        fetchTimeoutMs: 1_800_000,
+        cloneTimeoutMs: 3_600_000,
+      });
+
+      expect(resolved.fetchTimeoutMs).toBe(1_800_000);
+      expect(resolved.cloneTimeoutMs).toBe(3_600_000);
+    });
+
+    it("lets a repository entry override defaults, including with 0", () => {
+      const resolved = configLoader.resolveRepositoryConfig(
+        { ...baseRepo, fetchTimeoutMs: 0, cloneTimeoutMs: 1_000 },
+        { fetchTimeoutMs: 1_800_000, cloneTimeoutMs: 3_600_000 },
+      );
+
+      // 0 is a setting, not an omission: a truthiness-based merge would hand
+      // this repository the 1_800_000 from defaults instead of disabling the kill.
+      expect(resolved.fetchTimeoutMs).toBe(0);
+      expect(resolved.cloneTimeoutMs).toBe(1_000);
+    });
+
+    it("carries a defaults-level 0 rather than treating it as unset", () => {
+      const resolved = configLoader.resolveRepositoryConfig(baseRepo, { fetchTimeoutMs: 0, cloneTimeoutMs: 0 });
+
+      expect(resolved.fetchTimeoutMs).toBe(0);
+      expect(resolved.cloneTimeoutMs).toBe(0);
+    });
+
+    it("leaves both undefined when neither defaults nor repo set them", () => {
+      const resolved = configLoader.resolveRepositoryConfig(baseRepo, {});
+
+      expect(resolved.fetchTimeoutMs).toBeUndefined();
+      expect(resolved.cloneTimeoutMs).toBeUndefined();
+      expect("fetchTimeoutMs" in resolved).toBe(false);
+      expect("cloneTimeoutMs" in resolved).toBe(false);
+    });
+
+    it("carries both timeouts for clone-mode repositories too", () => {
+      const resolved = configLoader.resolveRepositoryConfig(
+        { ...baseRepo, mode: "clone", fetchTimeoutMs: 42, cloneTimeoutMs: 4_242 },
+        {},
+      );
+
+      expect(resolved.mode).toBe("clone");
+      expect(resolved.fetchTimeoutMs).toBe(42);
+      expect(resolved.cloneTimeoutMs).toBe(4_242);
+    });
+
+    it("resolves both through buildRepositories, from defaults and from the entry", async () => {
+      const configPath = path.join(tempDir, "timeouts-build.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default {
+           defaults: { fetchTimeoutMs: 1800000, cloneTimeoutMs: 3600000 },
+           repositories: [
+             { name: "inherits", repoUrl: "${TEST_URLS.github}", worktreeDir: "./a" },
+             { name: "overrides", repoUrl: "${TEST_URLS.github}", worktreeDir: "./b", fetchTimeoutMs: 0, cloneTimeoutMs: 60000 },
+           ],
+         };`,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories.map((repo) => [repo.name, repo.fetchTimeoutMs, repo.cloneTimeoutMs])).toEqual([
+        ["inherits", 1_800_000, 3_600_000],
+        ["overrides", 0, 60_000],
+      ]);
+    });
+
+    it("accepts 0 and any non-negative safe integer", async () => {
+      const config = (await loadWith(", fetchTimeoutMs: 0, cloneTimeoutMs: 1800000")) as {
+        repositories: Array<{ fetchTimeoutMs?: unknown; cloneTimeoutMs?: unknown }>;
+      };
+
+      expect(config.repositories[0].fetchTimeoutMs).toBe(0);
+      expect(config.repositories[0].cloneTimeoutMs).toBe(1_800_000);
+    });
+
+    it.each([
+      ["-1", "a negative window"],
+      ["1.5", "a fraction"],
+      ['"abc"', "a string"],
+      ["true", "a boolean"],
+      ["null", "null"],
+      ["NaN", "NaN"],
+      ["Infinity", "Infinity"],
+      ["Number.MAX_SAFE_INTEGER + 2", "a value past the safe-integer range"],
+    ])("rejects %s as a repository fetchTimeoutMs (%s)", async (value) => {
+      await expect(loadWith(`, fetchTimeoutMs: ${value}`)).rejects.toThrow(ConfigValidationError);
+      await expect(loadWith(`, fetchTimeoutMs: ${value}`)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'r' fetchTimeoutMs': " +
+          "must be a non-negative safe integer (0 disables the timeout)",
+      );
+    });
+
+    it("rejects an invalid repository cloneTimeoutMs under its own field name", async () => {
+      await expect(loadWith(", cloneTimeoutMs: -1")).rejects.toThrow(
+        "Invalid configuration for 'Repository 'r' cloneTimeoutMs': " +
+          "must be a non-negative safe integer (0 disables the timeout)",
+      );
+    });
+
+    it("rejects an invalid defaults.fetchTimeoutMs", async () => {
+      await expect(loadWith("", "defaults: { fetchTimeoutMs: -1 }, ")).rejects.toThrow(
+        "Invalid configuration for 'defaults.fetchTimeoutMs': " +
+          "must be a non-negative safe integer (0 disables the timeout)",
+      );
+    });
+
+    it("rejects an invalid defaults.cloneTimeoutMs", async () => {
+      await expect(loadWith("", 'defaults: { cloneTimeoutMs: "1h" }, ')).rejects.toThrow(
+        "Invalid configuration for 'defaults.cloneTimeoutMs': " +
+          "must be a non-negative safe integer (0 disables the timeout)",
+      );
+    });
+  });
+
   describe("filterRepositories", () => {
     const repos = [
       {

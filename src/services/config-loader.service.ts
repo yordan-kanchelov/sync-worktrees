@@ -320,6 +320,8 @@ export class ConfigLoaderService {
       }
 
       this.validateDepth(repoObj.depth, `Repository '${repoObj.name}' depth`);
+      this.validateTimeoutMs(repoObj.fetchTimeoutMs, `Repository '${repoObj.name}' fetchTimeoutMs`);
+      this.validateTimeoutMs(repoObj.cloneTimeoutMs, `Repository '${repoObj.name}' cloneTimeoutMs`);
       this.validateRepositoryMode(repoObj, configObj.defaults as Record<string, unknown> | undefined);
     });
 
@@ -376,6 +378,8 @@ export class ConfigLoaderService {
       }
 
       this.validateDepth(defaults.depth, "defaults.depth");
+      this.validateTimeoutMs(defaults.fetchTimeoutMs, "defaults.fetchTimeoutMs");
+      this.validateTimeoutMs(defaults.cloneTimeoutMs, "defaults.cloneTimeoutMs");
 
       if (defaults.mode !== undefined && !isRepositoryMode(defaults.mode)) {
         throw new ConfigValidationError("defaults.mode", "must be 'clone' or 'worktree'");
@@ -431,6 +435,21 @@ export class ConfigLoaderService {
     if (value === undefined) return;
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
       throw new ConfigValidationError(field, "must be a positive safe integer");
+    }
+  }
+
+  /**
+   * `fetchTimeoutMs` / `cloneTimeoutMs`, at either level. Zero is admitted
+   * deliberately and means "no inactivity kill at all": both services gate the
+   * simple-git option on `blockMs > 0`, so a zero never reaches git as a
+   * timeout (simple-git's own plugin gates on the same thing). Negatives,
+   * fractions, NaN, Infinity and non-numbers are rejected rather than passed to
+   * `setTimeout`, where they would silently become an immediate kill.
+   */
+  private validateTimeoutMs(value: unknown, field: string): void {
+    if (value === undefined) return;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new ConfigValidationError(field, "must be a non-negative safe integer (0 disables the timeout)");
     }
   }
 
@@ -868,6 +887,19 @@ export class ConfigLoaderService {
 
     if (repo.skipLfs !== undefined || defaults?.skipLfs !== undefined) {
       resolved.skipLfs = repo.skipLfs ?? defaults?.skipLfs ?? false;
+    }
+
+    // Both modes read these: GitService for the bare clone and every network
+    // command, CloneSyncService for the clone and the unshallow. Tested against
+    // `undefined` rather than for truthiness, because 0 is a real setting here
+    // ("no inactivity kill") and a truthiness test would silently discard it
+    // and fall back to the 5/15-minute defaults.
+    if (repo.fetchTimeoutMs !== undefined || defaults?.fetchTimeoutMs !== undefined) {
+      resolved.fetchTimeoutMs = repo.fetchTimeoutMs ?? defaults?.fetchTimeoutMs;
+    }
+
+    if (repo.cloneTimeoutMs !== undefined || defaults?.cloneTimeoutMs !== undefined) {
+      resolved.cloneTimeoutMs = repo.cloneTimeoutMs ?? defaults?.cloneTimeoutMs;
     }
 
     if (repo.retry || defaults?.retry || globalRetry) {

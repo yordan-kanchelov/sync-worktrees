@@ -229,7 +229,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T32** — Per-repository `parallelism` is never validated (F9 fix only covered
   global/defaults): a non-positive-integer value passes load and makes every sync throw TypeError from
   p-limit
-- [ ] **T33** — `fetchTimeoutMs` / `cloneTimeoutMs` are documented on Config and promised by README
+- [x] **T33** — `fetchTimeoutMs` / `cloneTimeoutMs` are documented on Config and promised by README
   but are silently dropped by resolveRepositoryConfig — no config-file user can change the 5/15-minute
   inactivity timeouts
 - [ ] **T34** — `sync-worktrees init` reports success but writes configs that cannot be loaded: ESM
@@ -1727,7 +1727,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   validates retry, filesToCopyOnBranchCreate, hooks, sparseCheckout, maintenance, trash and depth,
   but never `repoObj.parallelism`; `resolveRepositoryConfig` (681-686) then merges it unvalidated.
 
-### [ ] T33. `fetchTimeoutMs` / `cloneTimeoutMs` are documented on Config and promised by README but are silently dropped by resolveRepositoryConfig — no config-file user can change the 5/15-minute inactivity timeouts
+### [x] T33. `fetchTimeoutMs` / `cloneTimeoutMs` are documented on Config and promised by README but are silently dropped by resolveRepositoryConfig — no config-file user can change the 5/15-minute inactivity timeouts
 
 - **Category**: workflow · **Subsystem**: config
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

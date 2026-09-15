@@ -23,7 +23,9 @@ type CommonConfigKeys =
   | "filesToCopyOnBranchCreate"
   | "hooks"
   | "sparseCheckout"
-  | "maintenance";
+  | "maintenance"
+  | "fetchTimeoutMs"
+  | "cloneTimeoutMs";
 type WorktreeOnlyConfigKeys =
   "bareRepoDir" | "branchMaxAge" | "branchInclude" | "branchExclude" | "updateExistingWorktrees" | "trash";
 type CloneOnlyConfigKeys = "branch" | "depth";
@@ -31,8 +33,7 @@ type DefaultsOnlyConfigKeys = "runOnce";
 type DiscriminantConfigKeys = "mode";
 type BaseIdentityConfigKeys = "repoUrl" | "worktreeDir";
 // Set internally or read only at runtime — intentionally absent from the public input surface.
-type InternalOnlyConfigKeys =
-  "logger" | "__configFileDir" | "__configuredRepoDirs" | "fetchTimeoutMs" | "cloneTimeoutMs";
+type InternalOnlyConfigKeys = "logger" | "__configFileDir" | "__configuredRepoDirs";
 
 type ClassifiedConfigKeys =
   | CommonConfigKeys
@@ -102,6 +103,11 @@ const worktreeModeConfig = {
     hooks: {
       onBranchCreated: ["echo {WORKTREE_PATH}"],
     },
+    // Inactivity timeouts are common fields: accepted under `defaults` and on a
+    // repository entry, in either mode. 0 is a real value ("no inactivity
+    // kill"), not an omission.
+    fetchTimeoutMs: 0,
+    cloneTimeoutMs: 1_800_000,
   },
   repositories: [
     {
@@ -131,6 +137,8 @@ const cloneModeConfig = {
       debug: false,
       filesToCopyOnBranchCreate: [".env.local"],
       sparseCheckout: { include: ["packages/app"] },
+      fetchTimeoutMs: 600_000,
+      cloneTimeoutMs: 0,
     },
   ],
 } satisfies SyncWorktreesConfig;
@@ -161,5 +169,12 @@ describe("public config types", () => {
     expect(cloneModeConfig.repositories[0].mode).toBe("clone");
     expect(invalidCloneRepository.mode).toBe("clone");
     expect(invalidWorktreeRepository.mode).toBe("worktree");
+  });
+
+  it("accepts the inactivity timeouts under defaults and on a repository, in both modes", () => {
+    expect(worktreeModeConfig.defaults.fetchTimeoutMs).toBe(0);
+    expect(worktreeModeConfig.defaults.cloneTimeoutMs).toBe(1_800_000);
+    expect(cloneModeConfig.repositories[0].fetchTimeoutMs).toBe(600_000);
+    expect(cloneModeConfig.repositories[0].cloneTimeoutMs).toBe(0);
   });
 });

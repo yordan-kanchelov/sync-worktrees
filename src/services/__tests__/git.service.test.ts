@@ -232,6 +232,35 @@ describe("GitService", () => {
       expect((service as any).getCloneTimeoutMs()).toBe(2_000);
     });
 
+    it("keeps a configured 0 as 0 instead of falling back to the built-in window", async () => {
+      // 0 is the documented way to turn an inactivity kill off, and it is
+      // falsy: a `||` fallback here would quietly hand the repository the 5-
+      // and 15-minute built-ins instead, so a config file that asked for no
+      // kill would get the very window it was written to remove. The client
+      // that runs the command must end up with no `timeout` option at all —
+      // that, not a `{ block: 0 }`, is what makes 0 a disable rather than an
+      // instant abort.
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      const service = new GitService(createMockConfig({ fetchTimeoutMs: 0, cloneTimeoutMs: 0 }), mockLogger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(0);
+      expect((service as any).getCloneTimeoutMs()).toBe(0);
+
+      (mockGit.raw as Mock).mockResolvedValue("ref: refs/heads/main\tHEAD\n");
+      await service.getRemoteDefaultBranch(TEST_URLS.github);
+
+      // Every client built during that call, not just one of them: asserting
+      // that some call carried no timeout would pass even with a timed one
+      // beside it.
+      const optionsPerClient = (simpleGit as unknown as Mock).mock.calls.map((call) =>
+        typeof call[0] === "string" ? call[1] : call[0],
+      );
+      expect(optionsPerClient.length).toBeGreaterThan(0);
+      for (const options of optionsPerClient) {
+        expect(options ?? {}).not.toHaveProperty("timeout");
+      }
+    });
+
     it("disables the timeouts only while the unit-test shortcut is active for this process", async () => {
       process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
       const service = new GitService(createMockConfig(), mockLogger);

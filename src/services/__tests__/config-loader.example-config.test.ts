@@ -86,9 +86,10 @@ describe("sync-worktrees.config.example.js", () => {
     // Documenting a knob the code ignores is worse than leaving it out: the
     // file is meant to be copied, and a setting the loader never carries into
     // the resolved repository config never reaches a service. `fetchTimeoutMs`
-    // and `cloneTimeoutMs` are the live example — real runtime settings, absent
-    // from SyncWorktreesConfig, dropped by resolveRepositoryConfig — so they
-    // are described in the example's comments and never set.
+    // and `cloneTimeoutMs` were exactly that — read by GitService and
+    // CloneSyncService, documented on `Config`, and dropped on the floor by
+    // resolveRepositoryConfig — so the example now sets them for real and this
+    // guard covers them like every other key.
     for (const rawRepo of configFile.repositories) {
       const resolved = resolvedByName.get(rawRepo.name);
       expect(resolved).toBeDefined();
@@ -131,12 +132,21 @@ describe("sync-worktrees.config.example.js", () => {
       warnSizeBytes: 5368709120,
       migrateLegacy: true,
     });
+
+    // The two inactivity timeouts, which the loader dropped until they were
+    // propagated: the drop guard above only proves the keys survive, so read
+    // the values back off the resolved config the services receive.
+    expect(byName.get("large-media-project")?.fetchTimeoutMs).toBe(900000);
+    expect(byName.get("game-platform")?.cloneTimeoutMs).toBe(1800000);
+    // Neither is set globally: a repository that says nothing keeps the
+    // built-in default, which is `undefined` here and resolved in the service.
+    expect(byName.get("documentation")?.fetchTimeoutMs).toBeUndefined();
+    expect(byName.get("documentation")?.cloneTimeoutMs).toBeUndefined();
   });
 
   /**
    * The checks above only reach values the example SETS. Half of what it
-   * documents is prose — the defaults a copied setting falls back to, and the
-   * two timeouts that are described because they cannot be set at all — and a
+   * documents is prose — the defaults a copied setting falls back to — and a
    * wrong number there misleads exactly the reader the file exists for. These
    * pin that prose to the constants it is describing, so a changed default
    * fails here instead of quietly making the reference wrong.
@@ -144,12 +154,15 @@ describe("sync-worktrees.config.example.js", () => {
   it("quotes the defaults it documents straight from the constants", async () => {
     const source = await fs.readFile(EXAMPLE_CONFIG_PATH, "utf-8");
 
-    // The inactivity timeouts, described in prose because no config file can
-    // set them. Both the millisecond value and the human gloss beside it.
-    expect(source).toContain(`\`fetchTimeoutMs\` (${DEFAULT_CONFIG.FETCH_TIMEOUT_MS} ms = 5 min)`);
-    // `cloneTimeoutMs` and its gloss are split over two comment lines.
-    expect(source).toContain("`cloneTimeoutMs`");
-    expect(source).toContain(`(${DEFAULT_CONFIG.CLONE_TIMEOUT_MS} ms = 15 min)`);
+    // The inactivity timeouts are shown commented out under `defaults`, each
+    // line carrying the value it would set and the default it restates. Both
+    // halves are pinned, so neither can drift away from the constant.
+    expect(source).toContain(
+      `// fetchTimeoutMs: ${DEFAULT_CONFIG.FETCH_TIMEOUT_MS}, // Default: ${DEFAULT_CONFIG.FETCH_TIMEOUT_MS} ms = 5 min.`,
+    );
+    expect(source).toContain(
+      `// cloneTimeoutMs: ${DEFAULT_CONFIG.CLONE_TIMEOUT_MS}, // Default: ${DEFAULT_CONFIG.CLONE_TIMEOUT_MS} ms = 15 min.`,
+    );
     expect(DEFAULT_CONFIG.FETCH_TIMEOUT_MS).toBe(5 * 60_000);
     expect(DEFAULT_CONFIG.CLONE_TIMEOUT_MS).toBe(15 * 60_000);
 
