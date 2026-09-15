@@ -1411,3 +1411,48 @@ describe("RepositoryContext.loadConfig path collisions", () => {
     }
   });
 });
+
+describe("RepositoryContext.loadConfig unknown-key warnings", () => {
+  /**
+   * The stdio server's stdout is the JSON-RPC stream: a diagnostic written
+   * there is a protocol error, not a log line. `RepositoryContext` therefore
+   * hands its ConfigLoaderService a stderr-bound logger, and this pins both
+   * halves — the warning arrives, and nothing reaches stdout.
+   */
+  it("routes the warning to stderr and writes nothing to stdout", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-unknown-key-"));
+    try {
+      const configPath = path.join(workspace, "sync-worktrees.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "reference", repoUrl: "https://github.com/test/repo.git", worktreeDir: ${JSON.stringify(path.join(workspace, "worktrees"))}, bareRepoDir: ${JSON.stringify(path.join(workspace, "bare"))}, updateExistingWorktree: false }] };`,
+        "utf-8",
+      );
+
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+      const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        await new RepositoryContext().loadConfig(configPath);
+
+        expect(stderr.mock.calls.flat().join("")).toContain(
+          "[sync-worktrees] Unknown config key 'updateExistingWorktree' in repository 'reference' is ignored " +
+            "(did you mean 'updateExistingWorktrees'?)",
+        );
+        expect(stdout).not.toHaveBeenCalled();
+        expect(consoleLog).not.toHaveBeenCalled();
+        // The injected logger takes it, so console is not the path here.
+        expect(consoleWarn).not.toHaveBeenCalled();
+      } finally {
+        stderr.mockRestore();
+        stdout.mockRestore();
+        consoleLog.mockRestore();
+        consoleWarn.mockRestore();
+      }
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+});

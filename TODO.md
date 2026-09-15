@@ -244,7 +244,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T91** — Load-time validation gaps with runtime consequences: `branchInclude: [""]` prunes
   every non-default worktree, NaN/Infinity retry numbers pass and make retry() throw,
   `skipUpdateWhenOutsideSparse` accepts a string that inverts its meaning
-- [ ] **T92** — Unknown / misspelled config keys are silently ignored at runtime (typo'd
+- [x] **T92** — Unknown / misspelled config keys are silently ignored at runtime (typo'd
   `updateExistingWorktree`, `branchIncludes`, `fetchTimeoutMs` load without a warning)
 - [ ] **T93** — CLI error reporting loses context: init failures omit the repository name, every
   runtime error is labelled 'Error loading config file', `trash` errors dump a raw stack, and config
@@ -3702,7 +3702,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   empty strings; `validateRetryConfig` (362-411) uses `< 1` / `< 0` comparisons that `NaN` passes
   because `typeof NaN === "number"`.
 
-### [ ] T92. Unknown / misspelled config keys are silently ignored at runtime (typo'd `updateExistingWorktree`, `branchIncludes`, `fetchTimeoutMs` load without a warning)
+### [x] T92. Unknown / misspelled config keys are silently ignored at runtime (typo'd `updateExistingWorktree`, `branchIncludes`, `fetchTimeoutMs` load without a warning)
 
 - **Category**: workflow · **Subsystem**: config
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

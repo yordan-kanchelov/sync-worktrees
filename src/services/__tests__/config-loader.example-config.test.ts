@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setEnvVar } from "../../__tests__/test-utils";
 import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { getWorktreeDirLockTarget } from "../../utils/lock-path";
+import { collectUnknownConfigKeys } from "../../utils/unknown-config-keys";
 import { CLONE_MODE_CONFLICTING_FIELDS, ConfigLoaderService } from "../config-loader.service";
 
 import type { RepositoryConfig } from "../../types";
@@ -108,6 +109,16 @@ describe("sync-worktrees.config.example.js", () => {
         carriedIntoResolvedConfig: true,
       });
     }
+  });
+
+  it("sets no key the loader reports as unknown", async () => {
+    // The drop guard above proves each key the example sets survives into the
+    // resolved config. This is the other direction: nothing in the file — at
+    // any of the three levels, or inside a nested block, which the drop guard
+    // cannot reach — is a name the loader does not know.
+    const configFile = (await configLoader.loadConfigFile(EXAMPLE_CONFIG_PATH)) as unknown as Record<string, unknown>;
+
+    expect(collectUnknownConfigKeys(configFile)).toEqual([]);
   });
 
   it("resolves the nested knobs the README promises", async () => {

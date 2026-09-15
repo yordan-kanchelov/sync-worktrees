@@ -15,7 +15,9 @@ import { isPathEqualOrInside, isPathStrictlyInside, normalizePathForCompare, pat
 import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../utils/git-client";
 import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
+import { collectUnknownConfigKeys, formatUnknownConfigKey } from "../utils/unknown-config-keys";
 
+import type { Logger } from "./logger.service";
 import type { Config, ConfigFile, ParallelismConfig, RepositoryConfig, RepositoryMode } from "../types";
 
 const require = createRequire(import.meta.url);
@@ -327,6 +329,21 @@ function evaluateConfigInWorker(absolutePath: string): Promise<unknown> {
 }
 
 export class ConfigLoaderService {
+  private readonly logger?: Logger;
+
+  /** Sink for the loader's warnings, and only those; unset it falls through to `console.warn`. Both are stderr. */
+  constructor(options: { logger?: Logger } = {}) {
+    this.logger = options.logger;
+  }
+
+  private warn(message: string): void {
+    if (this.logger) {
+      this.logger.warn(message);
+    } else {
+      console.warn(message);
+    }
+  }
+
   async findConfigUpward(startDir: string): Promise<string | null> {
     let current = path.resolve(startDir);
     const root = path.parse(current).root;
@@ -597,6 +614,17 @@ export class ConfigLoaderService {
     }
 
     this.validateMergedParallelismPeak(globalParallelism, defaultsParallelism, repositoryParallelism);
+
+    this.warnOnUnknownConfigKeys(configObj);
+  }
+
+  // Everything the checks above never looked at. Why it warns rather than
+  // rejects, why it runs last, and why once per load is the right number: see
+  // the header of utils/unknown-config-keys.ts, which costs no shipped bytes.
+  private warnOnUnknownConfigKeys(configObj: Record<string, unknown>): void {
+    for (const finding of collectUnknownConfigKeys(configObj)) {
+      this.warn(formatUnknownConfigKey(finding));
+    }
   }
 
   private clearRequireCacheSubtree(configPath: string): void {
@@ -1039,7 +1067,7 @@ export class ConfigLoaderService {
     }
     for (const [url, names] of seen) {
       if (names.length > 1) {
-        console.warn(
+        this.warn(
           `[sync-worktrees] repoUrl '${redactRepoUrl(url)}' appears in multiple entries (${names.join(", ")}). ` +
             `Pin 'bareRepoDir' on duplicate entries to make config reorder-proof.`,
         );
@@ -1401,7 +1429,7 @@ export class ConfigLoaderService {
   }
 
   private warnOnNestedWorktreeDirs(inner: RepositoryConfig, outer: RepositoryConfig): void {
-    console.warn(
+    this.warn(
       `[sync-worktrees] worktreeDir '${path.resolve(inner.worktreeDir)}' of repository '${inner.name}' is inside ` +
         `worktreeDir '${path.resolve(outer.worktreeDir)}' of repository '${outer.name}'. ` +
         `A remote branch of '${outer.name}' whose directory name matches would move '${inner.name}' to trash. ` +

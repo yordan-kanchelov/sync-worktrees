@@ -173,7 +173,11 @@ export class RepositoryContext {
   private repos = new Map<string, RepoEntry>();
   private currentRepo: string | null = null;
   private configPath: string | null = null;
-  private configLoader = new ConfigLoaderService();
+  // Explicitly stderr-bound: this loader runs inside the stdio server, whose
+  // stdout is the JSON-RPC stream. `console.warn` already goes to stderr, so
+  // this is belt and braces rather than a fix — it makes the destination a
+  // property of this call site instead of a property of `console`.
+  private configLoader = new ConfigLoaderService({ logger: createStderrLogger() });
   private discoveryCache = new Map<string, CachedDiscovery>();
   private readonly launchCwd: string;
 

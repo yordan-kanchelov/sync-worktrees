@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 
@@ -58,6 +58,45 @@ export default {
     expect(output).toContain("test-repo-2");
     expect(output).toContain("https://github.com/octocat/Hello-World.git");
     expect(output).toContain("https://github.com/github/gitignore.git");
+  });
+
+  /**
+   * The acceptance case for unknown keys, run against the built CLI rather than
+   * the loader: `list` loads the config exactly once, so the warning appears
+   * exactly once, and it appears on stderr. The stdout half is not cosmetic —
+   * the same loader runs inside the MCP stdio server, where stdout carries the
+   * JSON-RPC stream and a stray line breaks the protocol.
+   */
+  it("warns once on stderr about a misspelled config key, and never on stdout", async () => {
+    const configPath = path.join(tmpBase, "unknown-key.config.js");
+    await fs.mkdir(tmpBase, { recursive: true });
+
+    await fs.writeFile(
+      configPath,
+      `
+export default {
+  repositories: [
+    {
+      name: "reference",
+      repoUrl: "https://github.com/octocat/Hello-World.git",
+      worktreeDir: "${path.join(tmpBase, "worktrees-unknown").replace(/\\/g, "/")}",
+      bareRepoDir: "${path.join(tmpBase, "bare-unknown").replace(/\\/g, "/")}",
+      updateExistingWorktree: false
+    }
+  ]
+};
+`,
+    );
+
+    const run = spawnSync("node", [cliPath, "list", "--config", configPath], { encoding: "utf-8" });
+
+    const expected =
+      "[sync-worktrees] Unknown config key 'updateExistingWorktree' in repository 'reference' is ignored " +
+      "(did you mean 'updateExistingWorktrees'?)";
+    expect(run.status).toBe(0);
+    expect(run.stderr.split(expected).length - 1).toBe(1);
+    expect(run.stdout).toContain("reference");
+    expect(run.stdout).not.toContain("Unknown config key");
   });
 
   it.skip("should sync a single repository from config file with runOnce", async () => {
