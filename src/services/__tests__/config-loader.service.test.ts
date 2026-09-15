@@ -1287,6 +1287,114 @@ describe("ConfigLoaderService", () => {
       expect(second.repositories[0].name).toBe("second");
     });
 
+    // The ESM mirror of the test above. It is deliberately duplicated in
+    // config-loader.esm-reload.test.ts against a real `node` child process:
+    // under vitest `import()` runs through Vite's module runner, not Node's
+    // registry, so this assertion alone does not prove the behaviour the user
+    // gets. Kept here anyway because it is the cheap regression guard and it
+    // covers the parts Vite does not touch (the worker, the clone, the error
+    // rebuild).
+    it("reloads .mjs configs and their imported child modules", async () => {
+      const childPath = path.join(tempDir, "repo-name.mjs");
+      const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+      await fs.writeFile(childPath, `export const name = "first";`);
+      await fs.writeFile(
+        configPath,
+        `
+          import { name } from "./repo-name.mjs";
+          export default {
+            repositories: [{
+              name,
+              repoUrl: "${TEST_URLS.github}",
+              worktreeDir: "./worktrees"
+            }]
+          };
+        `,
+      );
+
+      const first = await configLoader.loadConfigFile(configPath);
+      expect(first.repositories[0].name).toBe("first");
+
+      await fs.writeFile(childPath, `export const name = "second";`);
+
+      const second = await configLoader.loadConfigFile(configPath);
+      expect(second.repositories[0].name).toBe("second");
+    });
+
+    // Reload re-evaluates the config off the main thread, so its exported
+    // value has to survive a structured clone. `undefined` does, and has to:
+    // `resolveRepositoryConfig` spreads a present-but-undefined key over the
+    // inherited value, so a JSON round trip here would quietly change which
+    // setting a repository ends up with.
+    it("keeps present-but-undefined keys distinguishable from absent ones across a reload", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            defaults: { cronSchedule: "*/7 * * * *" },
+            repositories: [{
+              name: "repo",
+              repoUrl: "${TEST_URLS.github}",
+              worktreeDir: "./worktrees",
+              cronSchedule: undefined
+            }]
+          };
+        `,
+      );
+
+      await configLoader.loadConfigFile(configPath);
+      const reloaded = await configLoader.loadConfigFile(configPath);
+
+      expect("cronSchedule" in reloaded.repositories[0]).toBe(true);
+      expect(reloaded.repositories[0].cronSchedule).toBeUndefined();
+      expect(
+        configLoader.resolveRepositoryConfig(reloaded.repositories[0], reloaded.defaults, tempDir).cronSchedule,
+      ).toBe("*/7 * * * *");
+    });
+
+    // A function cannot cross a thread boundary. No field of the config
+    // surface is function-valued, so rather than silently dropping it — which
+    // would turn a rejected config into an accepted one — the reload fails
+    // loudly and names the fix. `handleReload` keeps the previous config when
+    // a reload throws, so this costs the user nothing but the message.
+    it("reports a config value that cannot be transferred out of the reload worker", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+      const repositories = `repositories: [{ name: "repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }]`;
+      await fs.writeFile(configPath, `export default { ${repositories} };`);
+
+      await configLoader.loadConfigFile(configPath);
+
+      await fs.writeFile(configPath, `export default { transform: (x) => x, ${repositories} };`);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/could not be cloned/);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/Export plain data/);
+    });
+
+    // The reload worker rebuilds the error it caught, because an Error does
+    // not cross a thread boundary as itself. `moduleSyntaxHint` keys off
+    // `name`, so a config that reloads into ESM syntax Node parses as
+    // CommonJS has to keep getting the hint that names the fix.
+    it("keeps the module-system hint on a config that only breaks on reload", async () => {
+      await fs.writeFile(path.join(tempDir, "package.json"), JSON.stringify({ name: "fixture", type: "commonjs" }));
+      const configPath = path.join(tempDir, "sync-worktrees.config.js");
+      await fs.writeFile(
+        configPath,
+        `module.exports = { repositories: [{ name: "repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await configLoader.loadConfigFile(configPath);
+
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /uses ESM syntax but Node parsed it as CommonJS/,
+      );
+    });
+
     it("should default skipLfs to false when not specified", () => {
       const repo = {
         name: "test",

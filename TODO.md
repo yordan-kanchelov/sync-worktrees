@@ -235,7 +235,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T34** — `sync-worktrees init` reports success but writes configs that cannot be loaded: ESM
   syntax into a `.cjs` target or into a `"type": "commonjs"` package, and `worktreeDir: "./"` when the
   worktree dir equals the config dir
-- [ ] **T35** — Config hot-reload is stale for ESM configs that import sibling modules: only the
+- [x] **T35** — Config hot-reload is stale for ESM configs that import sibling modules: only the
   top-level module is cache-busted, so TUI `r` and MCP `load_config` keep the first-loaded values of
   `./repos.js`-style imports
 - [ ] **T36** — Daemon/TUI mode never syncs at startup and no CLI/config option restores it:
@@ -1802,7 +1802,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   rescues the file; there is no extension- or package-type-aware branch in the generator and no
   post-write load check in runInit.
 
-### [ ] T35. Config hot-reload is stale for ESM configs that import sibling modules: only the top-level module is cache-busted, so TUI `r` and MCP `load_config` keep the first-loaded values of `./repos.js`-style imports
+### [x] T35. Config hot-reload is stale for ESM configs that import sibling modules: only the top-level module is cache-busted, so TUI `r` and MCP `load_config` keep the first-loaded values of `./repos.js`-style imports
 
 - **Category**: correctness · **Subsystem**: config
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

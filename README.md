@@ -339,6 +339,8 @@ Terminal mode requires [`tmux`](https://github.com/tmux/tmux) to be installed.
 
 Config files are JavaScript modules — ES modules by default, CommonJS when the file is `.cjs` or the nearest `package.json` declares `"type": "commonjs"` (`module.exports = config;` instead of `export default config;`). `sync-worktrees init` picks the right one for you. Relative paths resolve from the config file's location, and you have full access to `process.env` and Node module loading.
 
+Splitting a config across several files is supported, including on reload: reloading (`r` in the interactive UI, the `load_config` MCP tool) re-reads the config file **and** every module it pulls in, so editing `./repos.js` and pressing `r` picks up the change without restarting. A reload re-evaluates the config on a worker thread to get that fresh read, so the value a config file exports has to be plain data — strings, numbers, booleans, arrays, objects, and also `Date`, `RegExp`, `Map`, `Set` and `BigInt`. A function cannot cross that boundary, and neither can a symbol, a `WeakMap` or a `Proxy`; no setting takes any of them (`hooks.onBranchCreated` and the branch filters are arrays of strings), and a reload that finds one fails with a message naming the value, leaving the previously loaded config running.
+
 ### Minimal config
 
 ```javascript

@@ -1,6 +1,7 @@
 import { createRequire } from "module";
 import * as path from "path";
 import { pathToFileURL } from "url";
+import { Worker } from "worker_threads";
 
 import * as cron from "node-cron";
 
@@ -182,6 +183,149 @@ function moduleSyntaxHint(absolutePath: string, error: unknown): string {
   );
 }
 
+/**
+ * Config paths this *process* has already evaluated in its own module
+ * registry — the state that makes a second load of the same path a *reload*.
+ *
+ * It is module-level rather than per-instance on purpose, and that is load
+ * bearing rather than tidiness: the thing being tracked is Node's registry,
+ * which is per process, while `ConfigLoaderService` is not. `handleReload`
+ * constructs a brand new loader on every `r`, and so does every CLI command,
+ * so a per-instance Set would see a first load every single time and reload
+ * in-process — which is the exact staleness this whole path exists to remove.
+ * (`RepositoryContext` is the one holder of a long-lived loader, so it alone
+ * would have worked either way.) Pinned by "a reload through a second
+ * ConfigLoaderService still re-reads an imported module" in
+ * config-loader.esm-reload.test.ts.
+ */
+const configPathsEvaluatedInProcess = new Set<string>();
+
+/**
+ * Bootstrap for the worker that re-evaluates a config on reload.
+ *
+ * The point of the worker is its *empty* module registry. Appending `?t=` to
+ * the config's own URL — which is all an in-process reload can do — busts the
+ * config file and nothing else: the modules it pulls in with `import`,
+ * `await import()` or `createRequire()` keep their original specifiers, stay
+ * in the registry, and hand back the exports they were first evaluated with.
+ * A worker thread starts with its own registry, so the whole transitive graph
+ * is read from disk again. (It also un-breaks a `.js` config that resolves as
+ * CommonJS: Node's ESM→CJS bridge ignores the query string entirely, so those
+ * did not reload even at the top level.)
+ *
+ * Carried to the worker as a `data:` URL rather than `{ eval: true }`, which
+ * would make the module system of this snippet depend on where the process
+ * was started: an eval'd worker is classified like `node -e`, so running
+ * sync-worktrees from a directory whose package.json says `"type": "module"`
+ * turned a `require` here into "require is not defined in ES module scope".
+ * A `data:text/javascript` URL is always a module, on every Node version and
+ * from every working directory.
+ */
+const CONFIG_EVAL_WORKER_SOURCE = `
+import { parentPort, workerData } from "node:worker_threads";
+import { pathToFileURL } from "node:url";
+
+// Assigned rather than passed as the Worker's \`argv\` option, which only
+// appends: a \`data:\` URL worker has no script-path slot, so appending
+// \`process.argv.slice(2)\` leaves \`process.argv\` one entry short and a config
+// reading \`process.argv.slice(2)\` — the idiomatic spelling — sees its first
+// flag eaten. Copying the main thread's array verbatim is exact on every Node
+// version, whatever layout the option would have produced.
+process.argv = workerData.argv;
+
+const describe = (error) => ({
+  name: error && error.name ? String(error.name) : "Error",
+  message: error && error.message ? String(error.message) : String(error),
+  stack: error && error.stack ? String(error.stack) : undefined,
+  code: error && typeof error.code === "string" ? error.code : undefined,
+});
+
+await (async () => {
+  let config;
+  try {
+    const url = pathToFileURL(workerData.configPath);
+    url.searchParams.set("t", String(workerData.token));
+    const configModule = await import(url.href);
+    config = configModule.default;
+  } catch (error) {
+    parentPort.postMessage({ ok: false, ...describe(error) });
+    return;
+  }
+  try {
+    parentPort.postMessage({ ok: true, config });
+  } catch (error) {
+    parentPort.postMessage({ ok: false, uncloneable: true, ...describe(error) });
+  }
+})();
+`;
+
+type ConfigEvalResult =
+  | { ok: true; config: unknown }
+  | { ok: false; uncloneable?: boolean; name: string; message: string; stack?: string; code?: string };
+
+/**
+ * The exported value crosses back on the structured clone algorithm, not
+ * `JSON.stringify`, so `undefined` (distinct from an absent key, which
+ * `resolveRepositoryConfig` treats differently), `NaN`, `Infinity`, `-0`,
+ * `Date`, `RegExp`, `BigInt`, `Map` and `Set` all survive intact. What does
+ * not survive is anything structured clone refuses — a function, a symbol, a
+ * `WeakMap`, a `Proxy` — and class instances arrive as plain objects. No field
+ * of the public config surface is function-valued (`hooks.onBranchCreated`,
+ * `branchInclude` and `branchExclude` are all `string[]`), so this is reported
+ * as an error rather than papered over: a silent fallback here would hand back
+ * the stale config this whole path exists to avoid.
+ */
+function workerEvalError(result: Extract<ConfigEvalResult, { ok: false }>, absolutePath: string): Error {
+  if (result.uncloneable) {
+    return new Error(
+      `reloading '${path.basename(absolutePath)}' re-evaluates it in a worker thread so that the modules it imports ` +
+        `are read again, and its exported value could not be transferred out of that thread: ${result.message} ` +
+        `Export plain data (strings, numbers, booleans, arrays, objects) from a config file`,
+    );
+  }
+  // Rebuilt rather than re-thrown: an Error does not cross a thread boundary
+  // as itself. `name` is carried over because `moduleSyntaxHint` keys off it.
+  const error = new Error(result.message) as Error & { code?: string };
+  error.name = result.name;
+  if (result.stack) error.stack = result.stack;
+  if (result.code) error.code = result.code;
+  return error;
+}
+
+function evaluateConfigInWorker(absolutePath: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(CONFIG_EVAL_WORKER_SOURCE)}`), {
+      // `argv` travels in workerData, not in the Worker's own `argv` option:
+      // a config that branches on CLI flags must read exactly the argv it read
+      // when it was evaluated on the main thread, and the option can only
+      // append to an array the worker built for itself.
+      workerData: { configPath: absolutePath, token: Date.now(), argv: process.argv },
+    });
+
+    let settled = false;
+    const settle = (deliver: () => void): void => {
+      if (settled) return;
+      settled = true;
+      void worker.terminate();
+      deliver();
+    };
+
+    worker.once("message", (result: ConfigEvalResult) => {
+      settle(() => {
+        if (result.ok) {
+          resolve(result.config);
+        } else {
+          reject(workerEvalError(result, absolutePath));
+        }
+      });
+    });
+    worker.once("error", (error: Error) => settle(() => reject(error)));
+    worker.once("exit", (code) =>
+      settle(() => reject(new Error(`config evaluation worker exited with code ${code} without returning a config`))),
+    );
+  });
+}
+
 export class ConfigLoaderService {
   async findConfigUpward(startDir: string): Promise<string | null> {
     let current = path.resolve(startDir);
@@ -215,10 +359,7 @@ export class ConfigLoaderService {
         const configModule = require(absolutePath) as { default?: unknown };
         config = configModule.default ?? configModule;
       } else {
-        const fileUrl = pathToFileURL(absolutePath);
-        fileUrl.searchParams.set("t", Date.now().toString());
-        const configModule = (await import(fileUrl.href)) as { default?: unknown };
-        config = configModule.default;
+        config = await this.importConfigModule(absolutePath);
       }
 
       if (!config) {
@@ -236,6 +377,25 @@ export class ConfigLoaderService {
         `Failed to load config file: ${(error as Error).message}${moduleSyntaxHint(absolutePath, error)}`,
       );
     }
+  }
+
+  /**
+   * First evaluation of a path in this process runs on the main thread, which
+   * costs nothing and keeps the exported object exactly as the config built it
+   * — that is every one-shot CLI run, every daemon start and every MCP start.
+   * Only a *re*-load pays for a worker, because only a reload has a populated
+   * module registry to escape: `r` in the TUI and repeat `load_config` calls.
+   */
+  private async importConfigModule(absolutePath: string): Promise<unknown> {
+    if (configPathsEvaluatedInProcess.has(absolutePath)) {
+      return evaluateConfigInWorker(absolutePath);
+    }
+    configPathsEvaluatedInProcess.add(absolutePath);
+
+    const fileUrl = pathToFileURL(absolutePath);
+    fileUrl.searchParams.set("t", Date.now().toString());
+    const configModule = (await import(fileUrl.href)) as { default?: unknown };
+    return configModule.default;
   }
 
   private validateConfigFile(config: unknown): asserts config is ConfigFile {
