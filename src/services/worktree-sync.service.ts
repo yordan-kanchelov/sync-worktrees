@@ -36,6 +36,7 @@ import type {
   ForceCleanPreview,
   ForceCleanResult,
   ForceCleanSelection,
+  KeepRefDropResult,
   RepoOperationNotStarted,
   SyncOutcome,
   SyncResult,
@@ -452,8 +453,69 @@ export class WorktreeSyncService {
     }
   }
 
-  async deleteKeepRef(name: string): Promise<void> {
+  // Drops many keep refs behind one confirmation, which is the only practical
+  // way out from under a repository that has accumulated hundreds: the
+  // single-ref path costs a typed confirmation each, and force clean is the
+  // only batch alternative but also takes the whole trash and runs a gc.
+  //
+  // `names` is what the confirmation actually listed, not "every ref present
+  // now" — same reasoning as forceClean. The listing is taken outside the repo
+  // mutex and this runs inside it, a human pause later, so a sync in between
+  // can mint keep refs for entries it has just reaped. Those hold commits
+  // nobody has been shown, and are left in place.
+  //
+  // Per-ref best effort, deliberately not one `update-ref --stdin` batch: that
+  // is a single transaction, so one ref another git process has locked aborts
+  // every other deletion in the call (measured on git 2.43.0 — a stray `.lock`
+  // left all ten refs of a ten-ref batch in place). Turning "999 dropped, 1
+  // locked" into "0 dropped" is the wrong trade for a command a person runs to
+  // clear a backlog.
+  async deleteKeepRefs(names: readonly string[]): Promise<KeepRefDropResult> {
+    for (const name of names) this.assertKeepRefName(name);
+    const selected = new Set(names.map((name) => `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`));
+    const result = await this.runExclusiveRepoOperation<KeepRefDropResult>(
+      async () => {
+        const dropped: KeepRefDropResult = { deleted: 0, retained: [], errors: [] };
+        // Intersecting the live listing with the selection covers both
+        // directions: a ref minted since the listing is never in `selected`, and
+        // a selected ref already gone never shows up here.
+        const present = (await this.listKeepRefs()).filter((ref) => selected.has(ref));
+        const reservedNames = await this.getDivergedDirectoryNames();
+        for (const ref of present) {
+          if (this.isKeepRefReserved(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length), reservedNames)) {
+            dropped.retained.push(ref);
+            continue;
+          }
+          try {
+            await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
+            await this.gitService.deleteRef(ref);
+            dropped.deleted++;
+            await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
+          } catch (error) {
+            const message = getErrorMessage(error);
+            dropped.errors.push(`${ref}: ${message}`);
+            await this.removalAudit
+              .record({ action: "keep_ref_delete", result: "failure", path: ref, error: message })
+              .catch(() => undefined);
+          }
+        }
+        return dropped;
+      },
+      { wait: true },
+    );
+    if (!result.started) throw new Error(`Cannot delete keep refs: ${describeNotStarted(result)}`);
+    return result.value;
+  }
+
+  // A keep ref name reaches `refs/sync-worktrees/keep/<name>` as a path
+  // segment, so anything that could climb out of the namespace or read as an
+  // option is refused before it gets near git.
+  private assertKeepRefName(name: string): void {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error(`Invalid keep ref name '${name}'`);
+  }
+
+  async deleteKeepRef(name: string): Promise<void> {
+    this.assertKeepRefName(name);
     const ref = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`;
     const result = await this.runExclusiveRepoOperation(
       async () => {
@@ -537,7 +599,14 @@ export class WorktreeSyncService {
     }
     try {
       await this.trashMigration.migrateLegacyUnlocked();
-      await this.trashReaper.reapExpiredUnlocked();
+      // The reaper releases a permanent recovery ref only on evidence that the
+      // commits sit on a remote, and that evidence is only as current as the
+      // remote-tracking refs. This runs in the sync's `finally`, failed attempts
+      // included, so the runner — not the caller — says whether this attempt's
+      // pruning fetch actually completed.
+      await this.trashReaper.reapExpiredUnlocked(new Date(), {
+        remoteRefsFresh: this.worktreeModeSyncRunner.didPruneAllRemoteRefs(),
+      });
     } catch (error) {
       this.logger.warn(`⚠️ Trash maintenance failed: ${getErrorMessage(error)}`);
     }

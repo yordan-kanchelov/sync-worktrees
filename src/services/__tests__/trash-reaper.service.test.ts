@@ -34,6 +34,9 @@ function makeGitStub() {
     deleteRef: vi.fn<any>().mockResolvedValue(undefined),
     listRefs: vi.fn<any>().mockResolvedValue([]),
     createBundleFromRef: vi.fn<any>().mockResolvedValue(true),
+    // Non-zero: the trashed commits are on no remote, which is why the entry
+    // was pinned for keep-on-reap in the first place.
+    countCommitsNotOnAnyRemote: vi.fn<any>().mockResolvedValue(3),
   };
 }
 
@@ -434,6 +437,69 @@ describe("TrashReaperService", () => {
     await expect(fs.access(expired.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${expired.manifest.id}`, "abc123");
     expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
+  });
+
+  it("skips the keep ref when the commits have reached a remote since the worktree was pruned", async () => {
+    const expired = await makeEntry("now-on-remote", { ageDays: 31, branch: "now-on-remote", keepPinOnReap: true });
+    gitStub.countCommitsNotOnAnyRemote.mockResolvedValue(0);
+
+    await reaper.reapExpiredUnlocked(new Date(), { remoteRefsFresh: true });
+
+    expect(gitStub.countCommitsNotOnAnyRemote).toHaveBeenCalledWith("abc123");
+    await expect(fs.access(expired.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(gitStub.updateRef).not.toHaveBeenCalledWith(
+      `refs/sync-worktrees/keep/${expired.manifest.id}`,
+      expect.anything(),
+    );
+    // The pin still goes: the entry is reaped, it just needs no successor ref.
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
+  });
+
+  it("keeps minting the keep ref while the commits are on no remote", async () => {
+    const expired = await makeEntry("still-local", { ageDays: 31, branch: "still-local", keepPinOnReap: true });
+    gitStub.countCommitsNotOnAnyRemote.mockResolvedValue(2);
+
+    await reaper.reapExpiredUnlocked(new Date(), { remoteRefsFresh: true });
+
+    expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${expired.manifest.id}`, "abc123");
+  });
+
+  // Fail closed: "I could not find out" must read as "still needed", never as
+  // "safe to release". These commits may be the only copy left anywhere.
+  it("mints the keep ref when the re-check itself fails", async () => {
+    const expired = await makeEntry("recheck-fails", { ageDays: 31, branch: "recheck-fails", keepPinOnReap: true });
+    // Covers every way countCommitsNotOnAnyRemote refuses to answer: a
+    // rev-list that exited non-zero, an oid git cannot resolve, and the
+    // unparseable-count guard the method itself raises.
+    gitStub.countCommitsNotOnAnyRemote.mockRejectedValue(new Error("bad object abc123"));
+
+    await reaper.reapExpiredUnlocked(new Date(), { remoteRefsFresh: true });
+
+    expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${expired.manifest.id}`, "abc123");
+  });
+
+  // A remote-tracking ref `fetch --prune` has not dropped yet still makes its
+  // commits reachable, so a zero read against a stale ref set would release the
+  // anchor for commits the remote no longer has. Without a pruning fetch this
+  // tick, the reaper must not even ask.
+  it("never releases a keep ref when this tick's pruning fetch did not complete", async () => {
+    const expired = await makeEntry("stale-refs", { ageDays: 31, branch: "stale-refs", keepPinOnReap: true });
+    gitStub.countCommitsNotOnAnyRemote.mockResolvedValue(0);
+
+    await reaper.reapExpiredUnlocked(new Date(), { remoteRefsFresh: false });
+
+    expect(gitStub.countCommitsNotOnAnyRemote).not.toHaveBeenCalled();
+    expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${expired.manifest.id}`, "abc123");
+  });
+
+  it("defaults to the unconditional keep ref when the caller says nothing about the remote refs", async () => {
+    const expired = await makeEntry("no-opts", { ageDays: 31, branch: "no-opts", keepPinOnReap: true });
+    gitStub.countCommitsNotOnAnyRemote.mockResolvedValue(0);
+
+    await reaper.reapExpiredUnlocked();
+
+    expect(gitStub.countCommitsNotOnAnyRemote).not.toHaveBeenCalled();
+    expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${expired.manifest.id}`, "abc123");
   });
 
   it("defers the whole reap when the keep ref cannot be created — the pin may guard the last copy", async () => {

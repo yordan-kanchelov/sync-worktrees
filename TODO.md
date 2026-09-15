@@ -210,7 +210,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T85** — Manifest `branch` is not validated as a ref name; a hand-edited or corrupted
   manifest with an option-like branch makes restore run `git branch -m <sha>` and rename the bare
   repo's HEAD branch
-- [ ] **T86** — Permanent keep refs accumulate one per squash-merged branch with no expiry, no batch
+- [x] **T86** — Permanent keep refs accumulate one per squash-merged branch with no expiry, no batch
   removal, and O(N) fsync'd audit writes + git spawns in force clean
 - [ ] **T87** — Worktree restore copies the whole payload (fs.cp) and then rm's the container
   instead of renaming it into place — O(size) I/O and 2x disk during restore
@@ -3507,7 +3507,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   and `git worktree add --no-checkout <path> <branch>` (492-511, git.service.ts:918-921, 953-958)
   without `--` or `check-ref-format`.
 
-### [ ] T86. Permanent keep refs accumulate one per squash-merged branch with no expiry, no batch removal, and O(N) fsync'd audit writes + git spawns in force clean
+### [x] T86. Permanent keep refs accumulate one per squash-merged branch with no expiry, no batch removal, and O(N) fsync'd audit writes + git spawns in force clean
 
 - **Category**: workflow · **Subsystem**: trash
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

@@ -51,6 +51,7 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
       getRemoteCommit: vi.fn().mockResolvedValue("abc1234"),
       getRemoteBranchTips: vi.fn().mockResolvedValue(new Map()),
       setLfsSkipEnabled: vi.fn(),
+      fetchBranch: vi.fn().mockResolvedValue(undefined),
     };
   });
 
@@ -221,5 +222,45 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
     expect(outcome.actions).toContainEqual(
       expect.objectContaining({ kind: "noop", reason: "lfs_skip_enabled", branch }),
     );
+  });
+  // The trash reaper releases a permanent recovery ref only when the
+  // remote-tracking refs are current, and only `fetch --all --prune` makes them
+  // so. A `--prune` restricted to refspecs named on the command line — which is
+  // what the branch-by-branch fallback issues — prunes only those branches, so
+  // it cannot vouch for the ref set.
+  describe("didPruneAllRemoteRefs", () => {
+    it("is false before any attempt has fetched", () => {
+      expect(makeRunner().didPruneAllRemoteRefs()).toBe(false);
+    });
+
+    it("is true after an attempt whose 'fetch --all --prune' completed", async () => {
+      const runner = makeRunner();
+
+      await run(runner);
+
+      expect(gitService.fetchAll).toHaveBeenCalledTimes(1);
+      expect(runner.didPruneAllRemoteRefs()).toBe(true);
+    });
+
+    it("is false when the fetch fell back to fetching branch by branch", async () => {
+      gitService.fetchAll.mockRejectedValue(new Error(LFS_FAILURE));
+      const runner = makeRunner();
+
+      await run(runner);
+
+      expect(gitService.fetchBranch).toHaveBeenCalled();
+      expect(runner.didPruneAllRemoteRefs()).toBe(false);
+    });
+
+    it("does not carry a previous attempt's fetch into one that never got there", async () => {
+      const runner = makeRunner();
+      await run(runner);
+      expect(runner.didPruneAllRemoteRefs()).toBe(true);
+
+      gitService.fetchAll.mockRejectedValue(new Error("fatal: could not read Username"));
+      await expect(run(runner)).rejects.toThrow("could not read Username");
+
+      expect(runner.didPruneAllRemoteRefs()).toBe(false);
+    });
   });
 });

@@ -600,7 +600,13 @@ The object store is the one thing every worktree does share, so the `gc` is the 
 sync-worktrees trash --filter <repository-name>
 sync-worktrees trash --filter <repository-name> --restore <id>
 sync-worktrees trash --filter <repository-name> --dropKeepRef <listed-keep-name>
+sync-worktrees trash --filter <repository-name> --dropAllKeepRefs
 ```
+
+**Permanent keep refs**: a worktree whose commits were on no remote when it was pruned keeps them past payload expiry — when the entry is reaped, its pin is promoted to `refs/sync-worktrees/keep/<id>`, which nothing ages out. At reap time the question is asked again: if the commits are reachable from a remote-tracking ref by then, and this tick's `fetch --all --prune` completed so that ref set is current, no keep ref is minted. Anything less than that answer mints one — a failed fetch, a rev-list that failed, a count that could not be read.
+
+That re-check is narrow, and is not a cure for keep refs accumulating. A squash or rebase merge puts the branch's *content* on the default branch as a new commit, so the original commits stay reachable from no remote ref and still earn a permanent ref — one per pruned branch, for as long as the repository lives. `--dropAllKeepRefs` is the way back: it lists what is there, takes one typed confirmation for the whole set, and deletes the refs it listed. Refs a `.diverged/` directory still relies on are retained and named, refs minted while the confirmation was on screen are left alone, and a ref another git process has locked is reported without stopping the rest. The commits behind a dropped ref become collectable by the next `git gc`.
+
 
 **Restoring**: read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
 

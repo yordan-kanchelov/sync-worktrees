@@ -20,6 +20,7 @@ export type CliOptions =
       filter?: string;
       restore?: string;
       dropKeepRef?: string;
+      dropAllKeepRefs?: boolean;
     };
 
 export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptions {
@@ -121,7 +122,13 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
             type: "string",
             description: "Delete a permanent keep ref by its listed name.",
           })
-          .conflicts("restore", "dropKeepRef"),
+          .option("dropAllKeepRefs", {
+            type: "boolean",
+            description: "Delete every listed permanent keep ref behind one confirmation.",
+          })
+          .conflicts("restore", "dropKeepRef")
+          .conflicts("restore", "dropAllKeepRefs")
+          .conflicts("dropKeepRef", "dropAllKeepRefs"),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.TRASH,
@@ -129,6 +136,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           filter: args.filter,
           restore: args.restore,
           dropKeepRef: args.dropKeepRef,
+          dropAllKeepRefs: args.dropAllKeepRefs,
         };
       },
     )

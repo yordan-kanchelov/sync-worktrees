@@ -3852,12 +3852,15 @@ locked
       await expect(gitService.createBundleFromRef("/tmp/c.bundle", "refs/sync-worktrees/trash/id")).resolves.toBe(
         false,
       );
+      // origin's refs, not every remote-tracking ref present: one left behind
+      // by a removed remote survives `fetch --all --prune` and would make this
+      // read zero for commits no remote has.
       expect(mockGit.raw).toHaveBeenCalledWith([
         "rev-list",
         "--count",
         "refs/sync-worktrees/trash/id",
         "--not",
-        "--remotes",
+        "--glob=refs/remotes/origin/",
       ]);
     });
 
@@ -3873,7 +3876,7 @@ locked
         "/tmp/c.bundle",
         "refs/sync-worktrees/trash/id",
         "--not",
-        "--remotes",
+        "--glob=refs/remotes/origin/",
       ]);
 
       (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {

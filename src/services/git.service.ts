@@ -130,6 +130,12 @@ const LFS_ATTRIBUTE_CACHE_LIMIT = 256;
 // then reads as stale and is pruned.
 const REMOTE_REF_PREFIX = `${GIT_CONSTANTS.REFS.REMOTES}/`;
 
+// `--not <this>` excludes everything reachable from origin's remote-tracking
+// refs, and only those. Deliberately not `--remotes`: see
+// countCommitsNotOnAnyRemote for why every remote-tracking ref in the
+// repository is the wrong set to trust.
+const REMOTES_GLOB = `--glob=${REMOTE_REF_PREFIX}`;
+
 // The one ref under that prefix that is not a branch: the symref
 // `git remote set-head` writes. It is excluded by its full name only —
 // "feature/HEAD" is a legal branch name, so an endsWith("/HEAD") test would
@@ -1732,12 +1738,49 @@ export class GitService {
   // error is a real failure the caller must treat as fail-closed.
   async createBundleFromRef(bundlePath: string, refName: string): Promise<boolean> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
-    const count = (await bareGit.raw(["rev-list", "--count", refName, "--not", "--remotes"])).trim();
-    if (count === "0") {
+    if ((await this.countCommitsNotOnAnyRemote(refName)) === 0) {
       return false;
     }
-    await bareGit.raw(["bundle", "create", bundlePath, refName, "--not", "--remotes"]);
+    await bareGit.raw(["bundle", "create", bundlePath, refName, "--not", REMOTES_GLOB]);
     return true;
+  }
+
+  // How many commits reachable from `rev` are on no `refs/remotes/origin/*`
+  // ref — "is there anything here the remote does not already have?". The
+  // bundle decision above and the reaper's keep-ref re-check are the same
+  // question asked of the same ref set, so they ask it the same way.
+  //
+  // Scoped to `origin` rather than `--remotes`, which is every remote-tracking
+  // ref the repository happens to hold. `git fetch --all --prune` only prunes
+  // remotes still in config, so a `refs/remotes/<removed-remote>/*` left behind
+  // by a remote the user has since deleted survives every fetch and still
+  // anchors its commits under `--remotes` — measured: the count reads 0 with
+  // such a ref present and 2 once it is gone. Reading that zero would release
+  // the only anchor for commits no remote actually has. `origin` is the one
+  // remote this tool manages and the one it fetches, so it is the only ref set
+  // whose freshness anything here can vouch for. Narrowing can only over-count,
+  // which means bundling or pinning more than strictly necessary.
+  //
+  // Even so this proves reachability from those refs as they stand right now,
+  // nothing more: a ref `fetch --prune` has not yet dropped still anchors its
+  // commits. Callers that act on a zero must say why their ref set is current.
+  //
+  // Unparseable output throws rather than reading as zero: every caller treats
+  // zero as "nothing to preserve", so a number that could not be read must not
+  // become one.
+  async countCommitsNotOnAnyRemote(rev: string): Promise<number> {
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    const raw = (await bareGit.raw(["rev-list", "--count", rev, "--not", REMOTES_GLOB])).trim();
+    // `/^\d+$/` is the real gate; `Number.isInteger` catches only the digit
+    // string too long to survive parseInt (400 digits reads back as Infinity),
+    // which would otherwise be returned as a non-zero and mint the ref anyway.
+    const count = Number.parseInt(raw, 10);
+    if (!/^\d+$/.test(raw) || !Number.isInteger(count)) {
+      throw new Error(
+        `Could not read a commit count from 'git rev-list --count ${rev} --not ${REMOTES_GLOB}': '${raw}'`,
+      );
+    }
+    return count;
   }
 
   // Registers the worktree and writes its .git link without populating files —

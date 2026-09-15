@@ -15,6 +15,16 @@ import type { RemovalAuditService } from "./removal-audit.service";
 import type { TrashEntry, TrashService } from "./trash.service";
 import type { Config } from "../types";
 
+export interface ReapOptions {
+  /**
+   * True only when this tick's `fetch --all --prune` completed, so every
+   * `refs/remotes/*` ref reflects the remote as of this tick. Without it the
+   * reaper cannot tell a remote-tracking ref that still exists from one git has
+   * simply not pruned yet, and never releases a keep ref on its say-so.
+   */
+  remoteRefsFresh?: boolean;
+}
+
 export interface TrashReapResult {
   deleted: number;
   orphanedRefsDeleted: number;
@@ -51,8 +61,13 @@ export class TrashReaperService {
 
   // Disabled trash means "don't touch my trash" — existing entries are left
   // alone rather than aged out behind the user's back.
-  async reapExpiredUnlocked(now: Date = new Date()): Promise<TrashReapResult> {
-    return this.reapUnlocked(now, null);
+  //
+  // `remoteRefsFresh` says whether this tick's `fetch --all --prune` completed,
+  // which is what licenses the keep-ref re-check below. It defaults to false so
+  // every caller that cannot vouch for the remote-tracking refs gets the
+  // unconditional keep-ref behaviour.
+  async reapExpiredUnlocked(now: Date = new Date(), options: ReapOptions = {}): Promise<TrashReapResult> {
+    return this.reapUnlocked(now, null, options.remoteRefsFresh ?? false);
   }
 
   // Purges exactly the entries named by `entryIds` — the set a force-clean
@@ -61,10 +76,14 @@ export class TrashReaperService {
   // simply not found among the listed entries and cost nothing; entries that
   // are there but unnamed are left alone and counted in `skippedNotSelected`.
   async purgeAllUnlocked(entryIds: readonly string[]): Promise<TrashReapResult> {
-    return this.reapUnlocked(new Date(), new Set(entryIds));
+    return this.reapUnlocked(new Date(), new Set(entryIds), false);
   }
 
-  private async reapUnlocked(now: Date, purgeIds: ReadonlySet<string> | null): Promise<TrashReapResult> {
+  private async reapUnlocked(
+    now: Date,
+    purgeIds: ReadonlySet<string> | null,
+    remoteRefsFresh: boolean,
+  ): Promise<TrashReapResult> {
     const purgeAll = purgeIds !== null;
     const result: TrashReapResult = { deleted: 0, orphanedRefsDeleted: 0, skippedNotSelected: 0, errors: [] };
     if (!purgeAll && !this.trashService.isEnabled()) return result;
@@ -127,7 +146,12 @@ export class TrashReaperService {
       // deleting anything. On failure defer the whole reap to the next run —
       // these commits may be the only copy left anywhere.
       let keepRef: string | null = null;
-      if (!purgeAll && entry.manifest.keepPinOnReap && entry.manifest.headOid) {
+      if (
+        !purgeAll &&
+        entry.manifest.keepPinOnReap &&
+        entry.manifest.headOid &&
+        !(await this.commitsReachedARemote(entry.manifest.headOid, remoteRefsFresh))
+      ) {
         keepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${entry.manifest.id}`;
         try {
           await this.gitService.updateRef(keepRef, entry.manifest.headOid);
@@ -224,6 +248,44 @@ export class TrashReaperService {
 
     this.warnIfOverThreshold(entries.filter((entry) => !reapedIds.has(entry.manifest.id)));
     return result;
+  }
+
+  // The keep ref exists because, at the moment the worktree was pruned, its
+  // HEAD commits were on no remote. That can stop being true while the entry
+  // sits in the trash: the branch is pushed again, or the commits land on one
+  // that is. Asking the same question the entry's own bundle was decided on
+  // (`rev-list --count <oid> --not --remotes`, see createBundleFromRef) keeps
+  // the permanent ref for the entries that still need it.
+  //
+  // Narrow on purpose, and NOT a fix for keep refs accumulating: a squash or
+  // rebase merge rewrites the commits, so the originals stay reachable from no
+  // remote ref and still get a keep ref. What this skips is the entry whose own
+  // commits are now on a remote — nothing there is worth a permanent anchor.
+  //
+  // Anything but a cleanly parsed zero mints the ref: a rev-list that failed, a
+  // count that could not be read, an oid git cannot resolve.
+  //
+  // `remoteRefsFresh` is the other half of the proof. A `refs/remotes/*` ref
+  // that `fetch --prune` has not dropped yet still makes its commits reachable,
+  // so a zero read against a stale ref set would release the anchor for commits
+  // the remote no longer has — measured: after the branch is deleted on the
+  // remote the count reads 0 until the next `fetch --prune`, and 2 again after
+  // it. The caller passes true only for a tick whose `fetch --all --prune`
+  // completed; a failed fetch, or the LFS fallback that fetches branch by
+  // branch and so prunes only the branches it names, leaves it false and the
+  // ref is minted exactly as before.
+  private async commitsReachedARemote(headOid: string, remoteRefsFresh: boolean): Promise<boolean> {
+    if (!remoteRefsFresh) return false;
+    try {
+      if ((await this.gitService.countCommitsNotOnAnyRemote(headOid)) !== 0) return false;
+      this.logger.info(
+        `   ${headOid} is reachable from a remote-tracking ref; no permanent keep ref needed for these commits`,
+      );
+      return true;
+    } catch (error) {
+      this.logger.debug(`Trash reaper: could not re-check '${headOid}' against the remotes: ${getErrorMessage(error)}`);
+      return false;
+    }
   }
 
   private async reportDeleteFailure(

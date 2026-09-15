@@ -37,6 +37,10 @@ export class WorktreeModeSyncRunner {
   private pathResolution = new PathResolutionService();
   private removalAudit: RemovalAuditService;
   private trashService: TrashService;
+  // See didPruneAllRemoteRefs. Starts false so a runner that has never fetched
+  // — a sync that threw before phase 1, the TUI holding an idle instance —
+  // cannot vouch for anything.
+  private remoteRefsPrunedThisAttempt = false;
 
   constructor(
     private config: Config,
@@ -59,6 +63,10 @@ export class WorktreeModeSyncRunner {
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
+    // Cleared per attempt, not per sync: `runSyncAttempt` is what `retry` calls,
+    // so an attempt that fetched and a later one that did not must not share an
+    // answer.
+    this.remoteRefsPrunedThisAttempt = false;
     await this.ensureFetchAnchor(outcome);
     await this.fetchLatestRemoteData(phaseTimer, syncContext);
 
@@ -314,6 +322,20 @@ export class WorktreeModeSyncRunner {
     outcome.recordCreated(branch, anchorPath);
   }
 
+  // Did this attempt bring every `refs/remotes/*` ref up to date with the
+  // remote and drop the ones the remote no longer has?
+  //
+  // Only `fetchAll` ("fetch --all --prune") earns a true. The LFS fallback
+  // below fetches branch by branch, and a `--prune` restricted to refspecs
+  // named on the command line prunes only those branches — so a branch deleted
+  // on the remote can keep a remote-tracking ref through it. The reaper uses
+  // this to decide whether a "these commits are on a remote" reading is
+  // trustworthy enough to release a permanent recovery ref, so anything short
+  // of the full pruning fetch answers false.
+  didPruneAllRemoteRefs(): boolean {
+    return this.remoteRefsPrunedThisAttempt;
+  }
+
   private async fetchLatestRemoteData(phaseTimer: PhaseTimer, syncContext: SyncRetryContext): Promise<void> {
     this.logger.info("Step 1: Fetching latest data from remote...");
     phaseTimer.startPhase("Phase 1: Fetch");
@@ -321,6 +343,7 @@ export class WorktreeModeSyncRunner {
 
     try {
       await this.gitService.fetchAll();
+      this.remoteRefsPrunedThisAttempt = true;
     } catch (fetchError) {
       const errorMessage = getErrorMessage(fetchError);
 

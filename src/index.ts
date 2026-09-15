@@ -250,7 +250,13 @@ async function runList(configPath: string, filter?: string): Promise<void> {
   }
 }
 
-async function runTrash(configPath: string, filter?: string, restoreId?: string, dropKeepRef?: string): Promise<void> {
+async function runTrash(
+  configPath: string,
+  filter?: string,
+  restoreId?: string,
+  dropKeepRef?: string,
+  dropAllKeepRefs?: boolean,
+): Promise<void> {
   const configLoader = new ConfigLoaderService();
   const { repositories } = await configLoader.buildRepositories(configPath, { filter });
   if (repositories.length !== 1) {
@@ -274,6 +280,36 @@ async function runTrash(configPath: string, filter?: string, restoreId?: string,
     }
     await service.deleteKeepRef(dropKeepRef);
     console.log(`✅ Deleted ${dropKeepRef}`);
+    return;
+  }
+  if (dropAllKeepRefs) {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      throw new Error("--dropAllKeepRefs requires an interactive TTY");
+    }
+    // The names are read here, before the confirmation, and handed to the
+    // service as the set to act on: a sync running alongside this command can
+    // mint keep refs for entries it has just reaped, and those were never on
+    // screen. See deleteKeepRefs.
+    const names = (await service.listKeepRefs()).map((ref) => ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length));
+    if (names.length === 0) {
+      console.log("No keep refs to drop.");
+      return;
+    }
+    const phrase = `drop ${names.length}`;
+    const confirmation = await input({
+      message:
+        `Deleting ${names.length} keep ref(s) makes their commits eligible for 'git gc' and cannot be undone. ` +
+        `Type '${phrase}' to confirm:`,
+    });
+    if (confirmation !== phrase) {
+      throw new Error("Keep ref deletion was not confirmed");
+    }
+    const dropped = await service.deleteKeepRefs(names);
+    console.log(`✅ Deleted ${dropped.deleted} keep ref(s)`);
+    for (const ref of dropped.retained) {
+      console.log(`   Retained ${ref} — a '.diverged/' directory still depends on it`);
+    }
+    for (const error of dropped.errors) console.warn(`⚠️ Could not delete ${error}`);
     return;
   }
 
@@ -372,7 +408,7 @@ export async function main(): Promise<void> {
     }
     case CLI_COMMANDS.TRASH: {
       const configPath = await resolveConfigOrExit(options.config);
-      return runTrash(configPath, options.filter, options.restore, options.dropKeepRef);
+      return runTrash(configPath, options.filter, options.restore, options.dropKeepRef, options.dropAllKeepRefs);
     }
     case CLI_COMMANDS.RUN:
       return runSync(options);

@@ -68,10 +68,18 @@ describe("parseArguments", () => {
     const drop = parseArguments(["trash", "--filter", "backend", "--dropKeepRef", "keep-id"]);
     if (drop.command !== "trash") throw new Error("expected trash command");
     expect(drop.dropKeepRef).toBe("keep-id");
+
+    const dropAll = parseArguments(["trash", "--filter", "backend", "--dropAllKeepRefs"]);
+    if (dropAll.command !== "trash") throw new Error("expected trash command");
+    expect(dropAll).toMatchObject({ dropAllKeepRefs: true, dropKeepRef: undefined });
   });
 
-  it("rejects conflicting trash mutations", () => {
-    expect(() => parseArguments(["trash", "--restore", "entry", "--dropKeepRef", "keep"])).toThrow(/process\.exit/);
+  it.each([
+    ["restore against dropKeepRef", ["trash", "--restore", "entry", "--dropKeepRef", "keep"]],
+    ["restore against dropAllKeepRefs", ["trash", "--restore", "entry", "--dropAllKeepRefs"]],
+    ["dropKeepRef against dropAllKeepRefs", ["trash", "--dropKeepRef", "keep", "--dropAllKeepRefs"]],
+  ])("rejects conflicting trash mutations: %s", (_label, argv) => {
+    expect(() => parseArguments(argv)).toThrow(/process\.exit/);
   });
 
   it("rejects removed flag --repoUrl under strict()", () => {

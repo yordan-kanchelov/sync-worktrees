@@ -46,12 +46,20 @@ const FORBIDDEN_TARBALL_SUFFIXES = [".map"];
 // one .d.ts per source module (~0.14 MB) and the README. The bundles are not
 // minified, so the source comments are shipped with them and ordinary work on
 // this codebase moves the total by single-digit kB at a time — the byte
-// ceiling is sized to absorb that (~140 kB of headroom) while still tripping
-// on the step changes it is for: a dependency that stops being `external` in
-// esbuild, or source maps coming back, either of which adds hundreds of kB at
-// once. Raise it when it is ordinary growth that reached it, and say so.
+// ceiling is sized to absorb that while still tripping on the step changes it
+// is for: a dependency that stops being `external` in esbuild, or source maps
+// coming back, either of which adds hundreds of kB at once. Raise it when it
+// is ordinary growth that reached it, and say so.
+//
+// Saying so: raised from 1,400,000 after a run of audit fixes carried the
+// tarball to 1,399,065 bytes across 90 files — 935 bytes short of tripping.
+// That growth is comments and tests-adjacent source on the paths those fixes
+// touched, arriving a few kB at a time exactly as described above, not a step
+// change. Restored to roughly the original ~140 kB of headroom rather than
+// nudged past the current figure, so the next ordinary change does not spend
+// its review arguing with this number.
 const MAX_TARBALL_FILES = 120;
-const MAX_TARBALL_UNPACKED_BYTES = 1_400_000;
+const MAX_TARBALL_UNPACKED_BYTES = 1_540_000;
 const STEP_TIMEOUT_MS = 10_000;
 
 class SmokeFailure extends Error {}

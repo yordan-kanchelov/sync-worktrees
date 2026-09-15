@@ -325,10 +325,18 @@ describe("WorktreeSyncService", () => {
       });
     };
 
-    it("rejects names that could escape the keep namespace", async () => {
-      await expect(service.deleteKeepRef("../heads/main")).rejects.toThrow("Invalid keep ref name");
-      expect(mockGitService.deleteRef).not.toHaveBeenCalled();
-    });
+    // A keep ref name is one path segment under `refs/sync-worktrees/keep/`,
+    // and it reaches git as a positional argument. Anything that could climb
+    // out of the namespace, address a ref below it, or be read as an option is
+    // refused — by the single drop and by the batch alike.
+    it.each([["../heads/main"], ["nested/ref"], ["-d"], [".hidden"], [""]])(
+      "rejects the keep ref name %j",
+      async (name) => {
+        await expect(service.deleteKeepRef(name)).rejects.toThrow("Invalid keep ref name");
+        await expect(service.deleteKeepRefs([name])).rejects.toThrow("Invalid keep ref name");
+        expect(mockGitService.deleteRef).not.toHaveBeenCalled();
+      },
+    );
 
     it("deletes an explicitly selected keep ref under the repo lock", async () => {
       await service.initialize();
@@ -337,6 +345,97 @@ describe("WorktreeSyncService", () => {
 
       expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/preserved-entry");
       expect(handleWrites.some((write) => write.content.includes('"action":"keep_ref_delete"'))).toBe(true);
+    });
+
+    describe("batch drop", () => {
+      it("refuses the whole batch when one name among valid ones is bad", async () => {
+        await expect(service.deleteKeepRefs(["fine", "../heads/main"])).rejects.toThrow("Invalid keep ref name");
+        expect(mockGitService.deleteRef).not.toHaveBeenCalled();
+      });
+
+      it("drops every named ref under one repo-lock hold, one audit pair each", async () => {
+        await service.initialize();
+        mockGitService.listRefs.mockResolvedValue([
+          "refs/sync-worktrees/keep/one",
+          "refs/sync-worktrees/keep/two",
+          "refs/sync-worktrees/keep/three",
+        ]);
+        (fs.readdir as Mock<any>).mockResolvedValue([]);
+
+        const result = await service.deleteKeepRefs(["one", "two", "three"]);
+
+        expect(result).toMatchObject({ deleted: 3, retained: [], errors: [] });
+        expect(mockGitService.deleteRef).toHaveBeenCalledTimes(3);
+        expect(handleWrites.filter((write) => write.content.includes('"action":"keep_ref_delete"'))).toHaveLength(6);
+      });
+
+      // Per-ref best effort, exactly like the force-clean loop: one ref another
+      // git process has locked must not take the rest of the batch with it.
+      // This is why the deletions are NOT one `update-ref --stdin` transaction.
+      it("keeps going when git refuses one ref, and reports it", async () => {
+        await service.initialize();
+        mockGitService.listRefs.mockResolvedValue([
+          "refs/sync-worktrees/keep/one",
+          "refs/sync-worktrees/keep/locked",
+          "refs/sync-worktrees/keep/three",
+        ]);
+        (fs.readdir as Mock<any>).mockResolvedValue([]);
+        mockGitService.deleteRef.mockImplementation(async (ref: string) => {
+          if (ref.endsWith("locked")) throw new Error("cannot lock ref");
+        });
+
+        const result = await service.deleteKeepRefs(["one", "locked", "three"]);
+
+        expect(result.deleted).toBe(2);
+        expect(result.errors).toEqual(["refs/sync-worktrees/keep/locked: cannot lock ref"]);
+      });
+
+      // A `.diverged/<name>` directory and `keep/<name>` are the two halves of
+      // one preserved worktree. Dropping the ref would leave the directory with
+      // dead recovery instructions.
+      it("retains a ref a '.diverged/' directory still depends on", async () => {
+        await service.initialize();
+        mockGitService.listRefs.mockResolvedValue([
+          "refs/sync-worktrees/keep/still-on-disk",
+          "refs/sync-worktrees/keep/gone",
+        ]);
+        mockBusyWorktrees({}, ["still-on-disk"]);
+
+        const result = await service.deleteKeepRefs(["still-on-disk", "gone"]);
+
+        expect(result).toMatchObject({ deleted: 1, retained: ["refs/sync-worktrees/keep/still-on-disk"] });
+        expect(mockGitService.deleteRef).toHaveBeenCalledTimes(1);
+        expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/gone");
+      });
+
+      // The listing the confirmation was built from is taken outside the repo
+      // mutex; a sync running alongside can reap an entry and mint its keep ref
+      // before the typed answer arrives. Nobody was shown that ref.
+      it("leaves a ref minted after the confirmation listing alone", async () => {
+        await service.initialize();
+        mockGitService.listRefs.mockResolvedValue([
+          "refs/sync-worktrees/keep/shown",
+          "refs/sync-worktrees/keep/minted-after-listing",
+        ]);
+        (fs.readdir as Mock<any>).mockResolvedValue([]);
+
+        const result = await service.deleteKeepRefs(["shown"]);
+
+        expect(result.deleted).toBe(1);
+        expect(mockGitService.deleteRef).toHaveBeenCalledTimes(1);
+        expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/shown");
+      });
+
+      it("attempts nothing for a named ref that is already gone", async () => {
+        await service.initialize();
+        mockGitService.listRefs.mockResolvedValue([]);
+        (fs.readdir as Mock<any>).mockResolvedValue([]);
+
+        const result = await service.deleteKeepRefs(["deleted-meanwhile"]);
+
+        expect(result).toMatchObject({ deleted: 0, retained: [], errors: [] });
+        expect(mockGitService.deleteRef).not.toHaveBeenCalled();
+      });
     });
 
     it("force-cleans verified trash and all permanent keep refs under the repo lock", async () => {
@@ -2302,6 +2401,32 @@ describe("WorktreeSyncService", () => {
       await expect(svc.sync()).rejects.toThrow("Fetch failed");
       expect(migrationSpy).toHaveBeenCalledTimes(1);
       expect(reaperSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // The reaper may only release a permanent recovery ref on a ref set this
+    // tick's `fetch --all --prune` refreshed. Since maintenance runs in the
+    // sync's `finally` — failed attempts included — that answer has to come
+    // from the runner, per tick.
+    it("tells the reaper the remote refs are fresh after a completed pruning fetch", async () => {
+      mockGitService.fetchAll.mockResolvedValue(undefined);
+
+      const before = Date.now();
+      await new WorktreeSyncService(mockConfig).sync();
+
+      expect(reaperSpy).toHaveBeenCalledWith(expect.any(Date), { remoteRefsFresh: true });
+      // "Now", not some other instant: every expiry comparison the reaper makes
+      // is against this, so a frozen clock would silently stop it reaping.
+      const [passedNow] = reaperSpy.mock.calls[0] as [Date];
+      expect(passedNow.getTime()).toBeGreaterThanOrEqual(before);
+      expect(passedNow.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it("tells the reaper the remote refs are not fresh when the fetch failed", async () => {
+      mockGitService.fetchAll.mockRejectedValue(new Error("Fetch failed"));
+
+      await expect(new WorktreeSyncService(mockConfig).sync()).rejects.toThrow("Fetch failed");
+
+      expect(reaperSpy).toHaveBeenCalledWith(expect.any(Date), { remoteRefsFresh: false });
     });
   });
 

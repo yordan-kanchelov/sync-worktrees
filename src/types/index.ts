@@ -404,6 +404,23 @@ export interface DivergedDirectoryInfo {
 }
 
 /**
+ * What one batch `--dropAllKeepRefs` run did. Per-ref best effort, like the
+ * force-clean loop it mirrors: a ref that could not be deleted is reported and
+ * the rest still go.
+ */
+export interface KeepRefDropResult {
+  deleted: number;
+  /**
+   * Full ref names left alone because a `.diverged/` directory still relies on
+   * them — dropping those would leave the directory with dead recovery
+   * instructions.
+   */
+  retained: string[];
+  /** `<ref>: <message>` for every ref git refused to delete. */
+  errors: string[];
+}
+
+/**
  * The exact set a force-clean confirmation refers to. A preview is taken
  * outside the repo mutex and confirmed by a human an unbounded time later, so
  * the counts on screen are only a summary of these names — the purge deletes
