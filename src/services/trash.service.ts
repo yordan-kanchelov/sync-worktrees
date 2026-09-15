@@ -58,6 +58,9 @@ export interface TrashEntry {
   payloadPath: string;
 }
 
+/** Outcome of releasing the legacy `.diverged/` keep ref an adopted entry replaced. */
+export type LegacyKeepRefRelease = "released" | "absent" | "rejected";
+
 export interface TrashSummary {
   itemCount: number;
   totalSizeBytes: number;
@@ -593,6 +596,41 @@ export class TrashService {
         error instanceof Error ? error : undefined,
       );
     }
+  }
+
+  // The pre-trash `.diverged/` flow held its backup with a permanent
+  // `refs/sync-worktrees/keep/<dirname>` ref and recorded the name in the
+  // copied `.diverged-info.json`. Adoption replaces that single ref with this
+  // entry's own protection — a pin ref, plus a bundle whenever the commits are
+  // not already on a remote — so the legacy ref becomes redundant. Never
+  // before: trashDirectory places both before it resolves and restores the
+  // source directory on every failure inside it, so a caller that has an entry
+  // in hand is past the only point where releasing would be a loss.
+  //
+  // `candidate` comes from an unvalidated JSON.parse of a file the user can
+  // edit, so it is never the authority for what gets deleted: the ref name is
+  // re-derived from this entry's own manifest and the candidate only has to
+  // match it exactly. Exact equality, not a prefix test — a prefix check would
+  // accept `refs/sync-worktrees/keep/../../heads/main`, and `refs/heads/main`
+  // must never be deletable by editing a JSON file.
+  async releaseAdoptedKeepRef(entry: TrashEntry, candidate: unknown): Promise<LegacyKeepRefRelease> {
+    if (candidate === undefined || candidate === null) return "absent";
+    const { manifest } = entry;
+    // bundleFile is deliberately not required: createBundleFromRef returns
+    // nothing to bundle exactly when the commits are already on a remote,
+    // which is the case where the legacy ref protects the least.
+    if (
+      typeof candidate !== "string" ||
+      manifest.source !== ".diverged" ||
+      manifest.keepPinOnReap !== true ||
+      manifest.pinRef === null ||
+      !manifest.legacyOriginalName ||
+      candidate !== `${GIT_CONSTANTS.KEEP_REF_PREFIX}${manifest.legacyOriginalName}`
+    ) {
+      return "rejected";
+    }
+    await this.gitService.deleteRef(candidate);
+    return "released";
   }
 
   private async restoreAsWorktree(manifest: TrashManifest, payloadPath: string): Promise<void> {

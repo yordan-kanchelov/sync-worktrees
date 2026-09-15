@@ -15,6 +15,7 @@ import type { Config } from "../../types";
 import type { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
+import type { TrashEntry, TrashManifest } from "../trash.service";
 
 // Real filesystem everywhere except the one path a test declares undeletable:
 // an ESM namespace export cannot be spied on, so `rm` is replaceable only by
@@ -773,6 +774,103 @@ describe("TrashService", () => {
 
     it("rejects unknown ids", async () => {
       await expect(service.restore("nope")).rejects.toBeInstanceOf(TrashOperationError);
+    });
+  });
+
+  // Releasing the permanent keep ref a `.diverged/` backup was held by is the
+  // one destructive ref operation driven by a field of an unvalidated
+  // JSON.parse, so the guards are checked here directly rather than only
+  // through the adoption path, which can never present a wrong-shaped entry.
+  describe("releaseAdoptedKeepRef", () => {
+    const LEGACY_NAME = "2026-06-02-feat-abc12";
+    const LEGACY_KEEP_REF = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${LEGACY_NAME}`;
+
+    function adoptedEntry(overrides: Partial<TrashManifest> = {}): TrashEntry {
+      return {
+        manifest: {
+          schemaVersion: TRASH_CONSTANTS.SCHEMA_VERSION,
+          id: "2026-09-01T00-00-00-000Z-feat-abc12-aa11bb",
+          deletedAt: "2026-09-01T00:00:00.000Z",
+          expiresAt: "2026-10-01T00:00:00.000Z",
+          originalPath: path.join(worktreeDir, "feat"),
+          branch: "feat",
+          reason: "legacy-adopt",
+          sizeBytes: null,
+          headOid: "deadbeef",
+          pinRef: `${PREFIX}${HASH}/2026-09-01T00-00-00-000Z-feat-abc12-aa11bb`,
+          bundleFile: TRASH_CONSTANTS.BUNDLE_FILENAME,
+          source: ".diverged",
+          legacyOriginalName: LEGACY_NAME,
+          legacyQuarantinedAt: "2026-06-02T08:00:00.000Z",
+          keepPinOnReap: true,
+          ...overrides,
+        },
+        containerPath: path.join(worktreeDir, ".trash", "container"),
+        payloadPath: path.join(worktreeDir, ".trash", "container", "payload"),
+      };
+    }
+
+    it("releases the ref the entry's own legacy name derives", async () => {
+      await expect(service.releaseAdoptedKeepRef(adoptedEntry(), LEGACY_KEEP_REF)).resolves.toBe("released");
+      expect(gitStub.deleteRef).toHaveBeenCalledExactlyOnceWith(LEGACY_KEEP_REF);
+    });
+
+    it("reports nothing to do when the info file named no ref", async () => {
+      await expect(service.releaseAdoptedKeepRef(adoptedEntry(), undefined)).resolves.toBe("absent");
+      await expect(service.releaseAdoptedKeepRef(adoptedEntry(), null)).resolves.toBe("absent");
+      expect(gitStub.deleteRef).not.toHaveBeenCalled();
+    });
+
+    it("releases a fully-pushed adoption that had nothing to bundle", async () => {
+      // createBundleFromRef reports nothing to bundle exactly when the commits
+      // are already on a remote — the case where the legacy ref protects least.
+      await expect(service.releaseAdoptedKeepRef(adoptedEntry({ bundleFile: null }), LEGACY_KEEP_REF)).resolves.toBe(
+        "released",
+      );
+    });
+
+    it.each([
+      ["the entry never adopted a .diverged backup", { source: "worktree" as const }],
+      ["the entry is not pinned for keep-on-reap", { keepPinOnReap: false }],
+      ["the entry holds no pin ref of its own", { pinRef: null }],
+      ["the entry has no legacy name to derive the ref from", { legacyOriginalName: null }],
+    ])("refuses when %s", async (_label, overrides) => {
+      await expect(service.releaseAdoptedKeepRef(adoptedEntry(overrides), LEGACY_KEEP_REF)).resolves.toBe("rejected");
+      expect(gitStub.deleteRef).not.toHaveBeenCalled();
+    });
+
+    it("never derives a ref from a missing legacy name", async () => {
+      // legacyOriginalName is `string | null`, so an unguarded template would
+      // build 'refs/sync-worktrees/keep/null' and happily match it.
+      await expect(
+        service.releaseAdoptedKeepRef(
+          adoptedEntry({ legacyOriginalName: null }),
+          `${GIT_CONSTANTS.KEEP_REF_PREFIX}null`,
+        ),
+      ).resolves.toBe("rejected");
+      expect(gitStub.deleteRef).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      "refs/heads/main",
+      `${GIT_CONSTANTS.KEEP_REF_PREFIX}${LEGACY_NAME}/../../heads/main`,
+      `${GIT_CONSTANTS.KEEP_REF_PREFIX}${LEGACY_NAME}-other`,
+      GIT_CONSTANTS.KEEP_REF_PREFIX,
+    ])("refuses '%s', which is not this entry's keep ref", async (candidate) => {
+      await expect(service.releaseAdoptedKeepRef(adoptedEntry(), candidate)).resolves.toBe("rejected");
+      expect(gitStub.deleteRef).not.toHaveBeenCalled();
+    });
+
+    it("refuses a non-string keepRef", async () => {
+      await expect(service.releaseAdoptedKeepRef(adoptedEntry(), { toString: () => LEGACY_KEEP_REF })).resolves.toBe(
+        "rejected",
+      );
+      expect(gitStub.deleteRef).not.toHaveBeenCalled();
+    });
+
+    it("propagates a refused deletion instead of reporting a release", async () => {
+      gitStub.deleteRef.mockRejectedValue(new Error("ref locked"));
+      await expect(service.releaseAdoptedKeepRef(adoptedEntry(), LEGACY_KEEP_REF)).rejects.toThrow("ref locked");
     });
   });
 });

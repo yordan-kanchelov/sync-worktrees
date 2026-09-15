@@ -179,6 +179,166 @@ describe("TrashMigrationService", () => {
     expect(entries).toHaveLength(0);
   });
 
+  describe("legacy .diverged/ keep refs", () => {
+    const NAME = "2026-06-02-feat-abc12";
+    const LEGACY_KEEP_REF = `refs/sync-worktrees/keep/${NAME}`;
+
+    async function writeLegacyDiverged(keepRef?: unknown): Promise<string> {
+      const legacyDir = path.join(worktreeDir, ".diverged", NAME);
+      await fs.mkdir(legacyDir, { recursive: true });
+      await fs.writeFile(path.join(legacyDir, "work.txt"), "diverged work");
+      await fs.writeFile(
+        path.join(legacyDir, ".diverged-info.json"),
+        JSON.stringify({
+          originalBranch: "feat",
+          divergedAt: "2026-06-02T08:00:00.000Z",
+          originalPath: path.join(worktreeDir, "feat"),
+          localCommit: "deadbeef",
+          remoteCommit: "cafe1234",
+          ...(keepRef === undefined ? {} : { keepRef }),
+          instruction: "3. Discard changes: use the TUI worktree status view so the keep ref is released safely",
+        }),
+      );
+      return legacyDir;
+    }
+
+    function deleteRefCalls(ref: string): number {
+      return gitStub.deleteRef.mock.calls.filter((args: unknown[]) => args[0] === ref).length;
+    }
+
+    it("releases the legacy keep ref, but only after the replacement pin and bundle are in place", async () => {
+      await writeLegacyDiverged(LEGACY_KEEP_REF);
+
+      await migration.migrateLegacyUnlocked();
+
+      const { entries } = await trashService.listEntries();
+      expect(entries).toHaveLength(1);
+      const pinRef = entries[0].manifest.pinRef;
+      expect(pinRef).toBeTruthy();
+
+      // Deleted exactly once — not twice, and not left behind for the reaper
+      // to shadow with a second permanent keep/<trashId>.
+      expect(deleteRefCalls(LEGACY_KEEP_REF)).toBe(1);
+
+      const deleteOrder =
+        gitStub.deleteRef.mock.invocationCallOrder[
+          gitStub.deleteRef.mock.calls.findIndex((args: unknown[]) => args[0] === LEGACY_KEEP_REF)
+        ];
+      const pinOrder =
+        gitStub.updateRef.mock.invocationCallOrder[
+          gitStub.updateRef.mock.calls.findIndex((args: unknown[]) => args[0] === pinRef)
+        ];
+      // The ref that exists to stop never-pushed commits being collected is
+      // released only once something else is holding them.
+      expect(pinOrder).toBeLessThan(deleteOrder);
+      expect(gitStub.createBundleFromRef.mock.invocationCallOrder[0]).toBeLessThan(deleteOrder);
+      // ...and the manifest that survives a crash already records both.
+      expect(entries[0].manifest.bundleFile).toBe("commits.bundle");
+    });
+
+    it("leaves the legacy keep ref alone when the adoption's pin ref cannot be created", async () => {
+      await writeLegacyDiverged(LEGACY_KEEP_REF);
+      gitStub.updateRef.mockRejectedValue(new Error("refs are read-only"));
+
+      await migration.migrateLegacyUnlocked();
+
+      const { entries } = await trashService.listEntries();
+      expect(entries).toHaveLength(0);
+      expect(deleteRefCalls(LEGACY_KEEP_REF)).toBe(0);
+      // The backup — and the ref holding its commits — are both still there.
+      await expect(fs.access(path.join(worktreeDir, ".diverged", NAME, "work.txt"))).resolves.toBeUndefined();
+    });
+
+    it("leaves the legacy keep ref alone when the adoption's bundle cannot be created", async () => {
+      await writeLegacyDiverged(LEGACY_KEEP_REF);
+      gitStub.createBundleFromRef.mockRejectedValue(new Error("bundle failed"));
+
+      await migration.migrateLegacyUnlocked();
+
+      const { entries } = await trashService.listEntries();
+      expect(entries).toHaveLength(0);
+      expect(deleteRefCalls(LEGACY_KEEP_REF)).toBe(0);
+      await expect(fs.access(path.join(worktreeDir, ".diverged", NAME, "work.txt"))).resolves.toBeUndefined();
+    });
+
+    it.each([
+      ["a ref outside the keep namespace", "refs/heads/main"],
+      ["a traversal that only shares the keep prefix", `refs/sync-worktrees/keep/${NAME}/../../heads/main`],
+      ["another entry's keep ref", "refs/sync-worktrees/keep/2026-06-02-other-zzz99"],
+      ["a non-string", 42],
+    ])("refuses to delete %s named by the info file", async (_label, keepRef) => {
+      await writeLegacyDiverged(keepRef);
+
+      await migration.migrateLegacyUnlocked();
+
+      const { entries } = await trashService.listEntries();
+      expect(entries).toHaveLength(1);
+      // Nothing outside this entry's own pin ref was ever deleted.
+      const pinRef = entries[0].manifest.pinRef;
+      for (const [name] of gitStub.deleteRef.mock.calls) expect(name).toBe(pinRef);
+      if (typeof keepRef === "string") expect(deleteRefCalls(keepRef)).toBe(0);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("is not the keep ref"));
+    });
+
+    it("does nothing and warns nothing when the info file names no keep ref", async () => {
+      await writeLegacyDiverged(undefined);
+
+      await migration.migrateLegacyUnlocked();
+
+      const { entries } = await trashService.listEntries();
+      expect(entries).toHaveLength(1);
+      expect(gitStub.deleteRef).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("is not the keep ref"));
+    });
+
+    it("reports a refused keep ref deletion without calling the adoption failed", async () => {
+      await writeLegacyDiverged(LEGACY_KEEP_REF);
+      gitStub.deleteRef.mockRejectedValue(new Error("ref locked"));
+
+      await migration.migrateLegacyUnlocked();
+
+      const { entries } = await trashService.listEntries();
+      expect(entries).toHaveLength(1);
+      expect(deleteRefCalls(LEGACY_KEEP_REF)).toBe(1);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("could not delete its legacy keep ref"));
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("Failed to adopt"));
+      // The ref may still exist, so the payload must keep pointing at it.
+      const info = JSON.parse(await fs.readFile(path.join(entries[0].payloadPath, ".diverged-info.json"), "utf-8"));
+      expect(info.keepRef).toBe(LEGACY_KEEP_REF);
+    });
+
+    it("rewrites the adopted payload's info file onto the trash recovery flow", async () => {
+      await writeLegacyDiverged(LEGACY_KEEP_REF);
+
+      await migration.migrateLegacyUnlocked();
+
+      const { entries } = await trashService.listEntries();
+      const id = entries[0].manifest.id;
+      const info = JSON.parse(await fs.readFile(path.join(entries[0].payloadPath, ".diverged-info.json"), "utf-8"));
+      // The released ref is no longer advertised as a way back...
+      expect(info.keepRef).toBeNull();
+      // ...and the instruction no longer points at a TUI view that lists only
+      // `.diverged/` directories, which this payload has left.
+      expect(info.instruction).not.toContain("TUI");
+      expect(info.instruction).toContain(`sync-worktrees trash --restore ${id}`);
+      // An adopted backup is keepPinOnReap: the reaper mints a permanent
+      // `keep/<id>` for its never-pushed commits rather than letting expiry
+      // collect them, so only the FILES age out. An instruction that says
+      // discarding needs nothing done would be the same defect as the TUI one
+      // above — a payload describing a flow that does not apply to it.
+      expect(info.instruction).not.toContain("nothing to do");
+      expect(info.instruction).toContain(`sync-worktrees trash --dropKeepRef ${id}`);
+      expect(info.trashId).toBe(id);
+      // Everything else the diverge flow recorded is preserved verbatim.
+      expect(info.originalBranch).toBe("feat");
+      expect(info.localCommit).toBe("deadbeef");
+      expect(info.remoteCommit).toBe("cafe1234");
+      expect(info.divergedAt).toBe("2026-06-02T08:00:00.000Z");
+      // The user's own files are untouched.
+      await expect(fs.readFile(path.join(entries[0].payloadPath, "work.txt"), "utf-8")).resolves.toBe("diverged work");
+    });
+  });
+
   it("is inert when migrateLegacy is off or trash is disabled", async () => {
     const legacyDir = path.join(worktreeDir, ".removed", "2026-06-01T10-30-00-500Z-feature-x");
     await fs.mkdir(legacyDir, { recursive: true });

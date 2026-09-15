@@ -202,7 +202,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T82** — Compare-and-swap branch deletion (`update-ref -d`) leaves the `[branch "<name>"]`
   remote/merge section in the bare repo config for every trashed worktree, growing .bare/config
   without bound
-- [ ] **T83** — Legacy `.diverged/` adoption ignores the entry's `keep/<name>` ref: the permanent
+- [x] **T83** — Legacy `.diverged/` adoption ignores the entry's `keep/<name>` ref: the permanent
   keep ref stays after the directory is moved into trash, and the payload's .diverged-info.json still
   points at a recovery flow that no longer applies
 - [ ] **T84** — Force clean runs `git gc --prune=now` on a shared object store without checking for
@@ -3412,7 +3412,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `branch -D` on the common path; nothing else cleans config sections. No test asserts config state
   after trashing.
 
-### [ ] T83. Legacy `.diverged/` adoption ignores the entry's `keep/<name>` ref: the permanent keep ref stays after the directory is moved into trash, and the payload's .diverged-info.json still points at a recovery flow that no longer applies
+### [x] T83. Legacy `.diverged/` adoption ignores the entry's `keep/<name>` ref: the permanent keep ref stays after the directory is moved into trash, and the payload's .diverged-info.json still points at a recovery flow that no longer applies
 
 - **Category**: correctness · **Subsystem**: trash
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
