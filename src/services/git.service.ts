@@ -1784,7 +1784,9 @@ export class GitService {
   }
 
   // Registers the worktree and writes its .git link without populating files —
-  // restore overlays the preserved payload instead of a fresh checkout.
+  // restore moves the preserved payload in instead of checking anything out,
+  // keeping that link. The directory it leaves holds exactly one entry, the
+  // `.git` file, which is what makes replacing the directory wholesale safe.
   async addWorktreeNoCheckout(branchName: string, worktreePath: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     const absoluteWorktreePath = path.resolve(worktreePath);
@@ -1793,7 +1795,7 @@ export class GitService {
   }
 
   // Mixed reset: points the index at HEAD without touching working files, so
-  // overlaid payload content shows up as ordinary uncommitted changes.
+  // the restored payload's content shows up as ordinary uncommitted changes.
   async resetWorktreeIndex(worktreePath: string): Promise<void> {
     const worktreeGit = this.getCachedGit(worktreePath);
     await worktreeGit.raw(["reset"]);

@@ -212,7 +212,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   repo's HEAD branch
 - [x] **T86** — Permanent keep refs accumulate one per squash-merged branch with no expiry, no batch
   removal, and O(N) fsync'd audit writes + git spawns in force clean
-- [ ] **T87** — Worktree restore copies the whole payload (fs.cp) and then rm's the container
+- [x] **T87** — Worktree restore copies the whole payload (fs.cp) and then rm's the container
   instead of renaming it into place — O(size) I/O and 2x disk during restore
 - [ ] **T89** — `sync-worktrees trash` CLI ergonomics: no size/branch/restorable columns, silent on
   empty trash, expected errors print as 'Unhandled error' stack traces, restore fails fast when the
@@ -3540,7 +3540,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   changelog), but no re-check, expiry, or batch tooling exists; tests cover single-ref deletion
   only.
 
-### [ ] T87. Worktree restore copies the whole payload (fs.cp) and then rm's the container instead of renaming it into place — O(size) I/O and 2x disk during restore
+### [x] T87. Worktree restore copies the whole payload (fs.cp) and then rm's the container instead of renaming it into place — O(size) I/O and 2x disk during restore
 
 - **Category**: performance · **Subsystem**: trash
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

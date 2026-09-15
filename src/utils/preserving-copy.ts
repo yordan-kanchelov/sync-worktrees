@@ -3,11 +3,12 @@ import * as fs from "fs/promises";
 import type { CopyOptions } from "fs";
 
 /**
- * Copies a directory tree whose source is deleted on the next step: the
- * cross-device fallback that preserves a diverged worktree under `.diverged/`,
- * and the overlay that restores a trash payload onto a fresh worktree. Both
- * exist to keep a user's only remaining copy of their files, so the copy has
- * to be faithful, not merely readable.
+ * Copies a directory tree whose source is deleted on the next step, on the
+ * two paths where a rename is unavailable: preserving a diverged worktree
+ * under `.diverged/` across devices, and restoring a trash payload onto a
+ * fresh worktree when the trash root turns out not to share a filesystem with
+ * it. Both exist to keep a user's only remaining copy of their files, so the
+ * copy has to be faithful, not merely readable.
  *
  * `fs.cp` resolves every relative symlink target against the source directory
  * and writes the destination link as an absolute path back into the source, so

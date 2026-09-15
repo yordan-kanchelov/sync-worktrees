@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { symlinksSupported } from "../../__tests__/helpers/symlink-support";
 import { allowDeletion, mockUndeletableFile } from "../../__tests__/helpers/undeletable-file";
 import { cleanupTempDirectories, createMockLogger, createTempDirectory } from "../../__tests__/test-utils";
-import { GIT_CONSTANTS, TRASH_CONSTANTS } from "../../constants";
+import { GIT_CONSTANTS, PATH_CONSTANTS, TRASH_CONSTANTS } from "../../constants";
 import { TrashOperationError } from "../../errors";
 import { TrashService, summarizeTrashEntries } from "../trash.service";
 
@@ -19,15 +19,79 @@ import type { TrashEntry, TrashManifest } from "../trash.service";
 
 // Real filesystem everywhere except the one path a test declares undeletable:
 // an ESM namespace export cannot be spied on, so `rm` is replaceable only by
-// way of a partial module mock.
+// way of a partial module mock. `rename` and `cp` go through the same mock as
+// pass-through spies — restore moves the payload rather than copying it, which
+// is a claim about which of the two ran.
 vi.mock("fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof FsPromises>();
-  return { ...actual, default: actual, rm: vi.fn(actual.rm) };
+  return {
+    ...actual,
+    default: actual,
+    rm: vi.fn(actual.rm),
+    rename: vi.fn(actual.rename),
+    cp: vi.fn(actual.cp),
+    writeFile: vi.fn(actual.writeFile),
+  };
 });
 
 const DAY_MS = 86_400_000;
 const PREFIX = GIT_CONSTANTS.TRASH_REF_PREFIX;
 const HASH = "0123456789abcdef";
+const FRESH_GIT_LINK = "gitdir: /fresh/admin\n";
+
+/**
+ * What `git worktree add --no-checkout` leaves behind: the directory and
+ * exactly one entry in it, the `.git` link (measured on git 2.43). Restore
+ * reads that link back to re-point the payload it moves into the directory, so
+ * a stub that creates the directory alone is not the operation it stands in
+ * for. {@link makeGitStub} installs this by default.
+ */
+async function createFreshWorktreeDir(destination: string): Promise<void> {
+  await fs.mkdir(destination, { recursive: true });
+  await fs.writeFile(path.join(destination, PATH_CONSTANTS.GIT_DIR), FRESH_GIT_LINK);
+}
+
+/**
+ * Makes exactly the renames a test names fail, with everything else still
+ * going to the real one: the manifest writes and the trash move itself run
+ * through `fs.rename` too, and a blanket failure would break the fixture
+ * instead of the operation under test. Used for the EXDEV a bind mount or a
+ * symlinked worktreeDir puts between the trash root and the worktree, and for
+ * the rollback rename that puts a moved payload back.
+ */
+async function failRenameWhen(
+  shouldFail: (from: string, to: string) => boolean,
+  code: "EXDEV" | "EPERM",
+): Promise<void> {
+  const realRename = (await vi.importActual<typeof FsPromises>("fs/promises")).rename;
+  vi.mocked(fs.rename).mockImplementation((async (from: string, to: string) => {
+    if (shouldFail(String(from), String(to))) {
+      throw Object.assign(new Error(`${code}: rename '${String(from)}' -> '${String(to)}'`), { code });
+    }
+    return realRename(from, to);
+  }) as unknown as typeof fs.rename);
+}
+
+/** Hands `fs.rename` back to the real one. */
+function allowRename(): void {
+  vi.mocked(fs.rename).mockReset();
+}
+
+/** {@link failRenameWhen} for `fs.writeFile`, which restore uses for one thing. */
+async function failWriteFileWhen(shouldFail: (target: string) => boolean, code: "EIO"): Promise<void> {
+  const realWriteFile = (await vi.importActual<typeof FsPromises>("fs/promises")).writeFile;
+  vi.mocked(fs.writeFile).mockImplementation((async (target: string, data: string) => {
+    if (shouldFail(String(target))) {
+      throw Object.assign(new Error(`${code}: write '${String(target)}'`), { code });
+    }
+    return realWriteFile(target, data);
+  }) as unknown as typeof fs.writeFile);
+}
+
+/** Hands `fs.writeFile` back to the real one. */
+function allowWriteFile(): void {
+  vi.mocked(fs.writeFile).mockReset();
+}
 
 function makeGitStub() {
   return {
@@ -36,7 +100,9 @@ function makeGitStub() {
     deleteRef: vi.fn<any>().mockResolvedValue(undefined),
     getLocalBranchCommit: vi.fn<any>().mockResolvedValue(null),
     createBranchAt: vi.fn<any>().mockResolvedValue(undefined),
-    addWorktreeNoCheckout: vi.fn<any>().mockResolvedValue(undefined),
+    addWorktreeNoCheckout: vi.fn<any>(async (_branch: string, destination: string) =>
+      createFreshWorktreeDir(destination),
+    ),
     trackRemoteBranchIfExists: vi.fn<any>().mockResolvedValue(false),
     resetWorktreeIndex: vi.fn<any>().mockResolvedValue(undefined),
     removeWorktree: vi.fn<any>().mockResolvedValue(undefined),
@@ -75,8 +141,10 @@ describe("TrashService", () => {
 
   afterEach(async () => {
     // Before the cleanup below: it deletes the temp trees with the very fs.rm
-    // some of these tests replace.
+    // and fs.rename some of these tests replace.
     allowDeletion();
+    allowRename();
+    allowWriteFile();
     await cleanupTempDirectories();
   });
 
@@ -437,9 +505,6 @@ describe("TrashService", () => {
     it("still restores the same fixture when the branch is a real name", async () => {
       const source = await makeSourceDir("bad-branch", { "work.txt": "uncommitted work" });
       const entry = await service.trashDirectory({ dirPath: source, branch: "bad-branch", reason: "prune" });
-      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
-        await fs.mkdir(args[1] as string, { recursive: true });
-      });
 
       const listed = await service.listEntries();
       expect(listed.invalid).toEqual([]);
@@ -690,55 +755,290 @@ describe("TrashService", () => {
       });
       const { manifest } = await service.trashDirectory({ dirPath: source, branch: "feature-y", reason: "prune" });
 
-      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
-        const destination = args[1] as string;
-        await fs.mkdir(destination, { recursive: true });
-        await fs.writeFile(path.join(destination, ".git"), "gitdir: /fresh/admin");
-      });
-
       const restored = await service.restore(manifest.id);
 
       expect(gitStub.createBranchAt).toHaveBeenCalledWith("feature-y", "abc123");
       expect(gitStub.addWorktreeNoCheckout).toHaveBeenCalledWith("feature-y", source);
       expect(gitStub.resetWorktreeIndex).toHaveBeenCalledWith(source);
       await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
-      await expect(fs.readFile(path.join(source, ".git"), "utf-8")).resolves.toBe("gitdir: /fresh/admin");
+      await expect(fs.readFile(path.join(source, ".git"), "utf-8")).resolves.toBe(FRESH_GIT_LINK);
       expect(gitStub.deleteRef).toHaveBeenCalledWith(manifest.pinRef);
       expect(restored.branch).toBe("feature-y");
       await expect(service.listEntries()).resolves.toMatchObject({ entries: [] });
     });
 
-    // Restore overlays by copy and then deletes the container it copied from,
-    // which is what copyTreePreservingSymlinks exists for. Nothing may be
-    // asserted until that container is gone: a link rewritten to a path under
-    // `.trash/` still resolves while it is there and would prove nothing.
-    it("restores relative symlinks intact, resolvable after the trash container is deleted", async (ctx) => {
-      if (!(await symlinksSupported())) {
-        ctx.skip("this host cannot create symlinks");
-        return;
-      }
-      const source = await makeSourceDir("feature-links", { "work.txt": "uncommitted work" });
-      const binDir = path.join(source, "node_modules", ".bin");
-      await fs.mkdir(binDir, { recursive: true });
-      await fs.mkdir(path.join(source, "node_modules", "pkg"), { recursive: true });
-      await fs.writeFile(path.join(source, "node_modules", "pkg", "cli.js"), "#!/usr/bin/env node\n");
-      await fs.symlink(path.join("..", "pkg", "cli.js"), path.join(binDir, "tool"));
-      const { manifest, containerPath } = await service.trashDirectory({
+    // Trashing a worktree is one rename; putting it back is one rename too.
+    // The alternative is O(payload) under the repository lock: measured on
+    // this repository's own node_modules (282 MB, 23k entries) the copy the
+    // fresh worktree used to be filled with, plus the delete of the payload it
+    // was copied from, took 13s where the rename takes ~2ms.
+    it("moves the payload into the recreated worktree instead of copying it", async () => {
+      const source = await makeSourceDir("feature-move", {
+        "work.txt": "uncommitted work",
+        ".git": "gitdir: /stale/pruned/admin",
+      });
+      const { manifest, containerPath, payloadPath } = await service.trashDirectory({
         dirPath: source,
-        branch: "feature-links",
+        branch: "feature-move",
         reason: "prune",
       });
-      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
-        await fs.mkdir(args[1] as string, { recursive: true });
-      });
+      const payloadInode = (await fs.stat(payloadPath)).ino;
 
       await service.restore(manifest.id);
 
+      expect(fs.rename).toHaveBeenCalledWith(payloadPath, source);
+      expect(fs.cp).not.toHaveBeenCalled();
+      // The same directory, not a faithful copy of it.
+      expect((await fs.stat(source)).ino).toBe(payloadInode);
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      // The link `worktree add --no-checkout` wrote, not the stale one the
+      // payload carries from when it was a worktree.
+      await expect(fs.readFile(path.join(source, PATH_CONSTANTS.GIT_DIR), "utf-8")).resolves.toBe(FRESH_GIT_LINK);
+      await expect(fs.access(payloadPath)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(fs.access(containerPath)).rejects.toMatchObject({ code: "ENOENT" });
-      const restoredLink = path.join(source, "node_modules", ".bin", "tool");
-      await expect(fs.readlink(restoredLink)).resolves.toBe(path.join("..", "pkg", "cli.js"));
-      await expect(fs.readFile(restoredLink, "utf-8")).resolves.toBe("#!/usr/bin/env node\n");
     });
+
+    // A payload whose own `.git` is a directory rather than a link: the fresh
+    // link still has to win, as it did when the copy filtered the payload's
+    // `.git` out, and a plain overwrite cannot replace a directory.
+    it("replaces a payload's .git directory with the link the fresh registration wrote", async () => {
+      const source = await makeSourceDir("feature-gitdir", { "work.txt": "uncommitted work" });
+      await fs.mkdir(path.join(source, PATH_CONSTANTS.GIT_DIR));
+      await fs.writeFile(path.join(source, PATH_CONSTANTS.GIT_DIR, "HEAD"), "ref: refs/heads/feature-gitdir\n");
+      const { manifest } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-gitdir",
+        reason: "prune",
+      });
+
+      const restored = await service.restore(manifest.id);
+
+      expect(restored.branch).toBe("feature-gitdir");
+      await expect(fs.readFile(path.join(source, PATH_CONSTANTS.GIT_DIR), "utf-8")).resolves.toBe(FRESH_GIT_LINK);
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+    });
+
+    // The trash root lives under worktreeDir, so the payload and its
+    // destination are normally one filesystem — but a bind mount or a
+    // symlinked worktreeDir can still split them, and then the copy is the
+    // only way back.
+    it("falls back to copying the payload when the rename crosses a device boundary", async () => {
+      const source = await makeSourceDir("feature-exdev", {
+        "work.txt": "uncommitted work",
+        ".git": "gitdir: /stale/pruned/admin",
+      });
+      const { manifest, containerPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-exdev",
+        reason: "prune",
+      });
+      await failRenameWhen((_from, to) => to === source, "EXDEV");
+
+      const restored = await service.restore(manifest.id);
+
+      expect(restored.branch).toBe("feature-exdev");
+      expect(fs.cp).toHaveBeenCalled();
+      expect(gitStub.resetWorktreeIndex).toHaveBeenCalledWith(source);
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      await expect(fs.readFile(path.join(source, PATH_CONSTANTS.GIT_DIR), "utf-8")).resolves.toBe(FRESH_GIT_LINK);
+      await expect(fs.access(containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    // Once the payload has moved, the recreated worktree holds the only copy
+    // of it — and the rollback for a failed restore deletes that directory.
+    // The move has to be undone first, or a restore that fails halfway
+    // destroys the files it exists to preserve.
+    it("returns a moved payload to the container when a later step fails, leaving the entry restorable", async () => {
+      const source = await makeSourceDir("feature-late-fail", { "work.txt": "uncommitted work" });
+      const { manifest, payloadPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-late-fail",
+        reason: "prune",
+      });
+      gitStub.resetWorktreeIndex.mockRejectedValueOnce(new Error("index.lock exists"));
+
+      await expect(service.restore(manifest.id)).rejects.toThrow(/trash entry left intact/);
+
+      await expect(fs.readFile(path.join(payloadPath, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      await expect(fs.access(source)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(gitStub.removeWorktree).toHaveBeenCalledWith(source, { force: true });
+      expect(gitStub.deleteLocalBranch).toHaveBeenCalledWith("feature-late-fail");
+
+      // "Left intact" means restorable, not merely present: the retry works.
+      const restored = await service.restore(manifest.id);
+      expect(restored.branch).toBe("feature-late-fail");
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+    });
+
+    // The link is corrected on the payload BEFORE it moves, so this failure
+    // lands while the container still holds everything — the move never
+    // starts. That ordering is the point: written afterwards, a crash between
+    // the rename and the write stranded a worktree describing itself with a
+    // link to a pruned admin dir, and a payload-less trash entry whose retry
+    // reported the payload missing.
+    it("never starts the move when the payload's .git link cannot be corrected", async () => {
+      const source = await makeSourceDir("feature-link-fail", { "work.txt": "uncommitted work" });
+      const { manifest, payloadPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-link-fail",
+        reason: "prune",
+      });
+      await failWriteFileWhen((target) => target === path.join(payloadPath, PATH_CONSTANTS.GIT_DIR), "EIO");
+
+      await expect(service.restore(manifest.id)).rejects.toThrow(/trash entry left intact/);
+
+      // Nothing moved: the payload is whole and still in the container, which
+      // is the entire point of failing here rather than after the rename.
+      await expect(fs.readFile(path.join(payloadPath, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      expect(gitStub.removeWorktree).toHaveBeenCalledWith(source, { force: true });
+      allowWriteFile();
+      // Real `git worktree remove --force` deletes the registered directory;
+      // the stub only records the call, so clear it the way git would before
+      // the retry, which refuses a destination that already exists.
+      await fs.rm(source, { recursive: true, force: true });
+      const restored = await service.restore(manifest.id);
+      expect(restored.branch).toBe("feature-link-fail");
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+    });
+
+    // `movePayloadInto` recursively deletes the destination before renaming
+    // the payload over it, and the only thing making that safe is that
+    // `worktree add --no-checkout` just created it holding one entry. Today
+    // restore() refuses a destination that already exists, so nothing else can
+    // put files there — but that invariant lives in another file, and if it
+    // ever slips this line becomes a silent recursive delete of live data.
+    it("refuses to replace a destination holding anything but the link git just wrote", async () => {
+      const source = await makeSourceDir("feature-occupied", { "work.txt": "uncommitted work" });
+      const { manifest, payloadPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-occupied",
+        reason: "prune",
+      });
+      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
+        const dirPath = args[1] as string;
+        await createFreshWorktreeDir(dirPath);
+        await fs.writeFile(path.join(dirPath, "someone-elses-work.txt"), "do not delete me");
+      });
+
+      await expect(service.restore(manifest.id)).rejects.toThrow(/refusing to replace/);
+
+      await expect(fs.readFile(path.join(payloadPath, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      await expect(fs.readFile(path.join(source, "someone-elses-work.txt"), "utf-8")).resolves.toBe("do not delete me");
+    });
+
+    // The fallback is for EXDEV and nothing else. Any other rename failure
+    // quietly becoming a copy would trade the O(1) move this whole change
+    // exists for back into an O(payload) copy under the repository lock, with
+    // no error and nothing in the output to say it happened.
+    it("propagates a non-EXDEV rename failure instead of copying the payload instead", async () => {
+      const source = await makeSourceDir("feature-eperm", { "work.txt": "uncommitted work" });
+      const { manifest, payloadPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-eperm",
+        reason: "prune",
+      });
+      await failRenameWhen((from) => from === payloadPath, "EPERM");
+
+      await expect(service.restore(manifest.id)).rejects.toThrow(/trash entry left intact/);
+
+      expect(fs.cp).not.toHaveBeenCalled();
+      await expect(fs.readFile(path.join(payloadPath, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      allowRename();
+      await fs.rm(source, { recursive: true, force: true });
+      await expect(service.restore(manifest.id)).resolves.toMatchObject({ branch: "feature-eperm" });
+    });
+
+    // The cross-device path never reports the payload as moved, because the
+    // container still holds it. A later failure must therefore roll back the
+    // ordinary way — remove the half-built worktree — rather than try to
+    // rename the payload back over itself, which fails ENOTEMPTY and would
+    // leave a registered worktree and a stray branch behind for no reason.
+    it("rolls back normally when a cross-device restore fails after the copy", async () => {
+      const source = await makeSourceDir("feature-xdev-late", { "work.txt": "uncommitted work" });
+      const { manifest, payloadPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-xdev-late",
+        reason: "prune",
+      });
+      await failRenameWhen((_from, to) => to === source, "EXDEV");
+      gitStub.resetWorktreeIndex.mockRejectedValueOnce(new Error("index.lock exists"));
+
+      await expect(service.restore(manifest.id)).rejects.toThrow(/trash entry left intact/);
+
+      // Rolled back the ordinary way, and crucially NOT by renaming the
+      // payload back over a container that still holds it — that fails
+      // ENOTEMPTY and would leave the worktree registered and the branch
+      // behind for nothing.
+      expect(gitStub.removeWorktree).toHaveBeenCalledWith(source, { force: true });
+      expect(gitStub.deleteLocalBranch).toHaveBeenCalledWith("feature-xdev-late");
+      await expect(fs.readFile(path.join(payloadPath, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+
+      allowRename();
+      await fs.rm(source, { recursive: true, force: true });
+      const restored = await service.restore(manifest.id);
+      expect(restored.branch).toBe("feature-xdev-late");
+    });
+
+    // The one failure that must roll nothing back: with the payload moved and
+    // unable to go back, `git worktree remove --force` would delete the user's
+    // only copy of it. A half-finished worktree the error explains is the
+    // cheaper outcome by far.
+    it("never removes the directory when a moved payload cannot be put back", async () => {
+      const source = await makeSourceDir("feature-stuck", { "work.txt": "uncommitted work" });
+      const { manifest } = await service.trashDirectory({
+        dirPath: source,
+        branch: "feature-stuck",
+        reason: "prune",
+      });
+      gitStub.resetWorktreeIndex.mockRejectedValue(new Error("index.lock exists"));
+      await failRenameWhen((from) => from === source, "EPERM");
+
+      await expect(service.restore(manifest.id)).rejects.toThrow(/finish by hand/);
+
+      expect(gitStub.removeWorktree).not.toHaveBeenCalled();
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      await expect(fs.readFile(path.join(source, PATH_CONSTANTS.GIT_DIR), "utf-8")).resolves.toBe(FRESH_GIT_LINK);
+    });
+
+    // Both ways the payload can come back. The cross-device case is the one
+    // that still copies, which is what copyTreePreservingSymlinks exists for;
+    // nothing may be asserted until the container is gone, since a link
+    // rewritten to a path under `.trash/` still resolves while it is there and
+    // would prove nothing.
+    for (const { device, crossDevice } of [
+      { device: "the same", crossDevice: false },
+      { device: "another", crossDevice: true },
+    ]) {
+      it(`restores relative symlinks intact from ${device} device, resolvable after the container is deleted`, async (ctx) => {
+        if (!(await symlinksSupported())) {
+          ctx.skip("this host cannot create symlinks");
+          return;
+        }
+        const source = await makeSourceDir("feature-links", { "work.txt": "uncommitted work" });
+        const binDir = path.join(source, "node_modules", ".bin");
+        await fs.mkdir(binDir, { recursive: true });
+        await fs.mkdir(path.join(source, "node_modules", "pkg"), { recursive: true });
+        await fs.writeFile(path.join(source, "node_modules", "pkg", "cli.js"), "#!/usr/bin/env node\n");
+        await fs.symlink(path.join("..", "pkg", "cli.js"), path.join(binDir, "tool"));
+        const { manifest, containerPath } = await service.trashDirectory({
+          dirPath: source,
+          branch: "feature-links",
+          reason: "prune",
+        });
+        if (crossDevice) {
+          await failRenameWhen((_from, to) => to === source, "EXDEV");
+        }
+
+        await service.restore(manifest.id);
+
+        expect(fs.cp).toHaveBeenCalledTimes(crossDevice ? 1 : 0);
+        await expect(fs.access(containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+        const restoredLink = path.join(source, "node_modules", ".bin", "tool");
+        await expect(fs.readlink(restoredLink)).resolves.toBe(path.join("..", "pkg", "cli.js"));
+        await expect(fs.readFile(restoredLink, "utf-8")).resolves.toBe("#!/usr/bin/env node\n");
+      });
+    }
 
     it("restores an entry pinned in the legacy flat layout and releases that flat ref", async () => {
       const source = await makeSourceDir("legacy-restore", { "work.txt": "uncommitted work" });
@@ -752,9 +1052,6 @@ describe("TrashService", () => {
         path.join(containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME),
         JSON.stringify({ ...manifest, pinRef: legacyPinRef }),
       );
-      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
-        await fs.mkdir(args[1] as string, { recursive: true });
-      });
 
       const restored = await service.restore(manifest.id);
 
@@ -773,11 +1070,6 @@ describe("TrashService", () => {
         reason: "prune",
       });
       gitStub.getLocalBranchCommit.mockResolvedValue("abc123");
-      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
-        const destination = args[1] as string;
-        await fs.mkdir(destination, { recursive: true });
-        await fs.writeFile(path.join(destination, ".git"), "gitdir: /fresh/admin");
-      });
 
       await service.restore(manifest.id);
 
@@ -796,7 +1088,7 @@ describe("TrashService", () => {
       const order: string[] = [];
       gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
         order.push("addWorktreeNoCheckout");
-        await fs.mkdir(args[1] as string, { recursive: true });
+        await createFreshWorktreeDir(args[1] as string);
       });
       gitStub.trackRemoteBranchIfExists.mockImplementation(async () => {
         order.push("trackRemoteBranchIfExists");
@@ -816,9 +1108,6 @@ describe("TrashService", () => {
         dirPath: source,
         branch: "feature-no-upstream",
         reason: "prune",
-      });
-      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
-        await fs.mkdir(args[1] as string, { recursive: true });
       });
       gitStub.trackRemoteBranchIfExists.mockRejectedValue(new Error("config locked"));
 
@@ -897,11 +1186,13 @@ describe("TrashService", () => {
       await expect(service.restore(manifest.id)).rejects.toThrow(/payload missing or unverifiable/);
     });
 
-    // A worktree restore copies the payload out instead of moving it, so the
-    // cleanup is a real recursive delete over the user's files and takes the
-    // reaper's ordering: what it cannot delete must stay a listed entry the
-    // reaper will finish, never unrecognized content nothing comes back for.
-    it("leaves a restored entry listable when its payload cannot be deleted", async () => {
+    // A worktree restore moves the payload out, so the container it deletes
+    // afterwards normally holds nothing but its manifest. The cross-device
+    // fallback is the case where that cleanup is still a recursive delete over
+    // the user's files, and it takes the reaper's ordering: what it cannot
+    // delete must stay a listed entry the reaper will finish, never
+    // unrecognized content nothing comes back for.
+    it("leaves a restored entry listable when a copied-out payload cannot be deleted", async () => {
       const source = await makeSourceDir("feature-cleanup", {
         "work.txt": "uncommitted work",
         "root-built.js": "written by a root container",
@@ -911,9 +1202,7 @@ describe("TrashService", () => {
         branch: "feature-cleanup",
         reason: "prune",
       });
-      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
-        await fs.mkdir(args[1] as string, { recursive: true });
-      });
+      await failRenameWhen((_from, to) => to === source, "EXDEV");
       await mockUndeletableFile("root-built.js");
 
       const restored = await service.restore(manifest.id);

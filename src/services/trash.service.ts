@@ -537,9 +537,11 @@ export class TrashService {
     }
 
     // The payload is back in place — from here on, cleanup failures must not
-    // fail the restore (a rejected retry would see "payload missing"). A
-    // worktree restore copies the payload out rather than moving it, so this
-    // is a real recursive delete and takes the same ordering as the reaper's.
+    // fail the restore (a rejected retry would see "payload missing"). The
+    // container is normally empty but for its manifest by now, since both
+    // restore paths move the payload out; only the cross-device fallback in
+    // movePayloadInto leaves files here to delete, so this keeps the reaper's
+    // ordering for the case that still needs it.
     await removeTrashContainer(containerPath).catch((error: unknown) => {
       this.logger.warn(`⚠️ Failed to remove restored trash container '${containerPath}': ${getErrorMessage(error)}`);
       this.logger.warn(`   ${trashDeleteHint(containerPath)}`);
@@ -652,9 +654,12 @@ export class TrashService {
       createdBranch = true;
     }
 
+    let payloadMoved = false;
     try {
       await this.gitService.addWorktreeNoCheckout(branch, manifest.originalPath);
-      await this.copyPayloadOver(payloadPath, manifest.originalPath);
+      await this.movePayloadInto(payloadPath, manifest.originalPath, () => {
+        payloadMoved = true;
+      });
       await this.gitService.resetWorktreeIndex(manifest.originalPath);
       // The payload was checked out under the sparse profile when it was
       // trashed; the fresh registration must carry the same sparse config or
@@ -673,6 +678,25 @@ export class TrashService {
         this.logger.warn(`⚠️ Could not set the upstream of restored '${branch}': ${getErrorMessage(upstreamError)}`);
       }
     } catch (error) {
+      // The rollback below deletes the half-built worktree — and once the
+      // payload has been moved into it, that directory holds the only copy of
+      // the user's files. Put them back in the container first, by the reverse
+      // of the same rename, so a failed restore still leaves a complete,
+      // restorable entry exactly as it did when restore worked by copying.
+      if (payloadMoved) {
+        try {
+          await fs.rename(manifest.originalPath, payloadPath);
+        } catch (rollbackError) {
+          // Deleting the directory now would destroy the payload, so nothing
+          // is rolled back: the worktree stays registered, the branch stays,
+          // and the files stay where a `git reset` finishes the job by hand.
+          throw new TrashOperationError(
+            "restore",
+            `failed to recreate worktree for '${manifest.id}': ${getErrorMessage(error)}; the payload could not be returned to the trash container either (${getErrorMessage(rollbackError)}), so the files are left at '${manifest.originalPath}' with the worktree registered — finish by hand with 'git -C ${manifest.originalPath} reset'`,
+            error instanceof Error ? error : undefined,
+          );
+        }
+      }
       await this.gitService
         .removeWorktree(manifest.originalPath, { force: true })
         .catch((rollbackError: unknown) =>
@@ -693,8 +717,81 @@ export class TrashService {
     }
   }
 
-  // The payload's top-level .git link points at a pruned admin dir; the fresh
-  // one written by `worktree add --no-checkout` must survive the overlay.
+  /**
+   * Puts the payload back at `destination`, which `worktree add --no-checkout`
+   * has just created. Trashing was a single rename and so is this: the fresh
+   * directory holds exactly one entry, the `.git` file (measured on git 2.43),
+   * and restore() has already refused a destination that existed, so there is
+   * nothing in there to preserve but that link. Take it, drop the directory,
+   * rename the payload into its place and write the link back over the stale
+   * one the payload carries — the README's manual recipe, which repairs that
+   * link after its `cp -R`, in O(1) rather than O(payload) under the
+   * repository lock. Git is unbothered by the replacement: its admin dir
+   * addresses the checkout by path, so an identical `.git` at the same path
+   * leaves `worktree list`, `reset` and `status` working (measured).
+   *
+   * `onMoved` fires the instant the container stops holding the payload, and
+   * before anything that can fail afterwards, so the caller's rollback always
+   * knows whether the files it is about to delete are the only copy. It never
+   * fires on the cross-device path, where the entry is left complete.
+   */
+  private async movePayloadInto(payloadPath: string, destination: string, onMoved: () => void): Promise<void> {
+    const gitLinkPath = path.join(destination, PATH_CONSTANTS.GIT_DIR);
+    const gitLink = await fs.readFile(gitLinkPath);
+
+    // Only ever the directory `worktree add --no-checkout` just made, holding
+    // exactly its own `.git` — restore() has already refused a destination
+    // that existed. Checked rather than assumed: the next line is a recursive
+    // delete and the invariant that makes it safe lives in another file.
+    const existing = await fs.readdir(destination);
+    if (existing.length !== 1 || existing[0] !== PATH_CONSTANTS.GIT_DIR) {
+      throw new TrashOperationError(
+        "restore",
+        `refusing to replace '${destination}': expected only the '${PATH_CONSTANTS.GIT_DIR}' link git just registered, found ${existing.length} entries`,
+      );
+    }
+
+    // The payload's own `.git` is corrected BEFORE the move, not after. Both
+    // orders cost one rename; only this one leaves no instant at which a crash
+    // strands files at `destination` that describe themselves wrongly. Writing
+    // it afterwards left two such windows: killed before the rewrite, the
+    // restored worktree carried the payload's link to a pruned admin dir;
+    // killed mid-rewrite, it had no `.git` at all and the registration read
+    // `prunable`. Neither loses data, but both need `git worktree repair` by
+    // hand and leave a payload-less trash entry whose retry reports the
+    // payload missing. Now a crash before the rename leaves the payload whole
+    // in the container carrying a link that is merely early, and a crash after
+    // it leaves a complete worktree.
+    //
+    // Removed rather than overwritten because a payload's `.git` can be a
+    // directory, which `writeFile` cannot replace — the copy path drops it the
+    // same way, through the filter in copyPayloadOver.
+    const payloadGitLinkPath = path.join(payloadPath, PATH_CONSTANTS.GIT_DIR);
+    await fs.rm(payloadGitLinkPath, { recursive: true, force: true });
+    await fs.writeFile(payloadGitLinkPath, gitLink);
+
+    try {
+      await fs.rm(destination, { recursive: true, force: true });
+      await fs.rename(payloadPath, destination);
+    } catch (error) {
+      // EXDEV only. Every other failure propagates: silently falling back
+      // would trade the O(1) move this exists for back into the O(payload)
+      // copy under the repository lock, with nothing to say it happened.
+      if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+      // The trash root lives under worktreeDir, so the two are normally one
+      // filesystem — but a bind mount or a symlinked worktreeDir can still
+      // split them. Rebuild what the rm above removed and copy instead.
+      await fs.mkdir(destination, { recursive: true });
+      await fs.writeFile(gitLinkPath, gitLink);
+      await this.copyPayloadOver(payloadPath, destination);
+      return;
+    }
+    onMoved();
+  }
+
+  // The cross-device fallback for movePayloadInto, overlaying rather than
+  // moving. The payload's top-level .git points at a pruned admin dir; the
+  // fresh link already written into the destination must survive the copy.
   private async copyPayloadOver(payloadPath: string, destination: string): Promise<void> {
     await copyTreePreservingSymlinks(payloadPath, destination, {
       force: true,
