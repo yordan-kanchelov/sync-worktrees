@@ -556,7 +556,7 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
     exitConfigExists(targetPath);
   }
 
-  const input = await promptForInitConfig();
+  const input = await promptForInitConfig(path.dirname(targetPath));
 
   try {
     await generateConfigFile(input, targetPath, { overwrite: force });
@@ -565,6 +565,24 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
       exitConfigExists(error.configPath);
     }
     throw error;
+  }
+
+  // The wizard is the one place a config is written without the user ever
+  // seeing it, so prove it loads before claiming success. `buildRepositories`
+  // is the exact entry point `runFromConfigFile` uses, so anything it accepts
+  // here the next `sync-worktrees` run accepts too.
+  try {
+    await new ConfigLoaderService().buildRepositories(targetPath);
+  } catch (error) {
+    // The file is left in place deliberately: it holds the answers the user
+    // just typed and is the only evidence of what went wrong, and with --force
+    // deleting it would destroy the config it overwrote as well.
+    console.error(`\n❌ Wrote ${targetPath}, but it does not load:`);
+    console.error(`   ${getErrorMessage(error)}`);
+    console.error(
+      `💡 The file was left in place — fix it by hand, or re-run 'sync-worktrees init --force' to redo it.`,
+    );
+    process.exit(1);
   }
 
   const displayPath = path.relative(process.cwd(), targetPath) || targetPath;

@@ -232,7 +232,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T33** — `fetchTimeoutMs` / `cloneTimeoutMs` are documented on Config and promised by README
   but are silently dropped by resolveRepositoryConfig — no config-file user can change the 5/15-minute
   inactivity timeouts
-- [ ] **T34** — `sync-worktrees init` reports success but writes configs that cannot be loaded: ESM
+- [x] **T34** — `sync-worktrees init` reports success but writes configs that cannot be loaded: ESM
   syntax into a `.cjs` target or into a `"type": "commonjs"` package, and `worktreeDir: "./"` when the
   worktree dir equals the config dir
 - [ ] **T35** — Config hot-reload is stale for ESM configs that import sibling modules: only the
@@ -1760,7 +1760,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Re-verified: `resolveRepositoryConfig` (612-723) builds the resolved object field by
   field and never copies `fetchTimeoutMs` / `cloneTimeoutMs`.
 
-### [ ] T34. `sync-worktrees init` reports success but writes configs that cannot be loaded: ESM syntax into a `.cjs` target or into a `"type": "commonjs"` package, and `worktreeDir: "./"` when the worktree dir equals the config dir
+### [x] T34. `sync-worktrees init` reports success but writes configs that cannot be loaded: ESM syntax into a `.cjs` target or into a `"type": "commonjs"` package, and `worktreeDir: "./"` when the worktree dir equals the config dir
 
 - **Category**: workflow · **Subsystem**: config
 - **Severity**: Medium · **Verification**: finder's evidence and code citations, not independently

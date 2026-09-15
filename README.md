@@ -337,7 +337,7 @@ Terminal mode requires [`tmux`](https://github.com/tmux/tmux) to be installed.
 
 ## Configuration
 
-Config files are JavaScript ES modules. Relative paths resolve from the config file's location, and you have full access to `process.env` and Node module loading.
+Config files are JavaScript modules — ES modules by default, CommonJS when the file is `.cjs` or the nearest `package.json` declares `"type": "commonjs"` (`module.exports = config;` instead of `export default config;`). `sync-worktrees init` picks the right one for you. Relative paths resolve from the config file's location, and you have full access to `process.env` and Node module loading.
 
 ### Minimal config
 
@@ -713,7 +713,7 @@ The CLI loads a config file and runs it. Most run-mode settings (branch filters,
 
 Subcommands:
 
-- `sync-worktrees init [--config <path>] [--force]` — interactive wizard that writes a minimal config file (`./sync-worktrees.config.js` by default). Refuses to overwrite an existing target unless `--force` is passed.
+- `sync-worktrees init [--config <path>] [--force]` — interactive wizard that writes a minimal config file (`./sync-worktrees.config.js` by default). Refuses to overwrite an existing target unless `--force` is passed. The generated file is loaded back before the wizard reports success, so a config that would not load fails the command instead of surfacing on the next run.
 - `sync-worktrees list [--config <path>] [--filter <pattern>]` — print the resolved repositories and exit.
 
 ## Requirements

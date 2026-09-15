@@ -80,6 +80,59 @@ describe("ConfigLoaderService", () => {
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Config file not found");
     });
 
+    // Node reports a config parsed under the wrong module system as a bare
+    // `SyntaxError: Unexpected token 'export'` that names neither the file nor
+    // the fix, so the loader appends a hint. A `.cjs` target is the case that
+    // can be exercised here: it goes through the loader's real `require()`, so
+    // Node's own parser produces the error. The sibling case -- a `.js` file in
+    // a `"type": "commonjs"` package -- cannot be reproduced in-process, because
+    // Vitest resolves `import()` through its own pipeline rather than Node's
+    // module-type resolution; the generator's tests cover that one against a
+    // real `node` child process instead.
+    it("hints at the module system when a .cjs config uses export default", async () => {
+      const configPath = path.join(tempDir, "esm-in.cjs");
+      await fs.writeFile(configPath, `export default { repositories: [] };`);
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      // Additive: the original Node message survives verbatim.
+      expect(error.message).toContain("Failed to load config file: Unexpected token 'export'");
+      expect(error.message).toContain("esm-in.cjs");
+      expect(error.message).toContain('add "type": "module"');
+      expect(error.message).toContain(".mjs/.cjs");
+    });
+
+    it("leaves an unrelated syntax error unhinted", async () => {
+      // A genuine syntax error has nothing to do with the module system, so
+      // the hint must not fire on every SyntaxError.
+      const configPath = path.join(tempDir, "broken.cjs");
+      await fs.writeFile(configPath, `module.exports = { repositories: [ ;`);
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("Unexpected token ';'");
+      expect(error.message).not.toContain("hint:");
+    });
+
+    it("leaves other load failures unhinted", async () => {
+      const configPath = path.join(tempDir, "not-an-object.config.js");
+      await fs.writeFile(configPath, `export default "not an object";`);
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toBe("Failed to load config file: Config file must export an object");
+      expect(error.message).not.toContain("hint:");
+    });
+
     it("should throw error for invalid config format", async () => {
       const configPath = path.join(tempDir, "invalid.config.js");
       const configContent = `export default "not an object";`;

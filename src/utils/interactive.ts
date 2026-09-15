@@ -4,6 +4,7 @@ import { confirm, input, select } from "@inquirer/prompts";
 import * as cron from "node-cron";
 
 import { extractRepoNameFromUrl } from "./git-url";
+import { pathsEqual } from "./path-compare";
 
 import type { InitConfigInput, InitRepositoryInput } from "../types";
 
@@ -15,7 +16,7 @@ function safeRepoName(repoUrl: string): string {
   }
 }
 
-async function promptForRepository(): Promise<InitRepositoryInput> {
+async function promptForRepository(configDir: string): Promise<InitRepositoryInput> {
   const repoUrl = await input({
     message: "Enter the Git repository URL (e.g., https://github.com/user/repo.git):",
     validate: (value: string) => {
@@ -56,6 +57,18 @@ async function promptForRepository(): Promise<InitRepositoryInput> {
       if (!value.trim() && !defaultWorktreeDir) {
         return "Directory is required";
       }
+      // The config's own directory is never a usable worktreeDir: the generator
+      // would write `worktreeDir: "./"`, and the default bareRepoDir — `.bare/<name>`
+      // resolved against the *config file's* directory, not against worktreeDir —
+      // would land inside it, so the very next run would be rejected by the
+      // bareRepoDir/worktreeDir overlap check.
+      if (mode !== "clone" && pathsEqual(path.resolve(value.trim() || defaultWorktreeDir), configDir)) {
+        return (
+          `That is the config file's own directory. The bare repository defaults to '.bare/<name>' beside the ` +
+          `config file, so it would land inside worktreeDir and the config would be rejected as overlapping. ` +
+          `Use a subdirectory such as ${defaultWorktreeDir || "./worktrees"}.`
+        );
+      }
       return true;
     },
   });
@@ -65,6 +78,16 @@ async function promptForRepository(): Promise<InitRepositoryInput> {
   }
   if (!path.isAbsolute(worktreeDir)) {
     worktreeDir = path.resolve(worktreeDir);
+  }
+
+  // Clone mode is a warning, not a reject: `git clone` refuses a non-empty
+  // destination, and the directory holding the config file is never empty.
+  if (mode === "clone" && pathsEqual(worktreeDir, configDir)) {
+    console.warn(
+      `\n⚠️  '${worktreeDir}' is the config file's own directory. 'git clone' refuses a destination that exists and ` +
+        `is not empty, so the first sync will fail with "Cannot clone into '${worktreeDir}': directory exists and ` +
+        `is not empty." unless you move the config elsewhere.\n`,
+    );
   }
 
   const repo: InitRepositoryInput = { repoUrl, worktreeDir, mode };
@@ -112,13 +135,18 @@ async function promptForRepository(): Promise<InitRepositoryInput> {
   return repo;
 }
 
-export async function promptForInitConfig(): Promise<InitConfigInput> {
+/**
+ * @param configDir Directory the generated config file will live in. Answers
+ *   equal to it are rejected (worktree mode) or warned about (clone mode).
+ */
+export async function promptForInitConfig(configDir: string): Promise<InitConfigInput> {
   console.log("🔧 Welcome to sync-worktrees interactive setup!\n");
 
+  const resolvedConfigDir = path.resolve(configDir);
   const repositories: InitRepositoryInput[] = [];
   let addMore = true;
   while (addMore) {
-    repositories.push(await promptForRepository());
+    repositories.push(await promptForRepository(resolvedConfigDir));
     addMore = await confirm({
       message: "Add another repository?",
       default: false,

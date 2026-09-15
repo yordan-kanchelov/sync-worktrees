@@ -34,7 +34,8 @@ interface SerializableObject {
   [key: string]: SerializableValue;
 }
 
-function serializeToESM(obj: SerializableValue, indent: number = 0): string {
+/** Serializes to a JS object literal — identical under both module systems. */
+function serializeValue(obj: SerializableValue, indent: number = 0): string {
   const spaces = " ".repeat(indent);
   const innerSpaces = " ".repeat(indent + 2);
 
@@ -48,7 +49,7 @@ function serializeToESM(obj: SerializableValue, indent: number = 0): string {
 
   if (Array.isArray(obj)) {
     if (obj.length === 0) return "[]";
-    const items = obj.map((item) => `${innerSpaces}${serializeToESM(item, indent + 2)}`).join(",\n");
+    const items = obj.map((item) => `${innerSpaces}${serializeValue(item, indent + 2)}`).join(",\n");
     return `[\n${items}\n${spaces}]`;
   }
 
@@ -56,7 +57,7 @@ function serializeToESM(obj: SerializableValue, indent: number = 0): string {
     const entries = Object.entries(obj)
       .filter(([_, value]) => value !== undefined)
       .map(([key, value]) => {
-        const serializedValue = serializeToESM(value, indent + 2);
+        const serializedValue = serializeValue(value, indent + 2);
         return `${innerSpaces}${key}: ${serializedValue}`;
       });
 
@@ -65,6 +66,72 @@ function serializeToESM(obj: SerializableValue, indent: number = 0): string {
   }
 
   return String(obj);
+}
+
+/** The module system Node will parse a given config path under. */
+type ConfigModuleSystem = "esm" | "cjs";
+
+/**
+ * The `type` of the nearest `package.json` at or above `startDir`, using Node's
+ * own lookup rule: the *first* `package.json` found wins, a grandparent's `type`
+ * never applies once a nearer one exists. Returns `undefined` when there is no
+ * `package.json` in the chain, when it has no `type`, or when it cannot be read
+ * or parsed — all cases where we fall back to the ESM default.
+ */
+async function readNearestPackageType(startDir: string): Promise<string | undefined> {
+  let current = path.resolve(startDir);
+  const root = path.parse(current).root;
+
+  while (true) {
+    let raw: string | undefined;
+    try {
+      raw = await fs.readFile(path.join(current, "package.json"), "utf-8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "EISDIR") {
+        return undefined;
+      }
+    }
+
+    if (raw !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        const type = (parsed as { type?: unknown } | null)?.type;
+        return typeof type === "string" ? type : undefined;
+      } catch {
+        // Malformed package.json: Node stops its own lookup here too, so don't
+        // keep walking up and inherit a `type` Node would never apply.
+        return undefined;
+      }
+    }
+
+    if (current === root) return undefined;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+/**
+ * How Node will parse `configPath`, so the generated file is written in the
+ * module system it will actually be loaded under. `.cjs`/`.mjs` are decided by
+ * the extension alone; every other extension (including the default `.js`)
+ * follows the nearest `package.json`'s `type`.
+ *
+ * Note the asymmetry that makes the `"type": "commonjs"` case a real bug rather
+ * than a cosmetic one: with *no* `type` field Node's module-syntax detection
+ * re-parses an ESM `.js` file and it loads anyway, but an explicit
+ * `"type": "commonjs"` turns detection off and the same file is a hard
+ * `SyntaxError: Unexpected token 'export'` (verified on Node 22 and 24).
+ */
+async function detectConfigModuleSystem(configPath: string): Promise<ConfigModuleSystem> {
+  // Case-sensitive on purpose: Node's extension handling is, and so is the
+  // loader's own `endsWith(".cjs")` require/import split. Matching it exactly
+  // keeps the two from disagreeing about an oddly cased path.
+  const extension = path.extname(configPath);
+  if (extension === ".cjs") return "cjs";
+  if (extension === ".mjs") return "esm";
+  return (await readNearestPackageType(path.dirname(configPath))) === "commonjs" ? "cjs" : "esm";
 }
 
 export interface GenerateConfigFileOptions {
@@ -135,6 +202,9 @@ export async function generateConfigFile(
     repositories: input.repositories.map((repo, index) => buildRepository(repo, configDir, names[index])),
   };
 
+  const moduleSystem = await detectConfigModuleSystem(configPath);
+  const exportStatement = moduleSystem === "cjs" ? "module.exports = config;" : "export default config;";
+
   const configContent = `// @ts-check
 
 /**
@@ -143,9 +213,9 @@ export async function generateConfigFile(
  */
 
 /** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
-const config = ${serializeToESM(configObject)};
+const config = ${serializeValue(configObject)};
 
-export default config;
+${exportStatement}
 ${CONFIG_CHEATSHEET}`;
 
   try {

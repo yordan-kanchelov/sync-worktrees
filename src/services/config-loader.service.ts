@@ -167,6 +167,21 @@ export const CLONE_MODE_CONFLICTING_FIELDS = [
   "trash",
 ] as const satisfies readonly (keyof RepositoryConfig)[];
 
+/**
+ * A config written in ESM but parsed as CommonJS (a `.cjs` target, or a `.js`
+ * one whose nearest package.json says `"type": "commonjs"`) surfaces only as a
+ * bare `SyntaxError: Unexpected token 'export'`, which names neither the file
+ * nor the fix. Appended to — never substituted for — the original message.
+ */
+function moduleSyntaxHint(absolutePath: string, error: unknown): string {
+  if ((error as Error | null)?.name !== "SyntaxError") return "";
+  if (!/Unexpected token '?export'?/.test((error as Error).message)) return "";
+  return (
+    ` (hint: '${path.basename(absolutePath)}' uses ESM syntax but Node parsed it as CommonJS — ` +
+    `add "type": "module" to the nearest package.json, or use .mjs/.cjs; a .cjs config must use module.exports)`
+  );
+}
+
 export class ConfigLoaderService {
   async findConfigUpward(startDir: string): Promise<string | null> {
     let current = path.resolve(startDir);
@@ -217,7 +232,9 @@ export class ConfigLoaderService {
       if (error instanceof SyncWorktreesError) {
         throw error;
       }
-      throw new Error(`Failed to load config file: ${(error as Error).message}`);
+      throw new Error(
+        `Failed to load config file: ${(error as Error).message}${moduleSyntaxHint(absolutePath, error)}`,
+      );
     }
   }
 
