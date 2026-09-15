@@ -1,7 +1,6 @@
 export const GIT_CONSTANTS = {
   REMOTE_PREFIX: "origin/",
   REMOTE_NAME: "origin",
-  HEAD_REF: "/HEAD",
   DEFAULT_BRANCH: "main",
   COMMON_DEFAULT_BRANCHES: ["main", "master", "develop", "trunk"],
   BARE_DIR_NAME: ".bare",
@@ -30,7 +29,6 @@ export const GIT_CONSTANTS = {
   REFS: {
     HEADS: "refs/heads/",
     REMOTES: "refs/remotes/origin",
-    REMOTES_ORIGIN: "refs/remotes/origin/*",
   },
   FETCH_CONFIG: "+refs/heads/*:refs/remotes/origin/*",
   PROGRESS_BUCKET_PERCENT: 25,
@@ -53,7 +51,10 @@ export const DEFAULT_CONFIG = {
     INITIAL_DELAY_MS: 1000,
     MAX_DELAY_MS: 30000,
     BACKOFF_MULTIPLIER: 2,
-    JITTER_MS: 500,
+    // 0 on purpose, and read by SyncRetryPolicy: jitter only pays off when
+    // many repositories retry in lockstep, so it stays an opt-in
+    // (`retry.jitterMs`) rather than delay nobody asked for.
+    JITTER_MS: 0,
   },
   PARALLELISM: {
     MAX_REPOSITORIES: 2,
@@ -72,7 +73,6 @@ export const DEFAULT_CONFIG = {
     // shipped defaults peak at 2 × 20 = 40.
     MAX_SAFE_TOTAL_CONCURRENT_OPS: 100,
   },
-  UPDATE_EXISTING_WORKTREES: true,
   HOOK_TIMEOUT_MS: 60_000,
   FETCH_TIMEOUT_MS: 300_000,
   CLONE_TIMEOUT_MS: 900_000,
@@ -112,11 +112,6 @@ export const ERROR_MESSAGES = {
   EXDEV: "EXDEV",
 } as const;
 
-export const TEST_TIMEOUT = {
-  DEFAULT: 10000,
-  E2E: 60000,
-} as const;
-
 export const ENV_CONSTANTS = {
   GIT_LFS_SKIP_SMUDGE: "GIT_LFS_SKIP_SMUDGE",
   GIT_ATTR_SOURCE: "GIT_ATTR_SOURCE",
@@ -129,7 +124,6 @@ export const ENV_CONSTANTS = {
 
 export const PATH_CONSTANTS = {
   GIT_DIR: ".git",
-  README: "README",
   CLONE_INIT_MARKER: ".sync-worktrees-clone-init",
   /** Written the moment the clone resolves, before any post-clone step, and
    * removed once the initial file copy lands — its presence marks a
@@ -199,9 +193,6 @@ export const METADATA_CONSTANTS = {
   WORKTREE_METADATA_PATH: ".git/worktrees",
   DIVERGED_INFO_FILE: ".diverged-info.json",
   DIVERGED_REASON: "diverged-history-with-changes",
-  ACTION_CREATED: "created",
-  ACTION_UPDATED: "updated",
-  ACTION_FETCHED: "fetched",
 } as const;
 
 export const TERMINAL_CONSTANTS = {
@@ -211,7 +202,6 @@ export const TERMINAL_CONSTANTS = {
 } as const;
 
 export const HOOK_CONSTANTS = {
-  ENV_PREFIX: "SYNC_WORKTREES_",
   ENV_VARS: {
     BRANCH_NAME: "SYNC_WORKTREES_BRANCH_NAME",
     WORKTREE_PATH: "SYNC_WORKTREES_WORKTREE_PATH",

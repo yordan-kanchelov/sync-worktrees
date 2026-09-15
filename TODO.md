@@ -251,7 +251,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   SyntaxErrors lack file/line
 - [x] **T94** — Docs drift in shipped user-facing text: example config's lock-file location is
   wrong, README's CLI section omits the `trash` subcommand
-- [ ] **T95** — Dead or duplicated constants in src/constants.ts: unused
+- [x] **T95** — Dead or duplicated constants in src/constants.ts: unused
   GIT_CONSTANTS/DEFAULT_CONFIG/METADATA entries, FETCH_CONFIG duplicated as a literal in
   git.service.ts, test-only TEST_TIMEOUT shipped in dist, unused CliCommand type
 - [x] **T96** — Test coverage gaps in the config/CLI subsystem: example config never loaded, no
@@ -3793,7 +3793,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: Docs were not updated when the lock target moved in 5.3.1 and when the
   trash CLI was added in 5.2.0.
 
-### [ ] T95. Dead or duplicated constants in src/constants.ts: unused GIT_CONSTANTS/DEFAULT_CONFIG/METADATA entries, FETCH_CONFIG duplicated as a literal in git.service.ts, test-only TEST_TIMEOUT shipped in dist, unused CliCommand type
+### [x] T95. Dead or duplicated constants in src/constants.ts: unused GIT_CONSTANTS/DEFAULT_CONFIG/METADATA entries, FETCH_CONFIG duplicated as a literal in git.service.ts, test-only TEST_TIMEOUT shipped in dist, unused CliCommand type
 
 - **Category**: workflow · **Subsystem**: config
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

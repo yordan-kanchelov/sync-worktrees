@@ -348,14 +348,12 @@ export class GitService {
     // Check if fetch config already exists
     try {
       const existingConfig = await bareGit.raw(["config", "--get-all", "remote.origin.fetch"]);
-      const targetConfig = "+refs/heads/*:refs/remotes/origin/*";
-
-      if (!existingConfig.includes(targetConfig)) {
-        await bareGit.addConfig("remote.origin.fetch", targetConfig);
+      if (!existingConfig.includes(GIT_CONSTANTS.FETCH_CONFIG)) {
+        await bareGit.addConfig("remote.origin.fetch", GIT_CONSTANTS.FETCH_CONFIG);
       }
     } catch {
       // Config doesn't exist, add it
-      await bareGit.addConfig("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+      await bareGit.addConfig("remote.origin.fetch", GIT_CONSTANTS.FETCH_CONFIG);
     }
 
     // Always fetch to ensure remote refs are up-to-date

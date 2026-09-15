@@ -8,8 +8,6 @@ export const CLI_COMMANDS = {
   TRASH: "trash",
 } as const;
 
-export type CliCommand = (typeof CLI_COMMANDS)[keyof typeof CLI_COMMANDS];
-
 export type CliOptions =
   | { command: typeof CLI_COMMANDS.RUN; config?: string; runOnce: boolean }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
