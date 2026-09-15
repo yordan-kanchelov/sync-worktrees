@@ -241,7 +241,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T36** — Daemon/TUI mode never syncs at startup and no CLI/config option restores it:
   `--sync-on-start` was removed in 4.0.0 without a replacement, while README says the bare command
   'starts syncing'
-- [ ] **T91** — Load-time validation gaps with runtime consequences: `branchInclude: [""]` prunes
+- [x] **T91** — Load-time validation gaps with runtime consequences: `branchInclude: [""]` prunes
   every non-default worktree, NaN/Infinity retry numbers pass and make retry() throw,
   `skipUpdateWhenOutsideSparse` accepts a string that inverts its meaning
 - [ ] **T92** — Unknown / misspelled config keys are silently ignored at runtime (typo'd
@@ -3664,7 +3664,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: Existing tests target service logic with stubs; e2e directory contains
   only the reservation scenario for trash.
 
-### [ ] T91. Load-time validation gaps with runtime consequences: `branchInclude: [""]` prunes every non-default worktree, NaN/Infinity retry numbers pass and make retry() throw, `skipUpdateWhenOutsideSparse` accepts a string that inverts its meaning
+### [x] T91. Load-time validation gaps with runtime consequences: `branchInclude: [""]` prunes every non-default worktree, NaN/Infinity retry numbers pass and make retry() throw, `skipUpdateWhenOutsideSparse` accepts a string that inverts its meaning
 
 - **Category**: guardrail · **Subsystem**: config
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

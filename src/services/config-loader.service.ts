@@ -474,7 +474,11 @@ export class ConfigLoaderService {
       this.validateBoolean(repoObj.updateExistingWorktrees, `Repository '${repoObj.name}' updateExistingWorktrees`);
 
       if (repoObj.retry !== undefined) {
-        this.validateRetryConfig(repoObj.retry, `Repository '${repoObj.name}' retry config`);
+        this.validateRetryConfig(
+          repoObj.retry,
+          `Repository '${repoObj.name}' retry config`,
+          `Repository '${repoObj.name}' retry`,
+        );
       }
 
       if (repoObj.filesToCopyOnBranchCreate !== undefined) {
@@ -540,7 +544,7 @@ export class ConfigLoaderService {
         throw new Error("Invalid 'retry' in defaults");
       }
       if (defaults.retry !== undefined) {
-        this.validateRetryConfig(defaults.retry, "defaults retry config");
+        this.validateRetryConfig(defaults.retry, "defaults retry config", "defaults.retry");
       }
       if (defaults.filesToCopyOnBranchCreate !== undefined) {
         this.validateFilesToCopyConfig(defaults.filesToCopyOnBranchCreate, "defaults");
@@ -576,7 +580,7 @@ export class ConfigLoaderService {
     }
 
     if (configObj.retry !== undefined) {
-      this.validateRetryConfig(configObj.retry, "retry config");
+      this.validateRetryConfig(configObj.retry, "retry config", "retry");
     }
 
     let globalParallelism: ParallelismConfig = {};
@@ -648,10 +652,29 @@ export class ConfigLoaderService {
     }
   }
 
+  /**
+   * `branchInclude` / `branchExclude`, at either level.
+   *
+   * An empty or whitespace-only pattern matches nothing (git refuses a branch
+   * name containing a space) while `filterBranchesByName` applies an include
+   * list on `length > 0` alone, so `branchInclude: [""]` keeps no branch and
+   * the prune phase then sees every worktree but the default branch's as
+   * unmanaged. It arrives as `(process.env.BRANCHES ?? "").split(",")` with
+   * the variable unset, which yields `[""]` rather than `[]`.
+   */
   private validateBranchPatternList(value: unknown, field: string): void {
     if (value === undefined) return;
     if (!Array.isArray(value) || value.some((pattern) => typeof pattern !== "string")) {
       throw new ConfigValidationError(field, "must be an array of strings");
+    }
+    const blankIndex = (value as string[]).findIndex((pattern) => pattern.trim() === "");
+    if (blankIndex !== -1) {
+      throw new ConfigValidationError(
+        field,
+        `must not contain empty or whitespace-only patterns (invalid at index ${blankIndex}); ` +
+          `such a pattern matches no branch, and a branchInclude matching nothing prunes every worktree. ` +
+          `Omit the field to sync every branch`,
+      );
     }
   }
 
@@ -711,7 +734,30 @@ export class ConfigLoaderService {
     }
   }
 
-  private validateRetryConfig(value: unknown, context: string): void {
+  /**
+   * A `retry` block, at any level. `context` reads inside the long-standing
+   * messages ("Invalid 'retry' in defaults"); `fieldPrefix` names the setting
+   * for the checks added below, which follow the house shape and so say which
+   * repository is at fault — the older messages never did.
+   *
+   * Every bound here is `<`-shaped and NaN fails every `<`, so each field is
+   * also tested for finiteness and the two counts for integrality. Measured
+   * against `retry()`: a NaN or Infinity `maxAttempts` throws before the first
+   * attempt, so every sync fails without trying (Infinity is not a spelling of
+   * unlimited — the string is); a NaN delay or multiplier, or an Infinity
+   * `jitterMs`, makes the computed delay non-finite and `setTimeout` floors it
+   * to 1ms, hundreds of attempts a second in place of the 1s/2s/4s backoff;
+   * `maxDelayMs: Infinity` instead removes the cap, so the doubling runs away
+   * into days between attempts; a non-finite `maxLfsRetries` never trips the
+   * LFS limit, because `lfsAttempt > NaN` is never true. `jitterMs: NaN` and
+   * `backoffMultiplier: Infinity` are harmless on their own — one is skipped
+   * by `NaN > 0`, the other only pins the delay to `maxDelayMs` — and are
+   * rejected anyway, so each field has one rule and not a list of exceptions.
+   *
+   * Fractions stay legal for the delays and the multiplier, which are
+   * continuous: only the two counts must be whole.
+   */
+  private validateRetryConfig(value: unknown, context: string, fieldPrefix: string): void {
     if (typeof value !== "object" || value === null) {
       throw new Error(context === "retry config" ? "'retry' must be an object" : `Invalid 'retry' in ${context}`);
     }
@@ -722,20 +768,32 @@ export class ConfigLoaderService {
       if (retry.maxAttempts !== "unlimited" && (typeof retry.maxAttempts !== "number" || retry.maxAttempts < 1)) {
         throw new Error("Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number");
       }
+      if (retry.maxAttempts !== "unlimited" && !Number.isSafeInteger(retry.maxAttempts)) {
+        throw new ConfigValidationError(`${fieldPrefix}.maxAttempts`, "must be 'unlimited' or a positive safe integer");
+      }
     }
 
     if (retry.maxLfsRetries !== undefined) {
       if (typeof retry.maxLfsRetries !== "number" || retry.maxLfsRetries < 0) {
         throw new Error("Invalid 'maxLfsRetries' in retry config. Must be a non-negative number");
       }
+      if (!Number.isSafeInteger(retry.maxLfsRetries)) {
+        throw new ConfigValidationError(`${fieldPrefix}.maxLfsRetries`, "must be a non-negative safe integer");
+      }
     }
 
     if (retry.initialDelayMs !== undefined && (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)) {
       throw new Error("Invalid 'initialDelayMs' in retry config");
     }
+    if (retry.initialDelayMs !== undefined && !Number.isFinite(retry.initialDelayMs)) {
+      throw new ConfigValidationError(`${fieldPrefix}.initialDelayMs`, "must be a finite non-negative number");
+    }
 
     if (retry.maxDelayMs !== undefined && (typeof retry.maxDelayMs !== "number" || retry.maxDelayMs < 0)) {
       throw new Error("Invalid 'maxDelayMs' in retry config");
+    }
+    if (retry.maxDelayMs !== undefined && !Number.isFinite(retry.maxDelayMs)) {
+      throw new ConfigValidationError(`${fieldPrefix}.maxDelayMs`, "must be a finite non-negative number");
     }
 
     if (
@@ -744,9 +802,15 @@ export class ConfigLoaderService {
     ) {
       throw new Error("Invalid 'backoffMultiplier' in retry config");
     }
+    if (retry.backoffMultiplier !== undefined && !Number.isFinite(retry.backoffMultiplier)) {
+      throw new ConfigValidationError(`${fieldPrefix}.backoffMultiplier`, "must be a finite number of at least 1");
+    }
 
     if (retry.jitterMs !== undefined && (typeof retry.jitterMs !== "number" || retry.jitterMs < 0)) {
       throw new Error("Invalid 'jitterMs' in retry config");
+    }
+    if (retry.jitterMs !== undefined && !Number.isFinite(retry.jitterMs)) {
+      throw new ConfigValidationError(`${fieldPrefix}.jitterMs`, "must be a finite non-negative number");
     }
 
     const initialDelay = (retry.initialDelayMs as number) ?? DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS;
@@ -955,6 +1019,12 @@ export class ConfigLoaderService {
     if (cfg.mode !== undefined && cfg.mode !== "cone" && cfg.mode !== "no-cone") {
       throw new Error(`'sparseCheckout.mode' in ${context} must be 'cone' or 'no-cone'`);
     }
+
+    // The update phase reads this as `!== false`, which is true for every
+    // non-boolean: the string "false" enables the skipping it was written to
+    // disable, and HEAD then stops advancing for changes outside the sparse
+    // set. Typed here so the setting cannot mean the opposite of what it says.
+    this.validateBoolean(cfg.skipUpdateWhenOutsideSparse, `${context} sparseCheckout.skipUpdateWhenOutsideSparse`);
   }
 
   private warnOnDuplicateRepoUrls(repositories: Array<Record<string, unknown>>): void {

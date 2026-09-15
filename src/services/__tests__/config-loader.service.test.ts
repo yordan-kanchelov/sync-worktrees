@@ -1186,6 +1186,192 @@ describe("ConfigLoaderService", () => {
       const config = await configLoader.loadConfigFile(configPath);
       expect(config.retry?.maxLfsRetries).toBe(0);
     });
+
+    // Every bound in validateRetryConfig is `<`-shaped, and NaN fails every
+    // `<`. The values below all loaded before: a NaN maxAttempts made retry()
+    // throw before the first attempt on every sync, and a non-finite delay
+    // collapsed the backoff to setTimeout's 1ms floor. Each case asserts the
+    // new message, because some of them were already refused by the unrelated
+    // 'initialDelayMs must not exceed maxDelayMs' check and would pass here
+    // for that reason alone.
+    it.each([
+      ["maxAttempts: NaN", "maxAttempts: NaN", "'retry.maxAttempts': must be 'unlimited' or a positive safe integer"],
+      [
+        "maxAttempts: Infinity",
+        "maxAttempts: Infinity",
+        "'retry.maxAttempts': must be 'unlimited' or a positive safe integer",
+      ],
+      ["maxAttempts: 2.5", "maxAttempts: 2.5", "'retry.maxAttempts': must be 'unlimited' or a positive safe integer"],
+      ["maxAttempts: 1e21", "maxAttempts: 1e21", "'retry.maxAttempts': must be 'unlimited' or a positive safe integer"],
+      ["maxLfsRetries: NaN", "maxLfsRetries: NaN", "'retry.maxLfsRetries': must be a non-negative safe integer"],
+      ["maxLfsRetries: 1.5", "maxLfsRetries: 1.5", "'retry.maxLfsRetries': must be a non-negative safe integer"],
+      ["maxLfsRetries: 1e21", "maxLfsRetries: 1e21", "'retry.maxLfsRetries': must be a non-negative safe integer"],
+      ["initialDelayMs: NaN", "initialDelayMs: NaN", "'retry.initialDelayMs': must be a finite non-negative number"],
+      [
+        "initialDelayMs: Infinity",
+        "initialDelayMs: Infinity, maxDelayMs: Infinity",
+        "'retry.initialDelayMs': must be a finite non-negative number",
+      ],
+      ["maxDelayMs: NaN", "maxDelayMs: NaN", "'retry.maxDelayMs': must be a finite non-negative number"],
+      ["maxDelayMs: Infinity", "maxDelayMs: Infinity", "'retry.maxDelayMs': must be a finite non-negative number"],
+      [
+        "backoffMultiplier: NaN",
+        "backoffMultiplier: NaN",
+        "'retry.backoffMultiplier': must be a finite number of at least 1",
+      ],
+      [
+        "backoffMultiplier: Infinity",
+        "backoffMultiplier: Infinity",
+        "'retry.backoffMultiplier': must be a finite number of at least 1",
+      ],
+      ["jitterMs: NaN", "jitterMs: NaN", "'retry.jitterMs': must be a finite non-negative number"],
+      ["jitterMs: Infinity", "jitterMs: Infinity", "'retry.jitterMs': must be a finite non-negative number"],
+    ])("rejects retry %s", async (_label, field, message) => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { retry: { ${field} }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigValidationError);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(message);
+    });
+
+    // The new arms run after the long-standing ones, so a value an old bound
+    // already caught still reports the old message. Only a non-number tells the
+    // two orders apart: 0 and -1 are safe integers and reach the old arm either
+    // way, so those cases pass whichever arm runs first.
+    it.each([
+      [`maxAttempts: "3"`, "Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number"],
+      ["maxLfsRetries: null", "Invalid 'maxLfsRetries' in retry config. Must be a non-negative number"],
+    ])("keeps the long-standing message for %s", async (field, message) => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { retry: { ${field} }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(message);
+    });
+
+    it("names the repository whose retry block is at fault", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "alpha", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }, { name: "beta", repoUrl: "${TEST_URLS.gitlab}", worktreeDir: "./worktrees-b", retry: { maxAttempts: NaN } }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'beta' retry.maxAttempts'",
+      );
+    });
+
+    it("names the level of a defaults retry block", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { defaults: { retry: { jitterMs: Infinity } }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid configuration for 'defaults.retry.jitterMs'",
+      );
+    });
+
+    // The delays and the multiplier are continuous quantities: only the two
+    // counts are whole numbers. 'unlimited' is the one spelling of unbounded
+    // attempts -- Infinity is not, retry() has always thrown on it.
+    it("still accepts finite fractional delays, jitter and multiplier", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { retry: { maxAttempts: "unlimited", maxLfsRetries: 0, initialDelayMs: 1500.5, maxDelayMs: 30000, backoffMultiplier: 1.5, jitterMs: 250.5 }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.retry).toEqual({
+        maxAttempts: "unlimited",
+        maxLfsRetries: 0,
+        initialDelayMs: 1500.5,
+        maxDelayMs: 30000,
+        backoffMultiplier: 1.5,
+        jitterMs: 250.5,
+      });
+    });
+  });
+
+  describe("branch pattern list validation", () => {
+    async function loadWithPatterns(line: string, repoName = "test-repo"): Promise<unknown> {
+      const configPath = path.join(tempDir, "patterns.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "${repoName}", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees", ${line} }] };`,
+      );
+      return configLoader.loadConfigFile(configPath);
+    }
+
+    // A pattern that is empty or all whitespace can never match: git refuses a
+    // branch name containing a space. filterBranchesByName applies an include
+    // list on length alone, so branchInclude: [""] keeps no branch and the
+    // prune phase then sees every worktree but the default branch's as
+    // unmanaged.
+    it("rejects an empty branchInclude pattern", async () => {
+      await expect(loadWithPatterns(`branchInclude: [""]`)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'test-repo' branchInclude': must not contain empty or whitespace-only patterns (invalid at index 0)",
+      );
+    });
+
+    it("rejects a whitespace-only branchExclude pattern", async () => {
+      await expect(loadWithPatterns(`branchExclude: [" "]`)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'test-repo' branchExclude': must not contain empty or whitespace-only patterns (invalid at index 0)",
+      );
+    });
+
+    it("reports the index of the blank pattern among valid ones", async () => {
+      await expect(loadWithPatterns(`branchInclude: ["main", "release/*", "\t"]`)).rejects.toThrow(
+        "must not contain empty or whitespace-only patterns (invalid at index 2)",
+      );
+    });
+
+    it("reports the first blank pattern when a list holds several", async () => {
+      await expect(loadWithPatterns(`branchInclude: ["", "main", " "]`)).rejects.toThrow(
+        "must not contain empty or whitespace-only patterns (invalid at index 0)",
+      );
+    });
+
+    // Both defaults fields, not just one: an inherited branchInclude that
+    // matches nothing is the shape that prunes every repository's worktrees.
+    it.each([["branchInclude"], ["branchExclude"]])("rejects an empty %s pattern in defaults", async (field) => {
+      const configPath = path.join(tempDir, "patterns-defaults.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { defaults: { ${field}: [""] }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        `Invalid configuration for 'defaults.${field}': must not contain empty or whitespace-only patterns`,
+      );
+    });
+
+    it("rejects the shape an unset environment variable produces", async () => {
+      const configPath = path.join(tempDir, "patterns-env.config.js");
+      await fs.writeFile(
+        configPath,
+        `const branches = (process.env.SYNC_WORKTREES_T91_UNSET ?? "").split(",");
+export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees", branchInclude: branches }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigValidationError);
+    });
+
+    it("still accepts patterns, an empty list and an absent list", async () => {
+      await expect(
+        loadWithPatterns(`branchInclude: ["main", "release/*"], branchExclude: ["wip-*"]`),
+      ).resolves.toBeDefined();
+      await expect(loadWithPatterns(`branchInclude: [], branchExclude: []`)).resolves.toBeDefined();
+      await expect(loadWithPatterns(`branchMaxAge: "14d"`)).resolves.toBeDefined();
+    });
   });
 
   describe("resolveRepositoryConfig - retry and skipLfs", () => {
@@ -2846,6 +3032,32 @@ describe("ConfigLoaderService", () => {
     it("validates sparseCheckout in defaults", async () => {
       const c = `export default { defaults: { sparseCheckout: { include: [] } }, repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w" }] };`;
       await expect(loadInline(c)).rejects.toThrow(/at least one pattern/);
+    });
+
+    // The update phase reads the flag as `!== false`, so a string "false"
+    // enabled the skipping it was meant to switch off and HEAD stopped
+    // advancing for changes outside the sparse set.
+    it.each([[`"false"`], [`0`], [`null`]])(
+      "rejects a non-boolean skipUpdateWhenOutsideSparse (%s)",
+      async (literal) => {
+        const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["src"], skipUpdateWhenOutsideSparse: ${literal} } }] };`;
+        await expect(loadInline(c)).rejects.toBeInstanceOf(ConfigValidationError);
+        await expect(loadInline(c)).rejects.toThrow(
+          "Invalid configuration for 'Repository 'r' sparseCheckout.skipUpdateWhenOutsideSparse': must be a boolean",
+        );
+      },
+    );
+
+    it("rejects a non-boolean skipUpdateWhenOutsideSparse in defaults", async () => {
+      const c = `export default { defaults: { sparseCheckout: { include: ["src"], skipUpdateWhenOutsideSparse: "true" } }, repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w" }] };`;
+      await expect(loadInline(c)).rejects.toThrow(
+        "Invalid configuration for 'defaults sparseCheckout.skipUpdateWhenOutsideSparse': must be a boolean",
+      );
+    });
+
+    it.each([[`true`], [`false`]])("still accepts a boolean skipUpdateWhenOutsideSparse (%s)", async (literal) => {
+      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["src"], skipUpdateWhenOutsideSparse: ${literal} } }] };`;
+      await expect(loadInline(c)).resolves.toBeDefined();
     });
   });
 
