@@ -205,7 +205,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T83** — Legacy `.diverged/` adoption ignores the entry's `keep/<name>` ref: the permanent
   keep ref stays after the directory is moved into trash, and the payload's .diverged-info.json still
   points at a recovery flow that no longer applies
-- [ ] **T84** — Force clean runs `git gc --prune=now` on a shared object store without checking for
+- [x] **T84** — Force clean runs `git gc --prune=now` on a shared object store without checking for
   in-flight git operations, while the modal text says active worktrees are untouched
 - [ ] **T85** — Manifest `branch` is not validated as a ref name; a hand-edited or corrupted
   manifest with an option-like branch makes restore run `git branch -m <sha>` and rename the bare
@@ -3444,7 +3444,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   and `migrateDivergedDir` never deletes the `refs/sync-worktrees/keep/<name>` ref written by
   `divergeWorktree` (worktree-mode-sync-runner.ts:1111-1113).
 
-### [ ] T84. Force clean runs `git gc --prune=now` on a shared object store without checking for in-flight git operations, while the modal text says active worktrees are untouched
+### [x] T84. Force clean runs `git gc --prune=now` on a shared object store without checking for in-flight git operations, while the modal text says active worktrees are untouched
 
 - **Category**: guardrail · **Subsystem**: trash
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

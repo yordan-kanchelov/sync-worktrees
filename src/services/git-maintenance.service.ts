@@ -141,12 +141,27 @@ export class GitMaintenanceService {
   /**
    * Callers must hold the repository operation lock. This intentionally bypasses
    * isEnabled() and isDue() so an explicit request always attempts maintenance.
+   *
+   * It prunes on a grace window rather than `--prune=now` unless
+   * `maintenance.aggressive` asks for the latter — see
+   * MAINTENANCE_CONSTANTS.FORCE_CLEAN_PRUNE_EXPIRE for why, and for why the
+   * window does not cost the caller the reclamation it came for.
    */
   async runNowUnlocked(now: number = Date.now()): Promise<boolean> {
     return this.runUnlocked(now, true);
   }
 
-  private async runUnlocked(now: number, forceAggressive: boolean): Promise<boolean> {
+  // Plain `gc` honours git's own two-week grace. `--prune=now` honours none, so
+  // it is reserved for the config flag that documents the hazard; an explicit
+  // run that has not opted in still prunes, just not into the window where a
+  // concurrent git command's objects live.
+  private buildArgs(forcePrune: boolean): string[] {
+    if (this.config.maintenance?.aggressive ?? false) return ["gc", "--prune=now"];
+    if (forcePrune) return ["gc", `--prune=${MAINTENANCE_CONSTANTS.FORCE_CLEAN_PRUNE_EXPIRE}`];
+    return ["gc"];
+  }
+
+  private async runUnlocked(now: number, forcePrune: boolean): Promise<boolean> {
     // Outer guard: maintenance is best-effort and runs at the tail of sync(). Any
     // failure here — target resolution, state IO, the gc itself — must be swallowed
     // so it can never fail an otherwise-successful sync.
@@ -162,12 +177,11 @@ export class GitMaintenanceService {
 
       const statePath = this.getStatePath(gitDir);
       const state = await this.readState(statePath);
-      if (!forceAggressive && !this.isDue(state, now)) {
+      if (!forcePrune && !this.isDue(state, now)) {
         return false;
       }
 
-      const aggressive = forceAggressive || (this.config.maintenance?.aggressive ?? false);
-      const args = aggressive ? ["gc", "--prune=now"] : ["gc"];
+      const args = this.buildArgs(forcePrune);
       const nowIso = new Date(now).toISOString();
       state.lastAttemptAt = nowIso;
 

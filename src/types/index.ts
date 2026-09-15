@@ -114,10 +114,14 @@ export interface MaintenanceConfig {
    * When true, run `git gc --prune=now` instead of plain `git gc`. This prunes
    * recently-unreachable objects immediately, bypassing Git's default 2-week
    * grace period. Off by default — only enable for explicit aggressive cleanup.
+   * It also takes force clean's gc down to `--prune=now` from the grace window
+   * it otherwise uses.
    *
    * Hazard: the repo lock only serializes sync-worktrees processes. Plain git
    * commands run concurrently by you or your IDE can have objects written but
    * not yet ref-anchored; `--prune=now` deletes those with no grace window.
+   * Every worktree writes into the same object store, so this covers work in
+   * any of them, not just the one you are looking at.
    */
   aggressive?: boolean;
 }
@@ -436,6 +440,13 @@ export interface ForceCleanResult extends Omit<ForceCleanPreview, keyof ForceCle
   /** Recovery refs present at purge time but absent from the confirmed selection. */
   skippedNewKeepRefs: number;
   gcSucceeded: boolean;
+  /**
+   * True when the gc was deliberately not run because a git command was in
+   * flight, or an operation left half-finished, in a checkout sharing the
+   * object store. `errors` names what was found. Distinct from
+   * `gcSucceeded: false`, which means the gc ran and failed.
+   */
+  gcSkipped: boolean;
   errors: string[];
 }
 

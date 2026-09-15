@@ -309,6 +309,22 @@ describe("WorktreeSyncService", () => {
   });
 
   describe("permanent keep refs", () => {
+    // `fs.readdir` is what the busy probe reads: the bare repo's own entries,
+    // then `worktrees/`, then each registration's admin directory. Everything
+    // else in these suites wants the `.diverged` listing, so both are routed
+    // through one implementation.
+    const mockBusyWorktrees = (worktrees: Record<string, string[]>, divergedNames: string[] = []): void => {
+      const worktreesDir = `${path.sep}test${path.sep}.bare${path.sep}repo.git${path.sep}worktrees`;
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) => {
+        const target = String(dirPath);
+        if (target.endsWith(".diverged")) return divergedNames;
+        if (target === worktreesDir) return Object.keys(worktrees);
+        const owner = Object.keys(worktrees).find((name) => target === path.join(worktreesDir, name));
+        if (owner) return worktrees[owner];
+        return [];
+      });
+    };
+
     it("rejects names that could escape the keep namespace", async () => {
       await expect(service.deleteKeepRef("../heads/main")).rejects.toThrow("Invalid keep ref name");
       expect(mockGitService.deleteRef).not.toHaveBeenCalled();
@@ -363,7 +379,7 @@ describe("WorktreeSyncService", () => {
     // A `.diverged/<name>` directory and `keep/<name>` are two halves of one
     // preserved worktree: the files on disk and the commits behind them. Force
     // clean deletes neither or both — dropping only the ref and then running
-    // `gc --prune=now` would leave a directory whose own instructions
+    // the gc would leave a directory whose own instructions
     // ("git push --force-with-lease") no longer work, with nothing said about it.
     it("keeps a keep ref whose .diverged directory is still on disk", async () => {
       const divergedName = "2026-01-01-feature-1-abc";
@@ -396,7 +412,7 @@ describe("WorktreeSyncService", () => {
     // The other half of the confirmation: a recovery ref minted between the
     // preview and the keypress — a diverged-replace during the cron tick that
     // ran while the modal was open — holds commits that are on no remote. It
-    // was never counted on screen, so `gc --prune=now` must not be allowed to
+    // was never counted on screen, so the gc must not be allowed to
     // reach behind it.
     it("purges the named entries and refs, leaving ones that appeared after the preview", async () => {
       const shown = { manifest: { id: "shown-entry", sizeBytes: 1024 } } as any;
@@ -457,6 +473,135 @@ describe("WorktreeSyncService", () => {
 
       expect(mockGitService.deleteRef).not.toHaveBeenCalled();
       expect(result).toMatchObject({ keepRefsDeleted: 0, skippedNewKeepRefs: 0, errors: [] });
+    });
+
+    // The gc at the tail of force clean rewrites the object store every
+    // worktree shares, so it is the one step that can reach work outside the
+    // trash the user confirmed. A checkout with a git command in flight, or an
+    // operation half-finished, means the gc waits — the purge does not.
+    it("skips the gc and names the worktree when one is holding index.lock", async () => {
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [], invalid: [] });
+      vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
+        deleted: 1,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
+        errors: [],
+      });
+      const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
+      mockGitService.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/orphaned-entry"]);
+      mockBusyWorktrees({ "feature-1": ["index.lock"] });
+
+      const result = await service.forceClean({
+        trashEntryIds: ["trash-entry"],
+        keepRefNames: ["refs/sync-worktrees/keep/orphaned-entry"],
+      });
+
+      expect(gc).not.toHaveBeenCalled();
+      expect(result.gcSkipped).toBe(true);
+      expect(result.gcSucceeded).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain("index.lock");
+      expect(result.errors[0]).toContain("feature-1");
+      // Rendered next to a `GC skipped` row: wording it as a failure would put
+      // "GC skipped (git gc failed...)" on screen, which is the confusion the
+      // gcSkipped flag exists to remove.
+      expect(result.errors[0]).toContain("skipped");
+      expect(result.errors[0]).not.toContain("failed");
+      // The half the gc has nothing to do with still ran.
+      expect(result.trashDeleted).toBe(1);
+      expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/orphaned-entry");
+    });
+
+    // Clone mode has no bare repo: the object store is the checkout's own
+    // `.git`, and the markers that matter sit directly in it rather than under
+    // `worktrees/`. Probing the checkout ROOT instead would find nothing and
+    // silently lose the guard for every clone-mode repository — the code is
+    // right, but nothing else in the suite exercises this branch.
+    it("probes the checkout's .git directory in clone mode, not the checkout root", async () => {
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [], invalid: [] });
+      vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
+        deleted: 0,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
+        errors: [],
+      });
+      const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
+      mockGitService.listRefs.mockResolvedValue([]);
+      const cloneGitDir = path.join(mockConfig.worktreeDir, ".git");
+      (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) => {
+        const target = String(dirPath);
+        if (target === cloneGitDir) return ["index.lock"];
+        if (target === mockConfig.worktreeDir) return ["src", "package.json"];
+        return [];
+      });
+      const cloneService = new WorktreeSyncService({ ...mockConfig, mode: "clone", branch: "main" });
+
+      const result = await cloneService.forceClean({ trashEntryIds: [], keepRefNames: [] });
+
+      expect(gc).not.toHaveBeenCalled();
+      expect(result.gcSkipped).toBe(true);
+      expect(result.errors[0]).toContain("index.lock");
+    });
+
+    it("skips the gc when a worktree was left mid-rebase", async () => {
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [], invalid: [] });
+      vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
+        deleted: 0,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
+        errors: [],
+      });
+      const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
+      mockGitService.listRefs.mockResolvedValue([]);
+      mockBusyWorktrees({ "feature-2": ["rebase-merge"] });
+
+      const result = await service.forceClean({ trashEntryIds: [], keepRefNames: [] });
+
+      expect(gc).not.toHaveBeenCalled();
+      expect(result.gcSkipped).toBe(true);
+      expect(result.errors[0]).toContain("rebase-merge");
+    });
+
+    it("runs the gc when every worktree is idle", async () => {
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [], invalid: [] });
+      vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
+        deleted: 0,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
+        errors: [],
+      });
+      const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
+      mockGitService.listRefs.mockResolvedValue([]);
+      mockBusyWorktrees({ "feature-1": [], "feature-2": [] });
+
+      const result = await service.forceClean({ trashEntryIds: [], keepRefNames: [] });
+
+      expect(gc).toHaveBeenCalledTimes(1);
+      expect(result.gcSkipped).toBe(false);
+      expect(result.gcSucceeded).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
+
+    // A gc that ran and failed is a different answer from one the probe held
+    // back, and the one that has to reach the user as an error.
+    it("reports a gc that ran and failed, and does not call it skipped", async () => {
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [], invalid: [] });
+      vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked").mockResolvedValue({
+        deleted: 0,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
+        errors: [],
+      });
+      const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(false);
+      mockGitService.listRefs.mockResolvedValue([]);
+      mockBusyWorktrees({ "feature-1": [] });
+
+      const result = await service.forceClean({ trashEntryIds: [], keepRefNames: [] });
+
+      expect(gc).toHaveBeenCalledTimes(1);
+      expect(result.gcSkipped).toBe(false);
+      expect(result.gcSucceeded).toBe(false);
+      expect(result.errors).toEqual(["git gc failed"]);
     });
 
     // Before this branch the diverge flow minted `keep/diverged-<ts>-<branch>`

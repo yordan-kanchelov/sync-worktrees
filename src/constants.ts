@@ -158,6 +158,25 @@ export const CONFIG_FILE_NAMES = [
 
 export const MAINTENANCE_CONSTANTS = {
   STATE_FILENAME: "sync-worktrees-maintenance.json",
+  /**
+   * Prune expiry for the gc force clean runs, unless `maintenance.aggressive`
+   * opts into `now`. The object store is shared with every checkout, and
+   * `--prune=now` deletes objects a concurrent `git commit` has written but not
+   * yet anchored to a ref.
+   *
+   * What the window costs in reclamation depends on how the objects are stored,
+   * because expiry reads the mtime of the FILE CURRENTLY HOLDING an object, not
+   * the age of the commit and not when it stopped being reachable. A loose
+   * object carries its own mtime, so the commits a purged recovery ref was
+   * holding are still collected on the same run. A packed object inherits its
+   * pack's mtime, and a repack resets that clock for everything in the new
+   * pack — so when the store was repacked inside the window (force clean packs;
+   * so does `gc.auto` after someone's commit) this run reclaims nothing, and
+   * the next maintenance run past the hour does it instead. Deferral, not
+   * forfeit: cruft-pack mtimes are per-object and are not refreshed by repeated
+   * gc, so nothing is pinned indefinitely.
+   */
+  FORCE_CLEAN_PRUNE_EXPIRE: "1.hour.ago",
 } as const;
 
 export const TRASH_CONSTANTS = {

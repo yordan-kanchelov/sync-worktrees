@@ -820,7 +820,7 @@ export class InteractiveUIService {
                 ? `; left ${result.skippedNewEntries} trash entries and ${result.skippedNewKeepRefs} recovery refs added after the preview`
                 : "";
             this.addLog(
-              `🧹 Force clean ${repoName}: deleted ${result.trashDeleted} trash entries and ${result.keepRefsDeleted} recovery refs; GC ${result.gcSucceeded ? "complete" : "failed"}${skipped}`,
+              `🧹 Force clean ${repoName}: deleted ${result.trashDeleted} trash entries and ${result.keepRefsDeleted} recovery refs; GC ${result.gcSkipped ? "skipped" : result.gcSucceeded ? "complete" : "failed"}${skipped}`,
               level,
             );
             return { repoIndex, repoName, result };

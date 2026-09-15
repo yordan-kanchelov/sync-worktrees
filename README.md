@@ -501,7 +501,7 @@ defaults: {
 
 - **`interval`** is a duration string (`h`/`d`/`w`/`m`/`y`). The last run is timestamped in the object store (`<bare-repo>/sync-worktrees-maintenance.json`, or `<worktreeDir>/.git/…` in clone mode), so throttling survives daemon restarts and repeated `runOnce` invocations.
 - **`aggressive: false`** (default) runs plain `git gc`, which honors Git's two-week grace period — recently-unreachable objects (and anything reachable from a branch, tag, stash, or reflog) are always preserved.
-- **`aggressive: true`** runs `git gc --prune=now`, pruning recently-unreachable objects immediately. Use it only for explicit reclamation; the default is the safe choice. The repository operation lock only serializes sync-worktrees' own operations — `--prune=now` can still race manual `git` work happening in the checkout outside the daemon, so avoid enabling it on repositories you also edit by hand concurrently.
+- **`aggressive: true`** runs `git gc --prune=now`, pruning recently-unreachable objects immediately. Use it only for explicit reclamation; the default is the safe choice. The repository operation lock only serializes sync-worktrees' own operations — `--prune=now` can still race manual `git` work happening in the checkout outside the daemon, so avoid enabling it on repositories you also edit by hand concurrently. Every worktree shares the bare repository's object store, so this applies to work in any of them, not just the one you are looking at.
 - A maintenance failure is logged as a warning and never fails the sync. The attempt is still timestamped, so a broken `gc` is throttled instead of retried every tick.
 
 ### Locking
@@ -589,7 +589,12 @@ defaults: {
 
 Trash entries are deliberately not exposed through the MCP server — listing, restoring, and purging are human operations.
 
-In the TUI, press `x` to preview a force clean across every configured repository. Confirming with `y` deletes exactly the trash entries and permanent `refs/sync-worktrees/keep/*` recovery refs that preview counted, then runs `git gc --prune=now`. This is irreversible; active worktrees, unrecognized trash content, and anything a sync trashed while the preview was on screen are left untouched — the last of these is reported in the result line.
+In the TUI, press `x` to preview a force clean across every configured repository. Confirming with `y` deletes exactly the trash entries and permanent `refs/sync-worktrees/keep/*` recovery refs that preview counted, then runs `git gc`. This is irreversible; active worktree files, unrecognized trash content, and anything a sync trashed while the preview was on screen are left untouched — the last of these is reported in the result line.
+
+The object store is the one thing every worktree does share, so the `gc` is the step that can reach work outside the trash you confirmed:
+
+- The `gc` prunes on a one-hour grace window, not `--prune=now`, unless `maintenance.aggressive` opts into the latter. Prune expiry is measured from the mtime of the file currently holding an object, not from the age of the commit and not from when it stopped being reachable. A loose object carries its own mtime, so the commits behind a purged recovery ref are normally still collected on the same run; a packed object inherits its pack's mtime, and a repack resets that clock for everything in the new pack, so when the store has been repacked inside the window this run reclaims nothing and the next one past the hour does it instead. Objects written — or repacked — in the last hour wait, which is exactly where a concurrent `git commit` keeps the ones it has not yet anchored to a ref.
+- Before the `gc`, each worktree's admin directory is checked for `index.lock` or `HEAD.lock` and for an unfinished `merge`, `rebase`, `cherry-pick`, `revert` or `bisect`. If any is found the `gc` is skipped for that repository, the result line reads `GC skipped`, and the errors name the worktree and the marker. This is a point-in-time check, not a lock: it catches a command or operation that is already in progress, and cannot stop one that starts a moment later. Purging the trash and refs still happens either way. A marker left behind by a crashed command — a stale `index.lock`, or a `rebase-merge/` from an operation nobody finished — keeps reporting busy until you remove the lock or finish the operation in that worktree; the error names both so you can tell which.
 
 ```bash
 sync-worktrees trash --filter <repository-name>

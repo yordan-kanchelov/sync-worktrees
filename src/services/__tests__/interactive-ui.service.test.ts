@@ -2549,6 +2549,7 @@ describe("InteractiveUIService", () => {
           skippedNewEntries: 1,
           skippedNewKeepRefs: 1,
           gcSucceeded: true,
+          gcSkipped: false,
           errors: [],
         });
         const logs: Array<{ message: string; level: string }> = [];
@@ -2563,6 +2564,38 @@ describe("InteractiveUIService", () => {
             message: expect.stringContaining("left 1 trash entries and 1 recovery refs added after the preview"),
           }),
         );
+
+        void ui.destroy();
+      });
+
+      // A gc the busy probe held back is not a gc that ran and failed; the log
+      // line has to keep the two apart or every skip reads as a broken repo.
+      it("logs a gc held back by the busy probe as skipped, not failed", async () => {
+        const ui = new InteractiveUIService([mockSyncService]);
+        mockSyncService.forceClean.mockResolvedValue({
+          trashEntries: 0,
+          trashBytes: 0,
+          unknownTrashSizes: 0,
+          invalidTrashEntries: 0,
+          keepRefs: 0,
+          trashDeleted: 1,
+          keepRefsDeleted: 0,
+          keepRefsRetained: 0,
+          skippedNewEntries: 0,
+          skippedNewKeepRefs: 0,
+          gcSucceeded: false,
+          gcSkipped: true,
+          errors: ["git gc skipped, git is busy in: /w/feature-1 (index.lock)"],
+        });
+        const logs: Array<{ message: string; level: string }> = [];
+        ui.getEvents().on("addLog", (entry: { message: string; level: string }) => logs.push(entry));
+        ui.getEvents().emit("uiReady");
+
+        await ui.forceClean([{ repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] }]);
+
+        const message = logs.map((entry) => entry.message).join("\n");
+        expect(message).toContain("GC skipped");
+        expect(message).not.toContain("GC failed");
 
         void ui.destroy();
       });

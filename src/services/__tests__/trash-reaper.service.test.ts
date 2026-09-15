@@ -186,7 +186,7 @@ describe("TrashReaperService", () => {
     await expect(fs.access(shownA.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(shownB.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(trashedAfterPreview.containerPath)).resolves.toBeUndefined();
-    // Its pin is what keeps the commits out of the `gc --prune=now` that force
+    // Its pin is what keeps the commits out of the `gc` that force
     // clean runs next; the orphaned-pin sweep must not take it either.
     expect(gitStub.deleteRef).not.toHaveBeenCalledWith(trashedAfterPreview.manifest.pinRef);
     expect(result.orphanedRefsDeleted).toBe(0);

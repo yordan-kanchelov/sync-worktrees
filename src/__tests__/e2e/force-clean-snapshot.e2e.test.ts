@@ -11,7 +11,7 @@ import { createMockLogger } from "../test-utils";
 
 import type { RepositoryConfig } from "../../types";
 
-// Real git, real trash, real `gc --prune=now`. The force-clean modal takes its
+// Real git, real trash, real `gc`. The force-clean modal takes its
 // preview outside the repo mutex and then waits for a keypress; a cron tick in
 // that window trashes more worktrees. Before the selection snapshot, confirming
 // a preview that said "1 trash" purged everything present at run time —
@@ -128,8 +128,44 @@ describe("Force clean purges only the previewed set (E2E)", () => {
     expect(result.trashDeleted).toBe(1);
     expect(result.skippedNewEntries).toBe(1);
     expect(result.gcSucceeded).toBe(true);
+    expect(result.gcSkipped).toBe(false);
     const remaining = await service.listTrashEntries();
     expect(remaining.entries.map((entry) => entry.manifest.id)).toEqual([unseen!.manifest.id]);
     expect(await commitExists(onlyCopyOid)).toBe(true);
+  });
+
+  // Every worktree writes into the bare repository's object store, so the gc is
+  // the step that can reach a developer's in-flight work. An `index.lock` is
+  // what a running `git add`/`git commit` — or an IDE staging in the background
+  // — leaves on disk while it does.
+  it("skips the gc while a worktree has a git command in flight, and still purges", async () => {
+    const service = makeService();
+    await service.initialize();
+    await service.sync();
+
+    await simpleGit(remote).raw(["update-ref", "-d", "refs/heads/shown-first"]);
+    await service.sync();
+    const preview = await service.getForceCleanPreview();
+    expect(preview.trashEntries).toBe(1);
+
+    const worktrees = await fs.readdir(path.join(bareRepoDir, "worktrees"));
+    expect(worktrees.length).toBeGreaterThan(0);
+    const lock = path.join(bareRepoDir, "worktrees", worktrees[0], "index.lock");
+    await fs.writeFile(lock, "");
+
+    const result = await service.forceClean(preview);
+
+    expect(result.gcSkipped).toBe(true);
+    expect(result.gcSucceeded).toBe(false);
+    expect(result.errors.join(" ")).toContain("index.lock");
+    // The purge is not the risky half, so it is not the half that waits.
+    expect(result.trashDeleted).toBe(1);
+    expect((await service.listTrashEntries()).entries).toHaveLength(0);
+
+    // Once the command finishes, the next force clean runs the gc as usual.
+    await fs.rm(lock);
+    const after = await service.forceClean(await service.getForceCleanPreview());
+    expect(after.gcSkipped).toBe(false);
+    expect(after.gcSucceeded).toBe(true);
   });
 });

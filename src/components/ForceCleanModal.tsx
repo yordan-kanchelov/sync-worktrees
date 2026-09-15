@@ -97,8 +97,16 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
         <Text bold color="red">
           Force Clean
         </Text>
-        <Text>This permanently purges verified trash and recovery refs, then runs git gc --prune=now.</Text>
-        <Text>Active worktrees are not synced, changed, or removed.</Text>
+        <Text>
+          This permanently purges verified trash and recovery refs, then runs git gc on the object store every worktree
+          shares.
+        </Text>
+        <Text>
+          Active worktree files are not synced, changed, or removed — but that shared object store is, so finish any git
+          command running in a worktree first. If any worktree is caught mid-operation the gc is skipped for that whole
+          repository; the purge still runs. A lock left behind by a crashed command keeps reporting busy until it is
+          removed.
+        </Text>
 
         <Box flexDirection="column" marginTop={1}>
           {loading && <Text color="yellow">Loading cleanup preview...</Text>}
@@ -137,7 +145,7 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
                 }
               >
                 {row.repoName}: deleted {row.result.trashDeleted} trash and {row.result.keepRefsDeleted} refs; GC{" "}
-                {row.result.gcSucceeded ? "complete" : "failed"}
+                {row.result.gcSkipped ? "skipped" : row.result.gcSucceeded ? "complete" : "failed"}
                 {row.result.keepRefsRetained > 0
                   ? `; kept ${row.result.keepRefsRetained} ref(s) still backing a .diverged copy`
                   : ""}

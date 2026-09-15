@@ -33,6 +33,7 @@ function result(overrides: Partial<ForceCleanRepositoryResult["result"]> = {}): 
       skippedNewEntries: 0,
       skippedNewKeepRefs: 0,
       gcSucceeded: true,
+      gcSkipped: false,
       errors: [],
       ...overrides,
     },
@@ -118,5 +119,70 @@ describe("ForceCleanModal", () => {
     // The box wraps at 78 columns, so match the phrase either side of the seam.
     expect(lastFrame()).toContain("left 1 trash and 2 ref(s)");
     expect(lastFrame()).toContain("added after this preview");
+  });
+
+  // "Active worktrees are not synced, changed, or removed" was true about the
+  // files and false about the object store they all share, which is exactly
+  // what the gc rewrites. The confirmation has to say which of the two it
+  // means before it asks for a keypress.
+  it("says the gc reaches the object store every worktree shares", async () => {
+    const { lastFrame } = render(
+      <ForceCleanModal
+        getPreview={vi.fn().mockResolvedValue([{ repoIndex: 0, repoName: "app", preview: preview() }])}
+        forceClean={vi.fn().mockResolvedValue([result()])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await settle();
+    const frame = lastFrame() ?? "";
+    // Wrapping at 78 columns puts line breaks mid-sentence, so match on words.
+    expect(frame).toContain("object store");
+    expect(frame).toContain("shares");
+    expect(frame).toMatch(/worktree\s+files are not synced, changed, or removed/);
+    expect(frame).not.toMatch(/worktrees are not synced, changed, or removed/);
+  });
+
+  it("reads a gc that was skipped as skipped, not as failed", async () => {
+    const { stdin, lastFrame } = render(
+      <ForceCleanModal
+        getPreview={vi.fn().mockResolvedValue([{ repoIndex: 0, repoName: "app", preview: preview() }])}
+        forceClean={vi.fn().mockResolvedValue([
+          result({
+            gcSucceeded: false,
+            gcSkipped: true,
+            errors: ["git gc skipped, git is busy in: /w/feature-1 (index.lock)"],
+          }),
+        ])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await settle();
+    stdin.write("y");
+    await settle();
+
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("GC skipped");
+    expect(frame).not.toContain("GC failed");
+    expect(frame).toContain("index.lock");
+  });
+
+  it("still reads a gc that ran and failed as failed", async () => {
+    const { stdin, lastFrame } = render(
+      <ForceCleanModal
+        getPreview={vi.fn().mockResolvedValue([{ repoIndex: 0, repoName: "app", preview: preview() }])}
+        forceClean={vi
+          .fn()
+          .mockResolvedValue([result({ gcSucceeded: false, gcSkipped: false, errors: ["git gc failed"] })])}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await settle();
+    stdin.write("y");
+    await settle();
+
+    expect(lastFrame()).toContain("GC failed");
   });
 });

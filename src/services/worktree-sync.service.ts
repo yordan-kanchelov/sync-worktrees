@@ -6,6 +6,7 @@ import pLimit from "p-limit";
 import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, TrashOperationError } from "../errors";
 import { withGitAuthHint } from "../utils/git-auth-error";
+import { formatGitBusySignals, probeInFlightGitOperations } from "../utils/git-busy-probe";
 import { getErrorMessage } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
@@ -294,9 +295,9 @@ export class WorktreeSyncService {
   // outside the repo mutex and this runs inside it, an unbounded human pause
   // later, so a sync in between can (and does) add trash entries and keep refs.
   // Purging "everything present now" would destroy those without ever naming
-  // them — some hold the only copy of never-pushed commits, and `gc
-  // --prune=now` at the end makes that final. Anything not in the selection is
-  // left in place and reported.
+  // them — some hold the only copy of never-pushed commits, and the `gc` at
+  // the end makes that final. Anything not in the selection is left in place
+  // and reported.
   async forceClean(selection: ForceCleanSelection): Promise<ForceCleanResult> {
     await this.requireForceCleanTarget();
     const selectedKeepRefs = new Set(selection.keepRefNames);
@@ -309,7 +310,7 @@ export class WorktreeSyncService {
         const keepRefs = this.cloneSyncService ? [] : await this.listKeepRefs();
         // A `.diverged/<name>` directory and `keep/<name>` are the two halves of
         // one preserved worktree — the files, and the commits they were made on.
-        // Dropping the ref and then running `gc --prune=now` would leave the
+        // Dropping the ref and then running the gc would leave the
         // directory intact but its own recovery instructions dead, so refs whose
         // directory is still there are retained and reported instead.
         const reservedNames = this.cloneSyncService ? new Set<string>() : await this.getDivergedDirectoryNames();
@@ -343,8 +344,32 @@ export class WorktreeSyncService {
           }
         }
 
-        const gcSucceeded = await this.maintenanceService.runNowUnlocked();
-        if (!gcSucceeded) errors.push("git gc --prune=now failed");
+        // The purge above only deletes directories and refs, which git itself
+        // serializes. The gc rewrites the object store every checkout shares,
+        // so it is the one step a person's own `git commit` in a worktree can
+        // collide with. Look for commands in flight and operations left
+        // half-finished, and skip the gc rather than run it into them.
+        //
+        // This is point-in-time, not exclusion: nothing stops a commit starting
+        // the instant after the probe returns clean, and the repository lock
+        // does not cover other people's git processes. It buys refusal on the
+        // states that last — a conflicted merge, an interactive rebase, a held
+        // `index.lock` — not a guarantee. The objects the deleted refs were
+        // holding stay until the next maintenance run, which is the cheap half
+        // of the trade: the trash directories are already gone.
+        const busy = await probeInFlightGitOperations(this.getObjectStoreGitDir());
+        const gcSkipped = busy.length > 0;
+        let gcSucceeded = false;
+        if (gcSkipped) {
+          // The word "skipped" is load-bearing: this string is rendered next to
+          // a `GC skipped` row, and calling it a failure there would recreate
+          // the failed/skipped confusion this whole path exists to remove.
+          errors.push(`git gc skipped, git is busy in: ${formatGitBusySignals(busy)}`);
+          this.logger.warn(`🧹 Skipping force-clean gc: ${formatGitBusySignals(busy)}`);
+        } else {
+          gcSucceeded = await this.maintenanceService.runNowUnlocked();
+          if (!gcSucceeded) errors.push("git gc failed");
+        }
         // The survivors' ids are dropped: a result names counts, never a set to
         // act on — see ForceCleanResult. Unlike the preview this recount runs
         // inside the exclusive operation, so it must not measure: it reports
@@ -360,6 +385,7 @@ export class WorktreeSyncService {
           skippedNewEntries: reap.skippedNotSelected,
           skippedNewKeepRefs,
           gcSucceeded,
+          gcSkipped,
           errors,
         };
       },
@@ -405,6 +431,14 @@ export class WorktreeSyncService {
         `cannot scan '${divergedRoot}' to protect preserved commits; refusing to delete recovery refs: ${getErrorMessage(error)}`,
       );
     }
+  }
+
+  // The git dir whose object store force clean's gc rewrites: the clone's own
+  // in clone mode, the bare repository every worktree is linked to otherwise.
+  private getObjectStoreGitDir(): string {
+    return this.cloneSyncService
+      ? path.join(this.config.worktreeDir, PATH_CONSTANTS.GIT_DIR)
+      : this.gitService.getBareRepoPath();
   }
 
   private async requireForceCleanTarget(): Promise<void> {
