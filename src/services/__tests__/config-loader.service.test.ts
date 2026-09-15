@@ -131,6 +131,113 @@ describe("ConfigLoaderService", () => {
 
       expect(error.message).toBe("Failed to load config file: Config file must export an object");
       expect(error.message).not.toContain("hint:");
+      // And unlocated: the stack of a failure raised *after* the file
+      // evaluated starts in this loader, and pointing at sync-worktrees' own
+      // code for a config the person has to fix is worse than saying nothing.
+    });
+
+    // `Failed to load config file: Unexpected token ']'` named neither the file
+    // nor the line, and a run with an auto-discovered config did not even say
+    // which file it had found. A `.cjs` target is the shape that can be
+    // exercised in-process: it goes through the loader's real `require()`, so
+    // Node's own parser produces the error and decorates the stack with the
+    // position. Vitest resolves `import()` through its own pipeline, so the
+    // `.js`/`.mjs` half is pinned against a real `node` in the e2e suite.
+    it("names the file and the line a config failed to parse on", async () => {
+      const dir = await fs.realpath(tempDir);
+      const configPath = path.join(dir, "syntax.cjs");
+      await fs.writeFile(configPath, 'module.exports = {\n  repositories: [\n    { name: "a" ],\n  ],\n};\n');
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("Unexpected token ']'");
+      // The offending token is on line 3, not line 1 and not the last line.
+      expect(error.message).toContain(`${configPath}:3`);
+    });
+
+    // The other shape: a config that parses and then throws carries an ordinary
+    // stack frame rather than Node's compile-failure decoration, and the first
+    // frame outside `node:` internals is the position.
+    it("names the line a config threw from while it evaluated", async () => {
+      const dir = await fs.realpath(tempDir);
+      const configPath = path.join(dir, "throws.cjs");
+      await fs.writeFile(
+        configPath,
+        "const repositories = [];\nthrow new Error('this config refuses to load');\nmodule.exports = { repositories };\n",
+      );
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("this config refuses to load");
+      expect(error.message).toContain(`${configPath}:2:`);
+    });
+
+    // A stack frame is plain text, and the two things it is most often split
+    // on — whitespace, and the bracket that opens the location — both occur in
+    // ordinary directory names ("~/My Projects", "proj (old)"). Splitting on
+    // either one walked past the config's own frame and reported whatever came
+    // next, which is this package's code: the one place the location must never
+    // point, since it is not the file the person has to fix.
+    it.each([
+      ["a space", "my configs"],
+      ["a bracket", "configs (old)"],
+      ["both", "my configs (old)"],
+    ])("names the config's own line when its directory contains %s", async (_label, dirName) => {
+      const dir = path.join(await fs.realpath(tempDir), dirName);
+      await fs.mkdir(dir, { recursive: true });
+      const configPath = path.join(dir, "throws.cjs");
+      await fs.writeFile(configPath, "const repositories = [];\nthrow new Error('this config refuses to load');\n");
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain(`${configPath}:2:`);
+      expect(error.message).not.toContain("config-loader.service");
+    });
+
+    it.each([
+      ["a space", "my configs"],
+      ["a bracket", "configs (old)"],
+    ])("names the config's own line when a parse failure's directory contains %s", async (_label, dirName) => {
+      const dir = path.join(await fs.realpath(tempDir), dirName);
+      await fs.mkdir(dir, { recursive: true });
+      const configPath = path.join(dir, "syntax.cjs");
+      await fs.writeFile(configPath, 'module.exports = {\n  repositories: [\n    { name: "a" ],\n  ],\n};\n');
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("Unexpected token ']'");
+      expect(error.message).toContain(`${configPath}:3`);
+      expect(error.message).not.toContain("config-loader.service");
+    });
+
+    // Node's own frames sit above the config's on a resolution failure — nine
+    // of them here — and reporting `node:internal/modules/cjs/loader:1383` as
+    // the place to look would be worse than reporting nothing.
+    it("skips Node's internal frames to reach the config's own line", async () => {
+      const dir = await fs.realpath(tempDir);
+      const configPath = path.join(dir, "missing-import.cjs");
+      await fs.writeFile(configPath, "module.exports = require('sync-worktrees-no-such-package');\n");
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("Cannot find module 'sync-worktrees-no-such-package'");
+      expect(error.message).toContain(`${configPath}:1:`);
+      expect(error.message).not.toContain("node:internal");
     });
 
     it("should throw error for invalid config format", async () => {

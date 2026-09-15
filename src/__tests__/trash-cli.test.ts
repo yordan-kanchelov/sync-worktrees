@@ -400,6 +400,27 @@ it("rejects --dropKeepRef without an interactive TTY", async () => {
   expect(mocks.initialize).not.toHaveBeenCalled();
 });
 
+// Ctrl+C at a confirmation prompt is how a destructive command is declined,
+// and @inquirer answers it with an ExitPromptError of its own rather than
+// letting the signal through — so it landed in main().catch as "❌ Unhandled
+// error:" followed by ten frames of readline internals. Verified against the
+// real prompt under a pty; the name and message here are the ones it produced.
+it("reports Ctrl+C at a confirmation prompt as one line, not a crash", async () => {
+  process.argv.push("--dropKeepRef", "preserved-entry");
+  setTTY(true);
+  const cancelled = new Error("User force closed the prompt with SIGINT");
+  cancelled.name = "ExitPromptError";
+  mocks.input.mockRejectedValue(cancelled);
+
+  await expect(main()).resolves.toBeUndefined();
+
+  expect(stderr(errorLog)).toContain("SIGINT");
+  expect(stderr(errorLog)).not.toContain("Unhandled error");
+  expect(stderr(errorLog)).not.toMatch(/\n\s+at /);
+  expect(mocks.deleteKeepRef).not.toHaveBeenCalled();
+  expect(process.exitCode).toBe(1);
+});
+
 it("rejects --dropKeepRef when the typed confirmation does not match", async () => {
   process.argv.push("--dropKeepRef", "preserved-entry");
   setTTY(true);

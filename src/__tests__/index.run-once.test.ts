@@ -37,10 +37,13 @@ vi.mock("../services/logger.service", () => ({
 }));
 
 vi.mock("../services/worktree-sync.service", () => ({
-  WorktreeSyncService: vi.fn(function () {
+  // The name is passed through to `initialize` so a test can make one
+  // repository's initialization fail while the others succeed, the way a
+  // parallel run does.
+  WorktreeSyncService: vi.fn(function (config: RepositoryConfig) {
     return {
       getRecordedSkips: mocks.getRecordedSkips,
-      initialize: mocks.initialize,
+      initialize: (): Promise<void> => mocks.initialize(config.name) as Promise<void>,
       sync: mocks.sync,
     };
   }),
@@ -242,5 +245,31 @@ describe("runMultipleRepositories", () => {
       .map(String)
       .join("\n");
     expect(everything).not.toContain("s3cr3t-token");
+  });
+  // Under parallelism the "📦 Repository: <name>" header is printed whenever
+  // that repository's task happens to start, so with N repositories in flight
+  // a bare "Failed to initialize repository:" left no way to tell which one
+  // died. allSettled hands the results back in the order it was given them, so
+  // the index is the answer.
+  it("names the repository whose initialization failed", async () => {
+    const repoB: RepositoryConfig = { ...repo, name: "repo-b", worktreeDir: "/tmp/repo-b" };
+    const repoC: RepositoryConfig = { ...repo, name: "repo-c", worktreeDir: "/tmp/repo-c" };
+    mocks.initialize.mockImplementation((name: string) =>
+      name === "repo-b" ? Promise.reject(new Error("clone failed")) : Promise.resolve(),
+    );
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+
+    await runMultipleRepositories(configFile, [repo, repoB, repoC]);
+
+    const errors = mocks.logger.error.mock.calls.map((args) => String(args[0])).join("\n");
+    expect(errors).toContain("Failed to initialize repository 'repo-b'");
+    // Not "a name was interpolated": the two that initialized fine must not be
+    // blamed, which is what reading the wrong index would do.
+    expect(errors).not.toContain("repo-a");
+    expect(errors).not.toContain("repo-c");
+    expect(process.exitCode).toBe(1);
   });
 });

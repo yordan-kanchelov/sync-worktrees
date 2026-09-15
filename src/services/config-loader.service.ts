@@ -1,6 +1,6 @@
 import { createRequire } from "module";
 import * as path from "path";
-import { pathToFileURL } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { Worker } from "worker_threads";
 
 import * as cron from "node-cron";
@@ -183,6 +183,94 @@ function moduleSyntaxHint(absolutePath: string, error: unknown): string {
     ` (hint: '${path.basename(absolutePath)}' uses ESM syntax but Node parsed it as CommonJS — ` +
     `add "type": "module" to the nearest package.json, or use .mjs/.cjs; a .cjs config must use module.exports)`
   );
+}
+
+/**
+ * An ESM frame names the module by URL. `fileURLToPath` is what turns that back
+ * into something the person can open: it un-escapes the path and, because it
+ * reads only the pathname, it drops the `?t=` cache-buster `importConfigModule`
+ * appends — which otherwise travels into the frame. CommonJS frames are already
+ * plain paths.
+ */
+function sourcePathFromFrame(file: string): string {
+  if (!file.startsWith("file://")) return file;
+  try {
+    return fileURLToPath(file);
+  } catch {
+    return file;
+  }
+}
+
+/**
+ * Node's decoration of a CommonJS compile failure: the resolved filename and a
+ * line, alone on the stack's first line. Anchored on an absolute path — a drive
+ * letter, a separator, or a UNC root — because that is what `module.filename`
+ * always is, and because the alternative first line is `Name: message`, which
+ * can end in `:<digits>` too. Everything between is taken as the path, so a
+ * directory with a space or a bracket in its name still parses.
+ */
+const CJS_COMPILE_DECORATION = /^((?:[A-Za-z]:[\\/]|[/\\]).*):(\d+)$/;
+
+/**
+ * One stack frame, split into what it says about *where*. The parenthesised
+ * form (`at fn (<location>)`) is tried first and opens at the frame's *first*
+ * `(`, not its last: a path such as `/home/me/proj (old)/config.cjs` contains
+ * brackets of its own, and a greedy match hands back `old)/config.cjs`. The
+ * bare form (`at <location>`, optionally `at async <location>`) is the rest.
+ */
+const STACK_FRAME = /^\s+at (?:.*?\((.*)\)|(?:async )?(.*))$/;
+
+/** `<file>:<line>:<column>`, split at the last two colons so the file may hold any others. */
+const FRAME_POSITION = /^(.*):(\d+):(\d+)$/;
+
+/**
+ * Where evaluating a config actually went wrong, as `file:line[:col]`, read out
+ * of the error's stack. Empty when the stack names no position.
+ *
+ * Two shapes, both measured identically on Node 20, 22 and 24. A CommonJS
+ * compile failure arrives already decorated: Node prepends `<file>:<line>`, the
+ * offending source line and a caret *ahead of* the `SyntaxError:` header, and
+ * that prefix is the only place the position appears. Anything thrown while a
+ * module evaluates — a `ReferenceError` in the config, a throw from a module it
+ * imports — carries an ordinary frame instead, and the first frame outside
+ * Node's own internals is it.
+ *
+ * A module that fails to *parse* under the ESM loader carries neither: V8 keeps
+ * that position on its message object, which Node prints when the exception is
+ * fatal and discards once it is caught. Those report the file alone, on every
+ * Node version tested.
+ */
+function stackPosition(error: unknown): string {
+  const stack = (error as { stack?: unknown } | null | undefined)?.stack;
+  if (typeof stack !== "string") return "";
+
+  const lines = stack.split("\n");
+  const decorated = CJS_COMPILE_DECORATION.exec(lines[0] ?? "");
+  if (decorated) return `${decorated[1]}:${decorated[2]}`;
+
+  for (const line of lines) {
+    const frame = STACK_FRAME.exec(line);
+    if (!frame) continue;
+    const position = FRAME_POSITION.exec(frame[1] ?? frame[2] ?? "");
+    // `node:` is Node's own code and `data:` is the reload worker's bootstrap —
+    // CONFIG_EVAL_WORKER_SOURCE, percent-encoded into a URL a whole screen wide.
+    // Reporting either as the place to look would be worse than saying nothing.
+    if (!position || position[1].startsWith("node:") || position[1].startsWith("data:")) continue;
+    return `${sourcePathFromFrame(position[1])}:${position[2]}:${position[3]}`;
+  }
+  return "";
+}
+
+/**
+ * Names the file a load failure came from, so `Unexpected token ']'` stops
+ * being the whole report. The position is appended when the stack carries one,
+ * and the config path is named either way — an error thrown by a module the
+ * config imports points somewhere else entirely, and both halves matter then.
+ */
+function configErrorLocation(absolutePath: string, error: unknown): string {
+  const position = stackPosition(error);
+  if (position === "") return ` (${absolutePath})`;
+  return position.startsWith(`${absolutePath}:`) ? ` (${position})` : ` (${absolutePath}, at ${position})`;
 }
 
 /**
@@ -369,6 +457,7 @@ export class ConfigLoaderService {
       throw new ConfigFileNotFoundError(absolutePath);
     }
 
+    let evaluated = false;
     try {
       let config: unknown;
       if (absolutePath.endsWith(".cjs")) {
@@ -378,6 +467,7 @@ export class ConfigLoaderService {
       } else {
         config = await this.importConfigModule(absolutePath);
       }
+      evaluated = true;
 
       if (!config) {
         throw new Error("Config file must use 'export default' syntax");
@@ -390,8 +480,13 @@ export class ConfigLoaderService {
       if (error instanceof SyncWorktreesError) {
         throw error;
       }
+      // Only a failure from evaluating the file is located. Past that point the
+      // stack's first frame is this loader's own, and pointing the person at
+      // sync-worktrees' code for a config they have to fix is worse than saying
+      // nothing; those messages already name the offending field.
+      const where = evaluated ? "" : configErrorLocation(absolutePath, error);
       throw new Error(
-        `Failed to load config file: ${(error as Error).message}${moduleSyntaxHint(absolutePath, error)}`,
+        `Failed to load config file: ${(error as Error).message}${where}${moduleSyntaxHint(absolutePath, error)}`,
       );
     }
   }

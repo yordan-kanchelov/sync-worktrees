@@ -91,12 +91,17 @@ export async function runMultipleRepositories(
 
     const servicesToSync: Array<{ name: string; service: WorktreeSyncService }> = [];
 
-    for (const result of initResults) {
+    for (const [index, result] of initResults.entries()) {
       if (result.status === "fulfilled") {
         services.set(result.value.name, result.value.service);
         servicesToSync.push(result.value);
       } else {
-        globalLogger.error(`❌ Failed to initialize repository:`, result.reason);
+        // allSettled preserves the order of what it was handed, and it was
+        // handed repositories.map(...), so index is this repository. The name
+        // has to come from there: the rejected task never got far enough to
+        // return one, and its header line was printed whenever it happened to
+        // start, which under parallelism is nowhere near this line.
+        globalLogger.error(`❌ Failed to initialize repository '${repositories[index].name}':`, result.reason);
       }
     }
 
@@ -250,7 +255,7 @@ async function runList(configPath: string, filter?: string): Promise<void> {
       console.log("");
     });
   } catch (error) {
-    console.error("❌ Error loading config file:", (error as Error).message);
+    console.error("❌ Error loading config file:", redactSecretsInText(getErrorMessage(error)));
     process.exit(1);
   }
 }
@@ -262,8 +267,18 @@ async function runList(configPath: string, filter?: string): Promise<void> {
 // because a stack is the only useful thing to say about a bug.
 class TrashCliError extends Error {}
 
+// Ctrl+C at one of the confirmation prompts. @inquirer installs its own SIGINT
+// handler and rejects with an ExitPromptError rather than letting the signal
+// through, so declining a destructive prompt the most ordinary way there is
+// printed "❌ Unhandled error:" and ten frames of readline internals. Matched
+// by name because @inquirer/prompts does not re-export the class, and
+// @inquirer/core is not a dependency of this package.
+function isPromptCancellation(error: unknown): error is Error {
+  return error instanceof Error && error.name === "ExitPromptError";
+}
+
 function isExpectedTrashFailure(error: unknown): error is Error {
-  return error instanceof TrashCliError || error instanceof SyncWorktreesError;
+  return error instanceof TrashCliError || error instanceof SyncWorktreesError || isPromptCancellation(error);
 }
 
 // `null`, not `0`: sizes are measured off the repository lock, so a freshly
@@ -520,13 +535,18 @@ async function purgeTrashEntry(
   for (const error of result.errors) console.warn(`⚠️ ${error}`);
 }
 
-async function runFromConfigFile(configPath: string, runOnceOverride = false): Promise<void> {
+async function loadRunConfig(
+  configPath: string,
+  runOnceOverride: boolean,
+): Promise<{ configFile: ConfigFile; repositories: RepositoryConfig[] }> {
   const configLoader = new ConfigLoaderService();
   const { repositories, configFile } = await configLoader.buildRepositories(configPath);
-  const effectiveConfigFile = runOnceOverride
-    ? { ...configFile, defaults: { ...(configFile.defaults ?? {}), runOnce: true } }
-    : configFile;
-  await runMultipleRepositories(effectiveConfigFile, repositories, configPath);
+  return {
+    repositories,
+    configFile: runOnceOverride
+      ? { ...configFile, defaults: { ...(configFile.defaults ?? {}), runOnce: true } }
+      : configFile,
+  };
 }
 
 async function resolveConfigOrExit(cliPath: string | undefined): Promise<string> {
@@ -578,7 +598,7 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
     // just typed and is the only evidence of what went wrong, and with --force
     // deleting it would destroy the config it overwrote as well.
     console.error(`\n❌ Wrote ${targetPath}, but it does not load:`);
-    console.error(`   ${getErrorMessage(error)}`);
+    console.error(`   ${redactSecretsInText(getErrorMessage(error))}`);
     console.error(
       `💡 The file was left in place — fix it by hand, or re-run 'sync-worktrees init --force' to redo it.`,
     );
@@ -598,15 +618,33 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
   const displayPath = path.relative(process.cwd(), configPath) || configPath;
   console.log(`📄 Using config: ${displayPath}`);
 
+  let loaded: { configFile: ConfigFile; repositories: RepositoryConfig[] };
   try {
-    await runFromConfigFile(configPath, options.runOnce);
+    loaded = await loadRunConfig(configPath, options.runOnce);
   } catch (error) {
     if (error instanceof ConfigFileNotFoundError) {
       console.error(`\n❌ Config file not found: ${error.configPath}`);
       console.error(`💡 Run 'sync-worktrees init --config ${displayPath}' to create one.`);
       process.exit(1);
     }
-    console.error("❌ Error loading config file:", (error as Error).message);
+    console.error("❌ Error loading config file:", redactSecretsInText(getErrorMessage(error)));
+    process.exit(1);
+  }
+
+  try {
+    await runMultipleRepositories(loaded.configFile, loaded.repositories, configPath);
+  } catch (error) {
+    // The config loaded; this is the run failing. Everything that escapes here
+    // — a service constructor rejecting a repository name, a render that will
+    // not mount — used to be reported as "Error loading config file", which
+    // sent people to edit a file that was never the problem.
+    console.error("❌ Error running sync:", redactSecretsInText(getErrorMessage(error)));
+    // A typed failure says everything it has to say in that line. Anything else
+    // is a bug in this tool, and a stack is the only useful thing to say about
+    // one — through the same scrubbing, because a git error quotes the remote.
+    if (!(error instanceof SyncWorktreesError) && error instanceof Error && error.stack) {
+      console.error(redactSecretsInText(error.stack));
+    }
     process.exit(1);
   }
 }

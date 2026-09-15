@@ -246,7 +246,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   `skipUpdateWhenOutsideSparse` accepts a string that inverts its meaning
 - [x] **T92** — Unknown / misspelled config keys are silently ignored at runtime (typo'd
   `updateExistingWorktree`, `branchIncludes`, `fetchTimeoutMs` load without a warning)
-- [ ] **T93** — CLI error reporting loses context: init failures omit the repository name, every
+- [x] **T93** — CLI error reporting loses context: init failures omit the repository name, every
   runtime error is labelled 'Error loading config file', `trash` errors dump a raw stack, and config
   SyntaxErrors lack file/line
 - [ ] **T94** — Docs drift in shipped user-facing text: example config's lock-file location is
@@ -3730,7 +3730,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: The validator is written as positive checks on expected keys and has no
   key inventory; @ts-check is editor-only.
 
-### [ ] T93. CLI error reporting loses context: init failures omit the repository name, every runtime error is labelled 'Error loading config file', `trash` errors dump a raw stack, and config SyntaxErrors lack file/line
+### [x] T93. CLI error reporting loses context: init failures omit the repository name, every runtime error is labelled 'Error loading config file', `trash` errors dump a raw stack, and config SyntaxErrors lack file/line
 
 - **Category**: workflow · **Subsystem**: config
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
