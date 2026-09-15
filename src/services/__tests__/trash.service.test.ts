@@ -638,6 +638,74 @@ describe("TrashService", () => {
       expect(listed.entries.map((candidate) => candidate.manifest.pinRef)).toEqual([legacyPinRef]);
     });
 
+    // Every optional field arrived after the manifest did, and `JSON.stringify`
+    // writes no key at all for `undefined` — so an entry an older release left
+    // in `.trash/` has none of these four names anywhere in its file. Absence
+    // has to keep reading as "not set": refusing any one of them turns every
+    // entry an upgrade inherits into unrecognized content, which is never
+    // listed, never restored and never reaped, while its pin ref holds the
+    // objects through every gc for good. The keys are dropped one at a time so
+    // each tolerance is pinned on its own rather than as a group.
+    // `replacedAt` is deliberately not in this list: `trashDirectory` never
+    // writes it, so deleting it from a fresh manifest produces byte-identical
+    // JSON and the case would assert nothing. Its tolerance is already covered
+    // broadly — removing it from the validator fails 42 tests in this file.
+    it.each(["bundleFile", "legacyQuarantinedAt", "keepPinOnReap"])(
+      "keeps listing an entry whose manifest predates the %s field",
+      async (field) => {
+        const source = await makeSourceDir("pre-upgrade");
+        const entry = await service.trashDirectory({ dirPath: source, branch: "pre-upgrade", reason: "prune" });
+        const older: Record<string, unknown> = { ...entry.manifest };
+        // The key has to be there to start with, or dropping it proves nothing.
+        expect(field in older).toBe(true);
+        delete older[field];
+        await fs.writeFile(path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME), JSON.stringify(older));
+
+        const listed = await service.listEntries();
+
+        expect(listed.invalid).toEqual([]);
+        expect(listed.entries.map((candidate) => candidate.manifest.id)).toEqual([entry.manifest.id]);
+      },
+    );
+
+    // The whole shape at once, as a pre-namespacing release actually wrote it:
+    // a flat `<prefix><id>` pin and not one of the four later keys. Listing it
+    // is half the requirement — such an entry must still be restorable, since
+    // the payload is the user's only copy of the files and the flat pin is the
+    // only thing holding the commit.
+    it("restores a manifest written before the pin namespacing and the optional fields existed", async () => {
+      const source = await makeSourceDir("pre-upgrade-restore", { "work.txt": "uncommitted work" });
+      const entry = await service.trashDirectory({
+        dirPath: source,
+        branch: "pre-upgrade-restore",
+        reason: "prune",
+      });
+      const legacyPinRef = `${PREFIX}${entry.manifest.id}`;
+      const older: Record<string, unknown> = { ...entry.manifest, pinRef: legacyPinRef, replacedAt: null };
+      for (const field of ["bundleFile", "legacyQuarantinedAt", "keepPinOnReap", "replacedAt"]) {
+        expect(field in older).toBe(true);
+        delete older[field];
+      }
+      await fs.writeFile(path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME), JSON.stringify(older));
+
+      const listed = await service.listEntries();
+      expect(listed.invalid).toEqual([]);
+      expect(listed.entries[0].manifest).toMatchObject({
+        id: entry.manifest.id,
+        branch: "pre-upgrade-restore",
+        pinRef: legacyPinRef,
+      });
+
+      const restored = await service.restore(entry.manifest.id);
+
+      expect(restored.pinRef).toBe(legacyPinRef);
+      expect(gitStub.createBranchAt).toHaveBeenCalledWith("pre-upgrade-restore", "abc123");
+      expect(gitStub.addWorktreeNoCheckout).toHaveBeenCalledWith("pre-upgrade-restore", source);
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      expect(gitStub.deleteRef).toHaveBeenCalledWith(legacyPinRef);
+      await expect(service.listEntries()).resolves.toMatchObject({ entries: [], invalid: [] });
+    });
+
     it("rejects keep-on-reap manifests without a pinned HEAD", async () => {
       const source = await makeSourceDir("missing-keep-pin");
       const entry = await service.trashDirectory({ dirPath: source, branch: "missing-keep-pin", reason: "manual" });
@@ -1170,6 +1238,13 @@ describe("TrashService", () => {
 
       expect(gitStub.deleteLocalBranch).toHaveBeenCalledWith("feature-fail");
       await expect(fs.access(payloadPath)).resolves.toBeUndefined();
+      // "Intact" has to mean restorable, and a worktree restore needs the pin.
+      // The entry's manifest still names pinRef and headOid, so releasing the
+      // ref on the way through would leave a listable entry whose commit `git
+      // gc` is free to collect — the unrestorable state the restore-after-gc
+      // e2e has to build by hand. Moving the release to before
+      // restoreAsWorktree rather than after it passes every other test here.
+      expect(gitStub.deleteRef).not.toHaveBeenCalledWith(manifest.pinRef);
     });
 
     // A reap that already set the payload aside has committed the entry to

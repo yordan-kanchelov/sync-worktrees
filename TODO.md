@@ -218,7 +218,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   empty trash, expected errors print as 'Unhandled error' stack traces, restore fails fast when the
   daemon holds the lock, no single-entry purge, and a files-only restore is silently re-trashed by the
   next sync
-- [ ] **T90** — No real-git coverage for trash restore or force clean: restoreAsWorktree,
+- [x] **T90** — No real-git coverage for trash restore or force clean: restoreAsWorktree,
   legacy-manifest compatibility and purge are only exercised with stubbed GitService / mocked
   purgeAllUnlocked
 
@@ -3633,7 +3633,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: CLI tests mock the service and only cover dispatch; README documents
   the manual recipe instead of a command.
 
-### [ ] T90. No real-git coverage for trash restore or force clean: restoreAsWorktree, legacy-manifest compatibility and purge are only exercised with stubbed GitService / mocked purgeAllUnlocked
+### [x] T90. No real-git coverage for trash restore or force clean: restoreAsWorktree, legacy-manifest compatibility and purge are only exercised with stubbed GitService / mocked purgeAllUnlocked
 
 - **Category**: testing · **Subsystem**: trash
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
