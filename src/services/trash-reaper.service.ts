@@ -308,8 +308,14 @@ export class TrashReaperService {
 
     const summary = summarizeTrashEntries(remaining);
     if (summary.totalSizeBytes > warnSizeBytes) {
+      // The byte total covers only the entries that have been measured. Sizing
+      // runs off the repository lock, at the tail of a sync, so anything this
+      // very tick trashed is still `sizeBytes: null` here and contributes
+      // nothing — saying so keeps the number from reading as the whole of the
+      // trash when it is a floor under it.
+      const unmeasured = summary.unknownSizeCount > 0 ? `, plus ${summary.unknownSizeCount} not yet measured` : "";
       this.logger.warn(
-        `⚠️ Trash holds ${formatBytes(summary.totalSizeBytes)} across ${summary.itemCount} entries ` +
+        `⚠️ Trash holds at least ${formatBytes(summary.totalSizeBytes)} across ${summary.itemCount} entries${unmeasured} ` +
           `(threshold ${formatBytes(warnSizeBytes)}). Entries expire ${this.trashService.getRetentionDays()} days after removal.`,
       );
     }

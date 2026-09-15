@@ -251,7 +251,17 @@ export class WorktreeSyncService {
     return this.gitService.listRefs(GIT_CONSTANTS.KEEP_REF_PREFIX);
   }
 
+  // The confirmation this feeds is the only screen that shows trash bytes, and
+  // this method runs outside the repo mutex — the TUI awaits it, spinner up,
+  // before it draws anything — so it is where an unmeasured payload gets its
+  // `du`. That keeps the scan off the lock without making the number lazier
+  // than the person reading it: an entry trashed seconds ago is measured on
+  // the first open, not shown as "unknown" until some later one.
   async getForceCleanPreview(): Promise<ForceCleanPreview> {
+    return this.buildForceCleanPreview(true);
+  }
+
+  private async buildForceCleanPreview(measureSizes: boolean): Promise<ForceCleanPreview> {
     await this.requireForceCleanTarget();
     if (this.cloneSyncService) {
       return {
@@ -264,7 +274,10 @@ export class WorktreeSyncService {
         keepRefNames: [],
       };
     }
-    const [{ entries, invalid }, keepRefs] = await Promise.all([this.trashService.listEntries(), this.listKeepRefs()]);
+    const [{ entries, invalid }, keepRefs] = await Promise.all([
+      measureSizes ? this.trashService.listEntriesWithSizes() : this.trashService.listEntries(),
+      this.listKeepRefs(),
+    ]);
     return {
       trashEntries: entries.length,
       trashBytes: entries.reduce((total, entry) => total + (entry.manifest.sizeBytes ?? 0), 0),
@@ -333,8 +346,10 @@ export class WorktreeSyncService {
         const gcSucceeded = await this.maintenanceService.runNowUnlocked();
         if (!gcSucceeded) errors.push("git gc --prune=now failed");
         // The survivors' ids are dropped: a result names counts, never a set to
-        // act on — see ForceCleanResult.
-        const { trashEntryIds: _ids, keepRefNames: _refs, ...after } = await this.getForceCleanPreview();
+        // act on — see ForceCleanResult. Unlike the preview this recount runs
+        // inside the exclusive operation, so it must not measure: it reports
+        // what the survivors' manifests already say.
+        const { trashEntryIds: _ids, keepRefNames: _refs, ...after } = await this.buildForceCleanPreview(false);
         return {
           ...after,
           // The reaper's own count, not a before/after difference: a re-scan
@@ -548,109 +563,155 @@ export class WorktreeSyncService {
   }
 
   async sync(): Promise<SyncResult> {
-    const result = await this.runExclusiveRepoOperation<SyncOutcome>(async () => {
-      // Cleared here — once the sync actually starts — rather than by callers:
-      // a losing concurrent caller clearing the shared accumulator would
-      // silently truncate the winner's skips payload.
-      this.clearRecordedSkips();
-      // A pendingInitSkip minted by an earlier standalone initialize() must
-      // not leak into this operation: its skip record was just wiped above,
-      // and consuming the stale token would suppress the re-detection in
-      // runSyncAttempt — the sync would then report clean with zero actions.
-      // The in-operation init below re-arms the token when it still applies.
-      this.clearPendingInitSkip();
-      const totalTimer = new Timer();
-      const phaseTimer = new PhaseTimer();
-      const outcome = new SyncOutcomeAccumulator({
-        mode: this.cloneSyncService ? "clone" : "worktree",
-        repoName: (this.config as { name?: string }).name,
-      });
-      const syncContext = this.retryPolicy.createContext();
-      const retryOptions = this.retryPolicy.createOptions(syncContext);
-      let durationMs: number | undefined;
+    // Set as the first statement inside the exclusive operation so the `finally`
+    // below can tell "the operation ran" from "it never started". The result
+    // object cannot answer that on the failure path: a sync that trashes a
+    // worktree and then throws on a later phase rejects out of here without
+    // ever producing one, and those entries would stay unmeasured until some
+    // later tick happened to succeed.
+    let operationRan = false;
+    try {
+      const result = await this.runExclusiveRepoOperation<SyncOutcome>(async () => {
+        operationRan = true;
+        // Cleared here — once the sync actually starts — rather than by callers:
+        // a losing concurrent caller clearing the shared accumulator would
+        // silently truncate the winner's skips payload.
+        this.clearRecordedSkips();
+        // A pendingInitSkip minted by an earlier standalone initialize() must
+        // not leak into this operation: its skip record was just wiped above,
+        // and consuming the stale token would suppress the re-detection in
+        // runSyncAttempt — the sync would then report clean with zero actions.
+        // The in-operation init below re-arms the token when it still applies.
+        this.clearPendingInitSkip();
+        const totalTimer = new Timer();
+        const phaseTimer = new PhaseTimer();
+        const outcome = new SyncOutcomeAccumulator({
+          mode: this.cloneSyncService ? "clone" : "worktree",
+          repoName: (this.config as { name?: string }).name,
+        });
+        const syncContext = this.retryPolicy.createContext();
+        const retryOptions = this.retryPolicy.createOptions(syncContext);
+        let durationMs: number | undefined;
 
-      try {
-        let clonedThisOperation = false;
-        if (!this.isInitialized()) {
-          await this.initializeUnlocked(outcome);
-          // `outcome` was constructed a few lines up and nothing else has
-          // written to it, so a `created` action in it can only be the clone
-          // this init just made — not an adopted existing clone, which records
-          // nothing, and not a worktree-mode init, which is handed no
-          // accumulator at all. That clone came from `origin` at the tracked
-          // branch, so the sync attempt below would fetch a ref it already has
-          // and scan a working tree git checked out moments ago. The check is
-          // deliberately scoped to an init that ran *inside this operation*:
-          // a standalone `initialize()` (the run-once CLI, the TUI, the MCP
-          // `initialize` tool) can be followed by a sync at any distance, and
-          // a flag carried across that boundary cannot tell a sync a second
-          // later from one an hour later — a sync that silently does nothing
-          // is a worse defect than the tick this saves. What that leaves on
-          // the table is small: since CloneSyncService classifies before it
-          // reads the working tree, a post-clone tick ends `up_to_date`
-          // without a status scan, so what those callers still pay for is one
-          // no-op fetch.
-          clonedThisOperation = this.cloneSyncService !== undefined && outcome.getCounts().created > 0;
-        }
-
-        this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
-
-        const retryOutcomeBaseline = outcome.snapshot();
-        const retryOptionsWithOutcomeReset = {
-          ...retryOptions,
-          onRetry: (error: unknown, attempt: number, context?: LfsErrorContext): void => {
-            outcome.restore(retryOutcomeBaseline);
-            retryOptions.onRetry?.(error, attempt, context);
-          },
-        };
-
-        const cloneSync = this.cloneSyncService;
-        if (cloneSync) {
-          if (clonedThisOperation) {
-            this.logger.info("Clone was created by this run; it is at the tracked remote tip, so no fetch is needed.");
-          } else {
-            // Same timer the worktree-mode runner is given, so `debug` prints
-            // one table in one format whichever mode the repository is in.
-            await retry(() => cloneSync.runSyncAttempt(outcome, phaseTimer), retryOptionsWithOutcomeReset);
+        try {
+          let clonedThisOperation = false;
+          if (!this.isInitialized()) {
+            await this.initializeUnlocked(outcome);
+            // `outcome` was constructed a few lines up and nothing else has
+            // written to it, so a `created` action in it can only be the clone
+            // this init just made — not an adopted existing clone, which records
+            // nothing, and not a worktree-mode init, which is handed no
+            // accumulator at all. That clone came from `origin` at the tracked
+            // branch, so the sync attempt below would fetch a ref it already has
+            // and scan a working tree git checked out moments ago. The check is
+            // deliberately scoped to an init that ran *inside this operation*:
+            // a standalone `initialize()` (the run-once CLI, the TUI, the MCP
+            // `initialize` tool) can be followed by a sync at any distance, and
+            // a flag carried across that boundary cannot tell a sync a second
+            // later from one an hour later — a sync that silently does nothing
+            // is a worse defect than the tick this saves. What that leaves on
+            // the table is small: since CloneSyncService classifies before it
+            // reads the working tree, a post-clone tick ends `up_to_date`
+            // without a status scan, so what those callers still pay for is one
+            // no-op fetch.
+            clonedThisOperation = this.cloneSyncService !== undefined && outcome.getCounts().created > 0;
           }
-        } else {
-          await retry(
-            () => this.worktreeModeSyncRunner.runSyncAttempt(phaseTimer, syncContext, outcome),
-            retryOptionsWithOutcomeReset,
-          );
+
+          this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
+
+          const retryOutcomeBaseline = outcome.snapshot();
+          const retryOptionsWithOutcomeReset = {
+            ...retryOptions,
+            onRetry: (error: unknown, attempt: number, context?: LfsErrorContext): void => {
+              outcome.restore(retryOutcomeBaseline);
+              retryOptions.onRetry?.(error, attempt, context);
+            },
+          };
+
+          const cloneSync = this.cloneSyncService;
+          if (cloneSync) {
+            if (clonedThisOperation) {
+              this.logger.info(
+                "Clone was created by this run; it is at the tracked remote tip, so no fetch is needed.",
+              );
+            } else {
+              // Same timer the worktree-mode runner is given, so `debug` prints
+              // one table in one format whichever mode the repository is in.
+              await retry(() => cloneSync.runSyncAttempt(outcome, phaseTimer), retryOptionsWithOutcomeReset);
+            }
+          } else {
+            await retry(
+              () => this.worktreeModeSyncRunner.runSyncAttempt(phaseTimer, syncContext, outcome),
+              retryOptionsWithOutcomeReset,
+            );
+          }
+        } catch (rawError) {
+          // A credential / ssh failure carries its remedy hint from here on:
+          // the outcome, this log line and the rejection every consumer reports.
+          const error = withGitAuthHint(rawError);
+          if (outcome.getCounts().failed === 0) {
+            outcome.recordFailed("repo", getErrorMessage(error), { reason: "sync_failed" });
+          }
+          this.logger.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
+          throw error;
+        } finally {
+          this.retryPolicy.resetLfsSkipIfNeeded(syncContext);
+          this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
+          durationMs = totalTimer.stop();
+          this.lastOutcome = outcome.toOutcome(durationMs);
+
+          if (this.config.debug) {
+            const phaseResults = phaseTimer.getResults();
+            const repoName = (this.config as { name?: string }).name;
+            this.logger.table(formatTimingTable(durationMs, phaseResults, repoName));
+          }
+
+          // Trash maintenance runs even when the sync failed: it only acts on
+          // local expiry state, and a persistently failing fetch must not let
+          // .trash/ grow without bound. gc stays success-only below.
+          await this.runTrashMaintenanceUnlocked();
         }
-      } catch (rawError) {
-        // A credential / ssh failure carries its remedy hint from here on:
-        // the outcome, this log line and the rejection every consumer reports.
-        const error = withGitAuthHint(rawError);
-        if (outcome.getCounts().failed === 0) {
-          outcome.recordFailed("repo", getErrorMessage(error), { reason: "sync_failed" });
-        }
-        this.logger.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
-        throw error;
-      } finally {
-        this.retryPolicy.resetLfsSkipIfNeeded(syncContext);
-        this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
-        durationMs = totalTimer.stop();
-        this.lastOutcome = outcome.toOutcome(durationMs);
 
-        if (this.config.debug) {
-          const phaseResults = phaseTimer.getResults();
-          const repoName = (this.config as { name?: string }).name;
-          this.logger.table(formatTimingTable(durationMs, phaseResults, repoName));
-        }
+        await this.runMaintenanceIfDueUnlocked();
 
-        // Trash maintenance runs even when the sync failed: it only acts on
-        // local expiry state, and a persistently failing fetch must not let
-        // .trash/ grow without bound. gc stays success-only below.
-        await this.runTrashMaintenanceUnlocked();
-      }
+        return this.lastOutcome ?? outcome.toOutcome(durationMs);
+      });
 
-      await this.runMaintenanceIfDueUnlocked();
+      return result.started ? { started: true, outcome: result.value } : result;
+    } finally {
+      // Past the closing brace above the repo lock is released and the mutex
+      // slot is free, which is the whole reason this line is here and not in
+      // the trash maintenance inside. Sizing trash payloads execs `du` over
+      // entire worktrees; it is informational (TrashService.listEntriesWithSizes)
+      // and it is the one piece of trash bookkeeping slow enough that running
+      // it under the lock would make every MCP call fail fast and every TUI
+      // action queue for its duration. In a `finally` because a sync that
+      // trashes a worktree and then throws on a later phase has left behind
+      // exactly the unmeasured entries this exists to measure. Still awaited,
+      // not detached: it finishes inside the sync it belongs to, before the
+      // next tick or the reaper can run — and it never throws, so it cannot
+      // mask the sync failure it is unwinding through.
+      if (operationRan) await this.measureTrashSizesOffLock();
+    }
+  }
 
-      return this.lastOutcome ?? outcome.toOutcome(durationMs);
-    });
-
-    return result.started ? { started: true, outcome: result.value } : result;
+  // NOT one of the *Unlocked helpers — those run inside a held lock, this one
+  // must run outside it. Failures are logged and dropped: a size nobody has
+  // yet is not a reason to fail a sync that has already finished, and the next
+  // tick (or the force-clean preview) measures the entry instead.
+  //
+  // What that leaves is one tick of lag in the reaper's warnSizeBytes warning,
+  // which is raised inside the lock a few lines earlier: entries trashed by
+  // this tick are still unmeasured when it computes its total, so they count
+  // from the next tick on. The warning is an advisory about days of
+  // accumulation, and the lag only ever under-states it — it cannot raise a
+  // false alarm.
+  private async measureTrashSizesOffLock(): Promise<void> {
+    if (this.cloneSyncService) return;
+    try {
+      await this.trashService.listEntriesWithSizes();
+    } catch (error) {
+      this.logger.debug(`Trash size accounting failed: ${getErrorMessage(error)}`);
+    }
   }
 }

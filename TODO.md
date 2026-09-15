@@ -197,7 +197,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T11** — fs.cp in the cross-device diverged path (and trash restore) rewrites relative
   symlinks to absolute source paths that are then deleted, leaving dangling links in the
   preserved/restored copy
-- [ ] **T7** — Trash moves run `du` over the whole worktree (node_modules included) under the repo
+- [x] **T7** — Trash moves run `du` over the whole worktree (node_modules included) under the repo
   lock before the 8 ms rename; size is informational only
 - [ ] **T82** — Compare-and-swap branch deletion (`update-ref -d`) leaves the `[branch "<name>"]`
   remote/merge section in the bare repo config for every trashed worktree, growing .bare/config
@@ -703,7 +703,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   metadata (`hasLocalChangesSinceLastSync` → true) `handleDivergedBranch` trashes and recreates the
   worktree.
 
-### [ ] T7. Trash moves run `du` over the whole worktree (node_modules included) under the repo lock before the 8 ms rename; size is informational only
+### [x] T7. Trash moves run `du` over the whole worktree (node_modules included) under the repo lock before the 8 ms rename; size is informational only
 
 - **Category**: performance · **Subsystem**: worktree-sync
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

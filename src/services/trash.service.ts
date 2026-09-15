@@ -2,6 +2,8 @@ import { randomBytes } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import pLimit from "p-limit";
+
 import { DEFAULT_CONFIG, GIT_CONSTANTS, PATH_CONSTANTS, TRASH_CONSTANTS } from "../constants";
 import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { atomicWriteFile } from "../utils/atomic-write";
@@ -144,7 +146,6 @@ export class TrashService {
         `cannot create keep-on-reap trash entry for '${options.dirPath}': HEAD commit could not be resolved`,
       );
     }
-    const sizeBytes = await calculateDirectorySize(options.dirPath).catch(() => null);
 
     // Non-recursive container mkdir + EEXIST retry: the undo path below may
     // rm -rf the container, so it must never adopt one it didn't create.
@@ -159,7 +160,10 @@ export class TrashService {
       originalPath: path.resolve(options.originalPath ?? options.dirPath),
       branch: options.branch ?? null,
       reason: options.reason,
-      sizeBytes,
+      // Never measured here: the scan is the single most expensive thing in
+      // the trash pipeline and every caller of this method holds the repo
+      // lock. listEntriesWithSizes fills it in later, off the lock.
+      sizeBytes: null,
       headOid,
       pinRef: null,
       bundleFile: null,
@@ -212,12 +216,14 @@ export class TrashService {
         );
       }
     }
-    // headOid was resolved before the (potentially slow) size scan and bundle
-    // above. A commit made in that window would lose every protection at once
-    // — pin, bundle, worktree reflog, branch ref — the moment the removal
-    // pipeline runs `branch -D`, so re-verify HEAD and fail closed while the
-    // source directory is still untouched. Explicit-headOid callers (legacy
-    // adoption) are exempt: their source is not a live worktree.
+    // headOid was resolved before the bundle above. A commit made in that
+    // window would lose every protection at once — pin, bundle, worktree
+    // reflog, branch ref — the moment the removal pipeline runs `branch -D`,
+    // so re-verify HEAD and fail closed while the source directory is still
+    // untouched. Nothing slower than the bundle belongs between the two, which
+    // is why no size scan runs anywhere in this method (listEntriesWithSizes).
+    // Explicit-headOid callers (legacy adoption) are exempt: their source is
+    // not a live worktree.
     if (headOid !== null && options.headOid === undefined) {
       let currentHead: string | null;
       try {
@@ -311,6 +317,80 @@ export class TrashService {
     return { entries, invalid };
   }
 
+  /**
+   * {@link listEntries}, with every `sizeBytes` that is still `null` measured
+   * and written back to its manifest.
+   *
+   * The size is informational — the reaper's accumulated-trash warning and the
+   * force-clean confirmation's byte total are its only readers, and no
+   * removal, restore or reap consults it — and it is also by far the most
+   * expensive thing the trash pipeline does: {@link calculateDirectorySize}
+   * execs `du` over the whole payload, `node_modules` and all. So it is
+   * measured nowhere near the repository lock. Every caller of
+   * {@link trashDirectory} holds that lock; the callers of this method must
+   * not, and today are the tail of a sync, once its exclusive operation has
+   * released the lock, and the force-clean preview, which is built outside the
+   * repo mutex.
+   *
+   * Best effort per entry: a payload that cannot be scanned, or a size that
+   * cannot be written back, leaves that entry at `null` — the value every
+   * consumer reports as an unknown size rather than as zero — and the next
+   * call tries again.
+   */
+  async listEntriesWithSizes(): Promise<{ entries: TrashEntry[]; invalid: string[] }> {
+    const listing = await this.listEntries();
+    // Bounded, not serial. Before the scan moved off the repository lock it ran
+    // inside the removal fan-out, so a tick that pruned forty worktrees sized
+    // maxWorktreeRemoval of them at a time; scanning them one after another
+    // here would multiply the wall clock of a large prune by that factor. Each
+    // entry is its own container, so concurrent scans touch disjoint paths and
+    // the manifest read-back in measurePayload cannot race another scan.
+    const limit = pLimit(
+      this.config.parallelism?.maxWorktreeRemoval ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL,
+    );
+    await Promise.all(
+      listing.entries.map((entry) =>
+        limit(async () => {
+          if (entry.manifest.sizeBytes !== null) return;
+          entry.manifest.sizeBytes = await this.measurePayload(entry);
+        }),
+      ),
+    );
+    return listing;
+  }
+
+  // Holding no repo lock is the point, so the entry can be restored or reaped
+  // out from under this at any moment. Hence: a payload already set aside for
+  // deletion is not scanned at all, and the measurement is merged into the
+  // manifest as it reads back now rather than into the copy the scan started
+  // from — a container that has since been removed has no manifest left to
+  // read, and `atomicWriteFile` creates no directories, so a write that loses
+  // the race fails instead of resurrecting a deleted entry.
+  private async measurePayload(entry: TrashEntry): Promise<number | null> {
+    if (await hasPayloadPendingDeletion(entry.containerPath)) return null;
+
+    let sizeBytes: number;
+    try {
+      sizeBytes = await calculateDirectorySize(entry.payloadPath);
+    } catch (error) {
+      this.logger.debug(`Could not size trash payload for '${entry.manifest.id}': ${getErrorMessage(error)}`);
+      return null;
+    }
+
+    try {
+      const current = await this.readManifest(entry.containerPath);
+      if (current === null) return null;
+      await this.writeManifest(entry.containerPath, { ...current, sizeBytes });
+    } catch (error) {
+      // Reported as unknown rather than as a number only this process knows:
+      // one rule — the size is whatever the manifest says — keeps the preview
+      // total and the reaper's warning from disagreeing.
+      this.logger.debug(`Could not record trash payload size for '${entry.manifest.id}': ${getErrorMessage(error)}`);
+      return null;
+    }
+    return sizeBytes;
+  }
+
   private async assertNotLocked(dirPath: string): Promise<void> {
     const lock = await this.gitService.getWorktreeLock(dirPath);
     if (!lock.locked) return;
@@ -334,9 +414,9 @@ export class TrashService {
     keepPinOnReap?: boolean;
   }): Promise<{ entry: TrashEntry; branchRefError?: string }> {
     // Before anything moves: git refuses to unregister a locked worktree even
-    // with --force, so trashing one would size-scan it, rename the whole
-    // directory into .trash/ and rename it straight back on every tick. Refuse
-    // up front and leave the worktree untouched.
+    // with --force, so trashing one would rename the whole directory into
+    // .trash/ and rename it straight back on every tick. Refuse up front and
+    // leave the worktree untouched.
     await this.assertNotLocked(options.dirPath);
     const entry = await this.trashDirectory(options);
     // force is safe here: the directory was already moved to trash, so only

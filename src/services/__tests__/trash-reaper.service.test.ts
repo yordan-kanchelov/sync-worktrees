@@ -387,10 +387,43 @@ describe("TrashReaperService", () => {
   it("warns when retained trash exceeds warnSizeBytes so disk pressure is visible", async () => {
     config.trash = { warnSizeBytes: 1 };
     await makeEntry("big", { ageDays: 1 });
+    // The warning totals what the manifests say, and trashing no longer fills
+    // in a size — that happens off the repository lock, after the tick that
+    // trashed. This is the pass a previous tick would have made.
+    await trashService.listEntriesWithSizes();
 
     await reaper.reapExpiredUnlocked();
 
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Trash holds"));
+  });
+
+  it("names the entries it could not include in the total instead of silently counting them as zero", async () => {
+    config.trash = { warnSizeBytes: 1 };
+    await makeEntry("measured", { ageDays: 1 });
+    // One pass sizes what exists so far, then a second entry arrives the way a
+    // fresh removal does — manifest written, sizeBytes still null, because
+    // sizing runs off the repository lock after the tick that trashed. The
+    // total below is therefore a floor, and the warning has to say so: an
+    // unmeasured entry adds 0 bytes, and reporting that as the whole of the
+    // trash is how a 40 GB accumulation reads as 4 GB.
+    await trashService.listEntriesWithSizes();
+    await makeEntry("not-yet-measured", { ageDays: 1 });
+
+    await reaper.reapExpiredUnlocked();
+
+    const warning = warningsMatching(/Trash holds/)[0];
+    expect(warning).toContain("plus 1 not yet measured");
+    expect(warning).toContain("at least");
+  });
+
+  it("says nothing about unmeasured entries when every entry has a size", async () => {
+    config.trash = { warnSizeBytes: 1 };
+    await makeEntry("measured", { ageDays: 1 });
+    await trashService.listEntriesWithSizes();
+
+    await reaper.reapExpiredUnlocked();
+
+    expect(warningsMatching(/Trash holds/)[0]).not.toContain("not yet measured");
   });
 
   it("moves the pin to a permanent keep ref when reaping a keepPinOnReap entry", async () => {
