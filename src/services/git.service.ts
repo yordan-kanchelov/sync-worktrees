@@ -1681,6 +1681,36 @@ export class GitService {
   async deleteLocalBranchIfAt(branchName: string, expectedOid: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     await bareGit.raw(["update-ref", "-d", `${GIT_CONSTANTS.REFS.HEADS}${branchName}`, expectedOid]);
+    // Only after the delete actually succeeded: a CAS that the ref moved
+    // under rejects above, and the still-live branch keeps its upstream.
+    await this.removeBranchConfigSection(bareGit, branchName);
+  }
+
+  // `branch -D` drops the branch's `[branch "<name>"]` config section along
+  // with the ref; `update-ref -d` removes the ref only. Without this the CAS
+  // delete above would strand `branch.<name>.remote`/`.merge` in the bare
+  // repo's config on every pruned worktree, so the file grows without bound
+  // and a later restore of the same name silently inherits a stale upstream.
+  // Best-effort by design, and every failure mode here is one to swallow: git
+  // reports an absent section as a hard failure (exit 128 with stderr, which
+  // simple-git rejects), and a concurrent `git` holding `config.lock` fails it
+  // outright with no retry. A section left behind is untidiness — never a
+  // reason to report a branch deletion that did succeed as failed — so the
+  // catch is deliberately every error, not just the git ones.
+  //
+  // `--remove-section` splits its argument at the first dot and treats the
+  // whole remainder as one literal subsection, so a branch named `v1.2`
+  // addresses `[branch "v1.2"]` and leaves a sibling `[branch "v1"]` alone.
+  // The subsection is matched case-sensitively, so the name must be passed
+  // through exactly as git recorded it.
+  private async removeBranchConfigSection(bareGit: SimpleGit, branchName: string): Promise<void> {
+    try {
+      await bareGit.raw(["config", "--remove-section", `branch.${branchName}`]);
+    } catch (error) {
+      this.logger.debug(
+        `  - Left the config section of the deleted branch '${branchName}' in place: ${getErrorMessage(error)}`,
+      );
+    }
   }
 
   // Bundles only commits not reachable from any remote — for fully-pushed

@@ -199,7 +199,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   preserved/restored copy
 - [x] **T7** — Trash moves run `du` over the whole worktree (node_modules included) under the repo
   lock before the 8 ms rename; size is informational only
-- [ ] **T82** — Compare-and-swap branch deletion (`update-ref -d`) leaves the `[branch "<name>"]`
+- [x] **T82** — Compare-and-swap branch deletion (`update-ref -d`) leaves the `[branch "<name>"]`
   remote/merge section in the bare repo config for every trashed worktree, growing .bare/config
   without bound
 - [ ] **T83** — Legacy `.diverged/` adoption ignores the entry's `keep/<name>` ref: the permanent
@@ -3384,7 +3384,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   got the equivalent. simple-git's own timeout kills with SIGINT (index.js:1423), which git cleans
   up, so only hard kills reach this state.
 
-### [ ] T82. Compare-and-swap branch deletion (`update-ref -d`) leaves the `[branch "<name>"]` remote/merge section in the bare repo config for every trashed worktree, growing .bare/config without bound
+### [x] T82. Compare-and-swap branch deletion (`update-ref -d`) leaves the `[branch "<name>"]` remote/merge section in the bare repo config for every trashed worktree, growing .bare/config without bound
 
 - **Category**: performance · **Subsystem**: trash
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
