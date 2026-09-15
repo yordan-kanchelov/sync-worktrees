@@ -224,7 +224,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 ### Batch 5 — config loading, CLI and init
 
-- [ ] **T31** — The shipped sync-worktrees.config.example.js fails validation
+- [x] **T31** — The shipped sync-worktrees.config.example.js fails validation
   ('experimental-features' sets runOnce) — the README's reference for 'every knob' cannot be loaded
 - [ ] **T32** — Per-repository `parallelism` is never validated (F9 fix only covered
   global/defaults): a non-positive-integer value passes load and makes every sync throw TypeError from
@@ -1657,7 +1657,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `getFetchTimeoutMs`/`getCloneTimeoutMs` (git.service.ts:70-78, clone-sync.service.ts:98-106)
   short-circuit on it.
 
-### [ ] T31. The shipped sync-worktrees.config.example.js fails validation ('experimental-features' sets runOnce) — the README's reference for 'every knob' cannot be loaded
+### [x] T31. The shipped sync-worktrees.config.example.js fails validation ('experimental-features' sets runOnce) — the README's reference for 'every knob' cannot be loaded
 
 - **Category**: docs · **Subsystem**: config
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

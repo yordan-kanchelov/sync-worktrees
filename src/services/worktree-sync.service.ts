@@ -638,9 +638,10 @@ export class WorktreeSyncService {
     await this.maintenanceService.runIfDueUnlocked();
   }
 
-  // Same contract as runMaintenanceIfDueUnlocked: tail of a successful sync,
-  // inside the held lock, never fails the sync. Runs before gc so freshly
-  // reaped pin refs can be collected in the same maintenance window.
+  // Tail of every sync attempt, failed ones included (see the call site) —
+  // unlike runMaintenanceIfDueUnlocked, which is success-only. Inside the held
+  // lock, never fails the sync. Runs before gc so freshly reaped pin refs can
+  // be collected in the same maintenance window.
   private async runTrashMaintenanceUnlocked(): Promise<void> {
     if (isUnitTestShortcutEnabled()) {
       return;

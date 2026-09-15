@@ -152,7 +152,13 @@ export function computeParallelismPeak(parallelism: ParallelismConfig = {}): Par
   };
 }
 
-const CLONE_MODE_CONFLICTING_FIELDS = [
+/**
+ * Fields a clone-mode repository rejects, on the entry or inherited from
+ * `defaults`. Exported so the shipped example config's clone-mode section can
+ * be checked against it: that comment enumerates these names, and it silently
+ * fell behind when `trash` was added here.
+ */
+export const CLONE_MODE_CONFLICTING_FIELDS = [
   "branchInclude",
   "branchExclude",
   "branchMaxAge",

@@ -24,16 +24,19 @@ const config = {
     // skipLfs: true,  // Skip downloading large files tracked by Git LFS
     // Auto-update worktrees that are behind upstream (optional)
     // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
-    // Inactivity timeouts for the git commands that talk to the remote
-    // (fetch, push, ls-remote, remote set-head) and for the clone-sized ones:
-    // the initial clone, plus the `fetch --unshallow` that pulls a clone-mode
-    // repository's full history once `depth` is removed. Each one kills its
-    // command when no output arrives for that long, so it ends a stalled
-    // connection instead of hanging the sync forever. Local commands (worktree
-    // add, merge, checkout, status) are never killed this way — a large
-    // checkout is silent for minutes by design. Set 0 to disable.
-    // fetchTimeoutMs: 300000,   // Default: 300000 (5 min)
-    // cloneTimeoutMs: 900000,   // Default: 900000 (15 min); raise for huge first clones and unshallows
+    // Inactivity timeouts, for reference — NOT config-file settings.
+    // `fetchTimeoutMs` (300000 ms = 5 min) covers the git commands that talk to
+    // the remote (fetch, push, ls-remote, remote set-head); `cloneTimeoutMs`
+    // (900000 ms = 15 min) covers the clone-sized ones: the initial clone, plus
+    // the `fetch --unshallow` that pulls a clone-mode repository's full history
+    // once `depth` is removed. Each kills its command when no output arrives for
+    // that long, so a stalled connection ends the attempt instead of hanging the
+    // sync forever. Local commands (worktree add, merge, checkout, status) are
+    // never killed this way — a large checkout is silent for minutes by design.
+    // Neither one is part of SyncWorktreesConfig, and the config loader does not
+    // carry them from `defaults` or from a repository entry into the resolved
+    // repository config, so writing them here has no effect: every config-file
+    // run uses the two values above.
     // Periodic `git gc` of the object store (optional, applies to both modes).
     // Reclaims unreachable objects and consolidates packs. Runs at the tail of a
     // successful sync, throttled by `interval`, under the repo operation lock.
@@ -145,8 +148,11 @@ const config = {
       // Custom bare repository location
       bareRepoDir: path.join(os.homedir(), "experiments", ".bare", "experimental"),
 
-      // This repo should only sync when manually triggered
-      runOnce: true,
+      // To sync only when manually triggered, set `runOnce: true` under
+      // `defaults` above, or pass `--runOnce` for a single invocation.
+      // `runOnce` is a whole-file setting — one process runs every repository
+      // in the config, so it cannot be scheduled for some and one-shot for
+      // others. Setting it on a repository entry is a validation error.
 
       // Repository-specific retry configuration (overrides global)
       retry: {
@@ -172,6 +178,25 @@ const config = {
 
       // Check for updates every 30 minutes
       cronSchedule: "*/30 * * * *",
+
+      // Reversible removals (optional). Branches that age out of branchMaxAge
+      // are removed every tick, so this is where retention matters most.
+      // Each removal moves the directory to `<worktreeDir>/.trash/<id>/` with a
+      // manifest and a pin ref (`refs/sync-worktrees/trash/<root-hash>/<id>`)
+      // that keeps the trashed HEAD's objects alive through `git gc` for the
+      // retention window; a reaper deletes expired entries at the tail of every
+      // sync attempt, failed ones included, so a repository whose fetch keeps
+      // failing still expires its trash (the periodic `git gc` above is the
+      // success-only one). Inspect and recover with `sync-worktrees trash`.
+      // Worktree mode only: clone mode never removes its checkout, and `trash`
+      // on a clone-mode repository — or under `defaults`, which every
+      // clone-mode repository in the file inherits — is a validation error.
+      trash: {
+        enabled: true, // Default: true. false deletes removals outright.
+        retentionDays: 14, // Default: 30. Days an entry is kept before the reaper deletes it.
+        warnSizeBytes: 5368709120, // No default (off). Warn once the trash exceeds this many bytes (5 GiB here).
+        migrateLegacy: true, // Default: true. Adopt pre-trash `.removed/` and `.diverged/` entries into `.trash/`.
+      },
     },
 
     {
@@ -226,6 +251,15 @@ const config = {
       sparseCheckout: {
         // Cone mode (default): pass folder names; fast and recommended
         include: ["game-client"],
+
+        // Default: true. When an upstream change touches nothing inside the
+        // sparse set, the fast-forward is skipped rather than run: the working
+        // tree would not have changed either way, so HEAD is deliberately left
+        // behind the remote. Set false to always fast-forward.
+        // Honoured in cone mode only — no-cone always proceeds with the update.
+        // If the diff cannot be read, the update goes ahead rather than being
+        // treated as "nothing sparse was touched".
+        skipUpdateWhenOutsideSparse: true,
       },
     },
     {
@@ -342,16 +376,23 @@ const config = {
     //   unshallowed before normal sync.
     //   Clone-mode clone/fetch operations also use --no-tags.
     // - Conflicts with branchInclude / branchExclude / branchMaxAge / updateExistingWorktrees /
-    //   bareRepoDir — setting any of these on a clone-mode repo (or via defaults inherited into it)
-    //   is a validation error.
+    //   bareRepoDir / trash — setting any of these on a clone-mode repo (or via defaults
+    //   inherited into it) is a validation error.
     // - sparseCheckout, filesToCopyOnBranchCreate, and skipLfs still apply.
     //   filesToCopyOnBranchCreate fires exactly once on the initial clone.
     //   hooks.onBranchCreated does NOT fire on the initial clone in clone-mode (clone-mode
     //   tracks a single fixed branch with no later branch-creation event); the hook is
     //   reserved for TUI-initiated branch creation.
     //   sparseCheckout is re-applied every sync (config drift converges).
-    // - Lock file lives at `<configDir>/.sync-worktrees-state/<sanitized-name>-<hash>.lock` —
-    //   never inside the cloned repo, so no .gitignore noise.
+    // - Lock file lives next to the checkout, at
+    //   `<parent of worktreeDir>/.sync-worktrees-locks/<hash>.lock`, where <hash> is the
+    //   first 16 hex characters of sha256 over the symlink-resolved worktreeDir — never
+    //   inside the cloned repo, so no .gitignore noise, and never under ~/.cache, which
+    //   cache cleaners may delete under a live holder. Nothing in the environment feeds
+    //   into that path, so a cron/systemd daemon and an interactive run contend for the
+    //   same file. `SYNC_WORKTREES_LOCK_DIR` moves the lock directory elsewhere (for a
+    //   read-only parent); it is an escape hatch, so give it the same absolute path in
+    //   every process that syncs the same worktreeDir.
     //
     // Example: three monorepo-sibling components that import each other via fixed `../` paths.
     {
