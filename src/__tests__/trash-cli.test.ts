@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   deleteKeepRef: vi.fn(),
   deleteKeepRefs: vi.fn(),
   serviceConfig: vi.fn(),
+  isCloneMode: vi.fn(() => false),
 }));
 
 vi.mock("@inquirer/prompts", () => ({ input: mocks.input }));
@@ -32,7 +33,7 @@ vi.mock("../services/worktree-sync.service", () => ({
     return {
       initialize: mocks.initialize,
       isInitialized: vi.fn(() => true),
-      isCloneMode: vi.fn(() => false),
+      isCloneMode: mocks.isCloneMode,
       listTrashEntries: mocks.listTrashEntries,
       listKeepRefs: mocks.listKeepRefs,
       restoreFromTrash: mocks.restoreFromTrash,
@@ -106,6 +107,7 @@ beforeEach(() => {
   mocks.restoreFromTrash.mockResolvedValue({ id: "trash-entry", originalPath: "/test/worktrees/restored" });
   mocks.purgeTrashEntry.mockResolvedValue({ deleted: true, keepRefsMinted: [], errors: [] });
   mocks.deleteKeepRefs.mockResolvedValue({ deleted: 0, retained: [], errors: [] });
+  mocks.isCloneMode.mockReturnValue(false);
   setTTY(false);
   log = vi.spyOn(console, "log").mockImplementation(() => {});
   errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -679,6 +681,23 @@ it("reports a config that will not load as one line", async () => {
   expect(stderr(errorLog)).toContain("must have a 'repoUrl' property");
   expect(stderr(errorLog)).not.toContain("Unhandled error");
   expect(process.exitCode).toBe(1);
+});
+
+// The other half of the "is this invocation even accepted" gate, and the one
+// the README states as a constraint: clone mode never removes its checkout, so
+// it has no trash to list, restore or purge. Without this the gate could be
+// deleted outright and every trash test still passed — the listing would just
+// run against a repository that has none.
+it("rejects a clone-mode repository before any trash operation runs", async () => {
+  mocks.isCloneMode.mockReturnValue(true);
+
+  await expect(main()).resolves.toBeUndefined();
+
+  expect(stderr(errorLog)).toContain("only available for worktree-mode repositories");
+  expect(process.exitCode).toBe(1);
+  // Rejected up front, not after reading the trash it does not have.
+  expect(mocks.listTrashEntries).not.toHaveBeenCalled();
+  expect(mocks.listKeepRefs).not.toHaveBeenCalled();
 });
 
 it("reports a config that matches more than one repository as a usage error", async () => {

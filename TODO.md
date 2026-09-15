@@ -249,12 +249,12 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T93** — CLI error reporting loses context: init failures omit the repository name, every
   runtime error is labelled 'Error loading config file', `trash` errors dump a raw stack, and config
   SyntaxErrors lack file/line
-- [ ] **T94** — Docs drift in shipped user-facing text: example config's lock-file location is
+- [x] **T94** — Docs drift in shipped user-facing text: example config's lock-file location is
   wrong, README's CLI section omits the `trash` subcommand
 - [ ] **T95** — Dead or duplicated constants in src/constants.ts: unused
   GIT_CONSTANTS/DEFAULT_CONFIG/METADATA entries, FETCH_CONFIG duplicated as a literal in
   git.service.ts, test-only TEST_TIMEOUT shipped in dist, unused CliCommand type
-- [ ] **T96** — Test coverage gaps in the config/CLI subsystem: example config never loaded, no
+- [x] **T96** — Test coverage gaps in the config/CLI subsystem: example config never loaded, no
   per-repo parallelism or ESM-split reload case, runOnce init-rejection and locked-skip accounting
   untested, daemon branch of runMultipleRepositories untested, init round-trip only covers the happy
   path
@@ -3767,7 +3767,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: runList has the friendly catch but runTrash was added later without
   one; the init failure line predates multi-repo parallel init; no tests cover these outputs.
 
-### [ ] T94. Docs drift in shipped user-facing text: example config's lock-file location is wrong, README's CLI section omits the `trash` subcommand
+### [x] T94. Docs drift in shipped user-facing text: example config's lock-file location is wrong, README's CLI section omits the `trash` subcommand
 
 - **Category**: docs · **Subsystem**: config
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
@@ -3825,7 +3825,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: No unused-export lint (eslint config only covers JS files per
   package.json `lint` script) and the constants file grew organically across refactors.
 
-### [ ] T96. Test coverage gaps in the config/CLI subsystem: example config never loaded, no per-repo parallelism or ESM-split reload case, runOnce init-rejection and locked-skip accounting untested, daemon branch of runMultipleRepositories untested, init round-trip only covers the happy path
+### [x] T96. Test coverage gaps in the config/CLI subsystem: example config never loaded, no per-repo parallelism or ESM-split reload case, runOnce init-rejection and locked-skip accounting untested, daemon branch of runMultipleRepositories untested, init round-trip only covers the happy path
 
 - **Category**: testing · **Subsystem**: config
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

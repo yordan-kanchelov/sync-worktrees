@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import packageJson from "../../../package.json" with { type: "json" };
 import { parseArguments } from "../cli";
 
 describe("parseArguments", () => {
@@ -94,12 +95,37 @@ describe("parseArguments", () => {
     // --json describes the listing; an action produces no listing to describe.
     ["json against restore", ["trash", "--json", "--restore", "entry"]],
     ["json against purge", ["trash", "--json", "--purge", "entry"]],
+    ["json against dropKeepRef", ["trash", "--json", "--dropKeepRef", "keep"]],
     ["json against dropAllKeepRefs", ["trash", "--json", "--dropAllKeepRefs"]],
     // --wait is about the repository lock, which the listing never takes.
     ["wait against json", ["trash", "--wait", "--json"]],
+    ["wait against dropKeepRef", ["trash", "--wait", "--dropKeepRef", "keep"]],
     ["wait against dropAllKeepRefs", ["trash", "--wait", "--dropAllKeepRefs"]],
   ])("rejects conflicting trash mutations: %s", (_label, argv) => {
     expect(() => parseArguments(argv)).toThrow(/process\.exit/);
+  });
+
+  // `--help` is the CLI's own reference, and it is the only one that ships with
+  // the binary rather than with the README. A subcommand that exists but is not
+  // listed there is invisible: `trash` was added in 5.2.0 and went unmentioned
+  // in the README's Subcommands list until now, which is exactly the failure
+  // this pins on the side that the suite can see.
+  it("lists every subcommand in --help", () => {
+    expect(() => parseArguments(["--help"])).toThrow(/process\.exit/);
+
+    const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+
+    expect(output).toContain("sync-worktrees init");
+    expect(output).toContain("sync-worktrees list");
+    expect(output).toContain("sync-worktrees trash");
+  });
+
+  it("prints the package version for --version", () => {
+    expect(() => parseArguments(["--version"])).toThrow(/process\.exit/);
+
+    const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+
+    expect(output.trim()).toBe(packageJson.version);
   });
 
   it("rejects removed flag --repoUrl under strict()", () => {

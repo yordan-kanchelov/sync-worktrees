@@ -717,6 +717,14 @@ Subcommands:
 
 - `sync-worktrees init [--config <path>] [--force]` — interactive wizard that writes a minimal config file (`./sync-worktrees.config.js` by default). Refuses to overwrite an existing target unless `--force` is passed. The generated file is loaded back before the wizard reports success, so a config that would not load fails the command instead of surfacing on the next run.
 - `sync-worktrees list [--config <path>] [--filter <pattern>]` — print the resolved repositories and exit.
+- `sync-worktrees trash [--config <path>] [--filter <pattern>] [--json] [--restore <id> | --purge <id> | --dropKeepRef <name> | --dropAllKeepRefs] [--wait]` — inspect and recover reversible removals for one repository; see [Trash and restore](#trash-and-restore) for the listing columns, the `--json` shape and what each operation does. Every invocation needs **exactly one** matched repository (`--filter` is how you narrow a multi-repo config down to it; anything else exits 1 with the count it matched), and that repository must be in worktree mode — clone mode never removes its checkout, so a clone-mode repository is rejected. With no operation flag the command prints the trash listing and any permanent keep refs.
+  - `--restore <id>` puts an entry's payload back at its original path.
+  - `--purge <id>` permanently deletes one entry ahead of its expiry.
+  - `--dropKeepRef <name>` deletes one listed permanent keep ref; `--dropAllKeepRefs` deletes every listed one behind a single confirmation.
+  - `--json` prints the listing as JSON instead of a table.
+  - `--wait` applies to `--restore` and `--purge` — the two operations that take the repository lock — and retries a lock another process holds for up to two minutes instead of failing immediately.
+  - `--restore`, `--purge`, `--dropKeepRef` and `--dropAllKeepRefs` are mutually exclusive. `--json` describes the listing, so it is rejected alongside any of them, and `--wait` is rejected alongside `--json`, `--dropKeepRef` or `--dropAllKeepRefs`.
+  - `--purge`, `--dropKeepRef` and `--dropAllKeepRefs` each need an interactive TTY and a typed confirmation; `--restore` needs neither.
 
 ## Requirements
 
