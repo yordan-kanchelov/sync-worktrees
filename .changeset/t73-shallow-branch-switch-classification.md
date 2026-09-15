@@ -1,0 +1,5 @@
+---
+"sync-worktrees": patch
+---
+
+Switching a shallow clone-mode repository to a branch whose remote counterpart has moved past the configured `depth` no longer fails with "Cannot fast-forward branch". The switch used to run its own shortened relationship check whose only verdicts were "can" and "cannot", so a `depth: N` clone — whose `--depth N` fetch cuts the history under a tip the remote moved more than N commits past — read `merge-base`'s silence as a divergence and refused a switch that was a plain fast-forward, leaving the user to guess that raising or removing `depth` was what would converge it. It now asks the same classifier a sync tick asks (about `refs/heads/<branch>`, since the branch is not checked out yet) and spends the same deepening budget (50/200/1000 commits, stopping at the first decisive answer) before deciding: a real divergence or unpushed local commits still refuse the switch, and a clone still too shallow to tell after the whole budget now says so — naming `depth` as the remedy — instead of blaming the branch.

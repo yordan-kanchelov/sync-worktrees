@@ -4,8 +4,9 @@ import { confirm, input, select } from "@inquirer/prompts";
 import * as cron from "node-cron";
 
 import { extractRepoNameFromUrl } from "./git-url";
+import { pathsEqual } from "./path-compare";
 
-import type { InitConfigInput, InitRepositoryInput, RepositoryMode } from "../types";
+import type { InitConfigInput, InitRepositoryInput } from "../types";
 
 function safeRepoName(repoUrl: string): string {
   try {
@@ -15,24 +16,38 @@ function safeRepoName(repoUrl: string): string {
   }
 }
 
-async function promptForRepository(): Promise<InitRepositoryInput> {
-  const repoUrl = await input({
-    message: "Enter the Git repository URL (e.g., https://github.com/user/repo.git):",
-    validate: (value: string) => {
-      if (!value.trim()) {
-        return "Repository URL is required";
-      }
-      if (!value.match(/^(https?:\/\/|ssh:\/\/|git@|file:\/\/).*$/)) {
-        return "Please enter a valid Git URL (https://, ssh://, git@, or file://)";
-      }
-      if (!safeRepoName(value)) {
-        return "Couldn't derive a repository name from that URL — include the full path (e.g., https://github.com/user/repo.git)";
-      }
-      return true;
-    },
-  });
+/**
+ * Every answer below is trimmed the moment it comes back, because every
+ * validator here tests `value.trim()` while the raw string is what used to be
+ * stored. A trailing space therefore passed validation and survived: `path`
+ * does not normalize it away (`path.resolve("./wt ")` is `<cwd>/wt `), so init
+ * wrote a `worktreeDir` naming a directory nobody meant to create and a
+ * `repoUrl` git would be handed verbatim. The worktree-mode guard below is the
+ * sharp edge of the same split — it compared the *trimmed* answer against
+ * `configDir` and then stored the untrimmed one, so the path it approved was
+ * not the path it saved. `branch` and `depth` were already trimmed at the point
+ * of use; `cronSchedule` is trimmed where it is returned, for the same reason.
+ */
+async function promptForRepository(configDir: string): Promise<InitRepositoryInput> {
+  const repoUrl = (
+    await input({
+      message: "Enter the Git repository URL (e.g., https://github.com/user/repo.git):",
+      validate: (value: string) => {
+        if (!value.trim()) {
+          return "Repository URL is required";
+        }
+        if (!value.trim().match(/^(https?:\/\/|ssh:\/\/|git@|file:\/\/).*$/)) {
+          return "Please enter a valid Git URL (https://, ssh://, git@, or file://)";
+        }
+        if (!safeRepoName(value)) {
+          return "Couldn't derive a repository name from that URL — include the full path (e.g., https://github.com/user/repo.git)";
+        }
+        return true;
+      },
+    })
+  ).trim();
 
-  const mode = (await select({
+  const mode = await select({
     message: "How should this repository be managed?",
     choices: [
       {
@@ -44,27 +59,51 @@ async function promptForRepository(): Promise<InitRepositoryInput> {
         value: "clone",
       },
     ],
-  })) as RepositoryMode;
+  });
 
   const repoName = safeRepoName(repoUrl);
   const defaultWorktreeDir = repoName ? `./${repoName}` : "";
 
-  let worktreeDir = await input({
-    message: mode === "clone" ? "Enter the directory to clone into:" : "Enter the directory for storing worktrees:",
-    default: defaultWorktreeDir,
-    validate: (value: string) => {
-      if (!value.trim() && !defaultWorktreeDir) {
-        return "Directory is required";
-      }
-      return true;
-    },
-  });
+  let worktreeDir = (
+    await input({
+      message: mode === "clone" ? "Enter the directory to clone into:" : "Enter the directory for storing worktrees:",
+      default: defaultWorktreeDir,
+      validate: (value: string) => {
+        if (!value.trim() && !defaultWorktreeDir) {
+          return "Directory is required";
+        }
+        // The config's own directory is never a usable worktreeDir: the generator
+        // would write `worktreeDir: "./"`, and the default bareRepoDir — `.bare/<name>`
+        // resolved against the *config file's* directory, not against worktreeDir —
+        // would land inside it, so the very next run would be rejected by the
+        // bareRepoDir/worktreeDir overlap check.
+        if (mode !== "clone" && pathsEqual(path.resolve(value.trim() || defaultWorktreeDir), configDir)) {
+          return (
+            `That is the config file's own directory. The bare repository defaults to '.bare/<name>' beside the ` +
+            `config file, so it would land inside worktreeDir and the config would be rejected as overlapping. ` +
+            `Use a subdirectory such as ${defaultWorktreeDir || "./worktrees"}.`
+          );
+        }
+        return true;
+      },
+    })
+  ).trim();
 
-  if (!worktreeDir.trim() && defaultWorktreeDir) {
+  if (!worktreeDir && defaultWorktreeDir) {
     worktreeDir = defaultWorktreeDir;
   }
   if (!path.isAbsolute(worktreeDir)) {
     worktreeDir = path.resolve(worktreeDir);
+  }
+
+  // Clone mode is a warning, not a reject: `git clone` refuses a non-empty
+  // destination, and the directory holding the config file is never empty.
+  if (mode === "clone" && pathsEqual(worktreeDir, configDir)) {
+    console.warn(
+      `\n⚠️  '${worktreeDir}' is the config file's own directory. 'git clone' refuses a destination that exists and ` +
+        `is not empty, so the first sync will fail with "Cannot clone into '${worktreeDir}': directory exists and ` +
+        `is not empty." unless you move the config elsewhere.\n`,
+    );
   }
 
   const repo: InitRepositoryInput = { repoUrl, worktreeDir, mode };
@@ -75,10 +114,12 @@ async function promptForRepository(): Promise<InitRepositoryInput> {
       default: false,
     });
     if (askForBareDir) {
-      let bareRepoDir = await input({
-        message: "Enter the directory for the bare repository:",
-        validate: (value: string) => (value.trim() ? true : "Bare repository directory is required"),
-      });
+      let bareRepoDir = (
+        await input({
+          message: "Enter the directory for the bare repository:",
+          validate: (value: string) => (value.trim() ? true : "Bare repository directory is required"),
+        })
+      ).trim();
       if (!path.isAbsolute(bareRepoDir)) {
         bareRepoDir = path.resolve(bareRepoDir);
       }
@@ -112,13 +153,18 @@ async function promptForRepository(): Promise<InitRepositoryInput> {
   return repo;
 }
 
-export async function promptForInitConfig(): Promise<InitConfigInput> {
+/**
+ * @param configDir Directory the generated config file will live in. Answers
+ *   equal to it are rejected (worktree mode) or warned about (clone mode).
+ */
+export async function promptForInitConfig(configDir: string): Promise<InitConfigInput> {
   console.log("🔧 Welcome to sync-worktrees interactive setup!\n");
 
+  const resolvedConfigDir = path.resolve(configDir);
   const repositories: InitRepositoryInput[] = [];
   let addMore = true;
   while (addMore) {
-    repositories.push(await promptForRepository());
+    repositories.push(await promptForRepository(resolvedConfigDir));
     addMore = await confirm({
       message: "Add another repository?",
       default: false,
@@ -139,5 +185,13 @@ export async function promptForInitConfig(): Promise<InitConfigInput> {
     },
   });
 
-  return { repositories, cronSchedule };
+  // Same split as the answers above, and the only one that is not merely
+  // cosmetic: `cron.validate` accepts a space-padded expression but rejects
+  // every other kind of whitespace, while `trim()` removes them all. A cron
+  // answer carrying a tab or a non-breaking space — what pasting one out of a
+  // crontab or a rendered doc page gives you — therefore passed this validator
+  // and was written into the generated config, which `runInit`'s own round-trip
+  // load then rejected with "Invalid cron expression in defaults". The wizard
+  // must store the string it validated.
+  return { repositories, cronSchedule: cronSchedule.trim() };
 }

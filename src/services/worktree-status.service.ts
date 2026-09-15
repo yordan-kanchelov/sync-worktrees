@@ -1,16 +1,19 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import simpleGit from "simple-git";
+import pLimit from "p-limit";
 
-import { ENV_CONSTANTS, GIT_CONSTANTS, GIT_OPERATIONS, PATH_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, GIT_OPERATIONS, PATH_CONSTANTS } from "../constants";
 import { GitOperationError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
+import { createGitClient } from "../utils/git-client";
+import { GitClientCache } from "../utils/git-client-cache";
 import { getErrorMessage } from "../utils/lfs-error";
 
 import { Logger } from "./logger.service";
 
 import type { LastKnownRemoteTip } from "../types/sync-metadata";
+import type { LimitFunction } from "p-limit";
 import type { SimpleGit } from "simple-git";
 
 export interface WorktreeStatusDetails {
@@ -58,6 +61,44 @@ const OPERATION_FILES: ReadonlyArray<{ file: string; type: string }> = [
   { file: GIT_OPERATIONS.REBASE_APPLY, type: "rebase (apply)" },
 ];
 
+// `git submodule status` prints one line per submodule: a single status
+// character in column 0, the recorded object id, the path, and — only for an
+// initialized submodule — a " (<describe>)" suffix.
+//
+//   " " in sync   "-" not initialized   "+" commit differs   "U" merge conflicts
+//
+// Only "+" and "U" mean the worktree holds submodule state that could be lost.
+// "-" is the state every tool-created worktree starts in, because `git worktree
+// add` never initializes submodules; counting it as modified made every
+// worktree of a repo with submodules permanently un-prunable.
+//
+// A submodule path can contain spaces, so the path is everything after the
+// object id minus the describe suffix — not the first \S+ run (which used to
+// hand callers the object id itself).
+const SUBMODULE_STATUS_LINE = /^(.)(\S+)[ \t]+(.+)$/;
+const SUBMODULE_DESCRIBE_SUFFIX = /[ \t]+\([^()]*\)$/;
+
+function parseModifiedSubmodulePath(line: string): string | null {
+  const match = SUBMODULE_STATUS_LINE.exec(line);
+  if (!match) return null;
+  const [, prefix, , rest] = match;
+  if (prefix !== GIT_CONSTANTS.SUBMODULE_STATUS_OUT_OF_SYNC && prefix !== GIT_CONSTANTS.SUBMODULE_STATUS_CONFLICTED) {
+    return null;
+  }
+  const submodulePath = rest.replace(SUBMODULE_DESCRIBE_SUFFIX, "").trim();
+  return submodulePath || null;
+}
+
+function collectModifiedSubmodules(submoduleStatus: string): string[] {
+  const modified: string[] = [];
+  for (const line of submoduleStatus.split("\n")) {
+    if (!line.trim()) continue;
+    const submodulePath = parseModifiedSubmodulePath(line);
+    if (submodulePath) modified.push(submodulePath);
+  }
+  return modified;
+}
+
 interface WorktreeSnapshot {
   exists: boolean;
   status: Awaited<ReturnType<SimpleGit["status"]>> | null;
@@ -79,15 +120,50 @@ interface WorktreeSnapshot {
   untrackedNotIgnored: string[];
 }
 
+export interface WorktreeStatusServiceConfig {
+  skipLfs?: boolean;
+  /**
+   * Ceiling on the git processes this service has running at once, across every
+   * worktree it is asked about. Defaults to `maxStatusChecks`.
+   */
+  maxConcurrentGitProcesses?: number;
+}
+
 export class WorktreeStatusService {
-  private gitInstances = new Map<string, SimpleGit>();
+  private gitInstances = new GitClientCache();
   private logger: Logger;
+  // One budget for every git process this service spawns, shared by all
+  // worktrees. A single snapshot fans out to five commands at once, and the
+  // prune phase asks for `maxStatusChecks` snapshots in parallel — so without a
+  // shared ceiling that setting bounded worktrees rather than processes and the
+  // real peak was five times what the user configured. A slot is held around a
+  // single git command only, never around a helper that runs more of them, so
+  // the budget can never wait on itself.
+  //
+  // The trade: these clients carry no inactivity timeout (see createGitInstance),
+  // so a git command that hangs now holds a shared slot instead of delaying only
+  // its own worktree, and `maxStatusChecks` hung commands stall every remaining
+  // probe. Giving status clients a block timeout is the fix, and a change with
+  // its own risk — `git status` is legitimately silent on a large worktree.
+  private readonly gitBudget: LimitFunction;
 
   constructor(
-    private readonly config: { skipLfs?: boolean } = {},
+    private readonly config: WorktreeStatusServiceConfig = {},
     logger?: Logger,
   ) {
     this.logger = logger ?? Logger.createDefault();
+    this.gitBudget = pLimit(
+      Math.max(1, config.maxConcurrentGitProcesses ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
+    );
+  }
+
+  updateLogger(logger: Logger): void {
+    this.logger = logger;
+  }
+
+  /** Runs one git command against the shared process budget. */
+  private runGit<T>(command: () => Promise<T>): Promise<T> {
+    return this.gitBudget(command);
   }
 
   // Only gates fast-forwards, which never touch a submodule's working tree, so
@@ -98,7 +174,7 @@ export class WorktreeStatusService {
   // that must not be fooled by a quiet submodule — see getFullWorktreeStatus.
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {
     const worktreeGit = this.createGitInstance(worktreePath);
-    const status = await worktreeGit.status();
+    const status = await this.runGit(() => worktreeGit.status());
 
     const hasTrackedChanges =
       status.modified.length > 0 ||
@@ -111,13 +187,12 @@ export class WorktreeStatusService {
       return false;
     }
 
-    if (status.not_added.length > 0) {
-      const untrackedFiles = status.not_added;
-      const notIgnoredFiles = await this.filterUntrackedFiles(worktreePath, untrackedFiles);
-      return notIgnoredFiles.length === 0;
-    }
-
-    return true;
+    // `status.not_added` is already the untracked-and-not-ignored list: git
+    // only writes a path to a `??` line when no exclude rule matched it, and
+    // even `--ignored` (which nothing here passes) reports ignored paths on
+    // separate `!!` lines that simple-git parses into `status.ignored`. See
+    // untracked-ignored-status.e2e.test.ts.
+    return status.not_added.length === 0;
   }
 
   async getFullWorktreeStatus(
@@ -226,17 +301,17 @@ export class WorktreeStatusService {
     const git = this.createGitInstance(worktreePath);
 
     const [status, branchResult, remoteBranchesResult, stashResult, submoduleResult, gitDirResult] = await Promise.all([
-      git.status(["--ignore-submodules=none"]).catch((e: unknown) => {
+      this.runGit(() => git.status(["--ignore-submodules=none"])).catch((e: unknown) => {
         this.logger.error(`Error reading status for ${worktreePath}`, e);
         return null;
       }),
-      git.branch().catch(() => null),
-      git.branch(["-r"]).catch(() => null),
-      git.stashList().catch((e: unknown) => {
+      this.runGit(() => git.branch()).catch(() => null),
+      this.runGit(() => git.branch(["-r", "--no-color"])).catch(() => null),
+      this.runGit(() => git.stashList()).catch((e: unknown) => {
         this.logger.error(`Error checking stash`, e);
         return null;
       }),
-      git.raw(["submodule", "status"]).catch((e: unknown) => {
+      this.runGit(() => git.raw(["submodule", "status"])).catch((e: unknown) => {
         this.logger.error(`Error checking submodule status`, e);
         return null;
       }),
@@ -255,16 +330,23 @@ export class WorktreeStatusService {
     let headPushedToRecordedTip: boolean | null = null;
     if (!detached && currentBranch) {
       const [upstreamResult, anyRemoteResult, sinceSyncResult, recordedTipResult] = await Promise.all([
-        git.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]).then(
+        this.runGit(() => git.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`])).then(
           (raw) => ({ ok: true as const, value: raw }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
-        git.raw(["rev-list", "--count", currentBranch, "--not", "--remotes"]).then(
+        // HEAD, never the short branch name: git resolves a bare name through
+        // refs/tags/<name> before refs/heads/<name>, so a tag sharing the
+        // branch's name (`git checkout -b 1.4.2 1.4.2`) answers for the tag —
+        // with nothing but `warning: refname '<name>' is ambiguous.` on stderr
+        // and exit 0 — and local-only commits count as zero, which would let
+        // the prune pipeline remove the worktree. The branch is checked out
+        // here (the !detached guard above), so HEAD is exactly its tip.
+        this.runGit(() => git.raw(["rev-list", "--count", "HEAD", "--not", "--remotes"])).then(
           (raw) => ({ ok: true as const, value: raw }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
         lastSyncCommit
-          ? git.raw(["rev-list", "--count", `${lastSyncCommit}..HEAD`]).then(
+          ? this.runGit(() => git.raw(["rev-list", "--count", `${lastSyncCommit}..HEAD`])).then(
               (raw) => ({ ok: true as const, value: raw }),
               (error: unknown) => ({ ok: false as const, error }),
             )
@@ -274,7 +356,7 @@ export class WorktreeStatusService {
         // ("not an ancestor") as success because nothing is written to stderr.
         // Any failure (e.g. the recorded oid was gc'd) reads as "not proven".
         lastKnownRemoteTip
-          ? git.raw(["rev-list", "--count", `${lastKnownRemoteTip.oid}..HEAD`]).then(
+          ? this.runGit(() => git.raw(["rev-list", "--count", `${lastKnownRemoteTip.oid}..HEAD`])).then(
               (raw) => this.parseCount(raw) === 0,
               () => false,
             )
@@ -314,14 +396,8 @@ export class WorktreeStatusService {
 
     const operationProbe = gitDirResult ? await this.detectOperationFile(gitDirResult) : { file: null, unknown: false };
 
-    let untrackedNotIgnored: string[] = [];
-    if (status && status.not_added.length > 0) {
-      try {
-        untrackedNotIgnored = await this.filterUntrackedFiles(worktreePath, status.not_added);
-      } catch {
-        untrackedNotIgnored = status.not_added;
-      }
-    }
+    // Untracked-and-not-ignored straight from status — see checkWorktreeStatus.
+    const untrackedNotIgnored = status?.not_added ?? [];
 
     return {
       exists: true,
@@ -363,15 +439,7 @@ export class WorktreeStatusService {
 
   private deriveModifiedSubmodules(snap: WorktreeSnapshot): string[] {
     if (!snap.submoduleStatus) return [];
-    const modified: string[] = [];
-    for (const line of snap.submoduleStatus.split("\n").filter((l) => l.trim())) {
-      const firstChar = line.charAt(0);
-      if (firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_ADDED || firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_REMOVED) {
-        const match = line.match(/^[+-]\s*(\S+)/);
-        if (match) modified.push(match[1]);
-      }
-    }
-    return modified;
+    return collectModifiedSubmodules(snap.submoduleStatus);
   }
 
   private buildStatusDetails(snap: WorktreeSnapshot): WorktreeStatusDetails {
@@ -436,17 +504,20 @@ export class WorktreeStatusService {
         return true;
       }
 
-      const branchSummary = await worktreeGit.branch();
-      const currentBranch = branchSummary.current;
-
-      const anyRemoteResult = await worktreeGit.raw(["rev-list", "--count", currentBranch, "--not", "--remotes"]);
+      // Same unambiguous revision as collectSnapshot: a tag sharing the
+      // branch's name shadows the branch and hides its unpushed commits.
+      const anyRemoteResult = await this.runGit(() =>
+        worktreeGit.raw(["rev-list", "--count", "HEAD", "--not", "--remotes"]),
+      );
       const anyRemoteCount = this.parseCount(anyRemoteResult);
       if (anyRemoteCount === null || anyRemoteCount > 0) {
         return true;
       }
 
       if (lastSyncCommit) {
-        const sinceSyncResult = await worktreeGit.raw(["rev-list", "--count", `${lastSyncCommit}..HEAD`]);
+        const sinceSyncResult = await this.runGit(() =>
+          worktreeGit.raw(["rev-list", "--count", `${lastSyncCommit}..HEAD`]),
+        );
         const sinceSyncCount = this.parseCount(sinceSyncResult);
         if (sinceSyncCount === null || sinceSyncCount > 0) {
           return true;
@@ -468,11 +539,13 @@ export class WorktreeStatusService {
         return false;
       }
 
-      const branchSummary = await worktreeGit.branch();
+      const branchSummary = await this.runGit(() => worktreeGit.branch());
       const currentBranch = branchSummary.current;
 
-      const upstream = await worktreeGit.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]);
-      const remoteBranches = await worktreeGit.branch(["-r"]);
+      const upstream = await this.runGit(() =>
+        worktreeGit.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]),
+      );
+      const remoteBranches = await this.runGit(() => worktreeGit.branch(["-r", "--no-color"]));
 
       return !remoteBranches.all.includes(upstream.trim());
     } catch (error) {
@@ -496,7 +569,7 @@ export class WorktreeStatusService {
     const worktreeGit = this.createGitInstance(worktreePath);
 
     try {
-      const stashList = await worktreeGit.stashList();
+      const stashList = await this.runGit(() => worktreeGit.stashList());
       return stashList.total > 0;
     } catch (error) {
       this.logger.error(`Error checking stash`, error);
@@ -508,19 +581,8 @@ export class WorktreeStatusService {
     const worktreeGit = this.createGitInstance(worktreePath);
 
     try {
-      const result = await worktreeGit.raw(["submodule", "status"]);
-      const lines = result.split("\n").filter((line) => line.trim());
-
-      for (const line of lines) {
-        const firstChar = line.charAt(0);
-        if (
-          firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_ADDED ||
-          firstChar === GIT_CONSTANTS.SUBMODULE_STATUS_REMOVED
-        ) {
-          return true;
-        }
-      }
-      return false;
+      const result = await this.runGit(() => worktreeGit.raw(["submodule", "status"]));
+      return collectModifiedSubmodules(result).length > 0;
     } catch (error) {
       this.logger.error(`Error checking submodule status`, error);
       return true;
@@ -550,35 +612,9 @@ export class WorktreeStatusService {
     }
   }
 
-  private async filterUntrackedFiles(worktreePath: string, files: string[]): Promise<string[]> {
-    if (files.length === 0) return [];
-
-    const worktreeGit = this.createGitInstance(worktreePath);
-
-    try {
-      const result = await worktreeGit.raw(["check-ignore", "--", ...files]);
-
-      const ignoredFiles = new Set(
-        result
-          .trim()
-          .split("\n")
-          .filter((f) => f),
-      );
-      return files.filter((f) => !ignoredFiles.has(f));
-    } catch (error) {
-      const errorMessage = getErrorMessage(error);
-
-      if (errorMessage.includes(GIT_CONSTANTS.GIT_CHECK_IGNORE_NO_MATCH)) {
-        return files;
-      }
-
-      throw error;
-    }
-  }
-
   private async isDetachedHead(worktreeGit: SimpleGit): Promise<boolean> {
     try {
-      const branchSummary = await worktreeGit.branch();
+      const branchSummary = await this.runGit(() => worktreeGit.branch());
       return !branchSummary.current || branchSummary.detached;
     } catch {
       return true;
@@ -611,14 +647,22 @@ export class WorktreeStatusService {
   }
 
   private createGitInstance(worktreePath: string): SimpleGit {
-    const key = `${path.resolve(worktreePath)}::${this.config.skipLfs ? "1" : "0"}`;
-    let git = this.gitInstances.get(key);
-    if (!git) {
-      git = this.config.skipLfs
-        ? simpleGit(worktreePath).env({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" })
-        : simpleGit(worktreePath);
-      this.gitInstances.set(key, git);
-    }
-    return git;
+    return this.gitInstances.get(worktreePath, this.config.skipLfs ? "1" : "0", () =>
+      // createGitClient carries the (sanitized) process env: without HOME /
+      // XDG_CONFIG_HOME git ignores the global excludes file and every
+      // globally-ignored file reads as an untracked change, and without PATH
+      // the spawn itself can fail.
+      createGitClient(worktreePath, this.config.skipLfs ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {}),
+    );
+  }
+
+  /**
+   * Drops the client cached for a worktree that no longer exists. Called by
+   * GitService, which owns this service and is where every removal lands — a
+   * status client is built per worktree path, so without this the cache keeps
+   * one for every branch the repository ever had.
+   */
+  forgetWorktree(worktreePath: string): void {
+    this.gitInstances.forget(worktreePath);
   }
 }

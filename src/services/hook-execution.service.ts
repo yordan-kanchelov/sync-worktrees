@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 
 import { DEFAULT_CONFIG, HOOK_CONSTANTS } from "../constants";
+import { stripGitRepositorySelection } from "../utils/git-env";
 import { shellEscape } from "../utils/shell-escape";
 
 import type { HookContext, HooksConfig } from "../types";
@@ -62,9 +63,16 @@ export class HookExecutionService {
     this.activeProcesses.clear();
   }
 
+  // Hook commands run with the new worktree as their working directory, which
+  // is the whole of what "runs in the worktree" promises them. An inherited
+  // repository-selection variable outranks that directory for every git the
+  // hook runs, so the promise only holds once those are gone (see
+  // stripGitRepositorySelection). Nothing else about the hook's environment is
+  // touched: an editor, a pager and a terminal prompt are all things a hook
+  // command may legitimately want, unlike the git this tool runs itself.
   private buildEnvironment(context: HookContext): NodeJS.ProcessEnv {
     return {
-      ...process.env,
+      ...stripGitRepositorySelection(process.env),
       [HOOK_CONSTANTS.ENV_VARS.BRANCH_NAME]: context.branchName,
       [HOOK_CONSTANTS.ENV_VARS.WORKTREE_PATH]: context.worktreePath,
       [HOOK_CONSTANTS.ENV_VARS.REPO_NAME]: context.repoName,

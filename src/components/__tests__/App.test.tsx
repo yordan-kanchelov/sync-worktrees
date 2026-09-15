@@ -2,11 +2,12 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import App, { AppProps } from "../App";
+import type { AppProps } from "../App";
+import App from "../App";
 import { AppEventEmitter } from "../../utils/app-events";
 
 // Helper to wait for React state updates
-const waitForStateUpdate = () => new Promise(resolve => setTimeout(resolve, 100));
+const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 describe("App", () => {
   let defaultProps: AppProps;
@@ -21,9 +22,11 @@ describe("App", () => {
       onManualSync: vi.fn(),
       onReload: vi.fn(),
       onQuit: vi.fn().mockResolvedValue(undefined),
-      getRepositoryList: vi.fn().mockReturnValue([{ index: 0, name: "test-repo", repoUrl: "https://example.com/repo.git" }]),
+      getRepositoryList: vi
+        .fn()
+        .mockReturnValue([{ index: 0, name: "test-repo", repoUrl: "https://example.com/repo.git" }]),
       getBranchesForRepo: vi.fn().mockResolvedValue(["main", "develop"]),
-      getDefaultBranchForRepo: vi.fn().mockReturnValue("main"),
+      getDefaultBranchForRepo: vi.fn().mockResolvedValue("main"),
       createAndPushBranch: vi.fn().mockResolvedValue({ success: true, finalName: "test-branch" }),
       getWorktreesForRepo: vi.fn().mockResolvedValue([{ path: "/worktrees/main", branch: "main" }]),
       openEditorInWorktree: vi.fn().mockReturnValue({ success: true }),
@@ -40,6 +43,8 @@ describe("App", () => {
             unknownTrashSizes: 0,
             invalidTrashEntries: 1,
             keepRefs: 1,
+            trashEntryIds: ["entry-a", "entry-b"],
+            keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
           },
         },
       ]),
@@ -53,8 +58,13 @@ describe("App", () => {
             unknownTrashSizes: 0,
             invalidTrashEntries: 1,
             keepRefs: 0,
+            trashEntryIds: [],
+            keepRefNames: [],
             trashDeleted: 2,
             keepRefsDeleted: 1,
+            keepRefsRetained: 0,
+            skippedNewEntries: 0,
+            skippedNewKeepRefs: 0,
             gcSucceeded: true,
             errors: [],
           },
@@ -80,7 +90,6 @@ describe("App", () => {
 
       expect(lastFrame()).toContain("Running");
     });
-
   });
 
   describe("event subscriptions", () => {
@@ -204,7 +213,6 @@ describe("App", () => {
       // No error should occur - events are just silently ignored
     });
   });
-
 
   describe("updateLastSyncTime functionality", () => {
     it("should update last sync time and set status to idle", async () => {
@@ -366,6 +374,15 @@ describe("App", () => {
       await waitForStateUpdate();
 
       expect(defaultProps.forceClean).toHaveBeenCalledTimes(1);
+      // `y` authorizes the set behind the counts it just read out, so that is
+      // what reaches the service — not "whatever is in the trash by then".
+      expect(defaultProps.forceClean).toHaveBeenCalledWith([
+        {
+          repoIndex: 0,
+          trashEntryIds: ["entry-a", "entry-b"],
+          keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
+        },
+      ]);
       expect(lastFrame()).toContain("deleted 2 trash and 1 refs");
     });
 

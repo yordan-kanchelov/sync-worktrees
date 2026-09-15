@@ -1,3 +1,4 @@
+import { isGitAuthErrorFromError } from "./git-auth-error";
 import { isLfsErrorFromError } from "./lfs-error";
 
 interface ErrorWithCode {
@@ -57,6 +58,14 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
 
     if (err.code === "EBUSY") {
       return true;
+    }
+
+    // Credentials git could not obtain, a key ssh could not use or a host key
+    // it could not confirm: checked before the generic remote-repository
+    // patterns below, which these messages also contain. Retrying cannot help
+    // and costs minutes of backoff.
+    if (isGitAuthErrorFromError(error)) {
+      return false;
     }
 
     if (err.message?.includes("Could not read from remote repository")) {

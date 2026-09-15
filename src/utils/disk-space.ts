@@ -10,6 +10,7 @@ export async function calculateDirectorySize(dirPath: string): Promise<number> {
   return new Promise((resolve, reject) => {
     fastFolderSize(dirPath, (err, bytes) => {
       if (err) {
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- ExecException is an Error at runtime; its Omit<> type hides the Error base
         reject(err);
         return;
       }

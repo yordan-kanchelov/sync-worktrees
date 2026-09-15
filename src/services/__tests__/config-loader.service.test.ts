@@ -1,11 +1,16 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import pLimit from "p-limit";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
-import { ConfigError } from "../../errors";
-import { ConfigLoaderService } from "../config-loader.service";
+import { DEFAULT_CONFIG } from "../../constants";
+import { ConfigError, ConfigValidationError } from "../../errors";
+import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../../utils/git-client";
+import { ConfigLoaderService, computeParallelismPeak } from "../config-loader.service";
+
+import type { RepositoryConfig } from "../../types";
 
 describe("ConfigLoaderService", () => {
   let configLoader: ConfigLoaderService;
@@ -75,6 +80,166 @@ describe("ConfigLoaderService", () => {
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Config file not found");
     });
 
+    // Node reports a config parsed under the wrong module system as a bare
+    // `SyntaxError: Unexpected token 'export'` that names neither the file nor
+    // the fix, so the loader appends a hint. A `.cjs` target is the case that
+    // can be exercised here: it goes through the loader's real `require()`, so
+    // Node's own parser produces the error. The sibling case -- a `.js` file in
+    // a `"type": "commonjs"` package -- cannot be reproduced in-process, because
+    // Vitest resolves `import()` through its own pipeline rather than Node's
+    // module-type resolution; the generator's tests cover that one against a
+    // real `node` child process instead.
+    it("hints at the module system when a .cjs config uses export default", async () => {
+      const configPath = path.join(tempDir, "esm-in.cjs");
+      await fs.writeFile(configPath, `export default { repositories: [] };`);
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      // Additive: the original Node message survives verbatim.
+      expect(error.message).toContain("Failed to load config file: Unexpected token 'export'");
+      expect(error.message).toContain("esm-in.cjs");
+      expect(error.message).toContain('add "type": "module"');
+      expect(error.message).toContain(".mjs/.cjs");
+    });
+
+    it("leaves an unrelated syntax error unhinted", async () => {
+      // A genuine syntax error has nothing to do with the module system, so
+      // the hint must not fire on every SyntaxError.
+      const configPath = path.join(tempDir, "broken.cjs");
+      await fs.writeFile(configPath, `module.exports = { repositories: [ ;`);
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("Unexpected token ';'");
+      expect(error.message).not.toContain("hint:");
+    });
+
+    it("leaves other load failures unhinted", async () => {
+      const configPath = path.join(tempDir, "not-an-object.config.js");
+      await fs.writeFile(configPath, `export default "not an object";`);
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toBe("Failed to load config file: Config file must export an object");
+      expect(error.message).not.toContain("hint:");
+      // And unlocated: the stack of a failure raised *after* the file
+      // evaluated starts in this loader, and pointing at sync-worktrees' own
+      // code for a config the person has to fix is worse than saying nothing.
+    });
+
+    // `Failed to load config file: Unexpected token ']'` named neither the file
+    // nor the line, and a run with an auto-discovered config did not even say
+    // which file it had found. A `.cjs` target is the shape that can be
+    // exercised in-process: it goes through the loader's real `require()`, so
+    // Node's own parser produces the error and decorates the stack with the
+    // position. Vitest resolves `import()` through its own pipeline, so the
+    // `.js`/`.mjs` half is pinned against a real `node` in the e2e suite.
+    it("names the file and the line a config failed to parse on", async () => {
+      const dir = await fs.realpath(tempDir);
+      const configPath = path.join(dir, "syntax.cjs");
+      await fs.writeFile(configPath, 'module.exports = {\n  repositories: [\n    { name: "a" ],\n  ],\n};\n');
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("Unexpected token ']'");
+      // The offending token is on line 3, not line 1 and not the last line.
+      expect(error.message).toContain(`${configPath}:3`);
+    });
+
+    // The other shape: a config that parses and then throws carries an ordinary
+    // stack frame rather than Node's compile-failure decoration, and the first
+    // frame outside `node:` internals is the position.
+    it("names the line a config threw from while it evaluated", async () => {
+      const dir = await fs.realpath(tempDir);
+      const configPath = path.join(dir, "throws.cjs");
+      await fs.writeFile(
+        configPath,
+        "const repositories = [];\nthrow new Error('this config refuses to load');\nmodule.exports = { repositories };\n",
+      );
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("this config refuses to load");
+      expect(error.message).toContain(`${configPath}:2:`);
+    });
+
+    // A stack frame is plain text, and the two things it is most often split
+    // on — whitespace, and the bracket that opens the location — both occur in
+    // ordinary directory names ("~/My Projects", "proj (old)"). Splitting on
+    // either one walked past the config's own frame and reported whatever came
+    // next, which is this package's code: the one place the location must never
+    // point, since it is not the file the person has to fix.
+    it.each([
+      ["a space", "my configs"],
+      ["a bracket", "configs (old)"],
+      ["both", "my configs (old)"],
+    ])("names the config's own line when its directory contains %s", async (_label, dirName) => {
+      const dir = path.join(await fs.realpath(tempDir), dirName);
+      await fs.mkdir(dir, { recursive: true });
+      const configPath = path.join(dir, "throws.cjs");
+      await fs.writeFile(configPath, "const repositories = [];\nthrow new Error('this config refuses to load');\n");
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain(`${configPath}:2:`);
+      expect(error.message).not.toContain("config-loader.service");
+    });
+
+    it.each([
+      ["a space", "my configs"],
+      ["a bracket", "configs (old)"],
+    ])("names the config's own line when a parse failure's directory contains %s", async (_label, dirName) => {
+      const dir = path.join(await fs.realpath(tempDir), dirName);
+      await fs.mkdir(dir, { recursive: true });
+      const configPath = path.join(dir, "syntax.cjs");
+      await fs.writeFile(configPath, 'module.exports = {\n  repositories: [\n    { name: "a" ],\n  ],\n};\n');
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("Unexpected token ']'");
+      expect(error.message).toContain(`${configPath}:3`);
+      expect(error.message).not.toContain("config-loader.service");
+    });
+
+    // Node's own frames sit above the config's on a resolution failure — nine
+    // of them here — and reporting `node:internal/modules/cjs/loader:1383` as
+    // the place to look would be worse than reporting nothing.
+    it("skips Node's internal frames to reach the config's own line", async () => {
+      const dir = await fs.realpath(tempDir);
+      const configPath = path.join(dir, "missing-import.cjs");
+      await fs.writeFile(configPath, "module.exports = require('sync-worktrees-no-such-package');\n");
+
+      const error = await configLoader
+        .loadConfigFile(configPath)
+        .then(() => new Error("expected loadConfigFile to reject"))
+        .catch((e: unknown) => e as Error);
+
+      expect(error.message).toContain("Cannot find module 'sync-worktrees-no-such-package'");
+      expect(error.message).toContain(`${configPath}:1:`);
+      expect(error.message).not.toContain("node:internal");
+    });
+
     it("should throw error for invalid config format", async () => {
       const configPath = path.join(tempDir, "invalid.config.js");
       const configContent = `export default "not an object";`;
@@ -114,6 +279,58 @@ describe("ConfigLoaderService", () => {
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Duplicate repository name: duplicate");
+    });
+
+    it("redacts credentials from the invalid repoUrl error", async () => {
+      const configPath = path.join(tempDir, "invalid-url.config.js");
+      const configContent = `
+        export default {
+          repositories: [
+            {
+              name: "bad-url",
+              repoUrl: "ftp://ci-bot:s3cr3t-token@example.com/repo.git",
+              worktreeDir: "/worktrees"
+            }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Repository 'bad-url' has invalid 'repoUrl': 'ftp://***@example.com/repo.git'",
+      );
+    });
+
+    it("redacts credentials from the duplicate repoUrl warning", async () => {
+      const configPath = path.join(tempDir, "duplicate-url.config.js");
+      const configContent = `
+        export default {
+          repositories: [
+            {
+              name: "first",
+              repoUrl: "https://ci-bot:s3cr3t-token@example.com/repo.git",
+              worktreeDir: "/worktrees1",
+              bareRepoDir: "/bare1"
+            },
+            {
+              name: "second",
+              repoUrl: "https://ci-bot:s3cr3t-token@example.com/repo.git",
+              worktreeDir: "/worktrees2",
+              bareRepoDir: "/bare2"
+            }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await configLoader.loadConfigFile(configPath);
+
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "repoUrl 'https://***@example.com/repo.git' appears in multiple entries (first, second)",
+        ),
+      );
+      expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain("s3cr3t-token");
     });
 
     it("should throw error for empty repositories array", async () => {
@@ -584,6 +801,163 @@ describe("ConfigLoaderService", () => {
     });
   });
 
+  /**
+   * `fetchTimeoutMs` and `cloneTimeoutMs` are read by GitService (the bare
+   * clone, fetch, push, ls-remote, `remote set-head`) and by CloneSyncService
+   * (the clone, the branch fetches, the unshallow), and `Config` has documented
+   * them as user knobs with a "set 0 to disable" gloss since they existed — but
+   * resolveRepositoryConfig rebuilt the repository config from an explicit
+   * allowlist that never named them, so every config-file run silently used the
+   * 5- and 15-minute built-ins however the file was written.
+   */
+  describe("inactivity timeout configuration", () => {
+    const baseRepo = {
+      name: "test",
+      repoUrl: TEST_URLS.github,
+      worktreeDir: "/worktrees",
+      cronSchedule: "0 * * * *",
+      runOnce: false,
+    };
+
+    async function loadWith(entry: string, defaults = ""): Promise<unknown> {
+      const configPath = path.join(tempDir, "timeouts.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { ${defaults}repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", ` +
+          `worktreeDir: "/wt"${entry} }] };`,
+      );
+      return configLoader.loadConfigFile(configPath);
+    }
+
+    it("carries both timeouts from a repository entry into the resolved config", () => {
+      const resolved = configLoader.resolveRepositoryConfig({ ...baseRepo, fetchTimeoutMs: 0, cloneTimeoutMs: 60_000 });
+
+      expect(resolved.fetchTimeoutMs).toBe(0);
+      expect(resolved.cloneTimeoutMs).toBe(60_000);
+      // Presence matters on its own: `undefined` would let the service fall
+      // back to the built-in default, which is what a dropped key looked like.
+      expect("fetchTimeoutMs" in resolved).toBe(true);
+      expect("cloneTimeoutMs" in resolved).toBe(true);
+    });
+
+    it("inherits both timeouts from defaults when the repository sets neither", () => {
+      const resolved = configLoader.resolveRepositoryConfig(baseRepo, {
+        fetchTimeoutMs: 1_800_000,
+        cloneTimeoutMs: 3_600_000,
+      });
+
+      expect(resolved.fetchTimeoutMs).toBe(1_800_000);
+      expect(resolved.cloneTimeoutMs).toBe(3_600_000);
+    });
+
+    it("lets a repository entry override defaults, including with 0", () => {
+      const resolved = configLoader.resolveRepositoryConfig(
+        { ...baseRepo, fetchTimeoutMs: 0, cloneTimeoutMs: 1_000 },
+        { fetchTimeoutMs: 1_800_000, cloneTimeoutMs: 3_600_000 },
+      );
+
+      // 0 is a setting, not an omission: a truthiness-based merge would hand
+      // this repository the 1_800_000 from defaults instead of disabling the kill.
+      expect(resolved.fetchTimeoutMs).toBe(0);
+      expect(resolved.cloneTimeoutMs).toBe(1_000);
+    });
+
+    it("carries a defaults-level 0 rather than treating it as unset", () => {
+      const resolved = configLoader.resolveRepositoryConfig(baseRepo, { fetchTimeoutMs: 0, cloneTimeoutMs: 0 });
+
+      expect(resolved.fetchTimeoutMs).toBe(0);
+      expect(resolved.cloneTimeoutMs).toBe(0);
+    });
+
+    it("leaves both undefined when neither defaults nor repo set them", () => {
+      const resolved = configLoader.resolveRepositoryConfig(baseRepo, {});
+
+      expect(resolved.fetchTimeoutMs).toBeUndefined();
+      expect(resolved.cloneTimeoutMs).toBeUndefined();
+      expect("fetchTimeoutMs" in resolved).toBe(false);
+      expect("cloneTimeoutMs" in resolved).toBe(false);
+    });
+
+    it("carries both timeouts for clone-mode repositories too", () => {
+      const resolved = configLoader.resolveRepositoryConfig(
+        { ...baseRepo, mode: "clone", fetchTimeoutMs: 42, cloneTimeoutMs: 4_242 },
+        {},
+      );
+
+      expect(resolved.mode).toBe("clone");
+      expect(resolved.fetchTimeoutMs).toBe(42);
+      expect(resolved.cloneTimeoutMs).toBe(4_242);
+    });
+
+    it("resolves both through buildRepositories, from defaults and from the entry", async () => {
+      const configPath = path.join(tempDir, "timeouts-build.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default {
+           defaults: { fetchTimeoutMs: 1800000, cloneTimeoutMs: 3600000 },
+           repositories: [
+             { name: "inherits", repoUrl: "${TEST_URLS.github}", worktreeDir: "./a" },
+             { name: "overrides", repoUrl: "${TEST_URLS.github}", worktreeDir: "./b", fetchTimeoutMs: 0, cloneTimeoutMs: 60000 },
+           ],
+         };`,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories.map((repo) => [repo.name, repo.fetchTimeoutMs, repo.cloneTimeoutMs])).toEqual([
+        ["inherits", 1_800_000, 3_600_000],
+        ["overrides", 0, 60_000],
+      ]);
+    });
+
+    it("accepts 0 and any non-negative safe integer", async () => {
+      const config = (await loadWith(", fetchTimeoutMs: 0, cloneTimeoutMs: 1800000")) as {
+        repositories: Array<{ fetchTimeoutMs?: unknown; cloneTimeoutMs?: unknown }>;
+      };
+
+      expect(config.repositories[0].fetchTimeoutMs).toBe(0);
+      expect(config.repositories[0].cloneTimeoutMs).toBe(1_800_000);
+    });
+
+    it.each([
+      ["-1", "a negative window"],
+      ["1.5", "a fraction"],
+      ['"abc"', "a string"],
+      ["true", "a boolean"],
+      ["null", "null"],
+      ["NaN", "NaN"],
+      ["Infinity", "Infinity"],
+      ["Number.MAX_SAFE_INTEGER + 2", "a value past the safe-integer range"],
+    ])("rejects %s as a repository fetchTimeoutMs (%s)", async (value) => {
+      await expect(loadWith(`, fetchTimeoutMs: ${value}`)).rejects.toThrow(ConfigValidationError);
+      await expect(loadWith(`, fetchTimeoutMs: ${value}`)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'r' fetchTimeoutMs': " +
+          "must be a non-negative safe integer (0 disables the timeout)",
+      );
+    });
+
+    it("rejects an invalid repository cloneTimeoutMs under its own field name", async () => {
+      await expect(loadWith(", cloneTimeoutMs: -1")).rejects.toThrow(
+        "Invalid configuration for 'Repository 'r' cloneTimeoutMs': " +
+          "must be a non-negative safe integer (0 disables the timeout)",
+      );
+    });
+
+    it("rejects an invalid defaults.fetchTimeoutMs", async () => {
+      await expect(loadWith("", "defaults: { fetchTimeoutMs: -1 }, ")).rejects.toThrow(
+        "Invalid configuration for 'defaults.fetchTimeoutMs': " +
+          "must be a non-negative safe integer (0 disables the timeout)",
+      );
+    });
+
+    it("rejects an invalid defaults.cloneTimeoutMs", async () => {
+      await expect(loadWith("", 'defaults: { cloneTimeoutMs: "1h" }, ')).rejects.toThrow(
+        "Invalid configuration for 'defaults.cloneTimeoutMs': " +
+          "must be a non-negative safe integer (0 disables the timeout)",
+      );
+    });
+  });
+
   describe("filterRepositories", () => {
     const repos = [
       {
@@ -919,6 +1293,192 @@ describe("ConfigLoaderService", () => {
       const config = await configLoader.loadConfigFile(configPath);
       expect(config.retry?.maxLfsRetries).toBe(0);
     });
+
+    // Every bound in validateRetryConfig is `<`-shaped, and NaN fails every
+    // `<`. The values below all loaded before: a NaN maxAttempts made retry()
+    // throw before the first attempt on every sync, and a non-finite delay
+    // collapsed the backoff to setTimeout's 1ms floor. Each case asserts the
+    // new message, because some of them were already refused by the unrelated
+    // 'initialDelayMs must not exceed maxDelayMs' check and would pass here
+    // for that reason alone.
+    it.each([
+      ["maxAttempts: NaN", "maxAttempts: NaN", "'retry.maxAttempts': must be 'unlimited' or a positive safe integer"],
+      [
+        "maxAttempts: Infinity",
+        "maxAttempts: Infinity",
+        "'retry.maxAttempts': must be 'unlimited' or a positive safe integer",
+      ],
+      ["maxAttempts: 2.5", "maxAttempts: 2.5", "'retry.maxAttempts': must be 'unlimited' or a positive safe integer"],
+      ["maxAttempts: 1e21", "maxAttempts: 1e21", "'retry.maxAttempts': must be 'unlimited' or a positive safe integer"],
+      ["maxLfsRetries: NaN", "maxLfsRetries: NaN", "'retry.maxLfsRetries': must be a non-negative safe integer"],
+      ["maxLfsRetries: 1.5", "maxLfsRetries: 1.5", "'retry.maxLfsRetries': must be a non-negative safe integer"],
+      ["maxLfsRetries: 1e21", "maxLfsRetries: 1e21", "'retry.maxLfsRetries': must be a non-negative safe integer"],
+      ["initialDelayMs: NaN", "initialDelayMs: NaN", "'retry.initialDelayMs': must be a finite non-negative number"],
+      [
+        "initialDelayMs: Infinity",
+        "initialDelayMs: Infinity, maxDelayMs: Infinity",
+        "'retry.initialDelayMs': must be a finite non-negative number",
+      ],
+      ["maxDelayMs: NaN", "maxDelayMs: NaN", "'retry.maxDelayMs': must be a finite non-negative number"],
+      ["maxDelayMs: Infinity", "maxDelayMs: Infinity", "'retry.maxDelayMs': must be a finite non-negative number"],
+      [
+        "backoffMultiplier: NaN",
+        "backoffMultiplier: NaN",
+        "'retry.backoffMultiplier': must be a finite number of at least 1",
+      ],
+      [
+        "backoffMultiplier: Infinity",
+        "backoffMultiplier: Infinity",
+        "'retry.backoffMultiplier': must be a finite number of at least 1",
+      ],
+      ["jitterMs: NaN", "jitterMs: NaN", "'retry.jitterMs': must be a finite non-negative number"],
+      ["jitterMs: Infinity", "jitterMs: Infinity", "'retry.jitterMs': must be a finite non-negative number"],
+    ])("rejects retry %s", async (_label, field, message) => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { retry: { ${field} }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigValidationError);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(message);
+    });
+
+    // The new arms run after the long-standing ones, so a value an old bound
+    // already caught still reports the old message. Only a non-number tells the
+    // two orders apart: 0 and -1 are safe integers and reach the old arm either
+    // way, so those cases pass whichever arm runs first.
+    it.each([
+      [`maxAttempts: "3"`, "Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number"],
+      ["maxLfsRetries: null", "Invalid 'maxLfsRetries' in retry config. Must be a non-negative number"],
+    ])("keeps the long-standing message for %s", async (field, message) => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { retry: { ${field} }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(message);
+    });
+
+    it("names the repository whose retry block is at fault", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "alpha", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }, { name: "beta", repoUrl: "${TEST_URLS.gitlab}", worktreeDir: "./worktrees-b", retry: { maxAttempts: NaN } }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'beta' retry.maxAttempts'",
+      );
+    });
+
+    it("names the level of a defaults retry block", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { defaults: { retry: { jitterMs: Infinity } }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid configuration for 'defaults.retry.jitterMs'",
+      );
+    });
+
+    // The delays and the multiplier are continuous quantities: only the two
+    // counts are whole numbers. 'unlimited' is the one spelling of unbounded
+    // attempts -- Infinity is not, retry() has always thrown on it.
+    it("still accepts finite fractional delays, jitter and multiplier", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { retry: { maxAttempts: "unlimited", maxLfsRetries: 0, initialDelayMs: 1500.5, maxDelayMs: 30000, backoffMultiplier: 1.5, jitterMs: 250.5 }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.retry).toEqual({
+        maxAttempts: "unlimited",
+        maxLfsRetries: 0,
+        initialDelayMs: 1500.5,
+        maxDelayMs: 30000,
+        backoffMultiplier: 1.5,
+        jitterMs: 250.5,
+      });
+    });
+  });
+
+  describe("branch pattern list validation", () => {
+    async function loadWithPatterns(line: string, repoName = "test-repo"): Promise<unknown> {
+      const configPath = path.join(tempDir, "patterns.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "${repoName}", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees", ${line} }] };`,
+      );
+      return configLoader.loadConfigFile(configPath);
+    }
+
+    // A pattern that is empty or all whitespace can never match: git refuses a
+    // branch name containing a space. filterBranchesByName applies an include
+    // list on length alone, so branchInclude: [""] keeps no branch and the
+    // prune phase then sees every worktree but the default branch's as
+    // unmanaged.
+    it("rejects an empty branchInclude pattern", async () => {
+      await expect(loadWithPatterns(`branchInclude: [""]`)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'test-repo' branchInclude': must not contain empty or whitespace-only patterns (invalid at index 0)",
+      );
+    });
+
+    it("rejects a whitespace-only branchExclude pattern", async () => {
+      await expect(loadWithPatterns(`branchExclude: [" "]`)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'test-repo' branchExclude': must not contain empty or whitespace-only patterns (invalid at index 0)",
+      );
+    });
+
+    it("reports the index of the blank pattern among valid ones", async () => {
+      await expect(loadWithPatterns(`branchInclude: ["main", "release/*", "\t"]`)).rejects.toThrow(
+        "must not contain empty or whitespace-only patterns (invalid at index 2)",
+      );
+    });
+
+    it("reports the first blank pattern when a list holds several", async () => {
+      await expect(loadWithPatterns(`branchInclude: ["", "main", " "]`)).rejects.toThrow(
+        "must not contain empty or whitespace-only patterns (invalid at index 0)",
+      );
+    });
+
+    // Both defaults fields, not just one: an inherited branchInclude that
+    // matches nothing is the shape that prunes every repository's worktrees.
+    it.each([["branchInclude"], ["branchExclude"]])("rejects an empty %s pattern in defaults", async (field) => {
+      const configPath = path.join(tempDir, "patterns-defaults.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { defaults: { ${field}: [""] }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        `Invalid configuration for 'defaults.${field}': must not contain empty or whitespace-only patterns`,
+      );
+    });
+
+    it("rejects the shape an unset environment variable produces", async () => {
+      const configPath = path.join(tempDir, "patterns-env.config.js");
+      await fs.writeFile(
+        configPath,
+        `const branches = (process.env.SYNC_WORKTREES_T91_UNSET ?? "").split(",");
+export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees", branchInclude: branches }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigValidationError);
+    });
+
+    it("still accepts patterns, an empty list and an absent list", async () => {
+      await expect(
+        loadWithPatterns(`branchInclude: ["main", "release/*"], branchExclude: ["wip-*"]`),
+      ).resolves.toBeDefined();
+      await expect(loadWithPatterns(`branchInclude: [], branchExclude: []`)).resolves.toBeDefined();
+      await expect(loadWithPatterns(`branchMaxAge: "14d"`)).resolves.toBeDefined();
+    });
   });
 
   describe("resolveRepositoryConfig - retry and skipLfs", () => {
@@ -1018,6 +1578,114 @@ describe("ConfigLoaderService", () => {
 
       const second = await configLoader.loadConfigFile(configPath);
       expect(second.repositories[0].name).toBe("second");
+    });
+
+    // The ESM mirror of the test above. It is deliberately duplicated in
+    // config-loader.esm-reload.test.ts against a real `node` child process:
+    // under vitest `import()` runs through Vite's module runner, not Node's
+    // registry, so this assertion alone does not prove the behaviour the user
+    // gets. Kept here anyway because it is the cheap regression guard and it
+    // covers the parts Vite does not touch (the worker, the clone, the error
+    // rebuild).
+    it("reloads .mjs configs and their imported child modules", async () => {
+      const childPath = path.join(tempDir, "repo-name.mjs");
+      const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+      await fs.writeFile(childPath, `export const name = "first";`);
+      await fs.writeFile(
+        configPath,
+        `
+          import { name } from "./repo-name.mjs";
+          export default {
+            repositories: [{
+              name,
+              repoUrl: "${TEST_URLS.github}",
+              worktreeDir: "./worktrees"
+            }]
+          };
+        `,
+      );
+
+      const first = await configLoader.loadConfigFile(configPath);
+      expect(first.repositories[0].name).toBe("first");
+
+      await fs.writeFile(childPath, `export const name = "second";`);
+
+      const second = await configLoader.loadConfigFile(configPath);
+      expect(second.repositories[0].name).toBe("second");
+    });
+
+    // Reload re-evaluates the config off the main thread, so its exported
+    // value has to survive a structured clone. `undefined` does, and has to:
+    // `resolveRepositoryConfig` spreads a present-but-undefined key over the
+    // inherited value, so a JSON round trip here would quietly change which
+    // setting a repository ends up with.
+    it("keeps present-but-undefined keys distinguishable from absent ones across a reload", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            defaults: { cronSchedule: "*/7 * * * *" },
+            repositories: [{
+              name: "repo",
+              repoUrl: "${TEST_URLS.github}",
+              worktreeDir: "./worktrees",
+              cronSchedule: undefined
+            }]
+          };
+        `,
+      );
+
+      await configLoader.loadConfigFile(configPath);
+      const reloaded = await configLoader.loadConfigFile(configPath);
+
+      expect("cronSchedule" in reloaded.repositories[0]).toBe(true);
+      expect(reloaded.repositories[0].cronSchedule).toBeUndefined();
+      expect(
+        configLoader.resolveRepositoryConfig(reloaded.repositories[0], reloaded.defaults, tempDir).cronSchedule,
+      ).toBe("*/7 * * * *");
+    });
+
+    // A function cannot cross a thread boundary. No field of the config
+    // surface is function-valued, so rather than silently dropping it — which
+    // would turn a rejected config into an accepted one — the reload fails
+    // loudly and names the fix. `handleReload` keeps the previous config when
+    // a reload throws, so this costs the user nothing but the message.
+    it("reports a config value that cannot be transferred out of the reload worker", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+      const repositories = `repositories: [{ name: "repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }]`;
+      await fs.writeFile(configPath, `export default { ${repositories} };`);
+
+      await configLoader.loadConfigFile(configPath);
+
+      await fs.writeFile(configPath, `export default { transform: (x) => x, ${repositories} };`);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/could not be cloned/);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/Export plain data/);
+    });
+
+    // The reload worker rebuilds the error it caught, because an Error does
+    // not cross a thread boundary as itself. `moduleSyntaxHint` keys off
+    // `name`, so a config that reloads into ESM syntax Node parses as
+    // CommonJS has to keep getting the hint that names the fix.
+    it("keeps the module-system hint on a config that only breaks on reload", async () => {
+      await fs.writeFile(path.join(tempDir, "package.json"), JSON.stringify({ name: "fixture", type: "commonjs" }));
+      const configPath = path.join(tempDir, "sync-worktrees.config.js");
+      await fs.writeFile(
+        configPath,
+        `module.exports = { repositories: [{ name: "repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await configLoader.loadConfigFile(configPath);
+
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /uses ESM syntax but Node parsed it as CommonJS/,
+      );
     });
 
     it("should default skipLfs to false when not specified", () => {
@@ -1254,6 +1922,184 @@ describe("ConfigLoaderService", () => {
       expect(config.parallelism).toBeDefined();
     });
 
+    // The peak is what the guardrail is for: a status check is not one git
+    // process, and the phases it used to be summed with never run alongside it.
+    it("reports the shipped defaults' peak as 40 concurrent git processes", () => {
+      const peak = computeParallelismPeak();
+
+      expect(peak.perRepository).toBe(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+      expect(peak.total).toBe(
+        DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES * DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS,
+      );
+      expect(peak.total).toBe(40);
+      expect(peak.widestPhase.field).toBe("maxStatusChecks");
+    });
+
+    it("takes the widest phase rather than the sum of phases that never overlap", () => {
+      const peak = computeParallelismPeak({
+        maxRepositories: 2,
+        maxWorktreeCreation: 4,
+        maxWorktreeUpdates: 6,
+        maxWorktreeRemoval: 5,
+        maxStatusChecks: 9,
+        maxBranchFetches: 7,
+      });
+
+      expect(peak.perRepository).toBe(9);
+      expect(peak.total).toBe(18);
+    });
+
+    it("should accept a config that only exceeds the limit when phases are summed", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      // Summed: 5 × (6 + 5 + 5 + 5) = 105 — over the old limit. Per phase:
+      // 5 × 6 = 30, because creation, update, prune and status never overlap.
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 5,
+            maxWorktreeCreation: 6,
+            maxWorktreeUpdates: 5,
+            maxWorktreeRemoval: 5,
+            maxStatusChecks: 5
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+      expect(config.parallelism?.maxWorktreeCreation).toBe(6);
+    });
+
+    it("should name the widest phase and count status checks as git processes", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 6,
+            maxStatusChecks: 20
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(120\) exceeds safe limit \(100\)/,
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/maxStatusChecks: 20/);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/Consider reducing maxRepositories/);
+    });
+
+    // Every branch fetch goes through the anchor worktree's one git client,
+    // whose scheduler stops at 5 — measured: 40 concurrent fetches through one
+    // cached client peak at 9 processes, never 40. Rejecting this config would
+    // break a working setup over processes that cannot be spawned.
+    it("should accept a maxBranchFetches the shared fetch client cannot reach", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 2,
+            maxBranchFetches: 200
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const config = await configLoader.loadConfigFile(configPath);
+      expect(config.parallelism?.maxBranchFetches).toBe(200);
+    });
+
+    it("leaves the branch-fetch fallback out of the peak entirely", () => {
+      const peak = computeParallelismPeak({ maxRepositories: 1, maxBranchFetches: 1000 });
+
+      expect(peak.widestPhase.field).toBe("maxStatusChecks");
+      expect(peak.total).toBe(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+    });
+
+    // `git worktree add` and `git worktree remove` both run on the bare
+    // repository's single client, so these settings cannot reach their
+    // configured width either.
+    it("caps phases that share one git client at that client's concurrency", () => {
+      const peak = computeParallelismPeak({
+        maxRepositories: 1,
+        maxWorktreeCreation: 50,
+        maxWorktreeRemoval: 50,
+        maxWorktreeUpdates: 1,
+        maxStatusChecks: 1,
+      });
+
+      expect(peak.perRepository).toBe(SIMPLE_GIT_CLIENT_CONCURRENCY);
+      expect(peak.total).toBe(SIMPLE_GIT_CLIENT_CONCURRENCY);
+    });
+
+    it("should accept per-client-capped phases that the raw numbers would reject", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      // 20 × 50 = 1000 raw, but creation and removal top out at 5 apiece, so
+      // the real widest phase is the 20 status checks: 20 × 20 = 400. Still
+      // over the limit, and the message must name maxStatusChecks, not creation.
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 20,
+            maxWorktreeCreation: 50,
+            maxWorktreeRemoval: 50
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /widest phase \(status checks, maxStatusChecks: 20\) = 400 git processes/,
+      );
+    });
+
+    // The phase advice has to solve for the phase at the *configured* number of
+    // repositories: at 3 repositories, 100 status checks is still 300 processes.
+    it("should size the phase advice against the configured maxRepositories", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: {
+            maxRepositories: 3,
+            maxStatusChecks: 150
+          },
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees"
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Even one repository exceeds the limit at maxStatusChecks: 150\./,
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /With maxRepositories at 3, maxStatusChecks must be 33 or less/,
+      );
+    });
+
     it("should validate parallelism in defaults", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
@@ -1274,6 +2120,404 @@ describe("ConfigLoaderService", () => {
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
         "Invalid configuration for 'defaults parallelism.maxRepositories': must be a positive integer",
+      );
+    });
+
+    // A repository entry may carry its own `parallelism` block -- the shipped
+    // example config documents one -- and nothing validated it. The merged
+    // number reaches `pLimit()` at the start of a sync phase, where p-limit
+    // throws a TypeError mid-sync, after the fetch, on every run, while the
+    // config file loads clean and `list` reports it as valid.
+    it.each([
+      { field: "maxStatusChecks", literal: "0", label: "zero" },
+      { field: "maxStatusChecks", literal: "-1", label: "a negative" },
+      { field: "maxStatusChecks", literal: "1.5", label: "a fraction" },
+      { field: "maxStatusChecks", literal: "NaN", label: "NaN" },
+      { field: "maxStatusChecks", literal: 'Number("not-a-number")', label: "a NaN from a bad env var" },
+      { field: "maxStatusChecks", literal: '"50"', label: "a string" },
+      { field: "maxStatusChecks", literal: "Infinity", label: "Infinity" },
+      { field: "maxRepositories", literal: "0", label: "zero" },
+      { field: "maxWorktreeCreation", literal: "0", label: "zero" },
+      { field: "maxWorktreeUpdates", literal: "-2", label: "a negative" },
+      { field: "maxWorktreeRemoval", literal: "2.5", label: "a fraction" },
+      { field: "maxBranchFetches", literal: '"3"', label: "a string" },
+    ])("should reject $label for repository-level parallelism.$field", async ({ field, literal }) => {
+      const configPath = path.join(tempDir, `repo-parallelism-${field}-${literal}.config.js`);
+      const configContent = `
+        export default {
+          repositories: [{
+            name: "big",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            parallelism: { ${field}: ${literal} }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(ConfigValidationError);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        `Invalid configuration for 'Repository 'big' parallelism.${field}': must be a positive integer`,
+      );
+    });
+
+    // The rule is p-limit's, so pin it to p-limit rather than to a list of
+    // values someone believed it rejects. Infinity is the one deliberate
+    // divergence: p-limit takes it as "unbounded", and an unbounded phase has
+    // no peak to weigh against the safe-total limit.
+    it("rejects the values p-limit itself refuses, and Infinity on purpose", async () => {
+      for (const value of [0, -1, 1.5, Number.NaN, "50" as unknown as number]) {
+        expect(() => pLimit(value)).toThrow("Expected `concurrency` to be a number from 1 and up");
+      }
+      expect(() => pLimit(Number.POSITIVE_INFINITY)).not.toThrow();
+
+      const configPath = path.join(tempDir, "repo-parallelism-infinity.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { repositories: [{ name: "big", repoUrl: "${TEST_URLS.github}", worktreeDir: "./w", parallelism: { maxStatusChecks: Infinity } }] };`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'big' parallelism.maxStatusChecks': must be a positive integer",
+      );
+    });
+
+    it.each([{ literal: '"invalid"' }, { literal: "null" }, { literal: "42" }])(
+      "should reject a repository-level parallelism that is not an object ($literal)",
+      async ({ literal }) => {
+        const configPath = path.join(tempDir, `repo-parallelism-shape-${literal}.config.js`);
+        const configContent = `
+        export default {
+          repositories: [{
+            name: "big",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            parallelism: ${literal}
+          }]
+        };
+      `;
+        await fs.writeFile(configPath, configContent);
+
+        await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+          "'parallelism' in Repository 'big' must be an object",
+        );
+      },
+    );
+
+    it("should still resolve a valid repository-level override over defaults and global", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      const configContent = `
+        export default {
+          parallelism: { maxBranchFetches: 7 },
+          defaults: { parallelism: { maxStatusChecks: 8, maxWorktreeUpdates: 9 } },
+          repositories: [{
+            name: "big",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            parallelism: { maxStatusChecks: 12 }
+          }]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories[0].parallelism).toEqual({
+        maxBranchFetches: 7,
+        maxStatusChecks: 12,
+        maxWorktreeUpdates: 9,
+      });
+    });
+  });
+
+  /**
+   * The safe-total guard used to see one level at a time, each against the
+   * built-in defaults for whatever it left out -- so a repository's own block,
+   * which is merged over the global and `defaults` ones before it reaches
+   * p-limit, was weighed against nothing.
+   */
+  describe("parallelism safe-total guard across merged levels", () => {
+    const repoEntry = (name: string, parallelism?: string): string =>
+      `{ name: "${name}", repoUrl: "https://github.com/test/${name}.git", worktreeDir: "./wt-${name}"` +
+      `${parallelism ? `, parallelism: ${parallelism}` : ""} }`;
+
+    const writeConfig = async (fileName: string, body: string): Promise<string> => {
+      const configPath = path.join(tempDir, fileName);
+      await fs.writeFile(configPath, `export default {${body}};`);
+      return configPath;
+    };
+
+    it("rejects a repository override that pushes the run over the safe total", async () => {
+      // Global alone is 3 x 20 = 60 and loads today; merged, the wide entry
+      // runs 70 of its own beside two 20s.
+      const configPath = await writeConfig(
+        "over.config.js",
+        `
+          parallelism: { maxRepositories: 3, maxStatusChecks: 20 },
+          repositories: [
+            ${repoEntry("wide", "{ maxStatusChecks: 70 }")},
+            ${repoEntry("narrow-a")},
+            ${repoEntry("narrow-b")}
+          ],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(110\) exceeds safe limit \(100\)/,
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "the widest phase of each of the 3 repositories that can sync at once (maxRepositories: 3): " +
+          "'wide' (status checks, maxStatusChecks: 70) + 'narrow-a' (status checks, maxStatusChecks: 20) + " +
+          "'narrow-b' (status checks, maxStatusChecks: 20) = 110 git processes",
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Consider reducing maxRepositories or lowering maxStatusChecks\./,
+      );
+    });
+
+    // Which repositories share the slots is scheduling, not file order, so the
+    // worst case is the widest ones -- wherever they sit in the file.
+    it("fills the slots with the widest repositories, not the first ones", async () => {
+      const configPath = await writeConfig(
+        "widest-in-slots.config.js",
+        `
+          parallelism: { maxRepositories: 2, maxStatusChecks: 20 },
+          repositories: [
+            ${repoEntry("narrow-a")},
+            ${repoEntry("narrow-b")},
+            ${repoEntry("wide", "{ maxStatusChecks: 90 }")}
+          ],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(110\) exceeds safe limit \(100\)/,
+      );
+      // Three repositories, two slots: the count in the message is the slots,
+      // not the file's repository count, or it contradicts the number beside it.
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "the widest phase of each of the 2 repositories that can sync at once (maxRepositories: 2): " +
+          "'wide' (status checks, maxStatusChecks: 90) + 'narrow-a' (status checks, maxStatusChecks: 20) = 110",
+      );
+    });
+
+    // The failure this guard was written for: a repository block and nothing
+    // else, which is how the example config documents a per-repository override.
+    it("weighs a repository override with no global or defaults block above it", async () => {
+      const configPath = await writeConfig(
+        "repo-only.config.js",
+        `repositories: [${repoEntry("big", "{ maxStatusChecks: 101 }")}],`,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(101\) exceeds safe limit \(100\)/,
+      );
+    });
+
+    // A repository-level `maxRepositories` is validated as a positive integer,
+    // but it bounds nothing: runMultipleRepositories reads the global or
+    // `defaults` one and nothing else. Counting it here would reject a config
+    // that runs three repositories two at a time perfectly safely.
+    it("ignores a repository-level maxRepositories, which bounds nothing", async () => {
+      const configPath = await writeConfig(
+        "repo-max-repositories.config.js",
+        `
+          parallelism: { maxStatusChecks: 40 },
+          repositories: [
+            ${repoEntry("a", "{ maxRepositories: 50 }")},
+            ${repoEntry("b")},
+            ${repoEntry("c")}
+          ],
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories).toHaveLength(3);
+      expect(repositories[0].parallelism?.maxRepositories).toBe(50);
+    });
+
+    // One repository can exceed the ceiling by itself, and then the count in
+    // the message is the repositories there are, not the slots there are.
+    it("rejects a single repository that exceeds the ceiling on its own", async () => {
+      const configPath = await writeConfig(
+        "single-over.config.js",
+        `
+          parallelism: { maxRepositories: 5 },
+          repositories: [${repoEntry("only", "{ maxStatusChecks: 101 }")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "the widest phase of each of the 1 repository that can sync at once (maxRepositories: 5): " +
+          "'only' (status checks, maxStatusChecks: 101) = 101 git processes",
+      );
+    });
+
+    // runMultipleRepositories reads maxRepositories global-first, unlike every
+    // other setting, where `defaults` wins. The guard has to read it the same
+    // way or it weighs a width the run will never reach: here only one
+    // repository ever syncs at a time, so the peak is 25, not 5 x 25.
+    it("reads maxRepositories global-first, the way the runner does", async () => {
+      const configPath = await writeConfig(
+        "max-repos-precedence.config.js",
+        `
+          parallelism: { maxRepositories: 1, maxStatusChecks: 25 },
+          defaults: { parallelism: { maxRepositories: 5 } },
+          repositories: [
+            ${repoEntry("a")}, ${repoEntry("b")}, ${repoEntry("c")}, ${repoEntry("d")}, ${repoEntry("e")}
+          ],
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories).toHaveLength(5);
+      expect(repositories[0].parallelism?.maxStatusChecks).toBe(25);
+    });
+
+    // The peak is the sum of the repositories that can sync at once, not
+    // maxRepositories x the single widest one: one wide repository beside
+    // narrow ones never runs its width three times over, and rejecting it
+    // would fail a setup that works today.
+    it("accepts a wide repository whose slot-mates are narrow", async () => {
+      const configPath = await writeConfig(
+        "wide-beside-narrow.config.js",
+        `
+          parallelism: { maxRepositories: 3, maxStatusChecks: 20 },
+          repositories: [
+            ${repoEntry("wide", "{ maxStatusChecks: 50 }")},
+            ${repoEntry("narrow-a")},
+            ${repoEntry("narrow-b")}
+          ],
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories.map((repo) => repo.parallelism?.maxStatusChecks)).toEqual([50, 20, 20]);
+    });
+
+    // Only as many repositories as exist can occupy the slots.
+    it("counts at most as many repositories as the file defines", async () => {
+      const configPath = await writeConfig(
+        "one-repo.config.js",
+        `
+          parallelism: { maxRepositories: 5, maxStatusChecks: 20 },
+          repositories: [${repoEntry("only", "{ maxStatusChecks: 90 }")}],
+        `,
+      );
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.repositories[0].parallelism?.maxStatusChecks).toBe(90);
+    });
+
+    // Neither level is over the limit on its own -- 5 x 20 = 100 and 2 x 21 =
+    // 42 -- but `defaults` overrides the global block for every repository, so
+    // the run really peaks at 5 x 21.
+    it("weighs the global and defaults blocks against each other", async () => {
+      const configPath = await writeConfig(
+        "global-plus-defaults.config.js",
+        `
+          parallelism: { maxRepositories: 5 },
+          defaults: { parallelism: { maxStatusChecks: 21 } },
+          repositories: [
+            ${repoEntry("a")}, ${repoEntry("b")}, ${repoEntry("c")}, ${repoEntry("d")}, ${repoEntry("e")}
+          ],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Peak concurrent git processes \(105\) exceeds safe limit \(100\)/,
+      );
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/maxRepositories: 5/);
+    });
+
+    // Without per-repository overrides the sum is exactly maxRepositories x the
+    // widest phase, so a config that loads today keeps loading: 2 x 50 = 100 is
+    // at the limit, not over it, however many repositories the file lists.
+    it("gives a config without overrides the same verdict as the per-level check", async () => {
+      const configPath = await writeConfig(
+        "no-overrides.config.js",
+        `
+          parallelism: { maxRepositories: 2, maxStatusChecks: 50 },
+          repositories: [${repoEntry("a")}, ${repoEntry("b")}, ${repoEntry("c")}, ${repoEntry("d")}],
+        `,
+      );
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.parallelism?.maxStatusChecks).toBe(50);
+    });
+
+    it("lists the widest slot-mates and sums the rest", async () => {
+      const wide = (name: string): string => repoEntry(name, "{ maxStatusChecks: 25 }");
+      const configPath = await writeConfig(
+        "breakdown.config.js",
+        `
+          parallelism: { maxRepositories: 5, maxStatusChecks: 20 },
+          repositories: [${wide("a")}, ${wide("b")}, ${wide("c")}, ${wide("d")}, ${wide("e")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/\+ 2 more = 125 git processes/);
+    });
+
+    // A repository that overrides nothing runs the global block's widths, not
+    // the built-in defaults. Every case above happens to set the global
+    // maxStatusChecks to 20, which is also the built-in default, so dropping the
+    // global layer from the merge changes none of their numbers. Here it does:
+    // 51 + 50 is over, 51 + the built-in 20 would not be.
+    it("counts the global block for a repository that overrides nothing", async () => {
+      const configPath = await writeConfig(
+        "global-inherited.config.js",
+        `
+          parallelism: { maxRepositories: 2, maxStatusChecks: 50 },
+          repositories: [${repoEntry("a", "{ maxStatusChecks: 51 }")}, ${repoEntry("b")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'a' (status checks, maxStatusChecks: 51) + 'b' (status checks, maxStatusChecks: 50) = 101 git processes",
+      );
+    });
+
+    // The closing advice names the setting worth lowering, which is the widest
+    // repository's phase and not the narrowest's. They are the same field
+    // wherever every entry peaks on maxStatusChecks; here they are not.
+    it("names the widest repository's phase in the advice, not a slot-mate's", async () => {
+      const configPath = await writeConfig(
+        "advice-field.config.js",
+        `
+          parallelism: { maxRepositories: 2 },
+          repositories: [${repoEntry("updates-heavy", "{ maxWorktreeUpdates: 90 }")}, ${repoEntry("plain")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'updates-heavy' (worktree updates, maxWorktreeUpdates: 90) + 'plain' (status checks, maxStatusChecks: 20) = " +
+          "110 git processes. Consider reducing maxRepositories or lowering maxWorktreeUpdates.",
+      );
+    });
+
+    // The per-level check still runs on `defaults`, and the merged guard is not
+    // it in disguise: the per-level one weighs maxRepositories against the
+    // built-in defaults however many repositories the file lists, so one
+    // repository is enough for it to fire where the merged guard — one slot, 50
+    // processes — sees nothing to complain about.
+    it("still weighs a defaults block on its own, with its own message", async () => {
+      const configPath = await writeConfig(
+        "defaults-alone.config.js",
+        `
+          defaults: { parallelism: { maxRepositories: 5, maxStatusChecks: 50 } },
+          repositories: [${repoEntry("only")}],
+        `,
+      );
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Peak concurrent git processes (250) exceeds safe limit (100). Sync phases run one after another, so the " +
+          "peak is 5 repositories × the widest phase (status checks, maxStatusChecks: 50) = 250 git processes.",
       );
     });
   });
@@ -1298,6 +2542,53 @@ describe("ConfigLoaderService", () => {
       expect(resolved.parallelism).toEqual({
         maxWorktreeCreation: 2,
         maxWorktreeUpdates: 5,
+      });
+    });
+
+    // The placement the example config and README show. It used to be dropped
+    // on the floor: only defaults.parallelism and repo.parallelism were merged,
+    // so a top-level block silently left every per-repo limit at its default.
+    it("should apply a top-level parallelism block to every repository", async () => {
+      const configPath = path.join(tempDir, "toplevel.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default {
+          parallelism: { maxStatusChecks: 4 },
+          repositories: [
+            { name: "one", repoUrl: "${TEST_URLS.github}", worktreeDir: "./w1" },
+            { name: "two", repoUrl: "${TEST_URLS.github}", worktreeDir: "./w2" }
+          ]
+        };`,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories.map((repo) => repo.parallelism?.maxStatusChecks)).toEqual([4, 4]);
+    });
+
+    it("should let defaults and a repository override the top-level block", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        parallelism: { maxStatusChecks: 3 },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(
+        repo,
+        { parallelism: { maxStatusChecks: 6, maxWorktreeUpdates: 9 } },
+        tempDir,
+        undefined,
+        undefined,
+        { maxStatusChecks: 12, maxWorktreeUpdates: 12, maxWorktreeRemoval: 7 },
+      );
+
+      expect(resolved.parallelism).toEqual({
+        maxStatusChecks: 3,
+        maxWorktreeUpdates: 9,
+        maxWorktreeRemoval: 7,
       });
     });
 
@@ -1668,6 +2959,119 @@ describe("ConfigLoaderService", () => {
       expect(repositories[0].bareRepoDir).toBe(path.join(tempDir, ".bare", "repo"));
     });
 
+    // T79: each of these validated (or, for the scp form, did not) under the
+    // loader's own URL regexes while the extractor disagreed, so a repoUrl
+    // without an explicit bareRepoDir either died in getDefaultBareRepoDir with
+    // "Invalid Git URL format" right after validation passed, or was refused
+    // outright although git takes it. The entry is deliberately named something
+    // other than "repo": `.bare/repo` can then only come from the URL, not from
+    // the name-based fallback resolveRepoDirs uses for duplicate repoUrls.
+    it.each([
+      ["git://", "git://git.example.com/org/repo.git"],
+      ["https with a trailing slash", "https://github.com/org/repo.git/"],
+      ["scp with a non-git user", "deploy@git.example.com:org/repo.git"],
+    ])("derives .bare/repo from a %s repoUrl with no bareRepoDir", async (_label, repoUrl) => {
+      const configPath = path.join(tempDir, "shared-grammar.config.js");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            repositories: [{
+              name: "entry-named-something-else",
+              repoUrl: "${repoUrl}",
+              worktreeDir: "./worktrees"
+            }]
+          };
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories[0].repoUrl).toBe(repoUrl);
+      expect(repositories[0].bareRepoDir).toBe(path.join(tempDir, ".bare", "repo"));
+    });
+
+    // The other half of one grammar. A repoUrl with no repository path segment
+    // used to validate and then fail at bare-repo resolution with a message
+    // contradicting the validation. Which of the two questions it fails now
+    // depends on whether git can use it at all:
+    //
+    //  - `https://git.example.com` is a repository served at a web root, which
+    //    git clones. It is not refused; it just cannot name `.bare/<name>`, so
+    //    it loads with an explicit bareRepoDir and is refused without one, by a
+    //    message that says which entry and what to do about it.
+    //  - `ssh://git@host`, `git://host` and `file://` git cannot dial at all
+    //    (`fatal: no path specified`), so those stay refused as repoUrls.
+    it("loads a path-less http repoUrl when bareRepoDir is explicit", async () => {
+      const configPath = path.join(tempDir, "web-root-pinned.config.js");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            repositories: [{
+              name: "web-root",
+              repoUrl: "https://git.example.com",
+              worktreeDir: "./worktrees",
+              bareRepoDir: "./bare/web-root"
+            }]
+          };
+        `,
+      );
+
+      const { repositories } = await configLoader.buildRepositories(configPath);
+
+      expect(repositories[0].repoUrl).toBe("https://git.example.com");
+      expect(repositories[0].bareRepoDir).toBe(path.join(tempDir, "bare", "web-root"));
+    });
+
+    it("tells an entry with a path-less http repoUrl and no bareRepoDir what to set", async () => {
+      const configPath = path.join(tempDir, "web-root-unpinned.config.js");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            repositories: [{
+              name: "web-root",
+              repoUrl: "https://git.example.com",
+              worktreeDir: "./worktrees"
+            }]
+          };
+        `,
+      );
+
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(
+        "Repository 'web-root' needs an explicit 'bareRepoDir': no directory name can be derived from " +
+          "'https://git.example.com', which has no repository path segment",
+      );
+    });
+
+    it.each([
+      // The ssh row keeps its `git@`, which redaction rewrites in the message:
+      // a userinfo field is a credential position wherever it appears.
+      ["ssh://", "ssh://git@git.example.com", "ssh://***@git.example.com"],
+      ["git://", "git://git.example.com", "git://git.example.com"],
+      ["file://", "file://", "file://"],
+    ])("still refuses a path-less %s repoUrl outright, bareRepoDir or not", async (_label, repoUrl, shown) => {
+      const configPath = path.join(tempDir, "no-path-at-all.config.js");
+      await fs.writeFile(
+        configPath,
+        `
+          export default {
+            repositories: [{
+              name: "host-only",
+              repoUrl: ${JSON.stringify(repoUrl)},
+              worktreeDir: "./worktrees",
+              bareRepoDir: "./bare/host-only"
+            }]
+          };
+        `,
+      );
+
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(
+        `Repository 'host-only' has invalid 'repoUrl': '${shown}'`,
+      );
+    });
+
     it("should not set hooks when neither repo nor defaults have hooks", () => {
       const repo = {
         name: "test",
@@ -1849,6 +3253,32 @@ describe("ConfigLoaderService", () => {
       const c = `export default { defaults: { sparseCheckout: { include: [] } }, repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w" }] };`;
       await expect(loadInline(c)).rejects.toThrow(/at least one pattern/);
     });
+
+    // The update phase reads the flag as `!== false`, so a string "false"
+    // enabled the skipping it was meant to switch off and HEAD stopped
+    // advancing for changes outside the sparse set.
+    it.each([[`"false"`], [`0`], [`null`]])(
+      "rejects a non-boolean skipUpdateWhenOutsideSparse (%s)",
+      async (literal) => {
+        const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["src"], skipUpdateWhenOutsideSparse: ${literal} } }] };`;
+        await expect(loadInline(c)).rejects.toBeInstanceOf(ConfigValidationError);
+        await expect(loadInline(c)).rejects.toThrow(
+          "Invalid configuration for 'Repository 'r' sparseCheckout.skipUpdateWhenOutsideSparse': must be a boolean",
+        );
+      },
+    );
+
+    it("rejects a non-boolean skipUpdateWhenOutsideSparse in defaults", async () => {
+      const c = `export default { defaults: { sparseCheckout: { include: ["src"], skipUpdateWhenOutsideSparse: "true" } }, repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w" }] };`;
+      await expect(loadInline(c)).rejects.toThrow(
+        "Invalid configuration for 'defaults sparseCheckout.skipUpdateWhenOutsideSparse': must be a boolean",
+      );
+    });
+
+    it.each([[`true`], [`false`]])("still accepts a boolean skipUpdateWhenOutsideSparse (%s)", async (literal) => {
+      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["src"], skipUpdateWhenOutsideSparse: ${literal} } }] };`;
+      await expect(loadInline(c)).resolves.toBeDefined();
+    });
   });
 
   describe("resolveRepositoryConfig - sparseCheckout merge", () => {
@@ -1965,72 +3395,242 @@ describe("ConfigLoaderService", () => {
     });
   });
 
-  describe("detectBareRepoDirCollisions", () => {
+  describe("resolveRepositoryConfig - __configuredRepoDirs", () => {
+    function makeRepo(name: string, overrides: Record<string, unknown> = {}) {
+      return {
+        name,
+        repoUrl: `https://github.com/acme/${name}.git`,
+        worktreeDir: name,
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        ...overrides,
+      };
+    }
+
+    it("carries every entry's resolved worktreeDir and bareRepoDir, its own first", () => {
+      const all = [
+        makeRepo("api", { mode: "clone" }),
+        makeRepo("web", { mode: "clone" }),
+        makeRepo("trees", { mode: "worktree" }),
+      ];
+
+      const resolved = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
+
+      expect(resolved.__configuredRepoDirs).toEqual(["/cfg/web", "/cfg/api", "/cfg/trees", "/cfg/.bare/trees"]);
+    });
+
+    it("resolves a relative worktreeDir against the config directory and keeps an absolute one", () => {
+      const all = [
+        makeRepo("api", { mode: "clone", worktreeDir: "./checkouts/api" }),
+        makeRepo("web", { mode: "clone", worktreeDir: "/elsewhere/web" }),
+      ];
+
+      const resolved = configLoader.resolveRepositoryConfig(all[0], undefined, "/cfg", undefined, all);
+
+      expect(resolved.__configuredRepoDirs).toEqual(["/cfg/checkouts/api", "/elsewhere/web"]);
+    });
+
+    it("falls back to the entry's own directories when the repository list is not supplied", () => {
+      const resolved = configLoader.resolveRepositoryConfig(makeRepo("api", { mode: "clone" }), undefined, "/cfg");
+
+      expect(resolved.__configuredRepoDirs).toEqual(["/cfg/api"]);
+    });
+
+    it("skips a sibling whose own name cannot be made into a path segment", () => {
+      const url = "https://github.com/acme/monorepo.git";
+      const all = [
+        makeRepo("first", { repoUrl: url }),
+        makeRepo("...", { repoUrl: url, worktreeDir: "broken" }),
+        makeRepo("third", { repoUrl: url, worktreeDir: "third" }),
+      ];
+
+      // 'first' still resolves; the unusable name only fails when it is that
+      // entry's turn.
+      const resolved = configLoader.resolveRepositoryConfig(all[0], undefined, "/cfg", undefined, all);
+
+      // '/cfg/broken' is absent: only the entry that cannot be resolved is left out.
+      expect(resolved.__configuredRepoDirs).toEqual([
+        "/cfg/first",
+        "/cfg/.bare/monorepo",
+        "/cfg/third",
+        "/cfg/.bare/third",
+      ]);
+      expect(() => configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all)).toThrow(
+        /empty path segment/,
+      );
+    });
+  });
+
+  describe("detectPathCollisions", () => {
+    const originalPlatform = process.platform;
+
+    function setPlatform(platform: NodeJS.Platform): void {
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    }
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    });
+
+    function makeEntry(name: string, overrides: Partial<RepositoryConfig> & { worktreeDir: string }): RepositoryConfig {
+      return {
+        name,
+        repoUrl: `https://github.com/x/${name}.git`,
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        mode: "worktree",
+        ...overrides,
+      };
+    }
+
+    it("throws naming both repos when two worktree-mode repos share a worktreeDir", () => {
+      const repos = [
+        makeEntry("first", { worktreeDir: "/w/shared", bareRepoDir: "/b/first" }),
+        makeEntry("second", { worktreeDir: "/w/shared", bareRepoDir: "/b/second" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'first' and 'second'.*same worktreeDir/);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(path.resolve("/w/shared"));
+    });
+
+    it("throws when a clone-mode and a worktree-mode repo share a worktreeDir", () => {
+      const repos = [
+        makeEntry("checkout", { worktreeDir: "/w/shared", mode: "clone" }),
+        makeEntry("trees", { worktreeDir: "/w/shared", bareRepoDir: "/b/trees" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'checkout' and 'trees'.*same worktreeDir/);
+    });
+
+    it.each([
+      ["equal", "/x", "/x"],
+      ["bareRepoDir inside worktreeDir", "/x", "/x/inner"],
+      ["worktreeDir inside bareRepoDir", "/x/inner", "/x"],
+    ])(
+      "throws when one repo's worktreeDir and another's bareRepoDir overlap (%s)",
+      (_label, worktreeDir, bareRepoDir) => {
+        const repos = [
+          makeEntry("trees", { worktreeDir, bareRepoDir: "/elsewhere/trees" }),
+          makeEntry("bare", { worktreeDir: "/elsewhere/bare-trees", bareRepoDir }),
+        ];
+        expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
+        expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'trees' and 'bare'.*must not overlap/);
+        // Order of entries must not matter.
+        expect(() => configLoader.detectPathCollisions([...repos].reverse())).toThrow(
+          /'trees' and 'bare'.*must not overlap/,
+        );
+      },
+    );
+
+    it("does not throw for distinct directories", () => {
+      const repos = [
+        makeEntry("a", { worktreeDir: "/w/a", bareRepoDir: "/b/a" }),
+        makeEntry("b", { worktreeDir: "/w/b", bareRepoDir: "/b/b" }),
+        makeEntry("c", { worktreeDir: "/w/c", mode: "clone" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
+    });
+
+    it("does not treat a sibling that shares a string prefix as overlapping or nested", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const repos = [
+        makeEntry("x", { worktreeDir: "/w/x", bareRepoDir: "/b/x" }),
+        makeEntry("xy", { worktreeDir: "/w/xy", bareRepoDir: "/w/x-bare" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("treats case-only differences as distinct directories on linux", () => {
+      setPlatform("linux");
+      const repos = [
+        makeEntry("a", { worktreeDir: "/Work/Trees", bareRepoDir: "/Bare/A" }),
+        makeEntry("b", { worktreeDir: "/work/trees", bareRepoDir: "/bare/a" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
+    });
+
+    it("treats case-only worktreeDir duplicates as a collision on darwin", () => {
+      setPlatform("darwin");
+      const repos = [
+        makeEntry("a", { worktreeDir: "/Work/Trees", bareRepoDir: "/bare/a" }),
+        makeEntry("b", { worktreeDir: "/work/trees", bareRepoDir: "/bare/b" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'a' and 'b'.*same worktreeDir/);
+    });
+
+    it("warns without throwing when one worktreeDir is nested inside another", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const repos = [
+        makeEntry("outer", { worktreeDir: "/w", bareRepoDir: "/b/outer" }),
+        makeEntry("inner", { worktreeDir: "/w/sub", bareRepoDir: "/b/inner" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = warn.mock.calls[0][0] as string;
+      expect(message).toContain("'inner'");
+      expect(message).toContain("'outer'");
+      expect(message).toMatch(/is inside worktreeDir/);
+      warn.mockRestore();
+    });
+
     it("throws when two repos resolve to same bareRepoDir", () => {
       const repos = [
-        {
-          name: "a",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/a",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/shared/.bare/x",
-        },
-        {
-          name: "b",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/b",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/shared/.bare/x",
-        },
+        makeEntry("a", { worktreeDir: "/w/a", bareRepoDir: "/shared/.bare/x" }),
+        makeEntry("b", { worktreeDir: "/w/b", bareRepoDir: "/shared/.bare/x" }),
       ];
-      expect(() => configLoader.detectBareRepoDirCollisions(repos)).toThrow(/same bareRepoDir/);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'a' and 'b'.*same bareRepoDir/);
     });
 
     it("does not throw when bareRepoDirs differ", () => {
       const repos = [
-        {
-          name: "a",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/a",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/a/.bare",
-        },
-        {
-          name: "b",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/b",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/b/.bare",
-        },
+        makeEntry("a", { worktreeDir: "/w/a", bareRepoDir: "/a/.bare" }),
+        makeEntry("b", { worktreeDir: "/w/b", bareRepoDir: "/b/.bare" }),
       ];
-      expect(() => configLoader.detectBareRepoDirCollisions(repos)).not.toThrow();
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
     });
 
-    it("detects collision across case-only differences on case-insensitive filesystems", () => {
-      if (process.platform !== "darwin") return;
+    it("detects bareRepoDir collision across case-only differences on darwin", () => {
+      setPlatform("darwin");
       const repos = [
-        {
-          name: "a",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/a",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/Users/Me/.bare/x",
-        },
-        {
-          name: "b",
-          repoUrl: "https://github.com/x/y.git",
-          worktreeDir: "/w/b",
-          cronSchedule: "0 * * * *",
-          runOnce: false,
-          bareRepoDir: "/users/me/.bare/x",
-        },
+        makeEntry("a", { worktreeDir: "/w/a", bareRepoDir: "/Users/Me/.bare/x" }),
+        makeEntry("b", { worktreeDir: "/w/b", bareRepoDir: "/users/me/.bare/x" }),
       ];
-      expect(() => configLoader.detectBareRepoDirCollisions(repos)).toThrow(/same bareRepoDir/);
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/same bareRepoDir/);
+    });
+  });
+
+  describe("buildRepositories path collisions", () => {
+    async function writeSharedWorktreeDirConfig(): Promise<string> {
+      const configPath = path.join(tempDir, "shared.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default {
+          repositories: [
+            { name: "first", repoUrl: "${TEST_URLS.github}", worktreeDir: "./shared", bareRepoDir: "./.bare/first" },
+            { name: "second", repoUrl: "${TEST_URLS.gitlab}", worktreeDir: "./shared", bareRepoDir: "./.bare/second" }
+          ]
+        };`,
+      );
+      return configPath;
+    }
+
+    it("rejects a config whose entries share a worktreeDir", async () => {
+      const configPath = await writeSharedWorktreeDirConfig();
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(ConfigValidationError);
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(
+        /'first' and 'second'.*same worktreeDir/,
+      );
+      await expect(configLoader.buildRepositories(configPath)).rejects.toThrow(path.join(tempDir, "shared"));
+    });
+
+    it("rejects the collision even when --filter would select only one of the entries", async () => {
+      const configPath = await writeSharedWorktreeDirConfig();
+      await expect(configLoader.buildRepositories(configPath, { filter: "first" })).rejects.toThrow(
+        /'first' and 'second'.*same worktreeDir/,
+      );
     });
   });
 });

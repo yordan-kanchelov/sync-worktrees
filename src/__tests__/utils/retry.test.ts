@@ -230,6 +230,22 @@ describe("retry", () => {
         expect(mockFn).toHaveBeenCalledTimes(1);
       },
     );
+
+    // Credentials git could not obtain or a key/host ssh rejected: retrying
+    // cannot help. The ssh messages also contain "Could not read from remote
+    // repository", which on its own is retryable.
+    it.each([
+      "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      "fatal: Authentication failed for 'https://github.com/org/repo.git/'",
+      "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+      "user@host: Permission denied (password).\nfatal: Could not read from remote repository.",
+      "Host key verification failed.\nfatal: Could not read from remote repository.",
+    ])("should not retry the git authentication failure %s", async (message) => {
+      const mockFn = vi.fn().mockRejectedValue(new Error(message));
+
+      await expect(retry(mockFn, { initialDelayMs: 1 })).rejects.toThrow(message.split("\n")[0]);
+      expect(mockFn).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("onRetry callback", () => {

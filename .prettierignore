@@ -1,0 +1,16 @@
+# Build output, coverage and generated files
+dist/
+coverage/
+node_modules/
+*.tsbuildinfo
+pnpm-lock.yaml
+.mcp-stdio-test-*
+
+# Markdown is hand-wrapped (README, TODO, review notes) or generated (CHANGELOG, changesets)
+*.md
+
+# Binary assets
+assets/
+
+# The site has its own toolchain (Astro, npm) and workflow; it is not formatted from the root
+site/

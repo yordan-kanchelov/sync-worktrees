@@ -1,3 +1,4 @@
+import { DEFAULT_CONFIG } from "../constants";
 import { getErrorMessage } from "../utils/lfs-error";
 
 import type { GitService } from "./git.service";
@@ -26,12 +27,12 @@ export class SyncRetryPolicy {
 
   createOptions(syncContext: SyncRetryContext): RetryOptions {
     return {
-      maxAttempts: this.config.retry?.maxAttempts ?? 3,
-      maxLfsRetries: this.config.retry?.maxLfsRetries ?? 2,
-      initialDelayMs: this.config.retry?.initialDelayMs ?? 1000,
-      maxDelayMs: this.config.retry?.maxDelayMs ?? 30000,
-      backoffMultiplier: this.config.retry?.backoffMultiplier ?? 2,
-      jitterMs: this.config.retry?.jitterMs ?? 0,
+      maxAttempts: this.config.retry?.maxAttempts ?? DEFAULT_CONFIG.RETRY.MAX_ATTEMPTS,
+      maxLfsRetries: this.config.retry?.maxLfsRetries ?? DEFAULT_CONFIG.RETRY.MAX_LFS_RETRIES,
+      initialDelayMs: this.config.retry?.initialDelayMs ?? DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS,
+      maxDelayMs: this.config.retry?.maxDelayMs ?? DEFAULT_CONFIG.RETRY.MAX_DELAY_MS,
+      backoffMultiplier: this.config.retry?.backoffMultiplier ?? DEFAULT_CONFIG.RETRY.BACKOFF_MULTIPLIER,
+      jitterMs: this.config.retry?.jitterMs ?? DEFAULT_CONFIG.RETRY.JITTER_MS,
       onRetry: (error, attempt, context): void => {
         const errorMessage = getErrorMessage(error);
         this.logger.info(`\n⚠️  Sync attempt ${attempt} failed: ${errorMessage}`);

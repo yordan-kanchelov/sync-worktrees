@@ -5,6 +5,14 @@ export interface ParsedWorktree {
   detached: boolean;
   prunable: boolean;
   locked: boolean;
+  /**
+   * Reason recorded by `git worktree lock --reason`, exactly as git prints it;
+   * null for a lock without a reason. Git runs the reason through
+   * `quote_c_style`, so an ordinary reason appears verbatim while one holding a
+   * newline, quote or backslash comes back double-quoted with C escapes — which
+   * keeps this value single-line and safe to put in a log message.
+   */
+  lockReason: string | null;
 }
 
 export function parseWorktreeListPorcelain(output: string): ParsedWorktree[] {
@@ -23,6 +31,7 @@ export function parseWorktreeListPorcelain(output: string): ParsedWorktree[] {
       detached: current.detached ?? false,
       prunable: current.prunable ?? false,
       locked: current.locked ?? false,
+      lockReason: current.lockReason ?? null,
     });
     current = {};
   };
@@ -41,6 +50,8 @@ export function parseWorktreeListPorcelain(output: string): ParsedWorktree[] {
       current.prunable = true;
     } else if (line === "locked" || line.startsWith("locked ")) {
       current.locked = true;
+      const reason = line.substring("locked ".length).trim();
+      current.lockReason = reason.length > 0 ? reason : null;
     } else if (line.trim() === "") {
       flush();
     }

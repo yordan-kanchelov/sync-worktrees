@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HOOK_CONSTANTS } from "../../constants";
+import { setEnvVar } from "../../__tests__/test-utils";
 import { HookExecutionService } from "../hook-execution.service";
 
 import type { HookContext, HooksConfig } from "../../types";
@@ -91,6 +92,53 @@ describe("HookExecutionService", () => {
       );
 
       expect(stdoutCallback).toHaveBeenCalledWith("feature/test-branch,test-repo,main");
+    });
+
+    // Hook commands run with the new worktree as their cwd, which is all that
+    // tells them which repository they are in. A run started from a git hook in
+    // a linked worktree inherits that worktree's GIT_DIR (git exports it), and a
+    // shell or CI job can export any of the rest, so without this strip every
+    // `git` in a hook command would work on that repository instead.
+    it("does not pass on an inherited repository-selection variable", async () => {
+      const stdoutCallback = vi.fn();
+      const originalGitDir = process.env.GIT_DIR;
+      const originalIndexFile = process.env.GIT_INDEX_FILE;
+      process.env.GIT_DIR = "/elsewhere/.git";
+      process.env.GIT_INDEX_FILE = ".git/index";
+
+      try {
+        await runAndWait(
+          {
+            onBranchCreated: [
+              nodeScript(
+                `process.stdout.write([process.env.GIT_DIR ?? 'unset', process.env.GIT_INDEX_FILE ?? 'unset', process.env['${HOOK_CONSTANTS.ENV_VARS.REPO_NAME}']].join(','))`,
+              ),
+            ],
+          },
+          mockContext,
+          { onStdout: stdoutCallback },
+        );
+      } finally {
+        setEnvVar("GIT_DIR", originalGitDir);
+        setEnvVar("GIT_INDEX_FILE", originalIndexFile);
+      }
+
+      expect(stdoutCallback).toHaveBeenCalledWith("unset,unset,test-repo");
+    });
+
+    it("hands hooks the working repository URL, credentials included, via the environment", async () => {
+      const stdoutCallback = vi.fn();
+      const tokenUrl = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+
+      await runAndWait(
+        {
+          onBranchCreated: [nodeScript(`process.stdout.write(process.env['${HOOK_CONSTANTS.ENV_VARS.REPO_URL}'])`)],
+        },
+        { ...mockContext, repoUrl: tokenUrl },
+        { onStdout: stdoutCallback },
+      );
+
+      expect(stdoutCallback).toHaveBeenCalledWith(tokenUrl);
     });
 
     it.each([

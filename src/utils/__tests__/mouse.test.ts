@@ -5,8 +5,7 @@ import { MOUSE_TRACKING_DISABLE, MOUSE_TRACKING_ENABLE, isMouseSequence, parseWh
 const ESC = String.fromCharCode(27);
 // Ink strips the leading ESC before handing the sequence to useInput, so the
 // stripped form is what components actually see. The raw form is checked too.
-const sgr = (button: number, column = 10, row = 5, final = "M"): string =>
-  `[<${button};${column};${row}${final}`;
+const sgr = (button: number, column = 10, row = 5, final = "M"): string => `[<${button};${column};${row}${final}`;
 const rawSgr = (button: number): string => `${ESC}[<${button};10;5M`;
 
 describe("mouse", () => {

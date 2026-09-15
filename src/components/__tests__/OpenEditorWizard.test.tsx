@@ -2,7 +2,8 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import OpenEditorWizard, { OpenEditorWizardProps } from "../OpenEditorWizard";
+import type { OpenEditorWizardProps } from "../OpenEditorWizard";
+import OpenEditorWizard from "../OpenEditorWizard";
 
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 

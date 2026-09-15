@@ -127,7 +127,7 @@ Install the sync-worktrees MCP server with your client.
 }
 ```
 
-If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require a loaded config (or call `load_config` at runtime).
+If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require the repository to be listed in a loaded config (or call `load_config` at runtime); they stay unavailable for auto-detected repositories no matter which other tools have run.
 
 <details>
 <summary>Claude Code</summary>
@@ -264,8 +264,8 @@ Open `Settings` → `AI` → `Manage MCP Servers` → `+ Add` (see [Warp MCP doc
 | `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
 | `get_worktree_status`    | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress).                                                                                                                                 |
 | `create_worktree`        | Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`.                                                                                  |
-| `update_worktree`        | Fast-forward one worktree to match upstream.                                                                                                                                                                                      |
-| `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications.                                                                                                                                  |
+| `update_worktree`        | Fast-forward one worktree to match upstream. `updated` is false when there was nothing to merge.                                                                                                                                  |
+| `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. `success` is false (with `failed`/`failures` listed) when any action failed, matching the CLI's exit code 1.                     |
 | `initialize`             | Clone the bare repo and create the main worktree. Requires config. Streams progress.                                                                                                                                              |
 | `load_config`            | Load or reload a config file at runtime.                                                                                                                                                                                          |
 | `set_current_repository` | Select the active repo when multiple are configured.                                                                                                                                                                              |
@@ -275,7 +275,7 @@ All tools that target a single repo accept an optional `repoName`. When omitted,
 ### Safety
 
 - The MCP surface exposes no removal or trash operations — an agent cannot delete a worktree or touch the trash through it. Removal happens via sync's own safety-gated pruning or manual git commands.
-- `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk.
+- `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to `feature-foo/`) before touching disk, and errors with code `TARGET_EXISTS` when its target directory already exists but is not a registered worktree — it never moves an existing directory to trash or deletes it (clean the path up manually or let `sync` reconcile it).
 - Branches created by sync-worktrees use `--no-track` first, then publish with `git push -u origin <branch>`, so they do not inherit `origin/main` as their upstream.
 - Path-targeted tools verify the supplied path is a registered worktree of the selected repository.
 
@@ -337,7 +337,9 @@ Terminal mode requires [`tmux`](https://github.com/tmux/tmux) to be installed.
 
 ## Configuration
 
-Config files are JavaScript ES modules. Relative paths resolve from the config file's location, and you have full access to `process.env` and Node module loading.
+Config files are JavaScript modules — ES modules by default, CommonJS when the file is `.cjs` or the nearest `package.json` declares `"type": "commonjs"` (`module.exports = config;` instead of `export default config;`). `sync-worktrees init` picks the right one for you. Relative paths resolve from the config file's location, and you have full access to `process.env` and Node module loading.
+
+Splitting a config across several files is supported, including on reload: reloading (`r` in the interactive UI, the `load_config` MCP tool) re-reads the config file **and** every module it pulls in, so editing `./repos.js` and pressing `r` picks up the change without restarting. A reload re-evaluates the config on a worker thread to get that fresh read, so the value a config file exports has to be plain data — strings, numbers, booleans, arrays, objects, and also `Date`, `RegExp`, `Map`, `Set` and `BigInt`. A function cannot cross that boundary, and neither can a symbol, a `WeakMap` or a `Proxy`; no setting takes any of them (`hooks.onBranchCreated` and the branch filters are arrays of strings), and a reload that finds one fails with a message naming the value, leaving the previously loaded config running.
 
 ### Minimal config
 
@@ -403,7 +405,16 @@ export default config;
 Notes:
 
 - `bareRepoDir` defaults to `.bare/<repo-name>` if not specified.
+- If the bare repository at `bareRepoDir` already exists, its `origin` must be `repoUrl` (compared ignoring `.git`, a trailing slash and scheme/host case); otherwise initialization fails naming both URLs. Run `git -C <bareRepoDir> remote set-url origin <repoUrl>` or point `bareRepoDir` at a fresh directory.
+- Every entry needs its own directories: two entries that resolve to the same `worktreeDir` (in either mode) or the same `bareRepoDir`, or whose `worktreeDir` sits at or inside another entry's `bareRepoDir` (or vice versa), are rejected when the config loads, naming both entries and the path. A `worktreeDir` nested inside another entry's `worktreeDir` loads with a warning.
 - Repository-specific settings override `defaults`.
+
+### Authentication
+
+sync-worktrees runs every git command non-interactively — as a daemon, a cron tick, the MCP server or the TUI, nobody can answer a prompt — so it sets `GIT_TERMINAL_PROMPT=0` — unless you have exported that variable yourself, which is left alone so `--runOnce` in a terminal can still prompt. Credentials must come from a source that needs no prompt:
+
+- **HTTPS** — a git credential helper (`git config --global credential.helper <helper>`, or your platform's keychain / credential manager) that already holds credentials for the remote. An askpass program (`GIT_ASKPASS`, `core.askPass`) keeps working. A remote that would prompt fails within a second with git's message plus a hint naming the fix, and that failure is not retried.
+- **SSH** — a key loaded into `ssh-agent` (or one without a passphrase) and the host already present in `~/.ssh/known_hosts`. A key the remote rejects or a host key that does not match fails at once with a hint and is not retried. Known limitation: `GIT_TERMINAL_PROMPT=0` covers git's own prompts only; ssh reads a key passphrase or an unknown-host confirmation from the terminal itself, so a passphrase-protected key without an agent or a host missing from `known_hosts` still blocks until the fetch inactivity timeout (unchanged from earlier releases). sync-worktrees does not set `GIT_SSH_COMMAND`, because git gives it precedence over the `core.sshCommand` config key; a `core.sshCommand`-aware `BatchMode` wrapper is a follow-up.
 
 ### Clone mode
 
@@ -422,7 +433,18 @@ Set `mode: "clone"` to clone one checked-out branch directly into `worktreeDir` 
 
 Clone mode keeps only the checked-out branch materialized as a local `origin/*` ref. Branch discovery uses remote metadata, so the tool can list remote branches without downloading object closure for every branch tip. `branch` controls the checked-out branch that sync-worktrees fast-forwards on each sync. Omit `branch` and the remote HEAD is resolved at clone time.
 
-`depth` is valid only for clone-mode repositories and must be a positive safe integer. Shallow clones use `--single-branch --no-tags`, and sync fetches keep only the tracked branch at the configured depth. If you later remove `depth` from the config, the next sync unshallows the existing clone with `git fetch --unshallow --no-tags`.
+`depth` is valid only for clone-mode repositories and must be a positive safe integer. It applies to the initial `git clone --single-branch --no-tags --depth <N>`, and to every routine sync fetch as a **ratcheted cap**: `--depth max(depth, the window the clone already holds under origin/<branch>)`. The cap is there because a shallow clone has no ancestors to offer the server as `have`s — once the remote tip stops being a descendant of the clone's tip, which a force-push or a rebase does, an uncapped fetch has to pack the new tip's whole ancestry. The ratchet is there because `git fetch --depth N` re-applies N to the ref it fetches rather than capping at it: the configured value passed verbatim took a clone that had just been deepened straight back to one commit, which cut the parent link needed to tell a fast-forward from a divergence, so every remote advance bought another 50-commit deepen that the next tick threw away.
+
+Both numbers are **ancestry levels**, counted from the ref the fetch re-applies them to. `--depth N` keeps every commit within N parent steps of the fetched tip, so on a merge-built history one level holds several commits — a 50-level fetch of a remote whose pull requests land as two-commit merges produced a 147-commit clone. The clone is therefore measured in levels rather than commits (a count is the larger number, and feeding it back walks the boundary deeper every tick until the clone is complete and `depth` bounds nothing), and measured from `origin/<branch>` with a local `git rev-list --topo-order --parents` walk rather than from HEAD — HEAD is the tip a fetch re-applies its depth from only on a tick that ends in a fast-forward, and on a tick that fetches and then skips the merge (dirty worktree, unpushed commits, a divergence) it lags behind, so a cap measured there asks for less than the clone holds and cuts it back, further on every tick. Measured from the fetched ref the cap is a fixed point instead: the window a `--depth D` fetch produced measures back as exactly D, so history widens only when the deepen budget or a raised `depth` widens it. (HEAD is the fallback for a first sync, before `origin/<branch>` exists.)
+
+What the cap costs and buys, all measured on git 2.43. Against a 199-commit remote that force-pushed (`reset --hard HEAD~3` plus one commit, leaving a 197-commit tip), a `depth: 1` clone fetched 1 commit in a 3-object pack with the cap and all 197 in a 201-object pack without it — classified `indeterminate_shallow` either way, so the uncapped download bought nothing. (That remote is empty commits over a three-file seed, so the 201 is 197 commits, the three trees the clone lacked and the one blob the rewrite added; commits carrying content add a tree and a blob apiece to it.) Against a 601-commit remote advancing by one merged pull request per tick: one deepen to 50 levels (147 commits), then `--depth 50` and 6 objects per tick, `fast_forward` on the first classification, still 147 commits and still shallow six ticks later. Against a 120-commit remote advancing three commits a tick with the worktree left dirty for five ticks, so every tick fetched and skipped the merge: the window held at the 50 levels the deepen bought and the first clean tick fast-forwarded without deepening again — where the same run measured from HEAD sent `--depth` 50, 47, 41, 32, 20, 5 and had to buy the window back. A clone does not sit at exactly `depth`, though: a remote k levels ahead pushes the oldest k levels off the bottom, and a tip a force-push moved off the fetched ref's ancestry cannot be held inside the window by any depth. A clone that is not shallow gets no `--depth` at all, since there the flag would *make* it shallow — `--depth 5` against a full 199-commit clone left 5 commits.
+
+Editing `depth` reaches an existing clone, asymmetrically. Raising it raises the cap, so the next sync fetch deepens a shorter clone up to the new value — with `depth` raised from 1 to 10, the next fetch took a one-commit clone to 10. Raising it also **shrinks the deepen budget**, which only uses targets above `depth`: at 1000 or more there is no budget left, and a clone that cannot be classified can then only be skipped. Lowering `depth` cannot shorten an existing clone through the sync fetch, which takes the larger of the two. Removing `depth` changes an existing clone wholesale: the next sync unshallows it with `git fetch --unshallow --no-tags`, which is also the remedy when a sync reports it cannot classify the tracked branch.
+
+Two other fetches re-apply the configured value verbatim, and `--depth` below the current depth shortens:
+
+- The in-sync deepen budget (below) refetches at `--depth 50`, `200` or `1000` when it cannot classify the tracked branch, so a clone grown past the target it picks is cut back to it (80 commits went to 50) — and when the budget cannot settle the question either, because a force-push moved the branch off the clone's tip entirely, that repeats every tick until the divergence is resolved.
+- Switching the clone to another branch from the TUI, and the branch wizard's base-branch fetch, re-apply `depth` to whatever ref they name. The shallow boundary is repository-wide, so those can shorten **or** deepen the clone whether or not you edited `depth` — including when the ref is the tracked branch itself, which the wizard offers among the bases: a clone the deepen budget had grown to 50 commits went back to 1 on a `--depth 1` base fetch of it. The flag stays there because dropping it is ruinous for the case it exists for, a branch with a tip of its own the clone has never seen: fetching a 290-commit branch (this one built from commits that each rewrite a file) into a `depth: 1` clone cost 288 of them — all but the two the clone's existing shallow graft already hid — in an 861-object pack without `--depth`, against 1 commit and 3 objects with it.
 
 Clone mode rejects `branchInclude`, `branchExclude`, `branchMaxAge`, `updateExistingWorktrees`, and `bareRepoDir` at validation time (whether set directly or inherited via `defaults`) — they have no meaning for a single-branch checkout.
 
@@ -463,7 +485,7 @@ If you set `exclude` or `!`-prefixed patterns while `mode: "cone"` is explicit, 
 
 **Duplicate `repoUrl` handling:** The first entry per `repoUrl` keeps the URL-derived bare path (`.bare/<repo-slug>`). Subsequent duplicate entries auto-derive `bareRepoDir` from `name` (`.bare/<name>`). Pin `bareRepoDir` explicitly on duplicate entries if you want config order to be irrelevant.
 
-**Narrowing safety:** When a sync would narrow an existing worktree's sparse patterns (remove a previously included path), it first checks the worktree is clean. If there are uncommitted changes, unpushed commits, or in-progress operations, the sparse update is skipped with a warning.
+**Narrowing safety:** When a sync would narrow an existing worktree's sparse patterns (remove a previously included path), it first checks the worktree is clean. If there are uncommitted changes, unpushed commits, or in-progress operations, the sparse update is skipped with a warning and reattempted on the next sync. Clone mode applies the same uncommitted-and-untracked-changes check that gates its fast-forward; unpushed commits are reported there as a skip of their own. The check compares the new patterns against the ones already in force, so it does not apply to a checkout that is not sparse yet — giving an existing full checkout a `sparseCheckout` block narrows it on the next sync whether or not the tree is clean, in both modes. If Git rejects the pattern list outright, the sparse step is recorded as a failed action, so a `--runOnce` run exits non-zero rather than warning and moving on — unless the tree was dirty and the change narrows, in which case the skip above comes first and the rejection is not discovered until a run finds the tree clean.
 
 ### Maintenance
 
@@ -481,8 +503,16 @@ defaults: {
 
 - **`interval`** is a duration string (`h`/`d`/`w`/`m`/`y`). The last run is timestamped in the object store (`<bare-repo>/sync-worktrees-maintenance.json`, or `<worktreeDir>/.git/…` in clone mode), so throttling survives daemon restarts and repeated `runOnce` invocations.
 - **`aggressive: false`** (default) runs plain `git gc`, which honors Git's two-week grace period — recently-unreachable objects (and anything reachable from a branch, tag, stash, or reflog) are always preserved.
-- **`aggressive: true`** runs `git gc --prune=now`, pruning recently-unreachable objects immediately. Use it only for explicit reclamation; the default is the safe choice. The repository operation lock only serializes sync-worktrees' own operations — `--prune=now` can still race manual `git` work happening in the checkout outside the daemon, so avoid enabling it on repositories you also edit by hand concurrently.
+- **`aggressive: true`** runs `git gc --prune=now`, pruning recently-unreachable objects immediately. Use it only for explicit reclamation; the default is the safe choice. The repository operation lock only serializes sync-worktrees' own operations — `--prune=now` can still race manual `git` work happening in the checkout outside the daemon, so avoid enabling it on repositories you also edit by hand concurrently. Every worktree shares the bare repository's object store, so this applies to work in any of them, not just the one you are looking at.
 - A maintenance failure is logged as a warning and never fails the sync. The attempt is still timestamped, so a broken `gc` is throttled instead of retried every tick.
+
+### Locking
+
+Every sync runs under a cross-process repository lock, so a cron daemon, a `--runOnce` from a shell and the MCP server never operate on the same checkout at once. A run that finds the lock held is skipped with a warning; a run that cannot create or take the lock fails and names the path and errno.
+
+The lock file lives next to the checkout, in `<parent of worktreeDir>/.sync-worktrees-locks/<hash>.lock`, with `worktreeDir` resolved through symlinks first. Nothing in the environment feeds into that path: a daemon started by systemd, launchd or cron with a minimal environment, a shell whose dotfiles export `XDG_STATE_HOME`, and `sudo` with or without `-E` all contend for the same file as long as they point at the same `worktreeDir`. Worktree-mode repositories additionally lock the bare repository directory. Locks are never placed under `~/.cache` or inside `worktreeDir` itself.
+
+`SYNC_WORKTREES_LOCK_DIR` moves the lock files to another directory — for a checkout whose parent directory is read-only, for instance. It is an escape hatch, not a preference: give it the same absolute path in every process that syncs the same `worktreeDir`, otherwise those processes stop contending for one lock.
 
 ### Branch filtering
 
@@ -561,15 +591,41 @@ defaults: {
 
 Trash entries are deliberately not exposed through the MCP server — listing, restoring, and purging are human operations.
 
-In the TUI, press `x` to preview a force clean across every configured repository. Confirming with `y` immediately deletes every valid trash entry and all permanent `refs/sync-worktrees/keep/*` recovery refs, then runs `git gc --prune=now`. This is irreversible; active worktrees and unrecognized trash content are left untouched.
+In the TUI, press `x` to preview a force clean across every configured repository. Confirming with `y` deletes exactly the trash entries and permanent `refs/sync-worktrees/keep/*` recovery refs that preview counted, then runs `git gc`. This is irreversible; active worktree files, unrecognized trash content, and anything a sync trashed while the preview was on screen are left untouched — the last of these is reported in the result line.
+
+The object store is the one thing every worktree does share, so the `gc` is the step that can reach work outside the trash you confirmed:
+
+- The `gc` prunes on a one-hour grace window, not `--prune=now`, unless `maintenance.aggressive` opts into the latter. Prune expiry is measured from the mtime of the file currently holding an object, not from the age of the commit and not from when it stopped being reachable. A loose object carries its own mtime, so the commits behind a purged recovery ref are normally still collected on the same run; a packed object inherits its pack's mtime, and a repack resets that clock for everything in the new pack, so when the store has been repacked inside the window this run reclaims nothing and the next one past the hour does it instead. Objects written — or repacked — in the last hour wait, which is exactly where a concurrent `git commit` keeps the ones it has not yet anchored to a ref.
+- Before the `gc`, each worktree's admin directory is checked for `index.lock` or `HEAD.lock` and for an unfinished `merge`, `rebase`, `cherry-pick`, `revert` or `bisect`. If any is found the `gc` is skipped for that repository, the result line reads `GC skipped`, and the errors name the worktree and the marker. This is a point-in-time check, not a lock: it catches a command or operation that is already in progress, and cannot stop one that starts a moment later. Purging the trash and refs still happens either way. A marker left behind by a crashed command — a stale `index.lock`, or a `rebase-merge/` from an operation nobody finished — keeps reporting busy until you remove the lock or finish the operation in that worktree; the error names both so you can tell which.
 
 ```bash
-sync-worktrees trash --filter <repository-name>
+sync-worktrees trash --filter <repository-name>                                   # table of entries + keep refs
+sync-worktrees trash --filter <repository-name> --json                            # the same listing, machine-readable
 sync-worktrees trash --filter <repository-name> --restore <id>
+sync-worktrees trash --filter <repository-name> --purge <id>                      # permanent, typed confirmation
+sync-worktrees trash --filter <repository-name> --restore <id> --wait             # also valid with --purge
 sync-worktrees trash --filter <repository-name> --dropKeepRef <listed-keep-name>
+sync-worktrees trash --filter <repository-name> --dropAllKeepRefs
 ```
 
-**Restoring**: read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
+The listing is a table of `Id`, `Branch / path`, `Reason`, `Size`, `Expires`, `Restores as` and `Keep on reap`; an empty trash says so rather than printing nothing. `Size` reads `—` for a payload nothing has measured yet — sizes are gathered off the repository lock at the tail of a sync, so an entry trashed moments ago has none, and the listing never waits for a `du` of its own. `Restores as` is `worktree` when the entry still has its branch, HEAD commit and pin ref, and `files only` otherwise. `Keep on reap` marks an entry whose commits were on no remote when it was trashed; see **Permanent keep refs** below.
+
+`--json` prints `{ entries, invalidEntries, keepRefs }`, where each entry carries `id`, `branch`, `reason`, `originalPath`, `deletedAt`, `expiresAt`, `sizeBytes` (`null` when unmeasured — never `0`), `restoresAsWorktree`, `keepPinOnReap` and `source`.
+
+Expected failures — no entry with that id, a destination that already exists, a repository lock another process holds — print one `❌ <message>` line and exit 1; only an unexpected error prints a stack.
+
+`--restore` and `--purge` take the repository lock, which a running daemon holds for the length of a sync. Without `--wait` they fail immediately and say so. With `--wait` they retry the lock for up to two minutes and then give up with the same message — a bound, not "block until it frees up", so a scripted invocation always terminates. Both locks a worktree-mode repository takes share that one window rather than getting it each.
+
+`--purge <id>` deletes one entry ahead of its expiry, through the same path the expiry reaper uses: it needs an interactive TTY, the entry's id typed back, and it writes a `trash_purge` audit record before touching anything. For a `Keep on reap` entry the permanent `refs/sync-worktrees/keep/<id>` ref is created **first** and the files are deleted only if that succeeds — those commits are on no remote, so the payload and the pin can be the only copy in existence. Deleting the whole trash instead is the TUI's `x` (force clean), which also drops the recovery refs and runs a `gc`.
+
+**Permanent keep refs**: a worktree whose commits were on no remote when it was pruned keeps them past payload expiry — when the entry is reaped, its pin is promoted to `refs/sync-worktrees/keep/<id>`, which nothing ages out. At reap time the question is asked again: if the commits are reachable from a remote-tracking ref by then, and this tick's `fetch --all --prune` completed so that ref set is current, no keep ref is minted. Anything less than that answer mints one — a failed fetch, a rev-list that failed, a count that could not be read.
+
+That re-check is narrow, and is not a cure for keep refs accumulating. A squash or rebase merge puts the branch's *content* on the default branch as a new commit, so the original commits stay reachable from no remote ref and still earn a permanent ref — one per pruned branch, for as long as the repository lives. `--dropAllKeepRefs` is the way back: it lists what is there, takes one typed confirmation for the whole set, and deletes the refs it listed. Refs a `.diverged/` directory still relies on are retained and named, refs minted while the confirmation was on screen are left alone, and a ref another git process has locked is reported without stopping the rest. The commits behind a dropped ref become collectable by the next `git gc`.
+
+
+**Restoring**: `sync-worktrees trash --filter <name> --restore <id>` puts the payload back at its original path. An entry the listing shows as `worktree` is rebuilt as a registered worktree on its branch; one shown as `files only` is restored as a plain directory, because without a pin ref the trashed commits may already be gone. That second case has a consequence worth knowing before you use it: if the branch is still in the repository's synced set, the next sync finds an unregistered directory where its worktree belongs and moves it straight back to trash as a new `orphan` entry. The warning on the restore says so; copy what you need out of the directory, or exclude the branch, before the next tick.
+
+If you would rather do it by hand, read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
 
 ```bash
 cd my-repo-worktrees/.trash/<id>
@@ -579,17 +635,39 @@ git -C <bare-repo> worktree add --no-checkout <originalPath> <branch>
 cp -R payload/. <originalPath>/   # then restore the .git link git wrote:
 git -C <bare-repo> worktree repair <originalPath>
 git -C <originalPath> reset       # index at HEAD, payload shows as unstaged changes
-cd .. && rm -rf <id>              # discard the trash entry when done
-git -C <bare-repo> update-ref -d refs/sync-worktrees/trash/<workspace-hash>/<id>   # drop the pin
 ```
+
+Discarding one entry is `--purge <id>` (above), not `rm -rf`: removing the container by hand leaves its pin ref behind until the reaper's next sweep, and for a `Keep on reap` entry it destroys the only copy of commits that reached no remote.
 
 Notes:
 
 - Trash applies to worktree mode only; clone mode never removes its checkout.
 - Anything in `.trash/` without a valid manifest is left alone by the reaper and reported, never deleted.
-- Pin refs whose trash entry is gone (e.g. a failed cleanup, a manually emptied `.trash/`) are swept by the reaper on the next sync, so nothing stays pinned forever.
+- A payload the process cannot delete — build output owned by another uid through a bind mount, a file carrying the immutable attribute — does not strand the entry. The payload is renamed to `payload.deleting-<timestamp>` inside the container before anything is removed, so the manifest survives a refused delete: the entry stays listed, every later run retries it, and the warning names the path that refused. Such an entry can no longer be restored (its payload is already on the way out); copy what you need out of the container by hand.
+- Pin refs whose trash entry is gone (e.g. a failed cleanup, a manually emptied `.trash/`) are swept by the reaper on the next sync, so nothing stays pinned forever. The sweep only touches its own `<workspace-hash>/` namespace. Entries made before pins carried that namespace keep a flat `refs/sync-worktrees/trash/<id>` pin, which their own manifest still releases when the entry is restored or reaped; a flat pin whose entry was already gone by then is left alone — nothing distinguishes it from another workspace's — and has to be dropped by hand with `git update-ref -d`.
 - A failure to move a directory into trash (e.g. trash on a different filesystem) skips the removal entirely — the worktree stays in place.
 - Worktrees containing submodules are preserved byte-for-byte; nested submodule state is restored as-is but submodules are not re-registered automatically.
+
+### Parallelism
+
+`parallelism` bounds concurrent **git processes**, not worktrees. It can sit at the top level (as below), under `defaults`, or on a single repository — each layer overrides the one before it:
+
+```javascript
+parallelism: {
+  maxRepositories: 2,      // repositories synced at once
+  maxWorktreeCreation: 1,  // keep at 1 — git's worktree.lock makes parallel creation unsafe
+  maxWorktreeUpdates: 3,
+  maxWorktreeRemoval: 3,
+  maxStatusChecks: 20,     // git processes spent on read-only status probes
+  maxBranchFetches: 3,     // per-branch fetches, used only as a bulk-fetch fallback
+}
+```
+
+One status check of a worktree runs up to nine git commands: `status`, `branch`, `branch -r`, `stash list` and `submodule status` all at once, then up to four `rev-parse`/`rev-list` probes together. All of them share a single `maxStatusChecks`-wide budget per repository, so a prune of 200 stale worktrees still peaks at `maxStatusChecks` git processes.
+
+Two things sit outside that count. Git spawns children of its own — `git submodule status` runs a helper script and a child per submodule, measured on git 2.43 at roughly 1.5 git processes and 3 processes in total per call on an eight-submodule superproject — so a budget spent entirely on superproject probes costs about three times its size. And `maxWorktreeCreation`, `maxWorktreeRemoval` and `maxBranchFetches` each run their main git command through a single shared client whose scheduler stops at 5, so setting them higher than 5 buys little: the per-branch fetch fallback stops at 5 outright, while creation and removal grow a little past it for the few commands each unit runs on the worktree's own client. That fetch fallback only runs when a bulk fetch fails on LFS errors, and is left out of the peak entirely, so a config the loader reports as well inside the limit can still spawn about five fetches per repository if every repository hits the fallback at once.
+
+A repository's phases run one after another — create, then prune, then update — so the whole run peaks at `maxRepositories × the widest single limit`, never their sum. The config loader rejects a config whose peak exceeds 100 git processes and names the setting to lower. The defaults peak at 2 × 20 = 40.
 
 ### Retry and LFS
 
@@ -607,16 +685,20 @@ retry: {
 } // cap retry delay at 1 minute
 ```
 
-For repositories with Git LFS issues or large files you don't need, set `skipLfs: true` in `defaults` or per repository. The tool also retries LFS-specific failures with LFS disabled (configurable via `retry.maxLfsRetries`).
+Two inactivity timeouts guard the git commands that talk to the remote: `fetchTimeoutMs` (default 5 minutes — `fetch`, `push`, `ls-remote`, `remote set-head`) and `cloneTimeoutMs` (default 15 minutes — the initial clone, and the `fetch --unshallow` that pulls a clone-mode repository's full history after `depth` is removed, which moves the same bytes a clone would). Each kills its command when no output arrives inside the window, so a stalled connection ends the attempt instead of hanging the sync forever; `0` disables one. Local commands never carry them: `git worktree add` prints nothing while it checks out a large repository, and killing it there would fail a creation that only needed more time. Set either on a repository entry or under `defaults` (the entry wins, as everywhere else); both must be non-negative whole numbers of milliseconds, and anything else is a config validation error. Both knobs are shown in [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js).
+
+For repositories with Git LFS issues or large files you don't need, set `skipLfs: true` in `defaults` or per repository. The tool also falls back to LFS-free operation on LFS-specific failures: a worktree checkout that fails its smudge filter (`git worktree add`) is retried once with LFS downloads disabled for the rest of that sync, and an LFS failure that ends the whole sync attempt is retried the same way up to `retry.maxLfsRetries` times.
 
 ### Hooks and file copying
 
 Two lifecycle hooks the example config covers in depth:
 
 - `hooks.onBranchCreated` — array of shell commands run after a new branch's worktree is created. Placeholders: `{BRANCH_NAME}`, `{WORKTREE_PATH}`, `{REPO_NAME}`, `{BASE_BRANCH}`, `{REPO_URL}`. Fire-and-forget.
-- `filesToCopyOnBranchCreate` — paths copied into every newly created worktree (e.g. `.env.local`, `.npmrc`). Glob patterns are resolved relative to the config file's directory.
+- `filesToCopyOnBranchCreate` — paths copied into every newly created worktree (e.g. `.env.local`, `.npmrc`). Glob patterns are resolved relative to the config file's directory. That directory is normally the parent of every checkout, so a recursive pattern would otherwise read out of the other repositories: the expansion skips every `worktreeDir` and `bareRepoDir` the config file names (the destination included) — reached by that name, or under any other name in the source that resolves to the same directory, through however many symlinks — and skips `node_modules`, `.git`, `dist`, `build`, `.next`, `coverage`, and this tool's own `.bare/`, `.trash/`, `.removed/`, `.diverged/`, `.sync-worktrees-state/` and `.sync-worktrees-locks/`.
 
 In clone mode, `filesToCopyOnBranchCreate` fires once on the initial clone, and `hooks.onBranchCreated` fires only for TUI-initiated branch creation (clone mode tracks a single fixed branch with no later branch-creation events).
+
+Hook commands run with the new worktree as their working directory, and with the variables git uses to name a repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, ...) removed from their environment. Those variables outrank a working directory, so an inherited one would point a hook's `git` at that repository instead of the worktree — and git hands its own `GIT_DIR` to hooks run inside a linked worktree, so a run started from one inherits it with nothing exported by hand. Pass one explicitly in the command itself if a hook really does want it.
 
 For every knob (timeouts, parallelism, jitter, sparse-update behavior, retry tuning), see [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js).
 
@@ -633,8 +715,16 @@ The CLI loads a config file and runs it. Most run-mode settings (branch filters,
 
 Subcommands:
 
-- `sync-worktrees init [--config <path>] [--force]` — interactive wizard that writes a minimal config file (`./sync-worktrees.config.js` by default). Refuses to overwrite an existing target unless `--force` is passed.
+- `sync-worktrees init [--config <path>] [--force]` — interactive wizard that writes a minimal config file (`./sync-worktrees.config.js` by default). Refuses to overwrite an existing target unless `--force` is passed. The generated file is loaded back before the wizard reports success, so a config that would not load fails the command instead of surfacing on the next run.
 - `sync-worktrees list [--config <path>] [--filter <pattern>]` — print the resolved repositories and exit.
+- `sync-worktrees trash [--config <path>] [--filter <pattern>] [--json] [--restore <id> | --purge <id> | --dropKeepRef <name> | --dropAllKeepRefs] [--wait]` — inspect and recover reversible removals for one repository; see [Trash and restore](#trash-and-restore) for the listing columns, the `--json` shape and what each operation does. Every invocation needs **exactly one** matched repository (`--filter` is how you narrow a multi-repo config down to it; anything else exits 1 with the count it matched), and that repository must be in worktree mode — clone mode never removes its checkout, so a clone-mode repository is rejected. With no operation flag the command prints the trash listing and any permanent keep refs.
+  - `--restore <id>` puts an entry's payload back at its original path.
+  - `--purge <id>` permanently deletes one entry ahead of its expiry.
+  - `--dropKeepRef <name>` deletes one listed permanent keep ref; `--dropAllKeepRefs` deletes every listed one behind a single confirmation.
+  - `--json` prints the listing as JSON instead of a table.
+  - `--wait` applies to `--restore` and `--purge` — the two operations that take the repository lock — and retries a lock another process holds for up to two minutes instead of failing immediately.
+  - `--restore`, `--purge`, `--dropKeepRef` and `--dropAllKeepRefs` are mutually exclusive. `--json` describes the listing, so it is rejected alongside any of them, and `--wait` is rejected alongside `--json`, `--dropKeepRef` or `--dropAllKeepRefs`.
+  - `--purge`, `--dropKeepRef` and `--dropAllKeepRefs` each need an interactive TTY and a typed confirmation; `--restore` needs neither.
 
 ## Requirements
 

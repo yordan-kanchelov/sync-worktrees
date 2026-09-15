@@ -1,24 +1,173 @@
 import { createRequire } from "module";
 import * as path from "path";
-import { pathToFileURL } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
+import { Worker } from "worker_threads";
 
 import * as cron from "node-cron";
 
-import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../constants";
+import { CONFIG_FILE_NAMES, DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
 import { parseDuration } from "../utils/date-filter";
 import { fileExists } from "../utils/file-exists";
-import { getDefaultBareRepoDir } from "../utils/git-url";
-import { normalizePathForCompare } from "../utils/path-compare";
+import {
+  getDefaultBareRepoDir,
+  isValidGitUrl,
+  parseGitUrl,
+  redactRepoUrl,
+  redactSecretsInText,
+} from "../utils/git-url";
+import { isPathEqualOrInside, isPathStrictlyInside, normalizePathForCompare, pathsEqual } from "../utils/path-compare";
+import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../utils/git-client";
 import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
+import { collectUnknownConfigKeys, formatUnknownConfigKey } from "../utils/unknown-config-keys";
 
-import type { Config, ConfigFile, RepositoryConfig, RepositoryMode } from "../types";
+import type { Logger } from "./logger.service";
+import type { Config, ConfigFile, ParallelismConfig, RepositoryConfig, RepositoryMode } from "../types";
 
 const require = createRequire(import.meta.url);
 
-const CLONE_MODE_CONFLICTING_FIELDS = [
+/**
+ * How wide a phase can actually run, in git processes.
+ *
+ * `asConfigured` is a phase whose units each get their own git client, so it
+ * runs at exactly the configured width. `cappedByOneClient` is a phase whose
+ * git-command *unit* goes through a single cached simple-git client, whose
+ * scheduler caps it at SIMPLE_GIT_CLIENT_CONCURRENCY however high the setting
+ * is — measured: 40 concurrent branch fetches through the anchor worktree's
+ * client peak at 5 fetches (9 processes counting git's transport helpers), not
+ * 40. Creation and removal are capped this way for their `worktree add` and
+ * `worktree remove` calls, but each unit also runs a few commands on the new
+ * worktree's own client, outside that cap: `maxWorktreeCreation: 40` measured
+ * at a peak of 15 processes rather than 5, so the cap bounds the phase's growth
+ * rather than pinning it exactly.
+ */
+const asConfigured = (configured: number): number => configured;
+const cappedByOneClient = (configured: number): number => Math.min(configured, SIMPLE_GIT_CLIENT_CONCURRENCY);
+/**
+ * The branch-by-branch fetch is a fallback that only runs when a bulk fetch
+ * failed on LFS errors, and it goes through the anchor worktree's one client,
+ * so it can never exceed SIMPLE_GIT_CLIENT_CONCURRENCY however high
+ * `maxBranchFetches` is set. It is left out of the peak entirely rather than
+ * counted at that ceiling, because counting it -- even at 5 -- would newly
+ * reject configs that load today: 21 to 25 repositories with every other limit
+ * at 1 sum to 84-100 under the old rule but reach 105-125 at 5 per repository.
+ * Leaving it out is what makes "no config that loads today is rejected" hold
+ * for every input rather than merely for the ones we swept.
+ *
+ * This is a deliberate hole, not an impossibility: `maxRepositories` repos can
+ * each run 5 concurrent fallback fetches, so a config the peak reports as 42
+ * can spawn ~105 fetch processes if every repository hits the LFS fallback at
+ * once. The fallback has one call site and is gated on an LFS failure, so that
+ * is a narrow path. The setting is still validated as a positive integer.
+ */
+const notCounted = (): number => 0;
+
+/**
+ * Every per-repository parallelism setting: the phase it bounds, and the git
+ * processes that phase can really run at once. The phases run one after another
+ * — create, then prune, then update — so a repository's peak is the widest
+ * single phase, never the sum of all of them. (The update phase runs its
+ * read-only probes under its own `maxStatusChecks`-wide limiter and its
+ * fast-forwards under `maxWorktreeUpdates`, one after the other, so both are
+ * already covered by taking the maximum.)
+ *
+ * This table is the one place a parallelism setting is declared: it drives the
+ * positive-integer validation as well as the peak, so a phase added here cannot
+ * reach the arithmetic unvalidated.
+ *
+ * Counts are git processes this tool spawns. Git's own children are outside the
+ * model: `git submodule status` runs a `git-submodule`/`git-sh-i18n` helper and
+ * a child per submodule, measured on git 2.43 at ~1.5 git processes and ~3
+ * processes in total per call on an 8-submodule superproject (7 for a single
+ * probe with nothing else running), so a budget spent entirely on superproject
+ * probes costs roughly three times its size in processes.
+ */
+const PARALLELISM_PHASES = [
+  {
+    field: "maxWorktreeCreation",
+    label: "worktree creation",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION,
+    // `git worktree add` on the bare repository's one client.
+    concurrentProcesses: cappedByOneClient,
+  },
+  {
+    field: "maxWorktreeUpdates",
+    label: "worktree updates",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES,
+    // Each fast-forward runs on its own worktree's client, one command at a time.
+    concurrentProcesses: asConfigured,
+  },
+  {
+    field: "maxWorktreeRemoval",
+    label: "worktree removal",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL,
+    // `git worktree remove` on the bare repository's one client.
+    concurrentProcesses: cappedByOneClient,
+  },
+  {
+    field: "maxStatusChecks",
+    label: "status checks",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS,
+    // Enforced exactly by WorktreeStatusService's shared process budget.
+    concurrentProcesses: asConfigured,
+  },
+  {
+    field: "maxBranchFetches",
+    label: "branch fetches",
+    default: DEFAULT_CONFIG.PARALLELISM.MAX_BRANCH_FETCHES,
+    concurrentProcesses: notCounted,
+  },
+] as const satisfies ReadonlyArray<{
+  field: keyof ParallelismConfig;
+  label: string;
+  default: number;
+  concurrentProcesses: (configured: number) => number;
+}>;
+
+/** Every parallelism setting that must be a positive integer. */
+const PARALLELISM_INT_FIELDS: ReadonlyArray<keyof ParallelismConfig> = [
+  "maxRepositories",
+  ...PARALLELISM_PHASES.map((phase) => phase.field),
+];
+
+export interface ParallelismPeak {
+  /** Git processes the widest phase of a single repository runs at once. */
+  perRepository: number;
+  /** `maxRepositories` × `perRepository`: the whole run's peak. */
+  total: number;
+  /** The setting that decides `perRepository`, and how it reads in a message. */
+  widestPhase: { field: keyof ParallelismConfig; label: string; value: number };
+}
+
+/**
+ * Peak concurrent git processes a parallelism config allows. The shipped
+ * defaults come to 2 repositories × 20 status checks = 40.
+ */
+export function computeParallelismPeak(parallelism: ParallelismConfig = {}): ParallelismPeak {
+  const phases = PARALLELISM_PHASES.map((phase) => ({
+    field: phase.field,
+    label: phase.label,
+    value: phase.concurrentProcesses(parallelism[phase.field] ?? phase.default),
+  }));
+  const widestPhase = phases.reduce((widest, phase) => (phase.value > widest.value ? phase : widest));
+  const maxRepositories = parallelism.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+
+  return {
+    perRepository: widestPhase.value,
+    total: maxRepositories * widestPhase.value,
+    widestPhase,
+  };
+}
+
+/**
+ * Fields a clone-mode repository rejects, on the entry or inherited from
+ * `defaults`. Exported so the shipped example config's clone-mode section can
+ * be checked against it: that comment enumerates these names, and it silently
+ * fell behind when `trash` was added here.
+ */
+export const CLONE_MODE_CONFLICTING_FIELDS = [
   "branchInclude",
   "branchExclude",
   "branchMaxAge",
@@ -27,7 +176,268 @@ const CLONE_MODE_CONFLICTING_FIELDS = [
   "trash",
 ] as const satisfies readonly (keyof RepositoryConfig)[];
 
+/**
+ * A config written in ESM but parsed as CommonJS (a `.cjs` target, or a `.js`
+ * one whose nearest package.json says `"type": "commonjs"`) surfaces only as a
+ * bare `SyntaxError: Unexpected token 'export'`, which names neither the file
+ * nor the fix. Appended to — never substituted for — the original message.
+ */
+function moduleSyntaxHint(absolutePath: string, error: unknown): string {
+  if ((error as Error | null)?.name !== "SyntaxError") return "";
+  if (!/Unexpected token '?export'?/.test((error as Error).message)) return "";
+  return (
+    ` (hint: '${path.basename(absolutePath)}' uses ESM syntax but Node parsed it as CommonJS — ` +
+    `add "type": "module" to the nearest package.json, or use .mjs/.cjs; a .cjs config must use module.exports)`
+  );
+}
+
+/**
+ * An ESM frame names the module by URL. `fileURLToPath` is what turns that back
+ * into something the person can open: it un-escapes the path and, because it
+ * reads only the pathname, it drops the `?t=` cache-buster `importConfigModule`
+ * appends — which otherwise travels into the frame. CommonJS frames are already
+ * plain paths.
+ */
+function sourcePathFromFrame(file: string): string {
+  if (!file.startsWith("file://")) return file;
+  try {
+    return fileURLToPath(file);
+  } catch {
+    return file;
+  }
+}
+
+/**
+ * Node's decoration of a CommonJS compile failure: the resolved filename and a
+ * line, alone on the stack's first line. Anchored on an absolute path — a drive
+ * letter, a separator, or a UNC root — because that is what `module.filename`
+ * always is, and because the alternative first line is `Name: message`, which
+ * can end in `:<digits>` too. Everything between is taken as the path, so a
+ * directory with a space or a bracket in its name still parses.
+ */
+const CJS_COMPILE_DECORATION = /^((?:[A-Za-z]:[\\/]|[/\\]).*):(\d+)$/;
+
+/**
+ * One stack frame, split into what it says about *where*. The parenthesised
+ * form (`at fn (<location>)`) is tried first and opens at the frame's *first*
+ * `(`, not its last: a path such as `/home/me/proj (old)/config.cjs` contains
+ * brackets of its own, and a greedy match hands back `old)/config.cjs`. The
+ * bare form (`at <location>`, optionally `at async <location>`) is the rest.
+ */
+const STACK_FRAME = /^\s+at (?:.*?\((.*)\)|(?:async )?(.*))$/;
+
+/** `<file>:<line>:<column>`, split at the last two colons so the file may hold any others. */
+const FRAME_POSITION = /^(.*):(\d+):(\d+)$/;
+
+/**
+ * Where evaluating a config actually went wrong, as `file:line[:col]`, read out
+ * of the error's stack. Empty when the stack names no position.
+ *
+ * Two shapes, both measured identically on Node 20, 22 and 24. A CommonJS
+ * compile failure arrives already decorated: Node prepends `<file>:<line>`, the
+ * offending source line and a caret *ahead of* the `SyntaxError:` header, and
+ * that prefix is the only place the position appears. Anything thrown while a
+ * module evaluates — a `ReferenceError` in the config, a throw from a module it
+ * imports — carries an ordinary frame instead, and the first frame outside
+ * Node's own internals is it.
+ *
+ * A module that fails to *parse* under the ESM loader carries neither: V8 keeps
+ * that position on its message object, which Node prints when the exception is
+ * fatal and discards once it is caught. Those report the file alone, on every
+ * Node version tested.
+ */
+function stackPosition(error: unknown): string {
+  const stack = (error as { stack?: unknown } | null | undefined)?.stack;
+  if (typeof stack !== "string") return "";
+
+  const lines = stack.split("\n");
+  const decorated = CJS_COMPILE_DECORATION.exec(lines[0] ?? "");
+  if (decorated) return `${decorated[1]}:${decorated[2]}`;
+
+  for (const line of lines) {
+    const frame = STACK_FRAME.exec(line);
+    if (!frame) continue;
+    const position = FRAME_POSITION.exec(frame[1] ?? frame[2] ?? "");
+    // `node:` is Node's own code and `data:` is the reload worker's bootstrap —
+    // CONFIG_EVAL_WORKER_SOURCE, percent-encoded into a URL a whole screen wide.
+    // Reporting either as the place to look would be worse than saying nothing.
+    if (!position || position[1].startsWith("node:") || position[1].startsWith("data:")) continue;
+    return `${sourcePathFromFrame(position[1])}:${position[2]}:${position[3]}`;
+  }
+  return "";
+}
+
+/**
+ * Names the file a load failure came from, so `Unexpected token ']'` stops
+ * being the whole report. The position is appended when the stack carries one,
+ * and the config path is named either way — an error thrown by a module the
+ * config imports points somewhere else entirely, and both halves matter then.
+ */
+function configErrorLocation(absolutePath: string, error: unknown): string {
+  const position = stackPosition(error);
+  if (position === "") return ` (${absolutePath})`;
+  return position.startsWith(`${absolutePath}:`) ? ` (${position})` : ` (${absolutePath}, at ${position})`;
+}
+
+/**
+ * Config paths this *process* has already evaluated in its own module
+ * registry — the state that makes a second load of the same path a *reload*.
+ *
+ * It is module-level rather than per-instance on purpose, and that is load
+ * bearing rather than tidiness: the thing being tracked is Node's registry,
+ * which is per process, while `ConfigLoaderService` is not. `handleReload`
+ * constructs a brand new loader on every `r`, and so does every CLI command,
+ * so a per-instance Set would see a first load every single time and reload
+ * in-process — which is the exact staleness this whole path exists to remove.
+ * (`RepositoryContext` is the one holder of a long-lived loader, so it alone
+ * would have worked either way.) Pinned by "a reload through a second
+ * ConfigLoaderService still re-reads an imported module" in
+ * config-loader.esm-reload.test.ts.
+ */
+const configPathsEvaluatedInProcess = new Set<string>();
+
+/**
+ * Bootstrap for the worker that re-evaluates a config on reload.
+ *
+ * The point of the worker is its *empty* module registry. Appending `?t=` to
+ * the config's own URL — which is all an in-process reload can do — busts the
+ * config file and nothing else: the modules it pulls in with `import`,
+ * `await import()` or `createRequire()` keep their original specifiers, stay
+ * in the registry, and hand back the exports they were first evaluated with.
+ * A worker thread starts with its own registry, so the whole transitive graph
+ * is read from disk again. (It also un-breaks a `.js` config that resolves as
+ * CommonJS: Node's ESM→CJS bridge ignores the query string entirely, so those
+ * did not reload even at the top level.)
+ *
+ * Carried to the worker as a `data:` URL rather than `{ eval: true }`, which
+ * would make the module system of this snippet depend on where the process
+ * was started: an eval'd worker is classified like `node -e`, so running
+ * sync-worktrees from a directory whose package.json says `"type": "module"`
+ * turned a `require` here into "require is not defined in ES module scope".
+ * A `data:text/javascript` URL is always a module, on every Node version and
+ * from every working directory.
+ */
+const CONFIG_EVAL_WORKER_SOURCE = `
+import { parentPort, workerData } from "node:worker_threads";
+import { pathToFileURL } from "node:url";
+
+// Assigned rather than passed as the Worker's \`argv\` option, which only
+// appends: a \`data:\` URL worker has no script-path slot, so appending
+// \`process.argv.slice(2)\` leaves \`process.argv\` one entry short and a config
+// reading \`process.argv.slice(2)\` — the idiomatic spelling — sees its first
+// flag eaten. Copying the main thread's array verbatim is exact on every Node
+// version, whatever layout the option would have produced.
+process.argv = workerData.argv;
+
+const describe = (error) => ({
+  name: error && error.name ? String(error.name) : "Error",
+  message: error && error.message ? String(error.message) : String(error),
+  stack: error && error.stack ? String(error.stack) : undefined,
+  code: error && typeof error.code === "string" ? error.code : undefined,
+});
+
+await (async () => {
+  let config;
+  try {
+    const url = pathToFileURL(workerData.configPath);
+    url.searchParams.set("t", String(workerData.token));
+    const configModule = await import(url.href);
+    config = configModule.default;
+  } catch (error) {
+    parentPort.postMessage({ ok: false, ...describe(error) });
+    return;
+  }
+  try {
+    parentPort.postMessage({ ok: true, config });
+  } catch (error) {
+    parentPort.postMessage({ ok: false, uncloneable: true, ...describe(error) });
+  }
+})();
+`;
+
+type ConfigEvalResult =
+  | { ok: true; config: unknown }
+  | { ok: false; uncloneable?: boolean; name: string; message: string; stack?: string; code?: string };
+
+/**
+ * The exported value crosses back on the structured clone algorithm, not
+ * `JSON.stringify`, so `undefined` (distinct from an absent key, which
+ * `resolveRepositoryConfig` treats differently), `NaN`, `Infinity`, `-0`,
+ * `Date`, `RegExp`, `BigInt`, `Map` and `Set` all survive intact. What does
+ * not survive is anything structured clone refuses — a function, a symbol, a
+ * `WeakMap`, a `Proxy` — and class instances arrive as plain objects. No field
+ * of the public config surface is function-valued (`hooks.onBranchCreated`,
+ * `branchInclude` and `branchExclude` are all `string[]`), so this is reported
+ * as an error rather than papered over: a silent fallback here would hand back
+ * the stale config this whole path exists to avoid.
+ */
+function workerEvalError(result: Extract<ConfigEvalResult, { ok: false }>, absolutePath: string): Error {
+  if (result.uncloneable) {
+    return new Error(
+      `reloading '${path.basename(absolutePath)}' re-evaluates it in a worker thread so that the modules it imports ` +
+        `are read again, and its exported value could not be transferred out of that thread: ${result.message} ` +
+        `Export plain data (strings, numbers, booleans, arrays, objects) from a config file`,
+    );
+  }
+  // Rebuilt rather than re-thrown: an Error does not cross a thread boundary
+  // as itself. `name` is carried over because `moduleSyntaxHint` keys off it.
+  const error = new Error(result.message) as Error & { code?: string };
+  error.name = result.name;
+  if (result.stack) error.stack = result.stack;
+  if (result.code) error.code = result.code;
+  return error;
+}
+
+function evaluateConfigInWorker(absolutePath: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(CONFIG_EVAL_WORKER_SOURCE)}`), {
+      // `argv` travels in workerData, not in the Worker's own `argv` option:
+      // a config that branches on CLI flags must read exactly the argv it read
+      // when it was evaluated on the main thread, and the option can only
+      // append to an array the worker built for itself.
+      workerData: { configPath: absolutePath, token: Date.now(), argv: process.argv },
+    });
+
+    let settled = false;
+    const settle = (deliver: () => void): void => {
+      if (settled) return;
+      settled = true;
+      void worker.terminate();
+      deliver();
+    };
+
+    worker.once("message", (result: ConfigEvalResult) => {
+      settle(() => {
+        if (result.ok) {
+          resolve(result.config);
+        } else {
+          reject(workerEvalError(result, absolutePath));
+        }
+      });
+    });
+    worker.once("error", (error: Error) => settle(() => reject(error)));
+    worker.once("exit", (code) =>
+      settle(() => reject(new Error(`config evaluation worker exited with code ${code} without returning a config`))),
+    );
+  });
+}
+
 export class ConfigLoaderService {
+  private readonly logger?: Logger;
+
+  /** Sink for the loader's warnings, and only those; unset it falls through to `console.warn`. Both are stderr. */
+  constructor(options: { logger?: Logger } = {}) {
+    this.logger = options.logger;
+  }
+
+  private warn(message: string): void {
+    if (this.logger) {
+      this.logger.warn(message);
+    } else {
+      console.warn(message);
+    }
+  }
+
   async findConfigUpward(startDir: string): Promise<string | null> {
     let current = path.resolve(startDir);
     const root = path.parse(current).root;
@@ -53,6 +463,7 @@ export class ConfigLoaderService {
       throw new ConfigFileNotFoundError(absolutePath);
     }
 
+    let evaluated = false;
     try {
       let config: unknown;
       if (absolutePath.endsWith(".cjs")) {
@@ -60,11 +471,9 @@ export class ConfigLoaderService {
         const configModule = require(absolutePath) as { default?: unknown };
         config = configModule.default ?? configModule;
       } else {
-        const fileUrl = pathToFileURL(absolutePath);
-        fileUrl.searchParams.set("t", Date.now().toString());
-        const configModule = await import(fileUrl.href);
-        config = configModule.default;
+        config = await this.importConfigModule(absolutePath);
       }
+      evaluated = true;
 
       if (!config) {
         throw new Error("Config file must use 'export default' syntax");
@@ -77,8 +486,34 @@ export class ConfigLoaderService {
       if (error instanceof SyncWorktreesError) {
         throw error;
       }
-      throw new Error(`Failed to load config file: ${(error as Error).message}`);
+      // Only a failure from evaluating the file is located. Past that point the
+      // stack's first frame is this loader's own, and pointing the person at
+      // sync-worktrees' code for a config they have to fix is worse than saying
+      // nothing; those messages already name the offending field.
+      const where = evaluated ? "" : configErrorLocation(absolutePath, error);
+      throw new Error(
+        `Failed to load config file: ${(error as Error).message}${where}${moduleSyntaxHint(absolutePath, error)}`,
+      );
     }
+  }
+
+  /**
+   * First evaluation of a path in this process runs on the main thread, which
+   * costs nothing and keeps the exported object exactly as the config built it
+   * — that is every one-shot CLI run, every daemon start and every MCP start.
+   * Only a *re*-load pays for a worker, because only a reload has a populated
+   * module registry to escape: `r` in the TUI and repeat `load_config` calls.
+   */
+  private async importConfigModule(absolutePath: string): Promise<unknown> {
+    if (configPathsEvaluatedInProcess.has(absolutePath)) {
+      return evaluateConfigInWorker(absolutePath);
+    }
+    configPathsEvaluatedInProcess.add(absolutePath);
+
+    const fileUrl = pathToFileURL(absolutePath);
+    fileUrl.searchParams.set("t", Date.now().toString());
+    const configModule = (await import(fileUrl.href)) as { default?: unknown };
+    return configModule.default;
   }
 
   private validateConfigFile(config: unknown): asserts config is ConfigFile {
@@ -97,6 +532,7 @@ export class ConfigLoaderService {
     }
 
     const seenNames = new Set<string>();
+    const repositoryParallelism: Array<{ name: string; parallelism: ParallelismConfig }> = [];
 
     configObj.repositories.forEach((repo: unknown, index: number) => {
       if (!repo || typeof repo !== "object") {
@@ -118,10 +554,12 @@ export class ConfigLoaderService {
         throw new Error(`Repository '${repoObj.name}' must have a 'repoUrl' property`);
       }
 
-      if (!this.isValidGitUrl(repoObj.repoUrl)) {
+      if (!isValidGitUrl(repoObj.repoUrl)) {
         throw new Error(
-          `Repository '${repoObj.name}' has invalid 'repoUrl': '${repoObj.repoUrl}'. ` +
-            `Expected an HTTP(S), SSH, Git protocol URL, or a local/file path (file://, absolute filesystem path)`,
+          `Repository '${repoObj.name}' has invalid 'repoUrl': '${redactSecretsInText(repoObj.repoUrl)}'. ` +
+            `Expected an HTTP(S), SSH, Git protocol or file:// URL, an scp-style 'user@host:path/repo.git', or an ` +
+            `absolute filesystem path. All but HTTP(S) must name the repository's own path segment; an HTTP(S) ` +
+            `URL may stop at the host, but then the entry needs an explicit 'bareRepoDir'`,
         );
       }
 
@@ -156,7 +594,11 @@ export class ConfigLoaderService {
       this.validateBoolean(repoObj.updateExistingWorktrees, `Repository '${repoObj.name}' updateExistingWorktrees`);
 
       if (repoObj.retry !== undefined) {
-        this.validateRetryConfig(repoObj.retry, `Repository '${repoObj.name}' retry config`);
+        this.validateRetryConfig(
+          repoObj.retry,
+          `Repository '${repoObj.name}' retry config`,
+          `Repository '${repoObj.name}' retry`,
+        );
       }
 
       if (repoObj.filesToCopyOnBranchCreate !== undefined) {
@@ -180,6 +622,15 @@ export class ConfigLoaderService {
       }
 
       this.validateDepth(repoObj.depth, `Repository '${repoObj.name}' depth`);
+      this.validateTimeoutMs(repoObj.fetchTimeoutMs, `Repository '${repoObj.name}' fetchTimeoutMs`);
+      this.validateTimeoutMs(repoObj.cloneTimeoutMs, `Repository '${repoObj.name}' cloneTimeoutMs`);
+      repositoryParallelism.push({
+        name: repoObj.name,
+        parallelism:
+          repoObj.parallelism === undefined
+            ? {}
+            : this.parseParallelismConfig(repoObj.parallelism, `Repository '${repoObj.name}'`),
+      });
       this.validateRepositoryMode(repoObj, configObj.defaults as Record<string, unknown> | undefined);
     });
 
@@ -213,7 +664,7 @@ export class ConfigLoaderService {
         throw new Error("Invalid 'retry' in defaults");
       }
       if (defaults.retry !== undefined) {
-        this.validateRetryConfig(defaults.retry, "defaults retry config");
+        this.validateRetryConfig(defaults.retry, "defaults retry config", "defaults.retry");
       }
       if (defaults.filesToCopyOnBranchCreate !== undefined) {
         this.validateFilesToCopyConfig(defaults.filesToCopyOnBranchCreate, "defaults");
@@ -236,6 +687,8 @@ export class ConfigLoaderService {
       }
 
       this.validateDepth(defaults.depth, "defaults.depth");
+      this.validateTimeoutMs(defaults.fetchTimeoutMs, "defaults.fetchTimeoutMs");
+      this.validateTimeoutMs(defaults.cloneTimeoutMs, "defaults.cloneTimeoutMs");
 
       if (defaults.mode !== undefined && !isRepositoryMode(defaults.mode)) {
         throw new ConfigValidationError("defaults.mode", "must be 'clone' or 'worktree'");
@@ -247,18 +700,33 @@ export class ConfigLoaderService {
     }
 
     if (configObj.retry !== undefined) {
-      this.validateRetryConfig(configObj.retry, "retry config");
+      this.validateRetryConfig(configObj.retry, "retry config", "retry");
     }
 
+    let globalParallelism: ParallelismConfig = {};
     if (configObj.parallelism !== undefined) {
-      this.validateParallelismConfig(configObj.parallelism, "global");
+      globalParallelism = this.validateParallelismConfig(configObj.parallelism, "global");
     }
 
+    let defaultsParallelism: ParallelismConfig = {};
     if (configObj.defaults && typeof configObj.defaults === "object") {
       const defaults = configObj.defaults as Record<string, unknown>;
       if (defaults.parallelism !== undefined) {
-        this.validateParallelismConfig(defaults.parallelism, "defaults");
+        defaultsParallelism = this.validateParallelismConfig(defaults.parallelism, "defaults");
       }
+    }
+
+    this.validateMergedParallelismPeak(globalParallelism, defaultsParallelism, repositoryParallelism);
+
+    this.warnOnUnknownConfigKeys(configObj);
+  }
+
+  // Everything the checks above never looked at. Why it warns rather than
+  // rejects, why it runs last, and why once per load is the right number: see
+  // the header of utils/unknown-config-keys.ts, which costs no shipped bytes.
+  private warnOnUnknownConfigKeys(configObj: Record<string, unknown>): void {
+    for (const finding of collectUnknownConfigKeys(configObj)) {
+      this.warn(formatUnknownConfigKey(finding));
     }
   }
 
@@ -294,16 +762,50 @@ export class ConfigLoaderService {
     }
   }
 
+  /**
+   * `fetchTimeoutMs` / `cloneTimeoutMs`, at either level. Zero is admitted
+   * deliberately and means "no inactivity kill at all": both services gate the
+   * simple-git option on `blockMs > 0`, so a zero never reaches git as a
+   * timeout (simple-git's own plugin gates on the same thing). Negatives,
+   * fractions, NaN, Infinity and non-numbers are rejected rather than passed to
+   * `setTimeout`, where they would silently become an immediate kill.
+   */
+  private validateTimeoutMs(value: unknown, field: string): void {
+    if (value === undefined) return;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new ConfigValidationError(field, "must be a non-negative safe integer (0 disables the timeout)");
+    }
+  }
+
   private validateBoolean(value: unknown, field: string): void {
     if (value !== undefined && typeof value !== "boolean") {
       throw new ConfigValidationError(field, "must be a boolean");
     }
   }
 
+  /**
+   * `branchInclude` / `branchExclude`, at either level.
+   *
+   * An empty or whitespace-only pattern matches nothing (git refuses a branch
+   * name containing a space) while `filterBranchesByName` applies an include
+   * list on `length > 0` alone, so `branchInclude: [""]` keeps no branch and
+   * the prune phase then sees every worktree but the default branch's as
+   * unmanaged. It arrives as `(process.env.BRANCHES ?? "").split(",")` with
+   * the variable unset, which yields `[""]` rather than `[]`.
+   */
   private validateBranchPatternList(value: unknown, field: string): void {
     if (value === undefined) return;
     if (!Array.isArray(value) || value.some((pattern) => typeof pattern !== "string")) {
       throw new ConfigValidationError(field, "must be an array of strings");
+    }
+    const blankIndex = (value as string[]).findIndex((pattern) => pattern.trim() === "");
+    if (blankIndex !== -1) {
+      throw new ConfigValidationError(
+        field,
+        `must not contain empty or whitespace-only patterns (invalid at index ${blankIndex}); ` +
+          `such a pattern matches no branch, and a branchInclude matching nothing prunes every worktree. ` +
+          `Omit the field to sync every branch`,
+      );
     }
   }
 
@@ -363,7 +865,30 @@ export class ConfigLoaderService {
     }
   }
 
-  private validateRetryConfig(value: unknown, context: string): void {
+  /**
+   * A `retry` block, at any level. `context` reads inside the long-standing
+   * messages ("Invalid 'retry' in defaults"); `fieldPrefix` names the setting
+   * for the checks added below, which follow the house shape and so say which
+   * repository is at fault — the older messages never did.
+   *
+   * Every bound here is `<`-shaped and NaN fails every `<`, so each field is
+   * also tested for finiteness and the two counts for integrality. Measured
+   * against `retry()`: a NaN or Infinity `maxAttempts` throws before the first
+   * attempt, so every sync fails without trying (Infinity is not a spelling of
+   * unlimited — the string is); a NaN delay or multiplier, or an Infinity
+   * `jitterMs`, makes the computed delay non-finite and `setTimeout` floors it
+   * to 1ms, hundreds of attempts a second in place of the 1s/2s/4s backoff;
+   * `maxDelayMs: Infinity` instead removes the cap, so the doubling runs away
+   * into days between attempts; a non-finite `maxLfsRetries` never trips the
+   * LFS limit, because `lfsAttempt > NaN` is never true. `jitterMs: NaN` and
+   * `backoffMultiplier: Infinity` are harmless on their own — one is skipped
+   * by `NaN > 0`, the other only pins the delay to `maxDelayMs` — and are
+   * rejected anyway, so each field has one rule and not a list of exceptions.
+   *
+   * Fractions stay legal for the delays and the multiplier, which are
+   * continuous: only the two counts must be whole.
+   */
+  private validateRetryConfig(value: unknown, context: string, fieldPrefix: string): void {
     if (typeof value !== "object" || value === null) {
       throw new Error(context === "retry config" ? "'retry' must be an object" : `Invalid 'retry' in ${context}`);
     }
@@ -374,20 +899,32 @@ export class ConfigLoaderService {
       if (retry.maxAttempts !== "unlimited" && (typeof retry.maxAttempts !== "number" || retry.maxAttempts < 1)) {
         throw new Error("Invalid 'maxAttempts' in retry config. Must be 'unlimited' or a positive number");
       }
+      if (retry.maxAttempts !== "unlimited" && !Number.isSafeInteger(retry.maxAttempts)) {
+        throw new ConfigValidationError(`${fieldPrefix}.maxAttempts`, "must be 'unlimited' or a positive safe integer");
+      }
     }
 
     if (retry.maxLfsRetries !== undefined) {
       if (typeof retry.maxLfsRetries !== "number" || retry.maxLfsRetries < 0) {
         throw new Error("Invalid 'maxLfsRetries' in retry config. Must be a non-negative number");
       }
+      if (!Number.isSafeInteger(retry.maxLfsRetries)) {
+        throw new ConfigValidationError(`${fieldPrefix}.maxLfsRetries`, "must be a non-negative safe integer");
+      }
     }
 
     if (retry.initialDelayMs !== undefined && (typeof retry.initialDelayMs !== "number" || retry.initialDelayMs < 0)) {
       throw new Error("Invalid 'initialDelayMs' in retry config");
     }
+    if (retry.initialDelayMs !== undefined && !Number.isFinite(retry.initialDelayMs)) {
+      throw new ConfigValidationError(`${fieldPrefix}.initialDelayMs`, "must be a finite non-negative number");
+    }
 
     if (retry.maxDelayMs !== undefined && (typeof retry.maxDelayMs !== "number" || retry.maxDelayMs < 0)) {
       throw new Error("Invalid 'maxDelayMs' in retry config");
+    }
+    if (retry.maxDelayMs !== undefined && !Number.isFinite(retry.maxDelayMs)) {
+      throw new ConfigValidationError(`${fieldPrefix}.maxDelayMs`, "must be a finite non-negative number");
     }
 
     if (
@@ -396,9 +933,15 @@ export class ConfigLoaderService {
     ) {
       throw new Error("Invalid 'backoffMultiplier' in retry config");
     }
+    if (retry.backoffMultiplier !== undefined && !Number.isFinite(retry.backoffMultiplier)) {
+      throw new ConfigValidationError(`${fieldPrefix}.backoffMultiplier`, "must be a finite number of at least 1");
+    }
 
     if (retry.jitterMs !== undefined && (typeof retry.jitterMs !== "number" || retry.jitterMs < 0)) {
       throw new Error("Invalid 'jitterMs' in retry config");
+    }
+    if (retry.jitterMs !== undefined && !Number.isFinite(retry.jitterMs)) {
+      throw new ConfigValidationError(`${fieldPrefix}.jitterMs`, "must be a finite non-negative number");
     }
 
     const initialDelay = (retry.initialDelayMs as number) ?? DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS;
@@ -410,47 +953,147 @@ export class ConfigLoaderService {
     }
   }
 
-  private validateParallelismConfig(parallelism: unknown, context: string): void {
+  /**
+   * Field validation for one `parallelism` block, at any level. Returns the
+   * block as a typed object carrying only the fields it checked, so the peak
+   * arithmetic never sees a value this loop did not validate: both read the
+   * same field list.
+   *
+   * Every one of these numbers reaches `pLimit()` at the start of a sync phase,
+   * and p-limit throws `TypeError: Expected \`concurrency\` to be a number from
+   * 1 and up` for 0, a negative, a fraction, a NaN or a string — mid-sync,
+   * after the fetch, on every run, and not retryable. That is why the check is
+   * a load-time error rather than a clamp.
+   *
+   * `Number.isSafeInteger` also rejects `Infinity`, which p-limit itself allows
+   * as "unbounded". Keeping it rejected is deliberate: an unbounded phase has
+   * no peak to weigh against MAX_SAFE_TOTAL_CONCURRENT_OPS, and bounding git
+   * processes is the whole point of these settings.
+   */
+  private parseParallelismConfig(parallelism: unknown, context: string): ParallelismConfig {
     if (typeof parallelism !== "object" || parallelism === null) {
       throw new Error(`'parallelism' in ${context} must be an object`);
     }
 
     const config = parallelism as Record<string, unknown>;
 
-    const positiveIntFields = [
-      "maxRepositories",
-      "maxWorktreeCreation",
-      "maxWorktreeUpdates",
-      "maxWorktreeRemoval",
-      "maxStatusChecks",
-      "maxBranchFetches",
-    ] as const;
-
-    for (const field of positiveIntFields) {
+    const validated: ParallelismConfig = {};
+    for (const field of PARALLELISM_INT_FIELDS) {
       const value = config[field];
-      if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)) {
+      if (value === undefined) continue;
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
         throw new ConfigValidationError(`${context} parallelism.${field}`, "must be a positive integer");
       }
+      validated[field] = value;
     }
 
-    const maxRepos = (config.maxRepositories as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
-    const maxCreation = (config.maxWorktreeCreation as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_CREATION;
-    const maxUpdates = (config.maxWorktreeUpdates as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES;
-    const maxRemoval = (config.maxWorktreeRemoval as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL;
-    const maxStatus = (config.maxStatusChecks as number) ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+    return validated;
+  }
 
-    const maxPerRepoOps = maxCreation + maxUpdates + maxRemoval + maxStatus;
-    const totalMaxConcurrent = maxRepos * maxPerRepoOps;
+  /**
+   * One level's block, checked on its own against the built-in defaults for
+   * whatever it leaves out. Repository entries deliberately do not go through
+   * here: their block is only half a configuration (a repository that sets
+   * `maxStatusChecks` still inherits `maxRepositories` from above), so judging
+   * it in isolation would reject safe configs. They are weighed merged instead,
+   * in validateMergedParallelismPeak.
+   */
+  private validateParallelismConfig(parallelism: unknown, context: string): ParallelismConfig {
+    const validated = this.parseParallelismConfig(parallelism, context);
 
-    if (totalMaxConcurrent > DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS) {
-      const safeMaxRepos = Math.floor(DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS / maxPerRepoOps);
+    const maxRepos = validated.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+    const peak = computeParallelismPeak(validated);
+    const limit = DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS;
+
+    if (peak.total > limit) {
+      const { field, label, value } = peak.widestPhase;
+      // Both ways out of the failure, each solving for the other side: how many
+      // repositories fit at this phase width, and how wide the phase may be at
+      // this repository count. Either can come out below 1, in which case that
+      // half of the advice would be nonsense and is left out.
+      const safeMaxRepos = Math.floor(limit / peak.perRepository);
+      const safePhaseValue = Math.floor(limit / maxRepos);
+      const headroom =
+        safeMaxRepos >= 1
+          ? `With ${field} at ${value}, maximum safe maxRepositories is ${safeMaxRepos}.`
+          : `Even one repository exceeds the limit at ${field}: ${value}.`;
+      const phaseAdvice =
+        safePhaseValue >= 1 ? ` With maxRepositories at ${maxRepos}, ${field} must be ${safePhaseValue} or less.` : "";
       throw new Error(
-        `Total concurrent operations (${totalMaxConcurrent}) exceeds safe limit (${DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS}). ` +
-          `With current per-repository limits (creation: ${maxCreation}, updates: ${maxUpdates}, removal: ${maxRemoval}, status: ${maxStatus}), ` +
-          `maximum safe maxRepositories is ${safeMaxRepos}. ` +
-          `Consider reducing maxRepositories or lowering per-operation limits.`,
+        `Peak concurrent git processes (${peak.total}) exceeds safe limit (${limit}). ` +
+          `Sync phases run one after another, so the peak is ${maxRepos} ` +
+          `${maxRepos === 1 ? "repository" : "repositories"} × the widest phase ` +
+          `(${label}, ${field}: ${value}) = ${peak.total} git processes. ` +
+          `${headroom}${phaseAdvice} Consider reducing maxRepositories or lowering ${field}.`,
       );
     }
+
+    return validated;
+  }
+
+  /**
+   * The same ceiling, applied to what each repository will actually run.
+   *
+   * validateParallelismConfig only ever sees one level at a time, so nothing
+   * weighed a repository's own block — which resolveRepositoryConfig merges
+   * over the global and `defaults` ones — against `maxRepositories`, and
+   * nothing weighed the global and `defaults` blocks against each other
+   * either. This is that check, and it is additive: every message the
+   * per-level checks produce is still produced first.
+   *
+   * Only `maxRepositories` repositories sync at once and each runs its own
+   * widest phase, so the peak is the sum of the widest phases of the
+   * `maxRepositories` widest repositories — not `maxRepositories` × the single
+   * widest one, which would reject a wide entry that only ever syncs beside
+   * narrow ones (3 repositories peaking at 40/20/20 run 60 processes across two
+   * slots, not 120). With no per-repository overrides every repository merges
+   * to the same block and that sum collapses to `maxRepositories` × the widest
+   * phase, exactly what the per-level check already computes.
+   *
+   * `maxRepositories` is read global-first, the way runMultipleRepositories
+   * reads it. A repository-level `maxRepositories` is still validated as a
+   * positive integer, but it bounds nothing: nothing consumes it there.
+   */
+  private validateMergedParallelismPeak(
+    global: ParallelismConfig,
+    defaults: ParallelismConfig,
+    repositories: ReadonlyArray<{ name: string; parallelism: ParallelismConfig }>,
+  ): void {
+    const maxRepos = global.maxRepositories ?? defaults.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+
+    const peaks = repositories
+      .map((repo) => ({
+        name: repo.name,
+        peak: computeParallelismPeak({ ...global, ...defaults, ...repo.parallelism }),
+      }))
+      .sort((a, b) => b.peak.perRepository - a.peak.perRepository);
+
+    const concurrent = peaks.slice(0, maxRepos);
+    const total = concurrent.reduce((sum, repo) => sum + repo.peak.perRepository, 0);
+    const limit = DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS;
+
+    if (total <= limit) return;
+
+    // Enough of the sum to see where it comes from, without pasting fifty
+    // repositories into one error message.
+    const listed = 3;
+    const shown = concurrent
+      .slice(0, listed)
+      .map(
+        ({ name, peak }) =>
+          `'${name}' (${peak.widestPhase.label}, ${peak.widestPhase.field}: ${peak.widestPhase.value})`,
+      );
+    const rest = concurrent.length - shown.length;
+    const breakdown = rest > 0 ? `${shown.join(" + ")} + ${rest} more` : shown.join(" + ");
+    const widestField = concurrent[0].peak.widestPhase.field;
+
+    throw new Error(
+      `Peak concurrent git processes (${total}) exceeds safe limit (${limit}) once global, defaults and ` +
+        `per-repository parallelism are merged. Sync phases run one after another, so the peak is the widest ` +
+        `phase of each of the ${concurrent.length} ${concurrent.length === 1 ? "repository" : "repositories"} ` +
+        `that can sync at once (maxRepositories: ${maxRepos}): ${breakdown} = ${total} git processes. ` +
+        `Consider reducing maxRepositories or lowering ${widestField}.`,
+    );
   }
 
   private validateFilesToCopyConfig(filesToCopy: unknown, context: string): void {
@@ -459,7 +1102,7 @@ export class ConfigLoaderService {
     }
 
     for (let i = 0; i < filesToCopy.length; i++) {
-      const pattern = filesToCopy[i];
+      const pattern: unknown = filesToCopy[i];
       if (typeof pattern !== "string" || pattern.trim() === "") {
         throw new Error(
           `'filesToCopyOnBranchCreate' in ${context} must contain only non-empty strings (invalid at index ${i})`,
@@ -482,7 +1125,7 @@ export class ConfigLoaderService {
       throw new Error(`'sparseCheckout.include' in ${context} must contain at least one pattern`);
     }
     for (let i = 0; i < cfg.include.length; i++) {
-      const p = cfg.include[i];
+      const p: unknown = cfg.include[i];
       if (typeof p !== "string" || p.trim() === "") {
         throw new Error(
           `'sparseCheckout.include' in ${context} must contain only non-empty strings (invalid at index ${i})`,
@@ -495,7 +1138,7 @@ export class ConfigLoaderService {
         throw new Error(`'sparseCheckout.exclude' in ${context} must be an array`);
       }
       for (let i = 0; i < cfg.exclude.length; i++) {
-        const p = cfg.exclude[i];
+        const p: unknown = cfg.exclude[i];
         if (typeof p !== "string" || p.trim() === "") {
           throw new Error(
             `'sparseCheckout.exclude' in ${context} must contain only non-empty strings (invalid at index ${i})`,
@@ -507,6 +1150,12 @@ export class ConfigLoaderService {
     if (cfg.mode !== undefined && cfg.mode !== "cone" && cfg.mode !== "no-cone") {
       throw new Error(`'sparseCheckout.mode' in ${context} must be 'cone' or 'no-cone'`);
     }
+
+    // The update phase reads this as `!== false`, which is true for every
+    // non-boolean: the string "false" enables the skipping it was written to
+    // disable, and HEAD then stops advancing for changes outside the sparse
+    // set. Typed here so the setting cannot mean the opposite of what it says.
+    this.validateBoolean(cfg.skipUpdateWhenOutsideSparse, `${context} sparseCheckout.skipUpdateWhenOutsideSparse`);
   }
 
   private warnOnDuplicateRepoUrls(repositories: Array<Record<string, unknown>>): void {
@@ -521,8 +1170,8 @@ export class ConfigLoaderService {
     }
     for (const [url, names] of seen) {
       if (names.length > 1) {
-        console.warn(
-          `[sync-worktrees] repoUrl '${url}' appears in multiple entries (${names.join(", ")}). ` +
+        this.warn(
+          `[sync-worktrees] repoUrl '${redactRepoUrl(url)}' appears in multiple entries (${names.join(", ")}). ` +
             `Pin 'bareRepoDir' on duplicate entries to make config reorder-proof.`,
         );
       }
@@ -540,14 +1189,11 @@ export class ConfigLoaderService {
       throw new ConfigValidationError(`Repository '${repoName}' mode`, "must be 'clone' or 'worktree'");
     }
 
-    if (
-      repoObj.branch !== undefined &&
-      (typeof repoObj.branch !== "string" || (repoObj.branch as string).trim() === "")
-    ) {
+    if (repoObj.branch !== undefined && (typeof repoObj.branch !== "string" || repoObj.branch.trim() === "")) {
       throw new ConfigValidationError(`Repository '${repoName}' branch`, "must be a non-empty string");
     }
 
-    const effectiveMode = (repoMode as RepositoryMode | undefined) ?? (defaults?.mode as RepositoryMode | undefined);
+    const effectiveMode = repoMode ?? (defaults?.mode as RepositoryMode | undefined);
     if (effectiveMode !== REPOSITORY_MODES.CLONE) {
       const depthFromRepo = repoObj.depth;
       const depthFromDefaults = defaults?.depth;
@@ -599,7 +1245,7 @@ export class ConfigLoaderService {
       }
 
       for (let i = 0; i < hooksObj.onBranchCreated.length; i++) {
-        const command = hooksObj.onBranchCreated[i];
+        const command: unknown = hooksObj.onBranchCreated[i];
         if (typeof command !== "string" || command.trim() === "") {
           throw new Error(
             `'hooks.onBranchCreated' in ${context} must contain only non-empty strings (invalid at index ${i})`,
@@ -609,19 +1255,98 @@ export class ConfigLoaderService {
     }
   }
 
+  /**
+   * The on-disk directories one repository entry owns, resolved against the
+   * config file's directory. Split out of resolveRepositoryConfig so the same
+   * derivation — including the `.bare/<name>` fallback for duplicate repoUrls —
+   * answers both for the entry being resolved and for each of its siblings.
+   */
+  private resolveRepoDirs(
+    repo: RepositoryConfig,
+    defaults: Partial<Config> | undefined,
+    configDir: string | undefined,
+    allRepositories: RepositoryConfig[] | undefined,
+  ): { worktreeDir: string; bareRepoDir?: string } {
+    const mode: RepositoryMode = repo.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
+    const worktreeDir = this.resolvePath(repo.worktreeDir, configDir);
+
+    if (mode === REPOSITORY_MODES.CLONE) {
+      return { worktreeDir };
+    }
+    if (repo.bareRepoDir) {
+      return { worktreeDir, bareRepoDir: this.resolvePath(repo.bareRepoDir, configDir) };
+    }
+    if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories, defaults)) {
+      const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
+      return { worktreeDir, bareRepoDir: this.resolvePath(`${GIT_CONSTANTS.BARE_DIR_NAME}/${sanitized}`, configDir) };
+    }
+    // The only place a repository *name* is needed rather than a usable remote.
+    // `https://git.example.com` — a repository served at a web root — is a URL
+    // git clones but cannot be named after, so it is refused here, where the
+    // fix is, rather than at the repoUrl check, where refusing it would block a
+    // configuration that works.
+    // An unparseable repoUrl cannot reach here — validateConfig refuses it
+    // first — so this checks only for the parse that succeeds without a name,
+    // and leaves every other outcome to getDefaultBareRepoDir exactly as before.
+    const parsed = parseGitUrl(repo.repoUrl);
+    if (parsed && parsed.repoName === null) {
+      throw new Error(
+        `Repository '${repo.name}' needs an explicit 'bareRepoDir': no directory name can be derived from ` +
+          `'${redactSecretsInText(repo.repoUrl)}', which has no repository path segment`,
+      );
+    }
+    return { worktreeDir, bareRepoDir: this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir) };
+  }
+
+  /**
+   * Every directory the config file hands to a repository, this entry's own
+   * included. See Config.__configuredRepoDirs for what reads it.
+   *
+   * A sibling whose own resolution throws (a name that cannot be made into a
+   * path segment) is skipped rather than allowed to fail this entry: the throw
+   * still happens, unchanged, when that sibling's turn comes, and until then a
+   * missing exclusion is the safer failure than a misattributed error.
+   */
+  private collectConfiguredRepoDirs(
+    repo: RepositoryConfig,
+    ownDirs: { worktreeDir: string; bareRepoDir?: string },
+    defaults: Partial<Config> | undefined,
+    configDir: string | undefined,
+    allRepositories: RepositoryConfig[] | undefined,
+  ): string[] {
+    const dirs = new Set<string>([ownDirs.worktreeDir]);
+    if (ownDirs.bareRepoDir) dirs.add(ownDirs.bareRepoDir);
+
+    for (const sibling of allRepositories ?? []) {
+      if (sibling === repo) continue;
+      try {
+        const siblingDirs = this.resolveRepoDirs(sibling, defaults, configDir, allRepositories);
+        dirs.add(siblingDirs.worktreeDir);
+        if (siblingDirs.bareRepoDir) dirs.add(siblingDirs.bareRepoDir);
+      } catch {
+        // Left to the sibling's own resolveRepositoryConfig call.
+      }
+    }
+
+    return Array.from(dirs);
+  }
+
   resolveRepositoryConfig(
     repo: RepositoryConfig,
     defaults?: Partial<Config>,
     configDir?: string,
     globalRetry?: Config["retry"],
     allRepositories?: RepositoryConfig[],
+    globalParallelism?: Config["parallelism"],
   ): RepositoryConfig {
     const mode: RepositoryMode = repo.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
+
+    const ownDirs = this.resolveRepoDirs(repo, defaults, configDir, allRepositories);
 
     const resolved: RepositoryConfig = {
       name: repo.name,
       repoUrl: repo.repoUrl,
-      worktreeDir: this.resolvePath(repo.worktreeDir, configDir),
+      worktreeDir: ownDirs.worktreeDir,
       cronSchedule: repo.cronSchedule ?? defaults?.cronSchedule ?? DEFAULT_CONFIG.CRON_SCHEDULE,
       runOnce: defaults?.runOnce ?? false,
       debug: repo.debug ?? defaults?.debug,
@@ -632,6 +1357,8 @@ export class ConfigLoaderService {
       resolved.__configFileDir = configDir;
     }
 
+    resolved.__configuredRepoDirs = this.collectConfiguredRepoDirs(repo, ownDirs, defaults, configDir, allRepositories);
+
     if (mode === REPOSITORY_MODES.CLONE) {
       if (repo.branch ?? defaults?.branch) {
         resolved.branch = repo.branch ?? defaults?.branch;
@@ -640,14 +1367,7 @@ export class ConfigLoaderService {
         resolved.depth = repo.depth ?? defaults?.depth;
       }
     } else {
-      if (repo.bareRepoDir) {
-        resolved.bareRepoDir = this.resolvePath(repo.bareRepoDir, configDir);
-      } else if (allRepositories && this.isDuplicateRepoUrl(repo, allRepositories, defaults)) {
-        const sanitized = sanitizeNameForPath(repo.name, `Repository '${repo.name}' name`);
-        resolved.bareRepoDir = this.resolvePath(`.bare/${sanitized}`, configDir);
-      } else {
-        resolved.bareRepoDir = this.resolvePath(getDefaultBareRepoDir(repo.repoUrl), configDir);
-      }
+      resolved.bareRepoDir = ownDirs.bareRepoDir;
 
       if (repo.branchMaxAge || defaults?.branchMaxAge) {
         resolved.branchMaxAge = repo.branchMaxAge ?? defaults?.branchMaxAge;
@@ -670,6 +1390,19 @@ export class ConfigLoaderService {
       resolved.skipLfs = repo.skipLfs ?? defaults?.skipLfs ?? false;
     }
 
+    // Both modes read these: GitService for the bare clone and every network
+    // command, CloneSyncService for the clone and the unshallow. Tested against
+    // `undefined` rather than for truthiness, because 0 is a real setting here
+    // ("no inactivity kill") and a truthiness test would silently discard it
+    // and fall back to the 5/15-minute defaults.
+    if (repo.fetchTimeoutMs !== undefined || defaults?.fetchTimeoutMs !== undefined) {
+      resolved.fetchTimeoutMs = repo.fetchTimeoutMs ?? defaults?.fetchTimeoutMs;
+    }
+
+    if (repo.cloneTimeoutMs !== undefined || defaults?.cloneTimeoutMs !== undefined) {
+      resolved.cloneTimeoutMs = repo.cloneTimeoutMs ?? defaults?.cloneTimeoutMs;
+    }
+
     if (repo.retry || defaults?.retry || globalRetry) {
       resolved.retry = {
         ...(globalRetry || {}),
@@ -678,8 +1411,13 @@ export class ConfigLoaderService {
       };
     }
 
-    if (repo.parallelism || defaults?.parallelism) {
+    // Top level, then defaults, then the repository — the same precedence as
+    // retry above. Without the top-level layer a `parallelism` block written
+    // where the example config shows it (and where `retry` works) reached no
+    // repository at all, so per-repo limits silently stayed at their defaults.
+    if (repo.parallelism || defaults?.parallelism || globalParallelism) {
       resolved.parallelism = {
+        ...(globalParallelism || {}),
         ...(defaults?.parallelism || {}),
         ...(repo.parallelism || {}),
       };
@@ -747,33 +1485,74 @@ export class ConfigLoaderService {
     return firstIndex !== -1 && myIndex !== -1 && myIndex !== firstIndex;
   }
 
-  detectBareRepoDirCollisions(repositories: RepositoryConfig[]): void {
-    const seen = new Map<string, { name: string; displayPath: string }>();
-    for (const repo of repositories) {
-      if (!repo.bareRepoDir) continue;
-      const key = normalizePathForCompare(repo.bareRepoDir);
-      const displayPath = path.resolve(repo.bareRepoDir);
-      const existing = seen.get(key);
-      if (existing && existing.name !== repo.name) {
-        throw new Error(
-          `Repositories '${existing.name}' and '${repo.name}' resolve to the same bareRepoDir '${displayPath}'. ` +
-            `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`,
-        );
+  /**
+   * Rejects entries whose directories collide across the config: two entries
+   * sharing a worktreeDir (either mode) or a bareRepoDir, or one entry's
+   * worktreeDir overlapping another entry's bareRepoDir. Each entry's own
+   * worktreeDir/bareRepoDir separation is checked in resolveRepositoryConfig;
+   * this is the cross-entry check. A worktreeDir nested inside another
+   * entry's worktreeDir is allowed but warned about.
+   */
+  detectPathCollisions(repositories: RepositoryConfig[]): void {
+    for (let i = 0; i < repositories.length; i++) {
+      for (let j = i + 1; j < repositories.length; j++) {
+        this.detectPathCollisionBetween(repositories[i], repositories[j]);
       }
-      seen.set(key, { name: repo.name, displayPath });
     }
   }
 
-  private isValidGitUrl(url: string): boolean {
-    // HTTP(S) URLs
-    if (/^https?:\/\/.+/.test(url)) return true;
-    // SSH URLs (git@host:path or ssh://...)
-    if (/^(ssh:\/\/|git@).+/.test(url)) return true;
-    // Git protocol
-    if (/^git:\/\/.+/.test(url)) return true;
-    // Local file paths (absolute)
-    if (/^(file:\/\/|\/|[A-Za-z]:\\)/.test(url)) return true;
-    return false;
+  private detectPathCollisionBetween(a: RepositoryConfig, b: RepositoryConfig): void {
+    if (pathsEqual(a.worktreeDir, b.worktreeDir)) {
+      throw new ConfigValidationError(
+        `Repositories '${a.name}' and '${b.name}' worktreeDir`,
+        `resolve to the same worktreeDir '${path.resolve(a.worktreeDir)}'. ` +
+          `Each repository needs its own worktreeDir; sharing one lets each sync move the other's checkouts to trash.`,
+      );
+    }
+
+    if (a.bareRepoDir && b.bareRepoDir && pathsEqual(a.bareRepoDir, b.bareRepoDir)) {
+      throw new ConfigValidationError(
+        `Repositories '${a.name}' and '${b.name}' bareRepoDir`,
+        `resolve to the same bareRepoDir '${path.resolve(a.bareRepoDir)}'. ` +
+          `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`,
+      );
+    }
+
+    this.rejectWorktreeBareOverlap(a, b);
+    this.rejectWorktreeBareOverlap(b, a);
+
+    if (isPathStrictlyInside(a.worktreeDir, b.worktreeDir)) {
+      this.warnOnNestedWorktreeDirs(a, b);
+    } else if (isPathStrictlyInside(b.worktreeDir, a.worktreeDir)) {
+      this.warnOnNestedWorktreeDirs(b, a);
+    }
+  }
+
+  // `worktreeOwner`'s worktreeDir must not sit at or under `bareOwner`'s bare
+  // repo (worktrees would land inside git's object store), and `bareOwner`'s
+  // bare repo must not sit at or under `worktreeOwner`'s worktreeDir (the
+  // sync would treat it as a stale checkout directory).
+  private rejectWorktreeBareOverlap(worktreeOwner: RepositoryConfig, bareOwner: RepositoryConfig): void {
+    if (!bareOwner.bareRepoDir) return;
+    if (
+      isPathEqualOrInside(worktreeOwner.worktreeDir, bareOwner.bareRepoDir) ||
+      isPathEqualOrInside(bareOwner.bareRepoDir, worktreeOwner.worktreeDir)
+    ) {
+      throw new ConfigValidationError(
+        `Repositories '${worktreeOwner.name}' and '${bareOwner.name}' worktreeDir/bareRepoDir`,
+        `must not overlap ('${worktreeOwner.name}' worktreeDir: ${path.resolve(worktreeOwner.worktreeDir)}, ` +
+          `'${bareOwner.name}' bareRepoDir: ${path.resolve(bareOwner.bareRepoDir)})`,
+      );
+    }
+  }
+
+  private warnOnNestedWorktreeDirs(inner: RepositoryConfig, outer: RepositoryConfig): void {
+    this.warn(
+      `[sync-worktrees] worktreeDir '${path.resolve(inner.worktreeDir)}' of repository '${inner.name}' is inside ` +
+        `worktreeDir '${path.resolve(outer.worktreeDir)}' of repository '${outer.name}'. ` +
+        `A remote branch of '${outer.name}' whose directory name matches would move '${inner.name}' to trash. ` +
+        `Give each repository its own worktreeDir.`,
+    );
   }
 
   private resolvePath(inputPath: string, baseDir?: string): string {
@@ -804,10 +1583,17 @@ export class ConfigLoaderService {
     const configDir = path.dirname(path.resolve(configPath));
 
     let repositories = configFile.repositories.map((repo) =>
-      this.resolveRepositoryConfig(repo, configFile.defaults, configDir, configFile.retry, configFile.repositories),
+      this.resolveRepositoryConfig(
+        repo,
+        configFile.defaults,
+        configDir,
+        configFile.retry,
+        configFile.repositories,
+        configFile.parallelism,
+      ),
     );
 
-    this.detectBareRepoDirCollisions(repositories);
+    this.detectPathCollisions(repositories);
 
     if (overrides?.filter) {
       repositories = this.filterRepositories(repositories, overrides.filter);

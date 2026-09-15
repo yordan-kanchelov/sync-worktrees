@@ -46,8 +46,14 @@ export interface SparseCheckoutConfig {
  * Lower values reduce resource usage but increase total sync time.
  * Higher values speed up syncs but may cause lock contention or resource exhaustion.
  *
- * Note: Total concurrent operations can be maxRepositories × per-repo limits.
- * Tune these values based on your system resources and repository count.
+ * Every limit below counts git processes. A repository's phases run one after
+ * another (create, then prune, then update; the per-branch fetch only as a
+ * fallback), so a run peaks at `maxRepositories × the widest single limit` —
+ * they are never summed. The config loader rejects a config whose peak exceeds
+ * 100; the defaults peak at 2 × 20 = 40.
+ *
+ * May be set at the top level of the config file, under `defaults`, or on a
+ * single repository; each layer overrides the one before it.
  */
 export interface ParallelismConfig {
   /** Max concurrent repositories to sync (default: 2) */
@@ -55,16 +61,43 @@ export interface ParallelismConfig {
   /**
    * Max concurrent worktree creations (default: 1).
    * WARNING: Git's worktree.lock file makes parallel creation unsafe.
-   * Only increase if you understand the race condition risks.
+   * Only increase if you understand the race condition risks. `git worktree
+   * add` runs on the bare repository's one git client, whose scheduler stops
+   * at 5, so raising this far above 5 mostly does not widen the phase -- each
+   * creation also runs a few commands on the new worktree's own client, so the
+   * phase grows a little past 5 rather than stopping dead there.
    */
   maxWorktreeCreation?: number;
   /** Max concurrent worktree updates (default: 3) */
   maxWorktreeUpdates?: number;
-  /** Max concurrent worktree removals (default: 3) */
+  /**
+   * Max concurrent worktree removals (default: 3). `git worktree remove` runs
+   * on the bare repository's one git client, whose scheduler stops at 5, so
+   * raising this far above 5 mostly does not widen the phase -- each removal
+   * also runs a few commands on the worktree's own client.
+   */
   maxWorktreeRemoval?: number;
-  /** Max concurrent status checks (default: 20) */
+  /**
+   * Max concurrent git processes spent on read-only status probes (default: 20).
+   *
+   * One status check of a worktree runs up to nine git commands (`status`,
+   * `branch`, `branch -r`, `stash list` and `submodule status` at once, then up
+   * to four `rev-parse`/`rev-list` probes). They share this one budget across
+   * all worktrees, so it is a ceiling on git processes, not on worktrees in
+   * flight.
+   *
+   * Git's own children are extra: `git submodule status` runs a helper script
+   * and a child per submodule, measured on git 2.43 at ~1.5 git processes and
+   * ~3 processes in total per call on an eight-submodule superproject.
+   */
   maxStatusChecks?: number;
-  /** Max concurrent per-branch fetches when falling back from bulk fetch (default: 3) */
+  /**
+   * Max concurrent per-branch fetches when falling back from bulk fetch
+   * (default: 3). Every fetch goes through the anchor worktree's one git
+   * client, whose scheduler stops at 5, so values above 5 have no effect. This
+   * fallback is left out of the configured peak entirely; see
+   * PARALLELISM_PHASES for why, and for the hole that leaves.
+   */
   maxBranchFetches?: number;
 }
 
@@ -81,10 +114,14 @@ export interface MaintenanceConfig {
    * When true, run `git gc --prune=now` instead of plain `git gc`. This prunes
    * recently-unreachable objects immediately, bypassing Git's default 2-week
    * grace period. Off by default — only enable for explicit aggressive cleanup.
+   * It also takes force clean's gc down to `--prune=now` from the grace window
+   * it otherwise uses.
    *
    * Hazard: the repo lock only serializes sync-worktrees processes. Plain git
    * commands run concurrently by you or your IDE can have objects written but
    * not yet ref-anchored; `--prune=now` deletes those with no grace window.
+   * Every worktree writes into the same object store, so this covers work in
+   * any of them, not just the one you are looking at.
    */
   aggressive?: boolean;
 }
@@ -138,10 +175,33 @@ export interface SyncOutcome {
   durationMs?: number;
 }
 
-export type SyncResult =
-  | { started: true; outcome: SyncOutcome }
+/**
+ * The cross-process repository lock could not be taken for a reason other
+ * than contention: the lock directory or lock file could not be prepared or
+ * locked (ENOTDIR, EACCES, EROFS, ENOSPC, ...). Nothing else holds the lock;
+ * this process simply cannot take it, so the operation did not run.
+ */
+export interface RepoLockUnavailable {
+  reason: "lock_unavailable";
+  /** Lock directory or lock file that could not be prepared or locked. */
+  path: string;
+  /** errno code reported by the OS, when there was one. */
+  code?: string;
+  /** Underlying error message. */
+  error: string;
+}
+
+/**
+ * Why a repository operation did not start. `in_progress` and `locked` are
+ * contention (another operation or process is working on the repository) and
+ * read as skips; `lock_unavailable` is an infrastructure failure of this run.
+ */
+export type RepoOperationNotStarted =
   | { started: false; reason: "in_progress" }
-  | { started: false; reason: "locked" };
+  | { started: false; reason: "locked" }
+  | ({ started: false } & RepoLockUnavailable);
+
+export type SyncResult = { started: true; outcome: SyncOutcome } | RepoOperationNotStarted;
 
 export interface Config {
   repoUrl: string;
@@ -193,10 +253,68 @@ export interface Config {
   branch?: string;
   /**
    * Shallow clone depth for config-file clone-mode repositories. Maps to
-   * `git clone --single-branch --no-tags --depth <N>` on initial clone and
-   * keeps shallow sync fetches for the tracked branch at the configured depth.
+   * `git clone --single-branch --no-tags --depth <N>` on the initial clone.
+   *
+   * Routine sync fetches keep a `--depth` cap — without one, a remote tip that
+   * is not a descendant of the clone's tip (a force-push, a rebase) costs the
+   * new tip's whole ancestry, because a shallow clone has no ancestors to
+   * offer the server as `have`s — but the cap is ratcheted to
+   * `max(depth, the window the clone already holds under origin/<branch>)`, so
+   * it can never ask for a shorter window than the ref it caps holds.
+   * `git fetch --depth N` re-applies N to the ref it fetches rather than
+   * capping at it, so this value passed verbatim cut the clone back to it on
+   * every tick and made each remote advance unclassifiable.
+   *
+   * Both are depths in git's unit, counted from the ref the fetch re-applies
+   * them to: `--depth N` keeps every commit within N parent steps of the
+   * fetched tip, so one level of a merge-built history holds several commits.
+   * The clone is measured the same way — a local
+   * `git rev-list --topo-order --parents refs/remotes/origin/<branch>` walk —
+   * rather than counted in commits, which is the larger number and would push
+   * the boundary deeper every tick until nothing was bounded. The walk starts
+   * at the remote-tracking tip and not at HEAD because that is the ref
+   * `--depth` is re-applied from; a tick that fetches without merging (dirty
+   * worktree, unpushed commits, a divergence) leaves HEAD behind it, and a cap
+   * measured there shortens the clone instead of holding it. From the fetched
+   * ref the cap is a fixed point: the window a `--depth D` fetch produced
+   * measures back as D. HEAD is the fallback only for a first sync, before the
+   * remote-tracking ref exists, and a non-shallow clone gets no `--depth`.
+   *
+   * Editing this value reaches the sync path, asymmetrically. Raising it raises
+   * the cap, so the next sync fetch deepens a shorter clone up to the new value
+   * — and shrinks the deepen budget at the same time, because only targets
+   * above `depth` are used: at 1000 or more there is no budget left, and an
+   * unclassifiable clone can then only be skipped. Lowering it cannot shorten
+   * an existing clone through the sync fetch. Two other fetches do re-apply it
+   * verbatim: the in-sync deepen budget (`--depth 50/200/1000`), and the fetch
+   * used when switching the clone to another branch or creating a branch from a
+   * base branch — that one re-applies this value to whatever ref it names,
+   * often the tracked branch itself since the wizard offers it as a base, and
+   * because the shallow boundary is repository-wide it can re-cut the clone
+   * back to this depth or deepen it to a raised one. Removing `depth` is the
+   * one edit that predictably changes an existing clone: the next sync
+   * unshallows it. README.md has the measurements behind all of this.
    */
   depth?: number;
+  /**
+   * Inactivity timeout (ms) for the git commands that talk to the remote:
+   * `fetch`, `push`, `ls-remote` and `remote set-head`. Triggers when no
+   * stdout/stderr data arrives within the window, killing the command.
+   * Local commands (worktree add, merge, checkout, status, ...) never carry
+   * it — they are legitimately silent while a large checkout runs. The one
+   * fetch it does not cover is the unshallow, which is sized by
+   * cloneTimeoutMs instead.
+   * Default: 300_000 (5 min). Set 0 to disable.
+   */
+  fetchTimeoutMs?: number;
+  /**
+   * Inactivity timeout (ms) for `git clone` and for the `fetch --unshallow`
+   * that pulls a clone-mode repository's full history once `depth` is removed
+   * — clone-sized work reached through a fetch. Larger than fetch because
+   * server-side pack resolution can be silent for several minutes on big repos.
+   * Default: 900_000 (15 min). Set 0 to disable.
+   */
+  cloneTimeoutMs?: number;
   /**
    * Internal: directory of the loaded config file. Used to anchor the lock
    * location for clone-mode repos. Populated by ConfigLoaderService — not
@@ -204,17 +322,19 @@ export interface Config {
    */
   __configFileDir?: string;
   /**
-   * Inactivity timeout (ms) for fetch/standard git operations.
-   * Triggers when no stdout/stderr data arrives within window.
-   * Default: 300_000 (5 min). Set 0 to disable.
+   * Internal: the resolved worktreeDir (and bareRepoDir, in worktree mode) of
+   * every repository in the same config file, this one included. Populated by
+   * ConfigLoaderService.resolveRepositoryConfig when it is given the full
+   * repository list — not a user-facing field.
+   *
+   * Its one consumer is the `filesToCopyOnBranchCreate` expansion, which globs
+   * the config file's directory and must not read out of another repository's
+   * checkout; see FileCopyOptions.excludeDirs. A config the loader cannot see
+   * the whole of (a hand-built Config, a single repository resolved on its own)
+   * leaves this unset, and the copy falls back to excluding the destination and
+   * this repository's own directories, plus the name-based defaults.
    */
-  fetchTimeoutMs?: number;
-  /**
-   * Inactivity timeout (ms) for `git clone`. Larger than fetch because
-   * server-side pack resolution can be silent for several minutes on big repos.
-   * Default: 900_000 (15 min). Set 0 to disable.
-   */
-  cloneTimeoutMs?: number;
+  __configuredRepoDirs?: string[];
 }
 
 export interface RepositoryConfig extends Config {
@@ -283,7 +403,50 @@ export interface DivergedDirectoryInfo {
   keepRef?: string;
 }
 
-export interface ForceCleanPreview {
+/**
+ * What one batch `--dropAllKeepRefs` run did. Per-ref best effort, like the
+ * force-clean loop it mirrors: a ref that could not be deleted is reported and
+ * the rest still go.
+ */
+export interface KeepRefDropResult {
+  deleted: number;
+  /**
+   * Full ref names left alone because a `.diverged/` directory still relies on
+   * them — dropping those would leave the directory with dead recovery
+   * instructions.
+   */
+  retained: string[];
+  /** `<ref>: <message>` for every ref git refused to delete. */
+  errors: string[];
+}
+
+/** Outcome of deleting one named trash entry ahead of its expiry. */
+export interface TrashPurgeResult {
+  /** False when the container survived — `errors` says why, and the entry stays listed. */
+  deleted: boolean;
+  /**
+   * Permanent `refs/sync-worktrees/keep/<id>` refs minted before the payload
+   * was deleted, for an entry whose commits were on no remote. Empty is the
+   * normal case; a non-empty list is where the commits went.
+   */
+  keepRefsMinted: string[];
+  errors: string[];
+}
+
+/**
+ * The exact set a force-clean confirmation refers to. A preview is taken
+ * outside the repo mutex and confirmed by a human an unbounded time later, so
+ * the counts on screen are only a summary of these names — the purge deletes
+ * these and nothing else.
+ */
+export interface ForceCleanSelection {
+  /** Trash entry ids (`TrashManifest.id`) the preview counted. */
+  trashEntryIds: string[];
+  /** Full recovery ref names (`refs/.../keep/<name>`) the preview counted. */
+  keepRefNames: string[];
+}
+
+export interface ForceCleanPreview extends ForceCleanSelection {
   trashEntries: number;
   trashBytes: number;
   unknownTrashSizes: number;
@@ -291,12 +454,29 @@ export interface ForceCleanPreview {
   keepRefs: number;
 }
 
-export interface ForceCleanResult extends ForceCleanPreview {
+/**
+ * Deliberately NOT a {@link ForceCleanSelection}. A result's counts describe
+ * what is left AFTER the purge, so its entry ids would name the survivors —
+ * exactly what the run was asked to spare. Inheriting the selection fields
+ * would let `forceClean(lastResult)` type-check and destroy them.
+ */
+export interface ForceCleanResult extends Omit<ForceCleanPreview, keyof ForceCleanSelection> {
   trashDeleted: number;
   keepRefsDeleted: number;
   /** Recovery refs left alone because a `.diverged/` directory still relies on them. */
   keepRefsRetained: number;
+  /** Trash entries present at purge time but absent from the confirmed selection. */
+  skippedNewEntries: number;
+  /** Recovery refs present at purge time but absent from the confirmed selection. */
+  skippedNewKeepRefs: number;
   gcSucceeded: boolean;
+  /**
+   * True when the gc was deliberately not run because a git command was in
+   * flight, or an operation left half-finished, in a checkout sharing the
+   * object store. `errors` names what was found. Distinct from
+   * `gcSucceeded: false`, which means the gc ran and failed.
+   */
+  gcSkipped: boolean;
   errors: string[];
 }
 
@@ -305,6 +485,10 @@ export interface ForceCleanRepositoryPreview {
   repoName: string;
   preview?: ForceCleanPreview;
   error?: string;
+}
+
+export interface ForceCleanRepositorySelection extends ForceCleanSelection {
+  repoIndex: number;
 }
 
 export interface ForceCleanRepositoryResult {
@@ -333,6 +517,10 @@ interface SyncWorktreesCommonConfigFields {
   hooks?: SyncWorktreesHooksConfig;
   sparseCheckout?: SyncWorktreesSparseCheckoutConfig;
   maintenance?: SyncWorktreesMaintenanceConfig;
+  /** Inactivity timeout (ms) for remote git commands; default 300000, 0 disables. See `Config.fetchTimeoutMs`. */
+  fetchTimeoutMs?: number;
+  /** Inactivity timeout (ms) for clone-sized git commands; default 900000, 0 disables. See `Config.cloneTimeoutMs`. */
+  cloneTimeoutMs?: number;
 }
 
 interface SyncWorktreesRepositoryBase extends SyncWorktreesCommonConfigFields {

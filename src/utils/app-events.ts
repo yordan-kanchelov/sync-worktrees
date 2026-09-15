@@ -30,12 +30,12 @@ export class AppEventEmitter {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());
     }
-    this.listeners.get(event)!.add(callback as AnyEventCallback);
+    this.listeners.get(event)!.add(callback);
 
     return () => {
       const set = this.listeners.get(event);
       if (set) {
-        set.delete(callback as AnyEventCallback);
+        set.delete(callback);
         if (set.size === 0) {
           this.listeners.delete(event);
         }

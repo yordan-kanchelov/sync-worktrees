@@ -11,10 +11,16 @@ import {
   handleSync,
   handleUpdateWorktree,
 } from "../handlers";
+import { syncOutputSchema } from "../output-schemas";
 import { formatErrorResponse } from "../utils";
+import { createMockLogger } from "../../__tests__/test-utils";
+import { PathResolutionService } from "../../services/path-resolution.service";
+import { makeGitProgressHandler } from "../../utils/git-progress";
 
 import type { Capabilities, DiscoveredRepoContext, RepositoryContext } from "../context";
+import type { ProgressEvent } from "../../services/progress-emitter";
 import type { CallToolResult } from "@modelcontextprotocol/server";
+import type { SimpleGitProgressEvent } from "simple-git";
 
 async function invoke<T>(
   handler: (ctx: RepositoryContext, params: T, handlerContext?: any) => Promise<CallToolResult>,
@@ -31,8 +37,24 @@ async function invoke<T>(
 vi.mock("simple-git", () => ({
   default: vi.fn(() => ({
     raw: vi.fn<any>().mockRejectedValue(new Error("no upstream")),
+    env: vi.fn<any>().mockReturnThis(),
   })),
 }));
+
+function errno(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(code), { code });
+}
+
+// create_worktree probes its target path on disk (fs.access via probePathExists).
+// The fake /repo/worktrees tree never exists, so default to ENOENT and let the
+// target-path tests override it once per call.
+const fsMock = vi.hoisted(() => ({ access: vi.fn<any>() }));
+
+vi.mock("fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  fsMock.access.mockImplementation(() => Promise.reject(errno("ENOENT")));
+  return { ...actual, access: fsMock.access };
+});
 
 vi.mock("../../utils/disk-space", () => ({
   calculateDirectorySize: vi.fn().mockResolvedValue(123456),
@@ -114,6 +136,7 @@ type MockGit = {
 
 function makeCtx(opts: {
   discovered?: DiscoveredRepoContext | null;
+  baseCapabilities?: Capabilities | null;
   git?: Partial<MockGit>;
   syncInProgress?: boolean;
   loadConfigImpl?: (configPath: string) => Promise<unknown>;
@@ -135,7 +158,7 @@ function makeCtx(opts: {
     createBranch: vi.fn<any>(),
     pushBranch: vi.fn<any>(),
     addWorktree: vi.fn<any>(),
-    updateWorktree: vi.fn<any>(),
+    updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
     getDefaultBranch: vi.fn<any>().mockReturnValue("main"),
     getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
     ...opts.git,
@@ -173,6 +196,9 @@ function makeCtx(opts: {
   const ctx = {
     detectFromPath: vi.fn<any>().mockResolvedValue(opts.discovered ?? makeDiscovered()),
     getDiscoveredContext: vi.fn<any>().mockReturnValue(opts.discovered ?? makeDiscovered()),
+    getBaseCapabilities: vi
+      .fn<any>()
+      .mockReturnValue(opts.baseCapabilities === undefined ? makeCapabilities() : opts.baseCapabilities),
     getEntry: vi.fn<any>().mockReturnValue({
       name: opts.currentRepo ?? "test",
       service,
@@ -279,6 +305,7 @@ describe("handleListWorktrees", () => {
 
     const ctx = {
       getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getBaseCapabilities: vi.fn<any>().mockReturnValue(makeCapabilities()),
       getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
         makeDiscovered({
           repoName: String(repoName),
@@ -333,6 +360,7 @@ describe("handleListWorktrees", () => {
 
     const ctx = {
       getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getBaseCapabilities: vi.fn<any>().mockReturnValue(makeCapabilities()),
       getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
         makeDiscovered({
           repoName: String(repoName),
@@ -473,7 +501,7 @@ describe("handleCreateWorktree", () => {
     expect(body.code).toBe("SYNC_IN_PROGRESS");
   });
 
-  it("does not touch git when the repo operation lock is unavailable", async () => {
+  it("does not touch git when another process holds the repo operation lock", async () => {
     const { ctx, git, service } = makeCtx({
       git: {
         branchExists: vi.fn<any>(),
@@ -488,6 +516,34 @@ describe("handleCreateWorktree", () => {
 
     expect(body.code).toBe("SYNC_IN_PROGRESS");
     expect(git.branchExists).not.toHaveBeenCalled();
+    expect(git.createBranch).not.toHaveBeenCalled();
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("returns LOCK_UNAVAILABLE naming the path and errno when the repo lock cannot be taken", async () => {
+    const { ctx, git, service } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>(),
+        createBranch: vi.fn<any>(),
+        addWorktree: vi.fn<any>(),
+      },
+    });
+    service.runExclusiveRepoOperation.mockResolvedValueOnce({
+      started: false,
+      reason: "lock_unavailable",
+      path: "/state/sync-worktrees/locks",
+      code: "ENOTDIR",
+      error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "new-branch", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("LOCK_UNAVAILABLE");
+    expect(body.message).toContain("/state/sync-worktrees/locks");
+    expect(body.message).toContain("ENOTDIR");
+    expect(body.message).not.toMatch(/in progress/i);
     expect(git.createBranch).not.toHaveBeenCalled();
     expect(git.addWorktree).not.toHaveBeenCalled();
   });
@@ -637,11 +693,55 @@ describe("handleSync", () => {
     expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
   });
 
+  it("allows sync for a config-source entry whose discovery cache is empty", async () => {
+    const { ctx, service } = makeCtx({});
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(service.sync).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies sync from durable capabilities when the discovery cache is empty", async () => {
+    const { ctx, service } = makeCtx({
+      baseCapabilities: makeCapabilities({
+        sync: { available: false, reason: "repository is not listed in the loaded config" },
+      }),
+    });
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(body.message).toContain("not listed in the loaded config");
+    expect(ctx.getService).not.toHaveBeenCalled();
+    expect(service.sync).not.toHaveBeenCalled();
+  });
+
+  it("lets a durable denial win over a discovered context that reports sync as available", async () => {
+    const { ctx, service } = makeCtx({
+      discovered: makeDiscovered({ capabilities: makeCapabilities({ sync: { available: true } }) }),
+      baseCapabilities: makeCapabilities({ sync: { available: false, reason: "no config file loaded" } }),
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(body.message).toContain("no config file loaded");
+    expect(service.sync).not.toHaveBeenCalled();
+  });
+
   it("calls service.sync and returns duration", async () => {
     const { ctx, service } = makeCtx({});
     const result = await invoke(handleSync, ctx, {});
     const body = parseResponse(result);
     expect(body.success).toBe(true);
+    expect(body.failed).toBe(0);
+    expect(body.failures).toEqual([]);
     expect(typeof body.duration).toBe("number");
     expect(service.sync).toHaveBeenCalled();
     expect(body.outcome).toMatchObject({
@@ -652,6 +752,81 @@ describe("handleSync", () => {
     });
     expect(typeof body.outcome.durationMs).toBe("number");
     expect(body.skips).toEqual([]);
+    expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("reports success=false with the failed count and failures when the outcome recorded failures", async () => {
+    const { ctx, service } = makeCtx({});
+    const failure = {
+      kind: "failed",
+      scope: "worktree",
+      error: "EACCES: permission denied, rename '/repo/worktrees/b' -> '/repo/.trash/b'",
+      reason: "remove_failed",
+      branch: "b",
+      path: "/repo/worktrees/b",
+    };
+    // The runner collects per-worktree failures via Promise.allSettled and
+    // records them on the outcome instead of rejecting sync().
+    service.sync.mockResolvedValue({
+      started: true,
+      outcome: {
+        mode: "worktree",
+        started: true,
+        counts: { created: 1, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 1, noop: 0 },
+        actions: [{ kind: "created", branch: "a", path: "/repo/worktrees/a" }, failure],
+      },
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    // The call itself completed, so this is a structured result, not an error.
+    expect(result.isError).not.toBe(true);
+    expect(body.success).toBe(false);
+    expect(body.failed).toBe(1);
+    expect(body.failures).toEqual([failure]);
+    expect(body.outcome.counts.failed).toBe(1);
+    expect(body.outcome.actions).toHaveLength(2);
+    expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
+  });
+
+  it("reports success=false for a clone-mode outcome that recorded a repo-scoped failure", async () => {
+    const { ctx, service } = makeCtx({
+      service: { isCloneMode: vi.fn<any>().mockReturnValue(true) },
+    });
+    const failure = { kind: "failed", scope: "repo", error: "fetch failed", reason: "sync_failed" };
+    service.sync.mockResolvedValue({
+      started: true,
+      outcome: {
+        mode: "clone",
+        started: true,
+        counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 1, noop: 0 },
+        actions: [failure],
+      },
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(result.isError).not.toBe(true);
+    expect(body.success).toBe(false);
+    expect(body.failed).toBe(1);
+    expect(body.failures).toEqual([failure]);
+    expect(body.outcome.mode).toBe("clone");
+  });
+
+  it("treats a result without an outcome as a success with no failures", async () => {
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({ started: true });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.failed).toBe(0);
+    expect(body.failures).toEqual([]);
+    expect(body.outcome.counts.failed).toBe(0);
+    expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
   });
 
   it("invokes autoSelectCurrentRepoIfSingleConfig when repoName is omitted", async () => {
@@ -731,6 +906,34 @@ describe("handleSync", () => {
     expect(body.code).toBe("SYNC_IN_PROGRESS");
   });
 
+  it("keeps a contended lock as SYNC_IN_PROGRESS", async () => {
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({ started: false, reason: "locked" });
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+    expect(body.code).toBe("SYNC_IN_PROGRESS");
+  });
+
+  it("returns LOCK_UNAVAILABLE naming the path and errno when the repo lock cannot be taken", async () => {
+    // Not contention and not retryable: the sync never ran. The error must
+    // carry the cause rather than claim a sync is already in progress.
+    const { ctx, service } = makeCtx({});
+    service.sync.mockResolvedValue({
+      started: false,
+      reason: "lock_unavailable",
+      path: "/state/sync-worktrees/locks",
+      code: "ENOTDIR",
+      error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+    });
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("LOCK_UNAVAILABLE");
+    expect(body.message).toContain("/state/sync-worktrees/locks");
+    expect(body.message).toContain("ENOTDIR");
+    expect(body.message).not.toMatch(/in progress/i);
+  });
+
   it("delegates initialization to service.sync when needed", async () => {
     const { ctx, service } = makeCtx({});
     service.isInitialized.mockReturnValue(false);
@@ -742,6 +945,35 @@ describe("handleSync", () => {
     expect(service.initialize).not.toHaveBeenCalled();
     expect(service.sync).toHaveBeenCalled();
   });
+
+  function notifiedParams(notify: ReturnType<typeof vi.fn>): Array<{ progress: number; total?: number }> {
+    return notify.mock.calls.map((call: unknown[]) => (call[0] as any).params);
+  }
+
+  // The one rule the protocol puts on a progress token: every notification's
+  // value is above the one before it.
+  function expectIncreasing(params: Array<{ progress: number; total?: number }>): void {
+    for (let index = 1; index < params.length; index++) {
+      expect(params[index].progress).toBeGreaterThan(params[index - 1].progress);
+    }
+    // A total is only ever sent when the progress fits inside it.
+    for (const param of params) {
+      if (param.total !== undefined) expect(param.total).toBeGreaterThanOrEqual(param.progress);
+    }
+  }
+
+  // Subscribes a listener the way attachProgressReporter does and hands back a
+  // function that pushes one event through it.
+  function wireProgress(service: any): (event: ProgressEvent) => void {
+    const listeners: Array<(event: unknown) => void> = [];
+    service.onProgress = vi.fn<any>().mockImplementation((listener: any) => {
+      listeners.push(listener);
+      return () => listeners.splice(listeners.indexOf(listener), 1);
+    });
+    return (event) => {
+      for (const listener of listeners) listener(event);
+    };
+  }
 
   it("sends progress notifications from structured events", async () => {
     const { ctx, service } = makeCtx({});
@@ -774,6 +1006,153 @@ describe("handleSync", () => {
     });
   });
 
+  // The phases carry their own item counts now; a client showing a bar wants
+  // those rather than "the fifth event of this sync".
+  it("reports the counts an event carries as progress and total", async () => {
+    const { ctx, service } = makeCtx({});
+    const emit = wireProgress(service);
+    service.sync.mockImplementation(async () => {
+      emit({ phase: "create", message: "Creating worktrees: 'feature-1' (1/3)", processed: 1, total: 3 });
+      emit({ phase: "create", message: "Creating worktrees: 'feature-2' (2/3)", processed: 2, total: 3 });
+      return { started: true };
+    });
+
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    await handleSync(ctx, {}, { mcpReq: { _meta: { progressToken: "tok-1" }, notify } } as any);
+
+    expect(notify).toHaveBeenNthCalledWith(1, {
+      method: "notifications/progress",
+      params: {
+        progressToken: "tok-1",
+        progress: 1,
+        total: 3,
+        message: "[create] Creating worktrees: 'feature-1' (1/3)",
+      },
+    });
+    expect(notify).toHaveBeenNthCalledWith(2, {
+      method: "notifications/progress",
+      params: {
+        progressToken: "tok-1",
+        progress: 2,
+        total: 3,
+        message: "[create] Creating worktrees: 'feature-2' (2/3)",
+      },
+    });
+  });
+
+  // "The progress value MUST increase with each notification, even if the total
+  // is unknown" (MCP spec, notifications/progress) — while a sync's counts
+  // restart at 1 in every phase and in every stage of a phase.
+  it("keeps progress increasing across phases and stages that restart their counts", async () => {
+    const { ctx, service } = makeCtx({});
+    const emit = wireProgress(service);
+    service.sync.mockImplementation(async () => {
+      emit({ phase: "fetch", message: "Fetching latest data from remote" });
+      emit({ phase: "create", message: "Creating worktrees for new branches" });
+      for (const processed of [1, 2, 3]) {
+        emit({ phase: "create", message: `Creating worktrees: 'b${processed}' (${processed}/3)`, processed, total: 3 });
+      }
+      emit({ phase: "prune", message: "Pruning stale worktrees" });
+      for (const processed of [1, 2]) {
+        emit({
+          phase: "prune",
+          message: `Checking worktrees to prune: 'g${processed}' (${processed}/2)`,
+          processed,
+          total: 2,
+        });
+      }
+      // Same phase, second stage: the count starts over at 1.
+      emit({ phase: "prune", message: "Pruning stale worktrees: 'g1' (1/1)", processed: 1, total: 1 });
+      emit({ phase: "cleanup", message: "Cleanup complete" });
+      return { started: true };
+    });
+
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    await handleSync(ctx, {}, { mcpReq: { _meta: { progressToken: "tok-1" }, notify } } as any);
+
+    const params = notifiedParams(notify);
+    expect(params.map((param) => param.progress)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expectIncreasing(params);
+    // The counted runs keep their own denominators, offset by what came before.
+    expect(params[2]).toMatchObject({ progress: 3, total: 5 });
+    expect(params[8]).toMatchObject({ progress: 9, total: 9 });
+  });
+
+  // The stream git really produces: four transfer stages, each opening on
+  // `0% (0/n)` and closing on a 100% line git prints twice (once plain, once
+  // with ", done."). Counting those as items reported the same progress twice —
+  // and made a three-branch sync of a 1200-object repository end in the
+  // thousands, with the client's bar filling and resetting once per stage.
+  it("keeps progress increasing across a real git transfer stream", async () => {
+    const { ctx, service } = makeCtx({});
+    const emit = wireProgress(service);
+    // Built by the handler the git clients actually run, so the events carry
+    // whatever shape it really produces.
+    const transferred: ProgressEvent[] = [];
+    const objects = 1200;
+    const gitProgress = makeGitProgressHandler(createMockLogger, (event) => transferred.push(event));
+    for (const stage of ["counting", "compressing", "receiving", "resolving"]) {
+      for (const percent of [0, 25, 50, 75, 100, 100]) {
+        gitProgress({
+          method: "clone",
+          stage,
+          progress: percent,
+          processed: Math.round((objects * percent) / 100),
+          total: objects,
+        } as SimpleGitProgressEvent);
+      }
+    }
+    expect(transferred).toHaveLength(24);
+
+    service.sync.mockImplementation(async () => {
+      emit({ phase: "fetch", message: "Fetching latest data from remote" });
+      for (const event of transferred) emit(event);
+      emit({ phase: "create", message: "Creating worktrees for new branches" });
+      for (const processed of [1, 2, 3]) {
+        emit({ phase: "create", message: `Creating worktrees: 'b${processed}' (${processed}/3)`, processed, total: 3 });
+      }
+      return { started: true };
+    });
+
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    await handleSync(ctx, {}, { mcpReq: { _meta: { progressToken: "tok-1" }, notify } } as any);
+
+    const params = notifiedParams(notify);
+    expectIncreasing(params);
+    // A transfer event is one tick: its percentage is already in the message,
+    // and its object count is not a count of anything the sync is working
+    // through. 1 fetch + 24 transfer + 1 create = 26 ticks before the items.
+    expect(params.map((param) => param.progress)).toEqual(
+      [...Array(26).keys()].map((index) => index + 1).concat([27, 28, 29]),
+    );
+    expect(params.slice(0, 26).every((param) => param.total === undefined)).toBe(true);
+    expect(params.at(-1)).toMatchObject({ progress: 29, total: 29 });
+  });
+
+  // A stage that never reaches its total — an attempt that failed part way and
+  // was retried — must not leave the next stage reporting a smaller total.
+  it("never reports a total below the one already sent", async () => {
+    const { ctx, service } = makeCtx({});
+    const emit = wireProgress(service);
+    service.sync.mockImplementation(async () => {
+      emit({ phase: "update", message: "Checking worktrees for updates: 'a' (1/1000)", processed: 1, total: 1000 });
+      emit({ phase: "update", message: "Checking worktrees for updates: 'b' (2/1000)", processed: 2, total: 1000 });
+      // The attempt was abandoned there; the retry plans far fewer items.
+      emit({ phase: "update", message: "Checking worktrees for updates: 'a' (1/4)", processed: 1, total: 4 });
+      emit({ phase: "update", message: "Checking worktrees for updates: 'b' (2/4)", processed: 2, total: 4 });
+      return { started: true };
+    });
+
+    const notify = vi.fn<any>().mockResolvedValue(undefined);
+    await handleSync(ctx, {}, { mcpReq: { _meta: { progressToken: "tok-1" }, notify } } as any);
+
+    const params = notifiedParams(notify);
+    expectIncreasing(params);
+    const totals = params.map((param) => param.total!);
+    expect(totals).toEqual([...totals].sort((a, b) => a - b));
+    expect(totals).toEqual([1000, 1000, 1000, 1000]);
+  });
+
   it("unsubscribes progress listener even when sync throws", async () => {
     const { ctx, service } = makeCtx({});
     const unsubscribe = vi.fn<any>();
@@ -802,6 +1181,23 @@ describe("handleInitialize", () => {
 
     expect(body.defaultBranch).toBe("develop");
     expect(service.getDefaultBranch).toHaveBeenCalled();
+  });
+
+  it("denies initialize from durable capabilities when the discovery cache is empty", async () => {
+    const { ctx, service } = makeCtx({
+      baseCapabilities: makeCapabilities({
+        initialize: { available: false, reason: "no config file loaded (running in auto-detect mode)" },
+      }),
+    });
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+
+    const result = await invoke(handleInitialize, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
+    expect(body.message).toContain("auto-detect mode");
+    expect(ctx.getService).not.toHaveBeenCalled();
+    expect(service.initializeUnlocked).not.toHaveBeenCalled();
   });
 
   it("sends progress notifications when service emits events", async () => {
@@ -851,7 +1247,7 @@ describe("case-insensitive path handling in handlers", () => {
     const result = await invoke(handleUpdateWorktree, ctx, { path: "/users/foo/repo/feature" });
     const body = parseResponse(result);
     expect(body.success).toBe(true);
-    expect(git.updateWorktree).toHaveBeenCalledWith("/Users/foo/Repo/Feature");
+    expect(git.updateWorktree).toHaveBeenCalledWith("/Users/foo/Repo/Feature", "feature");
   });
 
   it("rejects mixed-case worktree path on linux (case-sensitive)", async () => {
@@ -877,7 +1273,44 @@ describe("handleUpdateWorktree", () => {
     expect(body.success).toBe(true);
     expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
     expect(git.fetchBranch).toHaveBeenCalledWith("feature");
-    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature");
+    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature", "feature");
+    expect(body.updated).toBe(true);
+  });
+
+  // The discovery snapshot has no freshness check: a `git checkout -b` inside
+  // a worktree touches only that worktree's own admin HEAD, so the branch the
+  // session recorded at detection time can outlive the checkout it described.
+  // Acting on that name would merge origin/<old branch> into the worktree and,
+  // whenever the new branch has no commits of its own, fast-forward *it* to the
+  // old branch's tip — a silent branch rewrite. The branch is read back from
+  // git before the fetch and the merge.
+  it("merges the branch the worktree is on now, not the one the discovery snapshot remembers", async () => {
+    const { ctx, git, service } = makeCtx({
+      discovered: makeDiscovered({ allWorktrees: [{ path: "/w/main", branch: "main", isCurrent: false }] }),
+      git: { getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/main", branch: "wip" }]) },
+    });
+
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/main" });
+
+    expect(parseResponse(result).success).toBe(true);
+    expect(service.getWorktrees).toHaveBeenCalled();
+    expect(git.updateWorktree).toHaveBeenCalledWith("/w/main", "wip");
+    expect(git.updateWorktree).not.toHaveBeenCalledWith("/w/main", "main");
+    expect(git.fetchBranch).toHaveBeenCalledWith("wip");
+    expect(git.fetchBranch).not.toHaveBeenCalledWith("main");
+  });
+
+  it("reports updated:false when the worktree already matched origin/<branch>", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature" }]),
+        updateWorktree: vi.fn<any>().mockResolvedValue({ updated: false, before: "abc123", after: "abc123" }),
+      },
+    });
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" });
+    const body = parseResponse(result);
+    expect(body).toEqual({ success: true, worktreePath: "/w/feature", updated: false });
+    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature", "feature");
   });
 
   it("fetches the target branch before updating the worktree", async () => {
@@ -890,6 +1323,7 @@ describe("handleUpdateWorktree", () => {
         }),
         updateWorktree: vi.fn<any>().mockImplementation(async () => {
           callOrder.push("updateWorktree");
+          return { updated: true, before: "old111", after: "new222" };
         }),
       },
     });
@@ -1248,6 +1682,99 @@ describe("handleCreateWorktree collisions", () => {
   });
 });
 
+describe("handleCreateWorktree target path guard", () => {
+  // The same sanitized (hash-suffixed) path the handler derives for the branch.
+  const targetPath = new PathResolutionService().getBranchWorktreePath("/repo/worktrees", "feature/x");
+
+  it("refuses when the target path exists on disk but is not a registered worktree", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/worktrees/main", branch: "main" }]),
+      },
+    });
+    fsMock.access.mockResolvedValueOnce(undefined);
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("TARGET_EXISTS");
+    expect(body.message).toContain(targetPath);
+    expect(body.message).toContain("not a registered worktree");
+    expect(fsMock.access).toHaveBeenCalledWith(targetPath);
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("refuses before creating a new branch when the target path is occupied", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+      },
+    });
+    fsMock.access.mockResolvedValueOnce(undefined);
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("TARGET_EXISTS");
+    // Refusing after createBranch would leave an unpushed local branch behind
+    // that a retry (after cleanup) then checks out without ever pushing.
+    expect(git.createBranch).not.toHaveBeenCalled();
+    expect(git.addWorktree).not.toHaveBeenCalled();
+    expect(git.pushBranch).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the target path cannot be probed", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+      },
+    });
+    fsMock.access.mockRejectedValueOnce(errno("EACCES"));
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("Cannot verify");
+    expect(body.message).toContain(targetPath);
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("proceeds to addWorktree when nothing exists at the target path", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+      },
+    });
+    fsMock.access.mockRejectedValueOnce(errno("ENOENT"));
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(fsMock.access).toHaveBeenCalledWith(targetPath);
+    expect(git.addWorktree).toHaveBeenCalledWith("feature/x", targetPath);
+  });
+
+  it("skips the disk probe when the path is already registered for the same branch", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: targetPath, branch: "feature/x" }]),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(fsMock.access).not.toHaveBeenCalled();
+    expect(git.addWorktree).toHaveBeenCalledWith("feature/x", targetPath);
+  });
+});
+
 describe("handleListWorktrees includeSize", () => {
   it("returns sizeBytes when includeSize=true", async () => {
     const { ctx } = makeCtx({
@@ -1458,5 +1985,92 @@ describe("handleDetectContext includeStatus", () => {
       staleHint: false,
     });
     expect(body.allWorktreeErrorsByRepo).toEqual({ broken: "git worktree list failed" });
+  });
+});
+
+describe("credential redaction in tool responses", () => {
+  const TOKEN_URL = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+  const REDACTED_URL = "https://***@github.com/test/repo.git";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("detect_context never echoes credentials from repoUrl, siblings, configured repositories or git errors", async () => {
+    const { ctx } = makeCtx({
+      discovered: makeDiscovered({
+        repoUrl: TOKEN_URL,
+        siblingRepositories: [
+          {
+            name: "sib",
+            bareRepoPath: "/ws/sib/.bare",
+            worktreeDir: "/ws/sib/worktrees",
+            repoUrl: TOKEN_URL,
+            present: true,
+            configMatched: true,
+          },
+        ],
+        notes: [`Failed to read bare repo at /ws/.bare: fatal: unable to access '${TOKEN_URL}/': 403`],
+      }),
+      configuredRepositorySummaries: [
+        {
+          name: "frontend",
+          mode: "worktree",
+          worktreeDir: "/ws/frontend",
+          repoUrl: TOKEN_URL,
+          bareRepoDir: "/ws/.bare/frontend",
+          isCurrent: true,
+          localReady: true,
+        },
+      ],
+      allConfiguredWorktreeErrors: { frontend: `fatal: could not read from remote repository ${TOKEN_URL}` },
+    });
+
+    const result = await invoke(handleDetectContext, ctx, { detailed: true, includeAllWorktrees: true });
+    const body = parseResponse(result);
+
+    expect(body.repoUrl).toBe(REDACTED_URL);
+    expect(body.siblingRepositories[0].repoUrl).toBe(REDACTED_URL);
+    expect(body.configuredRepositories[0].repoUrl).toBe(REDACTED_URL);
+    expect(body.notes[0]).toBe(
+      `Failed to read bare repo at /ws/.bare: fatal: unable to access '${REDACTED_URL}/': 403`,
+    );
+    expect(body.allWorktreeErrorsByRepo.frontend).toBe(`fatal: could not read from remote repository ${REDACTED_URL}`);
+    expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
+  });
+
+  it("load_config never echoes credentials from the repository list", async () => {
+    const { ctx } = makeCtx({ configPath: "/ws/sync-worktrees.config.js" });
+    vi.mocked(ctx.getRepositoryList).mockReturnValue([
+      { name: "frontend", repoUrl: TOKEN_URL, worktreeDir: "/ws/frontend", source: "config" },
+    ]);
+
+    const result = await invoke(handleLoadConfig, ctx, { configPath: "/ws/sync-worktrees.config.js" });
+    const body = parseResponse(result);
+
+    expect(body.repositories).toEqual([
+      { name: "frontend", repoUrl: REDACTED_URL, worktreeDir: "/ws/frontend", source: "config" },
+    ]);
+    expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
+  });
+
+  it("sync turns a git error that quotes the remote URL into a redacted error response", async () => {
+    const { ctx } = makeCtx({
+      service: {
+        sync: vi
+          .fn<any>()
+          .mockRejectedValue(
+            new Error(`fatal: unable to access '${TOKEN_URL}/': The requested URL returned error: 403`),
+          ),
+      },
+    });
+
+    const result = await invoke(handleSync, ctx, {});
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("INTERNAL_ERROR");
+    expect(body.message).toBe(`fatal: unable to access '${REDACTED_URL}/': The requested URL returned error: 403`);
+    expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
   });
 });

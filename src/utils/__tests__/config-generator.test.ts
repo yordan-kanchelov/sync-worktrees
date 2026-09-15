@@ -1,5 +1,8 @@
+import { execFile } from "child_process";
 import * as fs from "fs/promises";
+import * as os from "os";
 import * as path from "path";
+import { promisify } from "util";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -7,6 +10,8 @@ import { ConfigLoaderService } from "../../services/config-loader.service";
 import { ConfigFileExistsError, findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "../config-generator";
 
 import type { InitConfigInput, InitRepositoryInput } from "../../types";
+
+const execFileAsync = promisify(execFile);
 
 function makeInput(repositories: InitRepositoryInput[], cronSchedule = "0 * * * *"): InitConfigInput {
   return { repositories, cronSchedule };
@@ -314,6 +319,206 @@ describe("Config Generator", () => {
       expect(loaded.repositories[1].branch).toBe("main");
       expect(loaded.repositories[1].depth).toBe(5);
       expect(loaded.defaults?.cronSchedule).toBe("0 * * * *");
+    });
+  });
+
+  // The whole point of these is that a generated config can *look* right and
+  // still not load: `export default` inside a `.cjs` file, or inside a `.js`
+  // file whose package declares `"type": "commonjs"`, is a hard
+  // `SyntaxError: Unexpected token 'export'` on Node 22 and 24 alike. So every
+  // case here loads the file through the real ConfigLoaderService rather than
+  // asserting on its text alone.
+  describe("matches the module system Node will parse the target under", () => {
+    let pkgDir: string;
+
+    beforeEach(async () => {
+      // Must live outside the repo: the repo's own package.json says
+      // `"type": "module"`, which would mask every case below.
+      pkgDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-modsys-")));
+    });
+
+    afterEach(async () => {
+      await fs.rm(pkgDir, { recursive: true, force: true });
+    });
+
+    /**
+     * Loads the generated file in a real `node` child process, exactly the way
+     * ConfigLoaderService would (`require` for `.cjs`, `import()` otherwise),
+     * and returns the repository count. In-process this cannot be checked:
+     * Vitest resolves `import()` through its own pipeline, so a `.js` file in a
+     * `"type": "commonjs"` package loads there even though Node rejects it.
+     */
+    async function repositoryCountUnderRealNode(configPath: string): Promise<number> {
+      const script =
+        `const p = ${JSON.stringify(configPath)};` +
+        `const load = p.endsWith(".cjs")` +
+        ` ? Promise.resolve(require(p))` +
+        ` : import(require("url").pathToFileURL(p).href).then((m) => m.default);` +
+        `load.then((c) => console.log(String(c.repositories.length)));`;
+      const { stdout } = await execFileAsync(process.execPath, ["-e", script]);
+      return Number(stdout.trim());
+    }
+
+    async function writePackageJson(type?: string): Promise<void> {
+      await fs.writeFile(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify(type === undefined ? { name: "fixture" } : { name: "fixture", type }),
+      );
+    }
+
+    function inputFor(dir: string): InitConfigInput {
+      return makeInput([
+        { repoUrl: "https://github.com/user/app.git", worktreeDir: path.join(dir, "app"), mode: "worktree" },
+      ]);
+    }
+
+    it("writes CommonJS for a .cjs target so the loader's require() can read it", async () => {
+      await writePackageJson("module");
+      const configPath = path.join(pkgDir, "x.cjs");
+
+      await generateConfigFile(inputFor(pkgDir), configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain("module.exports = config;");
+      expect(content).not.toContain("export default");
+
+      const loaded = await new ConfigLoaderService().loadConfigFile(configPath);
+      expect(loaded.repositories[0].name).toBe("app");
+      await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
+    });
+
+    it('writes CommonJS for a .js target inside a "type": "commonjs" package', async () => {
+      await writePackageJson("commonjs");
+      const configPath = path.join(pkgDir, "x.js");
+
+      await generateConfigFile(inputFor(pkgDir), configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain("module.exports = config;");
+      expect(content).not.toContain("export default");
+
+      const loaded = await new ConfigLoaderService().loadConfigFile(configPath);
+      expect(loaded.repositories[0].name).toBe("app");
+      await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
+    });
+
+    it("follows the nearest package.json, not a more distant one", async () => {
+      await writePackageJson("module");
+      const nested = path.join(pkgDir, "nested");
+      await fs.mkdir(nested, { recursive: true });
+      await fs.writeFile(path.join(nested, "package.json"), JSON.stringify({ name: "nested", type: "commonjs" }));
+      const configPath = path.join(nested, "x.js");
+
+      await generateConfigFile(inputFor(nested), configPath);
+
+      expect(await fs.readFile(configPath, "utf-8")).toContain("module.exports = config;");
+      const loaded = await new ConfigLoaderService().loadConfigFile(configPath);
+      expect(loaded.repositories[0].name).toBe("app");
+      await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
+    });
+
+    // The monorepo shape the bug was reported from: the config lives in a
+    // subdirectory that has no package.json of its own, and the root one says
+    // `"type": "commonjs"`. Node keeps walking up past directories without a
+    // package.json, so the generator has to as well -- an ESM file written here
+    // is a hard `SyntaxError: Unexpected token 'export'` under real Node, which
+    // is why this asserts against a child process and not just the text.
+    it("walks past directories with no package.json to the nearest one above", async () => {
+      await writePackageJson("commonjs");
+      const nested = path.join(pkgDir, "tools", "config");
+      await fs.mkdir(nested, { recursive: true });
+      const configPath = path.join(nested, "sync-worktrees.config.js");
+
+      await generateConfigFile(inputFor(nested), configPath);
+
+      expect(await fs.readFile(configPath, "utf-8")).toContain("module.exports = config;");
+      await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
+    });
+
+    it("stops at a malformed nearest package.json rather than inheriting the parent's type", async () => {
+      await writePackageJson("commonjs");
+      const nested = path.join(pkgDir, "nested");
+      await fs.mkdir(nested, { recursive: true });
+      await fs.writeFile(path.join(nested, "package.json"), "{ not json");
+      const configPath = path.join(nested, "x.js");
+
+      await generateConfigFile(inputFor(nested), configPath);
+
+      // Node refuses to resolve a module type through a package.json it cannot
+      // parse, so neither module system would load here -- which is precisely
+      // why `init` round-trips the file through the loader before reporting
+      // success. What the generator must not do is walk past the broken file
+      // and apply a grandparent's `type`.
+      expect(await fs.readFile(configPath, "utf-8")).toContain("export default config;");
+      await expect(repositoryCountUnderRealNode(configPath)).rejects.toThrow(/ERR_INVALID_PACKAGE_CONFIG/);
+    });
+
+    it("stops at a nearest package.json with no type, rather than inheriting the parent's", async () => {
+      // Node's lookup stops at the first package.json it finds, so a parent's
+      // `"type": "commonjs"` must not reach a nested package that omits `type`.
+      await writePackageJson("commonjs");
+      const nested = path.join(pkgDir, "nested");
+      await fs.mkdir(nested, { recursive: true });
+      await fs.writeFile(path.join(nested, "package.json"), JSON.stringify({ name: "nested" }));
+      const configPath = path.join(nested, "x.js");
+
+      await generateConfigFile(inputFor(nested), configPath);
+
+      expect(await fs.readFile(configPath, "utf-8")).toContain("export default config;");
+      const loaded = await new ConfigLoaderService().loadConfigFile(configPath);
+      expect(loaded.repositories[0].name).toBe("app");
+      await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
+    });
+
+    it('keeps ESM for a .mjs target even inside a "type": "commonjs" package', async () => {
+      await writePackageJson("commonjs");
+      const configPath = path.join(pkgDir, "x.mjs");
+
+      await generateConfigFile(inputFor(pkgDir), configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      expect(content).toContain("export default config;");
+      expect(content).not.toContain("module.exports");
+
+      const loaded = await new ConfigLoaderService().loadConfigFile(configPath);
+      expect(loaded.repositories[0].name).toBe("app");
+      await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
+    });
+
+    it('keeps ESM for a .js target inside a "type": "module" package', async () => {
+      await writePackageJson("module");
+      const configPath = path.join(pkgDir, "x.js");
+
+      await generateConfigFile(inputFor(pkgDir), configPath);
+
+      expect(await fs.readFile(configPath, "utf-8")).toContain("export default config;");
+      const loaded = await new ConfigLoaderService().loadConfigFile(configPath);
+      expect(loaded.repositories[0].name).toBe("app");
+      await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
+    });
+
+    it("keeps ESM for a .js target with no package.json in the chain", async () => {
+      // Node's module-syntax detection re-parses this one as ESM, so it loads.
+      const configPath = path.join(pkgDir, "x.js");
+
+      await generateConfigFile(inputFor(pkgDir), configPath);
+
+      expect(await fs.readFile(configPath, "utf-8")).toContain("export default config;");
+      const loaded = await new ConfigLoaderService().loadConfigFile(configPath);
+      expect(loaded.repositories[0].name).toBe("app");
+      await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
+    });
+
+    it("keeps ESM for a .js target whose package.json has no type field", async () => {
+      await writePackageJson();
+      const configPath = path.join(pkgDir, "x.js");
+
+      await generateConfigFile(inputFor(pkgDir), configPath);
+
+      expect(await fs.readFile(configPath, "utf-8")).toContain("export default config;");
+      const loaded = await new ConfigLoaderService().loadConfigFile(configPath);
+      expect(loaded.repositories[0].name).toBe("app");
+      await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
     });
   });
 
