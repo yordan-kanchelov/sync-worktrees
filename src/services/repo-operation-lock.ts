@@ -25,6 +25,43 @@ export type RepoLockAcquireResult =
   | { acquired: false; reason: "locked" }
   | ({ acquired: false } & RepoLockUnavailable);
 
+export interface RepoLockAcquireOptions {
+  /**
+   * How long to keep retrying a lock another process already holds, in
+   * milliseconds. 0 (the default) keeps the fail-fast behaviour every periodic
+   * caller depends on: a cron tick that cannot take the lock is a clean skip,
+   * because whoever holds it is doing the same work.
+   *
+   * A non-zero budget is for the opposite case — an explicit, one-shot user
+   * command (a trash restore or purge) where "the daemon is mid-sync" is not a
+   * reason to give up. It is a BUDGET, not "wait for it": the window is an
+   * absolute deadline shared by both locks a worktree-mode repo takes, so the
+   * whole acquire is bounded by it however the time is spent, and a scripted
+   * or non-interactive run always terminates.
+   */
+  waitMs?: number;
+}
+
+// Fixed-interval retry rather than proper-lockfile's exponential default, so
+// the budget above is the wall clock a caller can quote to a user.
+const LOCK_RETRY_INTERVAL_MS = 1000;
+
+// `retries: 0` — the literal proper-lockfile default — for every caller without
+// a budget, so the no-wait path is byte-for-byte what it has always been and
+// stays a single failed attempt rather than a retry loop with a zero count.
+function retriesUntil(
+  deadline: number,
+): number | { retries: number; factor: number; minTimeout: number; maxTimeout: number } {
+  const remainingMs = deadline > 0 ? deadline - Date.now() : 0;
+  if (remainingMs <= 0) return 0;
+  return {
+    retries: Math.ceil(remainingMs / LOCK_RETRY_INTERVAL_MS),
+    factor: 1,
+    minTimeout: LOCK_RETRY_INTERVAL_MS,
+    maxTimeout: LOCK_RETRY_INTERVAL_MS,
+  };
+}
+
 export class RepoOperationLock {
   constructor(
     private config: Config,
@@ -36,19 +73,24 @@ export class RepoOperationLock {
     this.logger = logger;
   }
 
-  async acquire(): Promise<RepoLockAcquireResult> {
+  async acquire(options: RepoLockAcquireOptions = {}): Promise<RepoLockAcquireResult> {
     if (isUnitTestShortcutEnabled()) {
       return { acquired: true, release: async () => {} };
     }
 
+    // An absolute deadline, resolved once here: worktree mode takes two locks
+    // one after the other, and a per-lock budget would double the worst case.
+    const waitMs = options.waitMs ?? 0;
+    const deadline = waitMs > 0 ? Date.now() + waitMs : 0;
+
     if (resolveMode(this.config) === REPOSITORY_MODES.CLONE) {
-      return this.acquireWorktreeDirLock();
+      return this.acquireWorktreeDirLock(deadline);
     }
 
-    return this.acquireWorktreeModeLock();
+    return this.acquireWorktreeModeLock(deadline);
   }
 
-  private async acquireWorktreeDirLock(): Promise<RepoLockAcquireResult> {
+  private async acquireWorktreeDirLock(deadline: number): Promise<RepoLockAcquireResult> {
     const target = getWorktreeDirLockTarget(this.config);
     const lockTarget = path.join(target.dir, target.file);
     try {
@@ -61,17 +103,17 @@ export class RepoOperationLock {
     } catch (error) {
       return this.unavailable("create the repo lock file", lockTarget, error);
     }
-    return this.lockPath(lockTarget);
+    return this.lockPath(lockTarget, deadline);
   }
 
-  private async acquireWorktreeModeLock(): Promise<RepoLockAcquireResult> {
+  private async acquireWorktreeModeLock(deadline: number): Promise<RepoLockAcquireResult> {
     const barePath = this.gitService.getBareRepoPath();
     try {
       await fs.mkdir(barePath, { recursive: true });
     } catch (error) {
       return this.unavailable("prepare the bare repository directory for locking", barePath, error);
     }
-    const bare = await this.lockPath(barePath);
+    const bare = await this.lockPath(barePath, deadline);
     if (!bare.acquired) return bare;
 
     // The bare-repo lock alone does not serialize what this lock exists to
@@ -79,7 +121,7 @@ export class RepoOperationLock {
     // default bare path is derived per config file, so two configs can point
     // different bare repos at the same worktreeDir and both hold "their" bare
     // lock. Hold the worktreeDir-keyed lock as well.
-    const worktreeDir = await this.acquireWorktreeDirLock();
+    const worktreeDir = await this.acquireWorktreeDirLock(deadline);
     if (!worktreeDir.acquired) {
       try {
         await bare.release();
@@ -103,12 +145,12 @@ export class RepoOperationLock {
     };
   }
 
-  private async lockPath(lockTarget: string): Promise<RepoLockAcquireResult> {
+  private async lockPath(lockTarget: string, deadline: number): Promise<RepoLockAcquireResult> {
     try {
       const release = await lockfile.lock(lockTarget, {
         stale: DEFAULT_CONFIG.LOCK_STALE_MS,
         update: DEFAULT_CONFIG.LOCK_UPDATE_MS,
-        retries: 0,
+        retries: retriesUntil(deadline),
         realpath: false,
         // proper-lockfile's default onCompromised throws from inside its
         // refresh timer — uncatchable by any caller, so it would take down

@@ -420,6 +420,19 @@ export interface KeepRefDropResult {
   errors: string[];
 }
 
+/** Outcome of deleting one named trash entry ahead of its expiry. */
+export interface TrashPurgeResult {
+  /** False when the container survived — `errors` says why, and the entry stays listed. */
+  deleted: boolean;
+  /**
+   * Permanent `refs/sync-worktrees/keep/<id>` refs minted before the payload
+   * was deleted, for an entry whose commits were on no remote. Empty is the
+   * normal case; a non-empty list is where the commits went.
+   */
+  keepRefsMinted: string[];
+  errors: string[];
+}
+
 /**
  * The exact set a force-clean confirmation refers to. A preview is taken
  * outside the repo mutex and confirmed by a human an unbounded time later, so

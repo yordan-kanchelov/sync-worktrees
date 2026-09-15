@@ -532,6 +532,14 @@ export class TrashService {
         this.logger.warn(
           `⚠️ Trash entry '${id}' has no pinned commit; restoring files only — the directory will not be a registered worktree.`,
         );
+        // Not a hypothetical: an unregistered directory sitting where a synced
+        // branch's worktree belongs is exactly what clearStaleWorktreeDirectory
+        // treats as stale, and with trash enabled that means straight back into
+        // .trash/ under a fresh id and reason "orphan". Saying so here is the
+        // only warning the person gets before it happens.
+        this.logger.warn(
+          `   If '${manifest.branch}' is still in this repository's synced set, the next sync finds an unregistered directory at '${manifest.originalPath}' and moves it back to trash as a new 'orphan' entry. Copy what you need out of it first, or exclude the branch.`,
+        );
       }
       await fs.rename(payloadPath, manifest.originalPath);
     }

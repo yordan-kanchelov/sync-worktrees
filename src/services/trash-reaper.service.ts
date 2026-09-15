@@ -30,6 +30,13 @@ export interface TrashReapResult {
   orphanedRefsDeleted: number;
   /** Entries present on disk that the caller's purge selection did not name. */
   skippedNotSelected: number;
+  /**
+   * Permanent `refs/sync-worktrees/keep/<id>` refs minted on the way out, for
+   * entries whose commits were on no remote. Recorded when the ref is created,
+   * not when the payload delete succeeds: the ref is what protects the commits,
+   * and it exists either way.
+   */
+  keepRefsMinted: string[];
   errors: string[];
 }
 
@@ -67,7 +74,7 @@ export class TrashReaperService {
   // every caller that cannot vouch for the remote-tracking refs gets the
   // unconditional keep-ref behaviour.
   async reapExpiredUnlocked(now: Date = new Date(), options: ReapOptions = {}): Promise<TrashReapResult> {
-    return this.reapUnlocked(now, null, options.remoteRefsFresh ?? false);
+    return this.reapUnlocked(now, null, options.remoteRefsFresh ?? false, true);
   }
 
   // Purges exactly the entries named by `entryIds` — the set a force-clean
@@ -75,17 +82,39 @@ export class TrashReaperService {
   // there (reaped since, or half-deleted so its manifest no longer parses) are
   // simply not found among the listed entries and cost nothing; entries that
   // are there but unnamed are left alone and counted in `skippedNotSelected`.
+  //
+  // No keep refs: force clean's whole point is that the confirmation covered
+  // the recovery refs too, and it deletes them in the same breath — minting new
+  // ones here would put back what the person just asked to be rid of.
   async purgeAllUnlocked(entryIds: readonly string[]): Promise<TrashReapResult> {
-    return this.reapUnlocked(new Date(), new Set(entryIds), false);
+    return this.reapUnlocked(new Date(), new Set(entryIds), false, false);
+  }
+
+  // One named entry, ahead of its expiry, with the reap path's keep-ref
+  // protection intact. The difference from purgeAllUnlocked is deliberate: a
+  // person deleting a single entry has confirmed that entry, not the commits
+  // behind it, and a `keepPinOnReap` entry exists precisely because those
+  // commits were on no remote. `remoteRefsFresh` is false — this runs from a
+  // CLI invocation that has fetched nothing, so the re-check never gets to
+  // release the anchor on the strength of a stale remote-tracking ref.
+  async purgeEntryUnlocked(entryId: string): Promise<TrashReapResult> {
+    return this.reapUnlocked(new Date(), new Set([entryId]), false, true);
   }
 
   private async reapUnlocked(
     now: Date,
     purgeIds: ReadonlySet<string> | null,
     remoteRefsFresh: boolean,
+    honorKeepPin: boolean,
   ): Promise<TrashReapResult> {
     const purgeAll = purgeIds !== null;
-    const result: TrashReapResult = { deleted: 0, orphanedRefsDeleted: 0, skippedNotSelected: 0, errors: [] };
+    const result: TrashReapResult = {
+      deleted: 0,
+      orphanedRefsDeleted: 0,
+      skippedNotSelected: 0,
+      keepRefsMinted: [],
+      errors: [],
+    };
     if (!purgeAll && !this.trashService.isEnabled()) return result;
 
     let realRoot: string;
@@ -147,7 +176,7 @@ export class TrashReaperService {
       // these commits may be the only copy left anywhere.
       let keepRef: string | null = null;
       if (
-        !purgeAll &&
+        honorKeepPin &&
         entry.manifest.keepPinOnReap &&
         entry.manifest.headOid &&
         !(await this.commitsReachedARemote(entry.manifest.headOid, remoteRefsFresh))
@@ -155,6 +184,7 @@ export class TrashReaperService {
         keepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${entry.manifest.id}`;
         try {
           await this.gitService.updateRef(keepRef, entry.manifest.headOid);
+          result.keepRefsMinted.push(keepRef);
         } catch (error) {
           this.logger.warn(
             `⚠️ Trash reaper: cannot create keep ref '${keepRef}' for '${entry.manifest.id}'; deferring reap: ${getErrorMessage(error)}`,

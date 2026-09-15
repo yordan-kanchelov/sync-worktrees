@@ -214,7 +214,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   removal, and O(N) fsync'd audit writes + git spawns in force clean
 - [x] **T87** — Worktree restore copies the whole payload (fs.cp) and then rm's the container
   instead of renaming it into place — O(size) I/O and 2x disk during restore
-- [ ] **T89** — `sync-worktrees trash` CLI ergonomics: no size/branch/restorable columns, silent on
+- [x] **T89** — `sync-worktrees trash` CLI ergonomics: no size/branch/restorable columns, silent on
   empty trash, expected errors print as 'Unhandled error' stack traces, restore fails fast when the
   daemon holds the lock, no single-entry purge, and a files-only restore is silently re-trashed by the
   next sync
@@ -3598,7 +3598,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   (node_modules included) after every sync cycle and force clean, serially, even when the cycle
   changed nothing”.
 
-### [ ] T89. `sync-worktrees trash` CLI ergonomics: no size/branch/restorable columns, silent on empty trash, expected errors print as 'Unhandled error' stack traces, restore fails fast when the daemon holds the lock, no single-entry purge, and a files-only restore is silently re-trashed by the next sync
+### [x] T89. `sync-worktrees trash` CLI ergonomics: no size/branch/restorable columns, silent on empty trash, expected errors print as 'Unhandled error' stack traces, restore fails fast when the daemon holds the lock, no single-entry purge, and a files-only restore is silently re-trashed by the next sync
 
 - **Category**: workflow · **Subsystem**: trash
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

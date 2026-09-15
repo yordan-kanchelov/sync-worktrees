@@ -452,6 +452,7 @@ describe("WorktreeSyncService", () => {
         deleted: 1,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 0,
+        keepRefsMinted: [],
         errors: [],
       });
       vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -487,6 +488,7 @@ describe("WorktreeSyncService", () => {
         deleted: 0,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 0,
+        keepRefsMinted: [],
         errors: [],
       });
       vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -524,6 +526,7 @@ describe("WorktreeSyncService", () => {
         deleted: 1,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 1,
+        keepRefsMinted: [],
         errors: [],
       });
       vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -559,6 +562,7 @@ describe("WorktreeSyncService", () => {
         deleted: 0,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 0,
+        keepRefsMinted: [],
         errors: [],
       });
       vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -584,6 +588,7 @@ describe("WorktreeSyncService", () => {
         deleted: 1,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 0,
+        keepRefsMinted: [],
         errors: [],
       });
       const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -622,6 +627,7 @@ describe("WorktreeSyncService", () => {
         deleted: 0,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 0,
+        keepRefsMinted: [],
         errors: [],
       });
       const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -648,6 +654,7 @@ describe("WorktreeSyncService", () => {
         deleted: 0,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 0,
+        keepRefsMinted: [],
         errors: [],
       });
       const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -667,6 +674,7 @@ describe("WorktreeSyncService", () => {
         deleted: 0,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 0,
+        keepRefsMinted: [],
         errors: [],
       });
       const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -689,6 +697,7 @@ describe("WorktreeSyncService", () => {
         deleted: 0,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 0,
+        keepRefsMinted: [],
         errors: [],
       });
       const gc = vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(false);
@@ -716,6 +725,7 @@ describe("WorktreeSyncService", () => {
         deleted: 0,
         orphanedRefsDeleted: 0,
         skippedNotSelected: 0,
+        keepRefsMinted: [],
         errors: [],
       });
       vi.spyOn(GitMaintenanceService.prototype, "runNowUnlocked").mockResolvedValue(true);
@@ -2365,9 +2375,13 @@ describe("WorktreeSyncService", () => {
       vi.spyOn(RepoOperationLock.prototype, "acquire").mockResolvedValue({ acquired: true, release: async () => {} });
       vi.spyOn(GitMaintenanceService.prototype, "runIfDueUnlocked").mockResolvedValue(undefined);
       migrationSpy = vi.spyOn(TrashMigrationService.prototype, "migrateLegacyUnlocked").mockResolvedValue(undefined);
-      reaperSpy = vi
-        .spyOn(TrashReaperService.prototype, "reapExpiredUnlocked")
-        .mockResolvedValue({ deleted: 0, orphanedRefsDeleted: 0, skippedNotSelected: 0, errors: [] });
+      reaperSpy = vi.spyOn(TrashReaperService.prototype, "reapExpiredUnlocked").mockResolvedValue({
+        deleted: 0,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
+        keepRefsMinted: [],
+        errors: [],
+      });
     });
 
     afterEach(() => {

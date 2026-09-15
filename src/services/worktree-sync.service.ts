@@ -4,7 +4,7 @@ import * as path from "path";
 import pLimit from "p-limit";
 
 import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import { ConfigError, TrashOperationError } from "../errors";
+import { ConfigError, TrashError, TrashOperationError } from "../errors";
 import { withGitAuthHint } from "../utils/git-auth-error";
 import { formatGitBusySignals, probeInFlightGitOperations } from "../utils/git-busy-probe";
 import { getErrorMessage } from "../utils/lfs-error";
@@ -40,6 +40,7 @@ import type {
   RepoOperationNotStarted,
   SyncOutcome,
   SyncResult,
+  TrashPurgeResult,
 } from "../types";
 import type { LfsErrorContext } from "../utils/retry";
 
@@ -237,10 +238,57 @@ export class WorktreeSyncService {
   // same trash entries and refs at the tail of a sync. wait:true queues behind
   // an in-flight sync instead of failing fast — restores are explicit user
   // actions, not periodic work.
-  async restoreFromTrash(id: string): Promise<TrashManifest> {
-    const result = await this.runExclusiveRepoOperation(() => this.trashService.restore(id), { wait: true });
+  //
+  // `lockWaitMs` is the same argument carried across the process boundary. The
+  // in-process mutex has always queued here, but the cross-process lock did
+  // not, so a restore run while a daemon was mid-sync failed immediately for a
+  // reason that resolves itself in a minute. Callers that can afford to wait
+  // pass a bounded budget; the default stays fail-fast.
+  async restoreFromTrash(id: string, options: { lockWaitMs?: number } = {}): Promise<TrashManifest> {
+    const result = await this.runExclusiveRepoOperation(() => this.trashService.restore(id), {
+      wait: true,
+      lockWaitMs: options.lockWaitMs,
+    });
     if (!result.started) {
       throw new TrashOperationError("restore", `cannot restore trash entry '${id}': ${describeNotStarted(result)}`);
+    }
+    return result.value;
+  }
+
+  // Deletes ONE named trash entry ahead of its expiry, through the reap path
+  // rather than around it. Two properties matter and both come from reusing
+  // TrashReaperService.purgeEntryUnlocked instead of unlinking the container
+  // here:
+  //
+  //  - A `keepPinOnReap` entry gets its permanent `refs/sync-worktrees/keep/<id>`
+  //    ref minted BEFORE anything is deleted, and the whole purge is abandoned
+  //    if that fails. Those entries exist because their commits were on no
+  //    remote when the worktree was pruned, so the payload and the pin can be
+  //    the only copy in existence; deleting them without the anchor destroys
+  //    work. The result names any ref it minted so the caller can print it.
+  //  - The payload is renamed aside before it is removed and the attempt is in
+  //    the audit log before either, exactly as an expiry reap would be.
+  //
+  // The entry is looked up inside the lock, so "no trash entry with id" is
+  // decided against the same listing the purge acts on rather than against one
+  // read before the wait.
+  async purgeTrashEntry(id: string, options: { lockWaitMs?: number } = {}): Promise<TrashPurgeResult> {
+    if (this.cloneSyncService) {
+      throw new TrashOperationError("purge", "trash operations are only available for worktree-mode repositories");
+    }
+    const result = await this.runExclusiveRepoOperation<TrashPurgeResult>(
+      async () => {
+        const { entries } = await this.trashService.listEntries();
+        if (!entries.some((candidate) => candidate.manifest.id === id)) {
+          throw new TrashOperationError("purge", `no trash entry with id '${id}'`);
+        }
+        const reap = await this.trashReaper.purgeEntryUnlocked(id);
+        return { deleted: reap.deleted > 0, keepRefsMinted: reap.keepRefsMinted, errors: reap.errors };
+      },
+      { wait: true, lockWaitMs: options.lockWaitMs },
+    );
+    if (!result.started) {
+      throw new TrashOperationError("purge", `cannot purge trash entry '${id}': ${describeNotStarted(result)}`);
     }
     return result.value;
   }
@@ -305,7 +353,7 @@ export class WorktreeSyncService {
     const result = await this.runExclusiveRepoOperation(
       async () => {
         const reap = this.cloneSyncService
-          ? { deleted: 0, orphanedRefsDeleted: 0, skippedNotSelected: 0, errors: [] }
+          ? { deleted: 0, orphanedRefsDeleted: 0, skippedNotSelected: 0, keepRefsMinted: [], errors: [] }
           : await this.trashReaper.purgeAllUnlocked(selection.trashEntryIds);
         const errors = [...reap.errors];
         const keepRefs = this.cloneSyncService ? [] : await this.listKeepRefs();
@@ -503,7 +551,10 @@ export class WorktreeSyncService {
       },
       { wait: true },
     );
-    if (!result.started) throw new Error(`Cannot delete keep refs: ${describeNotStarted(result)}`);
+    // TrashError, not a bare Error: the CLI reports "the daemon holds the lock"
+    // as one line and exit code 1, and tells the two apart by type.
+    if (!result.started)
+      throw new TrashError(`Cannot delete keep refs: ${describeNotStarted(result)}`, "KEEP_REF_DROP");
     return result.value;
   }
 
@@ -525,7 +576,7 @@ export class WorktreeSyncService {
       },
       { wait: true },
     );
-    if (!result.started) throw new Error(`Cannot delete keep ref: ${describeNotStarted(result)}`);
+    if (!result.started) throw new TrashError(`Cannot delete keep ref: ${describeNotStarted(result)}`, "KEEP_REF_DROP");
   }
 
   async discardDivergedDirectory(targetPath: string, keepRef?: string): Promise<void> {
@@ -618,7 +669,7 @@ export class WorktreeSyncService {
 
   async runExclusiveRepoOperation<T>(
     operation: () => Promise<T>,
-    options: { wait?: boolean } = {},
+    options: { wait?: boolean; lockWaitMs?: number } = {},
   ): Promise<ExclusiveRepoOperationResult<T>> {
     // Fail-fast callers (sync, init, MCP) bail when any repo op is active or queued.
     // wait:true callers (interactive create) skip this check and queue on the mutex,
@@ -631,7 +682,7 @@ export class WorktreeSyncService {
     }
 
     return this.repoMutex(async (): Promise<ExclusiveRepoOperationResult<T>> => {
-      const lock = await this.repoOperationLock.acquire();
+      const lock = await this.repoOperationLock.acquire({ waitMs: options.lockWaitMs });
       if (!lock.acquired) {
         if (lock.reason === "locked") {
           this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");

@@ -74,10 +74,30 @@ describe("parseArguments", () => {
     expect(dropAll).toMatchObject({ dropAllKeepRefs: true, dropKeepRef: undefined });
   });
 
+  it("parses trash --purge, --json and --wait", () => {
+    const purge = parseArguments(["trash", "--filter", "backend", "--purge", "entry-id", "--wait"]);
+    if (purge.command !== "trash") throw new Error("expected trash command");
+    expect(purge).toMatchObject({ purge: "entry-id", wait: true, restore: undefined });
+
+    const json = parseArguments(["trash", "--filter", "backend", "--json"]);
+    if (json.command !== "trash") throw new Error("expected trash command");
+    expect(json).toMatchObject({ json: true, purge: undefined, wait: undefined });
+  });
+
   it.each([
     ["restore against dropKeepRef", ["trash", "--restore", "entry", "--dropKeepRef", "keep"]],
     ["restore against dropAllKeepRefs", ["trash", "--restore", "entry", "--dropAllKeepRefs"]],
     ["dropKeepRef against dropAllKeepRefs", ["trash", "--dropKeepRef", "keep", "--dropAllKeepRefs"]],
+    ["purge against restore", ["trash", "--purge", "entry", "--restore", "entry"]],
+    ["purge against dropKeepRef", ["trash", "--purge", "entry", "--dropKeepRef", "keep"]],
+    ["purge against dropAllKeepRefs", ["trash", "--purge", "entry", "--dropAllKeepRefs"]],
+    // --json describes the listing; an action produces no listing to describe.
+    ["json against restore", ["trash", "--json", "--restore", "entry"]],
+    ["json against purge", ["trash", "--json", "--purge", "entry"]],
+    ["json against dropAllKeepRefs", ["trash", "--json", "--dropAllKeepRefs"]],
+    // --wait is about the repository lock, which the listing never takes.
+    ["wait against json", ["trash", "--wait", "--json"]],
+    ["wait against dropAllKeepRefs", ["trash", "--wait", "--dropAllKeepRefs"]],
   ])("rejects conflicting trash mutations: %s", (_label, argv) => {
     expect(() => parseArguments(argv)).toThrow(/process\.exit/);
   });

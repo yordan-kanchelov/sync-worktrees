@@ -597,18 +597,33 @@ The object store is the one thing every worktree does share, so the `gc` is the 
 - Before the `gc`, each worktree's admin directory is checked for `index.lock` or `HEAD.lock` and for an unfinished `merge`, `rebase`, `cherry-pick`, `revert` or `bisect`. If any is found the `gc` is skipped for that repository, the result line reads `GC skipped`, and the errors name the worktree and the marker. This is a point-in-time check, not a lock: it catches a command or operation that is already in progress, and cannot stop one that starts a moment later. Purging the trash and refs still happens either way. A marker left behind by a crashed command — a stale `index.lock`, or a `rebase-merge/` from an operation nobody finished — keeps reporting busy until you remove the lock or finish the operation in that worktree; the error names both so you can tell which.
 
 ```bash
-sync-worktrees trash --filter <repository-name>
+sync-worktrees trash --filter <repository-name>                                   # table of entries + keep refs
+sync-worktrees trash --filter <repository-name> --json                            # the same listing, machine-readable
 sync-worktrees trash --filter <repository-name> --restore <id>
+sync-worktrees trash --filter <repository-name> --purge <id>                      # permanent, typed confirmation
+sync-worktrees trash --filter <repository-name> --restore <id> --wait             # also valid with --purge
 sync-worktrees trash --filter <repository-name> --dropKeepRef <listed-keep-name>
 sync-worktrees trash --filter <repository-name> --dropAllKeepRefs
 ```
+
+The listing is a table of `Id`, `Branch / path`, `Reason`, `Size`, `Expires`, `Restores as` and `Keep on reap`; an empty trash says so rather than printing nothing. `Size` reads `—` for a payload nothing has measured yet — sizes are gathered off the repository lock at the tail of a sync, so an entry trashed moments ago has none, and the listing never waits for a `du` of its own. `Restores as` is `worktree` when the entry still has its branch, HEAD commit and pin ref, and `files only` otherwise. `Keep on reap` marks an entry whose commits were on no remote when it was trashed; see **Permanent keep refs** below.
+
+`--json` prints `{ entries, invalidEntries, keepRefs }`, where each entry carries `id`, `branch`, `reason`, `originalPath`, `deletedAt`, `expiresAt`, `sizeBytes` (`null` when unmeasured — never `0`), `restoresAsWorktree`, `keepPinOnReap` and `source`.
+
+Expected failures — no entry with that id, a destination that already exists, a repository lock another process holds — print one `❌ <message>` line and exit 1; only an unexpected error prints a stack.
+
+`--restore` and `--purge` take the repository lock, which a running daemon holds for the length of a sync. Without `--wait` they fail immediately and say so. With `--wait` they retry the lock for up to two minutes and then give up with the same message — a bound, not "block until it frees up", so a scripted invocation always terminates. Both locks a worktree-mode repository takes share that one window rather than getting it each.
+
+`--purge <id>` deletes one entry ahead of its expiry, through the same path the expiry reaper uses: it needs an interactive TTY, the entry's id typed back, and it writes a `trash_purge` audit record before touching anything. For a `Keep on reap` entry the permanent `refs/sync-worktrees/keep/<id>` ref is created **first** and the files are deleted only if that succeeds — those commits are on no remote, so the payload and the pin can be the only copy in existence. Deleting the whole trash instead is the TUI's `x` (force clean), which also drops the recovery refs and runs a `gc`.
 
 **Permanent keep refs**: a worktree whose commits were on no remote when it was pruned keeps them past payload expiry — when the entry is reaped, its pin is promoted to `refs/sync-worktrees/keep/<id>`, which nothing ages out. At reap time the question is asked again: if the commits are reachable from a remote-tracking ref by then, and this tick's `fetch --all --prune` completed so that ref set is current, no keep ref is minted. Anything less than that answer mints one — a failed fetch, a rev-list that failed, a count that could not be read.
 
 That re-check is narrow, and is not a cure for keep refs accumulating. A squash or rebase merge puts the branch's *content* on the default branch as a new commit, so the original commits stay reachable from no remote ref and still earn a permanent ref — one per pruned branch, for as long as the repository lives. `--dropAllKeepRefs` is the way back: it lists what is there, takes one typed confirmation for the whole set, and deletes the refs it listed. Refs a `.diverged/` directory still relies on are retained and named, refs minted while the confirmation was on screen are left alone, and a ref another git process has locked is reported without stopping the rest. The commits behind a dropped ref become collectable by the next `git gc`.
 
 
-**Restoring**: read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
+**Restoring**: `sync-worktrees trash --filter <name> --restore <id>` puts the payload back at its original path. An entry the listing shows as `worktree` is rebuilt as a registered worktree on its branch; one shown as `files only` is restored as a plain directory, because without a pin ref the trashed commits may already be gone. That second case has a consequence worth knowing before you use it: if the branch is still in the repository's synced set, the next sync finds an unregistered directory where its worktree belongs and moves it straight back to trash as a new `orphan` entry. The warning on the restore says so; copy what you need out of the directory, or exclude the branch, before the next tick.
+
+If you would rather do it by hand, read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
 
 ```bash
 cd my-repo-worktrees/.trash/<id>
@@ -618,9 +633,9 @@ git -C <bare-repo> worktree add --no-checkout <originalPath> <branch>
 cp -R payload/. <originalPath>/   # then restore the .git link git wrote:
 git -C <bare-repo> worktree repair <originalPath>
 git -C <originalPath> reset       # index at HEAD, payload shows as unstaged changes
-cd .. && rm -rf <id>              # discard the trash entry when done
-git -C <bare-repo> update-ref -d refs/sync-worktrees/trash/<workspace-hash>/<id>   # drop the pin
 ```
+
+Discarding one entry is `--purge <id>` (above), not `rm -rf`: removing the container by hand leaves its pin ref behind until the reaper's next sweep, and for a `Keep on reap` entry it destroys the only copy of commits that reached no remote.
 
 Notes:
 

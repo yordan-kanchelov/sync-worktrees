@@ -1,9 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { TrashError } from "../../errors";
+import { TrashReaperService } from "../trash-reaper.service";
+import { TrashService } from "../trash.service";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { Config } from "../../types";
 import type { Logger } from "../logger.service";
+import type { TrashEntry } from "../trash.service";
 import type { Mock } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -60,6 +64,11 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     mocks.release.mockResolvedValue(undefined);
     mocks.acquire.mockResolvedValue({ acquired: true, release: mocks.release });
     service = new WorktreeSyncService(makeConfig());
+  });
+
+  // Prototype spies below would otherwise outlive their test.
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("rejects a fail-fast op while another operation is in flight", async () => {
@@ -164,6 +173,94 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("/state/sync-worktrees/locks"));
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("ENOTDIR"));
     expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("Another process holds"));
+  });
+
+  // The in-process mutex has always queued for these two, but the cross-process
+  // lock was taken with `retries: 0`, so a restore attempted while a daemon was
+  // mid-sync failed on the spot for a reason that clears itself in a minute.
+  describe("trash operations and the cross-process lock", () => {
+    it("takes the lock fail-fast by default and with a bounded budget under --wait", async () => {
+      // An id no listing can produce: the point is which options reached
+      // acquire(), and the operation body may reject for any reason after that.
+      await expect(service.purgeTrashEntry("missing-entry")).rejects.toThrow("no trash entry with id");
+      expect(mocks.acquire).toHaveBeenLastCalledWith({ waitMs: undefined });
+
+      await expect(service.purgeTrashEntry("missing-entry", { lockWaitMs: 90_000 })).rejects.toThrow(
+        "no trash entry with id",
+      );
+      expect(mocks.acquire).toHaveBeenLastCalledWith({ waitMs: 90_000 });
+
+      await expect(service.restoreFromTrash("missing-entry", { lockWaitMs: 90_000 })).rejects.toThrow(
+        "no trash entry with id",
+      );
+      expect(mocks.acquire).toHaveBeenLastCalledWith({ waitMs: 90_000 });
+    });
+
+    it("reports a lock another process holds as a purge failure rather than a crash", async () => {
+      mocks.acquire.mockResolvedValueOnce({ acquired: false, reason: "locked" });
+
+      await expect(service.purgeTrashEntry("any-entry")).rejects.toThrow(
+        "cannot purge trash entry 'any-entry': another process holds the repository lock",
+      );
+    });
+
+    // A typed error, so the CLI can print it as one line with exit code 1
+    // instead of letting it reach main().catch as an unhandled crash.
+    it("reports a keep-ref drop the lock refused as a trash error", async () => {
+      mocks.acquire.mockResolvedValueOnce({ acquired: false, reason: "locked" });
+      await expect(service.deleteKeepRef("preserved-entry")).rejects.toBeInstanceOf(TrashError);
+
+      mocks.acquire.mockResolvedValueOnce({ acquired: false, reason: "locked" });
+      await expect(service.deleteKeepRefs(["preserved-entry"])).rejects.toBeInstanceOf(TrashError);
+    });
+
+    // Which reap path a single-entry purge takes is the whole safety question:
+    // purgeAllUnlocked deliberately mints no keep refs, because force clean's
+    // confirmation covered the recovery refs too. A --purge confirmation covers
+    // one entry, so it must go through the path that still mints them.
+    it("purges one named entry through the reap path that mints keep refs", async () => {
+      const entry = { manifest: { id: "entry-1" } } as unknown as TrashEntry;
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [entry], invalid: [] });
+      const purgeEntry = vi.spyOn(TrashReaperService.prototype, "purgeEntryUnlocked").mockResolvedValue({
+        deleted: 1,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
+        keepRefsMinted: ["refs/sync-worktrees/keep/entry-1"],
+        errors: [],
+      });
+      const purgeAll = vi.spyOn(TrashReaperService.prototype, "purgeAllUnlocked");
+
+      await expect(service.purgeTrashEntry("entry-1")).resolves.toEqual({
+        deleted: true,
+        keepRefsMinted: ["refs/sync-worktrees/keep/entry-1"],
+        errors: [],
+      });
+
+      expect(purgeEntry).toHaveBeenCalledWith("entry-1");
+      expect(purgeAll).not.toHaveBeenCalled();
+    });
+
+    // A reap that deleted nothing is a failed purge, and the CLI prints
+    // "✅ Purged <id>" off this boolean. Without a case where the count is 0,
+    // widening the comparison to `>= 0` reports success while the entry is
+    // still sitting on disk.
+    it("reports a purge that deleted nothing as a failure, not a success", async () => {
+      const entry = { manifest: { id: "entry-2" } } as unknown as TrashEntry;
+      vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [entry], invalid: [] });
+      vi.spyOn(TrashReaperService.prototype, "purgeEntryUnlocked").mockResolvedValue({
+        deleted: 0,
+        orphanedRefsDeleted: 0,
+        skippedNotSelected: 0,
+        keepRefsMinted: [],
+        errors: ["entry-2: payload is locked"],
+      });
+
+      await expect(service.purgeTrashEntry("entry-2")).resolves.toEqual({
+        deleted: false,
+        keepRefsMinted: [],
+        errors: ["entry-2: payload is locked"],
+      });
+    });
   });
 
   it("releases the file lock even when the operation throws", async () => {

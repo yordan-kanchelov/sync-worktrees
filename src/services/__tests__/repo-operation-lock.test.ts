@@ -127,6 +127,73 @@ describe("RepoOperationLock", () => {
     expect(release).toHaveBeenCalledTimes(2);
   });
 
+  // `sync-worktrees trash --restore/--purge --wait` is the only caller that
+  // asks for this. Everything periodic keeps `retries: 0` above: a cron tick
+  // that cannot take the lock is a clean skip, because whoever holds it is
+  // doing the same work.
+  it("retries at a fixed interval inside the requested budget", async () => {
+    const config = makeConfig();
+    const worktreeTarget = getWorktreeDirLockTarget(config);
+    const lock = new RepoOperationLock(config, gitService as GitService);
+
+    expectAcquired(await lock.acquire({ waitMs: 5_000 }));
+
+    const calls = (lockfile.lock as Mock).mock.calls;
+    expect(calls.map(([target]) => target)).toEqual([
+      "/tmp/bare.git",
+      path.join(worktreeTarget.dir, worktreeTarget.file),
+    ]);
+    for (const [, options] of calls) {
+      // A fixed interval, not proper-lockfile's exponential default, so the
+      // budget is the wall clock the CLI can quote to the person waiting.
+      expect(options.retries).toMatchObject({ factor: 1, minTimeout: 1000, maxTimeout: 1000 });
+      expect(options.retries.retries).toBeGreaterThan(0);
+      expect(options.retries.retries).toBeLessThanOrEqual(5);
+    }
+  });
+
+  // The two locks share ONE window. A budget handed to each would make the
+  // worst case twice what the caller asked for — the difference between a
+  // bound a scripted run can rely on and one that silently doubles.
+  it("spends a single shared window across both worktree-mode locks", async () => {
+    vi.useFakeTimers();
+    try {
+      (lockfile.lock as Mock).mockImplementation(async () => {
+        vi.advanceTimersByTime(4_000);
+        return release;
+      });
+      const lock = new RepoOperationLock(makeConfig(), gitService as GitService);
+
+      expectAcquired(await lock.acquire({ waitMs: 6_000 }));
+
+      const budgets = (lockfile.lock as Mock).mock.calls.map(([, options]) => options.retries.retries);
+      expect(budgets).toEqual([6, 2]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up once the shared window is spent instead of retrying the second lock", async () => {
+    vi.useFakeTimers();
+    try {
+      (lockfile.lock as Mock).mockImplementation(async () => {
+        vi.advanceTimersByTime(9_000);
+        return release;
+      });
+      const lock = new RepoOperationLock(makeConfig(), gitService as GitService);
+
+      expectAcquired(await lock.acquire({ waitMs: 6_000 }));
+
+      // Exhausted, so the second lock falls back to the plain single attempt —
+      // never a fresh budget, and never a negative retry count.
+      const budgets = (lockfile.lock as Mock).mock.calls.map(([, options]) => options.retries);
+      expect(budgets[0]).toMatchObject({ retries: 6 });
+      expect(budgets[1]).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("releases the bare-repo lock and reports locked when the worktreeDir lock is contended in worktree mode", async () => {
     (lockfile.lock as Mock).mockResolvedValueOnce(release).mockRejectedValueOnce(errno("ELOCKED", "locked"));
     const lock = new RepoOperationLock(makeConfig(), gitService as GitService, logger);

@@ -513,6 +513,100 @@ describe("TrashReaperService", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("deferring reap"));
   });
 
+  // `sync-worktrees trash --purge <id>` deletes one entry ahead of its expiry.
+  // A keepPinOnReap entry is exactly the one whose payload and pin can be the
+  // only copy of its commits, so the permanent ref has to exist BEFORE anything
+  // is deleted — the expiry reap's ordering, and deliberately not
+  // purgeAllUnlocked's, whose confirmation covered the recovery refs too.
+  // The guard that makes --purge safe, and the only thing standing between it
+  // and destroying commits. A CLI purge has fetched nothing, so the
+  // remote-tracking refs it would consult may be stale: a branch deleted
+  // upstream whose `refs/remotes/origin/<b>` has not been pruned yet still
+  // makes the "are these commits on a remote?" count read 0. Acting on that
+  // zero releases the anchor for commits no remote has, and the next fetch
+  // prunes the ref that was vouching for them. So the re-check is not even
+  // asked from here — the ref is minted whatever the count says.
+  it("mints the keep ref even when the commits look like they reached a remote", async () => {
+    const named = await makeEntry("purge-stale-remote", {
+      ageDays: 1,
+      branch: "purge-stale-remote",
+      keepPinOnReap: true,
+    });
+    // What a stale, unpruned remote-tracking ref looks like to the re-check.
+    gitStub.countCommitsNotOnAnyRemote.mockResolvedValue(0);
+    gitStub.updateRef.mockClear();
+
+    const result = await reaper.purgeEntryUnlocked(named.manifest.id);
+
+    expect(result.deleted).toBe(1);
+    expect(result.keepRefsMinted).toEqual([`refs/sync-worktrees/keep/${named.manifest.id}`]);
+    expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${named.manifest.id}`, "abc123");
+    // Not merely "the answer was ignored": the question is never put, because
+    // there is no fetch behind this call to make the answer worth anything.
+    expect(gitStub.countCommitsNotOnAnyRemote).not.toHaveBeenCalled();
+  });
+
+  it("mints the keep ref before it deletes anything when purging one named entry", async () => {
+    const named = await makeEntry("purge-one", { ageDays: 1, branch: "purge-one", keepPinOnReap: true });
+    const bystander = await makeEntry("untouched", { ageDays: 1, branch: "untouched", keepPinOnReap: true });
+    gitStub.updateRef.mockClear();
+    vi.mocked(fs.rename).mockClear();
+
+    const result = await reaper.purgeEntryUnlocked(named.manifest.id);
+
+    expect(result.deleted).toBe(1);
+    expect(result.keepRefsMinted).toEqual([`refs/sync-worktrees/keep/${named.manifest.id}`]);
+    expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${named.manifest.id}`, "abc123");
+    // The ordering is the whole point: setting the payload aside is the first
+    // irreversible step, and the ref has to be there before it.
+    expect(gitStub.updateRef.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(fs.rename).mock.invocationCallOrder[0],
+    );
+    await expect(fs.access(named.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    // One entry, not the trash: the other keepPinOnReap entry keeps its payload
+    // and gets no ref minted for it either.
+    await expect(fs.access(bystander.containerPath)).resolves.toBeUndefined();
+    expect(result.skippedNotSelected).toBe(1);
+    expect(gitStub.updateRef).not.toHaveBeenCalledWith(
+      `refs/sync-worktrees/keep/${bystander.manifest.id}`,
+      expect.anything(),
+    );
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "trash_purge", result: "attempt", trashId: named.manifest.id }),
+    );
+  });
+
+  it("deletes nothing when a purged entry's keep ref cannot be created", async () => {
+    const named = await makeEntry("purge-keep-fails", {
+      ageDays: 1,
+      branch: "purge-keep-fails",
+      keepPinOnReap: true,
+    });
+    gitStub.updateRef.mockRejectedValue(new Error("ref store readonly"));
+
+    const result = await reaper.purgeEntryUnlocked(named.manifest.id);
+
+    expect(result.deleted).toBe(0);
+    expect(result.keepRefsMinted).toEqual([]);
+    await expect(fs.access(named.payloadPath)).resolves.toBeUndefined();
+    // The pin is still the only thing holding the commits, so it stays too.
+    expect(gitStub.deleteRef).not.toHaveBeenCalledWith(named.manifest.pinRef);
+    expect(result.errors.join(" ")).toContain("ref store readonly");
+  });
+
+  it("purges an ordinary entry without minting a recovery ref", async () => {
+    const named = await makeEntry("purge-plain", { ageDays: 1, branch: "purge-plain" });
+    gitStub.updateRef.mockClear();
+
+    const result = await reaper.purgeEntryUnlocked(named.manifest.id);
+
+    expect(result.deleted).toBe(1);
+    expect(result.keepRefsMinted).toEqual([]);
+    expect(gitStub.updateRef).not.toHaveBeenCalled();
+    expect(gitStub.deleteRef).toHaveBeenCalledWith(named.manifest.pinRef);
+    await expect(fs.access(named.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("keep-refs any keepPinOnReap entry regardless of reason, but never ordinary entries", async () => {
     const ordinary = await makeEntry("ordinary", { ageDays: 31, branch: "ordinary" });
     // Diverged removals set keepPinOnReap too — the trashed commits may exist

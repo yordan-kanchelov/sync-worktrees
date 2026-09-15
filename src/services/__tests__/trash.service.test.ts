@@ -1135,6 +1135,14 @@ describe("TrashService", () => {
       expect(gitStub.addWorktreeNoCheckout).not.toHaveBeenCalled();
       await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("data");
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("restoring files only"));
+      // An unregistered directory where a synced branch's worktree belongs is
+      // what the stale-directory path trashes, so this restore is undone by the
+      // next sync unless the person acts. Warning about the shape without
+      // warning about the consequence is what made this surprising.
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("moves it back to trash as a new 'orphan' entry"),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("pinless"));
     });
 
     it("refuses when the branch exists at a different commit instead of clobbering it", async () => {
