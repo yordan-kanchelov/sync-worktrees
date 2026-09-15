@@ -10,6 +10,7 @@ import { atomicWriteFile } from "../utils/atomic-write";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { filenameTimestamp } from "../utils/filename-timestamp";
+import { isGitCreatableBranchName, isGitObjectId } from "../utils/git-validation";
 import { getErrorMessage } from "../utils/lfs-error";
 import { copyTreePreservingSymlinks } from "../utils/preserving-copy";
 import { hasPayloadPendingDeletion, removeTrashContainer, trashDeleteHint } from "../utils/trash-container";
@@ -747,11 +748,11 @@ export class TrashService {
         !Number.isFinite(Date.parse(parsed.expiresAt)) ||
         typeof parsed.originalPath !== "string" ||
         !path.isAbsolute(parsed.originalPath) ||
-        !(typeof parsed.branch === "string" || parsed.branch === null) ||
+        !this.isRestorableBranch(parsed.branch) ||
         !["prune", "orphan", "diverged-replace", "manual", "legacy-adopt"].includes(parsed.reason as string) ||
         !(typeof parsed.sizeBytes === "number" || parsed.sizeBytes === null) ||
         (typeof parsed.sizeBytes === "number" && (!Number.isFinite(parsed.sizeBytes) || parsed.sizeBytes < 0)) ||
-        !(typeof parsed.headOid === "string" || parsed.headOid === null) ||
+        !(parsed.headOid === null || (typeof parsed.headOid === "string" && isGitObjectId(parsed.headOid))) ||
         !this.isOwnPinRef(parsed.pinRef, id) ||
         (parsed.pinRef !== null && parsed.headOid === null) ||
         !(
@@ -780,6 +781,42 @@ export class TrashService {
     } catch {
       return null;
     }
+  }
+
+  // `branch` and `headOid` reach git as positional arguments — `git branch
+  // <branch> <headOid>` in restoreAsWorktree, `git worktree add ... <branch>`
+  // right after it, `git update-ref <keepRef> <headOid>` in the reaper — and
+  // git's option parser permutes, so an option-shaped value in either slot is
+  // read as an option rather than refused. Measured on git 2.43.0: in a bare
+  // repo whose HEAD is refs/heads/main, both `git branch -m <sha>` and
+  // `git branch <name> -m` rename main, taking HEAD with them, and
+  // `git update-ref <ref> -d` deletes the ref it was asked to create. The `--`
+  // separators the git wrappers now pass are the other half of this; neither
+  // defence is a reason to drop the other.
+  //
+  // Real branch names cannot look like options, so only a hand-edited or
+  // corrupted manifest lands here — the same threat model isOwnPinRef below is
+  // written against. Rejecting the whole manifest (rather than only refusing
+  // the restore) is what keeps every other reader of `branch` honest too, and
+  // matches how every other structurally impossible field is treated here.
+  // The price is that such an entry is never listed, restored OR reaped — not
+  // even by force clean, which purges only the ids the preview collected from
+  // the VALID entries — so its payload and pin ref stay until someone deletes
+  // the container by hand; that is the standing treatment of an unparseable
+  // manifest, it is reported by both the trash listing and the reaper, and this
+  // tool never writes one (trash-migration refuses to adopt a legacy entry
+  // whose recorded branch or commit would produce it).
+  //
+  // That price is only acceptable while `isGitCreatableBranchName` is provably
+  // NO STRICTER than git. This whole policy rests on that one invariant: make
+  // the predicate reject a name git accepts and every entry carrying such a
+  // branch becomes permanently unreachable, silently, on upgrade. Its first
+  // version broke exactly this by delegating to the stricter creation-time
+  // validator. Do not reintroduce that delegation; the corpus test against real
+  // `git check-ref-format --branch` is what holds the line.
+  private isRestorableBranch(branch: unknown): boolean {
+    if (branch === null) return true;
+    return typeof branch === "string" && isGitCreatableBranchName(branch);
   }
 
   // A pin ref must belong to this entry, so a hand-edited manifest can never

@@ -1639,12 +1639,17 @@ export class GitService {
 
   async updateRef(refName: string, sha: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["update-ref", refName, sha]);
+    // `--` because the reaper promotes a trash pin to a permanent keep ref
+    // through here with a manifest-sourced oid: `git update-ref <ref> -d`
+    // DELETES the ref it was asked to write (measured, exit 0). With the
+    // separator the same call is `fatal: -d: not a valid SHA1` and the ref
+    // survives.
+    await bareGit.raw(["update-ref", "--", refName, sha]);
   }
 
   async deleteRef(refName: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["update-ref", "-d", refName]);
+    await bareGit.raw(["update-ref", "-d", "--", refName]);
   }
 
   async listRefs(prefix: string): Promise<string[]> {
@@ -1665,14 +1670,21 @@ export class GitService {
     }
   }
 
+  // `--` before the two positionals, because both of them come back out of a
+  // trash manifest and git's option parser permutes: without it `git branch
+  // <name> -m` and `git branch -m <sha>` are both `git branch -m`, which in a
+  // bare repo renames the branch HEAD points at. Verified on git 2.43.0 —
+  // after `--`, an option-shaped name is "not a valid branch name" and an
+  // option-shaped start-point is "not a valid object name", and refs/heads/
+  // is untouched either way.
   async createBranchAt(branchName: string, sha: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["branch", branchName, sha]);
+    await bareGit.raw(["branch", "--", branchName, sha]);
   }
 
   async deleteLocalBranch(branchName: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["branch", "-D", branchName]);
+    await bareGit.raw(["branch", "-D", "--", branchName]);
   }
 
   // Compare-and-swap delete: removes the branch ref only while it still
@@ -1680,7 +1692,7 @@ export class GitService {
   // ref instead of being orphaned by an unconditional `branch -D`.
   async deleteLocalBranchIfAt(branchName: string, expectedOid: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["update-ref", "-d", `${GIT_CONSTANTS.REFS.HEADS}${branchName}`, expectedOid]);
+    await bareGit.raw(["update-ref", "-d", "--", `${GIT_CONSTANTS.REFS.HEADS}${branchName}`, expectedOid]);
     // Only after the delete actually succeeded: a CAS that the ref moved
     // under rejects above, and the still-live branch keeps its upstream.
     await this.removeBranchConfigSection(bareGit, branchName);
@@ -1734,7 +1746,7 @@ export class GitService {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     const absoluteWorktreePath = path.resolve(worktreePath);
     await fs.mkdir(path.dirname(absoluteWorktreePath), { recursive: true });
-    await bareGit.raw(["worktree", "add", "--no-checkout", absoluteWorktreePath, branchName]);
+    await bareGit.raw(["worktree", "add", "--no-checkout", "--", absoluteWorktreePath, branchName]);
   }
 
   // Mixed reset: points the index at HEAD without touching working files, so
@@ -2253,7 +2265,7 @@ export class GitService {
     const upstream = `${GIT_CONSTANTS.REMOTE_PREFIX}${branchName}`;
     try {
       // Config-only: works on a --no-checkout worktree too.
-      await this.getCachedGit(worktreePath).raw(["branch", `--set-upstream-to=${upstream}`, branchName]);
+      await this.getCachedGit(worktreePath).raw(["branch", `--set-upstream-to=${upstream}`, "--", branchName]);
       this.logger.info(`  - Set upstream of '${branchName}' to ${upstream}`);
       return true;
     } catch (error) {

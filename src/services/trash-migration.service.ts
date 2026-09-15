@@ -3,6 +3,7 @@ import * as path from "path";
 
 import { DEFAULT_CONFIG, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 import { atomicWriteFile } from "../utils/atomic-write";
+import { isGitCreatableBranchName, isGitObjectId } from "../utils/git-validation";
 import { getErrorMessage } from "../utils/lfs-error";
 
 import type { Logger } from "./logger.service";
@@ -90,12 +91,17 @@ export class TrashMigrationService {
       const info = await this.readDivergedInfo(dirPath);
       const quarantinedAt = info?.divergedAt ? new Date(info.divergedAt) : null;
       const hasOriginalPath = typeof info?.originalPath === "string" && info.originalPath.length > 0;
-      // Type-check, not truthiness: readDivergedInfo is an unvalidated
-      // JSON.parse, and a truthy non-string branch would be serialized into a
-      // manifest that readManifest then rejects forever — an adopted entry
-      // that can never be listed, restored, or reaped.
-      const hasOriginalBranch = typeof info?.originalBranch === "string" && info.originalBranch.length > 0;
-      const hasValidLocalCommit = info?.localCommit == null || typeof info.localCommit === "string";
+      // Validated, not merely truthy: readDivergedInfo is an unvalidated
+      // JSON.parse, and anything readManifest would later refuse must not be
+      // serialized into a manifest here — the adopted entry would be moved out
+      // of .diverged/ and then never listed, restored, or reaped. So the two
+      // fields that become `branch` and `headOid` are held to the same rules
+      // readManifest applies to them, and an entry that fails stays in
+      // .diverged/ where the legacy keep ref still protects it.
+      const hasOriginalBranch =
+        typeof info?.originalBranch === "string" && isGitCreatableBranchName(info.originalBranch);
+      const hasValidLocalCommit =
+        info?.localCommit == null || (typeof info.localCommit === "string" && isGitObjectId(info.localCommit));
       if (
         !info ||
         !hasOriginalBranch ||

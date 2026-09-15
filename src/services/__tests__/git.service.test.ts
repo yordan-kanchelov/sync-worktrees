@@ -1675,7 +1675,7 @@ describe("GitService", () => {
       const upstreamCalls = (mockGit.raw as Mock).mock.calls.filter(
         (call) => Array.isArray(call[0]) && call[0][0] === "branch",
       );
-      expect(upstreamCalls).toEqual([[["branch", "--set-upstream-to=origin/feature-1", "feature-1"]]]);
+      expect(upstreamCalls).toEqual([[["branch", "--set-upstream-to=origin/feature-1", "--", "feature-1"]]]);
       expect(mockLogger.info).toHaveBeenCalledWith("  - Set upstream of 'feature-1' to origin/feature-1");
       expect(mockLogger.info).toHaveBeenCalledWith("  - Created worktree for 'feature-1'");
       expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("(without tracking)"));
@@ -3170,7 +3170,7 @@ locked
       await expect(gitService.trackRemoteBranchIfExists("feature-1", "/test/worktrees/feature-1")).resolves.toBe(true);
 
       expect(mockGit.raw).toHaveBeenCalledWith(["show-ref", "--verify", "refs/remotes/origin/feature-1"]);
-      expect(worktreeGit.raw).toHaveBeenCalledWith(["branch", "--set-upstream-to=origin/feature-1", "feature-1"]);
+      expect(worktreeGit.raw).toHaveBeenCalledWith(["branch", "--set-upstream-to=origin/feature-1", "--", "feature-1"]);
       expect(mockLogger.info).toHaveBeenCalledWith("  - Set upstream of 'feature-1' to origin/feature-1");
       expect(mockLogger.warn).not.toHaveBeenCalled();
     });

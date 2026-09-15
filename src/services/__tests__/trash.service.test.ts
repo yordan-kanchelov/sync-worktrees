@@ -391,6 +391,161 @@ describe("TrashService", () => {
       expect(listed.invalid).toEqual([entry.containerPath]);
     });
 
+    // `branch` and `headOid` are handed to git positionally by restore —
+    // `git branch <branch> <headOid>`, then `git worktree add ... <branch>` —
+    // and git's option parser permutes, so an option-shaped value in either
+    // slot is read as an option. Measured on git 2.43: in a bare repo whose
+    // HEAD is refs/heads/main, `git branch -m <sha>` and `git branch <name> -m`
+    // both rename main and take HEAD with it, and every later sync then fails
+    // to find the default branch. No real branch name or object id can look
+    // like that, so the manifest is the only way in — and it is refused here,
+    // before any of it reaches a git wrapper.
+    it.each([
+      { scenario: "an option", branch: "-m" },
+      { scenario: "a long option", branch: "--delete" },
+      { scenario: "a range expression", branch: "a..b" },
+      { scenario: "a reflog selector", branch: "feature@{1}" },
+      { scenario: "a .lock ref", branch: "feature/x.lock" },
+      { scenario: "empty", branch: "" },
+      // A JSON number, not a string: `isGitCreatableBranchName` throws on it
+      // and readManifest's catch would swallow that into the same `null`, so
+      // this only pins the typeof guard because the value below is one the
+      // predicate itself would otherwise be asked about.
+      { scenario: "a non-string", branch: 17 },
+      { scenario: "a number that would read as a valid name", branch: 123456 },
+    ])("rejects a manifest whose branch is $scenario, and never restores it", async ({ branch }) => {
+      const source = await makeSourceDir("bad-branch", { "work.txt": "uncommitted work" });
+      const entry = await service.trashDirectory({ dirPath: source, branch: "bad-branch", reason: "prune" });
+      await fs.writeFile(
+        path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME),
+        JSON.stringify({ ...entry.manifest, branch }),
+      );
+
+      const listed = await service.listEntries();
+      expect(listed.entries).toEqual([]);
+      expect(listed.invalid).toEqual([entry.containerPath]);
+
+      await expect(service.restore(entry.manifest.id)).rejects.toThrow(/no trash entry with id/);
+      expect(gitStub.createBranchAt).not.toHaveBeenCalled();
+      expect(gitStub.addWorktreeNoCheckout).not.toHaveBeenCalled();
+    });
+
+    // The control for the rejections above: the identical fixture with a
+    // real branch name still lists AND still reaches createBranchAt, so those
+    // assertions are about the branch value and not about a restore that never
+    // runs in this suite.
+    it("still restores the same fixture when the branch is a real name", async () => {
+      const source = await makeSourceDir("bad-branch", { "work.txt": "uncommitted work" });
+      const entry = await service.trashDirectory({ dirPath: source, branch: "bad-branch", reason: "prune" });
+      gitStub.addWorktreeNoCheckout.mockImplementation(async (...args: unknown[]) => {
+        await fs.mkdir(args[1] as string, { recursive: true });
+      });
+
+      const listed = await service.listEntries();
+      expect(listed.invalid).toEqual([]);
+      expect(listed.entries.map((candidate) => candidate.manifest.id)).toEqual([entry.manifest.id]);
+
+      await expect(service.restore(entry.manifest.id)).resolves.toMatchObject({ branch: "bad-branch" });
+      expect(gitStub.createBranchAt).toHaveBeenCalledWith("bad-branch", "abc123");
+    });
+
+    // The other direction, and the one that costs an entry if it is wrong:
+    // these all name branches git itself will happily create, so a check even
+    // slightly stricter than git's would quietly make each of them
+    // unlistable, unrestorable and unreapable. `@` in particular is accepted
+    // by `git branch` and by `git check-ref-format --branch` (measured on git
+    // 2.43) even though this tool refuses to create one.
+    it.each([
+      { scenario: "a slashed name with a dot", branch: "feature/x.y" },
+      { scenario: "a dotted release name", branch: "release-1.0" },
+      { scenario: "a deeply nested name", branch: "team/area/sub/thing" },
+      { scenario: "a non-ASCII name", branch: "fonctionnalité/日本語" },
+      { scenario: "a name ending in a dash", branch: "wip-" },
+      { scenario: "a name that merely contains .lock", branch: "feature/x.lock.y" },
+      { scenario: "a very long name", branch: `feature/${"x".repeat(300)}` },
+      { scenario: "the bare at-sign git allows", branch: "@" },
+    ])("keeps listing an entry whose branch is $scenario", async ({ branch }) => {
+      const source = await makeSourceDir("valid-branch");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "valid-branch", reason: "prune" });
+      await fs.writeFile(
+        path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME),
+        JSON.stringify({ ...entry.manifest, branch }),
+      );
+
+      const listed = await service.listEntries();
+
+      expect(listed.invalid).toEqual([]);
+      expect(listed.entries.map((candidate) => candidate.manifest.branch)).toEqual([branch]);
+    });
+
+    // `headOid` is the start-point of `git branch <branch> <headOid>` and the
+    // new value of the reaper's `git update-ref <keepRef> <headOid>`. Measured
+    // on git 2.43: `git update-ref <ref> -d` permutes into `update-ref -d
+    // <ref>` and DELETES the ref the reaper meant to create, so a keep-on-reap
+    // entry would report its commits preserved at a ref that does not exist.
+    it.each([
+      { scenario: "an option", headOid: "-m" },
+      { scenario: "the delete switch", headOid: "-d" },
+      { scenario: "a ref name rather than an oid", headOid: "refs/heads/main" },
+      { scenario: "not hexadecimal", headOid: "zzzzzz" },
+      { scenario: "empty", headOid: "" },
+      // 123456 passes the hex regex once stringified, so ONLY the typeof guard
+      // rejects it — without that case the guard is untested and a mutant that
+      // drops it survives the whole suite.
+      { scenario: "a JSON number that is valid hex", headOid: 123456 },
+      // The lower bound: git's shortest usable abbreviation is 4, so a
+      // three-character oid is not one this tool ever wrote.
+      { scenario: "shorter than the minimum abbreviation", headOid: "abc" },
+      { scenario: "a non-string", headOid: 17 },
+    ])("rejects a manifest whose headOid is $scenario", async ({ headOid }) => {
+      const source = await makeSourceDir("bad-oid");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "bad-oid", reason: "prune" });
+      await fs.writeFile(
+        path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME),
+        JSON.stringify({ ...entry.manifest, headOid }),
+      );
+
+      const listed = await service.listEntries();
+
+      expect(listed.entries).toEqual([]);
+      expect(listed.invalid).toEqual([entry.containerPath]);
+    });
+
+    it("keeps listing an entry whose headOid is a full-length object id", async () => {
+      const source = await makeSourceDir("good-oid");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "good-oid", reason: "prune" });
+      const fullOid = "a1b2c3d4".repeat(5);
+      await fs.writeFile(
+        path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME),
+        JSON.stringify({ ...entry.manifest, headOid: fullOid }),
+      );
+
+      const listed = await service.listEntries();
+
+      expect(listed.invalid).toEqual([]);
+      expect(listed.entries.map((candidate) => candidate.manifest.headOid)).toEqual([fullOid]);
+    });
+
+    // JSON.stringify drops an undefined value, so a key that is simply absent
+    // is how a hand-edited manifest loses a field. `null` is a meaningful
+    // answer for both of these — "no branch", "no known commit" — and absence
+    // must not be read as it: `isWorktreeRestorable` tests `!== null`, so an
+    // undefined branch would be carried into `git branch undefined <oid>`.
+    it.each(["branch", "headOid"])("rejects a manifest with no %s key at all — absence is not null", async (field) => {
+      const source = await makeSourceDir("absent-field");
+      const entry = await service.trashDirectory({ dirPath: source, branch: "absent-field", reason: "prune" });
+      const withoutField: Record<string, unknown> = { ...entry.manifest };
+      delete withoutField[field];
+      await fs.writeFile(
+        path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME),
+        JSON.stringify(withoutField),
+      );
+
+      await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [entry.containerPath] });
+      await expect(service.restore(entry.manifest.id)).rejects.toThrow(/no trash entry with id/);
+      expect(gitStub.createBranchAt).not.toHaveBeenCalled();
+    });
+
     it("rejects a manifest with no pinRef key at all — absence is not the same as an unpinned entry", async () => {
       const source = await makeSourceDir("absent-pin");
       const entry = await service.trashDirectory({ dirPath: source, branch: "absent-pin", reason: "manual" });

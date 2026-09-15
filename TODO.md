@@ -207,7 +207,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   points at a recovery flow that no longer applies
 - [x] **T84** — Force clean runs `git gc --prune=now` on a shared object store without checking for
   in-flight git operations, while the modal text says active worktrees are untouched
-- [ ] **T85** — Manifest `branch` is not validated as a ref name; a hand-edited or corrupted
+- [x] **T85** — Manifest `branch` is not validated as a ref name; a hand-edited or corrupted
   manifest with an option-like branch makes restore run `git branch -m <sha>` and rename the bare
   repo's HEAD branch
 - [ ] **T86** — Permanent keep refs accumulate one per squash-merged branch with no expiry, no batch
@@ -3475,7 +3475,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: The maintainers documented the hazard for `aggressive` (README 484) but
   the force-clean UI copy contradicts it and there is no runtime probe; tests mock `runNowUnlocked`.
 
-### [ ] T85. Manifest `branch` is not validated as a ref name; a hand-edited or corrupted manifest with an option-like branch makes restore run `git branch -m <sha>` and rename the bare repo's HEAD branch
+### [x] T85. Manifest `branch` is not validated as a ref name; a hand-edited or corrupted manifest with an option-like branch makes restore run `git branch -m <sha>` and rename the bare repo's HEAD branch
 
 - **Category**: guardrail · **Subsystem**: trash
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

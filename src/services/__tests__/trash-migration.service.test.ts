@@ -179,6 +179,63 @@ describe("TrashMigrationService", () => {
     expect(entries).toHaveLength(0);
   });
 
+  // .diverged-info.json is an unvalidated JSON.parse of a file a user can
+  // edit, and its originalBranch/localCommit become the adopted manifest's
+  // branch/headOid — the two fields readManifest now holds to git's own rules.
+  // Adopting a value readManifest would refuse would move the directory out of
+  // .diverged/ (where its legacy keep ref still protects it) and into an entry
+  // nothing ever lists, restores or reaps again.
+  it.each([
+    { scenario: "an option-shaped branch", info: { originalBranch: "-m" } },
+    { scenario: "a branch with a range expression", info: { originalBranch: "a..b" } },
+    { scenario: "an option-shaped commit", info: { localCommit: "-d" } },
+    { scenario: "a commit that is not an object id", info: { localCommit: "refs/heads/main" } },
+  ])("leaves a .diverged/ entry with $scenario alone rather than adopting it", async ({ info }) => {
+    const legacyDir = path.join(worktreeDir, ".diverged", "2026-06-02-feat-tampered");
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(legacyDir, ".diverged-info.json"),
+      JSON.stringify({
+        originalBranch: "feat",
+        divergedAt: "2026-06-02T08:00:00.000Z",
+        originalPath: path.join(worktreeDir, "feat"),
+        localCommit: "deadbeef",
+        ...info,
+      }),
+    );
+
+    await migration.migrateLegacyUnlocked();
+
+    await expect(fs.access(legacyDir)).resolves.toBeUndefined();
+    const listed = await trashService.listEntries();
+    expect(listed.entries).toHaveLength(0);
+    expect(listed.invalid).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("no parseable"));
+  });
+
+  // The control: the identical fixture without the tampering is adopted, so
+  // the assertions above are about the two edited fields and not about a
+  // migration that never runs.
+  it("adopts the same .diverged/ entry when the recorded branch and commit are well formed", async () => {
+    const legacyDir = path.join(worktreeDir, ".diverged", "2026-06-02-feat-tampered");
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(legacyDir, ".diverged-info.json"),
+      JSON.stringify({
+        originalBranch: "feat",
+        divergedAt: "2026-06-02T08:00:00.000Z",
+        originalPath: path.join(worktreeDir, "feat"),
+        localCommit: "deadbeef",
+      }),
+    );
+
+    await migration.migrateLegacyUnlocked();
+
+    await expect(fs.access(legacyDir)).rejects.toMatchObject({ code: "ENOENT" });
+    const listed = await trashService.listEntries();
+    expect(listed.entries.map((entry) => entry.manifest.branch)).toEqual(["feat"]);
+  });
+
   describe("legacy .diverged/ keep refs", () => {
     const NAME = "2026-06-02-feat-abc12";
     const LEGACY_KEEP_REF = `refs/sync-worktrees/keep/${NAME}`;
