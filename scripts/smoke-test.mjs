@@ -50,13 +50,26 @@ const FORBIDDEN_TARBALL_SUFFIXES = [".map"];
 // back, either of which adds hundreds of kB at once. Raise it when it is
 // ordinary growth that reached it, and say so.
 //
-// What actually costs bytes, measured rather than assumed: only dist/*.js, the
-// .d.ts files and README.md. esbuild re-prints the AST, so NO source comment
-// survives into either bundle — an earlier version of this note claimed the
-// opposite and used it to explain the growth, which sent later work hunting
-// for prose to cut that was never shipped. Tests, changesets and CHANGELOG.md
-// are outside `files` and cost nothing. src/utils/* and src/services/* are
-// billed twice, once into each bundle; src/mcp/* ships only in mcp-server.js.
+// What actually costs bytes: only dist/*.js, the .d.ts files and README.md.
+// Tests, changesets and CHANGELOG.md are outside `files` and cost nothing.
+// src/utils/* and src/services/* are billed twice, once into each bundle;
+// src/mcp/* ships only in mcp-server.js.
+//
+// Comments are where this note has been wrong twice, in both directions, so
+// here is the measured answer: `minify` is off, and esbuild keeps a comment
+// that leads a MEMBER of a braced or bracketed member list — an object-literal
+// property, an array element, a class field — while dropping one that leads a
+// STATEMENT, at module scope or inside a function or method body. Both bundles
+// carry well over a thousand `//` lines; a surviving line costs ~75 bytes in
+// each bundle it ships in. A `/** */` block is separate: tsc copies it verbatim
+// into the .d.ts when it leads a declaration the emitter reaches, by export or
+// by being referenced from an exported signature, and never copies `//` or a
+// plain `/* */`. So rationale is free in a function body, at module scope, or
+// in the changeset, and billed beside an object property or on an exported
+// declaration. Both earlier versions of this paragraph generalised from a probe
+// that sampled one syntactic position; a claim quantified over all positions
+// needs a probe that varies the position.
+//
 // A bundle delta runs about 45 bytes per line of shipped code, so a ~35-line
 // change costs a bit under 2 kB and there is no prose lever that offsets it.
 //
