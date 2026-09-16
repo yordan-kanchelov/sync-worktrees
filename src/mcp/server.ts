@@ -211,7 +211,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "create_worktree",
     {
       description:
-        "Worktree-mode only; clone-mode repos error here. Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Never moves, trashes or deletes an existing directory: errors with code TARGET_EXISTS when the target path exists on disk but is not a registered worktree (clean it up manually or via sync). Errors with code BRANCH_FILTERED when branchInclude/branchExclude/branchMaxAge exclude the branch, since sync prunes worktrees outside the filtered set; force=true creates it anyway. Returns: {success, branchName, worktreePath, created, pushed, warning}.",
+        "Worktree-mode only; clone-mode repos error here. Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Never moves, trashes or deletes an existing directory: errors with code TARGET_EXISTS when the target path exists on disk but is not a registered worktree (clean it up manually or via sync). Errors with code BRANCH_FILTERED when branchInclude/branchExclude/branchMaxAge exclude the branch, since sync prunes worktrees outside the filtered set; force=true creates it anyway. Safe to retry: a call whose worktree is already registered adds nothing and answers worktreeExisted=true, so the checkout is a previous call's, not fresh — re-read or update_worktree it rather than assuming it is clean. Returns: {success, branchName, worktreePath, created, worktreeExisted, pushed, warning}.",
       inputSchema: z.strictObject({
         branchName: z.string().describe("Branch name. Slashes/special chars sanitized for dir name."),
         baseBranch: z
@@ -239,7 +239,13 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
         title: "Create worktree",
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        // The target path is a pure function of the branch name, so a repeat
+        // call cannot add a second anything. The branch already exists (the
+        // first call created it), so `created` is false and the push is not
+        // reattempted either; addWorktree finds the path registered and
+        // returns. Repeating is a no-op, which is what this hint promises —
+        // unlike `sync`, whose work depends on what origin has since done.
+        idempotentHint: true,
         openWorldHint: true,
       },
     },

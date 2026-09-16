@@ -173,6 +173,11 @@ export const createWorktreeOutputSchema = z.looseObject({
   branchName: z.string(),
   worktreePath: z.string(),
   created: z.boolean().describe("The branch was newly created (vs. an existing local/remote branch checked out)."),
+  worktreeExisted: z
+    .boolean()
+    .describe(
+      "The path was already a registered worktree before this call. Its contents are a previous call's, not a fresh checkout — unless its directory had gone, which this call rebuilds.",
+    ),
   pushed: z.boolean(),
   pushError: z.string().optional().describe("Present only when success=false."),
   warning: z.string().optional().describe("The next sync would prune this worktree: local-only or filtered branch."),

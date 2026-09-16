@@ -295,7 +295,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T103** — MCP tool/instruction text and README drift: '.ts' configs are advertised but never
   discovered or loadable; README still says repo selection falls back to 'the first entry in the
   config'; list_worktrees fallback error blames initialization when the bare repo is simply missing
-- [ ] **T104** — create_worktree cannot tell the agent that the worktree already existed, yet is
+- [x] **T104** — create_worktree cannot tell the agent that the worktree already existed, yet is
   annotated idempotentHint:false; response shape hides the no-op
 - [ ] **T105** — MCP handler tests never exercise RepositoryContext and handlers together; the
   ctx/service contract is fully mocked, so state-machine regressions (capability bypass, membership
@@ -4089,7 +4089,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   server.test.ts (so the drift is locked in by the test); README MCP section was not updated with
   F8; the list fallback test (handlers.test.ts:1217-1229) only checks the empty-list path.
 
-### [ ] T104. create_worktree cannot tell the agent that the worktree already existed, yet is annotated idempotentHint:false; response shape hides the no-op
+### [x] T104. create_worktree cannot tell the agent that the worktree already existed, yet is annotated idempotentHint:false; response shape hides the no-op
 
 - **Category**: workflow · **Subsystem**: mcp
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

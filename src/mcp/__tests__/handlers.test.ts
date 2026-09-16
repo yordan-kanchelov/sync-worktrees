@@ -2042,6 +2042,109 @@ describe("handleCreateWorktree target path guard", () => {
   });
 });
 
+// A retry after a client timeout must be distinguishable from the first call.
+// Before `worktreeExisted`, the second create_worktree for the same branch
+// answered {success:true, created:false, pushed:false, worktreePath} — byte for
+// byte what "checked an existing remote branch out into a brand new worktree"
+// answers — so an agent could not tell a no-op from a fresh checkout.
+describe("handleCreateWorktree worktreeExisted", () => {
+  const targetPath = new PathResolutionService().getBranchWorktreePath("/repo/worktrees", "feature/x");
+
+  function makeCreateCtx(
+    worktrees: Array<{ path: string; branch: string }>,
+    existence = { local: true, remote: true },
+  ): ReturnType<typeof makeCtx> {
+    return makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue(existence),
+        getWorktrees: vi.fn<any>().mockResolvedValue(worktrees),
+      },
+    });
+  }
+
+  it("reports worktreeExisted=true, created=false when the path is already registered for the branch", async () => {
+    const { ctx, git } = makeCreateCtx([{ path: targetPath, branch: "feature/x" }]);
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.worktreeExisted).toBe(true);
+    expect(body.created).toBe(false);
+    expect(createWorktreeOutputSchema.parse(body).worktreeExisted).toBe(true);
+    // A no-op create still must not push or branch behind the caller's back.
+    expect(git.createBranch).not.toHaveBeenCalled();
+    expect(git.pushBranch).not.toHaveBeenCalled();
+  });
+
+  it("reports worktreeExisted=false for a fresh path, even with other worktrees registered", async () => {
+    const { ctx } = makeCreateCtx([{ path: "/repo/worktrees/main", branch: "main" }]);
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.worktreeExisted).toBe(false);
+    expect(body.created).toBe(false);
+    expect(createWorktreeOutputSchema.parse(body).worktreeExisted).toBe(false);
+  });
+
+  // `created` and `worktreeExisted` answer different questions: a brand new
+  // branch is `created: true` with nothing at the path, so neither field alone
+  // tells the agent what it is holding.
+  it("reports worktreeExisted=false when the branch itself was created", async () => {
+    const { ctx } = makeCreateCtx([], { local: false, remote: false });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.created).toBe(true);
+    expect(body.worktreeExisted).toBe(false);
+  });
+
+  // The schema requires the field, so the partial-success return must carry it
+  // too or the SDK turns the whole result into an error.
+  it("carries worktreeExisted on the push-failure result", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+        pushBranch: vi.fn<any>().mockRejectedValue(new Error("non-fast-forward")),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "exp", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(false);
+    expect(body.worktreeExisted).toBe(false);
+    expect(createWorktreeOutputSchema.parse(body).worktreeExisted).toBe(false);
+  });
+
+  it("matches the registration by path, not by position in the listing", async () => {
+    const { ctx } = makeCreateCtx([
+      { path: "/repo/worktrees/main", branch: "main" },
+      { path: targetPath, branch: "feature/x" },
+    ]);
+
+    const body = parseResponse(await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" }));
+
+    expect(body.worktreeExisted).toBe(true);
+  });
+
+  // A registration for a *different* branch at the same sanitized path is the
+  // collision error, not a worktreeExisted:true success.
+  it("still errors on a path collision rather than reporting worktreeExisted", async () => {
+    const { ctx } = makeCreateCtx([{ path: targetPath, branch: "feature-x" }]);
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.worktreeExisted).toBeUndefined();
+    expect(body.message).toContain("collides");
+  });
+});
+
 describe("handleListWorktrees includeSize", () => {
   it("returns sizeBytes when includeSize=true", async () => {
     const { ctx } = makeCtx({

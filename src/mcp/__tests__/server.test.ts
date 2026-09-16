@@ -234,6 +234,20 @@ describe("tool input schemas", () => {
     expect(create.description).toContain("warning");
   });
 
+  // The description is where a model learns what the field means; the schema
+  // `describe` only reaches clients that read outputSchema.
+  it("tells the model what worktreeExisted means, and annotates the tool as idempotent", () => {
+    const tools = (createServer(new RepositoryContext()) as any)._registeredTools as Record<
+      string,
+      { description: string; annotations: Record<string, unknown> }
+    >;
+    const create = tools.create_worktree;
+
+    expect(create.description).toContain("worktreeExisted");
+    expect(create.description).toMatch(/retry/i);
+    expect(create.annotations).toMatchObject({ idempotentHint: true, readOnlyHint: false, destructiveHint: false });
+  });
+
   it("still accepts declared keys and applies declared defaults", async () => {
     const detect = await schemaFor("detect_context")["~standard"].validate({ includeStatus: true });
     expect(detect.issues).toBeUndefined();
@@ -355,6 +369,25 @@ describe("stdio protocol", () => {
       for (const tool of tools.result.tools) {
         expect(tool.outputSchema, `${tool.name} outputSchema`).toMatchObject({ type: "object" });
       }
+
+      // Repeating create_worktree with the same arguments is a no-op, so
+      // clients that gate re-execution on idempotentHint must not prompt.
+      // sync is the counter-example in the same listing: what it does depends
+      // on what origin has done since, so it stays non-idempotent.
+      const byName = Object.fromEntries(
+        tools.result.tools.map((tool: { name: string; annotations?: Record<string, unknown> }) => [
+          tool.name,
+          tool.annotations,
+        ]),
+      );
+      expect(byName.create_worktree).toMatchObject({ idempotentHint: true, readOnlyHint: false });
+      expect(byName.sync).toMatchObject({ idempotentHint: false });
+      // The response field that makes the retry legible ships in the advertised
+      // schema, and is required rather than "present when it happened".
+      const createSchema = tools.result.tools.find((tool: { name: string }) => tool.name === "create_worktree")
+        .outputSchema as { properties: Record<string, unknown>; required?: string[] };
+      expect(createSchema.properties.worktreeExisted).toMatchObject({ type: "boolean" });
+      expect(createSchema.required).toContain("worktreeExisted");
 
       const toolCall = await modern.request({
         jsonrpc: "2.0",

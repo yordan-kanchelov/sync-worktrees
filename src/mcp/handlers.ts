@@ -527,6 +527,11 @@ export async function handleCreateWorktree(
         `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
       );
     }
+    // Past the collision guard a registration at this path is this branch's
+    // own, so addWorktree below is a no-op and the response would otherwise be
+    // byte-identical to a fresh checkout. A retrying agent has to be able to
+    // tell the two apart before it trusts the checkout's contents.
+    const worktreeExisted = existing.some((w) => pathsEqual(w.path, worktreePath));
     await ensureWorktreeTargetAvailable(worktreePath, existing);
 
     let created = false;
@@ -553,6 +558,7 @@ export async function handleCreateWorktree(
           branchName,
           worktreePath: path.resolve(worktreePath),
           created: true,
+          worktreeExisted,
           pushed: false,
           pushError: err instanceof Error ? err.message : String(err),
           warning: pruneRiskWarning(branchName, exclusion, true),
@@ -565,6 +571,7 @@ export async function handleCreateWorktree(
       branchName,
       worktreePath: path.resolve(worktreePath),
       created,
+      worktreeExisted,
       pushed,
       warning: pruneRiskWarning(branchName, exclusion, !existence.remote && !pushed),
     });
