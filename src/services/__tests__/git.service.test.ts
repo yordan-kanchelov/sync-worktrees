@@ -3574,7 +3574,7 @@ locked
       expect(worktreeRawCalls).toEqual(
         expect.arrayContaining([
           ["sparse-checkout", "init", "--cone"],
-          ["sparse-checkout", "set", "--cone", "apps", "packages"],
+          ["sparse-checkout", "set", "--cone", "--", "apps", "packages"],
           ["checkout", "HEAD"],
         ]),
       );
@@ -3623,7 +3623,7 @@ locked
         expect.arrayContaining([
           ["reset", "--soft", "origin/feature-1"],
           ["sparse-checkout", "init", "--cone"],
-          ["sparse-checkout", "set", "--cone", "apps"],
+          ["sparse-checkout", "set", "--cone", "--", "apps"],
           ["checkout", "HEAD"],
         ]),
       );
@@ -3666,7 +3666,7 @@ locked
       expect(worktreeRawCalls).toEqual(
         expect.arrayContaining([
           ["sparse-checkout", "init", "--no-cone"],
-          ["sparse-checkout", "set", "--no-cone", "/*", "!docs"],
+          ["sparse-checkout", "set", "--no-cone", "--", "/*", "!docs"],
           ["checkout", "HEAD"],
         ]),
       );

@@ -261,7 +261,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T79** — F9(3) incomplete: `extractRepoNameFromUrl` still rejects URL shapes `isValidGitUrl`
   accepts (`git://`, https with trailing slash), and the validator rejects legal scp URLs with a
   non-`git` user
-- [ ] **T80** — Sparse-checkout patterns are not validated at load time; cone-mode includes with a
+- [x] **T80** — Sparse-checkout patterns are not validated at load time; cone-mode includes with a
   leading slash (or wildcards) are rejected by git, so every worktree creation fails and is rolled
   back on every tick
 - [ ] **T61** — README states retry.maxAttempts defaults to 'unlimited' but the sync policy defaults
@@ -3330,7 +3330,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   bareRepoDir derivation throws 'Invalid Git URL format'; `user@host:path` scp URLs that git accepts
   are rejected outright”.
 
-### [ ] T80. Sparse-checkout patterns are not validated at load time; cone-mode includes with a leading slash (or wildcards) are rejected by git, so every worktree creation fails and is rolled back on every tick
+### [x] T80. Sparse-checkout patterns are not validated at load time; cone-mode includes with a leading slash (or wildcards) are rejected by git, so every worktree creation fails and is rolled back on every tick
 
 - **Category**: workflow · **Subsystem**: git
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

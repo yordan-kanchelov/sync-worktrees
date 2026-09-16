@@ -22,9 +22,17 @@ import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../utils/git-client";
 import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 import { collectUnknownConfigKeys, formatUnknownConfigKey } from "../utils/unknown-config-keys";
+import { findConeRuleViolations } from "./sparse-checkout.service";
 
 import type { Logger } from "./logger.service";
-import type { Config, ConfigFile, ParallelismConfig, RepositoryConfig, RepositoryMode } from "../types";
+import type {
+  Config,
+  ConfigFile,
+  ParallelismConfig,
+  RepositoryConfig,
+  RepositoryMode,
+  SparseCheckoutConfig,
+} from "../types";
 
 const require = createRequire(import.meta.url);
 
@@ -1149,6 +1157,16 @@ export class ConfigLoaderService {
 
     if (cfg.mode !== undefined && cfg.mode !== "cone" && cfg.mode !== "no-cone") {
       throw new Error(`'sparseCheckout.mode' in ${context} must be 'cone' or 'no-cone'`);
+    }
+
+    // Cone mode is the default, and it refuses the gitignore syntax the field
+    // invites: `git sparse-checkout set --cone` dies on a leading slash or a
+    // glob character. Unvalidated, the config loaded, every worktree was added
+    // and rolled back with "Sparse-checkout setup failed" naming neither the
+    // entry nor the rule, and the run repeated that on every tick forever.
+    const coneViolations = findConeRuleViolations(cfg as unknown as SparseCheckoutConfig);
+    if (coneViolations.length > 0) {
+      throw new ConfigValidationError(`${context} sparseCheckout.include`, coneViolations.join(" "));
     }
 
     // The update phase reads this as `!== false`, which is true for every

@@ -14,6 +14,113 @@ export type GitFactory = (worktreePath: string) => SimpleGit;
 // the other way round.
 const compareUtf8 = (a: string, b: string): number => Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
 
+// Which mode a config really runs in, with none of the warning `resolveMode`
+// attaches to the answer. Both callers must agree: the validator refuses cone
+// patterns git would refuse, so it has to be looking at the same mode the
+// apply step will pick.
+const modeFor = (cfg: SparseCheckoutConfig): SparseCheckoutMode => {
+  if (cfg.mode === "no-cone") return "no-cone";
+  if ((cfg.exclude?.length ?? 0) > 0 || cfg.include.some((p) => p.trim().startsWith("!"))) return "no-cone";
+  return cfg.mode ?? "cone";
+};
+
+/**
+ * Reshape cone directories the way `sparse-checkout set --cone` normalizes
+ * its arguments - which is the form `sparse-checkout list` then prints back:
+ * each path normalized, no trailing slash, deduplicated, sorted by UTF-8
+ * bytes, and without any entry an included parent already covers. Applying
+ * the canonical form changes nothing on disk; it only lets `patternsEqual`
+ * recognize an unchanged config instead of re-applying the same patterns
+ * (and checking HEAD back out) on every sync.
+ *
+ * No-cone patterns are left alone: there a trailing slash restricts the
+ * match to directories, order decides which negation wins, and
+ * `sparse-checkout list` echoes the file verbatim.
+ */
+const canonicalizeConePatterns = (patterns: string[]): string[] => {
+  const dirs = [...new Set(patterns.map((p) => normalizeConeDirectory(p)))].sort(compareUtf8);
+  const included = new Set(dirs);
+
+  // Normalizing first is what makes this parent check safe: `apps/../docs`
+  // only looks like it lives under `apps`, and dropping it would delete
+  // `docs/` from every worktree git had materialized it in.
+  return dirs.filter((p) => {
+    const parts = p.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      if (included.has(parts.slice(0, i).join("/"))) return false;
+    }
+    return true;
+  });
+};
+
+const normalizeConeDirectory = (pattern: string): string => {
+  const withoutTrailingSlash = pattern.replace(/\/+$/, "");
+  // Nothing but slashes: no directory left to normalize, so keep the entry as
+  // written and let git report it the way it does today.
+  if (withoutTrailingSlash.length === 0) return pattern;
+  return path.posix.normalize(withoutTrailingSlash);
+};
+
+// The four ways `sparse-checkout set --cone` refuses an argument, checked
+// against real git 2.43.0 and 2.55.0, which answer identically: a leading
+// slash, a leading '!', any of `*?[]` anywhere, and a path that normalizes
+// above the repository root. Everything else git takes, however odd it looks -
+// a backslash (named in git's own message but absent from its check), a space,
+// a brace, '#', '~', a Windows-style path, a name that does not exist yet, and
+// `.`, which quietly selects nothing. Two of git's refusals are deliberately
+// not mirrored: `--skip-checks` is never passed here, and "is not a directory"
+// depends on what the index holds at apply time, which a config load cannot
+// know. `exclude` needs no check of its own - a non-empty `exclude` is exactly
+// what demotes a config out of cone mode.
+const coneRuleBroken = (applied: string): string | null => {
+  if (applied.startsWith("/")) {
+    return "starts with '/': cone mode takes directories relative to the repository root. Drop the leading slash, or set sparseCheckout.mode to 'no-cone' for gitignore-style patterns.";
+  }
+  if (applied.startsWith("!")) {
+    return "starts with '!': cone mode takes directory names, not negations. Move it to sparseCheckout.exclude, or set sparseCheckout.mode to 'no-cone'.";
+  }
+  if (/[*?[\]]/.test(applied)) {
+    return "contains one of '*', '?', '[' or ']': cone mode takes directory names, not globs. Name the directory itself, or set sparseCheckout.mode to 'no-cone' for gitignore-style patterns.";
+  }
+  if (applied === ".." || applied.startsWith("../")) {
+    return "climbs above the repository root with '..': cone mode takes directories inside the repository.";
+  }
+  return null;
+};
+
+/**
+ * Cone-mode `include` entries `git sparse-checkout set --cone` would reject,
+ * as one sentence each naming the entry and the rule. Empty in no-cone mode,
+ * where patterns are legal. Judges the canonical directory list the apply step
+ * actually passes to git, so an entry a normalization or an included parent
+ * removes before git sees it is not reported.
+ */
+export function findConeRuleViolations(cfg: SparseCheckoutConfig): string[] {
+  if (modeFor(cfg) !== "cone") return [];
+
+  // Same input `buildPatternsForMode` gives the canonicalizer, so the list
+  // below is the argv git would see, entry for entry.
+  const includes = cfg.include.map((p) => p.trim()).filter((p) => p.length > 0);
+
+  const asWritten = new Map<string, string>();
+  for (const entry of cfg.include) {
+    const trimmed = entry.trim();
+    if (trimmed.length === 0) continue;
+    const applied = normalizeConeDirectory(trimmed);
+    if (!asWritten.has(applied)) asWritten.set(applied, entry);
+  }
+
+  const violations: string[] = [];
+  for (const applied of canonicalizeConePatterns(includes)) {
+    const broken = coneRuleBroken(applied);
+    if (!broken) continue;
+    const written = asWritten.get(applied) ?? applied;
+    const shown = written.trim() === applied ? `'${written}'` : `'${written}' (applied as '${applied}')`;
+    violations.push(`cone-mode 'include' entry ${shown} ${broken}`);
+  }
+  return violations;
+}
+
 interface SparseMatcher {
   mode: SparseCheckoutMode;
   patterns: string[];
@@ -36,20 +143,15 @@ export class SparseCheckoutService {
   }
 
   resolveMode(cfg: SparseCheckoutConfig): SparseCheckoutMode {
-    const hasExclude = !!cfg.exclude && cfg.exclude.length > 0;
-    const hasNegation = cfg.include.some((p) => p.trim().startsWith("!"));
-
-    if (cfg.mode === "no-cone") return "no-cone";
-    if (hasExclude || hasNegation) {
-      if (cfg.mode === "cone" && !this.warnedConfigs.has(cfg)) {
-        this.logger.warn(
-          "sparseCheckout: mode 'cone' is incompatible with excludes or negation patterns; auto-promoting to 'no-cone'",
-        );
-        this.warnedConfigs.add(cfg);
-      }
-      return "no-cone";
+    const mode = modeFor(cfg);
+    // Only excludes or a negated include can demote an explicit 'cone'.
+    if (mode === "no-cone" && cfg.mode === "cone" && !this.warnedConfigs.has(cfg)) {
+      this.logger.warn(
+        "sparseCheckout: mode 'cone' is incompatible with excludes or negation patterns; auto-promoting to 'no-cone'",
+      );
+      this.warnedConfigs.add(cfg);
     }
-    return cfg.mode ?? "cone";
+    return mode;
   }
 
   buildPatterns(cfg: SparseCheckoutConfig): string[] {
@@ -60,7 +162,7 @@ export class SparseCheckoutService {
     const includes = cfg.include.map((p) => p.trim()).filter((p) => p.length > 0);
 
     if (mode === "cone") {
-      return this.canonicalizeConePatterns(includes);
+      return canonicalizeConePatterns(includes);
     }
 
     const excludes = (cfg.exclude ?? [])
@@ -69,43 +171,6 @@ export class SparseCheckoutService {
       .map((p) => (p.startsWith("!") ? p : `!${p}`));
 
     return [...includes, ...excludes];
-  }
-
-  /**
-   * Reshape cone directories the way `sparse-checkout set --cone` normalizes
-   * its arguments - which is the form `sparse-checkout list` then prints back:
-   * each path normalized, no trailing slash, deduplicated, sorted by UTF-8
-   * bytes, and without any entry an included parent already covers. Applying
-   * the canonical form changes nothing on disk; it only lets `patternsEqual`
-   * recognize an unchanged config instead of re-applying the same patterns
-   * (and checking HEAD back out) on every sync.
-   *
-   * No-cone patterns are left alone: there a trailing slash restricts the
-   * match to directories, order decides which negation wins, and
-   * `sparse-checkout list` echoes the file verbatim.
-   */
-  private canonicalizeConePatterns(patterns: string[]): string[] {
-    const dirs = [...new Set(patterns.map((p) => this.normalizeConeDirectory(p)))].sort(compareUtf8);
-    const included = new Set(dirs);
-
-    // Normalizing first is what makes this parent check safe: `apps/../docs`
-    // only looks like it lives under `apps`, and dropping it would delete
-    // `docs/` from every worktree git had materialized it in.
-    return dirs.filter((p) => {
-      const parts = p.split("/");
-      for (let i = 1; i < parts.length; i++) {
-        if (included.has(parts.slice(0, i).join("/"))) return false;
-      }
-      return true;
-    });
-  }
-
-  private normalizeConeDirectory(pattern: string): string {
-    const withoutTrailingSlash = pattern.replace(/\/+$/, "");
-    // Nothing but slashes: no directory left to normalize, so keep the entry as
-    // written and let git report it the way it does today.
-    if (withoutTrailingSlash.length === 0) return pattern;
-    return path.posix.normalize(withoutTrailingSlash);
   }
 
   /**
@@ -128,7 +193,17 @@ export class SparseCheckoutService {
 
     const git = gitOverride ?? this.gitFactory(worktreePath);
     await git.raw(["sparse-checkout", "init", mode === "cone" ? "--cone" : "--no-cone"]);
-    await git.raw(["sparse-checkout", "set", mode === "cone" ? "--cone" : "--no-cone", ...patterns]);
+    // `--` or a directory whose name begins with a dash is read as an option
+    // instead of a path, in both modes. git 2.43 passed
+    // PARSE_OPT_KEEP_UNKNOWN_OPT here and let `-apps` through; 2.55 dropped it
+    // and dies with "unknown switch `a'" — a per-branch, per-tick failure on
+    // the git CI runs, naming neither the entry nor the reason. Both versions
+    // also read a directory named `--skip-checks` as the flag, which turns off
+    // the very checks validated at load and silently leaves the pattern list
+    // empty, and one named `--cone`/`--no-cone` as the mode. After `--` every
+    // argument is the path the config asked for, which is what the load-time
+    // cone rules assume they are judging.
+    await git.raw(["sparse-checkout", "set", mode === "cone" ? "--cone" : "--no-cone", "--", ...patterns]);
   }
 
   async readCurrent(worktreePath: string): Promise<string[] | null> {

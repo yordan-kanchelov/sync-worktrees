@@ -150,11 +150,13 @@ describe("Clone-mode sparse-checkout re-apply", () => {
     expect(first.status, first.stdout + first.stderr).toBe(0);
     expect(await sparsePatterns()).toEqual(["pkg"]);
 
-    // A cone pattern git refuses: "specify directories rather than patterns
-    // (no leading slash)". `sparse-checkout set` fails and the pattern list on
-    // disk is left exactly as it was.
+    // A cone entry git refuses at apply time and a config load cannot: whether
+    // 'pkg/a.txt' is a directory is a fact about the index, not about the
+    // pattern, so the loader's cone-rule check passes it through and git dies
+    // on it ("is not a directory"). `sparse-checkout set` fails and the pattern
+    // list on disk is left exactly as it was.
     const tip = await pushCommit();
-    await writeConfig(["/pkg"]);
+    await writeConfig(["pkg/a.txt"]);
 
     const second = runCli();
     const secondOutput = second.stdout + second.stderr;

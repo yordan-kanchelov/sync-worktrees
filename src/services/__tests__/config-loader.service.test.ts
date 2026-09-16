@@ -3249,6 +3249,46 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       await expect(loadInline(c)).resolves.toBeDefined();
     });
 
+    // Cone mode is the default, and git refuses a leading slash or a glob in
+    // it. Unvalidated, these configs loaded and then failed once per worktree
+    // per tick with a message naming neither the entry nor the rule (#T80).
+    it("rejects a cone include with a leading slash, naming the repository and the entry", async () => {
+      const c = `export default { repositories: [{ name: "web", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["/apps/web"] } }] };`;
+      await expect(loadInline(c)).rejects.toThrow(
+        "Invalid configuration for 'Repository 'web' sparseCheckout.include': cone-mode 'include' entry '/apps/web' starts with '/'",
+      );
+      await expect(loadInline(c)).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    it("rejects a cone include holding a glob character", async () => {
+      const c = `export default { repositories: [{ name: "web", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["apps/*"] } }] };`;
+      await expect(loadInline(c)).rejects.toThrow(/cone-mode 'include' entry 'apps\/\*'.*not globs/s);
+    });
+
+    it("accepts the trailing-slash directory git normalizes", async () => {
+      const c = `export default { repositories: [{ name: "web", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["apps/web/"] } }] };`;
+      await expect(loadInline(c)).resolves.toBeDefined();
+    });
+
+    it("leaves the same entries alone under mode 'no-cone'", async () => {
+      const c = `export default { repositories: [{ name: "web", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["/apps/web", "apps/*"], mode: "no-cone" } }] };`;
+      await expect(loadInline(c)).resolves.toBeDefined();
+    });
+
+    it("rejects a cone include in defaults, naming defaults", async () => {
+      const c = `export default { defaults: { sparseCheckout: { include: ["/apps/web"] } }, repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w" }] };`;
+      await expect(loadInline(c)).rejects.toThrow(
+        "Invalid configuration for 'defaults sparseCheckout.include': cone-mode 'include' entry '/apps/web' starts with '/'",
+      );
+    });
+
+    // `defaults.sparseCheckout` is inherited by every repository, clone-mode
+    // ones included, and clone mode runs the same `sparse-checkout set --cone`.
+    it("rejects a cone include in defaults inherited by a clone-mode repository", async () => {
+      const c = `export default { defaults: { sparseCheckout: { include: ["apps/*"] } }, repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", mode: "clone", branch: "main" }] };`;
+      await expect(loadInline(c)).rejects.toThrow(/cone-mode 'include' entry 'apps\/\*'/);
+    });
+
     it("validates sparseCheckout in defaults", async () => {
       const c = `export default { defaults: { sparseCheckout: { include: [] } }, repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w" }] };`;
       await expect(loadInline(c)).rejects.toThrow(/at least one pattern/);
