@@ -175,6 +175,7 @@ export const createWorktreeOutputSchema = z.looseObject({
   created: z.boolean().describe("The branch was newly created (vs. an existing local/remote branch checked out)."),
   pushed: z.boolean(),
   pushError: z.string().optional().describe("Present only when success=false."),
+  warning: z.string().optional().describe("The next sync would prune this worktree: local-only or filtered branch."),
 });
 
 const syncOutcomeScopeSchema = z.enum(["repo", "branch", "worktree", "sparse-checkout"]);

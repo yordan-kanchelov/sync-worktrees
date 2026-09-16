@@ -11,7 +11,7 @@ import {
   handleSync,
   handleUpdateWorktree,
 } from "../handlers";
-import { syncOutputSchema } from "../output-schemas";
+import { createWorktreeOutputSchema, syncOutputSchema } from "../output-schemas";
 import { formatErrorResponse } from "../utils";
 import { createMockLogger } from "../../__tests__/test-utils";
 import { PathResolutionService } from "../../services/path-resolution.service";
@@ -132,6 +132,7 @@ type MockGit = {
   updateWorktree: ReturnType<typeof vi.fn>;
   getDefaultBranch: ReturnType<typeof vi.fn>;
   getWorktreeMetadata: ReturnType<typeof vi.fn>;
+  getRemoteBranchesWithActivity: ReturnType<typeof vi.fn>;
 };
 
 function makeCtx(opts: {
@@ -161,6 +162,7 @@ function makeCtx(opts: {
     updateWorktree: vi.fn<any>().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
     getDefaultBranch: vi.fn<any>().mockReturnValue("main"),
     getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
+    getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([]),
     ...opts.git,
   };
 
@@ -677,6 +679,243 @@ describe("handleCreateWorktree", () => {
     expect(body.code).toBe("CAPABILITY_UNAVAILABLE");
     expect(service.runExclusiveRepoOperation).not.toHaveBeenCalled();
     expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+});
+
+// The sync planner prunes every registered worktree outside the FILTERED remote
+// branch list, and a worktree created seconds ago passes every canRemove gate.
+// A create that the next tick undoes is refused up front instead.
+describe("handleCreateWorktree branch-filter guard", () => {
+  function makeFilteredCtx(config: Record<string, unknown>, git: Partial<MockGit> = {}): ReturnType<typeof makeCtx> {
+    return makeCtx({
+      git: { branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: true }), ...git },
+      service: { config: { worktreeDir: "/repo/worktrees", ...config } },
+    });
+  }
+
+  it("refuses a branch excluded by branchInclude and never touches the worktree", async () => {
+    const { ctx, git } = makeFilteredCtx({ branchInclude: ["main", "release/*"] });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.code).toBe("BRANCH_FILTERED");
+    expect(body.message).toContain("branchInclude");
+    expect(body.message).toContain('["main","release/*"]');
+    expect(body.message).toContain("next sync");
+    expect(body.message).toContain("force: true");
+    expect(git.addWorktree).not.toHaveBeenCalled();
+    expect(git.createBranch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a branch excluded by branchExclude, naming that filter", async () => {
+    const { ctx, git } = makeFilteredCtx({ branchExclude: ["wip-*"] });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "wip-thing" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("BRANCH_FILTERED");
+    expect(body.message).toContain("branchExclude");
+    expect(body.message).not.toContain("branchInclude");
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("allows a branch that passes both name filters, with no warning", async () => {
+    const { ctx, git } = makeFilteredCtx({ branchInclude: ["main", "release/*"], branchExclude: ["release/old"] });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "release/1.2" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.warning).toBeUndefined();
+    expect(git.addWorktree).toHaveBeenCalled();
+  });
+
+  // resolveSyncBranches puts the default branch back into the inventory whatever
+  // the filters say, for as long as origin still has it, so refusing it here
+  // would refuse a worktree sync never prunes.
+  it("allows the default branch even when branchInclude excludes it", async () => {
+    const { ctx, git } = makeFilteredCtx({ branchInclude: ["feature/*"] });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "main" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.warning).toBeUndefined();
+    expect(git.addWorktree).toHaveBeenCalled();
+  });
+
+  it("still refuses a filtered default branch that origin no longer carries", async () => {
+    const { ctx, git } = makeFilteredCtx(
+      { branchInclude: ["feature/*"] },
+      { branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: false }) },
+    );
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "main" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("BRANCH_FILTERED");
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("proceeds with force:true but still reports the filter in warning", async () => {
+    const { ctx, git } = makeFilteredCtx({ branchInclude: ["main"] });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x", force: true });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(body.success).toBe(true);
+    expect(git.addWorktree).toHaveBeenCalledWith("feature/x", expect.stringContaining("feature-x"));
+    expect(body.warning).toContain("branchInclude");
+    expect(body.warning).toContain("next sync");
+    expect(body.warning).toContain("force: true");
+  });
+
+  it("refuses a remote branch older than branchMaxAge", async () => {
+    const stale = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const { ctx, git } = makeFilteredCtx(
+      { branchMaxAge: "30d" },
+      {
+        getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([
+          { branch: "feature/x", lastActivity: stale },
+          { branch: "main", lastActivity: new Date() },
+        ]),
+      },
+    );
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("BRANCH_FILTERED");
+    expect(body.message).toContain('branchMaxAge "30d"');
+    expect(git.addWorktree).not.toHaveBeenCalled();
+  });
+
+  it("allows a remote branch inside the branchMaxAge window", async () => {
+    const { ctx, git } = makeFilteredCtx(
+      { branchMaxAge: "30d" },
+      {
+        getRemoteBranchesWithActivity: vi
+          .fn<any>()
+          .mockResolvedValue([{ branch: "feature/x", lastActivity: new Date() }]),
+      },
+    );
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.warning).toBeUndefined();
+    expect(git.addWorktree).toHaveBeenCalled();
+  });
+
+  it("does not read branch activity when branchMaxAge is unset", async () => {
+    const { ctx, git } = makeFilteredCtx({ branchInclude: ["feature/*"] });
+
+    await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+
+    expect(git.getRemoteBranchesWithActivity).not.toHaveBeenCalled();
+  });
+
+  // The common case must cost nothing: with no filter configured the guard
+  // returns before it reads the default branch or the remote ref store.
+  it("reads no git state at all when no filter is configured", async () => {
+    const { ctx, git } = makeCtx({
+      git: { branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: true }) },
+    });
+
+    const body = parseResponse(await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" }));
+
+    expect(body.success).toBe(true);
+    expect(git.getDefaultBranch).not.toHaveBeenCalled();
+    expect(git.getRemoteBranchesWithActivity).not.toHaveBeenCalled();
+  });
+
+  // filterBranchesByName applies a list only on length > 0, so [] is "no filter"
+  // in the runner. The guard reads it through the same function, and must agree.
+  it("treats an empty branchInclude/branchExclude as no filter, as the runner does", async () => {
+    const { ctx, git } = makeFilteredCtx({ branchInclude: [], branchExclude: [] });
+
+    const body = parseResponse(await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" }));
+
+    expect(body.success).toBe(true);
+    expect(git.addWorktree).toHaveBeenCalled();
+  });
+
+  it("does not read branch activity for a branch origin does not carry", async () => {
+    const { ctx, git } = makeCtx({
+      git: { branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }) },
+      service: { config: { worktreeDir: "/repo/worktrees", branchMaxAge: "30d" } },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "exp", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(git.getRemoteBranchesWithActivity).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleCreateWorktree local-only branch warning", () => {
+  it("warns that the next sync prunes a push:false branch", async () => {
+    const { ctx } = makeCtx({
+      git: { branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }) },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, {
+      branchName: "exp",
+      baseBranch: "main",
+      push: false,
+    });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(true);
+    expect(body.pushed).toBe(false);
+    expect(body.warning).toContain("next sync");
+    expect(body.warning).toContain("its branch ref");
+    expect(createWorktreeOutputSchema.parse(body).warning).toBe(body.warning);
+  });
+
+  it("warns when the push failed, alongside pushError", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }),
+        pushBranch: vi.fn<any>().mockRejectedValue(new Error("non-fast-forward")),
+      },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "exp", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.success).toBe(false);
+    expect(body.pushError).toBe("non-fast-forward");
+    expect(body.warning).toContain("next sync");
+  });
+
+  it("warns for an existing branch that only exists locally", async () => {
+    const { ctx } = makeCtx({
+      git: { branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: false }) },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "exp" });
+    const body = parseResponse(result);
+
+    expect(body.created).toBe(false);
+    expect(body.warning).toContain("next sync");
+  });
+
+  it("does not warn once the new branch has been pushed", async () => {
+    const { ctx } = makeCtx({
+      git: { branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: false }) },
+    });
+
+    const result = await invoke(handleCreateWorktree, ctx, { branchName: "exp", baseBranch: "main" });
+    const body = parseResponse(result);
+
+    expect(body.pushed).toBe(true);
+    expect(body.warning).toBeUndefined();
   });
 });
 

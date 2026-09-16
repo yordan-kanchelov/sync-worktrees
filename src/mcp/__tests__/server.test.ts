@@ -212,6 +212,28 @@ describe("tool input schemas", () => {
     expect(message).toContain('Unrecognized key: "repo_name"');
   });
 
+  it("accepts create_worktree's force escape hatch", async () => {
+    const forced = await schemaFor("create_worktree")["~standard"].validate({ branchName: "x", force: true });
+    expect(forced.issues).toBeUndefined();
+    expect((forced as { value: unknown }).value).toEqual({ branchName: "x", force: true });
+  });
+
+  // A `push: false` worktree is pruned by the next sync, so the consequence has
+  // to be legible where an agent reads the parameter, not only in the response.
+  it("documents the pruning consequence on create_worktree's push and force parameters", () => {
+    const tools = (createServer(new RepositoryContext()) as any)._registeredTools as Record<
+      string,
+      { description: string; inputSchema: { shape: Record<string, { description?: string }> } }
+    >;
+    const create = tools.create_worktree;
+
+    expect(create.inputSchema.shape.push.description).toMatch(/prune/i);
+    expect(create.inputSchema.shape.push.description).toContain("next sync");
+    expect(create.inputSchema.shape.force.description).toMatch(/branch filters/i);
+    expect(create.description).toContain("BRANCH_FILTERED");
+    expect(create.description).toContain("warning");
+  });
+
   it("still accepts declared keys and applies declared defaults", async () => {
     const detect = await schemaFor("detect_context")["~standard"].validate({ includeStatus: true });
     expect(detect.issues).toBeUndefined();

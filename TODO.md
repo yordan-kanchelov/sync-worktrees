@@ -269,7 +269,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 ### Batch 6 — MCP server
 
-- [ ] **T37** — create_worktree silently creates worktrees the next sync will move to trash:
+- [x] **T37** — create_worktree silently creates worktrees the next sync will move to trash:
   branches excluded by branchInclude/branchExclude/branchMaxAge, and push:false local-only branches
   (whose local branch ref is deleted too)
 - [x] **T39** — Tool input schemas are non-strict: unknown/misspelled arguments (repo_name,
@@ -1869,7 +1869,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   “Daemon/TUI mode never performs an initial sync and there is no config equivalent of the removed
   `--sync-on-start` flag: a headless daemon idles until the first cron tick (hourly by default)”.
 
-### [ ] T37. create_worktree silently creates worktrees the next sync will move to trash: branches excluded by branchInclude/branchExclude/branchMaxAge, and push:false local-only branches (whose local branch ref is deleted too)
+### [x] T37. create_worktree silently creates worktrees the next sync will move to trash: branches excluded by branchInclude/branchExclude/branchMaxAge, and push:false local-only branches (whose local branch ref is deleted too)
 
 - **Category**: guardrail · **Subsystem**: mcp
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer

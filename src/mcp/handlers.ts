@@ -3,10 +3,13 @@ import * as path from "path";
 import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG } from "../constants";
+import { SyncWorktreesError } from "../errors";
 import { PathResolutionService } from "../services/path-resolution.service";
 import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { WorktreeStatusService } from "../services/worktree-status.service";
+import { filterBranchesByName } from "../utils/branch-filter";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
+import { filterBranchesByAge } from "../utils/date-filter";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { isValidGitBranchName } from "../utils/git-validation";
@@ -411,9 +414,69 @@ export async function handleGetWorktreeStatus(
   });
 }
 
+// The sync planner prunes every registered worktree whose branch is missing from
+// the FILTERED remote branch list, and a worktree created seconds ago is clean,
+// has nothing unpushed and no gone upstream — so canRemove is true and the next
+// tick moves it to .trash and deletes its local branch ref. Handing back a
+// checkout the daemon is configured to throw away is never what the caller
+// meant, so the branch is measured against the same filters the runner applies.
+// Returns the sentence naming the offending filter, or null.
+//
+// getRemoteBranchesWithActivity is one `for-each-ref` over refs/remotes in the
+// local ref store (no network, the same read the runner does), and it only runs
+// when branchMaxAge is configured and origin actually carries the branch. A
+// branch with no origin/<branch> has no activity to judge: it is local-only,
+// which pruneRiskWarning covers instead.
+async function branchPrunedBySync(
+  config: { branchInclude?: string[]; branchExclude?: string[]; branchMaxAge?: string },
+  git: RepoGitService,
+  branchName: string,
+  remoteExists: boolean,
+): Promise<string | null> {
+  const { branchInclude, branchExclude, branchMaxAge } = config;
+  // Most repositories configure no filters at all, and then sync keeps every
+  // remote branch: nothing to enforce, and nothing below worth spending.
+  if (!branchInclude && !branchExclude && !branchMaxAge) return null;
+  // The runner keeps the default branch in the inventory whatever the filters
+  // say — its worktree is where every fetch runs — for as long as origin still
+  // carries it. Refusing it here would refuse a worktree sync never prunes.
+  // getDefaultBranch() is the cached name, and only a sync re-resolves it, so
+  // between an origin-side rename and the next sync the NEW default is refused
+  // here although the runner would retain it. That errs closed, names the
+  // filter, and force: true still opens it.
+  if (remoteExists && branchName === git.getDefaultBranch()) return null;
+
+  const excluded = (filter: string, value: unknown): string =>
+    `'${branchName}' is excluded by ${filter} ${JSON.stringify(value)}, so the next sync would remove this worktree and delete the local branch ref.`;
+
+  if (filterBranchesByName([branchName], branchInclude).length === 0) return excluded("branchInclude", branchInclude);
+  if (filterBranchesByName([branchName], undefined, branchExclude).length === 0) {
+    return excluded("branchExclude", branchExclude);
+  }
+  if (!branchMaxAge || !remoteExists) return null;
+  const activity = (await git.getRemoteBranchesWithActivity()).filter((b) => b.branch === branchName);
+  return activity.length > 0 && filterBranchesByAge(activity, branchMaxAge).length === 0
+    ? excluded("branchMaxAge", branchMaxAge)
+    : null;
+}
+
+// force is an escape hatch, not a mute button: a forced creation still reports
+// the filter that will claim it, and a branch that exists nowhere on origin is
+// reported the same way whether push was declined or the push failed.
+function pruneRiskWarning(branchName: string, exclusion: string | null, localOnly: boolean): string | undefined {
+  const parts: string[] = [];
+  if (exclusion) parts.push(`${exclusion} Created anyway because force: true was passed.`);
+  if (localOnly) {
+    parts.push(
+      `'${branchName}' exists only locally, so the next sync removes it and its branch ref until it is pushed.`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
 export async function handleCreateWorktree(
   ctx: RepositoryContext,
-  params: { branchName: string; baseBranch?: string; push?: boolean; repoName?: string },
+  params: { branchName: string; baseBranch?: string; push?: boolean; force?: boolean; repoName?: string },
   _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const { branchName, baseBranch } = params;
@@ -437,6 +500,11 @@ export async function handleCreateWorktree(
 
     await git.fetchAll();
     const existence = await git.branchExists(branchName);
+
+    const exclusion = await branchPrunedBySync(service.config, git, branchName, existence.remote);
+    if (exclusion && !params.force) {
+      throw new SyncWorktreesError(`${exclusion} Adjust the config or pass force: true.`, "BRANCH_FILTERED");
+    }
 
     const worktreeDir = service.config.worktreeDir;
     const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
@@ -475,6 +543,7 @@ export async function handleCreateWorktree(
           created: true,
           pushed: false,
           pushError: err instanceof Error ? err.message : String(err),
+          warning: pruneRiskWarning(branchName, exclusion, true),
         });
       }
     }
@@ -485,6 +554,7 @@ export async function handleCreateWorktree(
       worktreePath: path.resolve(worktreePath),
       created,
       pushed,
+      warning: pruneRiskWarning(branchName, exclusion, !existence.remote && !pushed),
     });
   });
 }

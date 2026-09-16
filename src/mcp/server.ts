@@ -211,7 +211,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "create_worktree",
     {
       description:
-        "Worktree-mode only; clone-mode repos error here. Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Never moves, trashes or deletes an existing directory: errors with code TARGET_EXISTS when the target path exists on disk but is not a registered worktree (clean it up manually or via sync). Returns: {success, branchName, worktreePath, created, pushed}.",
+        "Worktree-mode only; clone-mode repos error here. Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Never moves, trashes or deletes an existing directory: errors with code TARGET_EXISTS when the target path exists on disk but is not a registered worktree (clean it up manually or via sync). Errors with code BRANCH_FILTERED when branchInclude/branchExclude/branchMaxAge exclude the branch, since sync prunes worktrees outside the filtered set; force=true creates it anyway. Returns: {success, branchName, worktreePath, created, pushed, warning}.",
       inputSchema: z.strictObject({
         branchName: z.string().describe("Branch name. Slashes/special chars sanitized for dir name."),
         baseBranch: z
@@ -220,7 +220,18 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
           .describe(
             "Base for new branch. Required if branchName doesn't exist locally or remotely; ignored otherwise.",
           ),
-        push: z.boolean().optional().describe("Push new branch to origin. Default: true. Ignored if branch existed."),
+        push: z
+          .boolean()
+          .optional()
+          .describe(
+            "Push new branch to origin. Default: true. Ignored if branch existed. push=false leaves a local-only branch that the next sync prunes (worktree trashed, branch ref deleted) until it is pushed; see `warning`.",
+          ),
+        force: z
+          .boolean()
+          .optional()
+          .describe(
+            "Create even when the branch filters exclude the branch. Default: false. `warning` still names the filter.",
+          ),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
       outputSchema: createWorktreeOutputSchema,
