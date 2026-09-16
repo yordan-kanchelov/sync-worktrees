@@ -84,7 +84,6 @@ async function getReadyService(
   options: {
     capability?: CapabilityKey;
     toolName?: string;
-    ensureInitialized?: boolean;
   } = {},
 ): Promise<{ discovered: DiscoveredRepoContext | null; service: RepoService; git: RepoGitService }> {
   if (!repoName) {
@@ -96,9 +95,6 @@ async function getReadyService(
   }
 
   const service = await ctx.getService(repoName);
-  if (options.ensureInitialized && !service.isInitialized()) {
-    await service.initialize();
-  }
 
   return {
     discovered,
@@ -137,9 +133,8 @@ async function ensureRepoWorktreePath(
   ctx: RepositoryContext,
   params: WorktreePathParams,
   service: RepoService,
-  git: RepoGitService,
 ): Promise<string> {
-  return (await ensureRepoWorktree(ctx, params, service, git)).path;
+  return (await ensureRepoWorktree(ctx, params, service)).path;
 }
 
 /**
@@ -167,7 +162,6 @@ async function ensureRepoWorktree(
   ctx: RepositoryContext,
   params: WorktreePathParams,
   service: RepoService,
-  git: RepoGitService,
   options: { fresh?: boolean; includeDetached?: boolean } = {},
 ): Promise<RepoWorktree> {
   const targetPath = params.path;
@@ -186,9 +180,7 @@ async function ensureRepoWorktree(
   }
 
   try {
-    const worktrees = await getWorktreesFromService(service, git, {
-      includeDetached: options.includeDetached === true,
-    });
+    const worktrees = await service.getWorktrees({ includeDetached: options.includeDetached === true });
     const match = worktrees.find((w) => pathsEqual(w.path, targetPath));
     // A detached registration whose checkout is gone reads as absent here, the
     // way `getWorktrees` already drops the prunable detached rows: there is no
@@ -219,30 +211,13 @@ async function ensureRepoWorktree(
 }
 
 function isCloneModeService(service: RepoService): boolean {
-  const candidate = service as RepoService & { isCloneMode?: () => boolean };
-  return typeof candidate.isCloneMode === "function" && candidate.isCloneMode();
+  return service.isCloneMode();
 }
 
 function ensureWorktreeModeService(service: RepoService, toolName: string): void {
   if (isCloneModeService(service)) {
     throw new CapabilityUnavailableError(toolName, [CLONE_MODE_WORKTREE_MUTATION_REASON]);
   }
-}
-
-type WorktreeListingOptions = { includeDetached?: boolean };
-
-async function getWorktreesFromService(
-  service: RepoService,
-  git: { getWorktrees: (options?: WorktreeListingOptions) => Promise<RepoWorktree[]> },
-  options: WorktreeListingOptions = {},
-): Promise<RepoWorktree[]> {
-  const candidate = service as RepoService & {
-    getWorktrees?: (options?: WorktreeListingOptions) => Promise<RepoWorktree[]>;
-  };
-  if (typeof candidate.getWorktrees === "function") {
-    return candidate.getWorktrees(options);
-  }
-  return git.getWorktrees(options);
 }
 
 /**
@@ -403,7 +378,7 @@ async function listWorktreesForRepo(
 
   let worktrees: Array<{ path: string; branch: string }>;
   try {
-    worktrees = await getWorktreesFromService(service, git);
+    worktrees = await service.getWorktrees();
   } catch (err) {
     if (discovered) {
       worktrees = discovered.allWorktrees.map((w) => ({ path: w.path, branch: w.branch }));
@@ -465,7 +440,7 @@ export async function handleGetWorktreeStatus(
     capability: "getStatus",
     toolName: "get_worktree_status",
   });
-  const resolvedPath = await ensureRepoWorktreePath(ctx, params, service, git);
+  const resolvedPath = await ensureRepoWorktreePath(ctx, params, service);
   const status = await git.getFullWorktreeStatus(params.path, params.includeDetails ?? false);
 
   // `divergence` rides in on the spread: it is a field of the status result now.
@@ -705,7 +680,7 @@ export async function handleUpdateWorktree(
     // same `worktree list --porcelain`, and the flag and the HEAD oid are both
     // in the rows already parsed) and lets the refusal below name the real
     // problem and the remedy instead.
-    const worktree = await ensureRepoWorktree(ctx, params, service, git, { fresh: true, includeDetached: true });
+    const worktree = await ensureRepoWorktree(ctx, params, service, { fresh: true, includeDetached: true });
     if (worktree.detached === true) {
       throw new WorktreeDetachedError(worktree.path, worktree.head);
     }

@@ -400,6 +400,10 @@ describe("handleListWorktrees", () => {
         const name = repoName as "repo-a" | "repo-b";
         return {
           isInitialized: vi.fn<any>().mockReturnValue(true),
+          isCloneMode: vi.fn<any>().mockReturnValue(false),
+          getWorktrees: vi
+            .fn<any>()
+            .mockImplementation((options?: unknown) => (gitByRepo[name].getWorktrees as any)(options)),
           getGitService: () => gitByRepo[name],
         };
       }),
@@ -457,6 +461,10 @@ describe("handleListWorktrees", () => {
         }
         return {
           isInitialized: vi.fn<any>().mockReturnValue(true),
+          isCloneMode: vi.fn<any>().mockReturnValue(false),
+          getWorktrees: vi
+            .fn<any>()
+            .mockImplementation((options?: unknown) => (gitByRepo["repo-a"].getWorktrees as any)(options)),
           getGitService: () => gitByRepo["repo-a"],
         };
       }),
@@ -1596,6 +1604,46 @@ describe("handleUpdateWorktree", () => {
     expect(git.fetchBranch).toHaveBeenCalledWith("feature");
     expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature", "feature");
     expect(body.updated).toBe(true);
+  });
+
+  // A configured repository whose bare clone is not on disk yet is cloned
+  // first: the listing this resolves the path against, and the fetch that
+  // follows, both need it. create_worktree's identical guard is pinned by the
+  // real-service suites, but every double that reaches update_worktree reports
+  // isInitialized() === true — including the context-flows suite, which spies
+  // the real service's isInitialized so nothing clones over the network — so
+  // deleting this guard outright used to pass all of them.
+  it("initializes a repository that was never cloned, before it reads the listing", async () => {
+    const callOrder: string[] = [];
+    const { ctx, git, service } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockImplementation(async () => {
+          callOrder.push("getWorktrees");
+          return [{ path: "/w/feature", branch: "feature" }];
+        }),
+      },
+    });
+    service.isInitialized.mockReturnValue(false);
+    service.initializeUnlocked.mockImplementation(async () => {
+      callOrder.push("initializeUnlocked");
+    });
+
+    const body = parseResponse(await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" }));
+
+    expect(body.success).toBe(true);
+    expect(callOrder).toEqual(["initializeUnlocked", "getWorktrees"]);
+    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature", "feature");
+  });
+
+  it("does not re-initialize a repository that is already cloned", async () => {
+    const { ctx, service } = makeCtx({
+      git: { getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature" }]) },
+    });
+
+    const body = parseResponse(await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" }));
+
+    expect(body.success).toBe(true);
+    expect(service.initializeUnlocked).not.toHaveBeenCalled();
   });
 
   // The discovery snapshot has no freshness check: a `git checkout -b` inside

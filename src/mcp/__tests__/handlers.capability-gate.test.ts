@@ -100,6 +100,10 @@ function makeService(): { service: Record<string, any>; git: Record<string, any>
       value: await (operation as () => Promise<unknown>)(),
     })),
     sync: vi.fn<any>().mockResolvedValue({ started: true }),
+    // WorktreeSyncService.getWorktrees is what the handlers call to list a
+    // repository's worktrees; it delegates to the git service in worktree mode,
+    // so this double does the same and each test keeps overriding one listing.
+    getWorktrees: vi.fn<any>().mockImplementation((options?: unknown) => (git.getWorktrees as any)(options)),
     getGitService: () => git,
     getDefaultBranch: vi.fn<any>().mockResolvedValue("main"),
     getRecordedSkips: () => [],

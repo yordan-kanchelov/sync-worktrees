@@ -297,7 +297,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   config'; list_worktrees fallback error blames initialization when the bare repo is simply missing
 - [x] **T104** — create_worktree cannot tell the agent that the worktree already existed, yet is
   annotated idempotentHint:false; response shape hides the no-op
-- [ ] **T105** — MCP handler tests never exercise RepositoryContext and handlers together; the
+- [x] **T105** — MCP handler tests never exercise RepositoryContext and handlers together; the
   ctx/service contract is fully mocked, so state-machine regressions (capability bypass, membership
   cache drift) are invisible
 - [-] **T59** — No dry-run/plan surface: the planner is pure but there is no CLI or MCP way to
@@ -4114,7 +4114,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: Only the branch `created` flag is modelled; no test covers a
   pre-existing worktree for the same branch.
 
-### [ ] T105. MCP handler tests never exercise RepositoryContext and handlers together; the ctx/service contract is fully mocked, so state-machine regressions (capability bypass, membership cache drift) are invisible
+### [x] T105. MCP handler tests never exercise RepositoryContext and handlers together; the ctx/service contract is fully mocked, so state-machine regressions (capability bypass, membership cache drift) are invisible
 
 - **Category**: testing · **Subsystem**: mcp
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
