@@ -9,7 +9,7 @@ import { input } from "@inquirer/prompts";
 import Table from "cli-table3";
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG, GIT_CONSTANTS } from "./constants";
+import { CONFIG_FILE_NAMES, DEFAULT_CONFIG, GIT_CONSTANTS } from "./constants";
 import { ConfigFileExistsError, ConfigFileNotFoundError, SyncWorktreesError } from "./errors";
 import { ConfigLoaderService } from "./services/config-loader.service";
 import { InteractiveUIService } from "./services/InteractiveUIService";
@@ -574,8 +574,14 @@ async function loadRunConfig(
 async function resolveConfigOrExit(cliPath: string | undefined): Promise<string> {
   const resolved = cliPath ? path.resolve(cliPath) : await findConfigInCwd();
   if (!resolved) {
+    // Derived from CONFIG_FILE_NAMES, not restated: this message named
+    // `{js,mjs,cjs}` while `findConfigInCwd` — which shares that constant —
+    // already searched for `.ts` as well, so the one place a user is told what
+    // to create disagreed with what the CLI would find. Building it from the
+    // list is the same fix as pinning the list: the claim cannot drift again.
+    const extensions = CONFIG_FILE_NAMES.map((name) => path.extname(name).slice(1)).join(",");
     console.error(
-      "❌ No config file found. Pass --config <path>, run `sync-worktrees init` to create one, or place a sync-worktrees.config.{js,mjs,cjs} in this directory.",
+      `❌ No config file found. Pass --config <path>, run \`sync-worktrees init\` to create one, or place a sync-worktrees.config.{${extensions}} in this directory.`,
     );
     process.exit(1);
   }

@@ -69,31 +69,31 @@ function commonJsConfigSource(nameExpression: string, preamble = ""): string {
   return `${preamble}module.exports = { repositories: [{ name: ${nameExpression}, repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`;
 }
 
+beforeAll(async () => {
+  bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-esm-reload-bundle-"));
+  bundlePath = path.join(bundleDir, "config-loader.mjs");
+  await fs.symlink(path.join(process.cwd(), "node_modules"), path.join(bundleDir, "node_modules"), "dir");
+  await build({
+    entryPoints: [path.join(process.cwd(), "src/services/config-loader.service.ts")],
+    outfile: bundlePath,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node22",
+    packages: "external",
+    define: { __SYNC_WORKTREES_VERSION__: JSON.stringify(packageJson.version) },
+  });
+}, 60_000);
+
+afterAll(async () => {
+  await fs.rm(bundleDir, { recursive: true, force: true });
+});
+
+afterEach(async () => {
+  await Promise.all(fixtureDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+});
+
 describe("config reload under real Node", () => {
-  beforeAll(async () => {
-    bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-esm-reload-bundle-"));
-    bundlePath = path.join(bundleDir, "config-loader.mjs");
-    await fs.symlink(path.join(process.cwd(), "node_modules"), path.join(bundleDir, "node_modules"), "dir");
-    await build({
-      entryPoints: [path.join(process.cwd(), "src/services/config-loader.service.ts")],
-      outfile: bundlePath,
-      bundle: true,
-      platform: "node",
-      format: "esm",
-      target: "node22",
-      packages: "external",
-      define: { __SYNC_WORKTREES_VERSION__: JSON.stringify(packageJson.version) },
-    });
-  }, 60_000);
-
-  afterAll(async () => {
-    await fs.rm(bundleDir, { recursive: true, force: true });
-  });
-
-  afterEach(async () => {
-    await Promise.all(fixtureDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
-  });
-
   it("re-reads a sibling module a .mjs config imports", async () => {
     const dir = await makeFixtureDir();
     const child = path.join(dir, "repos.mjs");
@@ -276,5 +276,152 @@ describe("config reload under real Node", () => {
     const result = JSON.parse(stdout.trim().split("\n").at(-1) as string) as { outcome: string; message?: string };
     expect(result.outcome).toBe("rejected");
     expect(result.message).toMatch(/worker exited with code 3/);
+  }, 60_000);
+});
+
+/**
+ * `.ts` configs, end to end, in a real `node` process — which is the only place
+ * this can be tested. Under vitest a dynamic `import()` is served by Vite, which
+ * compiles TypeScript with esbuild and would load an `enum`, a `namespace` or a
+ * parameter property without complaint. Node does not compile: it *erases* type
+ * annotations and refuses anything that would have to emit code. A suite that
+ * ran in-process would therefore pass on exactly the inputs a user's `node` run
+ * rejects, so these drive the bundled loader from a child process instead.
+ *
+ * Fixtures live under os.tmpdir() with no package.json, the way a checkout that
+ * is not an npm project does; Node's module-syntax detection then reads the
+ * `export default` as ESM. The `"type": "commonjs"` case is covered separately.
+ */
+describe("TypeScript configs under real Node", () => {
+  async function loadThroughRealNode(startDir: string): Promise<{ found: string | null; name?: string }> {
+    const script = `
+      import { ConfigLoaderService } from ${JSON.stringify(bundlePath)};
+      const loader = new ConfigLoaderService();
+      const found = await loader.findConfigUpward(${JSON.stringify(startDir)});
+      const out = { found };
+      if (found) out.name = (await loader.loadConfigFile(found)).repositories[0].name;
+      console.log(JSON.stringify(out));
+    `;
+    const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", script]);
+    return JSON.parse(stdout.trim().split("\n").at(-1) as string) as { found: string | null; name?: string };
+  }
+
+  async function loadErrorFromRealNode(configPath: string): Promise<string> {
+    const script = `
+      import { ConfigLoaderService } from ${JSON.stringify(bundlePath)};
+      const loader = new ConfigLoaderService();
+      try {
+        await loader.loadConfigFile(${JSON.stringify(configPath)});
+        console.log(JSON.stringify({ message: "loaded without error" }));
+      } catch (error) {
+        console.log(JSON.stringify({ message: error.message }));
+      }
+    `;
+    const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", script]);
+    return (JSON.parse(stdout.trim().split("\n").at(-1) as string) as { message: string }).message;
+  }
+
+  // The whole point of the change: the walk-up finds the file (it did not, so
+  // `detect_context` reported `configPath: null`) *and* Node executes it.
+  it("finds and loads a sync-worktrees.config.ts with type annotations", async () => {
+    const dir = await makeFixtureDir();
+    const configPath = path.join(dir, "sync-worktrees.config.ts");
+    await fs.writeFile(
+      configPath,
+      `interface Repo { name: string; repoUrl: string; worktreeDir: string }\n` +
+        `const repos: Repo[] = [{ name: "typed", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }];\n` +
+        `export default { repositories: repos } satisfies { repositories: Repo[] };`,
+    );
+
+    await expect(loadThroughRealNode(dir)).resolves.toEqual({ found: configPath, name: "typed" });
+  }, 60_000);
+
+  it("finds a .ts config from a nested directory", async () => {
+    const dir = await makeFixtureDir();
+    const configPath = path.join(dir, "sync-worktrees.config.ts");
+    const nested = path.join(dir, "packages", "web");
+    await fs.mkdir(nested, { recursive: true });
+    await fs.writeFile(
+      configPath,
+      `type Name = "nested";\nconst name: Name = "nested";\n` +
+        `export default { repositories: [{ name, repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees" }] };`,
+    );
+
+    await expect(loadThroughRealNode(nested)).resolves.toEqual({ found: configPath, name: "nested" });
+  }, 60_000);
+
+  // Node strips types, it does not compile them, so an `enum` is refused with
+  // ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX and a message about "strip-only mode"
+  // that tells a config author nothing. The hint is what makes it actionable.
+  it("explains non-erasable syntax instead of surfacing 'strip-only mode' alone", async () => {
+    const dir = await makeFixtureDir();
+    const configPath = path.join(dir, "sync-worktrees.config.ts");
+    await fs.writeFile(
+      configPath,
+      `enum Mode { Worktree = "worktree" }\n` +
+        `export default { repositories: [{ name: "e", repoUrl: "${TEST_URLS.github}", worktreeDir: "./w", mode: Mode.Worktree }] };`,
+    );
+
+    const message = await loadErrorFromRealNode(configPath);
+    expect(message).toContain("enum");
+    expect(message).toContain(configPath);
+    expect(message).toContain("erasing type annotations");
+    expect(message).toContain(".js/.mjs config");
+  }, 60_000);
+
+  // A `.ts` file under a `"type": "commonjs"` package.json is parsed as
+  // CommonJS-TypeScript, where `export default` is a hard SyntaxError. This is
+  // the one case `.mts` would have solved; `moduleSyntaxHint` already names the
+  // fix, which is why `.mts` is not in CONFIG_FILE_NAMES.
+  it('names the fix for a .ts config under a "type": "commonjs" package', async () => {
+    const dir = await makeFixtureDir();
+    await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "fixture", type: "commonjs" }));
+    const configPath = path.join(dir, "sync-worktrees.config.ts");
+    await fs.writeFile(
+      configPath,
+      `const name: string = "cjs-pkg";\n` +
+        `export default { repositories: [{ name, repoUrl: "${TEST_URLS.github}", worktreeDir: "./w" }] };`,
+    );
+
+    const message = await loadErrorFromRealNode(configPath);
+    expect(message).toContain("Unexpected token 'export'");
+    expect(message).toContain('add "type": "module" to the nearest package.json');
+  }, 60_000);
+
+  // Reload goes through a worker thread with its own module registry; a `.ts`
+  // config has to survive that path too, and `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`
+  // only reaches the hint because `workerEvalError` carries `code` across.
+  it("re-reads a .ts config, and still explains non-erasable syntax, on reload", async () => {
+    const dir = await makeFixtureDir();
+    const configPath = path.join(dir, "sync-worktrees.config.ts");
+    const source = (name: string, preamble = "") =>
+      `${preamble}const n: string = ${JSON.stringify(name)};\n` +
+      `export default { repositories: [{ name: n, repoUrl: "${TEST_URLS.github}", worktreeDir: "./w" }] };`;
+    await fs.writeFile(configPath, source("first"));
+
+    const script = `
+      import { writeFile } from "node:fs/promises";
+      import { ConfigLoaderService } from ${JSON.stringify(bundlePath)};
+      const loader = new ConfigLoaderService();
+      const first = (await loader.loadConfigFile(${JSON.stringify(configPath)})).repositories[0].name;
+      await writeFile(${JSON.stringify(configPath)}, ${JSON.stringify(source("second"))});
+      const second = (await loader.loadConfigFile(${JSON.stringify(configPath)})).repositories[0].name;
+      await writeFile(${JSON.stringify(configPath)}, ${JSON.stringify(source("third", "namespace N { export const x = 1; }\n"))});
+      let third;
+      try {
+        await loader.loadConfigFile(${JSON.stringify(configPath)});
+        third = "loaded without error";
+      } catch (error) {
+        third = error.message;
+      }
+      console.log(JSON.stringify({ first, second, third }));
+    `;
+    const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", script]);
+    const result = JSON.parse(stdout.trim().split("\n").at(-1) as string) as Record<string, string>;
+
+    expect(result.first).toBe("first");
+    expect(result.second).toBe("second");
+    expect(result.third).toContain("namespace");
+    expect(result.third).toContain("erasing type annotations");
   }, 60_000);
 });

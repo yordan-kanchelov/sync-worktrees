@@ -557,6 +557,16 @@ describe("Config Generator", () => {
       expect(result).toBe(configPath);
     });
 
+    // The CLI's bare `sync-worktrees` resolves its config through this, so a
+    // hand-written .ts config has to be reachable here too — not only through
+    // the MCP server's walk-up.
+    it("finds sync-worktrees.config.ts", async () => {
+      const configPath = path.join(tempDir, "sync-worktrees.config.ts");
+      await fs.writeFile(configPath, "export default {};");
+      const result = await findConfigInCwd(tempDir);
+      expect(result).toBe(configPath);
+    });
+
     it("prefers .js over .mjs and .cjs when all exist", async () => {
       const jsPath = path.join(tempDir, "sync-worktrees.config.js");
       await fs.writeFile(jsPath, "export default {};");

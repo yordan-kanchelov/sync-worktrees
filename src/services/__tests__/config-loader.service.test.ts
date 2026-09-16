@@ -5,7 +5,7 @@ import pLimit from "p-limit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
-import { DEFAULT_CONFIG } from "../../constants";
+import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../../constants";
 import { ConfigError, ConfigValidationError } from "../../errors";
 import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../../utils/git-client";
 import { ConfigLoaderService, computeParallelismPeak } from "../config-loader.service";
@@ -3251,8 +3251,8 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       expect(result).toBe(configPath);
     });
 
-    it("matches all supported extensions (.js, .mjs, .cjs)", async () => {
-      for (const ext of ["js", "mjs", "cjs"]) {
+    it("matches all supported extensions (.js, .mjs, .cjs, .ts)", async () => {
+      for (const ext of ["js", "mjs", "cjs", "ts"]) {
         const dir = await createTempDirectory(`config-ext-${ext}-`);
         const configPath = path.join(dir, `sync-worktrees.config.${ext}`);
         await fs.writeFile(configPath, "// fake", "utf-8");
@@ -3260,6 +3260,28 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
         const result = await configLoader.findConfigUpward(dir);
         expect(result).toBe(configPath);
       }
+    });
+
+    // The four names the MCP instructions and `detect_context` advertise, in the
+    // order the walk-up tries them. Pinned as a list so the two claims and the
+    // constant cannot drift: a `.ts` config that is never *looked* for is the
+    // shape of the bug this replaced, where `detect_context` reported
+    // `configPath: null` for a file sitting next to the caller.
+    it("advertises exactly the extensions it searches, .js first", () => {
+      expect([...CONFIG_FILE_NAMES]).toEqual([
+        "sync-worktrees.config.js",
+        "sync-worktrees.config.mjs",
+        "sync-worktrees.config.cjs",
+        "sync-worktrees.config.ts",
+      ]);
+    });
+
+    it("prefers .js over .ts when a directory holds both", async () => {
+      const dir = await createTempDirectory("config-ext-both-");
+      await fs.writeFile(path.join(dir, "sync-worktrees.config.ts"), "// fake", "utf-8");
+      await fs.writeFile(path.join(dir, "sync-worktrees.config.js"), "// fake", "utf-8");
+
+      expect(await configLoader.findConfigUpward(dir)).toBe(path.join(dir, "sync-worktrees.config.js"));
     });
   });
 

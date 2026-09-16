@@ -197,7 +197,12 @@ function makeCtx(opts: {
 
   const ctx = {
     detectFromPath: vi.fn<any>().mockResolvedValue(opts.discovered ?? makeDiscovered()),
-    getDiscoveredContext: vi.fn<any>().mockReturnValue(opts.discovered ?? makeDiscovered()),
+    // `=== undefined` rather than `??`: a test that passes `discovered: null` is
+    // asking for the no-detected-context branch, and `??` silently handed it a
+    // full context instead — which is how the fallback-throw below went untested.
+    getDiscoveredContext: vi
+      .fn<any>()
+      .mockReturnValue(opts.discovered === undefined ? makeDiscovered() : opts.discovered),
     getBaseCapabilities: vi
       .fn<any>()
       .mockReturnValue(opts.baseCapabilities === undefined ? makeCapabilities() : opts.baseCapabilities),
@@ -1887,18 +1892,41 @@ describe("handleListWorktrees fallbacks", () => {
     expect(git.getFullWorktreeStatus).toHaveBeenCalledTimes(2);
   });
 
-  it("returns an empty list when service lookup succeeds but no worktrees are available", async () => {
+  // A configured repository that has never been cloned: `git worktree list` runs
+  // against a bare directory that is not there, and nothing was detected on disk
+  // to fall back to. The old message ("service not initialized and no detected
+  // context") named the two things that failed and neither the cause nor the fix.
+  it("names the underlying git failure and points at initialize when there is no fallback", async () => {
     const { ctx } = makeCtx({
       discovered: null,
+      currentRepo: "backend",
       git: {
-        getWorktrees: vi.fn<any>().mockRejectedValue(new Error("git unavailable")),
+        getWorktrees: vi
+          .fn<any>()
+          .mockRejectedValue(new Error("Cannot use simple-git on a directory that does not exist")),
       },
     });
 
     const result = await invoke(handleListWorktrees, ctx, {});
     const body = parseResponse(result);
 
-    expect(body.worktrees).toEqual([]);
+    expect(result.isError).toBe(true);
+    expect(body.message).toContain("Cannot use simple-git on a directory that does not exist");
+    expect(body.message).toContain("initialize");
+    expect(body.message).toContain("backend");
+    expect(body.message).not.toContain("service not initialized and no detected context");
+  });
+
+  it("names the repository from repoName when one was passed", async () => {
+    const { ctx } = makeCtx({
+      discovered: null,
+      currentRepo: "backend",
+      configuredRepoNames: [],
+      git: { getWorktrees: vi.fn<any>().mockRejectedValue(new Error("boom")) },
+    });
+
+    const body = parseResponse(await invoke(handleListWorktrees, ctx, { repoName: "frontend" }));
+    expect(body.message).toContain("'frontend'");
   });
 });
 

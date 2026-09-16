@@ -93,6 +93,8 @@ By default, bare `sync-worktrees` launches the [interactive TUI](#interactive-tu
 
 To manage multiple repositories, edit the generated config file and add entries under `repositories`. See [Configuration](#configuration).
 
+Discovery tries `sync-worktrees.config.js`, `.mjs`, `.cjs` and `.ts`, in that order — the CLI in the current directory, the MCP server walking up from it. A `.ts` config is run by Node directly, with no build step, so it must use erasable syntax only (no `enum`, `namespace`, parameter properties or decorators). `init` writes `.js`, which is already type-checked through its `@satisfies` JSDoc.
+
 If the config lives outside the current directory, pass it explicitly:
 
 ```bash
@@ -270,7 +272,7 @@ Open `Settings` → `AI` → `Manage MCP Servers` → `+ Add` (see [Warp MCP doc
 | `load_config`            | Load or reload a config file at runtime.                                                                                                                                                                                          |
 | `set_current_repository` | Select the active repo when multiple are configured.                                                                                                                                                                              |
 
-All tools that target a single repo accept an optional `repoName`. When omitted, they use the current repository — set by auto-detect, the first entry in the config, or `set_current_repository`.
+All tools that target a single repo accept an optional `repoName`. When omitted, they use the current repository — set by auto-detect, by a config listing exactly one repository, or by `set_current_repository`. With several repositories configured and none of those in force, the call fails and names the repositories to choose from rather than picking one.
 
 Arguments are validated strictly: a key no tool declares is rejected by name (`Unrecognized key: "repo_name"`) rather than dropped, so a snake_case or misspelled `repoName` fails loudly instead of silently targeting the current repo.
 
@@ -737,7 +739,7 @@ Subcommands:
 
 ## Requirements
 
-- Node.js >= 22.0.0
+- Node.js >= 24.0.0
 - Git
 - An MCP-capable client (optional, only for the `sync-worktrees-mcp` server)
 

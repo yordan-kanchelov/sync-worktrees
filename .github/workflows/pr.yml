@@ -57,11 +57,16 @@ jobs:
     needs: check-changeset
     if: ${{ !cancelled() && needs.check-changeset.result != 'failure' && needs.check-changeset.outputs.has-changeset != 'false' }}
     strategy:
-      # Run both legs to completion so a failure on one runtime does not hide the result on the other.
+      # Kept as a matrix of one: a failure on one runtime must not hide the result on the other
+      # if a second version is ever added back.
       fail-fast: false
       matrix:
-        # 22 is the `engines.node` minimum (and the esbuild target); 24 is the version the release job publishes with.
-        node-version: [22, 24]
+        # 24 is the `engines.node` minimum and the version the release job publishes with.
+        # 22 was dropped when the floor was raised: testing a runtime the package refuses to
+        # install on is noise, and a `.ts` config relies on type stripping being on by default.
+        # (The esbuild target stays `node22` — a lower downlevel target runs fine on 24 and
+        # says nothing about what the package supports.)
+        node-version: [24]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

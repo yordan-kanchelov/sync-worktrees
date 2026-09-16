@@ -149,10 +149,28 @@ export const PATH_CONSTANTS = {
   STATE_DIR_NAME: ".sync-worktrees-state",
 } as const;
 
+// `.ts` is in the list because Node runs it directly: type stripping has been on
+// by default since 22.18 and `engines.node` is `>=24`, so every supported runtime
+// executes a `.ts` config through the loader's ordinary `import()` — no flag, no
+// transpile step, no dependency. Only *erasable* syntax survives that (see
+// `typeStrippingHint`), which is all a config needs, because it exports data.
+//
+// `.mts`/`.cts` are deliberately absent. Every extra name is another stat per
+// directory on every level of the walk-up, and the one case `.mts` would buy —
+// ESM-TS under a `"type": "commonjs"` package.json — already fails with
+// `moduleSyntaxHint` naming the fix. These four are also exactly what the MCP
+// instructions and `detect_context` advertise; a fifth would be a fifth claim to
+// keep true.
+//
+// Kept out of the JSDoc below on purpose: `tsc --emitDeclarationOnly` copies a
+// JSDoc block attached to an exported declaration into dist/constants.d.ts,
+// which ships. Line comments are dropped there and cost nothing.
+/** Auto-discovery order for `findConfigUpward` and `findConfigInCwd`; first hit in a directory wins. */
 export const CONFIG_FILE_NAMES = [
   "sync-worktrees.config.js",
   "sync-worktrees.config.mjs",
   "sync-worktrees.config.cjs",
+  "sync-worktrees.config.ts",
 ] as const;
 
 export const MAINTENANCE_CONSTANTS = {

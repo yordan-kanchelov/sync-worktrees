@@ -351,11 +351,23 @@ async function listWorktreesForRepo(
   let worktrees: Array<{ path: string; branch: string }>;
   try {
     worktrees = await getWorktreesFromService(service, git);
-  } catch {
+  } catch (err) {
     if (discovered) {
       worktrees = discovered.allWorktrees.map((w) => ({ path: w.path, branch: w.branch }));
     } else {
-      throw new Error("Cannot list worktrees - service not initialized and no detected context");
+      // The common way here is a configured repository that has never been
+      // cloned: `git worktree list` runs against a bare directory that does not
+      // exist, and simple-git rejects with "Cannot use simple-git on a directory
+      // that does not exist". Detection found nothing either, so there is no
+      // fallback list. Reporting only that combination told the caller the two
+      // things that did NOT work and neither the cause nor the remedy — and in
+      // a multi-repo listing this string is what lands in `repositories[name]
+      // .error`, next to repos that listed fine. Name both.
+      const cause = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Cannot list worktrees for '${repoName ?? ctx.getCurrentRepo() ?? "current repository"}': ${cause}. ` +
+          `Nothing was detected on disk either. If the repository has not been cloned yet, run 'initialize' first`,
+      );
     }
   }
 

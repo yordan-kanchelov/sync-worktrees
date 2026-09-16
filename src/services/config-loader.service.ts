@@ -200,6 +200,28 @@ function moduleSyntaxHint(absolutePath: string, error: unknown): string {
 }
 
 /**
+ * A `.ts` config is run by Node itself, which *erases* type annotations rather
+ * than compiling them: syntax that would have to emit code — `enum`,
+ * `namespace`, a parameter property, a decorator — is refused outright, with
+ * `code: "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX"` and a message about "strip-only
+ * mode" that explains neither why nor what to do instead. Keyed on the code
+ * rather than the text so the wording of Node's message is not load bearing,
+ * and it survives the reload path too: `workerEvalError` carries `code` back
+ * across the worker boundary. Appended to — never substituted for — the
+ * original message, which names the construct and the line.
+ *
+ * Not restricted to `.ts` paths on purpose: a `.js` config that imports a `.ts`
+ * sibling raises the same code from the sibling, and the same advice holds.
+ */
+function typeStrippingHint(error: unknown): string {
+  if ((error as { code?: unknown } | null)?.code !== "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX") return "";
+  return (
+    ` (hint: Node runs TypeScript by erasing type annotations, so syntax that emits code cannot run. ` +
+    `Rewrite it in erasable syntax — a plain object, a union of string literals, 'as const' — or use a .js/.mjs config)`
+  );
+}
+
+/**
  * An ESM frame names the module by URL. `fileURLToPath` is what turns that back
  * into something the person can open: it un-escapes the path and, because it
  * reads only the pathname, it drops the `?t=` cache-buster `importConfigModule`
@@ -500,7 +522,8 @@ export class ConfigLoaderService {
       // nothing; those messages already name the offending field.
       const where = evaluated ? "" : configErrorLocation(absolutePath, error);
       throw new Error(
-        `Failed to load config file: ${(error as Error).message}${where}${moduleSyntaxHint(absolutePath, error)}`,
+        `Failed to load config file: ${(error as Error).message}${where}` +
+          `${moduleSyntaxHint(absolutePath, error)}${typeStrippingHint(error)}`,
       );
     }
   }

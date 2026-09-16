@@ -292,7 +292,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   worktrees per call)
 - [ ] **T102** — Nested regular repos / submodules inside a managed worktree make detect_context
   return 'unsupported' instead of continuing to the enclosing worktree
-- [ ] **T103** — MCP tool/instruction text and README drift: '.ts' configs are advertised but never
+- [x] **T103** — MCP tool/instruction text and README drift: '.ts' configs are advertised but never
   discovered or loadable; README still says repo selection falls back to 'the first entry in the
   config'; list_worktrees fallback error blames initialization when the bare repo is simply missing
 - [ ] **T104** — create_worktree cannot tell the agent that the worktree already existed, yet is
@@ -4052,7 +4052,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: context tests cover only top-level worktree, plain dir, and regular
   repo roots.
 
-### [ ] T103. MCP tool/instruction text and README drift: '.ts' configs are advertised but never discovered or loadable; README still says repo selection falls back to 'the first entry in the config'; list_worktrees fallback error blames initialization when the bare repo is simply missing
+### [x] T103. MCP tool/instruction text and README drift: '.ts' configs are advertised but never discovered or loadable; README still says repo selection falls back to 'the first entry in the config'; list_worktrees fallback error blames initialization when the bare repo is simply missing
 
 - **Category**: docs · **Subsystem**: mcp
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
