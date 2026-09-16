@@ -29,6 +29,7 @@ import { TrashReaperService } from "./trash-reaper.service";
 import { TrashService } from "./trash.service";
 import { WorktreeModeSyncRunner } from "./worktree-mode-sync-runner";
 
+import type { RegisteredWorktree } from "./git.service";
 import type { ProgressEvent, ProgressListener } from "./progress-emitter";
 import type { TrashEntry, TrashManifest } from "./trash.service";
 import type {
@@ -151,11 +152,14 @@ export class WorktreeSyncService {
     return this.cloneSyncService !== null;
   }
 
-  async getWorktrees(): Promise<Array<{ path: string; branch: string }>> {
+  async getWorktrees(options: { includeDetached?: boolean } = {}): Promise<RegisteredWorktree[]> {
     if (this.cloneSyncService) {
+      // A clone-mode repository is one checkout, and its own listing always
+      // reports it whether or not HEAD is on a branch, so there is nothing for
+      // `includeDetached` to widen here.
       return this.cloneSyncService.getWorktrees();
     }
-    return this.gitService.getWorktrees();
+    return this.gitService.getWorktrees(options);
   }
 
   async getRemoteBranches(): Promise<string[]> {

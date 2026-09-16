@@ -278,7 +278,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T97** — Auto-detect derives worktreeDir as dirname(current worktree); from inside the
   default-branch worktree of a repo whose default branch contains '/' this is wrong and
   create_worktree/update_worktree fail in initialize() with a git 'already checked out' error
-- [ ] **T98** — update_worktree on a detached-HEAD worktree: membership passes or fails depending on
+- [x] **T98** — update_worktree on a detached-HEAD worktree: membership passes or fails depending on
   cache state, fetchBranch is called with the pseudo-branch '(detached abc1234)', and updateWorktree
   would merge origin/<sha>
 - [ ] **T99** — A found-but-broken auto-discovered config is invisible to the agent: detectFromPath
@@ -3894,7 +3894,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Re-verified: `worktreeDir = path.dirname(worktreeRoot)` at context.ts:534 — one level
   up regardless of how many path segments the branch name contributed.
 
-### [ ] T98. update_worktree on a detached-HEAD worktree: membership passes or fails depending on cache state, fetchBranch is called with the pseudo-branch '(detached abc1234)', and updateWorktree would merge origin/<sha>
+### [x] T98. update_worktree on a detached-HEAD worktree: membership passes or fails depending on cache state, fetchBranch is called with the pseudo-branch '(detached abc1234)', and updateWorktree would merge origin/<sha>
 
 - **Category**: correctness · **Subsystem**: mcp
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

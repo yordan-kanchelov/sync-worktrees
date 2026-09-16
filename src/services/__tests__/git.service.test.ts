@@ -2888,6 +2888,54 @@ locked
         { path: "/path/to/worktrees/held", branch: "held", isPrunable: false, locked: true },
       ]);
     });
+
+    // `includeDetached` exists for callers that must *find* a worktree rather
+    // than act on its branch — MCP membership checks, which otherwise report a
+    // registered detached path as one this repository does not have.
+    it("returns detached worktrees, flagged and with their HEAD, when asked", async () => {
+      await gitService.initialize();
+
+      mockGit.raw.mockResolvedValue(`worktree /path/to/repo.git
+bare
+
+worktree /path/to/worktrees/feature-1
+HEAD def456
+branch refs/heads/feature-1
+
+worktree /path/to/worktrees/loose
+HEAD abc123
+detached
+
+worktree /path/to/worktrees/gone
+HEAD 0ff123
+detached
+prunable gitdir file points to non-existent location
+`);
+
+      const worktrees = await gitService.getWorktrees({ includeDetached: true });
+
+      // The bare repository's own row has neither a branch nor a detached
+      // HEAD. It stays out: its `branch` would be the empty string, and a
+      // caller that fetched or merged that would be fetching `origin/`. The
+      // prunable detached row stays out too: its checkout is gone, so naming
+      // it "detached, check out a branch" points at a directory that is not
+      // there, and the rest of this service already reads prunable as absent.
+      expect(worktrees).toEqual([
+        { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false, head: "def456" },
+        {
+          path: "/path/to/worktrees/loose",
+          branch: "",
+          isPrunable: false,
+          locked: false,
+          detached: true,
+          head: "abc123",
+        },
+      ]);
+
+      // Default and explicit-false stay the branch-only listing.
+      expect(await gitService.getWorktrees()).toEqual(await gitService.getWorktrees({ includeDetached: false }));
+      expect((await gitService.getWorktrees()).map((w) => w.path)).toEqual(["/path/to/worktrees/feature-1"]);
+    });
   });
 
   describe("getWorktreeLock", () => {

@@ -283,6 +283,7 @@ Arguments are validated strictly: a key no tool declares is rejected by name (`U
 - `sync` prunes every worktree outside the filtered branch set, so `create_worktree` refuses one it would take away again: `BRANCH_FILTERED` for a branch `branchInclude`/`branchExclude`/`branchMaxAge` exclude (`force: true` overrides), and a `warning` for a local-only branch until it is pushed.
 - Branches created by sync-worktrees use `--no-track` first, then publish with `git push -u origin <branch>`, so they do not inherit `origin/main` as their upstream.
 - Path-targeted tools verify the supplied path is a registered worktree of the selected repository.
+- `update_worktree` errors with code `DETACHED_HEAD` when the worktree has no branch checked out: there is nothing for a fast-forward to move, and the message names the path and the commit HEAD sits on. Check a branch out there and call it again.
 
 ## Interactive TUI
 

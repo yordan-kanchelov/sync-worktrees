@@ -66,8 +66,9 @@ export interface RegisteredWorktree {
   lockReason?: string;
   /**
    * Set (to true) only for a worktree git lists as detached — one with no
-   * branch checked out. `getWorktrees()` filters those out entirely, so only
-   * listings that ask for detached entries ever carry it.
+   * branch checked out. `getWorktrees()` omits those unless `includeDetached`
+   * asks for them, and `branch` is the empty string on such a row: there is no
+   * ref for a caller to fetch, merge or fast-forward.
    */
   detached?: boolean;
   /**
@@ -1982,9 +1983,28 @@ export class GitService {
     return this.config.skipLfs || this.lfsSkipOverride;
   }
 
-  async getWorktrees(): Promise<RegisteredWorktree[]> {
+  async getWorktrees(options: { includeDetached?: boolean } = {}): Promise<RegisteredWorktree[]> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
-    return this.getWorktreesFromBare(bareGit);
+    if (options.includeDetached !== true) return this.getWorktreesFromBare(bareGit);
+    // `includeDetached` is for callers that must *find* a detached worktree
+    // (membership, path resolution) rather than act on its branch. Git's
+    // listing also opens with the bare repository's own row, which has neither
+    // a branch nor a detached HEAD; the default listing drops it along with
+    // the detached entries, so drop it here too. Otherwise asking for detached
+    // worktrees would quietly hand back a row whose `branch` is the empty
+    // string — something a caller could fetch or merge.
+    //
+    // A prunable detached row is dropped for the same reason the rest of this
+    // service treats a prunable registration as absent (isRegisteredWorktree):
+    // the checkout is gone, so `detached` there describes an admin file rather
+    // than a working tree, and a caller told "detached HEAD, check out a
+    // branch" would be sent to a directory that does not exist. Branch-bearing
+    // prunable rows are left exactly as they were: the default listing has
+    // always returned them, and nothing here changes that.
+    const worktrees = await this.getWorktreesFromBare(bareGit, true);
+    return worktrees.filter(
+      (worktree) => worktree.branch !== "" || (worktree.detached === true && worktree.isPrunable !== true),
+    );
   }
 
   // Whether git holds a lock on the registration covering `worktreePath` — a

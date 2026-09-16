@@ -120,6 +120,19 @@ export class WorktreeTargetExistsError extends SyncWorktreesError {
   }
 }
 
+// A registered worktree with no branch checked out. Distinct from
+// TARGET_EXISTS (nothing is registered there) and from "not a registered
+// worktree": the path is this repository's, it is simply not something a
+// fast-forward can be aimed at, because there is no branch to move.
+export class WorktreeDetachedError extends SyncWorktreesError {
+  constructor(worktreePath: string, head?: string) {
+    super(
+      `Worktree at '${worktreePath}' is on a detached HEAD${head ? ` (${head})` : ""}; check out a branch before fast-forwarding`,
+      "DETACHED_HEAD",
+    );
+  }
+}
+
 export function wrapHandler<P>(
   fn: (params: P, ctx: HandlerContext) => Promise<CallToolResult>,
 ): (params: P, ctx: HandlerContext) => Promise<CallToolResult> {

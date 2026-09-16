@@ -1615,6 +1615,62 @@ describe("handleUpdateWorktree", () => {
     expect(service.runExclusiveRepoOperation).not.toHaveBeenCalled();
     expect(git.updateWorktree).not.toHaveBeenCalled();
   });
+
+  // A detached worktree has no branch for a fast-forward to move, and git's
+  // listing says so with a `detached` flag and no branch name. `branch` is the
+  // empty string on such a row, so anything that got past this guard would
+  // fetch and merge `origin/` — a name git reads as a refspec of its own.
+  it("refuses a detached worktree by name, and neither fetches nor merges", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi
+          .fn<any>()
+          .mockResolvedValue([{ path: "/w/feature", branch: "", detached: true, head: "9f1c0de" }]),
+      },
+    });
+
+    const result = await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" });
+    const body = parseResponse(result);
+
+    expect(body.code).toBe("DETACHED_HEAD");
+    expect(body.message).toContain("detached HEAD");
+    expect(body.message).toContain("9f1c0de");
+    expect(body.message).toContain("/w/feature");
+    // The symptom being replaced: a path git has registered, reported as one
+    // this repository does not have.
+    expect(body.message).not.toContain("not a registered worktree");
+    expect(git.fetchBranch).not.toHaveBeenCalled();
+    expect(git.updateWorktree).not.toHaveBeenCalled();
+  });
+
+  // The guard can only fire on an entry the listing returned, and git omits
+  // detached worktrees unless asked for them — so the membership listing has
+  // to ask. Without this the refusal above is unreachable against real git and
+  // the old "not a registered worktree" answer comes back.
+  it("asks the membership listing for detached entries", async () => {
+    const { ctx, service } = makeCtx({
+      git: { getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature" }]) },
+    });
+
+    expect(parseResponse(await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" })).success).toBe(true);
+    expect(service.getWorktrees).toHaveBeenCalledWith(expect.objectContaining({ includeDetached: true }));
+  });
+
+  // `detached` is set only when true, so "absent" is the ordinary case and must
+  // not read as detached.
+  it("fast-forwards a worktree whose listing row carries no detached flag", async () => {
+    const { ctx, git } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature", head: "9f1c0de" }]),
+      },
+    });
+
+    const body = parseResponse(await invoke(handleUpdateWorktree, ctx, { path: "/w/feature" }));
+
+    expect(body.success).toBe(true);
+    expect(git.fetchBranch).toHaveBeenCalledWith("feature");
+    expect(git.updateWorktree).toHaveBeenCalledWith("/w/feature", "feature");
+  });
 });
 
 describe("handleGetWorktreeStatus", () => {
@@ -1678,6 +1734,52 @@ describe("handleGetWorktreeStatus", () => {
     expect(body.isClean).toBe(true);
     expect(service.getWorktrees).toHaveBeenCalled();
     expect(git.getWorktrees).not.toHaveBeenCalled();
+  });
+
+  // The consequence of the choice below, pinned so it stays a decision rather
+  // than a surprise: membership for a DETACHED path still depends on cache
+  // state here. The discovery snapshot lists such a worktree (under the
+  // pseudo-name `(detached <sha>)`), the fresh branch-only listing does not —
+  // so a warm snapshot answers and a cold one says "not a registered worktree"
+  // about the same registered path. Harmless only because this handler throws
+  // `.branch` away; `update_worktree`, which does not, resolves `fresh` plus
+  // `includeDetached` and is cache-independent either way.
+  it("answers a detached path from the snapshot but denies it without one", async () => {
+    const detachedPath = "/w/loose";
+    const gitMock = {
+      getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/x", branch: "x" }]),
+      getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ isClean: false, reasons: ["detached HEAD"] }),
+    };
+
+    const warm = makeCtx({
+      discovered: makeDiscovered({ allWorktrees: [{ path: detachedPath, branch: "(detached 9f1c0de)" } as any] }),
+      git: gitMock,
+    });
+    const warmBody = parseResponse(await invoke(handleGetWorktreeStatus, warm.ctx, { path: detachedPath }));
+    expect(warmBody.path).toBe(detachedPath);
+    expect(warmBody.reasons).toContain("detached HEAD");
+
+    const cold = makeCtx({ discovered: makeDiscovered({ allWorktrees: [] }), git: gitMock });
+    const coldBody = parseResponse(await invoke(handleGetWorktreeStatus, cold.ctx, { path: detachedPath }));
+    expect(coldBody.message).toContain("not a registered worktree");
+  });
+
+  // Read-only tools are left alone: they already describe a detached worktree
+  // (`get_worktree_status` puts "detached HEAD" in its reasons), so widening
+  // their listing would only change which paths they accept. Only the tool
+  // that acts on `branch` asks for detached entries.
+  it("keeps asking for the branch-only listing", async () => {
+    const { ctx, service } = makeCtx({
+      discovered: makeDiscovered({ allWorktrees: [] }),
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/x", branch: "x" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ isClean: true, reasons: [] }),
+      },
+    });
+
+    await invoke(handleGetWorktreeStatus, ctx, { path: "/w/x" });
+
+    expect(service.getWorktrees).toHaveBeenCalledWith(expect.objectContaining({ includeDetached: false }));
   });
 });
 
