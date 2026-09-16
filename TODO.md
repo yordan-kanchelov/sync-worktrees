@@ -264,7 +264,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T80** — Sparse-checkout patterns are not validated at load time; cone-mode includes with a
   leading slash (or wildcards) are rejected by git, so every worktree creation fails and is rolled
   back on every tick
-- [ ] **T61** — README states retry.maxAttempts defaults to 'unlimited' but the sync policy defaults
+- [x] **T61** — README states retry.maxAttempts defaults to 'unlimited' but the sync policy defaults
   to 3; DEFAULT_CONFIG.RETRY constants are bypassed (jitter 500 vs 0)
 
 ### Batch 6 — MCP server
@@ -2692,7 +2692,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: ProgressEvent grew the fields for git transfer progress; the runner was
   never wired to use them (CHANGELOG 4.1.1 notes the percent suffix 'never fired').
 
-### [ ] T61. README states retry.maxAttempts defaults to 'unlimited' but the sync policy defaults to 3; DEFAULT_CONFIG.RETRY constants are bypassed (jitter 500 vs 0)
+### [x] T61. README states retry.maxAttempts defaults to 'unlimited' but the sync policy defaults to 3; DEFAULT_CONFIG.RETRY constants are bypassed (jitter 500 vs 0)
 
 - **Category**: docs · **Subsystem**: worktree-sync
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer

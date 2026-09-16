@@ -374,10 +374,12 @@ const config = {
     updateExistingWorktrees: true,
   },
 
+  // Every field here is an override: left out, `retry` gives 3 attempts, a 1s
+  // initial delay and a 30s cap. See "Retry and LFS" for the full table.
   retry: {
-    maxAttempts: "unlimited",
+    maxAttempts: "unlimited", // keep retrying a flaky remote instead of stopping at 3
     initialDelayMs: 1000,
-    maxDelayMs: 600000,
+    maxDelayMs: 600000, // 10 minutes
     backoffMultiplier: 2,
   },
 
@@ -673,19 +675,20 @@ A repository's phases run one after another — create, then prune, then update 
 
 ### Retry and LFS
 
-The tool retries network errors (timeouts, DNS failures, access issues) and filesystem race conditions automatically:
+A failed sync attempt is retried automatically, but only for errors a retry can fix: DNS failures, refused connections, timeouts, `EBUSY`, `Could not read from remote repository`, `fatal: unable to access`, and Git LFS failures. Everything else fails on the first attempt — the credential, ssh key and host key failures git names in its message (see [Authentication](#authentication)), `EACCES`, `EPERM`, `EROFS`, `ENOSPC`, and any error not on that list.
 
-```javascript
-retry: {
-  maxAttempts: 5;
-} // try 5 times then stop
-retry: {
-  maxAttempts: "unlimited";
-} // keep trying forever (default)
-retry: {
-  maxDelayMs: 60000;
-} // cap retry delay at 1 minute
-```
+Leave `retry` out and a sync runs with these defaults:
+
+| Setting             | Default | Meaning                                                                                                |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `maxAttempts`       | `3`     | Attempts per sync, the first one included — so two retries. `"unlimited"` never stops retrying.        |
+| `maxLfsRetries`     | `2`     | LFS failures tolerated before the sync ends with an LFS-specific error; also bounded by `maxAttempts`. |
+| `initialDelayMs`    | `1000`  | Delay before the second attempt.                                                                       |
+| `backoffMultiplier` | `2`     | Each delay multiplies the one before it: 1s, then 2s — 4s and 8s only once `maxAttempts` is raised.    |
+| `maxDelayMs`        | `30000` | Ceiling on a single delay.                                                                             |
+| `jitterMs`          | `0`     | Upper bound of a random extra delay — opt in when many repositories retry in lockstep.                 |
+
+A `retry` block may sit at the top level, under `defaults` or on one repository, and the three merge field by field with the repository winning: `retry: { maxAttempts: "unlimited" }` keeps trying instead of stopping at three, `retry: { maxDelayMs: 60000 }` caps a single delay at a minute. When the attempts run out the sync fails — the daemon logs it and waits for the next cron fire, while `--runOnce` exits 1.
 
 Two inactivity timeouts guard the git commands that talk to the remote: `fetchTimeoutMs` (default 5 minutes — `fetch`, `push`, `ls-remote`, `remote set-head`) and `cloneTimeoutMs` (default 15 minutes — the initial clone, and the `fetch --unshallow` that pulls a clone-mode repository's full history after `depth` is removed, which moves the same bytes a clone would). Each kills its command when no output arrives inside the window, so a stalled connection ends the attempt instead of hanging the sync forever; `0` disables one. Local commands never carry them: `git worktree add` prints nothing while it checks out a large repository, and killing it there would fail a creation that only needed more time. Set either on a repository entry or under `defaults` (the entry wins, as everywhere else); both must be non-negative whole numbers of milliseconds, and anything else is a config validation error. Both knobs are shown in [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js).
 

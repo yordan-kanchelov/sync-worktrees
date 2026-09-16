@@ -425,7 +425,7 @@ describe("retry", () => {
           initialDelayMs: 1,
           maxLfsRetries: 1,
         }),
-      ).rejects.toThrow(/Consider using --skip-lfs option/);
+      ).rejects.toThrow(/Consider setting 'skipLfs: true' for this repository \(or under 'defaults'\)/);
     });
   });
 });
