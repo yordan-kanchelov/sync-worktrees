@@ -281,7 +281,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T98** — update_worktree on a detached-HEAD worktree: membership passes or fails depending on
   cache state, fetchBranch is called with the pseudo-branch '(detached abc1234)', and updateWorktree
   would merge origin/<sha>
-- [ ] **T99** — A found-but-broken auto-discovered config is invisible to the agent: detectFromPath
+- [x] **T99** — A found-but-broken auto-discovered config is invisible to the agent: detectFromPath
   logs to stderr, reports kind 'unmanaged'/configPath null, and re-imports the broken file on every
   subsequent detect_context
 - [ ] **T100** — detect_context with includeStatus + includeAllWorktrees enriches the current repo's
@@ -3930,7 +3930,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   does not point to a branch', merge origin/9768c59 --ff-only → 'not something we can merge'
   (scratch t1.mjs).
 
-### [ ] T99. A found-but-broken auto-discovered config is invisible to the agent: detectFromPath logs to stderr, reports kind 'unmanaged'/configPath null, and re-imports the broken file on every subsequent detect_context
+### [x] T99. A found-but-broken auto-discovered config is invisible to the agent: detectFromPath logs to stderr, reports kind 'unmanaged'/configPath null, and re-imports the broken file on every subsequent detect_context
 
 - **Category**: workflow · **Subsystem**: mcp
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

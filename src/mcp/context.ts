@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
 
@@ -123,6 +124,19 @@ interface RepositorySelectionState {
   defaultDecision: RepositorySelectionDecision;
 }
 
+// Identity of the config file that failed to auto-load, as it was on disk at
+// the moment of the failure. Both halves are null when the file could not be
+// read at all, which the gate treats as "unknown", never as "unchanged".
+interface ConfigFingerprint {
+  mtimeMs: number | null;
+  contentHash: string | null;
+}
+
+interface ConfigLoadFailure extends ConfigFingerprint {
+  path: string;
+  error: string;
+}
+
 interface CachedDiscovery {
   result: DiscoveredRepoContext;
   cachedAt: number;
@@ -190,6 +204,7 @@ export class RepositoryContext {
   // property of this call site instead of a property of `console`.
   private configLoader = new ConfigLoaderService({ logger: createStderrLogger() });
   private discoveryCache = new Map<string, CachedDiscovery>();
+  private lastConfigLoadFailure: ConfigLoadFailure | null = null;
   private readonly launchCwd: string;
 
   constructor(options: { launchCwd?: string } = {}) {
@@ -233,6 +248,9 @@ export class RepositoryContext {
     }
 
     this.configPath = absolutePath;
+    // Reached only past every throw in this method, so it marks a config that
+    // is genuinely loaded -- from the auto-load below or from load_config.
+    this.lastConfigLoadFailure = null;
     for (const resolved of resolvedAll) {
       this.repos.set(resolved.name, {
         name: resolved.name,
@@ -266,11 +284,27 @@ export class RepositoryContext {
 
     if (this.configPath === null) {
       const found = await this.configLoader.findConfigUpward(absolutePath);
-      if (found) {
-        try {
-          await this.loadConfig(found, { setDefaultCurrent: false });
-        } catch (err) {
-          process.stderr.write(`[sync-worktrees] auto-loaded config failed: ${(err as Error).message}\n`);
+      if (found === null) {
+        this.lastConfigLoadFailure = null;
+      } else {
+        // Fingerprinted before the attempt, never after: an edit that lands
+        // while the import is running must be re-imported next time, and
+        // recording the post-failure bytes would pin the repair as "already
+        // tried".
+        const fingerprint = await configFileFingerprint(found);
+        if (this.shouldReimportConfig(found, fingerprint)) {
+          try {
+            await this.loadConfig(found, { setDefaultCurrent: false });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.lastConfigLoadFailure = { path: found, error: message, ...fingerprint };
+            // Kept next to the note rather than replaced by it. The note is for
+            // an MCP client; this line is for whoever is tailing the server in a
+            // terminal, who never sees tool output. It costs nothing on the wire
+            // -- stderr is not the JSON-RPC stream -- and it is now written once
+            // per broken revision instead of once per cache miss.
+            process.stderr.write(`[sync-worktrees] auto-loaded config failed: ${message}\n`);
+          }
         }
       }
     }
@@ -441,6 +475,17 @@ export class RepositoryContext {
     return null;
   }
 
+  private shouldReimportConfig(configPath: string, fingerprint: ConfigFingerprint): boolean {
+    const failure = this.lastConfigLoadFailure;
+    if (failure === null) return true;
+    if (!pathsEqual(failure.path, configPath)) return true;
+    // Fail open when either side could not be fingerprinted. An unreadable file
+    // must never be mistaken for an unchanged one, or a config nobody can stat
+    // is pinned as broken for the life of the process.
+    if (fingerprint.contentHash === null || failure.contentHash === null) return true;
+    return fingerprint.mtimeMs !== failure.mtimeMs || fingerprint.contentHash !== failure.contentHash;
+  }
+
   private async isCacheFresh(cached: CachedDiscovery): Promise<boolean> {
     if (Date.now() - cached.cachedAt >= DISCOVERY_CACHE_TTL_MS) return false;
     if (!cached.worktreeAdminDir || !cached.result.bareRepoPath) return true;
@@ -457,6 +502,18 @@ export class RepositoryContext {
     absolutePath: string,
   ): Promise<{ result: DiscoveredRepoContext; adminDir: string | null }> {
     const notes: string[] = [];
+    // Seeded before any of the branches below so the note survives every shape
+    // this returns -- unmanaged, unsupported and clone-mode alike. Without it a
+    // found-but-broken config reaches the client as configPath: null with no
+    // hint that a config file exists, and the agent's next move is to write a
+    // second one.
+    const configFailure = this.lastConfigLoadFailure;
+    if (configFailure !== null) {
+      notes.push(
+        `Found config at ${configFailure.path} but it failed to load: ${configFailure.error}. ` +
+          `Fix it and call load_config.`,
+      );
+    }
 
     const located = await findWorktreeRoot(absolutePath);
     const worktreeRoot = located?.worktreeRoot ?? absolutePath;
@@ -1183,6 +1240,39 @@ function parseWorktreeList(output: string, currentPath: string | null): Discover
 type FindResult =
   | { kind: "worktree-file"; worktreeRoot: string; gitFileContent: string }
   | { kind: "regular-git-dir"; worktreeRoot: string };
+
+// A found-but-broken config is re-read on every cache-missing detect, and past
+// the first failure each read costs a whole worker thread: ConfigLoaderService
+// records a path as evaluated *before* it imports it, so even a failed first
+// import pushes every later one onto T35's reload path. This fingerprint is
+// what lets the gate skip that repeat -- but only while the file is still
+// byte-for-byte the one that failed, because a config the user has just fixed
+// has to load on the very next detect_context.
+//
+// mtime alone cannot keep that promise. It is nanosecond-resolution on ext4 and
+// APFS but one-second on HFS+ and on most NFS/SMB mounts, and the smallest real
+// syntax fix -- one '}' becoming ']' -- leaves the size identical, so a repair
+// landing in the same second as the failure is invisible to a stat-only check.
+// The hash reads a file of a few KB, once per auto-load attempt. A config that
+// loads is fingerprinted exactly once in the life of the process -- `configPath`
+// is set from then on and this whole path is skipped -- so a healthy workspace
+// pays one read of one file, ever, and never a read per detect. While a config
+// is broken it is computed on each attempt, which is exactly where it replaces
+// spawning a worker.
+//
+// Either half changing re-imports, so `touch` alone releases the gate. That is
+// the deliberate escape for a fault that lives in a module the config imports
+// rather than in the config file: such a SyntaxError names no file at all, in
+// the message or the stack, so there is nothing else here to fingerprint. The
+// note points at load_config, which does not come through this path.
+async function configFileFingerprint(filePath: string): Promise<ConfigFingerprint> {
+  try {
+    const [contents, stat] = await Promise.all([fs.readFile(filePath), fs.stat(filePath)]);
+    return { mtimeMs: stat.mtimeMs, contentHash: createHash("sha256").update(contents).digest("hex") };
+  } catch {
+    return { mtimeMs: null, contentHash: null };
+  }
+}
 
 async function safeMtimeMs(filePath: string): Promise<number | null> {
   try {
