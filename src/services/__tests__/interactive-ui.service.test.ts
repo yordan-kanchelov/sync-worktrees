@@ -4,6 +4,7 @@ import * as path from "path";
 import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AppEventEmitter } from "../../utils/app-events";
 import { calculateDirectorySize, formatBytes } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
 
@@ -125,7 +126,7 @@ describe("InteractiveUIService", () => {
         updateLastSyncTime: vi.fn(),
         setStatus: vi.fn(),
       };
-      return { unmount: mockUnmount };
+      return { unmount: mockUnmount, waitUntilExit: vi.fn(() => new Promise<void>(() => {})) };
     });
 
     const mockConfig: Config = {
@@ -401,17 +402,117 @@ describe("InteractiveUIService", () => {
       await expect(service.destroy()).resolves.toBeUndefined();
       expect(mockUnmount).toHaveBeenCalled();
     });
+
+    const collectLogs = (): { events: AppEventEmitter; messages: string[] } => {
+      const events = new AppEventEmitter();
+      const messages: string[] = [];
+      events.on("addLog", ({ message }) => void messages.push(message));
+      return { events, messages };
+    };
+
+    // The two timeouts are a policy, not an accident: a signal has a watchdog
+    // behind it and must not sit on a 30s wait, while `q` is a person who asked
+    // to leave and can afford to let a fetch land.
+    it("keeps the 2s timeout for the signal path and the 30s timeout for the q path", async () => {
+      mockSyncService.isSyncInProgress.mockReturnValue(true);
+      const fast = collectLogs();
+      const slow = collectLogs();
+      const fastService = new InteractiveUIService([mockSyncService], undefined, undefined, undefined, fast.events);
+      const slowService = new InteractiveUIService([mockSyncService], undefined, undefined, undefined, slow.events);
+      fast.events.emit("uiReady");
+      slow.events.emit("uiReady");
+      fast.messages.length = 0;
+      slow.messages.length = 0;
+
+      vi.useFakeTimers();
+      try {
+        const fastShutdown = fastService.destroy(true);
+        const slowShutdown = slowService.destroy();
+
+        await vi.advanceTimersByTimeAsync(1900);
+        expect(fast.messages.some((message) => message.startsWith("Warning: Timeout"))).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await fastShutdown;
+        expect(fast.messages).toContain(
+          "Warning: Timeout waiting for sync operations to complete after 2.0s. Proceeding with potential data loss risk.",
+        );
+        expect(slow.messages.some((message) => message.startsWith("Warning: Timeout"))).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(27000);
+        expect(slow.messages.some((message) => message.startsWith("Warning: Timeout"))).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await slowShutdown;
+        expect(slow.messages).toContain(
+          "Warning: Timeout waiting for sync operations to complete after 30.0s. Proceeding with potential data loss risk.",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reports the wait while it is still waiting, not after everything is torn down", async () => {
+      mockSyncService.isSyncInProgress.mockReturnValue(true);
+      const { events, messages } = collectLogs();
+      const service = new InteractiveUIService([mockSyncService], undefined, undefined, undefined, events);
+      events.emit("uiReady");
+      messages.length = 0;
+
+      vi.useFakeTimers();
+      try {
+        const shutdown = service.destroy(true);
+        await vi.advanceTimersByTimeAsync(10);
+        // Emitted while the interface is still mounted and listening, which is
+        // the whole point: isDestroyed is set after the wait, not before it.
+        expect(messages).toContain(
+          "Waiting for 1 in-progress sync(s) to finish... Press q or Ctrl+C again to quit now.",
+        );
+        expect(mockUnmount).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(2500);
+        await shutdown;
+        expect(mockUnmount).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ignores a key repeat inside the guard window but honours a deliberate second quit", async () => {
+      mockSyncService.isSyncInProgress.mockReturnValue(true);
+      const service = new InteractiveUIService([mockSyncService]);
+
+      const shutdown = service.destroy();
+      let settled = false;
+      void shutdown.then(() => {
+        settled = true;
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      void service.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(settled).toBe(false);
+
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      void service.destroy();
+
+      const outcome = await Promise.race([
+        shutdown.then(() => "shut down"),
+        new Promise((resolve) => setTimeout(() => resolve("still waiting"), 3000)),
+      ]);
+      expect(outcome).toBe("shut down");
+    });
   });
 
   describe("registerCronJob", () => {
     it("should stop registered cron jobs on destroy", async () => {
       const service = new InteractiveUIService([mockSyncService]);
-      const stopSpy = vi.fn();
-      service.registerCronJob({ stop: stopSpy } as unknown as cron.ScheduledTask);
+      const destroySpy = vi.fn();
+      service.registerCronJob({ stop: vi.fn(), destroy: destroySpy } as unknown as cron.ScheduledTask);
 
       await service.destroy();
 
-      expect(stopSpy).toHaveBeenCalled();
+      expect(destroySpy).toHaveBeenCalled();
     });
   });
 
@@ -926,7 +1027,10 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockSyncService, mockSyncService], "/test/config.js", "0 * * * *");
         const cronJobsSpy = vi.fn();
-        (service as any).cronJobs = [{ stop: cronJobsSpy }, { stop: cronJobsSpy }];
+        (service as any).cronJobs = [
+          { stop: vi.fn(), destroy: cronJobsSpy },
+          { stop: vi.fn(), destroy: cronJobsSpy },
+        ];
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
@@ -940,7 +1044,10 @@ describe("InteractiveUIService", () => {
         mockConfigLoaderInstance.loadConfigFile.mockRejectedValue(new Error("Failed to load config"));
 
         const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
-        const preExistingJob = { stop: vi.fn() };
+        // destroy() as well as stop(): the teardown at the end of this test
+        // calls it, and a double without it only reaches cancelCronJobs' catch,
+        // which would turn a missing method into a warning nobody reads.
+        const preExistingJob = { stop: vi.fn(), destroy: vi.fn() };
         (service as any).cronJobs = [preExistingJob];
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;

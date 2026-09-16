@@ -308,10 +308,10 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T41** — Concurrent sync cycles share one TUI status flag: the first cycle to finish (cron
   group, overlapping tick, or a fail-fast skip) flips the UI to idle, wipes the running cycle's
   progress rows and re-enables the `s`/`x`/`r` guards
-- [ ] **T42** — Ctrl+C in the TUI unmounts Ink (default `exitOnCtrlC`) but never runs `destroy()`:
+- [x] **T42** — Ctrl+C in the TUI unmounts Ink (default `exitOnCtrlC`) but never runs `destroy()`:
   the process keeps running headless with cron syncs, log events go nowhere, and a second Ctrl+C then
   kills it mid-sync
-- [ ] **T43** — `MOUSE_TRACKING_DISABLE` is never written on any exit path (q, SIGTERM, Ctrl+C): Ink
+- [x] **T43** — `MOUSE_TRACKING_DISABLE` is never written on any exit path (q, SIGTERM, Ctrl+C): Ink
   marks itself unmounted before React effect cleanups run, so `useStdout().write` in App's cleanup is
   a no-op and the shell inherits a terminal with mouse reporting on
 - [ ] **T44** — Branch wizard acts on stale refs and its collision check is decorative: it submits
@@ -330,7 +330,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T106** — WorktreeStatusView repository sizes get stuck at `calculating...` when the App
   re-renders while `du` is in flight (effect cleanup discards the result; `repositories` prop is a new
   array on every App render)
-- [ ] **T107** — Pressing `q` during a long sync freezes the TUI for up to 30 s with no feedback,
+- [x] **T107** — Pressing `q` during a long sync freezes the TUI for up to 30 s with no feedback,
   then exits mid-sync anyway: `destroy()` sets `isDestroyed` before waiting, so its own 'Waiting for N
   in-progress sync(s)' and timeout warning are dropped by `addLog`
 - [ ] **T108** — Reload (`r`) initializes the new services before injecting the UI logger, so
@@ -358,7 +358,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T116** — FileCopyService silently applies a hard-coded ignore list (dist/, build/, .next/,
   coverage/, …) even to explicit file patterns, swallows glob errors, and a zero-match copy produces
   no log line at all
-- [ ] **T117** — Reload/cancel stops cron tasks with `stop()` but never `destroy()`s them; node-cron
+- [x] **T117** — Reload/cancel stops cron tasks with `stop()` but never `destroy()`s them; node-cron
   v4's module-level registry retains every stopped task (and, through its closure, every previous
   generation of WorktreeSyncService instances) for the life of the daemon
 - [ ] **T48** — Docs drift: README says hooks/file copy run for every newly created worktree and
@@ -2052,7 +2052,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   sync flips the TUI status to idle and clears the progress panel while the first sync is still
   running (node-cron default noOverlap=false; fail-fast skip finishes instantly)”.
 
-### [ ] T42. Ctrl+C in the TUI unmounts Ink (default `exitOnCtrlC`) but never runs `destroy()`: the process keeps running headless with cron syncs, log events go nowhere, and a second Ctrl+C then kills it mid-sync
+### [x] T42. Ctrl+C in the TUI unmounts Ink (default `exitOnCtrlC`) but never runs `destroy()`: the process keeps running headless with cron syncs, log events go nowhere, and a second Ctrl+C then kills it mid-sync
 
 - **Category**: guardrail · **Subsystem**: tui
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
@@ -2095,7 +2095,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   tears down Ink but leaves the daemon running headless: cron keeps firing, logs are dropped, `q` is
   dead, until a second Ctrl+C (README also claims Esc quits, which is not implemented)”.
 
-### [ ] T43. `MOUSE_TRACKING_DISABLE` is never written on any exit path (q, SIGTERM, Ctrl+C): Ink marks itself unmounted before React effect cleanups run, so `useStdout().write` in App's cleanup is a no-op and the shell inherits a terminal with mouse reporting on
+### [x] T43. `MOUSE_TRACKING_DISABLE` is never written on any exit path (q, SIGTERM, Ctrl+C): Ink marks itself unmounted before React effect cleanups run, so `useStdout().write` in App's cleanup is a no-op and the shell inherits a terminal with mouse reporting on
 
 - **Category**: correctness · **Subsystem**: tui
 - **Severity**: Medium · **Verification**: finder's evidence and code citations, not independently
@@ -4175,7 +4175,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   resolves before any re-render; the cancel flag was written for unmount safety without accounting
   for dependency churn.
 
-### [ ] T107. Pressing `q` during a long sync freezes the TUI for up to 30 s with no feedback, then exits mid-sync anyway: `destroy()` sets `isDestroyed` before waiting, so its own 'Waiting for N in-progress sync(s)' and timeout warning are dropped by `addLog`
+### [x] T107. Pressing `q` during a long sync freezes the TUI for up to 30 s with no feedback, then exits mid-sync anyway: `destroy()` sets `isDestroyed` before waiting, so its own 'Waiting for N in-progress sync(s)' and timeout warning are dropped by `addLog`
 
 - **Category**: workflow · **Subsystem**: tui
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
@@ -4458,7 +4458,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: F2 restored relative-pattern semantics but kept the unconditional
   ignore list; no diagnostic for zero matches exists on either call site.
 
-### [ ] T117. Reload/cancel stops cron tasks with `stop()` but never `destroy()`s them; node-cron v4's module-level registry retains every stopped task (and, through its closure, every previous generation of WorktreeSyncService instances) for the life of the daemon
+### [x] T117. Reload/cancel stops cron tasks with `stop()` but never `destroy()`s them; node-cron v4's module-level registry retains every stopped task (and, through its closure, every previous generation of WorktreeSyncService instances) for the life of the daemon
 
 - **Category**: performance · **Subsystem**: process
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Only the terminal renderer is stubbed. Everything the wizard calls below it —
 // InteractiveUIService, WorktreeSyncService, CloneSyncService, simple-git and
 // git itself — is the real thing.
-vi.mock("ink", () => ({ render: vi.fn(() => ({ unmount: vi.fn() })) }));
+vi.mock("ink", () => ({
+  render: vi.fn(() => ({ unmount: vi.fn(), waitUntilExit: vi.fn(() => new Promise<void>(() => {})) })),
+}));
 
 import { InteractiveUIService } from "../../services/InteractiveUIService";
 import { WorktreeSyncService } from "../../services/worktree-sync.service";

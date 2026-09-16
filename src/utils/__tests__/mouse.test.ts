@@ -1,6 +1,31 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { MOUSE_TRACKING_DISABLE, MOUSE_TRACKING_ENABLE, isMouseSequence, parseWheelEvent } from "../mouse";
+import {
+  MOUSE_TRACKING_DISABLE,
+  MOUSE_TRACKING_ENABLE,
+  createMouseTracking,
+  isMouseSequence,
+  parseWheelEvent,
+} from "../mouse";
+
+import type { MouseTrackingExitTarget } from "../mouse";
+
+const recordingStream = (): { write: (data: string) => void; written: string[] } => {
+  const written: string[] = [];
+  return { write: (data: string): void => void written.push(data), written };
+};
+
+const recordingExitTarget = (): MouseTrackingExitTarget & { listeners: Array<() => void> } => {
+  const listeners: Array<() => void> = [];
+  return {
+    listeners,
+    once: (_event: "exit", listener: () => void): void => void listeners.push(listener),
+    removeListener: (_event: "exit", listener: () => void): void => {
+      const index = listeners.indexOf(listener);
+      if (index !== -1) listeners.splice(index, 1);
+    },
+  };
+};
 
 const ESC = String.fromCharCode(27);
 // Ink strips the leading ESC before handing the sequence to useInput, so the
@@ -74,5 +99,102 @@ describe("mouse", () => {
     expect(MOUSE_TRACKING_ENABLE).toContain("[?1006h");
     expect(MOUSE_TRACKING_DISABLE).toContain("[?1000l");
     expect(MOUSE_TRACKING_DISABLE).toContain("[?1006l");
+  });
+
+  describe("createMouseTracking", () => {
+    it("writes the enable sequence once and the disable sequence once", () => {
+      const stream = recordingStream();
+      const exitTarget = recordingExitTarget();
+      const tracking = createMouseTracking(stream, exitTarget);
+
+      tracking.enable();
+      tracking.enable();
+      tracking.disable();
+      tracking.disable();
+
+      expect(stream.written).toEqual([MOUSE_TRACKING_ENABLE, MOUSE_TRACKING_DISABLE]);
+      expect(exitTarget.listeners).toEqual([]);
+    });
+
+    it("never writes the disable sequence when tracking was never enabled", () => {
+      const stream = recordingStream();
+      const exitTarget = recordingExitTarget();
+
+      createMouseTracking(stream, exitTarget).disable();
+
+      expect(stream.written).toEqual([]);
+      expect(exitTarget.listeners).toEqual([]);
+    });
+
+    // The path that matters when nothing in the app gets to run its teardown:
+    // an uncaught exception, or a process.exit from somewhere else entirely.
+    it("restores the terminal from a process exit listener", () => {
+      const stream = recordingStream();
+      const exitTarget = recordingExitTarget();
+      const tracking = createMouseTracking(stream, exitTarget);
+
+      tracking.enable();
+      expect(exitTarget.listeners).toHaveLength(1);
+
+      for (const listener of [...exitTarget.listeners]) listener();
+
+      expect(stream.written).toEqual([MOUSE_TRACKING_ENABLE, MOUSE_TRACKING_DISABLE]);
+
+      tracking.disable();
+      expect(stream.written).toEqual([MOUSE_TRACKING_ENABLE, MOUSE_TRACKING_DISABLE]);
+    });
+
+    // The listener is registered with `once` and removed by disable(), so a
+    // second restore should not be able to happen - but the sequence must never
+    // go out twice if a host re-emits, or the terminal ends up with an extra
+    // reset in the middle of whatever runs next.
+    it("writes the disable sequence once even if the exit listener fires twice", () => {
+      const stream = recordingStream();
+      const exitTarget = recordingExitTarget();
+      const tracking = createMouseTracking(stream, exitTarget);
+
+      tracking.enable();
+      const [listener] = exitTarget.listeners;
+      listener();
+      listener();
+
+      expect(stream.written).toEqual([MOUSE_TRACKING_ENABLE, MOUSE_TRACKING_DISABLE]);
+    });
+
+    it("still arms the exit restore when the enable write throws", () => {
+      const written: string[] = [];
+      let failNext = true;
+      const stream = {
+        write: (data: string): void => {
+          if (failNext) {
+            failNext = false;
+            throw new Error("EPIPE");
+          }
+          written.push(data);
+        },
+      };
+      const exitTarget = recordingExitTarget();
+      const tracking = createMouseTracking(stream, exitTarget);
+
+      expect(() => tracking.enable()).not.toThrow();
+      expect(exitTarget.listeners).toHaveLength(1);
+
+      tracking.disable();
+      expect(written).toEqual([MOUSE_TRACKING_DISABLE]);
+    });
+
+    it("swallows a disable write that throws so teardown continues", () => {
+      const stream = {
+        write: vi.fn((): void => {
+          throw new Error("stream destroyed");
+        }),
+      };
+      const exitTarget = recordingExitTarget();
+      const tracking = createMouseTracking(stream, exitTarget);
+
+      tracking.enable();
+      expect(() => tracking.disable()).not.toThrow();
+      expect(exitTarget.listeners).toEqual([]);
+    });
   });
 });

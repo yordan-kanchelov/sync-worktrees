@@ -10,7 +10,9 @@ const mocks = vi.hoisted(() => ({
   cronHandlers: [] as Array<() => Promise<void>>,
 }));
 
-vi.mock("ink", () => ({ render: vi.fn(() => ({ unmount: vi.fn() })) }));
+vi.mock("ink", () => ({
+  render: vi.fn(() => ({ unmount: vi.fn(), waitUntilExit: vi.fn(() => new Promise<void>(() => {})) })),
+}));
 vi.mock("node-cron", () => ({
   schedule: vi.fn((_expression: string, handler: () => Promise<void>) => {
     mocks.cronHandlers.push(handler);

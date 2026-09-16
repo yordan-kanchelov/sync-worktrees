@@ -22,6 +22,8 @@ import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
+import { createMouseTracking } from "../utils/mouse";
+import type { MouseTracking } from "../utils/mouse";
 import { resolveMode } from "../utils/repo-mode";
 import { shellEscape } from "../utils/shell-escape";
 import * as fs from "fs/promises";
@@ -43,6 +45,13 @@ import type {
 
 const WAIT_SYNC_FAST_TIMEOUT_MS = 2000;
 const WAIT_SYNC_DEFAULT_TIMEOUT_MS = 30000;
+const FORCE_QUIT_GUARD_MS = 500;
+
+export interface InteractiveUIRuntime {
+  stdout: NodeJS.WriteStream;
+  stdin: NodeJS.ReadStream;
+  exit: (code: number) => void;
+}
 
 export class InteractiveUIService {
   private app: Instance | null = null;
@@ -65,6 +74,14 @@ export class InteractiveUIService {
   private ownsEvents: boolean;
   private unsubscribeCallbacks: Array<() => void> = [];
   private progressUnsubscribers: Array<() => void> = [];
+  private readonly stdout: NodeJS.WriteStream;
+  private readonly stdin: NodeJS.ReadStream;
+  private readonly exitProcess: (code: number) => void;
+  private readonly mouse: MouseTracking;
+  private inkExited = false;
+  private shutdown: Promise<void> | null = null;
+  private shutdownStartedAt = 0;
+  private releaseForceQuit: (() => void) | null = null;
 
   constructor(
     syncServices: WorktreeSyncService[],
@@ -72,6 +89,7 @@ export class InteractiveUIService {
     cronSchedule?: string,
     maxParallel?: number,
     events?: AppEventEmitter,
+    runtime: Partial<InteractiveUIRuntime> = {},
   ) {
     this.ownsEvents = events === undefined;
     this.events = events ?? new AppEventEmitter();
@@ -85,6 +103,10 @@ export class InteractiveUIService {
     this.repositoryCount = syncServices.length;
     this.maxProgressLines = Math.max(1, maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
     this.limit = pLimit(this.maxProgressLines);
+    this.stdout = runtime.stdout ?? process.stdout;
+    this.stdin = runtime.stdin ?? process.stdin;
+    this.exitProcess = runtime.exit ?? ((code: number): void => process.exit(code));
+    this.mouse = createMouseTracking(this.stdout);
 
     this.startBufferFlushCheck();
     this.renderUI();
@@ -197,10 +219,30 @@ export class InteractiveUIService {
   }
 
   private cancelCronJobs(): void {
-    for (const job of this.cronJobs) {
-      void job.stop();
-    }
+    const jobs = this.cronJobs;
     this.cronJobs = [];
+    for (const job of jobs) {
+      // destroy(), not stop(): stop() only clears the runner's timer, while
+      // node-cron keeps every task it ever scheduled in a module-level registry
+      // that is released on `task:destroyed` and nothing else. The task holds
+      // the tick callback, the callback closes over this generation of
+      // WorktreeSyncService objects, and those hold a simple-git client per
+      // worktree — so every `r` reload leaked one whole generation. destroy()
+      // stops the runner on the way through, so stopping first is redundant.
+      // Both are `void | Promise<void>` (node-cron 4.6): a background task's
+      // destroy() rejects after its own 5s timeout, and dropping that promise
+      // on the floor would take the process down with an unhandled rejection.
+      try {
+        const settled: unknown = job.destroy();
+        if (typeof (settled as PromiseLike<void> | undefined)?.then === "function") {
+          void Promise.resolve(settled).catch((error: unknown) => {
+            this.addLog(`Failed to release cron task: ${getErrorMessage(error)}`, "warn");
+          });
+        }
+      } catch (error) {
+        this.addLog(`Failed to release cron task: ${getErrorMessage(error)}`, "warn");
+      }
+    }
   }
 
   public registerCronJob(job: cron.ScheduledTask): void {
@@ -252,8 +294,50 @@ export class InteractiveUIService {
       {
         alternateScreen: true,
         incrementalRendering: true,
+        stdout: this.stdout,
+        stdin: this.stdin,
       },
     );
+
+    // render() has already entered the alternate screen and drawn the first
+    // frame, so the tracking mode goes on over it here and comes back off in
+    // destroy(), after Ink has restored the primary buffer. Gated on the same
+    // condition Ink gates the alternate screen on: a DECSET written down a pipe
+    // is just bytes in whatever is reading it.
+    if (this.stdout.isTTY) {
+      this.mouse.enable();
+    }
+
+    const instance = this.app;
+    const onInkExit = (): void => this.handleInkExit(instance);
+    // Ink 7 answers Ctrl+C itself, at the root of its own tree and before the
+    // byte reaches any useInput listener: it drops raw mode and unmounts, but
+    // never calls onQuit, never cancels the cron jobs and never exits, so the
+    // process went on syncing headlessly against an interface nobody could see.
+    // The exit promise is the only signal for that which does not depend on
+    // which modal currently owns the keyboard, and it also fires when Ink tears
+    // the tree down after a render error. Both settlements route to the same
+    // place; a rejected exit promise is still an exit.
+    void instance.waitUntilExit().then(onInkExit, onInkExit);
+  }
+
+  private handleInkExit(instance: Instance): void {
+    // Not `this.app === null`: destroy() nulls it as it unmounts, and Ink
+    // settles its exit promise a tick later, so that arrival is our own
+    // teardown reporting back and there is nothing left to do about it.
+    if (this.app !== instance) return;
+    this.inkExited = true;
+    if (this.shutdown !== null) {
+      // Ctrl+C on top of the wait `q` started. Ink answers it by tearing its
+      // own tree down, which leaves the user staring at a bare terminal, so
+      // read it as the second press it is rather than letting the wait run on.
+      this.requestForceQuit();
+      return;
+    }
+    void this.handleQuit().catch((error: unknown) => {
+      this.addLog(`Shutdown failed: ${getErrorMessage(error)}`, "error");
+      this.exitProcess(1);
+    });
   }
 
   private async handleManualSync(): Promise<void> {
@@ -380,23 +464,53 @@ export class InteractiveUIService {
 
   private async handleQuit(): Promise<void> {
     await this.destroy();
-    process.exit(0);
+    this.exitProcess(0);
   }
 
-  private async waitForInProgressSyncs(timeoutMs: number = WAIT_SYNC_DEFAULT_TIMEOUT_MS): Promise<void> {
+  // Shutdown progress is the one thing a user needs while the interface is
+  // waiting on a sync, and on the Ctrl+C path Ink has already put the terminal
+  // back on the primary buffer, so the log panel it would go to is gone. Write
+  // those lines to the stream as well, or the process just looks hung.
+  private shutdownNotice(message: string, level: "info" | "warn"): void {
+    this.addLog(message, level);
+    if (!this.inkExited) return;
+    try {
+      this.stdout.write(`${message}\n`);
+    } catch {
+      // Best effort - the stream may already be gone during teardown.
+    }
+  }
+
+  private requestForceQuit(): void {
+    const release = this.releaseForceQuit;
+    if (release === null) return;
+    // A held key repeats every few tens of milliseconds. The shortcut has to be
+    // a second decision, not the tail of the keystroke that started the wait.
+    if (Date.now() - this.shutdownStartedAt < FORCE_QUIT_GUARD_MS) return;
+    this.releaseForceQuit = null;
+    release();
+  }
+
+  private async waitForInProgressSyncs(
+    timeoutMs: number = WAIT_SYNC_DEFAULT_TIMEOUT_MS,
+    abort?: Promise<void>,
+  ): Promise<void> {
     const inProgressServices = this.syncServices.filter((s) => s.isSyncInProgress());
 
     if (inProgressServices.length === 0) {
       return;
     }
 
-    this.addLog(`Waiting for ${inProgressServices.length} in-progress sync(s) to finish...`, "info");
+    const hint = abort ? " Press q or Ctrl+C again to quit now." : "";
+    this.shutdownNotice(`Waiting for ${inProgressServices.length} in-progress sync(s) to finish...${hint}`, "info");
 
+    let settledEarly = false;
     const syncChecks = inProgressServices.map(async (service) => {
       const checkInterval = 500;
       const startTime = Date.now();
 
       while (service.isSyncInProgress()) {
+        if (settledEarly) return;
         if (Date.now() - startTime > timeoutMs) {
           throw new Error("Timeout waiting for sync operations to complete");
         }
@@ -404,13 +518,23 @@ export class InteractiveUIService {
       }
     });
 
-    try {
-      await Promise.all(syncChecks);
-    } catch {
-      this.addLog(
+    // Settled rather than raced bare: once the force-quit shortcut wins the
+    // race the timeout rejection still arrives, and an unattended rejection
+    // there would take the whole process down on the way out.
+    const waited = Promise.all(syncChecks).then(
+      () => "finished" as const,
+      () => "timeout" as const,
+    );
+    const outcome = abort ? await Promise.race([waited, abort.then(() => "forced" as const)]) : await waited;
+    settledEarly = true;
+
+    if (outcome === "timeout") {
+      this.shutdownNotice(
         `Warning: Timeout waiting for sync operations to complete after ${formatDuration(timeoutMs)}. Proceeding with potential data loss risk.`,
         "warn",
       );
+    } else if (outcome === "forced") {
+      this.shutdownNotice("Force quit: leaving in-progress sync(s) unfinished.", "warn");
     }
   }
 
@@ -1189,21 +1313,54 @@ export class InteractiveUIService {
     });
   }
 
+  // A second call while the first is still waiting is the force-quit shortcut:
+  // a second `q`, or the real SIGINT a second Ctrl+C becomes once Ink has
+  // dropped raw mode. It shortcuts the wait rather than starting a second
+  // teardown, and returns the shutdown already in flight so every caller -
+  // signal handler included - settles on the same one.
   public async destroy(fast = false): Promise<void> {
-    this.isDestroyed = true;
+    if (this.shutdown !== null) {
+      this.requestForceQuit();
+      return this.shutdown;
+    }
+    this.shutdownStartedAt = Date.now();
+    this.shutdown = this.runShutdown(fast);
+    return this.shutdown;
+  }
+
+  // isDestroyed is set *after* the wait, not before it. As the first statement
+  // it silenced addLog for the whole shutdown, so the "waiting for N in-progress
+  // sync(s)" notice and the data-loss warning this method emits were both
+  // dropped and the interface just froze for up to 30s before exiting anyway.
+  private async runShutdown(fast: boolean): Promise<void> {
     this.cancelCronJobs();
 
+    const forceQuit = new Promise<void>((resolve) => {
+      this.releaseForceQuit = resolve;
+    });
+
     try {
-      await this.waitForInProgressSyncs(fast ? WAIT_SYNC_FAST_TIMEOUT_MS : WAIT_SYNC_DEFAULT_TIMEOUT_MS);
+      await this.waitForInProgressSyncs(fast ? WAIT_SYNC_FAST_TIMEOUT_MS : WAIT_SYNC_DEFAULT_TIMEOUT_MS, forceQuit);
     } catch {
       // Best effort - proceed with teardown even if syncs don't finish
     }
+    this.releaseForceQuit = null;
 
+    this.isDestroyed = true;
     this.hookExecutionService.cleanup();
     if (this.app) {
       this.app.unmount();
       this.app = null;
     }
+    // After Ink's own unmount, deliberately: Ink writes the alternate-screen
+    // exit inside unmount() and treats everything written before it as
+    // disposable, so the sequence that has to survive belongs on the primary
+    // buffer the shell gets back. Outside the branch above, not inside it: on
+    // the Ctrl+C path Ink unmounted itself before it settled the exit promise
+    // that got us here, so the buffer is already restored and the unmount()
+    // above is Ink's own no-op — but `this.app` is still that instance, so a
+    // reader cannot take the branch as a proxy for "we did the restoring".
+    this.mouse.disable();
     for (const unsubscribe of this.unsubscribeCallbacks) {
       unsubscribe();
     }

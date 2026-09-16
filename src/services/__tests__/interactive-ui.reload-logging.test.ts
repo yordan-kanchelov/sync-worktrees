@@ -102,7 +102,10 @@ describe("InteractiveUIService reload logging", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    (ink.render as unknown as Mock).mockReturnValue({ unmount: vi.fn() });
+    (ink.render as unknown as Mock).mockReturnValue({
+      unmount: vi.fn(),
+      waitUntilExit: vi.fn(() => new Promise<void>(() => {})),
+    });
 
     events = new AppEventEmitter();
     panelLogs = [];

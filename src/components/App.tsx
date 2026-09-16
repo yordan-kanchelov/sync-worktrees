@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Box, useInput, useStdout, useWindowSize } from "ink";
+import { Box, useInput, useWindowSize } from "ink";
 import StatusBar from "./StatusBar";
 import HelpModal from "./HelpModal";
 import BranchCreationWizard from "./BranchCreationWizard";
@@ -8,7 +8,7 @@ import WorktreeStatusView from "./WorktreeStatusView";
 import ForceCleanModal from "./ForceCleanModal";
 import LogPanel from "./LogPanel";
 import { redactSecretsInText } from "../utils/git-url";
-import { MOUSE_TRACKING_DISABLE, MOUSE_TRACKING_ENABLE, isMouseSequence } from "../utils/mouse";
+import { isMouseSequence } from "../utils/mouse";
 import type { AppEventEmitter } from "../utils/app-events";
 import type { AppSyncProgress } from "../utils/app-events";
 import type {
@@ -112,16 +112,6 @@ const App: React.FC<AppProps> = ({
   const [schedule, setSchedule] = useState(cronSchedule);
 
   const { rows } = useWindowSize();
-  const { write } = useStdout();
-
-  // Terminals only report the wheel while tracking is on, and it must be turned
-  // back off on exit or the shell inherits a terminal that swallows clicks.
-  useEffect(() => {
-    write(MOUSE_TRACKING_ENABLE);
-    return () => {
-      write(MOUSE_TRACKING_DISABLE);
-    };
-  }, [write]);
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     setLogs((prev) => {
