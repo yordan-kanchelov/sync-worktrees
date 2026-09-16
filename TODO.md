@@ -290,7 +290,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T101** — list_worktrees per-worktree cost: getDivergence duplicates upstream/rev-list work
   already done inside getFullWorktreeStatus (≈10-11 git spawns per worktree, ~4,400 processes for 400
   worktrees per call)
-- [ ] **T102** — Nested regular repos / submodules inside a managed worktree make detect_context
+- [x] **T102** — Nested regular repos / submodules inside a managed worktree make detect_context
   return 'unsupported' instead of continuing to the enclosing worktree
 - [x] **T103** — MCP tool/instruction text and README drift: '.ts' configs are advertised but never
   discovered or loadable; README still says repo selection falls back to 'the first entry in the
@@ -4024,7 +4024,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   service; round-1 #25 covers the `git branch -v -a` cost inside the status service but not the
   MCP-side duplicate divergence probe.
 
-### [ ] T102. Nested regular repos / submodules inside a managed worktree make detect_context return 'unsupported' instead of continuing to the enclosing worktree
+### [x] T102. Nested regular repos / submodules inside a managed worktree make detect_context return 'unsupported' instead of continuing to the enclosing worktree
 
 - **Category**: workflow · **Subsystem**: mcp
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

@@ -550,8 +550,14 @@ export class RepositoryContext {
       );
     }
 
-    const located = await findWorktreeRoot(absolutePath);
-    const worktreeRoot = located?.worktreeRoot ?? absolutePath;
+    const located = await findEnclosingCheckout(absolutePath, (dir) => this.findConfiguredCloneEntry(dir));
+    // When the walk found nothing, report the deepest .git it stepped over as
+    // the location rather than the probed path: that is the directory the agent
+    // is actually standing in a repository of, and it is what this reported
+    // before the walk resumed. A .git that could not be read is the shallowest
+    // of the three, so it only names the location when nothing was stepped over.
+    const worktreeRoot =
+      located.found?.worktreeRoot ?? located.skipped[0]?.path ?? located.undetermined?.path ?? absolutePath;
 
     const unsupported = (reason: string): { result: DiscoveredRepoContext; adminDir: string | null } => {
       notes.push(reason);
@@ -575,36 +581,26 @@ export class RepositoryContext {
       };
     };
 
-    if (!located) {
-      return unsupported("No .git file found in path or any parent directory");
+    if (located.found === null) {
+      // The old message named only the absence of a .git. Saying that after
+      // stepping over three nested repositories tells the agent something
+      // false, so the exhausted answer enumerates what the walk passed. It is
+      // the only note in this case, which is why the per-skip notes below are
+      // not also pushed here.
+      return unsupported(describeExhaustedWalk(absolutePath, located));
     }
-    if (located.kind === "regular-git-dir") {
-      const cloneEntry = this.findConfiguredCloneEntry(worktreeRoot);
-      if (cloneEntry) {
-        return {
-          result: await this.buildCloneModeContext(cloneEntry, worktreeRoot, notes),
-          adminDir: null,
-        };
-      }
-      return unsupported("Directory has .git folder (regular repo, not a sync-worktrees worktree)");
+    for (const skip of located.skipped) {
+      notes.push(`Walked past ${skip.reason} at ${skip.path}`);
     }
-
-    const gitFileContent = located.gitFileContent;
-
-    const gitdirMatch = gitFileContent.match(/^gitdir:\s*(.+)$/m);
-    if (!gitdirMatch) {
-      return unsupported("Invalid .git file format (missing gitdir line)");
+    if (located.found.kind === "clone-root") {
+      return {
+        result: await this.buildCloneModeContext(located.found.entry, worktreeRoot, notes),
+        adminDir: null,
+      };
     }
 
-    const gitdir = gitdirMatch[1].trim();
-    const resolvedGitdir = path.isAbsolute(gitdir) ? gitdir : path.resolve(worktreeRoot, gitdir);
-    const worktreesMatch = resolvedGitdir.match(/^(.+?)[/\\]worktrees[/\\][^/\\]+$/);
-    if (!worktreesMatch) {
-      return unsupported("gitdir does not follow worktree structure (missing /worktrees/<name>)");
-    }
-
-    const bareRepoPath = path.resolve(worktreesMatch[1]);
-    const adminDir = path.resolve(resolvedGitdir);
+    const bareRepoPath = located.found.bareRepoPath;
+    const adminDir = located.found.adminDir;
 
     let repoUrl: string | null = null;
     let worktrees: DiscoveredWorktree[];
@@ -1272,9 +1268,20 @@ function parseWorktreeList(output: string, currentPath: string | null): Discover
   return results;
 }
 
-type FindResult =
-  | { kind: "worktree-file"; worktreeRoot: string; gitFileContent: string }
-  | { kind: "regular-git-dir"; worktreeRoot: string };
+type EnclosingCheckout =
+  | { kind: "worktree"; worktreeRoot: string; bareRepoPath: string; adminDir: string }
+  | { kind: "clone-root"; worktreeRoot: string; entry: RepoEntry };
+
+interface SkippedGitDir {
+  path: string;
+  reason: string;
+}
+
+interface CheckoutWalkResult {
+  found: EnclosingCheckout | null;
+  skipped: SkippedGitDir[];
+  undetermined: SkippedGitDir | null;
+}
 
 // A found-but-broken config is re-read on every cache-missing detect, and past
 // the first failure each read costs a whole worker thread: ConfigLoaderService
@@ -1357,27 +1364,154 @@ async function readCurrentBranch(worktreePath: string): Promise<string> {
   return head ? `(detached ${head})` : "(detached)";
 }
 
-async function findWorktreeRoot(startPath: string): Promise<FindResult | null> {
+// Every clause of the exhausted reason carries a whole absolute path, and the
+// reason is repeated once per capability plus once in the notes, so enumerating
+// one clause per level makes the answer grow with the square of the depth: a
+// probe under thirty nested repositories produced a 16 KB reason and a 116 KB
+// tool result. The deepest few are the ones the agent is standing in; the rest
+// are counted.
+const MAX_ENUMERATED_SKIPS = 5;
+
+function describeSkippedGitDirs(skipped: SkippedGitDir[]): string {
+  const shown = skipped.slice(0, MAX_ENUMERATED_SKIPS);
+  const remaining = skipped.length - shown.length;
+  const listed = shown.map((skip) => `${skip.reason} at ${skip.path}`).join("; ");
+  return remaining === 0 ? listed : `${listed}; and ${remaining} more`;
+}
+
+function describeExhaustedWalk(absolutePath: string, walk: CheckoutWalkResult): string {
+  const walkedPast = walk.skipped.length === 0 ? "" : `; walked past ${describeSkippedGitDirs(walk.skipped)}`;
+  if (walk.undetermined !== null) {
+    // Not "no worktree here" -- "cannot tell". Answering with the repository
+    // that encloses an unreadable .git would name a different repository than
+    // the one the agent is standing in, and every mutating tool would then act
+    // on that name.
+    return (
+      `Cannot determine whether ${walk.undetermined.path} is a sync-worktrees worktree: ` +
+      `${walk.undetermined.reason}. Detection stopped there rather than answer with an enclosing repository` +
+      walkedPast
+    );
+  }
+  if (walk.skipped.length === 0) {
+    return "No .git file found in path or any parent directory";
+  }
+  return `No sync-worktrees worktree found in ${absolutePath} or any parent directory${walkedPast}`;
+}
+
+function classifyGitFile(
+  dir: string,
+  gitFileContent: string,
+): Extract<EnclosingCheckout, { kind: "worktree" }> | string {
+  // Returns the enclosing worktree this .git file points at, or the reason it
+  // is not one. A submodule lands on the second branch: its gitdir resolves to
+  // <admin>/modules/<name>, which carries a path separator after /worktrees/
+  // and so cannot match.
+  const gitdirMatch = gitFileContent.match(/^gitdir:\s*(.+)$/m);
+  if (!gitdirMatch) {
+    return "a nested repository (.git file without a gitdir line)";
+  }
+  const gitdir = gitdirMatch[1].trim();
+  const resolvedGitdir = path.isAbsolute(gitdir) ? gitdir : path.resolve(dir, gitdir);
+  const worktreesMatch = resolvedGitdir.match(/^(.+?)[/\\]worktrees[/\\][^/\\]+$/);
+  if (!worktreesMatch) {
+    return "a nested repository or submodule (gitdir does not point into <bare>/worktrees/<name>)";
+  }
+  return {
+    kind: "worktree",
+    worktreeRoot: dir,
+    bareRepoPath: path.resolve(worktreesMatch[1]),
+    adminDir: path.resolve(resolvedGitdir),
+  };
+}
+
+async function findEnclosingCheckout(
+  startPath: string,
+  resolveCloneRoot: (dir: string) => RepoEntry | null,
+): Promise<CheckoutWalkResult> {
+  // Walks up from startPath and stops at the first directory that is a shape
+  // this tool can act on: a worktree whose gitdir points into
+  // <bare>/worktrees/<name>, or a configured clone-mode root. Every other .git
+  // on the way -- a vendored `git init`, a submodule, an unreadable one -- is
+  // recorded and stepped over rather than answered with, so an agent sitting in
+  // a nested repository still learns about the managed worktree above it.
+  //
+  // A clone-mode root is a terminal answer, not something to step over:
+  // resuming past a checkout the config names would trade a real repository
+  // for whatever happens to sit further up.
+  //
+  // A .git that cannot be READ is the one thing the walk may not step over. A
+  // .git folder and a gitdir line that points elsewhere are both positive
+  // identifications -- git itself would not call either of them a linked
+  // worktree -- but an errno says only that this process could not look. Passing
+  // it over lets a managed worktree whose own .git is briefly unreadable be
+  // answered with the DIFFERENT repository that encloses it, capabilities and
+  // all, where the honest answer is "cannot tell". So the walk stops there,
+  // unless the config names that very directory as a clone-mode root, which
+  // identifies the repository without reading anything.
   let current = path.resolve(startPath);
   const root = path.parse(current).root;
+  const skipped: SkippedGitDir[] = [];
 
   while (true) {
     const gitPath = path.join(current, ".git");
+    let gitFileContent: string | null = null;
+    let skipReason: string | null = null;
+    let unreadableReason: string | null = null;
     try {
-      const content = await fs.readFile(gitPath, "utf-8");
-      return { kind: "worktree-file", worktreeRoot: current, gitFileContent: content };
+      gitFileContent = await fs.readFile(gitPath, "utf-8");
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "EISDIR") {
-        return { kind: "regular-git-dir", worktreeRoot: current };
-      }
-      if (code !== "ENOENT") {
-        return null;
+        skipReason = "a nested repository (.git folder: regular repo, not a sync-worktrees worktree)";
+      } else if (code !== "ENOENT") {
+        // One unreadable .git used to abort the walk for the whole tree and
+        // then report "No .git file found in path or any parent directory",
+        // which is false. It still ends the walk -- see above -- but as its own
+        // outcome, carrying the errno and the directory, so the caller can say
+        // which .git it could not read instead of claiming there was none.
+        unreadableReason = `an unreadable .git (${code ?? "unknown error"})`;
       }
     }
-    if (current === root) return null;
+
+    if (gitFileContent !== null) {
+      const classified = classifyGitFile(current, gitFileContent);
+      if (typeof classified !== "string") {
+        return { found: classified, skipped, undetermined: null };
+      }
+      skipReason = classified;
+    }
+
+    if (unreadableReason !== null) {
+      const cloneEntry = resolveCloneRoot(current);
+      if (cloneEntry) {
+        return { found: { kind: "clone-root", worktreeRoot: current, entry: cloneEntry }, skipped, undetermined: null };
+      }
+      return { found: null, skipped, undetermined: { path: current, reason: unreadableReason } };
+    }
+
+    if (skipReason !== null) {
+      // The clone lookup runs wherever the walk would otherwise step over
+      // something, not only on a .git folder. A clone-mode checkout usually has
+      // one, but `git clone --separate-git-dir` leaves a .git *file* holding a
+      // gitdir that points nowhere near <bare>/worktrees/<name>, and a checkout
+      // whose .git cannot be read at all is still the configured repository the
+      // config names. Ruling out the worktree shape first keeps a .git file
+      // that is a real worktree pointer answering as a worktree, as it always
+      // has.
+      const cloneEntry = resolveCloneRoot(current);
+      if (cloneEntry) {
+        return { found: { kind: "clone-root", worktreeRoot: current, entry: cloneEntry }, skipped, undetermined: null };
+      }
+      skipped.push({ path: current, reason: skipReason });
+    }
+
+    if (current === root) return { found: null, skipped, undetermined: null };
     const parent = path.dirname(current);
-    if (parent === current) return null;
+    // path.dirname is its own fixed point at a filesystem root, and on Windows
+    // at a UNC share root it is one that `current === root` does not recognise.
+    // Both guards stay: without this one the loop would re-probe the same
+    // directory forever now that a probe no longer ends it.
+    if (parent === current) return { found: null, skipped, undetermined: null };
     current = parent;
   }
 }
