@@ -93,6 +93,24 @@ describe("App", () => {
   });
 
   describe("event subscriptions", () => {
+    // index.ts kicks off the daemon's startup sync in the same synchronous turn
+    // as InteractiveUIService's constructor — the turn render() runs in. Log
+    // lines survive a late mount either way, because addLog buffers until
+    // `uiReady` and flushLogBuffer replays in call order; setStatus and
+    // setSyncProgress have no buffer at all. Emitted before this effect has
+    // subscribed they are dropped on the floor, and the status bar would read
+    // Running for the whole of the first sync with an empty progress panel.
+    // Ink flushes a mount effect synchronously inside render(); pin it, because
+    // that is what makes the startup sync's status reach the screen.
+    it("emits uiReady before render() returns", () => {
+      const seen: string[] = [];
+      appEvents.on("uiReady", () => seen.push("uiReady"));
+
+      render(<App {...defaultProps} />);
+
+      expect(seen).toEqual(["uiReady"]);
+    });
+
     it("should respond to appEvents on mount", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 

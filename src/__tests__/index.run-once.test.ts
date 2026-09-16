@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runMultipleRepositories } from "../index";
+import { InteractiveUIService } from "../services/InteractiveUIService";
 
 import type { ConfigFile, RepositoryConfig, SyncOutcomeCounts } from "../types";
 
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   },
   registerSignalHandler: vi.fn(),
   sync: vi.fn(),
+  triggerInitialSync: vi.fn(),
 }));
 
 vi.mock("../services/InteractiveUIService", () => ({
@@ -26,6 +28,7 @@ vi.mock("../services/InteractiveUIService", () => ({
       calculateAndUpdateDiskSpace: vi.fn(),
       destroy: vi.fn(),
       setupCronJobs: vi.fn(),
+      triggerInitialSync: mocks.triggerInitialSync,
     };
   }),
 }));
@@ -271,5 +274,21 @@ describe("runMultipleRepositories", () => {
     expect(errors).not.toContain("repo-a");
     expect(errors).not.toContain("repo-c");
     expect(process.exitCode).toBe(1);
+  });
+
+  it("never builds the UI, so `syncOnStart` cannot sync a one-shot run twice", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+
+    // `syncOnStart` defaults to true and this config does not turn it off: the
+    // guard is the branch, not the flag. A one-shot run syncs in this function
+    // and must not also hand a startup cycle to a UI it never renders.
+    await runMultipleRepositories({ ...configFile, defaults: { runOnce: true } }, [repo]);
+
+    expect(vi.mocked(InteractiveUIService)).not.toHaveBeenCalled();
+    expect(mocks.triggerInitialSync).not.toHaveBeenCalled();
+    expect(mocks.sync).toHaveBeenCalledTimes(1);
   });
 });

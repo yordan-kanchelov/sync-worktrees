@@ -591,6 +591,13 @@ export class ConfigLoaderService {
         throw new ConfigValidationError(`Repository '${repoObj.name}' runOnce`, "cannot be set; use defaults.runOnce");
       }
 
+      if (repoObj.syncOnStart !== undefined) {
+        throw new ConfigValidationError(
+          `Repository '${repoObj.name}' syncOnStart`,
+          "cannot be set; use defaults.syncOnStart",
+        );
+      }
+
       if (repoObj.debug !== undefined && typeof repoObj.debug !== "boolean") {
         throw new Error(`Repository '${repoObj.name}' has invalid 'debug' property`);
       }
@@ -660,6 +667,7 @@ export class ConfigLoaderService {
       if (defaults.runOnce !== undefined && typeof defaults.runOnce !== "boolean") {
         throw new Error("Invalid 'runOnce' in defaults");
       }
+      this.validateBoolean(defaults.syncOnStart, "defaults.syncOnStart");
       if (defaults.debug !== undefined && typeof defaults.debug !== "boolean") {
         throw new Error("Invalid 'debug' in defaults");
       }

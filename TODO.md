@@ -238,7 +238,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T35** — Config hot-reload is stale for ESM configs that import sibling modules: only the
   top-level module is cache-busted, so TUI `r` and MCP `load_config` keep the first-loaded values of
   `./repos.js`-style imports
-- [ ] **T36** — Daemon/TUI mode never syncs at startup and no CLI/config option restores it:
+- [x] **T36** — Daemon/TUI mode never syncs at startup and no CLI/config option restores it:
   `--sync-on-start` was removed in 4.0.0 without a replacement, while README says the bare command
   'starts syncing'
 - [x] **T91** — Load-time validation gaps with runtime consequences: `branchInclude: [""]` prunes
@@ -1834,7 +1834,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   module; its static imports of sibling files are resolved by URL and stay cached for the process
   lifetime.
 
-### [ ] T36. Daemon/TUI mode never syncs at startup
+### [x] T36. Daemon/TUI mode never syncs at startup
 
 - **Decision**: add `defaults.syncOnStart`, **default true**, triggering a non-blocking initial sync once the UI is rendered. README lines 89/92 must match. Behaviour change for existing daemon users: a restart now syncs immediately instead of waiting for the next tick. and no CLI/config option restores it: `--sync-on-start` was removed in 4.0.0 without a replacement, while README says the bare command 'starts syncing'
 

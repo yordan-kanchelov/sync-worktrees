@@ -62,14 +62,23 @@ type Assert<T extends true> = T;
 type IsNever<T> = [T] extends [never] ? true : false;
 
 /**
- * Keys accepted on a repository entry and under `defaults` alike — everything
- * `Config` declares that a user is meant to write.
+ * Everything `Config` declares that a user is meant to write, at either level.
+ *
+ * "Accepted" here means "not reported as unknown", which is not the same as
+ * "valid there": `runOnce` and `syncOnStart` are whole-file switches over one
+ * process and `validateConfigFile` rejects both on a repository entry, naming
+ * the `defaults` key to use instead. They stay on this one list rather than a
+ * defaults-only third list because the exhaustiveness proof below is what makes
+ * the inventory self-maintaining, a third list would have to be woven into it
+ * for no user-visible gain, and the scan runs last anyway — the validation
+ * error fires first, so the choice can never change what the user is told.
  */
 const SHARED_CONFIG_KEYS = [
   "repoUrl",
   "worktreeDir",
   "cronSchedule",
   "runOnce",
+  "syncOnStart",
   "bareRepoDir",
   "retry",
   "parallelism",

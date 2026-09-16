@@ -18,6 +18,10 @@ const config = {
     cronSchedule: "0 * * * *",
     // By default, run as a scheduled job (not one-time)
     runOnce: false,
+    // Sync once as soon as the daemon starts, before the first cron tick
+    // (default: true). Set false to wait for the schedule instead. Whole-file
+    // like `runOnce`, and ignored when `runOnce` is on.
+    // syncOnStart: false,
     // Maximum age of branches to sync (optional)
     // branchMaxAge: "30d",  // Only sync branches active in last 30 days
     // Skip Git LFS downloads (optional)

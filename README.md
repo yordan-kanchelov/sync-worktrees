@@ -89,7 +89,7 @@ sync-worktrees init      # interactive wizard → writes sync-worktrees.config.j
 sync-worktrees           # auto-loads the config in the current directory and starts syncing
 ```
 
-By default, bare `sync-worktrees` launches the [interactive TUI](#interactive-tui) and keeps syncing on the cron schedule from your config. Press `q` to quit. For a one-shot run (CI, scripts, ad-hoc), add `--runOnce`.
+By default, bare `sync-worktrees` launches the [interactive TUI](#interactive-tui), syncs once straight away, then keeps syncing on the cron schedule from your config — so a fresh `init` gives you worktrees now rather than at the top of the next hour. Set `defaults.syncOnStart: false` to leave the first sync to the schedule. Press `q` to quit. For a one-shot run (CI, scripts, ad-hoc), add `--runOnce`.
 
 To manage multiple repositories, edit the generated config file and add entries under `repositories`. See [Configuration](#configuration).
 
@@ -281,7 +281,7 @@ All tools that target a single repo accept an optional `repoName`. When omitted,
 
 ## Interactive TUI
 
-Running `sync-worktrees` without `runOnce` drops you into an interactive terminal UI with live log streaming, manual sync triggers, and wizards for the common operations.
+Running `sync-worktrees` without `runOnce` drops you into an interactive terminal UI with live log streaming, manual sync triggers, and wizards for the common operations. It syncs once on startup (see `defaults.syncOnStart`) and then on the cron schedule; `s` triggers the same cycle by hand. Only one cycle runs at a time: a tick or an `s` that lands on one already running says so in the log and skips.
 
 ### Keybindings
 
@@ -410,6 +410,7 @@ Notes:
 - If the bare repository at `bareRepoDir` already exists, its `origin` must be `repoUrl` (compared ignoring `.git`, a trailing slash and scheme/host case); otherwise initialization fails naming both URLs. Run `git -C <bareRepoDir> remote set-url origin <repoUrl>` or point `bareRepoDir` at a fresh directory.
 - Every entry needs its own directories: two entries that resolve to the same `worktreeDir` (in either mode) or the same `bareRepoDir`, or whose `worktreeDir` sits at or inside another entry's `bareRepoDir` (or vice versa), are rejected when the config loads, naming both entries and the path. A `worktreeDir` nested inside another entry's `worktreeDir` loads with a warning.
 - Repository-specific settings override `defaults`.
+- `defaults.syncOnStart` (default `true`) runs one sync as soon as the daemon starts, before the first cron tick — the same cycle a tick would run, so a restart after a config change takes effect immediately instead of a schedule period later. Set it to `false` to wait for the schedule. Like `runOnce` it is a whole-file setting: one process runs every repository, so setting it on a repository entry is a validation error. It has no effect under `runOnce`, which already syncs once and exits.
 
 ### Authentication
 

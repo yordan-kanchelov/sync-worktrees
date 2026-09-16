@@ -55,6 +55,12 @@ export async function runMultipleRepositories(
   const globalLogger = Logger.createDefault();
 
   const runOnce = configFile.defaults?.runOnce ?? false;
+  // Read off the config file, not off a resolved repository: this and `runOnce`
+  // are whole-file switches over one process, and the loader rejects both on a
+  // repository entry for that reason. Resolving `syncOnStart` per repository
+  // would advertise a granularity it does not have — the daemon runs exactly one
+  // startup cycle across every service.
+  const syncOnStart = configFile.defaults?.syncOnStart ?? true;
   const maxParallel =
     configFile.parallelism?.maxRepositories ??
     configFile.defaults?.parallelism?.maxRepositories ??
@@ -223,6 +229,22 @@ export async function runMultipleRepositories(
     }
     for (const [schedule, count] of cronSchedules) {
       uiService.addLog(`⏰ ${schedule}: ${count} repository(ies)`);
+    }
+
+    // Last, and deliberately. The constructor above already called Ink's
+    // render(), and Ink flushes the App's mount effect — the one that subscribes
+    // to every event and emits `uiReady` — synchronously inside it, so the
+    // interface is listening before this line runs. Going after the summary
+    // lines keeps their order under either timing anyway: addLog emits straight
+    // through once the UI is ready and otherwise buffers in call order, so the
+    // sync's output cannot overtake them. Not awaited, like the disk-space probe
+    // above — the branch returns to leave the cron jobs and the UI running. The
+    // cycle is exactly what the first cron tick would have run (same services,
+    // same lazy initialize inside runSyncServices) except for logErrors, which
+    // is on here: a startup failure answers "I just started it, where are my
+    // worktrees?", while the cron path stays quiet and retries next tick.
+    if (syncOnStart) {
+      void uiService.triggerInitialSync();
     }
   }
 }

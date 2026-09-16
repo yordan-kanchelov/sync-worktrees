@@ -456,6 +456,23 @@ describe("ConfigLoaderService", () => {
       );
     });
 
+    it("should reject repository syncOnStart with a defaults.syncOnStart pointer", async () => {
+      const configPath = path.join(tempDir, "invalid-synconstart.config.js");
+      const configContent = `
+        export default {
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", syncOnStart: false }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigError);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        /Repository 'test' syncOnStart.*defaults\.syncOnStart/,
+      );
+    });
+
     it("should throw error for invalid debug type", async () => {
       const configPath = path.join(tempDir, "invalid-debug.config.js");
       const configContent = `
@@ -543,6 +560,40 @@ describe("ConfigLoaderService", () => {
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow("Invalid 'runOnce' in defaults");
+    });
+
+    it("should throw error for a non-boolean syncOnStart in defaults", async () => {
+      const configPath = path.join(tempDir, "invalid-defaults-synconstart.config.js");
+      const configContent = `
+        export default {
+          defaults: { syncOnStart: "yes" },
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigValidationError);
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "Invalid configuration for 'defaults.syncOnStart': must be a boolean",
+      );
+    });
+
+    it("accepts a boolean syncOnStart in defaults", async () => {
+      const configPath = path.join(tempDir, "valid-defaults-synconstart.config.js");
+      const configContent = `
+        export default {
+          defaults: { syncOnStart: false },
+          repositories: [
+            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      const loaded = await configLoader.loadConfigFile(configPath);
+      expect(loaded.defaults?.syncOnStart).toBe(false);
     });
 
     it("should throw error for invalid debug in defaults", async () => {

@@ -27,6 +27,7 @@ interface FakeUiService {
   calculateAndUpdateDiskSpace: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
   setupCronJobs: ReturnType<typeof vi.fn>;
+  triggerInitialSync: ReturnType<typeof vi.fn>;
 }
 
 const mocks = vi.hoisted(() => ({
@@ -42,6 +43,12 @@ const mocks = vi.hoisted(() => ({
   sync: vi.fn(),
   registerSignalHandler: vi.fn(),
   disposeSignalHandler: vi.fn(),
+  // Every addLog line and the startup sync, in the order index.ts made them:
+  // the summary lines are only "first" if nothing can overtake them.
+  callOrder: [] as string[],
+  // When set, the promise the fake startup sync returns — a sync still running
+  // when `runMultipleRepositories` is expected to have returned.
+  initialSyncGate: null as Promise<void> | null,
   // Constructor arguments paired with the object that construction returned. A
   // fresh object every time, never one shared instance: the daemon is supposed
   // to build exactly one UI service per run, and a shared spy would report the
@@ -53,10 +60,19 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../services/InteractiveUIService", () => ({
   InteractiveUIService: vi.fn(function (...args: unknown[]) {
     const instance: FakeUiService = {
-      addLog: vi.fn(),
+      addLog: vi.fn((line: unknown) => {
+        mocks.callOrder.push(`addLog:${String(line)}`);
+      }),
       calculateAndUpdateDiskSpace: vi.fn(),
       destroy: vi.fn(),
       setupCronJobs: vi.fn(),
+      // Returns a promise, because index.ts leaves it unawaited and `void` on
+      // a non-promise would be a different statement than the one under test.
+      // `initialSyncGate` lets a test hold that promise open.
+      triggerInitialSync: vi.fn(() => {
+        mocks.callOrder.push("triggerInitialSync");
+        return mocks.initialSyncGate ?? Promise.resolve();
+      }),
     };
     mocks.uiConstructions.push({ args, instance });
     return instance;
@@ -112,6 +128,8 @@ describe("runMultipleRepositories in daemon mode", () => {
     vi.clearAllMocks();
     mocks.uiConstructions.length = 0;
     mocks.syncServiceConstructions.length = 0;
+    mocks.callOrder.length = 0;
+    mocks.initialSyncGate = null;
     mocks.createLogger.mockReturnValue(mocks.logger);
   });
 
@@ -119,16 +137,17 @@ describe("runMultipleRepositories in daemon mode", () => {
     process.exitCode = previousExitCode;
   });
 
-  it("builds one sync service per repository and starts none of them", async () => {
+  it("builds one sync service per repository and drives none of them directly", async () => {
     const repos = [repository("repo-a", "0 * * * *"), repository("repo-b", "0 * * * *")];
 
     await runMultipleRepositories(daemonConfig(repos), repos);
 
     // Order matters: the UI lists repositories in the order it was handed them.
     expect(mocks.syncServiceConstructions.map((built) => built.config)).toEqual(repos);
-    // The daemon hands scheduling to the cron jobs. Doing the run-once branch's
-    // work here as well would sync every repository once the moment the daemon
-    // started, off-schedule and before the UI was on screen.
+    // The startup sync and every cron tick go through the UI service, which owns
+    // the progress plumbing, the parallelism limit and the lazy initialize. The
+    // daemon branch must never reach past it into the services itself the way
+    // the run-once branch does.
     expect(mocks.initialize).not.toHaveBeenCalled();
     expect(mocks.sync).not.toHaveBeenCalled();
     // Nothing failed, and nothing in this branch reports an outcome at all.
@@ -219,6 +238,84 @@ describe("runMultipleRepositories in daemon mode", () => {
       "⏰ 0 * * * *: 2 repository(ies)",
       "⏰ */5 * * * *: 1 repository(ies)",
     ]);
+  });
+
+  it("syncs once at startup when `defaults.syncOnStart` is left out", async () => {
+    const repos = [repository("repo-a", "0 * * * *"), repository("repo-b", "0 * * * *")];
+
+    await runMultipleRepositories(daemonConfig(repos), repos);
+
+    // One cycle for the whole run, not one per repository: triggerInitialSync
+    // takes every service the UI owns.
+    expect(mocks.uiConstructions[0].instance.triggerInitialSync).toHaveBeenCalledTimes(1);
+    expect(mocks.uiConstructions[0].instance.triggerInitialSync).toHaveBeenCalledWith();
+  });
+
+  it("syncs once at startup when `defaults.syncOnStart` is true", async () => {
+    const repos = [repository("repo-a", "0 * * * *")];
+    const config = daemonConfig(repos);
+    config.defaults = { ...config.defaults, syncOnStart: true };
+
+    await runMultipleRepositories(config, repos);
+
+    expect(mocks.uiConstructions[0].instance.triggerInitialSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for the first cron tick when `defaults.syncOnStart` is false", async () => {
+    const repos = [repository("repo-a", "0 * * * *")];
+    const config = daemonConfig(repos);
+    config.defaults = { ...config.defaults, syncOnStart: false };
+
+    await runMultipleRepositories(config, repos);
+
+    expect(mocks.uiConstructions[0].instance.triggerInitialSync).not.toHaveBeenCalled();
+    // Opting out of the startup sync is not opting out of the schedule.
+    expect(mocks.uiConstructions[0].instance.setupCronJobs).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts the startup sync after the summary lines", async () => {
+    const repos = [repository("repo-a", "0 * * * *")];
+
+    await runMultipleRepositories(daemonConfig(repos), repos);
+
+    // The summary is what a user sees first; a sync started ahead of it would
+    // push its own fetch output above "📋 1 repositories configured", because
+    // both go through the same ordered log buffer.
+    expect(mocks.callOrder).toEqual([
+      "addLog:📋 1 repositories configured",
+      "addLog:⏰ 0 * * * *: 1 repository(ies)",
+      "triggerInitialSync",
+    ]);
+  });
+
+  it("returns while the startup sync is still running", async () => {
+    const repos = [repository("repo-a", "0 * * * *")];
+    const order: string[] = [];
+    let release!: () => void;
+    mocks.initialSyncGate = new Promise<void>((resolve) => {
+      release = () => {
+        order.push("startup sync finished");
+        resolve();
+      };
+    });
+
+    const call = runMultipleRepositories(daemonConfig(repos), repos).then(() => {
+      order.push("runMultipleRepositories returned");
+    });
+
+    // Ordering, not a stopwatch: two turns of the event loop settle everything
+    // this branch does not await (it awaits nothing else), while anything it
+    // does await cannot settle until `release()` below. A loaded CI runner just
+    // makes the turns take longer; it cannot change which of the two is first.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(order).toEqual(["runMultipleRepositories returned"]);
+    expect(mocks.uiConstructions[0].instance.triggerInitialSync).toHaveBeenCalledTimes(1);
+
+    release();
+    await call;
+    expect(order).toEqual(["runMultipleRepositories returned", "startup sync finished"]);
   });
 
   it("routes a shutdown signal to the UI service, passing the fast flag through", async () => {

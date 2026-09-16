@@ -13,13 +13,15 @@ import type { Mock } from "vitest";
 const mocks = vi.hoisted(() => ({
   acquire: vi.fn(),
   release: vi.fn(),
+  gitInitialize: vi.fn(),
+  gitIsInitialized: vi.fn(() => true),
 }));
 
 vi.mock("../git.service", () => ({
   GitService: vi.fn(function () {
     return {
-      initialize: vi.fn(),
-      isInitialized: vi.fn(() => true),
+      initialize: mocks.gitInitialize,
+      isInitialized: mocks.gitIsInitialized,
       updateLogger: vi.fn(),
       setStaleDirectoryTrasher: vi.fn(),
     };
@@ -63,6 +65,8 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     vi.clearAllMocks();
     mocks.release.mockResolvedValue(undefined);
     mocks.acquire.mockResolvedValue({ acquired: true, release: mocks.release });
+    mocks.gitInitialize.mockResolvedValue(undefined);
+    mocks.gitIsInitialized.mockReturnValue(true);
     service = new WorktreeSyncService(makeConfig());
   });
 
@@ -87,6 +91,38 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
 
     hold.resolve();
     await first;
+  });
+
+  // The daemon starts a sync and arms the cron jobs in the same breath, so a
+  // tick can land on a repository whose very first initialize() is still
+  // running. isInitialized() is an in-process flag (`this.git !== null`), so
+  // both callers genuinely observe `false`; what stops the second one is the
+  // fail-fast check above, not the flag.
+  it("runs the real init once when two callers race initialize() on a fresh repo", async () => {
+    mocks.gitIsInitialized.mockReturnValue(false);
+    const entered = deferred<void>();
+    const hold = deferred<void>();
+    mocks.gitInitialize.mockImplementation(async () => {
+      entered.resolve();
+      await hold.promise;
+      mocks.gitIsInitialized.mockReturnValue(true);
+    });
+
+    expect(service.isInitialized()).toBe(false);
+    const first = service.initialize();
+    await entered.promise;
+    // Still false for the second caller — this is the race, not a hypothetical.
+    expect(service.isInitialized()).toBe(false);
+
+    // Resolves rather than throwing or deadlocking: the loser logs and returns.
+    await service.initialize();
+    expect(mocks.gitInitialize).toHaveBeenCalledTimes(1);
+    const logger = service.config.logger as unknown as { warn: Mock };
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Initialize skipped: operation in progress"));
+
+    hold.resolve();
+    await first;
+    expect(mocks.gitInitialize).toHaveBeenCalledTimes(1);
   });
 
   it("queues a wait:true op behind the in-flight op and runs it after release", async () => {

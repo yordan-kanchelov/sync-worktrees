@@ -59,6 +59,7 @@ export class InteractiveUIService {
   private limit: ReturnType<typeof pLimit>;
   private maxProgressLines: number;
   private reloadInProgress = false;
+  private syncCycleInFlight = false;
   private isDestroyed = false;
   private events: AppEventEmitter;
   private ownsEvents: boolean;
@@ -996,6 +997,24 @@ export class InteractiveUIService {
     services: WorktreeSyncService[],
     options: { logErrors: boolean },
   ): Promise<Array<{ repo: string; error: string }>> {
+    // One cycle at a time, per UI service. The daemon now starts a sync and
+    // arms the cron jobs in the same breath, so a tick landing inside the
+    // startup cycle is routine rather than the rare `s`-during-a-sync it used
+    // to be. WorktreeSyncService's repoMutex already refuses the second
+    // caller's work (`in_progress`), so nothing raced the repository itself —
+    // but the losing cycle still got far enough to do two things it should not:
+    // runSyncServices calls clearRecordedSkips() on every service before it
+    // learns it cannot run, wiping the clone-mode skips the in-flight cycle had
+    // accumulated (sync() clears that accumulator inside the lock precisely so
+    // a losing caller cannot truncate the winner's payload), and this method's
+    // `finally` drove the status back to "idle" and blanked the progress panel
+    // while the first cycle was still fetching. Skipping outright is what the
+    // tick means anyway: the work is already being done.
+    if (this.syncCycleInFlight) {
+      this.addLog("A sync is already running; skipping this cycle.", "info");
+      return [];
+    }
+    this.syncCycleInFlight = true;
     this.setStatus("syncing");
 
     try {
@@ -1023,6 +1042,7 @@ export class InteractiveUIService {
       return failures;
     } finally {
       this.setStatus("idle");
+      this.syncCycleInFlight = false;
     }
   }
 

@@ -40,6 +40,7 @@ const EVERY_REPOSITORY_KEY: Record<keyof RepositoryConfig, true> = {
   worktreeDir: true,
   cronSchedule: true,
   runOnce: true,
+  syncOnStart: true,
   bareRepoDir: true,
   retry: true,
   parallelism: true,
@@ -174,7 +175,7 @@ describe("collectUnknownConfigKeys", () => {
   const cleanConfig = {
     retry: { maxAttempts: 3 },
     parallelism: { maxRepositories: 2 },
-    defaults: { cronSchedule: "0 * * * *", runOnce: false, trash: { enabled: true } },
+    defaults: { cronSchedule: "0 * * * *", runOnce: false, syncOnStart: true, trash: { enabled: true } },
     repositories: [
       {
         name: "web",
@@ -187,6 +188,14 @@ describe("collectUnknownConfigKeys", () => {
 
   it("reports nothing for a config using only known keys", () => {
     expect(collectUnknownConfigKeys(cleanConfig)).toEqual([]);
+  });
+
+  it("reports nothing for a defaults-only key the loader rejects per repository", () => {
+    // `syncOnStart` (like `runOnce`) is a whole-file switch: `validateConfigFile`
+    // throws before this scan ever sees it on a repository entry, but it is a
+    // perfectly good `defaults` key and warning on it would be a false alarm.
+    expect(collectUnknownConfigKeys({ defaults: { syncOnStart: false }, repositories: [] })).toEqual([]);
+    expect(KNOWN_DEFAULTS_KEYS).toContain("syncOnStart");
   });
 
   it("reports nothing for internal keys the loader writes itself", () => {

@@ -29,7 +29,7 @@ type CommonConfigKeys =
 type WorktreeOnlyConfigKeys =
   "bareRepoDir" | "branchMaxAge" | "branchInclude" | "branchExclude" | "updateExistingWorktrees" | "trash";
 type CloneOnlyConfigKeys = "branch" | "depth";
-type DefaultsOnlyConfigKeys = "runOnce";
+type DefaultsOnlyConfigKeys = "runOnce" | "syncOnStart";
 type DiscriminantConfigKeys = "mode";
 type BaseIdentityConfigKeys = "repoUrl" | "worktreeDir";
 // Set internally or read only at runtime — intentionally absent from the public input surface.
