@@ -6,10 +6,11 @@ import pLimit from "p-limit";
 import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
+import { PathResolutionService } from "../services/path-resolution.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 import { createGitClient } from "../utils/git-client";
 import { redactRepoUrl } from "../utils/git-url";
-import { normalizePathForCompare } from "../utils/path-compare";
+import { normalizePathForCompare, pathsEqual } from "../utils/path-compare";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
@@ -101,6 +102,13 @@ interface RepoEntry {
   source: "config" | "detected";
   service?: WorktreeSyncService;
   discovered?: DiscoveredRepoContext;
+  // Auto-detected entries only: the last detection could not agree on a
+  // worktreeDir, so config.worktreeDir holds a placeholder no tool may write
+  // under. Durable on the entry rather than only on `discovered`, which
+  // invalidateDiscovered() clears while leaving the entry itself in place.
+  // (RepoEntry is not exported, but __registerForTest names it, so tsc emits
+  // this interface into the .d.ts -- a /** */ comment here would ship too.)
+  worktreeDirUndetermined?: boolean;
 }
 
 type RepositorySelectionDecision =
@@ -128,6 +136,9 @@ const DISCOVERY_CACHE_TTL_MS = 5000;
 const NO_REMOTE_URL_REASON = "no remote origin URL detected";
 const NO_CONFIG_NO_URL_REASON = "no config and no remote URL";
 const CLONE_MODE_REASON = "clone-mode repositories have a single checkout; use sync for clone-mode updates";
+const UNDETERMINED_WORKTREE_DIR_REASON =
+  "cannot determine worktreeDir: the registered worktrees and the worktree this call came from do not agree on " +
+  "where they live; set an explicit worktreeDir in a config for this repository and call load_config";
 const CONFIG_RECOVERY_HINT = "call load_config or detect_context from a configured workspace";
 
 function emptyCapabilities(reason?: string): Capabilities {
@@ -547,7 +558,7 @@ export class RepositoryContext {
       };
     }
 
-    const worktreeDir = path.dirname(worktreeRoot);
+    const derivedWorktreeDir = deriveWorktreeDir(worktrees);
 
     const foldedBare = normalizePathForCompare(bareRepoPath);
     let matchedConfig: RepoEntry | null = null;
@@ -560,6 +571,17 @@ export class RepositoryContext {
       }
     }
 
+    // A matching config is authoritative: its worktreeDir is the directory the
+    // tools will actually write under, so report that rather than anything read
+    // back from git. Only an auto-detected repository has to be derived, and
+    // only it reports null when the derivation could not agree on an answer.
+    const worktreeDir = matchedConfig ? path.resolve(matchedConfig.config.worktreeDir) : derivedWorktreeDir;
+    notes.push(
+      worktreeDir === null
+        ? `Could not determine worktreeDir from the registered worktrees of ${bareRepoPath}`
+        : `worktreeDir resolved to ${worktreeDir}`,
+    );
+
     let entry: RepoEntry | null = null;
     let kind: DiscoveredRepoContext["kind"] = "unmanaged";
 
@@ -569,10 +591,28 @@ export class RepositoryContext {
     } else if (repoUrl) {
       const detectedKey = `${AUTO_DETECT_PREFIX}${path.basename(bareRepoPath)}@${bareRepoPath}`;
       entry = this.repos.get(detectedKey) ?? null;
-      if (!entry) {
+      if (entry) {
+        // Detection re-runs on every cache miss and the registered list can
+        // change between runs, so keep the stored entry in step with the value
+        // reported here instead of leaving the first run's answer frozen in.
+        // getService builds the service from a spread copy of this config, so
+        // an already-built one keeps the directory it was born with: drop it
+        // too, or detect_context reports the new directory while
+        // create_worktree keeps writing under the old one. Both locks a repo
+        // operation takes are keyed by paths, not by this object, so a rebuilt
+        // service is still serialized against one that is mid-operation.
+        if (derivedWorktreeDir !== null && !pathsEqual(entry.config.worktreeDir, derivedWorktreeDir)) {
+          entry.config.worktreeDir = derivedWorktreeDir;
+          entry.service = undefined;
+        }
+      } else {
         const syntheticConfig: Config = {
           repoUrl,
-          worktreeDir,
+          // Only reached when the derivation failed. The read-only tools work
+          // off the bare repo and never touch this directory; createWorktree
+          // and updateWorktree, the two that would write under it, are marked
+          // unavailable below, so nothing is placed on disk from this guess.
+          worktreeDir: derivedWorktreeDir ?? path.dirname(worktreeRoot),
           bareRepoDir: bareRepoPath,
           cronSchedule: DEFAULT_CONFIG.CRON_SCHEDULE,
           runOnce: true,
@@ -580,6 +620,10 @@ export class RepositoryContext {
         entry = { name: detectedKey, config: syntheticConfig, source: "detected" };
         this.repos.set(detectedKey, entry);
       }
+      // Record the outcome where invalidateDiscovered cannot erase it: that
+      // call drops `discovered` but keeps the entry, and ensureCapability
+      // stops at the base capabilities when there is no discovery snapshot.
+      entry.worktreeDirUndetermined = derivedWorktreeDir === null;
     }
 
     // Start from the entry's durable capabilities so that discovery can only
@@ -598,6 +642,13 @@ export class RepositoryContext {
       // A bare repo without an origin URL cannot create worktrees, even when a
       // loaded config lists one for it.
       capabilities.createWorktree = { available: false, reason: NO_REMOTE_URL_REASON };
+    }
+    if (worktreeDir === null) {
+      // Both tools resolve a target under worktreeDir — createWorktree through
+      // getBranchWorktreePath, updateWorktree through the initialize() that
+      // rebuilds the default-branch worktree — so neither may run on a guess.
+      capabilities.createWorktree = { available: false, reason: UNDETERMINED_WORKTREE_DIR_REASON };
+      capabilities.updateWorktree = { available: false, reason: UNDETERMINED_WORKTREE_DIR_REASON };
     }
 
     const repoName = entry?.name ?? null;
@@ -793,6 +844,13 @@ export class RepositoryContext {
     const worktreeMutation = (): CapabilityState => {
       if (resolveMode(entry.config) === REPOSITORY_MODES.CLONE) {
         return { available: false, reason: CLONE_MODE_REASON };
+      }
+      // An auto-detected entry whose worktreeDir could not be derived carries a
+      // placeholder directory. Both tools resolve their target under it, so the
+      // refusal has to be durable rather than live only in the discovery
+      // snapshot that every mutating tool — and load_config — clears.
+      if (entry.worktreeDirUndetermined) {
+        return { available: false, reason: UNDETERMINED_WORKTREE_DIR_REASON };
       }
       return entry.config.repoUrl ? { available: true } : { available: false, reason: NO_REMOTE_URL_REASON };
     };
@@ -1024,6 +1082,86 @@ export class RepositoryContext {
       return { worktrees: [], error: err instanceof Error ? err.message : String(err) };
     }
   }
+}
+
+const pathResolution = new PathResolutionService();
+
+// Where a registered worktree says its parent directory is, or null when its
+// path is not one this tool would have produced.
+//
+// Two shapes exist and they are not alike. A branch worktree sits at
+// getBranchWorktreePath(worktreeDir, branch): one component, the branch name
+// flattened and suffixed with a hash of it. The default-branch worktree is the
+// exception -- GitService anchors it at the plain join(worktreeDir, branch), so
+// a nested name such as `release/2024` contributes two components, which is
+// exactly what made dirname() the wrong answer here. Both shapes invert, so a
+// candidate parent is rebuilt back into a path and kept only if it reproduces
+// the registered one. Only a path matching neither shape abstains outright -- a
+// detached entry carrying the pseudo-name `(detached abc1234)`, a directory
+// named after neither the branch nor its flattening. The anchor shape is
+// `<dir>/<branch>`, so a hand-run `git worktree add ../hotfix hotfix` outside
+// worktreeDir is recognized and votes for `../`; deriveWorktreeDir outvotes it
+// rather than relying on it to abstain.
+function worktreeDirCandidate(worktree: DiscoveredWorktree): string | null {
+  const resolved = path.resolve(worktree.path);
+  const hashedParent = path.dirname(resolved);
+  if (pathsEqual(pathResolution.getBranchWorktreePath(hashedParent, worktree.branch), resolved)) {
+    return hashedParent;
+  }
+  const segments = worktree.branch.split("/");
+  let anchorParent = resolved;
+  for (let i = 0; i < segments.length; i++) anchorParent = path.dirname(anchorParent);
+  return pathsEqual(path.join(anchorParent, ...segments), resolved) ? anchorParent : null;
+}
+
+// Two independent signals have to agree, or nothing is answered.
+//
+// The count decides first. Abstaining entries do not vote, and a minority of
+// recognized ones is outvoted rather than allowed to refuse for everyone --
+// the anchor shape is `<dir>/<branch>`, so the conventional hand-run
+// `git worktree add ../hotfix hotfix` is recognized and would otherwise veto a
+// repository whose other entries agree. A tie leaves no answer to prefer.
+//
+// Then the worktree this detection was run from has to corroborate that count.
+// It is the one entry known to be real and relevant, but it is a sample of one
+// and an agent is most likely to be standing in exactly the hand-placed
+// worktree that disagrees, so it confirms rather than overrides: letting it
+// override put a new worktree beside one stray while five tool-made ones said
+// otherwise. When it is absent from the list (git stores canonical paths, so a
+// symlinked cwd matches none of them) or abstains (a detached entry), the count
+// stands alone -- there is nothing to corroborate with, not a reason to refuse.
+//
+// A single vote still wins: the shape it matched already fixes how many
+// components its branch name contributed, which is the fact a probe path cannot
+// supply, and there is no second entry to weigh it against.
+function deriveWorktreeDir(worktrees: DiscoveredWorktree[]): string | null {
+  const votes = new Map<string, { dir: string; count: number }>();
+  for (const worktree of worktrees) {
+    const candidate = worktreeDirCandidate(worktree);
+    if (candidate === null) continue;
+    const key = normalizePathForCompare(candidate);
+    const tally = votes.get(key);
+    if (tally) tally.count += 1;
+    else votes.set(key, { dir: candidate, count: 1 });
+  }
+
+  let leader: { dir: string; count: number } | null = null;
+  let tied = false;
+  for (const tally of votes.values()) {
+    if (leader === null || tally.count > leader.count) {
+      leader = tally;
+      tied = false;
+    } else if (tally.count === leader.count) {
+      tied = true;
+    }
+  }
+  const counted = leader !== null && !tied ? leader.dir : null;
+
+  const probe = worktrees.find((worktree) => worktree.isCurrent);
+  const probeCandidate = probe ? worktreeDirCandidate(probe) : null;
+  if (probeCandidate === null) return counted;
+  if (counted === null) return null;
+  return pathsEqual(probeCandidate, counted) ? counted : null;
 }
 
 function parseWorktreeList(output: string, currentPath: string | null): DiscoveredWorktree[] {

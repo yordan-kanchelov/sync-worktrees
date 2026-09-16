@@ -5,6 +5,7 @@ import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConfigValidationError } from "../../errors";
+import { PathResolutionService } from "../../services/path-resolution.service";
 import { RepositoryContext } from "../context";
 import { handleLoadConfig } from "../handlers";
 import { formatErrorResponse } from "../utils";
@@ -130,6 +131,152 @@ describe("RepositoryContext.detectFromPath", () => {
     expect(result.capabilities.createWorktree.available).toBe(true);
     expect(result.capabilities.sync.available).toBe(false);
     expect(result.capabilities.initialize.available).toBe(false);
+  });
+
+  it("ignores a hand-placed worktree that matches no layout instead of letting it veto", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [
+        `worktree ${fixture.currentWorktree}`,
+        "branch refs/heads/feature-x",
+        "",
+        `worktree ${path.join(fixture.root, "scratch", "hand-made")}`,
+        "branch refs/heads/main",
+        "",
+      ].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    const result = await ctx.detectFromPath(fixture.currentWorktree);
+
+    expect(result.worktreeDir).toBe(fixture.worktreesDir);
+    expect(result.capabilities.createWorktree.available).toBe(true);
+    expect(result.capabilities.updateWorktree.available).toBe(true);
+  });
+
+  it("refuses to guess worktreeDir when two registered worktrees name different parents", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [
+        `worktree ${fixture.currentWorktree}`,
+        "branch refs/heads/feature-x",
+        "",
+        `worktree ${path.join(fixture.root, "elsewhere", "main")}`,
+        "branch refs/heads/main",
+        "",
+      ].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    const result = await ctx.detectFromPath(fixture.currentWorktree);
+
+    expect(result.worktreeDir).toBeNull();
+    expect(result.capabilities.createWorktree).toEqual({
+      available: false,
+      reason:
+        "cannot determine worktreeDir: the registered worktrees and the worktree this call came from do not agree " +
+        "on where they live; set an explicit worktreeDir in a config for this repository and call load_config",
+    });
+    expect(result.capabilities.updateWorktree).toEqual({
+      available: false,
+      reason:
+        "cannot determine worktreeDir: the registered worktrees and the worktree this call came from do not agree " +
+        "on where they live; set an explicit worktreeDir in a config for this repository and call load_config",
+    });
+    expect(result.notes.some((n: string) => n.startsWith("Could not determine worktreeDir"))).toBe(true);
+    expect(result.capabilities.listWorktrees.available).toBe(true);
+    expect(result.capabilities.getStatus.available).toBe(true);
+  });
+
+  it("recognises a hashed branch worktree whose branch name has more segments than its path", async () => {
+    const hashed = new PathResolutionService().getBranchWorktreePath(fixture.worktreesDir, "feature/deep/x");
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [
+        `worktree ${fixture.currentWorktree}`,
+        "branch refs/heads/feature-x",
+        "",
+        `worktree ${hashed}`,
+        "branch refs/heads/feature/deep/x",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await new RepositoryContext().detectFromPath(fixture.currentWorktree);
+
+    expect(result.worktreeDir).toBe(fixture.worktreesDir);
+  });
+
+  it("reports the configured worktreeDir for a managed repo rather than one read back from git", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [
+        `worktree ${fixture.currentWorktree}`,
+        "branch refs/heads/feature-x",
+        "",
+        `worktree ${path.join(fixture.root, "elsewhere", "main")}`,
+        "branch refs/heads/main",
+        "",
+      ].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    ctx.__registerForTest("configured", {
+      config: {
+        repoUrl: "https://github.com/test/repo.git",
+        bareRepoDir: path.resolve(fixture.bareRepo),
+        worktreeDir: path.join(fixture.root, "configured-wt"),
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+      },
+      source: "config" as const,
+    });
+
+    const result = await ctx.detectFromPath(fixture.currentWorktree);
+
+    expect(result.kind).toBe("managed");
+    expect(result.worktreeDir).toBe(path.join(fixture.root, "configured-wt"));
+    expect(result.capabilities.createWorktree.available).toBe(true);
+    expect(result.capabilities.updateWorktree.available).toBe(true);
+  });
+
+  // The detected entry is created once per bare repo and then reused, so a
+  // later detection that can derive what an earlier one could not has to write
+  // the answer back; otherwise the reported worktreeDir and the one the tools
+  // resolve drift apart, which is the whole defect in a second guise.
+  it("refreshes an existing detected entry's worktreeDir once the derivation succeeds", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-nested-"));
+    const bareRepo = path.join(root, ".bare", "repo");
+    await fs.mkdir(path.join(bareRepo, "worktrees", "2024"), { recursive: true });
+    const worktreesDir = path.join(root, "worktrees");
+    const anchorWorktree = path.join(worktreesDir, "release", "2024");
+    await fs.mkdir(anchorWorktree, { recursive: true });
+    await fs.writeFile(
+      path.join(anchorWorktree, ".git"),
+      `gitdir: ${path.join(bareRepo, "worktrees", "2024")}\n`,
+      "utf-8",
+    );
+
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    const anchorEntry = [`worktree ${anchorWorktree}`, "branch refs/heads/release/2024", ""];
+    mockWorktreeList.mockResolvedValue(
+      [...anchorEntry, `worktree ${path.join(root, "elsewhere", "main")}`, "branch refs/heads/main", ""].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    const first = await ctx.detectFromPath(anchorWorktree);
+    expect(first.worktreeDir).toBeNull();
+    expect(first.capabilities.createWorktree.available).toBe(false);
+
+    ctx.invalidateDiscovered();
+    mockWorktreeList.mockResolvedValue(anchorEntry.join("\n"));
+    const second = await ctx.detectFromPath(anchorWorktree);
+
+    expect(second.worktreeDir).toBe(worktreesDir);
+    expect(second.capabilities.createWorktree.available).toBe(true);
+    expect((await ctx.getService()).config.worktreeDir).toBe(worktreesDir);
+
+    await fs.rm(root, { recursive: true, force: true });
   });
 
   it("returns unsupported for regular git repo (directory .git)", async () => {

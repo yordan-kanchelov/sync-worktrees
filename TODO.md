@@ -275,7 +275,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T39** — Tool input schemas are non-strict: unknown/misspelled arguments (repo_name,
   include_status, branch_name…) are silently stripped, so calls run against the wrong repo or with
   defaults instead of failing
-- [ ] **T97** — Auto-detect derives worktreeDir as dirname(current worktree); from inside the
+- [x] **T97** — Auto-detect derives worktreeDir as dirname(current worktree); from inside the
   default-branch worktree of a repo whose default branch contains '/' this is wrong and
   create_worktree/update_worktree fail in initialize() with a git 'already checked out' error
 - [ ] **T98** — update_worktree on a detached-HEAD worktree: membership passes or fails depending on
@@ -3858,7 +3858,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   and exclude src/index.ts and src/utils/cli.ts entirely, so gaps in these entry points do not move
   the numbers.
 
-### [ ] T97. Auto-detect derives worktreeDir as dirname(current worktree); from inside the default-branch worktree of a repo whose default branch contains '/' this is wrong and create_worktree/update_worktree fail in initialize() with a git 'already checked out' error
+### [x] T97. Auto-detect derives worktreeDir as dirname(current worktree); from inside the default-branch worktree of a repo whose default branch contains '/' this is wrong and create_worktree/update_worktree fail in initialize() with a git 'already checked out' error
 
 - **Category**: correctness · **Subsystem**: mcp
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
