@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BranchCreatedActionsService } from "../branch-created-actions.service";
 import { FileCopyService } from "../file-copy.service";
+import { HookExecutionService } from "../hook-execution.service";
 import { Logger } from "../logger.service";
 
 import type { Config } from "../../types";
@@ -203,5 +204,71 @@ describe("BranchCreatedActionsService.copyFiles", () => {
       await expect(fs.readFile(path.join(dest, ".env.local"), "utf-8")).resolves.toBe("shared");
       await expect(fs.stat(path.join(dest, "vendor", "tools", ".env.local"))).rejects.toThrow();
     });
+  });
+});
+
+describe("BranchCreatedActionsService.runHooks", () => {
+  const NODE = process.execPath;
+  const nodeScript = (body: string): string => `"${NODE}" -e "${body.replace(/"/g, '\\"')}"`;
+
+  let service: HookExecutionService;
+  let lines: string[];
+  let logger: Logger;
+
+  beforeEach(() => {
+    service = new HookExecutionService();
+    lines = [];
+    logger = new Logger({ outputFn: (message) => void lines.push(message) });
+  });
+
+  afterEach(async () => {
+    await service.cleanup();
+  });
+
+  // Driven through the real HookExecutionService and real child processes: the
+  // log line is the deliverable, so nothing here stands in for the thing that
+  // produces it.
+  const runAndWaitFor = async (commands: string[], expected: number): Promise<void> => {
+    new BranchCreatedActionsService().runHooks({
+      config: makeConfig({ hooks: { onBranchCreated: commands, timeoutMs: 0 } }),
+      repoName: "api",
+      branchName: "feature/x",
+      worktreePath: os.tmpdir(),
+      baseBranch: "main",
+      logger,
+      hookExecutionService: service,
+    });
+    await vi.waitFor(() => {
+      expect(lines.filter((line) => line.includes("[hook] Command")).length).toBe(expected);
+    });
+  };
+
+  it("names the command that succeeded", async () => {
+    const command = nodeScript("process.exit(0)");
+    await runAndWaitFor([command], 1);
+
+    expect(lines.filter((line) => line.includes("[hook] Command"))).toEqual([
+      `[hook] Command completed successfully: ${command}`,
+    ]);
+  });
+
+  it("names the command that failed, alongside its exit code", async () => {
+    const command = nodeScript("process.exit(3)");
+    await runAndWaitFor([command], 1);
+
+    expect(lines.filter((line) => line.includes("[hook] Command"))).toEqual([
+      `[hook] Command exited with code 3: ${command}`,
+    ]);
+  });
+
+  it("tells two hooks apart when only one of them fails", async () => {
+    const ok = nodeScript("process.exit(0)");
+    const bad = nodeScript("process.exit(1)");
+    await runAndWaitFor([ok, bad], 2);
+
+    const reported = lines.filter((line) => line.includes("[hook] Command")).sort();
+    expect(reported).toEqual(
+      [`[hook] Command completed successfully: ${ok}`, `[hook] Command exited with code 1: ${bad}`].sort(),
+    );
   });
 });

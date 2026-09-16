@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
 import { Console } from "node:console";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import * as cron from "node-cron";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +11,7 @@ import { AppEventEmitter } from "../../utils/app-events";
 import { MOUSE_TRACKING_DISABLE, MOUSE_TRACKING_ENABLE } from "../../utils/mouse";
 import { InteractiveUIService } from "../InteractiveUIService";
 
+import type { HookExecutionService } from "../hook-execution.service";
 import type { WorktreeSyncService } from "../worktree-sync.service";
 
 // Ink decides interactivity (and therefore whether it uses the alternate screen
@@ -36,8 +40,17 @@ class FakeStdout extends EventEmitter {
   columns = 100;
   rows = 24;
   readonly chunks: string[] = [];
+  // A stream that refuses a write. Not EPIPE - that arrives as an "error"
+  // event, which no synchronous catch could ever see - but the case the guard
+  // in writeLines is actually for: stdout is injected, so it is not always a
+  // live tty, and one that says no must not abandon the rest of teardown.
+  failWritesMatching: string | null = null;
   write = (data: string, callback?: () => void): boolean => {
-    this.chunks.push(String(data));
+    const text = String(data);
+    if (this.failWritesMatching !== null && text.includes(this.failWritesMatching)) {
+      throw new Error("stream refused the write");
+    }
+    this.chunks.push(text);
     if (typeof callback === "function") callback();
     return true;
   };
@@ -95,7 +108,9 @@ describe("InteractiveUIService exit path", () => {
   let harnesses: Harness[] = [];
   let ownedTaskIds: string[] = [];
 
-  const mount = (options: { syncInProgress?: boolean; stdoutIsTTY?: boolean } = {}): Harness => {
+  const mount = (
+    options: { syncInProgress?: boolean; stdoutIsTTY?: boolean; failWritesMatching?: string } = {},
+  ): Harness => {
     let syncInProgress = options.syncInProgress ?? false;
     const syncService = {
       sync: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
@@ -122,6 +137,7 @@ describe("InteractiveUIService exit path", () => {
     // Not `?? true`: the interesting value is `false`, so the default has to be
     // chosen on absence rather than on falsiness.
     if (options.stdoutIsTTY !== undefined) stdout.isTTY = options.stdoutIsTTY;
+    if (options.failWritesMatching !== undefined) stdout.failWritesMatching = options.failWritesMatching;
     const stdin = new FakeStdin();
     const exit = vi.fn();
     const events = new AppEventEmitter();
@@ -467,6 +483,126 @@ describe("InteractiveUIService exit path", () => {
       } finally {
         process.off("unhandledRejection", record);
       }
+    });
+  });
+
+  describe("hooks on quit (T110)", () => {
+    const fixtureDirs: string[] = [];
+    const PROC_AVAILABLE = fs.existsSync("/proc/self/stat");
+
+    afterEach(() => {
+      for (const dir of fixtureDirs.splice(0)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    // A killed orphan is reparented to pid 1 and lingers as a zombie wherever
+    // nothing reaps it, so ESRCH alone would never arrive here. Where /proc can
+    // answer, read the state instead.
+    const isAlive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return false;
+      }
+      if (!PROC_AVAILABLE) return true;
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+      } catch {
+        return false;
+      }
+    };
+
+    const startRealHook = async (service: InteractiveUIService): Promise<{ command: string; pid: number }> => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ui-hook-"));
+      fixtureDirs.push(dir);
+      const pidFile = JSON.stringify(path.join(dir, "pid"));
+      const body = `const fs=require('fs');fs.writeFileSync(${pidFile},String(process.pid));setInterval(()=>{},20);`;
+      const command = `"${process.execPath}" -e "${body.replace(/"/g, '\\"')}"`;
+
+      (
+        service as unknown as { hookExecutionService: HookExecutionService }
+      ).hookExecutionService.executeOnBranchCreated(
+        { onBranchCreated: [command], timeoutMs: 0 },
+        {
+          branchName: "feature/x",
+          worktreePath: dir,
+          repoName: "test-repo",
+          baseBranch: "main",
+          repoUrl: "https://example.com/repo.git",
+        },
+      );
+
+      await waitFor(
+        () => fs.existsSync(path.join(dir, "pid")) && fs.readFileSync(path.join(dir, "pid"), "utf8") !== "",
+        "the hook to report its pid",
+      );
+      return { command, pid: Number(fs.readFileSync(path.join(dir, "pid"), "utf8")) };
+    };
+
+    it("terminates the hook and says which one, on the primary buffer the shell gets back", async () => {
+      const harness = mount();
+      await sleep(60);
+      const { command, pid } = await startRealHook(harness.service);
+      expect(isAlive(pid)).toBe(true);
+
+      harness.stdin.write("q");
+      await waitFor(() => harness.exit.mock.calls.length > 0, "the process to be asked to exit");
+
+      // The outcome: the hook the quit ended is really gone, not merely signalled.
+      await waitFor(() => !isAlive(pid), "the hook process to go away");
+
+      // And the user was told. On the stream, after Ink hands the primary
+      // buffer back — the log panel is torn down mid-teardown and never read,
+      // so a line that only reached addLog would be a silent kill again.
+      const text = harness.stdout.text;
+      const exitAlternate = text.lastIndexOf(EXIT_ALTERNATE_SCREEN);
+      expect(exitAlternate).toBeGreaterThanOrEqual(0);
+
+      const summary = "Terminating 1 hook(s) still running; hooks do not outlive the interface:";
+      const named = `[hook] terminated on exit: ${command}`;
+      expect(text.lastIndexOf(summary)).toBeGreaterThan(exitAlternate);
+      expect(text.lastIndexOf(named)).toBeGreaterThan(exitAlternate);
+
+      // And the log panel got them too, which only holds while they are emitted
+      // *before* `isDestroyed` silences addLog. Moving the two statements past
+      // it leaves the stream write above still passing and the panel — the sink
+      // a logger or a lingering render would read — silently empty.
+      expect(harness.logs).toEqual(expect.arrayContaining([summary, named]));
+    });
+
+    // F6. The guard around the teardown writes was covered by nothing, and the
+    // async EPIPE its comment named could never have reached it. This is the
+    // failure it does catch, and what it buys: the quit still finishes.
+    it("finishes the quit when the stream refuses one of the lines", async () => {
+      const harness = mount({ failWritesMatching: "terminated on exit" });
+      await sleep(60);
+      const { pid } = await startRealHook(harness.service);
+
+      harness.stdin.write("q");
+      await waitFor(() => harness.exit.mock.calls.length > 0, "the process to be asked to exit");
+
+      // Exit 0 through the ordinary path, not 1 through "Shutdown failed": a
+      // throw here used to abandon the statements that restore the terminal.
+      expect(harness.exit).toHaveBeenCalledWith(0);
+      expect(harness.logs.filter((line) => line.startsWith("Shutdown failed"))).toEqual([]);
+      // The line before the one that threw still made it out, so the loop wrote
+      // what it could rather than being skipped wholesale.
+      expect(harness.stdout.text).toContain("hook(s) still running");
+      await waitFor(() => !isAlive(pid), "the hook process to go away");
+    });
+
+    it("says nothing about hooks when none were running", async () => {
+      const harness = mount();
+      await sleep(60);
+
+      harness.stdin.write("q");
+      await waitFor(() => harness.exit.mock.calls.length > 0, "the process to be asked to exit");
+
+      expect(harness.stdout.text).not.toContain("terminated on exit");
+      expect(harness.stdout.text).not.toContain("hook(s) still running");
+      expect(harness.logs.filter((line) => line.includes("hook"))).toEqual([]);
     });
   });
 });

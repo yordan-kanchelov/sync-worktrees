@@ -165,7 +165,7 @@ const KNOWN_MAINTENANCE_KEYS = [
   "aggressive",
 ] as const satisfies readonly (keyof MaintenanceConfig)[];
 
-const KNOWN_HOOKS_KEYS = ["onBranchCreated"] as const satisfies readonly (keyof HooksConfig)[];
+const KNOWN_HOOKS_KEYS = ["onBranchCreated", "timeoutMs"] as const satisfies readonly (keyof HooksConfig)[];
 
 type _RepositoryKeysComplete = Assert<
   IsNever<

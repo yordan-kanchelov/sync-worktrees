@@ -106,7 +106,7 @@ const EVERY_NESTED_KEY: Record<keyof typeof NESTED_KNOWN_KEYS, Record<string, tr
     interval: true,
     aggressive: true,
   } satisfies Record<keyof MaintenanceConfig, true>,
-  hooks: { onBranchCreated: true } satisfies Record<keyof HooksConfig, true>,
+  hooks: { onBranchCreated: true, timeoutMs: true } satisfies Record<keyof HooksConfig, true>,
 };
 
 describe("config key inventory", () => {

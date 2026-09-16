@@ -425,3 +425,83 @@ describe("TypeScript configs under real Node", () => {
     expect(result.third).toContain("erasing type annotations");
   }, 60_000);
 });
+
+/**
+ * `hooks.timeoutMs` (T114) through the real loader in a real `node` process.
+ * Under vitest the first load of a config goes through Vite and only a second
+ * one through Node's own registry, so an in-process assertion can agree with a
+ * resolution or a rejection that a user's `node` run never produces. The value
+ * has to survive defaults→repository inheritance as a number, and `0` has to
+ * survive it as `0` rather than being dropped as falsy, which is precisely the
+ * kind of thing a bundler-served load can paper over.
+ */
+describe("hooks.timeoutMs under real Node", () => {
+  async function loadHooksThroughRealNode(configBody: string): Promise<{ hooks?: unknown; message?: string }> {
+    const dir = await makeFixtureDir();
+    const configPath = path.join(dir, "sync-worktrees.config.js");
+    await fs.writeFile(configPath, configBody);
+    const script = `
+      import { ConfigLoaderService } from ${JSON.stringify(bundlePath)};
+      const loader = new ConfigLoaderService();
+      try {
+        const config = await loader.loadConfigFile(${JSON.stringify(configPath)});
+        console.log(JSON.stringify({ hooks: config.repositories[0].hooks }));
+      } catch (error) {
+        console.log(JSON.stringify({ message: error.message }));
+      }
+    `;
+    const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", script]);
+    return JSON.parse(stdout.trim().split("\n").at(-1) as string) as { hooks?: unknown; message?: string };
+  }
+
+  const repo = (extra: string): string =>
+    `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "./w"${extra} }] };`;
+
+  it("resolves a configured timeout on a repository entry", async () => {
+    const result = await loadHooksThroughRealNode(repo(`, hooks: { onBranchCreated: ["echo hi"], timeoutMs: 600000 }`));
+
+    expect(result.hooks).toEqual({ onBranchCreated: ["echo hi"], timeoutMs: 600000 });
+  });
+
+  it("keeps a configured 0 as 0 rather than dropping it as falsy", async () => {
+    const result = await loadHooksThroughRealNode(repo(`, hooks: { onBranchCreated: ["echo hi"], timeoutMs: 0 }`));
+
+    expect(result.hooks).toEqual({ onBranchCreated: ["echo hi"], timeoutMs: 0 });
+  });
+
+  // The ceiling is setTimeout's own. Above 2^31-1 the delay does not fit the
+  // 32-bit field: Node prints a TimeoutOverflowWarning over the alternate
+  // screen, substitutes 1, and the hook is SIGTERMed a few milliseconds after
+  // it starts while onError reports the year that was asked for. Measured at
+  // `timeoutMs: 31536000000` before this bound existed. Refused at load, so
+  // the config file and the runtime cannot disagree about it.
+  it("refuses a non-integer, a negative, a non-number and an over-32-bit delay", async () => {
+    for (const value of ["1.5", "-1", '"600000"', "NaN", "2147483648", "31536000000"]) {
+      const result = await loadHooksThroughRealNode(repo(`, hooks: { timeoutMs: ${value} }`));
+
+      expect(result.hooks).toBeUndefined();
+      expect(result.message).toBe(
+        "Failed to load config file: 'hooks.timeoutMs' in Repository 'r' must be a whole number of milliseconds " +
+          "from 0 to 2147483647 (0 disables the timeout)",
+      );
+    }
+  }, 60_000);
+
+  it("accepts the ceiling itself, so the bound is off by nothing", async () => {
+    const result = await loadHooksThroughRealNode(repo(`, hooks: { timeoutMs: 2147483647 }`));
+
+    expect(result.hooks).toEqual({ timeoutMs: 2147483647 });
+  });
+
+  it("refuses it under defaults too, naming defaults", async () => {
+    const result = await loadHooksThroughRealNode(
+      `export default { defaults: { hooks: { timeoutMs: -5 } }, ` +
+        `repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "./w" }] };`,
+    );
+
+    expect(result.message).toBe(
+      "Failed to load config file: 'hooks.timeoutMs' in defaults must be a whole number of milliseconds " +
+        "from 0 to 2147483647 (0 disables the timeout)",
+    );
+  });
+});

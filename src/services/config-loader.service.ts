@@ -1302,6 +1302,20 @@ export class ConfigLoaderService {
         }
       }
     }
+
+    if (hooksObj.timeoutMs !== undefined) {
+      const timeoutMs: unknown = hooksObj.timeoutMs;
+      // The upper bound is setTimeout's, not an arbitrary one: a delay above
+      // 2^31-1 does not fit the 32-bit field, so Node warns and substitutes 1.
+      // A year-long timeout would otherwise load cleanly and then SIGTERM the
+      // hook a few milliseconds after it started, reporting the year it was
+      // asked for. Anyone who meant "no timeout" has 0 for it.
+      if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647) {
+        throw new Error(
+          `'hooks.timeoutMs' in ${context} must be a whole number of milliseconds from 0 to 2147483647 (0 disables the timeout)`,
+        );
+      }
+    }
   }
 
   /**

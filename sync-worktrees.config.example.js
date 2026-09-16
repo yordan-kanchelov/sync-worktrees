@@ -314,7 +314,9 @@ const config = {
       worktreeDir: "./worktrees/project",
 
       // Hooks configuration - commands to run on specific lifecycle events
-      // All hooks run in background (fire-and-forget) and log output to UI
+      // Hooks run in the background - branch creation does not wait for them -
+      // and their output goes to the UI log panel. They do not outlive the UI:
+      // quitting terminates every hook still running, naming each one.
       // Platform: commands are executed by a POSIX shell (macOS/Linux only).
       // Windows/cmd.exe syntax is not supported — Windows support was dropped
       // intentionally. Use a Node cross-platform script if Windows is required.
@@ -340,6 +342,15 @@ const config = {
           // Run a custom setup script using environment variables
           // "cd $SYNC_WORKTREES_WORKTREE_PATH && ./setup-dev.sh"
         ],
+
+        // How long one hook may run before it is SIGTERMed (SIGKILL 5s later).
+        // Default 60000, max 2147483647 (setTimeout's own ceiling; a larger
+        // value is refused rather than silently becoming a ~1ms timeout). The
+        // `pnpm install` hook suggested above routinely outruns the default on
+        // a monorepo, so it is raised here to 10 minutes. 0 means no timeout:
+        // the hook runs unbounded, and nothing reclaims it if it wedges until
+        // you quit the interactive UI.
+        timeoutMs: 600000,
       },
     },
 

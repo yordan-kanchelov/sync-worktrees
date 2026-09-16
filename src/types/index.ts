@@ -20,6 +20,13 @@ export interface HookContext {
 
 export interface HooksConfig {
   onBranchCreated?: string[];
+  /**
+   * Milliseconds one hook may run before it is SIGTERMed (SIGKILL 5s later).
+   * Default 60000, which an install step on a large repository outruns; the
+   * ceiling is setTimeout's own, 2147483647. `0` removes the bound entirely,
+   * so nothing ever reclaims a wedged hook.
+   */
+  timeoutMs?: number;
 }
 
 export type SparseCheckoutMode = "cone" | "no-cone";

@@ -474,10 +474,30 @@ export class InteractiveUIService {
   private shutdownNotice(message: string, level: "info" | "warn"): void {
     this.addLog(message, level);
     if (!this.inkExited) return;
+    this.writeLines([message]);
+  }
+
+  private describeTerminatedHooks(commands: string[]): string[] {
+    if (commands.length === 0) return [];
+    return [
+      `Terminating ${commands.length} hook(s) still running; hooks do not outlive the interface:`,
+      ...commands.map((command) => `[hook] terminated on exit: ${command}`),
+    ];
+  }
+
+  private writeLines(lines: string[]): void {
+    // The one guarded write to the stream, shared by every line teardown puts
+    // there. The guard is for a stream that refuses the write outright - stdout
+    // is injected here, so it is not always a live tty - and not for EPIPE,
+    // which a stream reports through an "error" event that no synchronous catch
+    // could ever see. What it buys is that a stream saying no does not abandon
+    // the rest of teardown, which is what puts the terminal back.
     try {
-      this.stdout.write(`${message}\n`);
+      for (const line of lines) {
+        this.stdout.write(`${line}\n`);
+      }
     } catch {
-      // Best effort - the stream may already be gone during teardown.
+      // Nothing left to report it to.
     }
   }
 
@@ -1346,8 +1366,19 @@ export class InteractiveUIService {
     }
     this.releaseForceQuit = null;
 
+    // Before isDestroyed, which silences addLog: killing the user's in-flight
+    // `npm ci` is the one part of teardown they have to be told about, and the
+    // lines are repeated on the stream below because on a plain `q` the log
+    // panel is torn down a few statements later and never read. Awaited, and
+    // not only for the list: the exit that follows this method closes the pipes
+    // the hooks hold, so a hook trapping SIGTERM only gets to act on it because
+    // cleanup() holds the process open until it has.
+    const hookLines = this.describeTerminatedHooks(await this.hookExecutionService.cleanup());
+    for (const line of hookLines) {
+      this.addLog(line, "warn");
+    }
+
     this.isDestroyed = true;
-    this.hookExecutionService.cleanup();
     if (this.app) {
       this.app.unmount();
       this.app = null;
@@ -1361,6 +1392,7 @@ export class InteractiveUIService {
     // above is Ink's own no-op — but `this.app` is still that instance, so a
     // reader cannot take the branch as a proxy for "we did the restoring".
     this.mouse.disable();
+    this.writeLines(hookLines);
     for (const unsubscribe of this.unsubscribeCallbacks) {
       unsubscribe();
     }

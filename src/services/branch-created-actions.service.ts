@@ -93,10 +93,13 @@ export class BranchCreatedActionsService {
       onStderr: (data) => logger.warn(`[hook] ${data}`),
       onError: (command, error) => logger.error(`[hook] Failed to execute '${command}': ${error.message}`),
       onComplete: (command, exitCode) => {
+        // Named, not counted: several hooks finish out of order and interleaved
+        // with each other's output, so "exited with code 1" on its own does not
+        // say which of them the user has to go and fix.
         if (exitCode === 0) {
-          logger.info(`[hook] Command completed successfully`);
+          logger.info(`[hook] Command completed successfully: ${command}`);
         } else if (exitCode !== null) {
-          logger.warn(`[hook] Command exited with code ${exitCode}`);
+          logger.warn(`[hook] Command exited with code ${exitCode}: ${command}`);
         }
       },
     });

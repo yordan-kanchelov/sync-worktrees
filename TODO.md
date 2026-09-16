@@ -338,7 +338,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T109** — Docs/help drift: README and the help modal say `Esc` quits, but the main screen
   ignores Esc; README quick start says the TUI 'starts syncing' while the daemon never syncs until the
   first cron tick and no `syncOnStart` option remains
-- [ ] **T110** — Quitting the TUI SIGTERMs (then SIGKILLs) the whole process group of every
+- [x] **T110** — Quitting the TUI SIGTERMs (then SIGKILLs) the whole process group of every
   in-flight `onBranchCreated` hook (e.g. `npm install` in the new worktree) — undocumented,
   contradicts 'fire-and-forget'
 - [ ] **T111** — Editor mode spawns `$EDITOR` detached with stdio ignored, so terminal editors
@@ -350,7 +350,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T113** — NODE_ENV=test silently disables the cross-process lock, and the e2e double-run test
   (spawning dist under the inherited NODE_ENV=test) therefore never exercises locking; no test
   anywhere runs two real processes against one repo
-- [ ] **T114** — onBranchCreated hooks are killed at a hard-coded, undocumented 60 s timeout (the
+- [x] **T114** — onBranchCreated hooks are killed at a hard-coded, undocumented 60 s timeout (the
   example config's own `pnpm install` hook routinely exceeds it); `setTimeoutMs` is never wired to
   config, and completion logs omit which hook finished
 - [ ] **T115** — Repository initialization failures are logged without the repository name in both
@@ -4261,7 +4261,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   keys work; App.test.tsx has no Esc case; index.run-once.test.ts mocks the UI service without
   asserting an initial sync.
 
-### [ ] T110. Quitting the TUI SIGTERMs (then SIGKILLs) the whole process group of every in-flight `onBranchCreated` hook (e.g. `npm install` in the new worktree) — undocumented, contradicts 'fire-and-forget'
+### [x] T110. Quitting the TUI SIGTERMs (then SIGKILLs) the whole process group of every in-flight `onBranchCreated` hook (e.g. `npm install` in the new worktree) — undocumented, contradicts 'fire-and-forget'
 
 - **Category**: guardrail · **Subsystem**: tui
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
@@ -4376,7 +4376,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: The bypass is intentional for unit tests but leaks into the e2e layer
   through env inheritance; no test asserts lock contention between processes.
 
-### [ ] T114. onBranchCreated hooks are killed at a hard-coded, undocumented 60 s timeout (the example config's own `pnpm install` hook routinely exceeds it); `setTimeoutMs` is never wired to config, and completion logs omit which hook finished
+### [x] T114. onBranchCreated hooks are killed at a hard-coded, undocumented 60 s timeout (the example config's own `pnpm install` hook routinely exceeds it); `setTimeoutMs` is never wired to config, and completion logs omit which hook finished
 
 - **Category**: workflow · **Subsystem**: process
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

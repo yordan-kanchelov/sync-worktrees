@@ -2934,6 +2934,48 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       expect(resolved.hooks?.onBranchCreated).toEqual(["repo-command"]);
     });
 
+    it("inherits hooks.timeoutMs from defaults, field by field (T114)", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        hooks: { onBranchCreated: ["repo-command"] },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(
+        repo,
+        { hooks: { onBranchCreated: ["default-command"], timeoutMs: 600000 } },
+        tempDir,
+      );
+
+      // Whole object, not one field: the entry's onBranchCreated has to win
+      // while the timeout it did not mention still arrives from defaults.
+      expect(resolved.hooks).toEqual({ onBranchCreated: ["repo-command"], timeoutMs: 600000 });
+    });
+
+    it("lets a repository override an inherited hooks.timeoutMs with 0", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        hooks: { timeoutMs: 0 },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(
+        repo,
+        { hooks: { onBranchCreated: ["default-command"], timeoutMs: 600000 } },
+        tempDir,
+      );
+
+      // 0 is a value, not an absence: an override that treated it as falsy
+      // would hand the repository the inherited 600000 instead.
+      expect(resolved.hooks).toEqual({ onBranchCreated: ["default-command"], timeoutMs: 0 });
+    });
+
     it("should keep filesToCopyOnBranchCreate patterns relative", () => {
       const repo = {
         name: "test",
