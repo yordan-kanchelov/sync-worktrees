@@ -43,23 +43,41 @@ const FORBIDDEN_TARBALL_PREFIXES = ["src/", "scripts/", ".pnpmfile.cjs"];
 const FORBIDDEN_TARBALL_SUFFIXES = [".map"];
 // Ceilings so that tarball growth is noticed rather than shipped. `npm pack`
 // reports 86 files and ~1.26 MB unpacked: the two esbuild bundles (~1.07 MB),
-// one .d.ts per source module (~0.14 MB) and the README. The bundles are not
-// minified, so the source comments are shipped with them and ordinary work on
-// this codebase moves the total by single-digit kB at a time — the byte
-// ceiling is sized to absorb that while still tripping on the step changes it
-// is for: a dependency that stops being `external` in esbuild, or source maps
-// coming back, either of which adds hundreds of kB at once. Raise it when it
-// is ordinary growth that reached it, and say so.
+// one .d.ts per source module (~0.14 MB) and the README. Ordinary work on this
+// codebase moves the total by single-digit kB at a time — the byte ceiling is
+// sized to absorb that while still tripping on the step changes it is for: a
+// dependency that stops being `external` in esbuild, or source maps coming
+// back, either of which adds hundreds of kB at once. Raise it when it is
+// ordinary growth that reached it, and say so.
+//
+// What actually costs bytes, measured rather than assumed: only dist/*.js, the
+// .d.ts files and README.md. esbuild re-prints the AST, so NO source comment
+// survives into either bundle — an earlier version of this note claimed the
+// opposite and used it to explain the growth, which sent later work hunting
+// for prose to cut that was never shipped. Tests, changesets and CHANGELOG.md
+// are outside `files` and cost nothing. src/utils/* and src/services/* are
+// billed twice, once into each bundle; src/mcp/* ships only in mcp-server.js.
+// A bundle delta runs about 45 bytes per line of shipped code, so a ~35-line
+// change costs a bit under 2 kB and there is no prose lever that offsets it.
 //
 // Saying so: raised from 1,400,000 after a run of audit fixes carried the
 // tarball to 1,399,065 bytes across 90 files — 935 bytes short of tripping.
-// That growth is comments and tests-adjacent source on the paths those fixes
-// touched, arriving a few kB at a time exactly as described above, not a step
-// change. Restored to roughly the original ~140 kB of headroom rather than
-// nudged past the current figure, so the next ordinary change does not spend
-// its review arguing with this number.
+// That growth is source on the paths those fixes touched, arriving a few kB at
+// a time exactly as described above, not a step change. Restored to roughly
+// the original ~140 kB of headroom rather than nudged past the current figure,
+// so the next ordinary change does not spend its review arguing with this
+// number.
+//
+// Saying so again: raised from 1,540,000 at 1,499,840 bytes across 90 files,
+// with 30 audit items still to implement and a measured ~2.4 kB median per
+// item — enough to reach the old ceiling around item 14 and turn an ordinary
+// task red for a reason that has nothing to do with it. Checked first that
+// this is not the step change the ceiling is for: `packages: "external"` is
+// still set in esbuild.config.js, no dependency has been inlined, and the
+// no-.map assertion above still passes. Same ~140 kB of headroom as the last
+// raise, on the same reasoning.
 const MAX_TARBALL_FILES = 120;
-const MAX_TARBALL_UNPACKED_BYTES = 1_540_000;
+const MAX_TARBALL_UNPACKED_BYTES = 1_640_000;
 const STEP_TIMEOUT_MS = 10_000;
 
 class SmokeFailure extends Error {}
