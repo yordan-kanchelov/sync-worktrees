@@ -23,11 +23,11 @@ import {
   WorktreeTargetExistsError,
   formatToolResponse,
 } from "./utils";
-import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summary";
+import { deriveLabel, deriveSafeToRemove } from "./worktree-summary";
 
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
 import type { HandlerContext } from "./utils";
-import type { WorktreeLabel } from "./worktree-summary";
+import type { Divergence, WorktreeLabel } from "./worktree-summary";
 import type { ProgressEvent, RepoOperationNotStarted } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
@@ -44,7 +44,7 @@ type ListedWorktree = {
   isCurrent: boolean;
   label: WorktreeLabel;
   status: Awaited<ReturnType<RepoGitService["getFullWorktreeStatus"]>> | null;
-  divergence: Awaited<ReturnType<typeof getDivergence>>;
+  divergence: Divergence | null;
   safeToRemove: ReturnType<typeof deriveSafeToRemove>;
   lastSyncAt: string | null;
   sizeBytes: number | null;
@@ -292,17 +292,23 @@ export async function handleDetectContext(
     return formatToolResponse(response);
   }
 
-  const statusService = new WorktreeStatusService();
-  const statusLimit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+  // One enricher for every list in this response, so a worktree that appears
+  // in both `allWorktrees` and `allWorktreesByRepo[<current repo>]` -- which is
+  // every worktree of the current repo, since the two lists come from separate
+  // `worktree list --porcelain` reads of the same repository -- is probed once
+  // and both lists report the same answer.
+  const enrich = createWorktreeEnricher(
+    new WorktreeStatusService(),
+    pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
+  );
 
-  const enriched = await enrichDetectedWorktrees(response.allWorktrees, statusService, statusLimit);
+  const enriched = await enrichDetectedWorktrees(response.allWorktrees, enrich);
   let allWorktreesByRepo = response.allWorktreesByRepo;
 
   if (allWorktreesByRepo) {
     const entries = await Promise.all(
       Object.entries(allWorktreesByRepo).map(
-        async ([repoName, worktrees]) =>
-          [repoName, await enrichDetectedWorktrees(worktrees, statusService, statusLimit)] as const,
+        async ([repoName, worktrees]) => [repoName, await enrichDetectedWorktrees(worktrees, enrich)] as const,
       ),
     );
     allWorktreesByRepo = Object.fromEntries(entries);
@@ -311,33 +317,42 @@ export async function handleDetectContext(
   return formatToolResponse({ ...response, allWorktrees: enriched, allWorktreesByRepo });
 }
 
+type WorktreeEnrichment = Pick<DiscoveredWorktree, "label" | "divergence" | "staleHint">;
+type WorktreeEnricher = (worktree: DiscoveredWorktree) => Promise<WorktreeEnrichment>;
+
+// Memoizes on the two inputs the enrichment actually reads -- the worktree's
+// path and whether it is the current one -- rather than on the path alone, so
+// two listings that disagreed about `isCurrent` would each still get the label
+// they asked for instead of silently sharing one. The promise is stored, not
+// the result, so concurrent callers join the probe already in flight.
+function createWorktreeEnricher(statusService: WorktreeStatusService, limit: Limit): WorktreeEnricher {
+  const started = new Map<string, Promise<WorktreeEnrichment>>();
+
+  return (wt) => {
+    const key = `${wt.isCurrent ? "1" : "0"}${path.resolve(wt.path)}`;
+    const existing = started.get(key);
+    if (existing !== undefined) return existing;
+
+    const pending = limit(async (): Promise<WorktreeEnrichment> => {
+      const status = await statusService.getFullWorktreeStatus(wt.path, false).catch(() => null);
+      return {
+        label: status ? deriveLabel(status, wt.isCurrent) : wt.isCurrent ? "current" : "unknown",
+        divergence: status?.divergence ?? null,
+        staleHint: status?.upstreamGone ?? false,
+      };
+    });
+    started.set(key, pending);
+    return pending;
+  };
+}
+
 async function enrichDetectedWorktrees(
   worktrees: DiscoveredWorktree[],
-  statusService: WorktreeStatusService,
-  limit: Limit,
+  enrich: WorktreeEnricher,
 ): Promise<DiscoveredWorktree[]> {
   if (worktrees.length === 0) return worktrees;
 
-  return Promise.all(
-    worktrees.map((wt) =>
-      limit(async () => {
-        const [status, divergence] = await Promise.all([
-          statusService.getFullWorktreeStatus(wt.path, false).catch(() => null),
-          getDivergence(wt.path),
-        ]);
-        return {
-          ...wt,
-          label: status
-            ? deriveLabel(status, wt.isCurrent)
-            : wt.isCurrent
-              ? ("current" as const)
-              : ("unknown" as const),
-          divergence,
-          staleHint: status?.upstreamGone ?? false,
-        };
-      }),
-    ),
-  );
+  return Promise.all(worktrees.map(async (wt) => ({ ...wt, ...(await enrich(wt)) })));
 }
 
 export async function handleListWorktrees(
@@ -417,9 +432,8 @@ async function listWorktreesForRepo(
         const resolvedPath = path.resolve(wt.path);
         const isCurrent = currentPath !== null && pathsEqual(wt.path, currentPath);
 
-        const [status, divergence, metadata, sizeBytes] = await Promise.all([
+        const [status, metadata, sizeBytes] = await Promise.all([
           git.getFullWorktreeStatus(wt.path, false).catch(() => null),
-          getDivergence(wt.path),
           git.getWorktreeMetadata(wt.path).catch(() => null),
           includeSize ? calculateDirectorySize(wt.path).catch(() => null) : Promise.resolve(null),
         ]);
@@ -430,7 +444,7 @@ async function listWorktreesForRepo(
           isCurrent,
           label: status ? deriveLabel(status, isCurrent) : isCurrent ? "current" : "unknown",
           status,
-          divergence,
+          divergence: status?.divergence ?? null,
           safeToRemove: status ? deriveSafeToRemove(status) : { safe: false, reason: "status unavailable" },
           lastSyncAt: metadata?.lastSyncDate ?? null,
           sizeBytes,
@@ -452,15 +466,12 @@ export async function handleGetWorktreeStatus(
     toolName: "get_worktree_status",
   });
   const resolvedPath = await ensureRepoWorktreePath(ctx, params, service, git);
-  const [status, divergence] = await Promise.all([
-    git.getFullWorktreeStatus(params.path, params.includeDetails ?? false),
-    getDivergence(params.path),
-  ]);
+  const status = await git.getFullWorktreeStatus(params.path, params.includeDetails ?? false);
 
+  // `divergence` rides in on the spread: it is a field of the status result now.
   return formatToolResponse({
     path: resolvedPath,
     ...status,
-    divergence,
   });
 }
 

@@ -147,6 +147,19 @@ interface CachedDiscovery {
 
 const AUTO_DETECT_PREFIX = "__auto_detected__:";
 const DISCOVERY_CACHE_TTL_MS = 5000;
+// How many probed paths the discovery cache keeps, least-recently-used first
+// out. The cache is keyed by the path detect_context was pointed at and each
+// entry holds a whole DiscoveredRepoContext -- including that repository's
+// full `allWorktrees` array -- so an unbounded map retained one such array per
+// distinct subdirectory a long-lived MCP session ever probed, which for a repo
+// with many worktrees is quadratic in the worktree count.
+//
+// 64 is far above the working set the cache exists for: entries only stay
+// usable for DISCOVERY_CACHE_TTL_MS, and the paths a client probes inside a
+// five-second window are the one or two it is working in. Eviction cannot
+// change an answer either -- a dropped entry is re-detected from disk, exactly
+// as a TTL expiry or any mutating tool's invalidateDiscovered() already forces.
+const DISCOVERY_CACHE_LIMIT = 64;
 const NO_REMOTE_URL_REASON = "no remote origin URL detected";
 const NO_CONFIG_NO_URL_REASON = "no config and no remote URL";
 const CLONE_MODE_REASON = "clone-mode repositories have a single checkout; use sync for clone-mode updates";
@@ -279,6 +292,10 @@ export class RepositoryContext {
 
     const cached = this.discoveryCache.get(absolutePath);
     if (cached && (await this.isCacheFresh(cached))) {
+      // A Map iterates in insertion order, so re-inserting a hit makes it the
+      // newest entry and rememberDiscovery evicts the least recently used one.
+      this.discoveryCache.delete(absolutePath);
+      this.discoveryCache.set(absolutePath, cached);
       return cached.result;
     }
 
@@ -316,7 +333,7 @@ export class RepositoryContext {
         safeMtimeMs(path.join(adminDir, "HEAD")),
         safeMtimeMs(path.join(result.bareRepoPath, "worktrees")),
       ]);
-      this.discoveryCache.set(absolutePath, {
+      this.rememberDiscovery(absolutePath, {
         result,
         cachedAt: Date.now(),
         worktreeAdminDir: adminDir,
@@ -326,6 +343,24 @@ export class RepositoryContext {
     }
 
     return result;
+  }
+
+  private rememberDiscovery(absolutePath: string, entry: CachedDiscovery): void {
+    // Caches one detection, dropping the oldest entries past
+    // DISCOVERY_CACHE_LIMIT. Written here rather than above the member: esbuild
+    // ships a comment that leads a class-body member into the bundle, and drops
+    // one that leads a statement in a method body.
+    //
+    // The leading delete is what makes this least-recently-used rather than
+    // first-inserted-first-out: a Map keeps a re-`set` key in its original
+    // position, so re-caching a hot path would not move it off the front.
+    this.discoveryCache.delete(absolutePath);
+    this.discoveryCache.set(absolutePath, entry);
+    while (this.discoveryCache.size > DISCOVERY_CACHE_LIMIT) {
+      const oldest = this.discoveryCache.keys().next();
+      if (oldest.done === true) break;
+      this.discoveryCache.delete(oldest.value);
+    }
   }
 
   invalidateDiscovered(): void {

@@ -63,6 +63,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
         hasModifiedSubmodules: false,
         upstreamGone: false,
         fullyPushedUpstreamDeleted: false,
+        divergence: null,
         canRemove: true,
         reasons: [],
       }),
@@ -775,6 +776,7 @@ describe("WorktreeSyncService", () => {
         hasModifiedSubmodules: false,
         upstreamGone: false,
         fullyPushedUpstreamDeleted: false,
+        divergence: null,
         canRemove: true,
         reasons: [],
       });
@@ -1157,6 +1159,7 @@ describe("WorktreeSyncService", () => {
           hasModifiedSubmodules: false,
           upstreamGone: false,
           fullyPushedUpstreamDeleted: false,
+          divergence: null,
           canRemove: false,
           reasons: ["uncommitted changes"],
         },
@@ -1172,6 +1175,7 @@ describe("WorktreeSyncService", () => {
           hasModifiedSubmodules: false,
           upstreamGone: false,
           fullyPushedUpstreamDeleted: false,
+          divergence: null,
           canRemove: false,
           reasons: ["unpushed commits"],
         },
@@ -1187,6 +1191,7 @@ describe("WorktreeSyncService", () => {
           hasModifiedSubmodules: false,
           upstreamGone: false,
           fullyPushedUpstreamDeleted: false,
+          divergence: null,
           canRemove: false,
           reasons: ["uncommitted changes", "unpushed commits"],
         },
@@ -1232,6 +1237,7 @@ describe("WorktreeSyncService", () => {
         hasModifiedSubmodules: false,
         upstreamGone: true,
         fullyPushedUpstreamDeleted: false,
+        divergence: null,
         canRemove: false,
         reasons: ["unpushed commits"],
       });
@@ -1377,6 +1383,7 @@ describe("WorktreeSyncService", () => {
           hasModifiedSubmodules: false,
           upstreamGone: false,
           fullyPushedUpstreamDeleted: false,
+          divergence: null,
           canRemove: true,
           reasons: [],
         }) // deleted-clean: can remove
@@ -1388,6 +1395,7 @@ describe("WorktreeSyncService", () => {
           hasModifiedSubmodules: false,
           upstreamGone: false,
           fullyPushedUpstreamDeleted: false,
+          divergence: null,
           canRemove: false,
           reasons: ["uncommitted changes"],
         }) // deleted-dirty: has uncommitted changes
@@ -1399,6 +1407,7 @@ describe("WorktreeSyncService", () => {
           hasModifiedSubmodules: false,
           upstreamGone: false,
           fullyPushedUpstreamDeleted: false,
+          divergence: null,
           canRemove: false,
           reasons: ["unpushed commits"],
         }) // deleted-unpushed: has unpushed commits
@@ -1410,6 +1419,7 @@ describe("WorktreeSyncService", () => {
           hasModifiedSubmodules: false,
           upstreamGone: false,
           fullyPushedUpstreamDeleted: false,
+          divergence: null,
           canRemove: true,
           reasons: [],
         }); // deleted-clean: TOCTOU re-validation before removal
@@ -1448,6 +1458,7 @@ describe("WorktreeSyncService", () => {
         hasModifiedSubmodules: false,
         upstreamGone: false,
         fullyPushedUpstreamDeleted: true,
+        divergence: null,
         canRemove: true,
         reasons: [],
       });
@@ -2216,6 +2227,7 @@ describe("WorktreeSyncService", () => {
           hasModifiedSubmodules: false,
           upstreamGone: false,
           fullyPushedUpstreamDeleted: true,
+          divergence: null,
           canRemove: true,
           reasons: [],
         });
@@ -3169,6 +3181,7 @@ describe("WorktreeSyncService", () => {
         hasModifiedSubmodules: false,
         upstreamGone: false,
         fullyPushedUpstreamDeleted: false,
+        divergence: null,
         canRemove: false,
         reasons: ["uncommitted changes"],
       });
@@ -3191,6 +3204,7 @@ describe("WorktreeSyncService", () => {
         hasModifiedSubmodules: false,
         upstreamGone: false,
         fullyPushedUpstreamDeleted: false,
+        divergence: null,
         canRemove: false,
         reasons: ["unpushed commits"],
       });
@@ -3213,6 +3227,7 @@ describe("WorktreeSyncService", () => {
         hasModifiedSubmodules: false,
         upstreamGone: false,
         fullyPushedUpstreamDeleted: false,
+        divergence: null,
         canRemove: false,
         reasons: ["rebase in progress"],
       });
@@ -3235,6 +3250,7 @@ describe("WorktreeSyncService", () => {
         hasModifiedSubmodules: false,
         upstreamGone: false,
         fullyPushedUpstreamDeleted: false,
+        divergence: null,
         canRemove: true,
         reasons: [],
       });

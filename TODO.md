@@ -284,10 +284,10 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T99** — A found-but-broken auto-discovered config is invisible to the agent: detectFromPath
   logs to stderr, reports kind 'unmanaged'/configPath null, and re-imports the broken file on every
   subsequent detect_context
-- [ ] **T100** — detect_context with includeStatus + includeAllWorktrees enriches the current repo's
+- [x] **T100** — detect_context with includeStatus + includeAllWorktrees enriches the current repo's
   worktrees twice (allWorktrees and allWorktreesByRepo[current]) — ~10 git spawns per worktree
   duplicated; discovery/repo caches never evict
-- [ ] **T101** — list_worktrees per-worktree cost: getDivergence duplicates upstream/rev-list work
+- [x] **T101** — list_worktrees per-worktree cost: getDivergence duplicates upstream/rev-list work
   already done inside getFullWorktreeStatus (≈10-11 git spawns per worktree, ~4,400 processes for 400
   worktrees per call)
 - [ ] **T102** — Nested regular repos / submodules inside a managed worktree make detect_context
@@ -3958,7 +3958,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: handlers.test.ts 'surfaces the real parse error…' covers load_config
   only; context tests only cover valid configs.
 
-### [ ] T100. detect_context with includeStatus + includeAllWorktrees enriches the current repo's worktrees twice (allWorktrees and allWorktreesByRepo[current]) — ~10 git spawns per worktree duplicated; discovery/repo caches never evict
+### [x] T100. detect_context with includeStatus + includeAllWorktrees enriches the current repo's worktrees twice (allWorktrees and allWorktreesByRepo[current]) — ~10 git spawns per worktree duplicated; discovery/repo caches never evict
 
 - **Category**: performance · **Subsystem**: mcp
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
@@ -3990,7 +3990,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: handlers.test.ts:1435-1461 asserts labels in both views but not the
   call count; the context caching tests only check hit/miss for a single path.
 
-### [ ] T101. list_worktrees per-worktree cost: getDivergence duplicates upstream/rev-list work already done inside getFullWorktreeStatus (≈10-11 git spawns per worktree, ~4,400 processes for 400 worktrees per call)
+### [x] T101. list_worktrees per-worktree cost: getDivergence duplicates upstream/rev-list work already done inside getFullWorktreeStatus (≈10-11 git spawns per worktree, ~4,400 processes for 400 worktrees per call)
 
 - **Category**: performance · **Subsystem**: mcp
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

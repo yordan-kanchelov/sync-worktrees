@@ -144,7 +144,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
           .boolean()
           .optional()
           .describe(
-            "Enrich entries with label, divergence, staleHint. Adds 1 git status + rev-list per worktree. Labels here are metadata-blind (no sync metadata is loaded), so a fully-pushed branch whose remote was deleted shows 'dirty'; list_worktrees gives the authoritative label/safeToRemove. Default: false.",
+            "Enrich entries with label, divergence, staleHint. Adds one status check per worktree. Labels here are metadata-blind (no sync metadata is loaded), so a fully-pushed branch whose remote was deleted shows 'dirty'; list_worktrees gives the authoritative label/safeToRemove. Default: false.",
           ),
       }),
       outputSchema: detectContextOutputSchema,

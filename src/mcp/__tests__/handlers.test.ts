@@ -11,7 +11,12 @@ import {
   handleSync,
   handleUpdateWorktree,
 } from "../handlers";
-import { createWorktreeOutputSchema, syncOutputSchema } from "../output-schemas";
+import {
+  createWorktreeOutputSchema,
+  getWorktreeStatusOutputSchema,
+  listWorktreesOutputSchema,
+  syncOutputSchema,
+} from "../output-schemas";
 import { formatErrorResponse } from "../utils";
 import { createMockLogger } from "../../__tests__/test-utils";
 import { PathResolutionService } from "../../services/path-resolution.service";
@@ -62,9 +67,14 @@ vi.mock("../../utils/disk-space", () => ({
   calculateSyncDiskSpace: vi.fn().mockResolvedValue("N/A"),
 }));
 
+// Every path the detect_context enrichment asked the status service about, in
+// call order. One entry per git probe, so a path listed twice in the response
+// shows up twice here unless the handler deduplicated it.
+const statusProbes = vi.hoisted(() => [] as string[]);
+
 vi.mock("../../services/worktree-status.service", () => {
   class FakeStatusService {
-    async getFullWorktreeStatus(): Promise<{
+    async getFullWorktreeStatus(worktreePath: string): Promise<{
       isClean: boolean;
       hasUnpushedCommits: boolean;
       hasStashedChanges: boolean;
@@ -73,7 +83,9 @@ vi.mock("../../services/worktree-status.service", () => {
       upstreamGone: boolean;
       canRemove: boolean;
       reasons: string[];
+      divergence: { ahead: number; behind: number } | null;
     }> {
+      statusProbes.push(worktreePath);
       return {
         isClean: true,
         hasUnpushedCommits: false,
@@ -83,6 +95,7 @@ vi.mock("../../services/worktree-status.service", () => {
         upstreamGone: false,
         canRemove: true,
         reasons: [],
+        divergence: { ahead: 3, behind: 4 },
       };
     }
   }
@@ -270,6 +283,70 @@ describe("handleListWorktrees", () => {
     expect(body.worktrees[1].safeToRemove).toEqual({ safe: true, reason: expect.any(String) });
     expect(body.worktrees[1].sizeBytes).toBeNull();
     expect(git.getWorktrees).toHaveBeenCalled();
+  });
+
+  // divergence used to be a `rev-list --left-right --count HEAD...@{upstream}`
+  // of its own, run beside the status probe; it is a field of the status result
+  // now. Nothing else pinned the wiring, so a listing that silently stopped
+  // reporting it -- or reported one thing at the top level and another under
+  // `status` -- passed the whole suite. Both places are the status result's own
+  // answer, and the advertised schema is parsed here rather than eyeballed
+  // because `divergence` is a *required* member of the status object now.
+  it("reports each worktree's divergence from its status result, at both places the schema names", async () => {
+    const divergence = { ahead: 5, behind: 2 };
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([
+          { path: "/repo/main", branch: "main", isCurrent: true },
+          { path: "/repo/worktrees/feature", branch: "feature", isCurrent: false },
+        ]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
+          canRemove: true,
+          reasons: [],
+          divergence,
+        }),
+      },
+    });
+
+    const body = parseResponse(await invoke(handleListWorktrees, ctx, {}));
+
+    expect(body.worktrees.map((wt: any) => wt.divergence)).toEqual([divergence, divergence]);
+    expect(body.worktrees.map((wt: any) => wt.status.divergence)).toEqual([divergence, divergence]);
+    expect(listWorktreesOutputSchema.parse(body).worktrees?.[0].divergence).toEqual(divergence);
+  });
+
+  // A worktree with no upstream ref to compare against says so, rather than
+  // reporting the 0/0 that means "level with its upstream".
+  it("passes a null divergence through as null, not as zero", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/main", branch: "main", isCurrent: true }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
+          canRemove: true,
+          reasons: [],
+          divergence: null,
+        }),
+      },
+    });
+
+    const body = parseResponse(await invoke(handleListWorktrees, ctx, {}));
+
+    expect(body.worktrees[0].divergence).toBeNull();
+    expect(body.worktrees[0].status.divergence).toBeNull();
   });
 
   it("fails with CAPABILITY_UNAVAILABLE when canListWorktrees is false", async () => {
@@ -1690,6 +1767,35 @@ describe("handleGetWorktreeStatus", () => {
     expect(body.isClean).toBe(false);
   });
 
+  // get_worktree_status stopped computing divergence of its own: it rides in on
+  // the `...status` spread. The advertised schema still requires the field, so
+  // parse the body rather than only reading it.
+  it("reports divergence from the status result", async () => {
+    const divergence = { ahead: 1, behind: 7 };
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/x", branch: "x" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({
+          isClean: true,
+          hasUnpushedCommits: false,
+          hasStashedChanges: false,
+          hasOperationInProgress: false,
+          hasModifiedSubmodules: false,
+          upstreamGone: false,
+          fullyPushedUpstreamDeleted: false,
+          canRemove: true,
+          reasons: [],
+          divergence,
+        }),
+      },
+    });
+
+    const body = parseResponse(await invoke(handleGetWorktreeStatus, ctx, { path: "/w/x" }));
+
+    expect(body.divergence).toEqual(divergence);
+    expect(getWorktreeStatusOutputSchema.parse(body).divergence).toEqual(divergence);
+  });
+
   it("invokes autoSelectCurrentRepoIfSingleConfig when repoName is omitted on a path-based handler", async () => {
     const { ctx } = makeCtx({
       git: {
@@ -2358,6 +2464,62 @@ describe("handleDetectContext includeStatus", () => {
     expect(body.allWorktrees[0].label).toBe("current");
     expect(body.allWorktrees[1].label).toBe("clean");
     expect(body.allWorktrees[0].staleHint).toBe(false);
+    // Straight off the status result, not a second rev-list of its own.
+    expect(body.allWorktrees[1].divergence).toEqual({ ahead: 3, behind: 4 });
+  });
+
+  // allWorktrees and allWorktreesByRepo[<current repo>] are two separate
+  // `worktree list --porcelain` reads of the same repository, so every worktree
+  // of the current repo is in both. Enriching each list independently probed
+  // all of them twice -- 8 git processes per worktree, spent twice.
+  it("probes each worktree once when both lists name it", async () => {
+    statusProbes.length = 0;
+    const listed = [
+      { path: "/repo/main", branch: "main", isCurrent: true },
+      { path: "/repo/feat", branch: "feat", isCurrent: false },
+    ];
+    const ctx = {
+      detectFromPath: vi.fn<any>().mockResolvedValue(makeDiscovered({ allWorktrees: listed })),
+      getConfiguredRepositorySummaries: vi.fn<any>().mockResolvedValue([]),
+      getAllConfiguredWorktreeDetails: vi.fn<any>().mockResolvedValue({
+        // Distinct objects carrying the same paths, exactly as the two reads
+        // produce them.
+        worktreesByRepo: { test: listed.map((wt) => ({ ...wt })) },
+        errorsByRepo: {},
+      }),
+    } as unknown as RepositoryContext;
+
+    const result = await invoke(handleDetectContext, ctx, { includeStatus: true, includeAllWorktrees: true });
+    const body = parseResponse(result);
+
+    expect([...statusProbes].sort()).toEqual(["/repo/feat", "/repo/main"]);
+    // Both lists still report the enrichment, and report the same thing.
+    expect(body.allWorktrees.map((wt: any) => [wt.label, wt.divergence])).toEqual([
+      ["current", { ahead: 3, behind: 4 }],
+      ["clean", { ahead: 3, behind: 4 }],
+    ]);
+    expect(body.allWorktreesByRepo.test).toEqual(body.allWorktrees);
+  });
+
+  it("still probes a path that two lists disagree about", async () => {
+    statusProbes.length = 0;
+    const ctx = {
+      detectFromPath: vi
+        .fn<any>()
+        .mockResolvedValue(makeDiscovered({ allWorktrees: [{ path: "/repo/main", branch: "main", isCurrent: true }] })),
+      getConfiguredRepositorySummaries: vi.fn<any>().mockResolvedValue([]),
+      getAllConfiguredWorktreeDetails: vi.fn<any>().mockResolvedValue({
+        worktreesByRepo: { test: [{ path: "/repo/main", branch: "main", isCurrent: false }] },
+        errorsByRepo: {},
+      }),
+    } as unknown as RepositoryContext;
+
+    const result = await invoke(handleDetectContext, ctx, { includeStatus: true, includeAllWorktrees: true });
+    const body = parseResponse(result);
+
+    expect(statusProbes).toEqual(["/repo/main", "/repo/main"]);
+    expect(body.allWorktrees[0].label).toBe("current");
+    expect(body.allWorktreesByRepo.test[0].label).toBe("clean");
   });
 
   it("returns lean mode-discriminated configured repository setup by default", async () => {

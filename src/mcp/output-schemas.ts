@@ -25,7 +25,7 @@ const divergenceSchema = z
     behind: z.number().describe("Commits on the upstream not on this branch."),
   })
   .nullable()
-  .describe("null when the worktree has no upstream or rev-list failed.");
+  .describe("null when the worktree has no upstream ref to compare against.");
 
 const capabilityStateSchema = z.looseObject({
   available: z.boolean(),
@@ -86,6 +86,7 @@ const worktreeStatusShape = {
     .describe("Commits look unpushed only because the upstream ref was deleted after they landed."),
   canRemove: z.boolean(),
   reasons: z.array(z.string()),
+  divergence: divergenceSchema,
   details: z
     .looseObject({})
     .optional()
@@ -165,7 +166,6 @@ export const listWorktreesOutputSchema = z.looseObject({
 export const getWorktreeStatusOutputSchema = z.looseObject({
   path: z.string().describe("Resolved absolute worktree path."),
   ...worktreeStatusShape,
-  divergence: divergenceSchema,
 });
 
 export const createWorktreeOutputSchema = z.looseObject({

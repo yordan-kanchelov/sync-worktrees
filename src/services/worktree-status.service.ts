@@ -49,6 +49,9 @@ export interface WorktreeStatusResult {
   fullyPushedUpstreamDeleted: boolean;
   canRemove: boolean;
   reasons: string[];
+  // Commits HEAD has that @{upstream} lacks and the other way round. null when
+  // there is no upstream ref to compare against — see getFullWorktreeStatus.
+  divergence: { ahead: number; behind: number } | null;
   details?: WorktreeStatusDetails;
 }
 
@@ -213,6 +216,7 @@ export class WorktreeStatusService {
         fullyPushedUpstreamDeleted: false,
         canRemove: true,
         reasons: [],
+        divergence: null,
       };
     }
     // A failed probe (EMFILE/EINTR under load) is indistinguishable from a live
@@ -228,6 +232,7 @@ export class WorktreeStatusService {
         fullyPushedUpstreamDeleted: false,
         canRemove: false,
         reasons: ["cannot verify worktree path (filesystem probe failed)"],
+        divergence: null,
       };
     }
 
@@ -257,6 +262,44 @@ export class WorktreeStatusService {
       !snap.detached && snap.upstream !== null && snap.remoteBranches.length > 0
         ? !snap.remoteBranches.includes(snap.upstream)
         : false;
+
+    // Ahead/behind against @{upstream}, read off the `## <branch>...<upstream>
+    // [ahead N, behind M]` header `git status -b` already printed. It is the
+    // same symmetric-difference count `rev-list --left-right --count
+    // HEAD...@{upstream}` answers with, so the MCP layer no longer spawns that
+    // rev-list per worktree (it used to, through a getDivergence helper that
+    // also built a client of its own, outside this service's process budget).
+    //
+    // `snap.upstream !== null` is the condition under which that rev-list used
+    // to succeed, on every state an intact repository reaches: the rev-parse
+    // that produced it resolves @{upstream} to an existing remote-tracking ref,
+    // and fails otherwise -- with "no upstream configured" when nothing is
+    // tracked, and with exit 128 and "fatal: ambiguous argument" when the
+    // tracked ref has been deleted, even though `git status` still prints its
+    // name with `[gone]` and 0/0. A detached HEAD fails it too, and an unborn
+    // branch never gets here (no current branch, so `detached`). So a worktree
+    // with nothing to compare against keeps reporting null rather than a
+    // fabricated 0/0, which is what every caller already reads as "cannot say".
+    // Checked against real git on: in sync, ahead, behind, diverged, upstream
+    // force-rebased, unrelated histories, a local branch as upstream, a
+    // non-origin remote, a shallow clone, 250/120 counts, no upstream, a pruned
+    // upstream, an unborn branch and a detached HEAD.
+    //
+    // The two answers do come apart in one place, and it is not "exactly":
+    // where the remote-tracking ref exists but its object does not -- a ref
+    // left pointing at a missing oid, or at a non-commit. `rev-parse
+    // --abbrev-ref` answers from the ref name alone and succeeds, while `git
+    // status` needs the commit, cannot compare, and prints `[gone]`, which
+    // simple-git parses as 0/0. So a corrupt upstream ref reports 0/0 where the
+    // rev-list reported null. Telling that apart would cost back the
+    // per-worktree process this removed, and the same snapshot already reports
+    // it: an upstream that is not in `git branch -r` sets upstreamGone, so the
+    // worktree is labelled stale either way. Narrowing the guard to a
+    // remote-tracking upstream is not the fix -- it would turn a branch that
+    // tracks a local branch into a null, which is the local-upstream case in
+    // worktree-divergence.e2e.test.ts.
+    const divergence =
+      snap.status !== null && snap.upstream !== null ? { ahead: snap.status.ahead, behind: snap.status.behind } : null;
 
     const reasons: string[] = [];
     if (!isClean) reasons.push("uncommitted changes");
@@ -289,6 +332,7 @@ export class WorktreeStatusService {
       fullyPushedUpstreamDeleted,
       canRemove,
       reasons,
+      divergence,
       details,
     };
   }

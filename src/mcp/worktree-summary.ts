@@ -1,13 +1,9 @@
-import { createGitClient } from "../utils/git-client";
-
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
 
 export type WorktreeLabel = "current" | "dirty" | "stale" | "clean" | "unknown";
 
-export interface Divergence {
-  ahead: number;
-  behind: number;
-}
+/** Ahead/behind against `@{upstream}`, as {@link WorktreeStatusResult.divergence} reports it. */
+export type Divergence = NonNullable<WorktreeStatusResult["divergence"]>;
 
 export interface SafeToRemove {
   safe: boolean;
@@ -40,15 +36,4 @@ export function deriveSafeToRemove(status: WorktreeStatusResult): SafeToRemove {
   }
 
   return { safe: false, reason: "not safe to remove" };
-}
-
-export async function getDivergence(worktreePath: string): Promise<Divergence | null> {
-  try {
-    const git = createGitClient(worktreePath);
-    const output = await git.raw(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]);
-    const [aheadStr, behindStr] = output.trim().split(/\s+/);
-    return { ahead: parseInt(aheadStr, 10), behind: parseInt(behindStr, 10) };
-  } catch {
-    return null;
-  }
 }

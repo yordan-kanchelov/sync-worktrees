@@ -941,6 +941,44 @@ describe("RepositoryContext.detectFromPath caching", () => {
     expect(mockWorktreeList.mock.calls.length).toBe(firstCallCount + 1);
   });
 
+  // Every probed path used to get its own permanent entry, and each entry holds
+  // a whole DiscoveredRepoContext -- including that repository's full
+  // allWorktrees array. A session that walked a project's subdirectories
+  // therefore retained one such array per directory it ever looked at.
+  it("keeps the discovery cache bounded as distinct paths are probed", async () => {
+    mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+    mockWorktreeList.mockResolvedValue(
+      [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+    );
+
+    const ctx = new RepositoryContext();
+    const probed: string[] = [];
+    for (let i = 0; i < 80; i++) {
+      const dir = path.join(fixture.currentWorktree, "pkg", `sub-${i}`);
+      await fs.mkdir(dir, { recursive: true });
+      probed.push(dir);
+      await ctx.detectFromPath(dir);
+    }
+
+    // Every probe landed on a real worktree, so without a bound the cache would
+    // now hold one entry per path. Guard the guard: a cache that never cached
+    // anything would also satisfy the ceiling.
+    expect(ctx.__discoveryCacheSizeForTest()).toBeGreaterThan(1);
+    expect(ctx.__discoveryCacheSizeForTest()).toBeLessThan(probed.length);
+
+    // Eviction is not a correctness change: the oldest path simply re-detects.
+    const callsBeforeReprobe = mockWorktreeList.mock.calls.length;
+    const evicted = await ctx.detectFromPath(probed[0]);
+    expect(mockWorktreeList.mock.calls.length).toBe(callsBeforeReprobe + 1);
+    expect(evicted.isWorktree).toBe(true);
+    expect(evicted.currentWorktreePath).toBe(fixture.currentWorktree);
+
+    // ...while the newest path is still a hit.
+    const callsBeforeHit = mockWorktreeList.mock.calls.length;
+    await ctx.detectFromPath(probed[probed.length - 1]);
+    expect(mockWorktreeList.mock.calls.length).toBe(callsBeforeHit);
+  });
+
   it("does not cache unsupported results", async () => {
     const plain = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-plain-cache-"));
 
