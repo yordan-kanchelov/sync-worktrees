@@ -245,6 +245,27 @@ async function checkMcpHandshake(sandbox) {
     }
     send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
+    // Tool inputs are strict objects, so an argument key no tool declares is
+    // refused by name. The vitest suite asserts this against a bundle it builds
+    // from src/ at test time, which leaves the shipped artifact unproven: only
+    // this check runs the tools/call path through dist/mcp-server.js. Were the
+    // schemas loose again, `repo_name` would be stripped and the call would
+    // reach the handler, failing on the empty sandbox instead — an error either
+    // way, so the key name in the text is what separates the two.
+    const toolCall = await request({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "create_worktree", arguments: { branchName: "smoke", repo_name: "nope" } },
+    });
+    const toolText = toolCall.result?.content?.[0]?.text ?? "";
+    if (toolCall.error || toolCall.result?.isError !== true || !toolText.includes("repo_name")) {
+      fail("tools/call with an undeclared argument key must fail naming the key (strict tool input schemas)", {
+        response: JSON.stringify(toolCall),
+        stderr: stderr(),
+      });
+    }
+
     // A stdio server must shut down when the client closes its end.
     child.stdin.end();
     const exit = await withTimeout(exited, STEP_TIMEOUT_MS, "dist/mcp-server.js exit after stdin closed", () => ({
@@ -339,7 +360,7 @@ async function main() {
 
   const checks = [
     ["bin/sync-worktrees.js --version prints the package version", checkCliVersion],
-    ["dist/mcp-server.js completes an MCP initialize handshake over stdio", checkMcpHandshake],
+    ["dist/mcp-server.js handshakes over stdio and refuses an undeclared tool argument", checkMcpHandshake],
     ["npm pack ships the entry points, no source maps, and stays under the size ceilings", checkTarballContents],
   ];
 

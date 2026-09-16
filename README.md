@@ -272,6 +272,8 @@ Open `Settings` → `AI` → `Manage MCP Servers` → `+ Add` (see [Warp MCP doc
 
 All tools that target a single repo accept an optional `repoName`. When omitted, they use the current repository — set by auto-detect, the first entry in the config, or `set_current_repository`.
 
+Arguments are validated strictly: a key no tool declares is rejected by name (`Unrecognized key: "repo_name"`) rather than dropped, so a snake_case or misspelled `repoName` fails loudly instead of silently targeting the current repo.
+
 ### Safety
 
 - The MCP surface exposes no removal or trash operations — an agent cannot delete a worktree or touch the trash through it. Removal happens via sync's own safety-gated pruning or manual git commands.

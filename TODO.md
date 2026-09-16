@@ -272,7 +272,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T37** — create_worktree silently creates worktrees the next sync will move to trash:
   branches excluded by branchInclude/branchExclude/branchMaxAge, and push:false local-only branches
   (whose local branch ref is deleted too)
-- [ ] **T39** — Tool input schemas are non-strict: unknown/misspelled arguments (repo_name,
+- [x] **T39** — Tool input schemas are non-strict: unknown/misspelled arguments (repo_name,
   include_status, branch_name…) are silently stripped, so calls run against the wrong repo or with
   defaults instead of failing
 - [ ] **T97** — Auto-detect derives worktreeDir as dirname(current worktree); from inside the
@@ -1944,7 +1944,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Re-verified: `handleSync` (handlers.ts:447-455) returns `success: true`
   unconditionally; the CLI maps `counts.failed > 0` to exit code 1 (index.ts:126-133, 157-176).
 
-### [ ] T39. Tool input schemas are non-strict
+### [x] T39. Tool input schemas are non-strict
 
 - **Decision**: make **every** tool input a `z.strictObject`, so an unrecognized key is an InvalidParams error naming it. Accepted cost: an agent that today sends an extra key and appears to succeed will start getting an error.: unknown/misspelled arguments (repo_name, include_status, branch_name…) are silently stripped, so calls run against the wrong repo or with defaults instead of failing
 

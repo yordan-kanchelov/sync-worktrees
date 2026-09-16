@@ -179,6 +179,53 @@ describe("createServer", () => {
   });
 });
 
+describe("tool input schemas", () => {
+  // Every tool input is a strict object. A plain `z.object` strips keys it does
+  // not declare and the SDK forwards the stripped value to the handler, so an
+  // agent that sends `repo_name` instead of `repoName` gets the *current* repo
+  // acted on and a success response. These assert the rejection through
+  // `~standard.validate` — the exact entry point `validateToolInput` uses — so
+  // what is checked is what the SDK sees, not merely what zod is capable of.
+  const TOOL_NAMES = [
+    "detect_context",
+    "list_worktrees",
+    "get_worktree_status",
+    "create_worktree",
+    "sync",
+    "update_worktree",
+    "initialize",
+    "load_config",
+    "set_current_repository",
+  ] as const;
+
+  const schemaFor = (name: string) => {
+    const tools = (createServer(new RepositoryContext()) as any)._registeredTools as Record<
+      string,
+      { inputSchema: { "~standard": { validate: (v: unknown) => Promise<{ issues?: Array<{ message: string }> }> } } }
+    >;
+    return tools[name].inputSchema;
+  };
+
+  it.each(TOOL_NAMES)("%s rejects an unrecognized key and names it", async (name) => {
+    const { issues } = await schemaFor(name)["~standard"].validate({ repo_name: "b" });
+    const message = (issues ?? []).map((issue) => issue.message).join(", ");
+    expect(message).toContain('Unrecognized key: "repo_name"');
+  });
+
+  it("still accepts declared keys and applies declared defaults", async () => {
+    const detect = await schemaFor("detect_context")["~standard"].validate({ includeStatus: true });
+    expect(detect.issues).toBeUndefined();
+    expect((detect as { value: unknown }).value).toEqual({ includeStatus: true, detailed: false });
+
+    const create = await schemaFor("create_worktree")["~standard"].validate({
+      branchName: "x",
+      baseBranch: "main",
+      repoName: "b",
+    });
+    expect(create.issues).toBeUndefined();
+  });
+});
+
 describe("stdio protocol", () => {
   it("serves MCP 2026-07-28 and rejects a legacy handshake", async () => {
     const buildDir = await fs.mkdtemp(path.join(process.cwd(), ".mcp-stdio-test-"));
@@ -298,6 +345,32 @@ describe("stdio protocol", () => {
       expect(JSON.parse(toolCall.result.content[0].text)).toMatchObject({ isWorktree: false });
       // Results validate against the advertised schema and ship structuredContent.
       expect(toolCall.result.structuredContent).toMatchObject({ isWorktree: false });
+
+      // Acceptance for strict tool inputs, seen the way a client sees it: over
+      // the wire, an unrecognized key comes back as an error result whose text
+      // names the key. Were the schema loose, `repo_name` would be stripped and
+      // create_worktree would run against whatever repo is current.
+      const misspelledCreate = await modern.request({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: { name: "create_worktree", arguments: { branchName: "x", repo_name: "b" }, _meta: envelope },
+      });
+      expect(misspelledCreate.error).toBeUndefined();
+      expect(misspelledCreate.result.isError).toBe(true);
+      expect(misspelledCreate.result.content[0].text).toContain("repo_name");
+      expect(misspelledCreate.result.content[0].text).toContain("create_worktree");
+
+      const misspelledList = await modern.request({
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/call",
+        params: { name: "list_worktrees", arguments: { repo_name: "b" }, _meta: envelope },
+      });
+      expect(misspelledList.error).toBeUndefined();
+      expect(misspelledList.result.isError).toBe(true);
+      expect(misspelledList.result.content[0].text).toContain("repo_name");
+      expect(misspelledList.result.content[0].text).toContain("list_worktrees");
 
       const legacy = startServer();
       const initialize = await legacy.request({
