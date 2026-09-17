@@ -1,6 +1,7 @@
 import * as path from "path";
 
 import { confirm, input, select } from "@inquirer/prompts";
+import * as cron from "node-cron";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { promptForInitConfig } from "../interactive";
@@ -19,6 +20,10 @@ describe("promptForInitConfig", () => {
   const mockConfirm = confirm as unknown as MockedFunction<typeof confirm>;
 
   const cwd = process.cwd();
+  // Where the generated config would live. Deliberately a directory none of the
+  // answers below point at, so the equal-to-config-dir guard stays quiet unless
+  // a test aims at it.
+  const CONFIG_DIR = path.join(cwd, "config-home");
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -38,7 +43,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("worktree");
     mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false); // custom bare? no; add another? no
 
-    const result = await promptForInitConfig();
+    const result = await promptForInitConfig(CONFIG_DIR);
 
     expect(result).toEqual({
       repositories: [
@@ -61,7 +66,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("worktree");
     mockConfirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false); // custom bare? yes; add another? no
 
-    const result = await promptForInitConfig();
+    const result = await promptForInitConfig(CONFIG_DIR);
 
     expect(result.repositories[0].bareRepoDir).toBe("/custom/bare/location");
   });
@@ -76,7 +81,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("clone");
     mockConfirm.mockResolvedValueOnce(false); // add another? no
 
-    const result = await promptForInitConfig();
+    const result = await promptForInitConfig(CONFIG_DIR);
 
     expect(result.repositories[0]).toEqual({
       repoUrl: "https://github.com/user/repo.git",
@@ -97,7 +102,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("clone");
     mockConfirm.mockResolvedValueOnce(false);
 
-    const result = await promptForInitConfig();
+    const result = await promptForInitConfig(CONFIG_DIR);
 
     expect(result.repositories[0]).toEqual({
       repoUrl: "https://github.com/user/repo.git",
@@ -123,7 +128,7 @@ describe("promptForInitConfig", () => {
       .mockResolvedValueOnce(true) // add another? yes
       .mockResolvedValueOnce(false); // add another? no
 
-    const result = await promptForInitConfig();
+    const result = await promptForInitConfig(CONFIG_DIR);
 
     expect(result.repositories).toHaveLength(2);
     expect(result.repositories[0].mode).toBe("worktree");
@@ -139,7 +144,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("worktree");
     mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
-    const result = await promptForInitConfig();
+    const result = await promptForInitConfig(CONFIG_DIR);
 
     expect(mockInput).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -158,7 +163,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("worktree");
     mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
-    const result = await promptForInitConfig();
+    const result = await promptForInitConfig(CONFIG_DIR);
 
     expect(result.repositories[0].worktreeDir).toBe(path.resolve(cwd, "./my-worktrees"));
   });
@@ -171,7 +176,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("worktree");
     mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
-    const result = await promptForInitConfig();
+    const result = await promptForInitConfig(CONFIG_DIR);
 
     expect(mockInput).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -190,7 +195,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("worktree");
     mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
-    await promptForInitConfig();
+    await promptForInitConfig(CONFIG_DIR);
 
     const validateFn = mockInput.mock.calls.find((call) => call[0].message?.includes("repository URL"))?.[0].validate;
 
@@ -218,7 +223,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("clone");
     mockConfirm.mockResolvedValueOnce(false);
 
-    await promptForInitConfig();
+    await promptForInitConfig(CONFIG_DIR);
 
     const depthValidate = mockInput.mock.calls.find((call) => call[0].message?.includes("depth"))?.[0].validate;
 
@@ -241,7 +246,7 @@ describe("promptForInitConfig", () => {
     mockSelect.mockResolvedValueOnce("worktree");
     mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
 
-    await promptForInitConfig();
+    await promptForInitConfig(CONFIG_DIR);
 
     const cronValidate = mockInput.mock.calls.find((call) => call[0].message?.includes("cron schedule"))?.[0].validate;
 
@@ -251,5 +256,266 @@ describe("promptForInitConfig", () => {
       expect(cronValidate("")).toBe("Cron schedule is required");
       expect(cronValidate("0 * * * *")).toBe(true);
     }
+  });
+
+  // Answering the worktree-dir prompt with the config file's own directory used
+  // to be accepted: the generator wrote `worktreeDir: "./"`, the default
+  // bareRepoDir `.bare/<name>` landed inside it, and the very next run died on
+  // the bareRepoDir/worktreeDir overlap check.
+  it("rejects a worktreeDir equal to the config directory in worktree mode", async () => {
+    mockInput
+      .mockResolvedValueOnce("https://github.com/user/repo.git")
+      .mockResolvedValueOnce(path.join(CONFIG_DIR, "worktrees"))
+      .mockResolvedValueOnce("0 * * * *");
+    mockSelect.mockResolvedValueOnce("worktree");
+    mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+    await promptForInitConfig(CONFIG_DIR);
+
+    const dirValidate = mockInput.mock.calls.find((call) => call[0].message?.includes("storing worktrees"))?.[0]
+      .validate;
+
+    expect(dirValidate).toBeDefined();
+    if (dirValidate) {
+      expect(dirValidate(CONFIG_DIR)).toContain("config file's own directory");
+      expect(dirValidate(`${CONFIG_DIR}${path.sep}`)).toContain("config file's own directory");
+      expect(dirValidate(path.join(CONFIG_DIR, "sub", ".."))).toContain("config file's own directory");
+      expect(dirValidate(path.join(CONFIG_DIR, "worktrees"))).toBe(true);
+      expect(dirValidate("/somewhere/else")).toBe(true);
+    }
+  });
+
+  it("rejects a relative worktreeDir that resolves to the config directory", async () => {
+    mockInput
+      .mockResolvedValueOnce("https://github.com/user/repo.git")
+      .mockResolvedValueOnce("./worktrees")
+      .mockResolvedValueOnce("0 * * * *");
+    mockSelect.mockResolvedValueOnce("worktree");
+    mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+    // Relative answers resolve against the cwd, so point the config dir there.
+    await promptForInitConfig(cwd);
+
+    const dirValidate = mockInput.mock.calls.find((call) => call[0].message?.includes("storing worktrees"))?.[0]
+      .validate;
+
+    expect(dirValidate).toBeDefined();
+    if (dirValidate) {
+      expect(dirValidate(".")).toContain("config file's own directory");
+      expect(dirValidate("./worktrees")).toBe(true);
+    }
+  });
+
+  it("resolves a relative worktreeDir against the cwd, not the config directory", async () => {
+    // The answer is stored as `path.resolve(value)` — relative to the cwd — so
+    // the guard has to compare the same thing, or it rejects answers that are
+    // fine and accepts ones that are not.
+    const elsewhere = path.join(cwd, "elsewhere");
+    mockInput
+      .mockResolvedValueOnce("https://github.com/user/repo.git")
+      .mockResolvedValueOnce("./worktrees")
+      .mockResolvedValueOnce("0 * * * *");
+    mockSelect.mockResolvedValueOnce("worktree");
+    mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+    await promptForInitConfig(elsewhere);
+
+    const dirValidate = mockInput.mock.calls.find((call) => call[0].message?.includes("storing worktrees"))?.[0]
+      .validate;
+
+    expect(dirValidate).toBeDefined();
+    if (dirValidate) {
+      // "." is the cwd, which is not the config directory here, so it is fine.
+      expect(dirValidate(".")).toBe(true);
+      expect(dirValidate(elsewhere)).toContain("config file's own directory");
+    }
+  });
+
+  it("warns but does not reject a clone directory equal to the config directory", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockInput
+      .mockResolvedValueOnce("https://github.com/user/repo.git")
+      .mockResolvedValueOnce(CONFIG_DIR)
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("0 * * * *");
+    mockSelect.mockResolvedValueOnce("clone");
+    mockConfirm.mockResolvedValueOnce(false);
+
+    const result = await promptForInitConfig(CONFIG_DIR);
+
+    const dirValidate = mockInput.mock.calls.find((call) => call[0].message?.includes("clone into"))?.[0].validate;
+    expect(dirValidate).toBeDefined();
+    if (dirValidate) {
+      expect(dirValidate(CONFIG_DIR)).toBe(true);
+    }
+
+    expect(result.repositories[0].worktreeDir).toBe(CONFIG_DIR);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("directory exists and is not empty");
+  });
+
+  // Every validator in the wizard tests `value.trim()`, but the raw answer used
+  // to be what was stored. `path` never normalizes trailing whitespace away
+  // (`path.resolve("./wt ")` is `<cwd>/wt `), so an answer that validated as
+  // `./wt` was saved as a different directory — and the generated config then
+  // pointed init's own round-trip load at it.
+  describe("trims the answers it stores", () => {
+    it("stores a worktree repository's repoUrl and worktreeDir without surrounding whitespace", async () => {
+      mockInput
+        .mockResolvedValueOnce("  https://github.com/user/repo.git  ")
+        .mockResolvedValueOnce("  /path/to/worktrees  ")
+        .mockResolvedValueOnce("0 * * * *");
+      mockSelect.mockResolvedValueOnce("worktree");
+      mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+      const result = await promptForInitConfig(CONFIG_DIR);
+
+      expect(result.repositories[0]).toEqual({
+        repoUrl: "https://github.com/user/repo.git",
+        worktreeDir: "/path/to/worktrees",
+        mode: "worktree",
+      });
+    });
+
+    it("trims a relative worktreeDir before resolving it, not after", async () => {
+      // `path.resolve` keeps the space, so an untrimmed "./my-worktrees "
+      // becomes "<cwd>/my-worktrees " — a directory one character away from the
+      // one the answer named, and the one every later sync would create.
+      mockInput
+        .mockResolvedValueOnce("https://github.com/user/repo.git")
+        .mockResolvedValueOnce("./my-worktrees ")
+        .mockResolvedValueOnce("0 * * * *");
+      mockSelect.mockResolvedValueOnce("worktree");
+      mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+      const result = await promptForInitConfig(CONFIG_DIR);
+
+      expect(result.repositories[0].worktreeDir).toBe(path.resolve(cwd, "./my-worktrees"));
+    });
+
+    it("trims a custom bareRepoDir", async () => {
+      mockInput
+        .mockResolvedValueOnce("https://github.com/user/repo.git")
+        .mockResolvedValueOnce("/path/to/worktrees")
+        .mockResolvedValueOnce(" /custom/bare/location ")
+        .mockResolvedValueOnce("0 * * * *");
+      mockSelect.mockResolvedValueOnce("worktree");
+      mockConfirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+      const result = await promptForInitConfig(CONFIG_DIR);
+
+      expect(result.repositories[0].bareRepoDir).toBe("/custom/bare/location");
+    });
+
+    it("warns about a clone directory that is the config directory plus trailing whitespace", async () => {
+      // The guard is `pathsEqual(worktreeDir, configDir)`. Against the untrimmed
+      // answer that comparison is false, so the one warning telling the user
+      // their first clone will fail never printed for a pasted path.
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockInput
+        .mockResolvedValueOnce("https://github.com/user/repo.git")
+        .mockResolvedValueOnce(`${CONFIG_DIR} `)
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("0 * * * *");
+      mockSelect.mockResolvedValueOnce("clone");
+      mockConfirm.mockResolvedValueOnce(false);
+
+      const result = await promptForInitConfig(CONFIG_DIR);
+
+      expect(result.repositories[0].worktreeDir).toBe(CONFIG_DIR);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain("directory exists and is not empty");
+    });
+
+    it("stores a cron schedule without surrounding whitespace", async () => {
+      // `cron.validate` tolerates a space-padded expression but rejects a tab or
+      // a non-breaking space, while the validator here tests `value.trim()`. An
+      // answer pasted out of a crontab or a rendered doc page therefore passed
+      // the prompt and was written into the config, which init's own round-trip
+      // load then refused with "Invalid cron expression in defaults".
+      // The non-breaking space is spelled out so the source stays ASCII.
+      const padded = `${String.fromCharCode(0xa0)}\t0 * * * *  `;
+      mockInput
+        .mockResolvedValueOnce("https://github.com/user/repo.git")
+        .mockResolvedValueOnce("/path/to/worktrees")
+        .mockResolvedValueOnce(padded);
+      mockSelect.mockResolvedValueOnce("worktree");
+      mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+      const result = await promptForInitConfig(CONFIG_DIR);
+
+      expect(result.cronSchedule).toBe("0 * * * *");
+      // The half that makes it a bug rather than a cosmetic difference: the raw
+      // answer is what the config loader would have been handed, and it refuses
+      // exactly the strings this prompt accepted.
+      expect(cron.validate(padded)).toBe(false);
+      expect(cron.validate(result.cronSchedule)).toBe(true);
+    });
+
+    it("rejects the config directory as worktreeDir even with trailing whitespace", async () => {
+      // The guard compares `value.trim()` while the prompt returns the raw
+      // string. Now that the answer is trimmed on the way out, a guard reading
+      // the raw value would approve `"<configDir> "` and then store exactly
+      // `configDir` — the state the guard exists to prevent.
+      mockInput
+        .mockResolvedValueOnce("https://github.com/user/repo.git")
+        .mockResolvedValueOnce(path.join(CONFIG_DIR, "worktrees"))
+        .mockResolvedValueOnce("0 * * * *");
+      mockSelect.mockResolvedValueOnce("worktree");
+      mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+      await promptForInitConfig(CONFIG_DIR);
+
+      const dirValidate = mockInput.mock.calls.find((call) => call[0].message?.includes("storing worktrees"))?.[0]
+        .validate;
+
+      expect(dirValidate).toBeDefined();
+      if (dirValidate) {
+        expect(dirValidate(`${CONFIG_DIR} `)).toContain("config file's own directory");
+        expect(dirValidate(`  ${CONFIG_DIR}`)).toContain("config file's own directory");
+      }
+    });
+
+    it("accepts a repository URL with surrounding whitespace instead of calling it malformed", async () => {
+      // The URL-shape check was the one validator that read the raw value, so a
+      // leading space — the usual artefact of pasting — was reported as "not a
+      // valid Git URL" even though the answer would have been trimmed anyway.
+      mockInput
+        .mockResolvedValueOnce("https://github.com/user/repo.git")
+        .mockResolvedValueOnce("/path/to/worktrees")
+        .mockResolvedValueOnce("0 * * * *");
+      mockSelect.mockResolvedValueOnce("worktree");
+      mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+      await promptForInitConfig(CONFIG_DIR);
+
+      const validateFn = mockInput.mock.calls.find((call) => call[0].message?.includes("repository URL"))?.[0].validate;
+
+      expect(validateFn).toBeDefined();
+      if (validateFn) {
+        expect(validateFn("  https://github.com/user/repo.git  ")).toBe(true);
+        expect(validateFn("\tgit@github.com:user/repo.git\t")).toBe(true);
+        // Still not a URL once trimmed.
+        expect(validateFn("  not-a-url  ")).toBe("Please enter a valid Git URL (https://, ssh://, git@, or file://)");
+      }
+    });
+  });
+
+  it("does not warn for a clone directory below the config directory", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockInput
+      .mockResolvedValueOnce("https://github.com/user/repo.git")
+      .mockResolvedValueOnce(path.join(CONFIG_DIR, "checkout"))
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("")
+      .mockResolvedValueOnce("0 * * * *");
+    mockSelect.mockResolvedValueOnce("clone");
+    mockConfirm.mockResolvedValueOnce(false);
+
+    await promptForInitConfig(CONFIG_DIR);
+
+    expect(warn).not.toHaveBeenCalled();
   });
 });

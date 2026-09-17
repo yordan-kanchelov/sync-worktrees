@@ -1,11 +1,19 @@
 import * as fs from "fs/promises";
 
 import simpleGit from "simple-git";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  PRIMARY_CHECKOUT_GIT_DIRS,
+  PRIMARY_CHECKOUT_GIT_DIR_PROBE,
+  buildFsStats,
+  setEnvVar,
+} from "../../__tests__/test-utils";
+import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../../errors";
 import { BranchCreatedActionsService } from "../branch-created-actions.service";
 import { CloneSyncService } from "../clone-sync.service";
+import { FileCopyService } from "../file-copy.service";
 import { Logger } from "../logger.service";
 import { SyncOutcomeAccumulator } from "../sync-outcome";
 
@@ -16,6 +24,12 @@ import type { Mock } from "vitest";
 
 vi.mock("fs/promises");
 vi.mock("simple-git");
+
+// The local history walks the sync fetch's depth ratchet measures the clone
+// with: the remote-tracking tip `git fetch --depth` re-applies its depth from,
+// and HEAD as the fallback for a clone that has no such ref yet.
+const REMOTE_HISTORY_WALK = "rev-list --topo-order --parents refs/remotes/origin/main";
+const HEAD_HISTORY_WALK = "rev-list --topo-order --parents HEAD";
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -32,10 +46,12 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
 interface FakeGitClient {
   clone: Mock;
   fetch: Mock;
+  push: Mock;
   raw: Mock;
   merge: Mock;
   env: Mock;
   branch: Mock;
+  status: Mock;
 }
 
 function buildGitMock(rawMap: Record<string, string> = {}): FakeGitClient {
@@ -43,9 +59,13 @@ function buildGitMock(rawMap: Record<string, string> = {}): FakeGitClient {
   const client: FakeGitClient = {
     clone: vi.fn().mockResolvedValue(undefined),
     fetch: vi.fn().mockResolvedValue(undefined),
+    push: vi.fn().mockResolvedValue(undefined),
     raw: vi.fn().mockImplementation(async (args: string[]) => {
       const key = Array.isArray(args) ? args.join(" ") : String(args);
       if (rawMap[key] !== undefined) return rawMap[key];
+      // The fake stands in for an ordinary clone: its own '.git', no owning
+      // repository behind it.
+      if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
       if (key.startsWith("rev-parse --abbrev-ref HEAD")) return "main";
       if (key.startsWith("remote get-url origin")) return "https://github.com/example/repo.git";
       if (key.startsWith("checkout HEAD")) return "";
@@ -54,6 +74,9 @@ function buildGitMock(rawMap: Record<string, string> = {}): FakeGitClient {
     merge: vi.fn().mockResolvedValue(undefined),
     env: env as Mock,
     branch: vi.fn().mockResolvedValue({ current: "main", all: [] }),
+    // A clean tree: only the rejected-fast-forward cleanup reads it, and only
+    // what git reports as deviating from HEAD can ever be a candidate there.
+    status: vi.fn().mockResolvedValue({ not_added: [], modified: [], deleted: [] }),
   };
   env.mockReturnValue(client);
   return client;
@@ -75,9 +98,89 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     getSparseCheckoutService: vi.fn().mockReturnValue(sparseService),
     checkWorktreeStatus: vi.fn().mockResolvedValue(true),
     classifyRemoteRelationship: vi.fn().mockResolvedValue("fast_forward"),
+    isLfsSkipEnabled: vi.fn().mockReturnValue(false),
+    setLfsSkipEnabled: vi.fn(),
     ...overrides,
   };
   return stub as unknown as GitService;
+}
+
+// `git rev-list --topo-order --parents <ref>` output for a linear history of
+// `commits` commits — as many ancestry levels as commits.
+function linearHistory(commits: number): string {
+  const lines: string[] = [];
+  for (let i = commits; i >= 1; i--) {
+    lines.push(i === 1 ? "c1" : `c${i} c${i - 1}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+// The same output for a history of `merges` merge commits, each landing a
+// two-commit side branch with `--no-ff` — the shape a repository takes when
+// pull requests land as merge commits. It holds `3 * merges + 1` commits, but
+// only `merges + 2` ancestry levels (the mainline, plus the two commits of the
+// oldest side branch hanging below its merge base), which is why the two units
+// cannot be swapped for each other.
+function mergeHistory(merges: number): string {
+  const lines: string[] = [];
+  for (let i = merges; i >= 1; i--) {
+    lines.push(`m${i} m${i - 1} b${i}`, `b${i} a${i}`, `a${i} m${i - 1}`);
+  }
+  lines.push("m0");
+  return `${lines.join("\n")}\n`;
+}
+
+// The probes a sync tick makes before its fetch: the primary-checkout guard,
+// the origin URL, the current branch, whether the clone is shallow — and, for
+// the sync fetch's depth ratchet, the local history walk it measures the
+// clone's current depth with.
+//
+// `history` is what the walk from origin/main returns, which is the one the
+// ratchet asks for: `headHistory` stands in for a HEAD the last tick left
+// behind the fetched tip, and defaults to the same graph for the ticks where
+// the two coincide. `missingRemoteRef` makes the origin/main walk reject the
+// way `git rev-list` rejects an unknown ref, which is the first sync.
+function buildSyncRawMock(opts: {
+  shallow: boolean;
+  history?: string | (() => string);
+  headHistory?: string | (() => string);
+  historyError?: Error;
+  missingRemoteRef?: boolean;
+}): (args: string[]) => Promise<string> {
+  const resolve = (source: string | (() => string) | undefined): string =>
+    typeof source === "function" ? source() : (source ?? "");
+  return async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+    if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+    if (key === "rev-parse --abbrev-ref HEAD") return "main";
+    if (key === "rev-parse --is-shallow-repository") return opts.shallow ? "true" : "false";
+    if (key === REMOTE_HISTORY_WALK) {
+      if (opts.historyError) throw opts.historyError;
+      if (opts.missingRemoteRef) {
+        throw new Error("fatal: ambiguous argument 'refs/remotes/origin/main': unknown revision");
+      }
+      return resolve(opts.history);
+    }
+    if (key === HEAD_HISTORY_WALK) {
+      if (opts.historyError) throw opts.historyError;
+      return resolve(opts.headHistory ?? opts.history);
+    }
+    return "";
+  };
+}
+
+// The GitService half of the per-sync LFS fallback: SyncRetryPolicy calls
+// setLfsSkipEnabled(true) between attempts and every client built afterwards
+// is supposed to see it.
+function buildLfsAwareGitService(): GitService {
+  let lfsSkipEnabled = false;
+  return buildGitService({
+    setLfsSkipEnabled: vi.fn((value: boolean) => {
+      lfsSkipEnabled = value;
+    }) as unknown as Mock,
+    isLfsSkipEnabled: vi.fn(() => lfsSkipEnabled) as unknown as Mock,
+  });
 }
 
 describe("CloneSyncService", () => {
@@ -86,9 +189,89 @@ describe("CloneSyncService", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks only drops call history, so an implementation set by one
+    // test outlives it: a later test then passes (or fails) on a filesystem
+    // some earlier test described. These three decide which branch of
+    // initialize() runs — what the destination holds, whether a marker is
+    // there, what the gitdir pointer says — so each test states its own, and
+    // the baseline here is the automock's (every call resolves undefined).
+    (fs.readdir as unknown as Mock).mockReset();
+    (fs.access as unknown as Mock).mockReset();
+    (fs.readFile as unknown as Mock).mockReset();
     gitMock = buildGitMock();
     (simpleGit as unknown as Mock).mockReturnValue(gitMock);
+    (fs.lstat as unknown as Mock).mockResolvedValue(buildFsStats("directory"));
+    // A fake filesystem with no symlinks in it: every path resolves to itself.
+    // Tests that need a link say so by overriding this.
+    (fs.realpath as unknown as Mock).mockImplementation(async (target: string) => target);
     logger = Logger.createDefault();
+  });
+
+  // Every argv this service handed `git.raw`, in order.
+  function rawCalls(): string[][] {
+    return gitMock.raw.mock.calls.map((call) => (Array.isArray(call[0]) ? (call[0] as string[]) : []));
+  }
+
+  // The stale-ref sweep's deletions, as argv: one `git branch -r -D` naming a
+  // whole batch of refs. Tests assert on these rather than on a per-ref call,
+  // which is the shape the sweep must not go back to.
+  function staleRefDeleteCalls(): string[][] {
+    return gitMock.raw.mock.calls
+      .map((call) => (Array.isArray(call[0]) ? (call[0] as string[]) : []))
+      .filter((args) => args[0] === "branch" && args[1] === "-r" && args[2] === "-D");
+  }
+
+  // Every ref named across those calls, in the order git was asked to delete
+  // them.
+  function sweptRefNames(): string[] {
+    return staleRefDeleteCalls().flatMap((args) => args.slice(3));
+  }
+
+  describe("inactivity timeouts", () => {
+    const originalShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      setEnvVar(ENV_CONSTANTS.UNIT_TEST_SHORTCUT, originalShortcut);
+      setEnvVar("NODE_ENV", originalNodeEnv);
+    });
+
+    it("keeps the default timeouts when NODE_ENV=test but the unit-test shortcut is unset", () => {
+      process.env.NODE_ENV = "test";
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+    });
+
+    it("prefers the configured timeouts when the unit-test shortcut is unset", () => {
+      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
+      const service = new CloneSyncService(
+        makeConfig({ fetchTimeoutMs: 1_000, cloneTimeoutMs: 2_000 }),
+        buildGitService(),
+        logger,
+      );
+
+      expect((service as any).getFetchTimeoutMs()).toBe(1_000);
+      expect((service as any).getCloneTimeoutMs()).toBe(2_000);
+    });
+
+    it("disables the timeouts only while the unit-test shortcut is active for this process", () => {
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(0);
+      expect((service as any).getCloneTimeoutMs()).toBe(0);
+    });
+
+    it("ignores a shortcut value inherited from another process", () => {
+      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid + 1);
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+    });
   });
 
   describe("initialize", () => {
@@ -124,6 +307,29 @@ describe("CloneSyncService", () => {
         counts: expect.objectContaining({ created: 1 }),
         actions: [{ kind: "created", branch: "main", path: config.worktreeDir }],
       });
+    });
+
+    // The recorded outcome is what the MCP `sync` result and the run summary
+    // show, so a clone that git could not authenticate carries the remedy
+    // hint there, not only on the rejection.
+    it("records a clone-time authentication failure with the credential hint", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+      const authError = new Error(
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+      );
+      gitMock.clone.mockRejectedValueOnce(authError);
+
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.initialize(outcome)).rejects.toBe(authError);
+
+      const failed = outcome.toOutcome().actions.find((action) => action.kind === "failed");
+      expect(failed).toMatchObject({ reason: "clone_failed" });
+      expect(JSON.stringify(failed)).toMatch(/terminal prompts disabled\\nHint: .*credential helper/);
     });
 
     it("passes --depth for configured shallow clone depth", async () => {
@@ -182,6 +388,7 @@ describe("CloneSyncService", () => {
       (fs.access as unknown as Mock).mockResolvedValue(undefined);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
@@ -208,6 +415,7 @@ describe("CloneSyncService", () => {
       (fs.access as unknown as Mock).mockResolvedValue(undefined);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "config --get-all remote.origin.fetch") return "+refs/heads/*:refs/remotes/origin/*\n";
@@ -235,6 +443,7 @@ describe("CloneSyncService", () => {
       (fs.access as unknown as Mock).mockResolvedValue(undefined);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "config --get-all remote.origin.fetch") {
@@ -264,6 +473,7 @@ describe("CloneSyncService", () => {
       (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "develop";
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         return "";
@@ -303,6 +513,7 @@ describe("CloneSyncService", () => {
       (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "develop";
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         return "";
@@ -330,6 +541,7 @@ describe("CloneSyncService", () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "remote get-url origin") return "https://github.com/example/other.git";
         return "";
@@ -355,6 +567,7 @@ describe("CloneSyncService", () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         // config repoUrl is "...repo.git"; on-disk origin lacks the .git suffix.
         if (key === "remote get-url origin") return "https://github.com/example/repo";
@@ -377,6 +590,7 @@ describe("CloneSyncService", () => {
       (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") throw new Error("fatal: not a git repository");
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         return "";
@@ -432,6 +646,69 @@ describe("CloneSyncService", () => {
       expect(runHooksSpy).not.toHaveBeenCalled();
     });
 
+    it("keeps the initial file copy out of every other checkout the config names", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+
+      const fileCopyService = new FileCopyService();
+      const copySpy = vi.spyOn(fileCopyService, "copyFiles").mockResolvedValue({
+        copied: [],
+        skipped: [],
+        errors: [],
+      });
+      const branchCreatedActions = new BranchCreatedActionsService(fileCopyService);
+
+      const config = makeConfig({
+        worktreeDir: "/ws/web",
+        __configFileDir: "/ws",
+        __configuredRepoDirs: ["/ws/web", "/ws/api", "/ws/trees", "/ws/.bare/tools"],
+        filesToCopyOnBranchCreate: ["**/.env.local"],
+      });
+      const service = new CloneSyncService(config, buildGitService(), logger, { branchCreatedActions });
+
+      await service.initialize();
+
+      expect(copySpy).toHaveBeenCalledTimes(1);
+      const [sourceDir, destDir, patterns, options] = copySpy.mock.calls[0];
+      expect(sourceDir).toBe("/ws");
+      expect(destDir).toBe("/ws/web");
+      expect(patterns).toEqual(["**/.env.local"]);
+      // The destination, and every worktreeDir/bareRepoDir in the config file.
+      expect(options?.excludeDirs).toEqual(["/ws/web", "/ws/api", "/ws/trees", "/ws/.bare/tools"]);
+    });
+
+    it("falls back to its own directories when the config carries no repository list", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+
+      const fileCopyService = new FileCopyService();
+      const copySpy = vi.spyOn(fileCopyService, "copyFiles").mockResolvedValue({
+        copied: [],
+        skipped: [],
+        errors: [],
+      });
+      const branchCreatedActions = new BranchCreatedActionsService(fileCopyService);
+
+      const service = new CloneSyncService(
+        makeConfig({
+          worktreeDir: "/ws/web",
+          __configFileDir: "/ws",
+          filesToCopyOnBranchCreate: ["**/.env.local"],
+        }),
+        buildGitService(),
+        logger,
+        { branchCreatedActions },
+      );
+
+      await service.initialize();
+
+      expect(copySpy.mock.calls[0][3]?.excludeDirs).toEqual(["/ws/web"]);
+    });
+
     it("skips file copy when the clone-init marker already exists", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
       (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
@@ -469,6 +746,411 @@ describe("CloneSyncService", () => {
       await expect(service.initialize()).rejects.toBeInstanceOf(GitOperationError);
       expect(gitMock.clone).not.toHaveBeenCalled();
       expect(fs.rm).not.toHaveBeenCalled();
+    });
+
+    // A clone that fails AFTER its objects land ("Clone succeeded, but
+    // checkout failed") leaves a complete `.git` on the tracked branch next to
+    // a half-written tree. Nothing on disk tells that apart from a clone the
+    // user made, so it used to be adopted as one and reported `dirty_tree`
+    // forever at info level, with the run exiting 0.
+    describe("clone that fails after its objects land (#T13)", () => {
+      // ENOENT probe, git leaves `.git/HEAD` behind, nothing else exists.
+      function mockFailedCheckoutClone(cloneError: Error): void {
+        (fs.readdir as unknown as Mock).mockRejectedValueOnce(enoent());
+        (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+        (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+        (fs.access as unknown as Mock).mockImplementation(async (p: unknown) => {
+          if (String(p).endsWith(`.git/HEAD`)) return;
+          throw enoent();
+        });
+        gitMock.clone.mockRejectedValueOnce(cloneError);
+      }
+
+      function enoent(): NodeJS.ErrnoException {
+        return Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+
+      const INCOMPLETE_MARKER = "/tmp/clone-demo/.git/.sync-worktrees-clone-incomplete";
+
+      it("marks the directory instead of leaving it adoptable when the checkout cannot be repaired", async () => {
+        const cloneError = new Error(
+          "Cloning into '/tmp/clone-demo'...\nfatal: a.bin: smudge filter lfs failed\n" +
+            "warning: Clone succeeded, but checkout failed.\n",
+        );
+        mockFailedCheckoutClone(cloneError);
+        gitMock.raw.mockImplementation(async (args: string[]) => {
+          const key = args.join(" ");
+          if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+          if (key === "checkout -f HEAD") throw new Error("fatal: a.bin: smudge filter lfs failed");
+          return "";
+        });
+
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expect(service.initialize()).rejects.toBe(cloneError);
+        // The marker carries the failing line so the next run can quote it.
+        expect(fs.writeFile).toHaveBeenCalledWith(
+          INCOMPLETE_MARKER,
+          expect.stringContaining("fatal: a.bin: smudge filter lfs failed"),
+        );
+        // A directory holding a fetched `.git` is never deleted, only marked.
+        expect(fs.rm).not.toHaveBeenCalledWith("/tmp/clone-demo", expect.anything());
+      });
+
+      it("refuses to adopt a marked directory instead of syncing it as a user's own clone", async () => {
+        // Both initialize() calls below describe the same on-disk state, so
+        // this stub is not a `...Once`: a second call falling through to the
+        // automock would prove nothing about the refusal.
+        (fs.readdir as unknown as Mock).mockResolvedValue([".git", "README"]);
+        (fs.readFile as unknown as Mock).mockImplementation(async (p: unknown) => {
+          if (String(p) === INCOMPLETE_MARKER) {
+            return "2026-01-01T00:00:00.000Z\nfatal: a.bin: smudge filter lfs failed\nfull git output\n";
+          }
+          throw enoent();
+        });
+
+        const skips: CloneSkipReason[] = [];
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger, {
+          onSkip: (reason) => skips.push(reason),
+        });
+
+        await expect(service.initialize()).rejects.toThrow(
+          /previous clone of '\/tmp\/clone-demo' did not complete \(fatal: a\.bin: smudge filter lfs failed\)/,
+        );
+        await expect(service.initialize()).rejects.toBeInstanceOf(GitOperationError);
+        // Loud, not a soft skip: no dirty_tree, no branch_mismatch, and the
+        // run must not report the repo as merely skipped.
+        expect(skips).toEqual([]);
+        expect(service.isInitialized()).toBe(false);
+        // Nothing was written to the refused directory.
+        expect(gitMock.raw).not.toHaveBeenCalledWith(
+          expect.arrayContaining(["config", "--replace-all", "remote.origin.fetch"]),
+        );
+      });
+
+      it("retries the checkout with LFS smudging disabled and finishes the init", async () => {
+        mockFailedCheckoutClone(new Error("fatal: a.bin: smudge filter lfs failed"));
+        const gitService = buildGitService();
+        const branchCreatedActions = new BranchCreatedActionsService();
+        const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: ["CLAUDE.md"] }),
+          gitService,
+          logger,
+          { branchCreatedActions },
+        );
+
+        await expect(service.initialize()).resolves.toBeUndefined();
+
+        expect(gitMock.raw).toHaveBeenCalledWith(["checkout", "-f", "HEAD"]);
+        expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+        // The marker is written before the retry (a kill mid-retry must still
+        // leave the directory unadoptable) and removed once it succeeds.
+        expect(fs.writeFile).toHaveBeenCalledWith(INCOMPLETE_MARKER, expect.any(String));
+        expect(fs.rm).toHaveBeenCalledWith(INCOMPLETE_MARKER, { force: true });
+        // The post-clone steps a silently adopted clone never got.
+        expect(gitService.verifyLfs).toHaveBeenCalledWith("/tmp/clone-demo", "main");
+        expect(copyFilesSpy).toHaveBeenCalledTimes(1);
+        expect(service.isInitialized()).toBe(true);
+      });
+
+      it("applies sparse-checkout with LFS smudging disabled after a recovered clone", async () => {
+        mockFailedCheckoutClone(new Error("fatal: a.bin: smudge filter lfs failed"));
+        const gitService = buildGitService();
+
+        const service = new CloneSyncService(makeConfig({ sparseCheckout: { include: ["src"] } }), gitService, logger);
+
+        await expect(service.initialize()).resolves.toBeUndefined();
+
+        // `sparse-checkout set` materializes everything the cone brings in, so
+        // it runs the smudge filter too: handed the default client it would
+        // die on the objects the retry just skipped, one statement before the
+        // trailing checkout, and leave a half-narrowed tree behind.
+        const sparseService = gitService.getSparseCheckoutService();
+        const call = (sparseService.applyToWorktree as Mock).mock.calls.at(-1);
+        expect(call?.[0]).toBe("/tmp/clone-demo");
+        expect(call?.[1]).toEqual({ include: ["src"] });
+        // A client must be handed over, and it must be one built with smudging
+        // off: `expect.anything()` alone would pass for the default client,
+        // which is the bug this test exists for.
+        expect(call?.[2]).toBeDefined();
+        expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+      });
+
+      // The marker is the only thing that tells a clone of ours that never
+      // finished from a clone the user made, so "cannot read it" must never
+      // resolve to "there is no marker" — that is the adoption this guard
+      // exists to prevent.
+      it("fails closed when the marker cannot be read rather than adopting the clone", async () => {
+        (fs.readdir as unknown as Mock).mockResolvedValue([".git", "README"]);
+        (fs.readFile as unknown as Mock).mockImplementation(async (p: unknown) => {
+          if (String(p) === INCOMPLETE_MARKER) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+          throw enoent();
+        });
+
+        const skips: CloneSkipReason[] = [];
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger, {
+          onSkip: (reason) => skips.push(reason),
+        });
+
+        await expect(service.initialize()).rejects.toThrow(/could not be read \(permission denied\)/);
+        expect(skips).toEqual([]);
+        expect(service.isInitialized()).toBe(false);
+      });
+
+      // The other half of the same rule: maybeCleanupPartialClone's rm -rf arm
+      // is live for a directory this init created, so a HEAD probe that merely
+      // failed must not be read as "nothing was fetched here".
+      it("marks rather than deletes when the '.git/HEAD' probe itself fails", async () => {
+        const cloneError = new Error("fatal: a.bin: smudge filter lfs failed");
+        mockFailedCheckoutClone(cloneError);
+        (fs.access as unknown as Mock).mockImplementation(async (p: unknown) => {
+          if (String(p).endsWith(`.git/HEAD`)) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+          throw enoent();
+        });
+
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expect(service.initialize()).rejects.toBe(cloneError);
+        expect(fs.rm).not.toHaveBeenCalledWith("/tmp/clone-demo", expect.anything());
+        expect(fs.writeFile).toHaveBeenCalledWith(INCOMPLETE_MARKER, expect.any(String));
+        // Nothing may be checked out into a directory we cannot even probe.
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["checkout", "-f", "HEAD"]);
+      });
+
+      it("does not retry the checkout when the failure is not an LFS error", async () => {
+        const cloneError = new Error("fatal: unable to write file README: No space left on device");
+        mockFailedCheckoutClone(cloneError);
+
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expect(service.initialize()).rejects.toBe(cloneError);
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["checkout", "-f", "HEAD"]);
+        expect(fs.writeFile).toHaveBeenCalledWith(
+          INCOMPLETE_MARKER,
+          expect.stringContaining("No space left on device"),
+        );
+      });
+    });
+
+    // `maybeCleanupPartialClone` is this subsystem's only recursive delete,
+    // and three conditions stand between a failed clone and it: the directory
+    // must be one this init created, everything left in it must be
+    // dot-prefixed, and there must be no usable `.git/HEAD`. Each test below
+    // moves exactly one of them and leaves the rest of the on-disk picture
+    // alone, so dropping a single condition fails a test of its own rather
+    // than passing a suite that never reached the delete at all.
+    describe("cleanup of a clone that failed before writing HEAD (#T70)", () => {
+      const WORKTREE_DIR = "/tmp/clone-demo";
+      const HEAD_PATH = `${WORKTREE_DIR}/.git/HEAD`;
+      const RM_ARGS = { recursive: true, force: true };
+
+      function enoent(): NodeJS.ErrnoException {
+        return Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+
+      function eacces(message: string): NodeJS.ErrnoException {
+        return Object.assign(new Error(message), { code: "EACCES" });
+      }
+
+      // A clone that dies before git writes `.git/HEAD`. `before` is what the
+      // pre-clone probe of the destination sees — null for ENOENT, the only
+      // answer that makes what lands there this init's own to delete — and
+      // `after` what the post-failure listing sees, or the error it fails
+      // with. `.git/HEAD` is absent throughout unless `headTurnsUpAfterProbe`
+      // makes it appear between the settle probe and the cleanup's own check.
+      function mockCloneFailingBeforeHead(opts: {
+        before: string[] | null;
+        after?: string[] | NodeJS.ErrnoException;
+        headTurnsUpAfterProbe?: boolean;
+      }): Error {
+        const readdir = fs.readdir as unknown as Mock;
+        if (opts.before === null) {
+          readdir.mockRejectedValueOnce(enoent());
+        } else {
+          readdir.mockResolvedValueOnce(opts.before);
+        }
+        const after = opts.after ?? [".git"];
+        if (Array.isArray(after)) {
+          readdir.mockResolvedValue(after);
+        } else {
+          readdir.mockRejectedValue(after);
+        }
+
+        let headProbes = 0;
+        (fs.access as unknown as Mock).mockImplementation(async (target: unknown) => {
+          if (String(target) === HEAD_PATH) {
+            headProbes += 1;
+            if (opts.headTurnsUpAfterProbe && headProbes > 1) return;
+          }
+          throw enoent();
+        });
+        (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+        (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+
+        const cloneError = new Error("fatal: unable to access 'https://github.com/example/repo.git/': HTTP 502\n");
+        gitMock.clone.mockRejectedValueOnce(cloneError);
+        return cloneError;
+      }
+
+      // Only the deletes aimed at the destination itself: the marker removals
+      // go through the same mock and are not what these tests are about.
+      function worktreeRemovals(): unknown[][] {
+        return (fs.rm as unknown as Mock).mock.calls.filter((call) => call[0] === WORKTREE_DIR);
+      }
+
+      // Every recursive delete, wherever it is aimed. The filtered helper above
+      // answers "did it remove the destination"; this one answers "did it
+      // remove anything at all", which is the question a leave-in-place test
+      // has to ask — a filtered assertion cannot see a delete pointed at the
+      // parent directory, and would call that clean.
+      function recursiveRemovals(): unknown[][] {
+        return (fs.rm as unknown as Mock).mock.calls.filter(
+          (call) => (call[1] as { recursive?: boolean } | undefined)?.recursive === true,
+        );
+      }
+
+      // Whichever way the cleanup settles, the init fails with git's own
+      // error and the run reports the repository as a clone failure.
+      async function expectCloneFailureOutcome(service: CloneSyncService, cloneError: Error): Promise<void> {
+        const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+
+        await expect(service.initialize(outcome)).rejects.toBe(cloneError);
+
+        expect(outcome.toOutcome().counts).toMatchObject({ failed: 1, created: 0 });
+        expect(outcome.toOutcome().actions).toEqual([
+          expect.objectContaining({ kind: "failed", reason: "clone_failed", branch: "main", path: WORKTREE_DIR }),
+        ]);
+        expect(service.isInitialized()).toBe(false);
+      }
+
+      it("deletes the directory this init created when the failed clone left nothing usable in it", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git"] });
+        const infoSpy = vi.spyOn(logger, "info");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([[WORKTREE_DIR, RM_ARGS]]);
+        expect(infoSpy).toHaveBeenCalledWith(`Cleaned up incomplete clone at '${WORKTREE_DIR}'.`);
+        // A directory that is being deleted is never also marked unadoptable.
+        expect(fs.writeFile).not.toHaveBeenCalled();
+      });
+
+      it("leaves a destination that existed before the clone attempt in place", async () => {
+        // The single difference from the test above: the destination was
+        // already there (empty) when init looked at it, so nothing in it is
+        // this init's to delete. What the failed clone left behind is
+        // identical.
+        const cloneError = mockCloneFailingBeforeHead({ before: [], after: [".git"] });
+        const warnSpy = vi.spyOn(logger, "warn");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([]);
+        expect(recursiveRemovals()).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          `Clone failed; leaving '${WORKTREE_DIR}' for manual inspection (directory existed before clone attempt).`,
+        );
+        // Refused on ownership alone — the contents are never even listed.
+        expect(fs.readdir).toHaveBeenCalledTimes(1);
+      });
+
+      it("leaves a destination holding a checked-out file in place", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git", "README.md"] });
+        const warnSpy = vi.spyOn(logger, "warn");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([]);
+        expect(recursiveRemovals()).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          `Clone failed; leaving '${WORKTREE_DIR}' for manual inspection (post-failure contents do not look like an ` +
+            `empty incomplete clone).`,
+        );
+      });
+
+      it("leaves the destination alone when a usable '.git/HEAD' turns up after the settle probe", async () => {
+        // The third condition, reachable only through the interleaving that
+        // can still contradict settleFailedClone's "HEAD is missing": HEAD
+        // landing between that read and this one. It is the last thing
+        // standing between the delete and a `.git` whose objects are all
+        // there — the "Clone succeeded, but checkout failed" shape, which is
+        // marked for inspection and never removed.
+        const cloneError = mockCloneFailingBeforeHead({
+          before: null,
+          after: [".git"],
+          headTurnsUpAfterProbe: true,
+        });
+        const warnSpy = vi.spyOn(logger, "warn");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([]);
+        expect(recursiveRemovals()).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          `Clone failed; leaving '${WORKTREE_DIR}' for manual inspection (post-failure contents do not look like an ` +
+            `empty incomplete clone).`,
+        );
+      });
+
+      it("deletes nothing when the post-failure listing itself fails", async () => {
+        // A directory that could not be read is not a directory known to hold
+        // nothing: EACCES here must not settle as "every entry is dotted".
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: eacces("permission denied") });
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        // The listing was attempted (pre-clone probe, then this one) and its
+        // failure is what stopped the delete — not some earlier return.
+        expect(fs.readdir).toHaveBeenCalledTimes(2);
+        expect(worktreeRemovals()).toEqual([]);
+        expect(recursiveRemovals()).toEqual([]);
+      });
+
+      // `[].every(...)` is true, so an empty listing takes the delete arm. That
+      // is the right answer — a destination this init created and git left with
+      // nothing in it is exactly what there is to clean up — but nothing pinned
+      // it, and a plausible-looking `entries.length > 0 &&` guard would silently
+      // start leaving empty directories behind while logging that their
+      // contents do not look empty.
+      it("deletes a destination this init created that the failed clone left completely empty", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [] });
+        const infoSpy = vi.spyOn(logger, "info");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([[WORKTREE_DIR, RM_ARGS]]);
+        expect(infoSpy).toHaveBeenCalledWith(`Cleaned up incomplete clone at '${WORKTREE_DIR}'.`);
+      });
+
+      it("reports the clone failure, not the cleanup failure, when the delete cannot be done", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git"] });
+        (fs.rm as unknown as Mock).mockRejectedValue(eacces("permission denied"));
+        const warnSpy = vi.spyOn(logger, "warn");
+        const infoSpy = vi.spyOn(logger, "info");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        // The user is owed the reason the clone failed; a tidy-up that also
+        // failed is a warning next to it, not a replacement for it.
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(worktreeRemovals()).toEqual([[WORKTREE_DIR, RM_ARGS]]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          `Failed to clean up incomplete clone at '${WORKTREE_DIR}': permission denied`,
+        );
+        // And it must not have announced the cleanup it did not manage: the
+        // success line belongs after the delete returns, not before it.
+        expect(infoSpy).not.toHaveBeenCalledWith(`Cleaned up incomplete clone at '${WORKTREE_DIR}'.`);
+      });
     });
 
     it("completes an interrupted init's pending file copy when adopting the existing clone (#review)", async () => {
@@ -530,6 +1212,138 @@ describe("CloneSyncService", () => {
       const sparseService = gitService.getSparseCheckoutService();
       expect(sparseService.applyToWorktree).toHaveBeenCalledTimes(1);
       expect(copyFilesSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // The pending marker is the only record that a finished clone still owes
+    // its initial file copy: the existing-clone path runs the copy only when
+    // the marker is there, and nothing else ever notices a clone that never
+    // got one. So every step between the clone finishing and the marker
+    // landing is a window in which a kill costs the copy permanently.
+    describe("clone-init pending marker window (#T67)", () => {
+      const PENDING_MARKER = "/tmp/clone-demo/.git/.sync-worktrees-clone-init.pending";
+
+      function enoent(): NodeJS.ErrnoException {
+        return Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+
+      function mockFreshClone(): void {
+        (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+        (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+        (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+        (fs.access as unknown as Mock).mockRejectedValue(enoent());
+      }
+
+      it("writes the marker before the first git write of the post-clone setup", async () => {
+        mockFreshClone();
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: [".env.local"] }),
+          buildGitService(),
+          logger,
+        );
+
+        await service.initialize();
+
+        const markerIndex = (fs.writeFile as unknown as Mock).mock.calls.findIndex(
+          ([target]) => String(target) === PENDING_MARKER,
+        );
+        expect(markerIndex).toBeGreaterThanOrEqual(0);
+        const refspecIndex = gitMock.raw.mock.calls.findIndex(([args]) =>
+          (args as string[]).join(" ").startsWith("config --replace-all remote.origin.fetch"),
+        );
+        expect(refspecIndex).toBeGreaterThanOrEqual(0);
+        expect((fs.writeFile as unknown as Mock).mock.invocationCallOrder[markerIndex]).toBeLessThan(
+          gitMock.raw.mock.invocationCallOrder[refspecIndex],
+        );
+      });
+
+      // The kill, simulated at the one point in the window the code can
+      // observe: the first git write after the clone never comes back. What
+      // is on disk by then — a complete, adoptable clone — is the same thing
+      // a SIGKILL there would leave, so the only question is whether the
+      // marker landed before it.
+      it("leaves the marker behind when the post-clone remote narrowing dies", async () => {
+        mockFreshClone();
+        const killed = new Error("fatal: the process went away");
+        gitMock.raw.mockImplementation(async (args: string[]) => {
+          const key = args.join(" ");
+          if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+          if (key.startsWith("config --replace-all remote.origin.fetch")) throw killed;
+          return "";
+        });
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: [".env.local"] }),
+          buildGitService(),
+          logger,
+        );
+
+        await expect(service.initialize()).rejects.toBe(killed);
+        expect(fs.writeFile).toHaveBeenCalledWith(PENDING_MARKER, expect.any(String));
+      });
+
+      // Why the window costs the copy for good rather than a retry: an
+      // unmarked clone is indistinguishable from one the user made, and
+      // adoption is silent about it.
+      it("adopts an unmarked clone without copying anything or warning", async () => {
+        (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+        (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+        (fs.readFile as unknown as Mock).mockRejectedValue(enoent());
+        (fs.access as unknown as Mock).mockRejectedValue(enoent());
+
+        const branchCreatedActions = new BranchCreatedActionsService();
+        const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+        const warnSpy = vi.spyOn(logger, "warn");
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: [".env.local"] }),
+          buildGitService(),
+          logger,
+          { branchCreatedActions },
+        );
+
+        await service.initialize();
+
+        expect(service.isInitialized()).toBe(true);
+        expect(copyFilesSpy).not.toHaveBeenCalled();
+        expect(warnSpy).not.toHaveBeenCalled();
+      });
+
+      // The two markers answer different questions — the incomplete one
+      // whether this clone may be adopted at all, the pending one what an
+      // adopted clone still owes — and they can only coexist when a recovered
+      // clone's incomplete marker could not be removed. The refusal wins:
+      // nothing is copied into a working tree that was never fully written.
+      it("refuses the clone when an incomplete marker sits next to the pending one", async () => {
+        (fs.readdir as unknown as Mock).mockResolvedValue([".git", "README"]);
+        (fs.readFile as unknown as Mock).mockImplementation(async (target: unknown) => {
+          if (String(target).endsWith(".sync-worktrees-clone-incomplete")) {
+            return "2026-01-01T00:00:00.000Z\nfatal: a.bin: smudge filter lfs failed\nfull git output\n";
+          }
+          throw enoent();
+        });
+        (fs.access as unknown as Mock).mockImplementation(async (target: unknown) => {
+          if (String(target) === PENDING_MARKER) return;
+          throw enoent();
+        });
+
+        const branchCreatedActions = new BranchCreatedActionsService();
+        const copyFilesSpy = vi.spyOn(branchCreatedActions, "copyFiles").mockResolvedValue();
+
+        const service = new CloneSyncService(
+          makeConfig({ filesToCopyOnBranchCreate: [".env.local"] }),
+          buildGitService(),
+          logger,
+          { branchCreatedActions },
+        );
+
+        await expect(service.initialize()).rejects.toThrow(
+          /did not complete \(fatal: a\.bin: smudge filter lfs failed\)/,
+        );
+        expect(copyFilesSpy).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -611,6 +1425,7 @@ describe("CloneSyncService", () => {
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "HEAD";
         return "";
@@ -635,6 +1450,7 @@ describe("CloneSyncService", () => {
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false";
@@ -653,6 +1469,7 @@ describe("CloneSyncService", () => {
       const service = new CloneSyncService(makeConfig({ branch: "feature/new" }), buildGitService(), logger);
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/other.git";
         return "";
       });
@@ -676,6 +1493,7 @@ describe("CloneSyncService", () => {
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true";
@@ -693,6 +1511,11 @@ describe("CloneSyncService", () => {
 
       await service.checkoutBranch("feature/new");
 
+      // Without the flag the switch would download that branch's history down
+      // to the repository root. `--depth` is not free here either — the
+      // shallow boundary is repository-wide, so a fetched ref that shares the
+      // tracked branch's history can shorten it — but the switch is about to
+      // leave the old branch behind, so the flag stays.
       expect(gitMock.fetch).toHaveBeenCalledWith([
         "origin",
         "--prune",
@@ -709,32 +1532,107 @@ describe("CloneSyncService", () => {
         "remote.origin.fetch",
         "+refs/heads/feature/new:refs/remotes/origin/feature/new",
       ]);
-      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/main"]);
-      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/old"]);
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/HEAD"]);
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/feature/new"]);
+      // Four refs listed — HEAD, the branch being switched to, and two stale
+      // ones — go out as ONE delete naming exactly the two stale ones. A
+      // process per ref is what this must not be.
+      expect(staleRefDeleteCalls()).toEqual([["branch", "-r", "-D", "origin/main", "origin/old"]]);
+      expect(rawCalls().some((args) => args[0] === "update-ref" && args[1] === "-d")).toBe(false);
+      expect(sweptRefNames()).not.toContain("origin/HEAD");
+      expect(sweptRefNames()).not.toContain("origin/feature/new");
     });
 
-    it("does not switch to an existing local branch that cannot fast-forward to origin", async () => {
-      const service = new CloneSyncService(makeConfig({ branch: "feature/existing" }), buildGitService(), logger);
-      (service as unknown as { initialized: boolean }).initialized = true;
-      gitMock.raw.mockImplementation(async (args: string[]) => {
+    // A clone standing on 'main' that already carries a local
+    // 'feature/existing', with nothing else to report.
+    const existingLocalBranchRaw =
+      (isShallow: string) =>
+      async (args: string[]): Promise<string> => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === "rev-parse --is-shallow-repository") return isShallow;
         if (key === "show-ref --verify refs/heads/feature/existing") return "";
-        if (key === "rev-parse refs/heads/feature/existing") return "1111111";
-        if (key === "rev-parse refs/remotes/origin/feature/existing") return "2222222";
-        if (key === "merge-base refs/heads/feature/existing refs/remotes/origin/feature/existing") return "3333333";
         return "";
-      });
+      };
+
+    const deepenFetchArgs = (depth: number): string[] => [
+      "origin",
+      "--depth",
+      String(depth),
+      "--prune",
+      "--no-tags",
+      "--progress",
+      "+refs/heads/feature/existing:refs/remotes/origin/feature/existing",
+    ];
+
+    // The switch asks the same classifier a sync tick asks, about
+    // 'refs/heads/<branch>' rather than HEAD — the branch is not checked out
+    // yet. It used to run a second, shorter implementation of its own whose
+    // only verdicts were 'can' and 'cannot'.
+    it.each([["diverged"], ["local_ahead"]])(
+      "does not switch to an existing local branch classified as %s",
+      async (relationship) => {
+        const classify = vi.fn().mockResolvedValue(relationship);
+        const service = new CloneSyncService(
+          makeConfig({ branch: "feature/existing" }),
+          buildGitService({ classifyRemoteRelationship: classify }),
+          logger,
+        );
+        (service as unknown as { initialized: boolean }).initialized = true;
+        gitMock.raw.mockImplementation(existingLocalBranchRaw("false"));
+
+        await expect(service.checkoutBranch("feature/existing")).rejects.toMatchObject({
+          constructor: FastForwardError,
+          branchName: "feature/existing",
+        });
+
+        expect(classify).toHaveBeenCalledWith("/tmp/clone-demo", "feature/existing", "refs/heads/feature/existing");
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/existing"]);
+        expect(gitMock.merge).not.toHaveBeenCalled();
+      },
+    );
+
+    // The reported defect: a `depth: N` clone whose remote moved more than N
+    // commits ahead cannot answer from what it fetched, and the switch used to
+    // read that silence as 'cannot fast-forward' for a branch that was a plain
+    // fast-forward.
+    it("deepens a shallow clone that cannot classify the branch, then fast-forwards it", async () => {
+      const classify = vi.fn().mockResolvedValueOnce("indeterminate_shallow").mockResolvedValueOnce("fast_forward");
+      const service = new CloneSyncService(
+        makeConfig({ branch: "feature/existing", depth: 1 }),
+        buildGitService({ classifyRemoteRelationship: classify }),
+        logger,
+      );
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(existingLocalBranchRaw("true"));
+
+      await service.checkoutBranch("feature/existing");
+
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(2, deepenFetchArgs(50));
+      expect(gitMock.fetch).toHaveBeenCalledTimes(2);
+      expect(classify).toHaveBeenCalledTimes(2);
+      expect(gitMock.raw).toHaveBeenCalledWith(["switch", "feature/existing"]);
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/feature/existing", "--ff-only"]);
+    });
+
+    it("reports the exhausted depth budget instead of refusing the branch as un-fast-forwardable", async () => {
+      const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
+      const service = new CloneSyncService(
+        makeConfig({ branch: "feature/existing", depth: 1 }),
+        buildGitService({ classifyRemoteRelationship: classify }),
+        logger,
+      );
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(existingLocalBranchRaw("true"));
 
       await expect(service.checkoutBranch("feature/existing")).rejects.toMatchObject({
-        constructor: FastForwardError,
-        branchName: "feature/existing",
+        constructor: GitOperationError,
+        message: expect.stringContaining("deepening to 1000 commits"),
       });
 
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(2, deepenFetchArgs(50));
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(3, deepenFetchArgs(200));
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(4, deepenFetchArgs(1000));
       expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/existing"]);
       expect(gitMock.merge).not.toHaveBeenCalled();
     });
@@ -742,17 +1640,7 @@ describe("CloneSyncService", () => {
     it("restores the previous branch when merge fails after switching to an existing local branch", async () => {
       const service = new CloneSyncService(makeConfig({ branch: "feature/existing" }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "false";
-        if (key === "show-ref --verify refs/heads/feature/existing") return "";
-        if (key === "rev-parse refs/heads/feature/existing") return "1111111";
-        if (key === "rev-parse refs/remotes/origin/feature/existing") return "2222222";
-        if (key === "merge-base refs/heads/feature/existing refs/remotes/origin/feature/existing") return "1111111";
-        return "";
-      });
+      gitMock.raw.mockImplementation(existingLocalBranchRaw("false"));
       gitMock.merge.mockRejectedValueOnce(new Error("Not possible to fast-forward"));
 
       await expect(service.checkoutBranch("feature/existing")).rejects.toThrow("Not possible to fast-forward");
@@ -807,6 +1695,7 @@ describe("CloneSyncService", () => {
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "show-ref --verify refs/remotes/origin/feature/new") throw new Error("missing remote ref");
@@ -826,6 +1715,7 @@ describe("CloneSyncService", () => {
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "remote get-url origin") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true";
@@ -835,7 +1725,7 @@ describe("CloneSyncService", () => {
 
       await service.checkoutBranch("feature/new");
 
-      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow", "--no-tags"]);
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow", "--no-tags", "--progress"]);
       expect(gitMock.fetch).toHaveBeenNthCalledWith(2, [
         "origin",
         "--prune",
@@ -843,6 +1733,298 @@ describe("CloneSyncService", () => {
         "--progress",
         "+refs/heads/feature/new:refs/remotes/origin/feature/new",
       ]);
+    });
+  });
+
+  // The TUI branch wizard's clone-mode half. Its worktree-mode counterpart
+  // (GitService.createBranch + pushBranch) runs in a bare repository that does
+  // not exist here, so every command below has to land in the clone instead.
+  describe("createAndPushBranch", () => {
+    const CREATED_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const NEW_BRANCH = "feature/new";
+    const NEW_BRANCH_REF = `refs/heads/${NEW_BRANCH}`;
+
+    // A clone that tracks 'main', has no local 'feature/new', and a remote that
+    // has not got one either.
+    function mockWizardRaw(overrides: (key: string) => string | undefined = () => undefined): void {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = Array.isArray(args) ? args.join(" ") : String(args);
+        const override = overrides(key);
+        if (override !== undefined) return override;
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === `show-ref --verify ${NEW_BRANCH_REF}`) throw new Error("missing local branch");
+        if (key === `ls-remote --heads origin ${NEW_BRANCH_REF}`) return "";
+        if (key === `rev-parse --verify ${NEW_BRANCH_REF}`) return `${CREATED_SHA}\n`;
+        return "";
+      });
+    }
+
+    function buildWizardService(gitService = buildGitService()): CloneSyncService {
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), gitService, logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      return service;
+    }
+
+    function branchAndPushCalls(): string[][] {
+      return gitMock.raw.mock.calls
+        .map((call) => (Array.isArray(call[0]) ? (call[0] as string[]) : []))
+        .filter((args) => args[0] === "branch");
+    }
+
+    it("creates the branch from origin/<base> and publishes it from the clone", async () => {
+      mockWizardRaw();
+      const service = buildWizardService();
+
+      await service.createAndPushBranch("main", NEW_BRANCH);
+
+      // The base branch is refreshed with the clone's own narrowed refspec —
+      // origin/main is usually not even present under single-branch tracking.
+      expect(gitMock.fetch).toHaveBeenCalledWith([
+        "origin",
+        "--prune",
+        "--no-tags",
+        "--progress",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["branch", "--no-track", NEW_BRANCH, "origin/main"]);
+      expect(gitMock.push).toHaveBeenCalledWith([
+        "origin",
+        `${NEW_BRANCH_REF}:${NEW_BRANCH_REF}`,
+        "-u",
+        `--force-with-lease=${NEW_BRANCH_REF}:`,
+      ]);
+      // In the clone, with the locale git's error classification depends on.
+      expect(simpleGit).toHaveBeenCalledWith("/tmp/clone-demo", expect.anything());
+      expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ LC_ALL: "C", LANG: "C" }));
+    });
+
+    // This fetch keeps the configured depth: for a base branch the clone has
+    // never seen, dropping the flag would pull that branch's history down to
+    // the repository root. The flag is not free, and this test's own case is
+    // the expensive one — the base is "main", the configured tracked branch,
+    // so `--depth 1` re-applies to history the clone already holds and re-cuts
+    // it back to one commit (and would deepen it, had `depth` been raised).
+    // The wizard offers the tracked branch as a base like any other, so that
+    // is the common case rather than the exception; the flag stays because the
+    // alternative is downloading a long-lived base branch in full.
+    it("keeps the configured shallow depth on the base-branch fetch", async () => {
+      mockWizardRaw((key) => (key === "rev-parse --is-shallow-repository" ? "true" : undefined));
+      const service = new CloneSyncService(makeConfig({ branch: "main", depth: 1 }), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+
+      await service.createAndPushBranch("main", NEW_BRANCH);
+
+      expect(gitMock.fetch).toHaveBeenCalledWith([
+        "origin",
+        "--prune",
+        "--no-tags",
+        "--progress",
+        "--depth",
+        "1",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ]);
+      expect(gitMock.push).toHaveBeenCalledTimes(1);
+    });
+
+    it("deletes the branch it created when the push is rejected", async () => {
+      mockWizardRaw();
+      gitMock.push.mockRejectedValueOnce(new Error("! [remote rejected] feature/new (pre-receive hook declined)"));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("pre-receive hook declined"),
+      });
+
+      // Compare-and-swap on the commit it was created at, so a ref something
+      // else moved meanwhile survives.
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", NEW_BRANCH_REF, CREATED_SHA]);
+    });
+
+    it("names the leftover branch when the rollback itself fails", async () => {
+      mockWizardRaw((key) => {
+        if (key === `update-ref -d ${NEW_BRANCH_REF} ${CREATED_SHA}`) throw new Error("ref lock held");
+        return undefined;
+      });
+      gitMock.push.mockRejectedValueOnce(new Error("remote: permission denied"));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        message: expect.stringContaining(`branch -D ${NEW_BRANCH}`),
+      });
+    });
+
+    it("refuses a name the remote already has, in the wording the wizard suffixes on", async () => {
+      mockWizardRaw((key) =>
+        key === `ls-remote --heads origin ${NEW_BRANCH_REF}` ? `${CREATED_SHA}\t${NEW_BRANCH_REF}\n` : undefined,
+      );
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("already exists on the remote"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it("refuses a name the clone already has", async () => {
+      mockWizardRaw((key) => (key === `show-ref --verify ${NEW_BRANCH_REF}` ? "" : undefined));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("already exists in the clone at '/tmp/clone-demo'"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+    });
+
+    it("refuses a dirty checkout before anything is created or pushed", async () => {
+      mockWizardRaw();
+      const service = buildWizardService(
+        buildGitService({ checkWorktreeStatus: vi.fn().mockResolvedValue(false) as unknown as Mock }),
+      );
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: WorktreeNotCleanError,
+        message: expect.stringContaining("has local changes"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    // Same class as the dirty-tree refusal: checkoutBranch refuses a detached
+    // HEAD, so publishing first strands a branch nobody can switch to.
+    it("refuses a detached HEAD before anything reaches the remote", async () => {
+      mockWizardRaw((key) => (key === "rev-parse --abbrev-ref HEAD" ? "HEAD" : undefined));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("detached HEAD"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    // 'feat' already existing makes 'feat/sub' impossible. Git says so, but the
+    // wizard only suffix-retries on "already exists", and a bare git message
+    // names no repository.
+    it("reports a name that collides with an existing branch path in the wizard's own wording", async () => {
+      mockWizardRaw();
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = Array.isArray(args) ? args.join(" ") : String(args);
+        if (key.startsWith("branch --no-track")) {
+          throw new Error(
+            `fatal: cannot lock ref 'refs/heads/${NEW_BRANCH}': 'refs/heads/feat' exists; cannot create '${NEW_BRANCH}'`,
+          );
+        }
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === `show-ref --verify ${NEW_BRANCH_REF}`) throw new Error("missing local branch");
+        if (key === `ls-remote --heads origin ${NEW_BRANCH_REF}`) return "";
+        return "";
+      });
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("already exists"),
+      });
+
+      expect(gitMock.push).not.toHaveBeenCalled();
+    });
+
+    it("reports a base branch that is gone from the remote instead of creating anything", async () => {
+      mockWizardRaw();
+      gitMock.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/main"));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: GitOperationError,
+        message: expect.stringContaining("origin/main is missing on the remote"),
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+    });
+
+    it("refuses to write into a checkout another repository owns", async () => {
+      mockWizardRaw((key) =>
+        key === PRIMARY_CHECKOUT_GIT_DIR_PROBE ? "/other/repo/.git/worktrees/app-main\n/other/repo/.git\n" : undefined,
+      );
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: ConfigError,
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+      });
+
+      expect(branchAndPushCalls()).toEqual([]);
+      expect(gitMock.push).not.toHaveBeenCalled();
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+
+    it("names the repository instead of letting simple-git report a missing directory", async () => {
+      mockWizardRaw();
+      (fs.access as unknown as Mock).mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("main", NEW_BRANCH)).rejects.toMatchObject({
+        constructor: ConfigError,
+        code: "CONFIG_CLONE_DESTINATION_MISSING",
+        message: expect.stringContaining("is not a git clone"),
+      });
+    });
+
+    // The base fetch leaves origin/<base> in a clone that is supposed to hold
+    // exactly one remote-tracking ref. It used to be swept away by the next
+    // sync tick's unconditional narrowing; that narrowing now writes only when
+    // the refspec actually drifted, so the ref is removed here, by the call
+    // that fetched it.
+    it("drops the origin/<base> ref its own fetch created", async () => {
+      mockWizardRaw();
+      const service = buildWizardService();
+
+      await service.createAndPushBranch("release/1.x", NEW_BRANCH);
+
+      expect(gitMock.raw).toHaveBeenCalledWith(["branch", "--no-track", NEW_BRANCH, "origin/release/1.x"]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/release/1.x"]);
+    });
+
+    it("keeps origin/<base> when the base is the branch the clone stands on", async () => {
+      mockWizardRaw();
+      const service = buildWizardService();
+
+      await service.createAndPushBranch("main", NEW_BRANCH);
+
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/main"]);
+    });
+
+    // A push that never landed takes the branch it created with it, so the
+    // ref this call fetched must not outlive that either.
+    it("drops it even when the push is rejected", async () => {
+      mockWizardRaw();
+      gitMock.push.mockRejectedValueOnce(new Error("! [remote rejected] feature/new (pre-receive hook declined)"));
+      const service = buildWizardService();
+
+      await expect(service.createAndPushBranch("release/1.x", NEW_BRANCH)).rejects.toThrow("pre-receive hook declined");
+
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", "refs/remotes/origin/release/1.x"]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["update-ref", "-d", NEW_BRANCH_REF, CREATED_SHA]);
     });
   });
 
@@ -908,6 +2090,7 @@ describe("CloneSyncService", () => {
     it("unshallows before normal fetch when depth was removed from config", async () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true\n";
         return "";
@@ -917,7 +2100,7 @@ describe("CloneSyncService", () => {
 
       await service.runSyncAttempt();
 
-      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow", "--no-tags"]);
+      expect(gitMock.fetch).toHaveBeenNthCalledWith(1, ["--unshallow", "--no-tags", "--progress"]);
       expect(gitMock.fetch).toHaveBeenNthCalledWith(2, [
         "origin",
         "--prune",
@@ -930,6 +2113,7 @@ describe("CloneSyncService", () => {
     it("soft-skips with missing_remote_ref when the unshallow fetch hits a deleted tracked branch (#review)", async () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true\n";
         if (key.startsWith("remote get-url origin")) return "https://github.com/example/repo.git";
@@ -952,55 +2136,251 @@ describe("CloneSyncService", () => {
       expect(gitMock.merge).not.toHaveBeenCalled();
     });
 
-    it("does not unshallow when depth is configured", async () => {
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "true";
-        return "";
-      });
-      const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
-      setInitialized(service);
-
-      await service.runSyncAttempt();
-
-      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
-      expect(gitMock.fetch).toHaveBeenCalledWith([
+    // `git fetch --depth N` re-applies N to the ref it fetches rather than
+    // capping history at N, so passing the configured depth on every tick cut
+    // the clone back to it and made the next advance unclassifiable. The cap
+    // itself has to stay — a remote tip that is not a descendant of the clone's
+    // tip costs the whole ancestry without one — so the sync fetch ratchets it:
+    // `max(configured depth, the depth the clone already has)`, which can only
+    // ever grow.
+    //
+    // `--depth` counts ancestry *levels*, so the ratchet measures levels too. A
+    // commit count would be a different, always-larger number on any history
+    // with merges, and feeding it back as a depth walks the boundary deeper
+    // every tick until the clone holds the whole repository.
+    describe("sync fetch depth ratchet", () => {
+      const syncFetchArgs = (depth?: string): string[] => [
         "origin",
         "--prune",
         "--no-tags",
         "--progress",
-        "--depth",
-        "1",
+        ...(depth === undefined ? [] : ["--depth", depth]),
         "+refs/heads/main:refs/remotes/origin/main",
-      ]);
-    });
+      ];
 
-    it("does not make a full existing clone shallow when depth is configured", async () => {
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "false";
-        return "";
+      it("raises --depth to the depth the clone holds under the fetched ref", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: linearHistory(31) }));
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("31"));
       });
-      const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
-      setInitialized(service);
 
-      await service.runSyncAttempt();
+      it("keeps the configured depth when the clone is shallower than it", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: linearHistory(3) }));
+        const service = new CloneSyncService(makeConfig({ depth: 50 }), buildGitService(), logger);
+        setInitialized(service);
 
-      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
-      expect(gitMock.fetch).toHaveBeenCalledWith([
-        "origin",
-        "--prune",
-        "--no-tags",
-        "--progress",
-        "+refs/heads/main:refs/remotes/origin/main",
-      ]);
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("50"));
+      });
+
+      // The ref the depth is measured from, pinned. `git fetch --depth N`
+      // re-applies N from the fetched tip, so HEAD is the right ref only on a
+      // tick that ends in a fast-forward. Any tick that fetches and does not
+      // merge — a dirty tree, unpushed commits, a divergence, a tip too shallow
+      // to classify — leaves HEAD behind, and measuring it there asks for less
+      // than the clone holds, which re-truncates: measured on git 2.43 over a
+      // worktree left dirty, a HEAD-measured ratchet sent 50, 47, 41, 32, 20, 5
+      // on successive ticks and the window the deepen paid for was gone in
+      // five.
+      it("measures the fetched ref, not a HEAD an unmerged tick left behind", async () => {
+        gitMock.raw.mockImplementation(
+          buildSyncRawMock({ shallow: true, history: linearHistory(50), headHistory: linearHistory(35) }),
+        );
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("50"));
+        // Not the 35 levels HEAD can still reach, and not measured from HEAD at
+        // all while origin/main answers.
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["rev-list", "--topo-order", "--parents", "HEAD"]);
+      });
+
+      // First sync of a clone whose remote-tracking ref is not there yet: the
+      // walk rejects, and HEAD is what the clone holds, so it stands in.
+      it("falls back to the HEAD walk when the remote-tracking ref is missing", async () => {
+        gitMock.raw.mockImplementation(
+          buildSyncRawMock({ shallow: true, missingRemoteRef: true, headHistory: linearHistory(12) }),
+        );
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.raw).toHaveBeenCalledWith(["rev-list", "--topo-order", "--parents", "HEAD"]);
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("12"));
+      });
+
+      // The unit, pinned. Ten merged two-commit pull requests are 31 commits in
+      // 12 ancestry levels; `--depth` speaks levels, so the cap is 12. Sending
+      // the commit count instead would ask for a boundary nearly three times
+      // deeper than the one the clone has, and repeating that every tick is how
+      // a `depth: 1` clone walks itself up to full history.
+      it("measures ancestry levels, not commits, on a history of merges", async () => {
+        const history = mergeHistory(10);
+        expect(history.trim().split("\n")).toHaveLength(31);
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history }));
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("12"));
+      });
+
+      // The fixed point the ratchet depends on: a clone that `--depth 12`
+      // produced measures back as 12, so the next tick asks for 12 again rather
+      // than for something deeper. Two ticks over an unchanged clone therefore
+      // send the same cap twice.
+      it("asks for the same depth again when the clone has not changed", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: mergeHistory(10) }));
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+        await service.runSyncAttempt();
+
+        const syncDepths = gitMock.fetch.mock.calls
+          .map((call) => call[0] as string[])
+          .filter((args) => args.includes("+refs/heads/main:refs/remotes/origin/main"))
+          .map((args) => args[args.indexOf("--depth") + 1]);
+        expect(syncDepths).toEqual(["12", "12"]);
+      });
+
+      // The same fixed point across ticks that never merge: the window the
+      // fetched ref holds does not change, so neither does the cap. A ratchet
+      // measured from HEAD would send a smaller number on every one of these.
+      it("holds the cap across ticks that fetch and skip the merge", async () => {
+        // HEAD falls further behind on every tick; origin/main keeps its 50.
+        const headReach = [50, 47, 44];
+        let tick = 0;
+        gitMock.raw.mockImplementation(
+          buildSyncRawMock({
+            shallow: true,
+            history: linearHistory(50),
+            headHistory: () => linearHistory(headReach[Math.min(tick, headReach.length - 1)]),
+          }),
+        );
+        const service = new CloneSyncService(
+          makeConfig({ depth: 1 }),
+          buildGitService({ checkWorktreeStatus: vi.fn().mockResolvedValue(false) }),
+          logger,
+        );
+        setInitialized(service);
+
+        for (; tick < 3; tick++) {
+          await service.runSyncAttempt();
+        }
+
+        const syncDepths = gitMock.fetch.mock.calls
+          .map((call) => call[0] as string[])
+          .filter((args) => args.includes("+refs/heads/main:refs/remotes/origin/main"))
+          .map((args) => args[args.indexOf("--depth") + 1]);
+        expect(syncDepths).toEqual(["50", "50", "50"]);
+        expect(gitMock.merge).not.toHaveBeenCalled();
+      });
+
+      // On a full clone the flag has no ratchet to sit under: `--depth` would
+      // *make* the repository shallow, so there is none, and the clone is not
+      // even walked.
+      it("sends no --depth on a full clone, and does not measure its depth", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: false, history: linearHistory(199) }));
+        const service = new CloneSyncService(makeConfig({ depth: 1 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs());
+        expect(gitMock.raw).not.toHaveBeenCalledWith([
+          "rev-list",
+          "--topo-order",
+          "--parents",
+          "refs/remotes/origin/main",
+        ]);
+        expect(gitMock.raw).not.toHaveBeenCalledWith(["rev-list", "--topo-order", "--parents", "HEAD"]);
+      });
+
+      it("sends no --depth when no depth is configured", async () => {
+        // Shallow with no configured depth is the unshallow path, so this one
+        // is a full clone: nothing to cap, nothing to unshallow.
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: false, history: linearHistory(199) }));
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs());
+      });
+
+      // Both directions of an unreadable walk fall back to the configured depth
+      // rather than to no cap: a re-truncation is something the deepen budget
+      // can still undo, an uncapped transfer is not. simple-git resolves with ""
+      // when git exits non-zero without writing to stderr, so the silent form
+      // has to be handled as well as the rejection — and "" is also what an
+      // unborn HEAD leaves, where the configured depth is not merely the lesser
+      // evil but exactly right.
+      it("falls back to the configured depth when both history walks reject", async () => {
+        gitMock.raw.mockImplementation(
+          buildSyncRawMock({ shallow: true, historyError: new Error("fatal: bad revision 'HEAD'") }),
+        );
+        const service = new CloneSyncService(makeConfig({ depth: 7 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("7"));
+      });
+
+      it.each([
+        ["an empty walk (unborn HEAD)", ""],
+        ["a blank-line-only walk", "\n\n"],
+      ])("falls back to the configured depth on %s", async (_label, history) => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history }));
+        const service = new CloneSyncService(makeConfig({ depth: 7 }), buildGitService(), logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("7"));
+      });
+
+      // The regression this cap exists for. A shallow clone has no ancestors to
+      // offer as `have`s, so when the remote tip stops being a descendant of
+      // its tip — a force-push or a rebase, routine on the branches clone mode
+      // tracks — an uncapped fetch packs the new tip's whole ancestry.
+      // Measured on git 2.43 against a 199-commit remote of empty commits
+      // force-pushed to a 197-commit tip (`reset --hard HEAD~3` plus one
+      // commit), a `depth: 1` clone: capped, origin/main stayed at 1 commit for
+      // a 3-object pack; uncapped, all 197 commits in a 201-object pack.
+      // The clone-mode e2e pins the same thing end to end.
+      it("still caps the fetch when the clone holds a single commit", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: linearHistory(1) }));
+        const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
+        const service = new CloneSyncService(
+          makeConfig({ depth: 1 }),
+          buildGitService({ classifyRemoteRelationship: classify }),
+          logger,
+        );
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.fetch).toHaveBeenNthCalledWith(1, syncFetchArgs("1"));
+      });
     });
 
     it("does not unshallow full repositories without configured depth", async () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false\n";
         return "";
@@ -1033,12 +2413,9 @@ describe("CloneSyncService", () => {
     });
 
     it("deepens a shallow configured clone before classifying as fast-forward", async () => {
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "rev-parse --is-shallow-repository") return "true";
-        return "";
-      });
+      // A one-commit clone: the ratchet leaves the sync fetch at the configured
+      // depth, which is too little to classify, so the budget is spent.
+      gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: linearHistory(1) }));
       const classify = vi.fn().mockResolvedValueOnce("indeterminate_shallow").mockResolvedValueOnce("fast_forward");
       const gitService = buildGitService({ classifyRemoteRelationship: classify });
       const service = new CloneSyncService(makeConfig({ depth: 1 }), gitService, logger);
@@ -1068,6 +2445,49 @@ describe("CloneSyncService", () => {
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
 
+    // The churn the ratchet exists to stop. Passing the *configured* depth on
+    // every tick threw away the history the deepen above just paid for and
+    // re-grafted the tip it fetched, so the next remote advance was
+    // indeterminate again — one 50-commit deepen fetch per tick, forever, with
+    // `fast_forward` never reached on the first classification. With the
+    // ratchet the second tick asks for the clone's own size instead, so the
+    // deepen happens once.
+    it("does not re-shorten the deepened history on the next sync of a depth: 1 clone", async () => {
+      // The clone holds one commit until the first tick's deepen-to-50 and
+      // fast-forward; from then on it holds 50.
+      let history = linearHistory(1);
+      gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: () => history }));
+      const classify = vi
+        .fn()
+        .mockResolvedValueOnce("indeterminate_shallow")
+        .mockResolvedValueOnce("fast_forward")
+        .mockResolvedValue("fast_forward");
+      const service = new CloneSyncService(
+        makeConfig({ depth: 1 }),
+        buildGitService({ classifyRemoteRelationship: classify }),
+        logger,
+      );
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+      const fetchesAfterFirstTick = gitMock.fetch.mock.calls.length;
+      history = linearHistory(50);
+      await service.runSyncAttempt();
+
+      // The second tick fetches once, at the depth the clone now holds rather
+      // than the configured 1: the boundary the deepen established is left
+      // where it is, so merge-base still has something to walk and no second
+      // deepen is bought.
+      const secondTickFetches = gitMock.fetch.mock.calls
+        .slice(fetchesAfterFirstTick)
+        .map((call) => call[0] as string[]);
+      expect(secondTickFetches).toEqual([
+        ["origin", "--prune", "--no-tags", "--progress", "--depth", "50", "+refs/heads/main:refs/remotes/origin/main"],
+      ]);
+      expect(classify).toHaveBeenCalledTimes(3);
+      expect(gitMock.merge).toHaveBeenCalledTimes(2);
+    });
+
     it("walks 50 -> 200 -> 1000 depth targets before giving up on a shallow indeterminate clone", async () => {
       const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
       const skips: CloneSkipReason[] = [];
@@ -1079,7 +2499,10 @@ describe("CloneSyncService", () => {
 
       await service.runSyncAttempt();
 
+      // Everything after the sync fetch, which now carries a ratcheted
+      // `--depth` of its own.
       const depthArgs = gitMock.fetch.mock.calls
+        .slice(1)
         .map((call) => call[0] as string[])
         .filter((args) => args[1] === "--depth" && args.includes("+refs/heads/main:refs/remotes/origin/main"))
         .map((args) => Number(args[args.indexOf("--depth") + 1]));
@@ -1211,6 +2634,88 @@ describe("CloneSyncService", () => {
       expect(sparseService.needsUpdate).toHaveBeenCalledWith(config.worktreeDir, config.sparseCheckout);
       expect(sparseService.applyToWorktree).not.toHaveBeenCalled();
     });
+
+    // README's narrowing-safety paragraph promises the tool checks the tree is
+    // clean before it drops paths out of the cone. Worktree mode always did;
+    // clone mode narrowed regardless and left git to print a warning of its
+    // own (#T68).
+    it("skips a narrowing sparse update while the tree is dirty", async () => {
+      const gitService = buildGitService({ checkWorktreeStatus: vi.fn().mockResolvedValue(false) });
+      const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+      (sparseService.readCurrent as Mock).mockResolvedValue(["other", "pkg"]);
+      (sparseService.buildPatterns as Mock).mockReturnValue(["pkg"]);
+      (sparseService.isNarrowing as Mock).mockReturnValue(true);
+
+      const config = makeConfig({ sparseCheckout: { include: ["pkg"] } });
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+      const service = new CloneSyncService(config, gitService, logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt(outcome);
+
+      expect(sparseService.isNarrowing).toHaveBeenCalledWith(["other", "pkg"], ["pkg"]);
+      expect(sparseService.applyToWorktree).not.toHaveBeenCalled();
+      expect(outcome.toOutcome().actions).toContainEqual(
+        expect.objectContaining({
+          kind: "skipped",
+          scope: "sparse-checkout",
+          reason: "sparse_narrowing_unsafe",
+          branch: "main",
+          path: config.worktreeDir,
+        }),
+      );
+    });
+
+    // The deferral is only a deferral: the same narrowing applies on the first
+    // tick that finds the tree clean.
+    it("applies a narrowing sparse update once the tree is clean", async () => {
+      const gitService = buildGitService();
+      const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+      (sparseService.readCurrent as Mock).mockResolvedValue(["other", "pkg"]);
+      (sparseService.buildPatterns as Mock).mockReturnValue(["pkg"]);
+      (sparseService.isNarrowing as Mock).mockReturnValue(true);
+
+      const config = makeConfig({ sparseCheckout: { include: ["pkg"] } });
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+      const service = new CloneSyncService(config, gitService, logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt(outcome);
+
+      expect(sparseService.applyToWorktree).toHaveBeenCalledWith(config.worktreeDir, config.sparseCheckout);
+      expect(outcome.toOutcome().counts.skipped).toBe(0);
+    });
+
+    // A sparse config git rejects used to warn and exit 0 on every tick, so
+    // nothing watching the run ever learned it was broken (#T68).
+    it("records a failed action when the sparse re-apply throws", async () => {
+      const gitService = buildGitService();
+      const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+      (sparseService.applyToWorktree as Mock).mockRejectedValue(
+        new Error("fatal: specify directories rather than patterns (no leading slash)"),
+      );
+
+      const config = makeConfig({ sparseCheckout: { include: ["/pkg"] } });
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+      const service = new CloneSyncService(config, gitService, logger);
+      setInitialized(service);
+
+      await service.runSyncAttempt(outcome);
+
+      expect(outcome.toOutcome().counts.failed).toBe(1);
+      expect(outcome.toOutcome().actions).toContainEqual(
+        expect.objectContaining({
+          kind: "failed",
+          scope: "sparse-checkout",
+          reason: "sparse_checkout_failed",
+          error: expect.stringContaining("no leading slash"),
+          branch: "main",
+          path: config.worktreeDir,
+        }),
+      );
+      // Still not fatal: the fast-forward the sync exists for runs anyway.
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+    });
   });
 
   describe("runSyncAttempt skip reasons", () => {
@@ -1304,6 +2809,7 @@ describe("CloneSyncService", () => {
       const { service, skips } = buildServiceWithSkips(buildGitService());
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key.startsWith("show-ref --verify refs/remotes/origin/main")) {
           throw new Error("show-ref: ref not found");
@@ -1369,6 +2875,720 @@ describe("CloneSyncService", () => {
       expect(skips).toEqual([]);
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
+
+    // The order inside a tick is the point of these, not just the verdict:
+    // `checkWorktreeStatus` is `git status`, an index refresh plus an
+    // untracked-file walk of the whole checkout, and it is the only command in
+    // a steady-state tick whose cost scales with how many files the clone
+    // holds. The classification that decides whether anything will be written
+    // is three ref reads. So a tick that ends 'up to date' — the overwhelmingly
+    // common daemon tick — must not pay for the walk at all (#T71).
+    it("does not read the working tree on an up-to-date tick", async () => {
+      const checkWorktreeStatus = vi.fn().mockResolvedValue(true);
+      const gitService = buildGitService({
+        checkWorktreeStatus,
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("up_to_date"),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+
+      await service.runSyncAttempt(outcome);
+
+      expect(checkWorktreeStatus).not.toHaveBeenCalled();
+      expect(skips).toEqual([]);
+      expect(gitMock.merge).not.toHaveBeenCalled();
+      expect(outcome.toOutcome().actions).toEqual([
+        expect.objectContaining({ kind: "noop", scope: "repo", reason: "already_up_to_date" }),
+      ]);
+    });
+
+    // Same for every other verdict that cannot end in a merge. Each one used to
+    // be reachable only through the dirty gate, so a dirty clone was reported
+    // as 'working tree has local changes' whatever its actual relationship to
+    // origin was; now the skip names the relationship, which is what the user
+    // has to act on.
+    const NON_MERGING_VERDICTS: Array<[string, CloneSkipReason]> = [
+      ["local_ahead", { kind: "ahead_unpushed", branch: "main" }],
+      ["diverged", { kind: "diverged", branch: "main" }],
+      ["indeterminate_shallow", { kind: "indeterminate_shallow", branch: "main", deepenedTo: null }],
+    ];
+    for (const [relationship, expected] of NON_MERGING_VERDICTS) {
+      it(`does not read the working tree when the relationship is ${relationship}`, async () => {
+        const checkWorktreeStatus = vi.fn().mockResolvedValue(false);
+        const gitService = buildGitService({
+          checkWorktreeStatus,
+          classifyRemoteRelationship: vi.fn().mockResolvedValue(relationship),
+        });
+        const { service, skips } = buildServiceWithSkips(gitService);
+
+        await service.runSyncAttempt();
+
+        expect(checkWorktreeStatus).not.toHaveBeenCalled();
+        expect(skips).toEqual([expected]);
+        expect(gitMock.merge).not.toHaveBeenCalled();
+      });
+    }
+
+    // The other half of the order: the merge is the one thing in a tick that
+    // writes to the working tree, and it is still gated on a status scan taken
+    // immediately before it — after the classification (and any deepening
+    // fetches) rather than before them.
+    it("reads the working tree between classifying and fast-forwarding", async () => {
+      const order: string[] = [];
+      const gitService = buildGitService({
+        checkWorktreeStatus: vi.fn().mockImplementation(async () => {
+          order.push("status");
+          return true;
+        }),
+        classifyRemoteRelationship: vi.fn().mockImplementation(async () => {
+          order.push("classify");
+          return "fast_forward";
+        }),
+      });
+      gitMock.merge.mockImplementation(async () => {
+        order.push("merge");
+      });
+      const { service } = buildServiceWithSkips(gitService);
+
+      await service.runSyncAttempt();
+
+      expect(order).toEqual(["classify", "status", "merge"]);
+    });
+
+    // The user-visible half of the reorder: a clone somebody is working in that
+    // is already at origin/<branch> has nothing to merge, so it is up to date —
+    // not a skip in the run summary, the MCP sync result and the TUI, every
+    // tick, for a repository that needed nothing done to it.
+    it("reports a dirty clone that is already at origin as up to date, not a skip", async () => {
+      const gitService = buildGitService({
+        checkWorktreeStatus: vi.fn().mockResolvedValue(false),
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("up_to_date"),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+      const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+
+      await service.runSyncAttempt(outcome);
+
+      expect(skips).toEqual([]);
+      expect(outcome.toOutcome().counts.skipped).toBe(0);
+      expect(outcome.toOutcome().counts.noop).toBe(1);
+    });
+
+    // And the case the dirty gate is actually for: a fast-forward would write
+    // over the user's edits, so it is still refused, and still reported as
+    // dirty_tree.
+    it("still records dirty_tree when a dirty clone could otherwise fast-forward", async () => {
+      const gitService = buildGitService({
+        checkWorktreeStatus: vi.fn().mockResolvedValue(false),
+        classifyRemoteRelationship: vi.fn().mockResolvedValue("fast_forward"),
+      });
+      const { service, skips } = buildServiceWithSkips(gitService);
+
+      await service.runSyncAttempt();
+
+      expect(skips).toEqual([{ kind: "dirty_tree" }]);
+      expect(gitMock.merge).not.toHaveBeenCalled();
+    });
+
+    describe("rejected fast-forward", () => {
+      const LFS_MERGE_FAILURE = "fatal: assets/big.bin: smudge filter lfs failed";
+      const HEAD_BEFORE_MERGE = "1111111111111111111111111111111111111111";
+      const HEAD_AFTER_MERGE = "2222222222222222222222222222222222222222";
+      const BLOB_ATTRIBUTES = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const BLOB_POINTER = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      const BLOB_LATE = "cccccccccccccccccccccccccccccccccccccccc";
+      const BLOB_SOMEONE_ELSE = "dddddddddddddddddddddddddddddddddddddddd";
+      const BLOB_LINK = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+      // What git leaves behind when it rejects a `merge --ff-only`: HEAD and
+      // the index still on the old commit, the paths that sort before the one
+      // it could not write already updated on disk.
+      function mockRejectedFastForward(options: {
+        headAfterMerge?: string;
+        mergePaths: string[];
+        // path -> object id, optionally with the tree mode a symlink carries.
+        remoteBlobs: Record<string, string | { mode: string; id: string }>;
+        worktreeHashes: Record<string, string>;
+        // What lstat finds on disk; anything unlisted is a regular file.
+        worktreeKinds?: Record<string, "symlink" | "directory">;
+        // Symlink targets readlink answers with, and the blob contents cat-file
+        // prints for an object id.
+        linkTargets?: Record<string, string>;
+        blobContents?: Record<string, string>;
+        // Paths `hash-object` refuses, the way it does for a dangling symlink
+        // or an unreadable file — one bad path fails the whole invocation.
+        unhashable?: string[];
+        status: { not_added?: string[]; modified?: string[]; deleted?: string[] };
+      }): void {
+        const headAfterMerge = options.headAfterMerge ?? HEAD_BEFORE_MERGE;
+        let headReads = 0;
+        gitMock.raw.mockImplementation(async (args: string[]) => {
+          const key = args.join(" ");
+          if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+          if (key === "rev-parse --abbrev-ref HEAD") return "main";
+          if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+          if (key === "rev-parse HEAD") return `${headReads++ === 0 ? HEAD_BEFORE_MERGE : headAfterMerge}\n`;
+          if (key === "diff --name-only -z HEAD refs/remotes/origin/main") {
+            return options.mergePaths.map((mergePath) => `${mergePath}\0`).join("");
+          }
+          if (args[0] === "ls-tree") {
+            return (
+              args
+                .slice(4)
+                // Real git is handed `:(literal)<path>` so a name starting with
+                // ':' is not read as pathspec magic; answer for the bare path.
+                .map((pathspec) => pathspec.replace(/^:\(literal\)/, ""))
+                .filter((treePath) => options.remoteBlobs[treePath] !== undefined)
+                .map((treePath) => {
+                  const entry = options.remoteBlobs[treePath];
+                  const { mode, id } = typeof entry === "string" ? { mode: "100644", id: entry } : entry;
+                  return `${mode} blob ${id}\t${treePath}\0`;
+                })
+                .join("")
+            );
+          }
+          if (args[0] === "hash-object") {
+            const paths = args.slice(2);
+            const refused = paths.find((filePath) => options.unhashable?.includes(filePath));
+            if (refused !== undefined) {
+              throw new Error(`fatal: could not open '${refused}' for reading: No such file or directory`);
+            }
+            return paths.map((filePath) => options.worktreeHashes[filePath] ?? BLOB_SOMEONE_ELSE).join("\n");
+          }
+          if (args[0] === "cat-file") return options.blobContents?.[args[2]] ?? "";
+          return "";
+        });
+        gitMock.status.mockResolvedValue({ not_added: [], modified: [], deleted: [], ...options.status });
+        // `.git` stays a directory for the primary-checkout guard; every
+        // candidate is a regular file unless the test says otherwise.
+        (fs.lstat as unknown as Mock).mockImplementation(async (target: unknown) => {
+          const relative = String(target).replace("/tmp/clone-demo/", "");
+          return buildFsStats(options.worktreeKinds?.[relative] ?? (relative === ".git" ? "directory" : "file"));
+        });
+        (fs.readlink as unknown as Mock).mockImplementation(async (target: unknown) => {
+          const relative = String(target).replace("/tmp/clone-demo/", "");
+          const linkTarget = options.linkTargets?.[relative];
+          if (linkTarget === undefined) throw new Error("EINVAL: not a symlink");
+          return linkTarget;
+        });
+      }
+
+      function rawCommands(): string[][] {
+        return gitMock.raw.mock.calls.map(([args]) => args as string[]);
+      }
+
+      // The retry policy logs "Temporarily disabling LFS downloads" and sets
+      // the override on GitService. Clone mode built every client from
+      // `config.skipLfs` alone, so the retry's merge ran with the identical
+      // environment and died on the object the attempt before it had.
+      it("runs the retry's ff-merge with LFS smudging disabled once the sync override is set (#T14)", async () => {
+        const gitService = buildLfsAwareGitService();
+        const { service } = buildServiceWithSkips(gitService);
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+        expect(gitMock.env).not.toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+
+        gitService.setLfsSkipEnabled(true);
+        gitMock.env.mockClear();
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.merge).toHaveBeenCalledTimes(2);
+        expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+        // Not one client but all of them: the retry's fetch runs in the same
+        // attempt as its merge and has to skip smudging too.
+        const envs = gitMock.env.mock.calls.map(([env]) => env as NodeJS.ProcessEnv);
+        expect(envs.length).toBeGreaterThan(0);
+        expect(envs.every((env) => env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] === "1")).toBe(true);
+      });
+
+      // git's checkout half writes in path order and stops at the first path it
+      // cannot produce, so the rejection leaves the earlier ones on disk and the
+      // later ones untouched. Until that is undone every following tick reports
+      // dirty_tree at info level and exits 0 — for good, because git then
+      // refuses to overwrite the untracked files the first attempt left.
+      it("undoes the half-applied checkout when the ff-merge is rejected (#T14)", async () => {
+        const { service, skips } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "assets/big.bin", "docs/removed.md", "src/late.ts"],
+          remoteBlobs: {
+            ".gitattributes": BLOB_ATTRIBUTES,
+            "assets/big.bin": BLOB_POINTER,
+            "src/late.ts": BLOB_LATE,
+          },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          status: { not_added: [".gitattributes"], deleted: ["docs/removed.md"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(gitMock.raw).toHaveBeenCalledWith(["diff", "--name-only", "-z", "HEAD", "refs/remotes/origin/main"]);
+        // Only the dirty half of the merge's path set is ever weighed: the
+        // paths git never got to are not on disk to compare.
+        expect(gitMock.raw).toHaveBeenCalledWith(["hash-object", "--", ".gitattributes"]);
+        // Untracked and byte-identical to what origin/main holds for it, so the
+        // next fast-forward writes it back unchanged.
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/.gitattributes", { force: true });
+        // Deleted by the merge; restoring writes only what HEAD already holds,
+        // and only into the working tree — the index the merge never reached.
+        expect(gitMock.raw).toHaveBeenCalledWith([
+          "restore",
+          "--source=HEAD",
+          "--worktree",
+          "--",
+          ":(literal)docs/removed.md",
+        ]);
+        // The merge failure is still the caller's to handle, and it is not a skip.
+        expect(skips).toEqual([]);
+      });
+
+      // The tree was verified clean before the merge, but the relationship
+      // classification, up to three deepening fetches and the merge itself sit
+      // in that window — minutes in a large repository. A file that appears in
+      // it hashes to something other than the blob origin/main holds for that
+      // path, and is left where it is.
+      it("leaves a file that is not what origin/<branch> holds where it is (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "assets/big.bin"],
+          remoteBlobs: { ".gitattributes": BLOB_ATTRIBUTES, "assets/big.bin": BLOB_POINTER },
+          worktreeHashes: { ".gitattributes": BLOB_SOMEONE_ELSE },
+          status: { not_added: [".gitattributes"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(rawCommands().some((command) => command[0] === "restore")).toBe(false);
+      });
+
+      // A dirty path the incoming commit does not touch is somebody's own work,
+      // and never becomes a candidate — which is what keeps dirty_tree meaning
+      // what it says on the next tick.
+      it("never weighs a dirty path the merge would not have written (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: ["assets/big.bin"],
+          remoteBlobs: { "assets/big.bin": BLOB_POINTER },
+          worktreeHashes: {},
+          status: { not_added: ["scratch.txt"], modified: ["src/app.ts"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(rawCommands().some((command) => command[0] === "hash-object")).toBe(false);
+        expect(rawCommands().some((command) => command[0] === "restore")).toBe(false);
+      });
+
+      // A merge that moved HEAD wrote those files on purpose; undoing them
+      // would throw away the update that had just landed.
+      it("touches nothing when HEAD moved despite the merge failing (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          headAfterMerge: HEAD_AFTER_MERGE,
+          mergePaths: [".gitattributes"],
+          remoteBlobs: { ".gitattributes": BLOB_ATTRIBUTES },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          status: { not_added: [".gitattributes"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error("error: post-checkout hook exited with 1"));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("post-checkout hook");
+
+        expect(gitMock.status).not.toHaveBeenCalled();
+        expect(fs.rm).not.toHaveBeenCalled();
+      });
+
+      // `git hash-object` FOLLOWS a symlink and hashes the file at the other
+      // end, while git stores a symlink as a blob holding the target path — so
+      // a symlink the merge wrote never matched, stayed behind, and wedged
+      // every later tick exactly the way this cleanup exists to prevent.
+      it("proves a symlink by its target rather than hashing what it points at (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: ["0-link.md", "assets/big.bin"],
+          remoteBlobs: {
+            "0-link.md": { mode: "120000", id: BLOB_LINK },
+            "assets/big.bin": BLOB_POINTER,
+          },
+          // What hash-object would have answered: the hash of README.md's
+          // contents, which is not the symlink's blob and must not be consulted.
+          worktreeHashes: { "0-link.md": BLOB_SOMEONE_ELSE },
+          worktreeKinds: { "0-link.md": "symlink" },
+          linkTargets: { "0-link.md": "README.md" },
+          blobContents: { [BLOB_LINK]: "README.md" },
+          status: { not_added: ["0-link.md"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(gitMock.raw).toHaveBeenCalledWith(["cat-file", "blob", BLOB_LINK]);
+        expect(rawCommands().some((command) => command[0] === "hash-object")).toBe(false);
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/0-link.md", { force: true });
+      });
+
+      // A symlink whose target the merge never got to write is dangling, and
+      // `hash-object` dies on it. Batched with 199 others that would have
+      // disqualified every one of them — so a link the merge wrote is proved
+      // without hash-object at all, and a file that cannot be hashed
+      // disqualifies only itself.
+      it("keeps cleaning the rest when one file cannot be hashed (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "0-dangling.md", "0-unreadable.txt", "assets/big.bin"],
+          remoteBlobs: {
+            ".gitattributes": BLOB_ATTRIBUTES,
+            "0-dangling.md": { mode: "120000", id: BLOB_LINK },
+            "0-unreadable.txt": BLOB_LATE,
+            "assets/big.bin": BLOB_POINTER,
+          },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          worktreeKinds: { "0-dangling.md": "symlink" },
+          linkTargets: { "0-dangling.md": "missing/target" },
+          blobContents: { [BLOB_LINK]: "missing/target" },
+          unhashable: ["0-unreadable.txt"],
+          status: { not_added: [".gitattributes", "0-dangling.md", "0-unreadable.txt"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        // The batch died on the unreadable path, so each was asked for again
+        // on its own.
+        expect(gitMock.raw).toHaveBeenCalledWith(["hash-object", "--", ".gitattributes", "0-unreadable.txt"]);
+        expect(gitMock.raw).toHaveBeenCalledWith(["hash-object", "--", ".gitattributes"]);
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/.gitattributes", { force: true });
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/0-dangling.md", { force: true });
+        // Nothing could be established about it, so it is left where it is.
+        expect(fs.rm).not.toHaveBeenCalledWith("/tmp/clone-demo/0-unreadable.txt", { force: true });
+      });
+
+      // The merge deletes a path only when the incoming commit no longer has
+      // it. A path origin/<branch> still carries went missing some other way —
+      // somebody's own `rm` inside the window — and restoring it from HEAD
+      // would silently undo that.
+      it("leaves a missing path alone when origin/<branch> still holds it (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "assets/big.bin", "zz-old.md"],
+          remoteBlobs: {
+            ".gitattributes": BLOB_ATTRIBUTES,
+            "assets/big.bin": BLOB_POINTER,
+            // Modified upstream, not deleted: still in the incoming tree.
+            "zz-old.md": BLOB_LATE,
+          },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          status: { not_added: [".gitattributes"], deleted: ["zz-old.md"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error(LFS_MERGE_FAILURE));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
+
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/.gitattributes", { force: true });
+        expect(rawCommands().some((command) => command[0] === "restore")).toBe(false);
+      });
+
+      // Nothing here is LFS-specific: any rejection that stopped the checkout
+      // half-way leaves the same wedge, and the same per-path proof decides
+      // what may be undone.
+      it("undoes the half-applied checkout after a non-LFS rejection too (#T14)", async () => {
+        const { service } = buildServiceWithSkips(buildGitService());
+        mockRejectedFastForward({
+          mergePaths: [".gitattributes", "src/gen.ts"],
+          remoteBlobs: { ".gitattributes": BLOB_ATTRIBUTES, "src/gen.ts": BLOB_LATE },
+          worktreeHashes: { ".gitattributes": BLOB_ATTRIBUTES },
+          status: { not_added: [".gitattributes"] },
+        });
+        gitMock.merge.mockRejectedValueOnce(new Error("error: unable to write file src/gen.ts: Permission denied"));
+
+        await expect(service.runSyncAttempt()).rejects.toThrow("Permission denied");
+
+        expect(fs.rm).toHaveBeenCalledWith("/tmp/clone-demo/.gitattributes", { force: true });
+      });
+    });
+  });
+
+  // `git config --replace-all` rewrites .git/config whether or not the value
+  // changes, and the tick used to run two of them plus a `for-each-ref` over
+  // every origin ref — converging a remote that nothing in the tick had moved.
+  // The tick now reads the two keys in one process and writes only on drift.
+  describe("single-branch remote convergence", () => {
+    // The one read that decides it, as the mock sees it.
+    const CONFIG_READ = ["config", "--local", "-z", "--get-regexp", "^remote\\.origin\\.(fetch|tagOpt)$"];
+    const CONFIG_READ_KEY = CONFIG_READ.join(" ");
+    const NARROW_REFSPEC = "+refs/heads/main:refs/remotes/origin/main";
+    const WRITE_REFSPEC = ["config", "--replace-all", "remote.origin.fetch", NARROW_REFSPEC];
+    const WRITE_TAG_OPT = ["config", "--replace-all", "remote.origin.tagOpt", "--no-tags"];
+    const SCAN_REFS = ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"];
+
+    // `git config -z` answers with `key\nvalue` records separated by NUL, and
+    // lower-cases the key it prints.
+    function configReadOutput(entries: Array<[string, string]>): string {
+      return entries.map(([key, value]) => `${key}\n${value}\0`).join("");
+    }
+
+    const CONVERGED = configReadOutput([
+      ["remote.origin.fetch", NARROW_REFSPEC],
+      ["remote.origin.tagopt", "--no-tags"],
+    ]);
+
+    function mockTickRaw(configRead: string | (() => never), staleRefs: string[] = []): void {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key === SCAN_REFS.join(" ")) return ["refs/remotes/origin/main", ...staleRefs].join("\n");
+        if (key === CONFIG_READ_KEY) {
+          return typeof configRead === "string" ? configRead : configRead();
+        }
+        return "";
+      });
+    }
+
+    function buildTickService(): CloneSyncService {
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      (service as unknown as { resolvedBranch: string }).resolvedBranch = "main";
+      return service;
+    }
+
+    it("reads the remote config once and writes nothing when it is already narrowed", async () => {
+      mockTickRaw(CONVERGED);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      // The tick still merged, so this is a full steady-state tick, not one
+      // that returned early.
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      expect(rawCalls()).not.toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
+      expect(rawCalls()).not.toContainEqual(SCAN_REFS);
+      expect(rawCalls().filter((args) => args[0] === "config")).toEqual([CONFIG_READ]);
+    });
+
+    // The spawn budget of the commonest thing this tool does: one tick over a
+    // clone that is already narrowed and one commit behind. Every entry is a
+    // git process this service starts, so a new one added to this path has to
+    // be justified here. The relationship classification is GitService's and
+    // is stubbed out in this harness, so its own reads are not in the list.
+    it("spends a fixed set of git processes on a steady-state tick", async () => {
+      mockTickRaw(CONVERGED);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls().map((args) => args.join(" "))).toEqual([
+        // The tick's own gates: the branch it stands on, the origin it points
+        // at, and the primary-checkout guard every write path goes through.
+        "rev-parse --abbrev-ref HEAD",
+        "remote get-url origin",
+        PRIMARY_CHECKOUT_GIT_DIR_PROBE,
+        // Shallow state, then the remote-config read that replaced the two
+        // writes and the ref scan.
+        "rev-parse --is-shallow-repository",
+        CONFIG_READ_KEY,
+        // Post-fetch: the ref materialized, and the commit the merge starts
+        // from.
+        "show-ref --verify refs/remotes/origin/main",
+        "rev-parse HEAD",
+      ]);
+      expect(gitMock.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("narrows a widened refspec on the tick, and sweeps the refs it fetched", async () => {
+      mockTickRaw(
+        configReadOutput([
+          ["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+          ["remote.origin.tagopt", "--no-tags"],
+        ]),
+        ["refs/remotes/origin/HEAD", "refs/remotes/origin/feat/other"],
+      );
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).toContainEqual(SCAN_REFS);
+      expect(staleRefDeleteCalls()).toEqual([["branch", "-r", "-D", "origin/feat/other"]]);
+      // Only what drifted: tagOpt already said --no-tags.
+      expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
+    });
+
+    // The shape a legacy all-branches clone arrives in: the scan answers with
+    // HEAD, the tracked branch and everything the wide refspec fetched. One
+    // process deletes the stale ones, and the two refs that must survive are
+    // not named in it.
+    it("deletes every stale ref in a single git process", async () => {
+      mockTickRaw(configReadOutput([["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]]), [
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/a",
+        "refs/remotes/origin/b",
+      ]);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(staleRefDeleteCalls()).toEqual([["branch", "-r", "-D", "origin/a", "origin/b"]]);
+      expect(rawCalls().filter((args) => args[0] === "update-ref")).toEqual([]);
+      expect(sweptRefNames()).toEqual(["origin/a", "origin/b"]);
+    });
+
+    // The only bound left on the batch is the length of one command line, so
+    // a clone with thousands of stale refs still spends a handful of
+    // processes rather than one per ref — and every ref is named exactly once
+    // across them.
+    it("splits a large sweep into bounded batches instead of one process per ref", async () => {
+      const stale = Array.from({ length: 450 }, (_, index) => `refs/remotes/origin/feat/b${index}`);
+      mockTickRaw(configReadOutput([["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]]), stale);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(staleRefDeleteCalls().map((args) => args.slice(0, 3))).toEqual([
+        ["branch", "-r", "-D"],
+        ["branch", "-r", "-D"],
+        ["branch", "-r", "-D"],
+      ]);
+      expect(staleRefDeleteCalls().map((args) => args.length - 3)).toEqual([200, 200, 50]);
+      expect(sweptRefNames()).toEqual(stale.map((ref) => ref.slice("refs/remotes/".length)));
+    });
+
+    // Best-effort, batch by batch: `git branch -D` reports the refs it could
+    // not remove by failing the process it was asked in, and the refs in the
+    // batches after it still have to be tried. The sweep is cleanup — the
+    // tick that owns it narrows the refspec and syncs regardless.
+    // How much of a refused batch git removed is version-dependent (2.43 kept
+    // going, 2.55 rolled the whole batch back), so the refused batch is retried
+    // one ref at a time rather than trusting either answer.
+    it("retries a refused batch one ref at a time, and still narrows the refspec", async () => {
+      const stale = Array.from({ length: 250 }, (_, index) => `refs/remotes/origin/feat/b${index}`);
+      mockTickRaw(configReadOutput([["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]]), stale);
+      const tickRaw = gitMock.raw.getMockImplementation() as (args: string[]) => Promise<string>;
+      let batches = 0;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        // Only the first multi-ref batch is refused; the per-ref retries that
+        // follow it are allowed through, except the one ref git really holds.
+        if (args[0] === "branch" && args.length > 4 && ++batches === 1) {
+          throw new Error("error: cannot lock ref 'refs/remotes/origin/feat/b7': Unable to create lock file");
+        }
+        if (args[0] === "branch" && args[3] === "origin/feat/b7") {
+          throw new Error("error: cannot lock ref 'refs/remotes/origin/feat/b7': Unable to create lock file");
+        }
+        return tickRaw(args);
+      });
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      const deletes = staleRefDeleteCalls();
+      // The refused batch of 200, then 200 single-ref retries, then the
+      // untouched second batch of 50.
+      expect(deletes.map((args) => args.length - 3)).toEqual([200, ...Array.from({ length: 200 }, () => 1), 50]);
+      const retried = deletes.filter((args) => args.length === 4).map((args) => args[3]);
+      expect(retried).toContain("origin/feat/b7");
+      expect(new Set(retried).size).toBe(200);
+      expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+    });
+
+    // The sweep runs before the write it belongs to, so a process killed
+    // between them leaves the wide refspec that makes the next tick redo both.
+    it("sweeps the stale refs before narrowing the refspec", async () => {
+      mockTickRaw(configReadOutput([["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]]), [
+        "refs/remotes/origin/feat/other",
+      ]);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      const keys = rawCalls().map((args) => args.join(" "));
+      expect(keys.indexOf(SCAN_REFS.join(" "))).toBeLessThan(keys.indexOf(WRITE_REFSPEC.join(" ")));
+      expect(keys.indexOf("branch -r -D origin/feat/other")).toBeGreaterThan(-1);
+      expect(keys.indexOf("branch -r -D origin/feat/other")).toBeLessThan(keys.indexOf(WRITE_REFSPEC.join(" ")));
+    });
+
+    it("writes tagOpt alone when only tagOpt drifted, and leaves the refs alone", async () => {
+      mockTickRaw(
+        configReadOutput([
+          ["remote.origin.fetch", NARROW_REFSPEC],
+          ["remote.origin.tagopt", "--tags"],
+        ]),
+        ["refs/remotes/origin/feat/other"],
+      );
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls()).toContainEqual(WRITE_TAG_OPT);
+      expect(rawCalls()).not.toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).not.toContainEqual(SCAN_REFS);
+    });
+
+    // `git config` reports a key it does not hold with exit code 1 and an
+    // empty stderr, which simple-git resolves with "" instead of rejecting —
+    // the same answer a read that genuinely failed gives. Both have to write:
+    // a read believed on the strength of silence would leave a clone
+    // un-narrowed for as long as the daemon runs.
+    it.each([
+      ["the keys are unset", ""],
+      ["the read reports only one of the two", configReadOutput([["remote.origin.tagopt", "--no-tags"]])],
+      [
+        "the refspec is one of several values",
+        configReadOutput([
+          ["remote.origin.fetch", NARROW_REFSPEC],
+          ["remote.origin.fetch", "+refs/pull/*/head:refs/remotes/origin/pr/*"],
+        ]),
+      ],
+    ])("converges the remote when %s", async (_case, output) => {
+      mockTickRaw(output);
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).toContainEqual(SCAN_REFS);
+    });
+
+    it("converges the remote when the read itself fails", async () => {
+      mockTickRaw(() => {
+        throw new Error("fatal: bad config line 4 in file .git/config");
+      });
+      const service = buildTickService();
+
+      await service.runSyncAttempt();
+
+      expect(rawCalls()).toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).toContainEqual(WRITE_TAG_OPT);
+      expect(rawCalls()).toContainEqual(SCAN_REFS);
+    });
+
+    // Adoption is the one call that sweeps whatever it finds: the directory
+    // is a clone somebody else made, so a refspec that already reads narrow
+    // says nothing about the refs lying next to it. It happens once per
+    // process, not once per tick.
+    it("still sweeps stale refs when adopting a clone whose config is already narrowed", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
+      (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
+      (fs.access as unknown as Mock).mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+      mockTickRaw(CONVERGED, ["refs/remotes/origin/feat/other"]);
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(rawCalls()).toContainEqual(SCAN_REFS);
+      expect(staleRefDeleteCalls()).toEqual([["branch", "-r", "-D", "origin/feat/other"]]);
+      expect(rawCalls()).not.toContainEqual(WRITE_REFSPEC);
+      expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
+    });
   });
 
   describe("branch resolution", () => {
@@ -1392,6 +3612,306 @@ describe("CloneSyncService", () => {
 
       expect(resolved).toBe("develop");
       expect(gitService.getRemoteDefaultBranch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("credential redaction", () => {
+    const TOKEN_URL = "https://ci-bot:s3cr3t-token@github.com/example/repo.git";
+    const REDACTED_URL = "https://***@github.com/example/repo.git";
+    const OTHER_TOKEN_URL = "https://other-bot:0th3r-token@github.com/example/other.git";
+
+    it("logs the clone with the URL redacted while git receives the working URL", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+      (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+      (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+      const infoSpy = vi.spyOn(logger, "info");
+      const config = makeConfig({ repoUrl: TOKEN_URL });
+      const service = new CloneSyncService(config, buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(gitMock.clone).toHaveBeenCalledWith(TOKEN_URL, config.worktreeDir, expect.any(Array));
+      expect(infoSpy).toHaveBeenCalledWith(`Cloning '${REDACTED_URL}' (main) into '${config.worktreeDir}'...`);
+      expect(JSON.stringify(infoSpy.mock.calls)).not.toContain("s3cr3t-token");
+    });
+
+    it("reports an origin mismatch with both URLs redacted in the skip, the warning and the progress event", async () => {
+      const skips: CloneSkipReason[] = [];
+      const progressEvents: Array<{ phase: string; message: string }> = [];
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "remote get-url origin") return OTHER_TOKEN_URL;
+        return "";
+      });
+      const warnSpy = vi.spyOn(logger, "warn");
+      const service = new CloneSyncService(makeConfig({ repoUrl: TOKEN_URL }), buildGitService(), logger, {
+        onSkip: (reason) => skips.push(reason),
+        progressEmitter: (event) => progressEvents.push(event),
+      });
+
+      await service.initialize();
+
+      expect(skips).toEqual([
+        { kind: "origin_mismatch", actual: "https://***@github.com/example/other.git", expected: REDACTED_URL },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`has origin 'https://***@github.com/example/other.git', expected '${REDACTED_URL}'`),
+      );
+      expect(progressEvents).toContainEqual(
+        expect.objectContaining({
+          phase: "skip",
+          message: `Skipping '${REDACTED_URL}': origin 'https://***@github.com/example/other.git' is not '${REDACTED_URL}'`,
+        }),
+      );
+      expect(JSON.stringify([skips, warnSpy.mock.calls, progressEvents])).not.toMatch(/s3cr3t-token|0th3r-token/);
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  // A clone-mode worktreeDir the user pointed us at may be a linked worktree
+  // (`git worktree add`) or a submodule. Both share the config and refs of the
+  // repository that owns their git dir, so narrowing `remote.origin.fetch`,
+  // deleting `refs/remotes/origin/*` or fetching with --prune there rewrites
+  // THAT repository — on the first sync and every tick after it.
+  describe("primary-checkout guard", () => {
+    const OWNING_GIT_DIR = "/other/repo/.git";
+    const LINKED_GIT_DIRS = `${OWNING_GIT_DIR}/worktrees/app-main\n${OWNING_GIT_DIR}\n`;
+
+    function mockRaw(responder: (key: string) => string | undefined): void {
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = Array.isArray(args) ? args.join(" ") : String(args);
+        return responder(key) ?? "";
+      });
+    }
+
+    function adoptedDirectoryWith(gitDirs: string): (key: string) => string | undefined {
+      return (key) => {
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return gitDirs;
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        return "";
+      };
+    }
+
+    function setInitialized(service: CloneSyncService): void {
+      (service as unknown as { initialized: boolean }).initialized = true;
+      (service as unknown as { resolvedBranch: string }).resolvedBranch = "main";
+    }
+
+    function repositoryWrites(): string[][] {
+      return gitMock.raw.mock.calls
+        .map((call) => (Array.isArray(call[0]) ? (call[0] as string[]) : []))
+        .filter(
+          (args) =>
+            (args[0] === "config" && args[1] === "--replace-all") ||
+            (args[0] === "update-ref" && args[1] === "-d") ||
+            // The stale-ref sweep's batched delete, and the wizard's branch
+            // creation: both write refs into whatever repository they reach.
+            args[0] === "branch" ||
+            args[0] === "switch" ||
+            args[0] === "remote",
+        )
+        .filter((args) => args[0] !== "remote" || args[1] !== "get-url");
+    }
+
+    function expectNothingWritten(): void {
+      expect(repositoryWrites()).toEqual([]);
+      expect(gitMock.fetch).not.toHaveBeenCalled();
+      expect(gitMock.merge).not.toHaveBeenCalled();
+    }
+
+    it("refuses to adopt a checkout whose git dir belongs to another repository", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      mockRaw(adoptedDirectoryWith(LINKED_GIT_DIRS));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.initialize()).rejects.toMatchObject({
+        constructor: ConfigError,
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+        message: expect.stringContaining(`Its shared git directory is '${OWNING_GIT_DIR}'`),
+      });
+      expectNothingWritten();
+    });
+
+    // A linked worktree whose git dir was relocated has a real `.git`
+    // DIRECTORY holding a `commondir` file, so it passes the lstat gate and
+    // only the common-dir comparison catches it. Without this case the whole
+    // `--git-common-dir` half of the guard is untested.
+    it("refuses a real '.git' directory that shares another repository's common dir", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      (fs.lstat as unknown as Mock).mockResolvedValue(buildFsStats("directory"));
+      mockRaw(adoptedDirectoryWith(`.git\n${OWNING_GIT_DIR}\n`));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.initialize()).rejects.toMatchObject({
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+        message: expect.stringContaining(`Its shared git directory is '${OWNING_GIT_DIR}'`),
+      });
+      expectNothingWritten();
+    });
+
+    it("names the gitdir pointer when '.git' is a linked worktree's file", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      (fs.lstat as unknown as Mock).mockResolvedValue(buildFsStats("file"));
+      // Only '.git' itself reads back: it is a file here, so nothing else in
+      // this checkout's git directory can be read at all.
+      (fs.readFile as unknown as Mock).mockImplementation(async (p: unknown) => {
+        if (String(p) === "/tmp/clone-demo/.git") return `gitdir: ${OWNING_GIT_DIR}/worktrees/app-main\n`;
+        throw Object.assign(new Error("ENOTDIR"), { code: "ENOTDIR" });
+      });
+      mockRaw(adoptedDirectoryWith(LINKED_GIT_DIRS));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.initialize()).rejects.toMatchObject({
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+        message: expect.stringContaining(`is a gitdir pointer to '${OWNING_GIT_DIR}/worktrees/app-main'`),
+      });
+      expectNothingWritten();
+    });
+
+    // git reports a symlinked `.git` exactly like a primary one, so a link
+    // that relocates this repo's own git dir cannot be told apart from one
+    // aimed at a git dir another checkout is still using.
+    it("refuses a '.git' symlink it cannot prove is unshared", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      (fs.lstat as unknown as Mock).mockResolvedValue(buildFsStats("symlink"));
+      (fs.realpath as unknown as Mock).mockResolvedValue("/elsewhere/gitdir");
+      mockRaw(adoptedDirectoryWith(PRIMARY_CHECKOUT_GIT_DIRS));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.initialize()).rejects.toMatchObject({
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+        message: expect.stringContaining("is a symlink to '/elsewhere/gitdir'"),
+      });
+      expectNothingWritten();
+    });
+
+    it("fails closed when the git-dir probe itself fails", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) throw new Error("fatal: not a git repository");
+        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        return "";
+      });
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.initialize()).rejects.toMatchObject({
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+        message: expect.stringContaining("its git directory could not be read"),
+      });
+      expectNothingWritten();
+    });
+
+    it("fails closed when git reports no git directory at all", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      mockRaw(adoptedDirectoryWith(""));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.initialize()).rejects.toMatchObject({
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+        message: expect.stringContaining("did not report its git directory"),
+      });
+      expectNothingWritten();
+    });
+
+    it("fails closed when '.git' cannot be stat'ed", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      (fs.lstat as unknown as Mock).mockRejectedValue(
+        Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }),
+      );
+      mockRaw(adoptedDirectoryWith(PRIMARY_CHECKOUT_GIT_DIRS));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.initialize()).rejects.toMatchObject({
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+        message: expect.stringContaining("could not be read"),
+      });
+      expectNothingWritten();
+    });
+
+    // The daemon reuses one service across ticks, so a directory that becomes
+    // a linked worktree after init must be refused on the next tick too.
+    it("re-checks on every sync tick, not only at init", async () => {
+      mockRaw(adoptedDirectoryWith(LINKED_GIT_DIRS));
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      setInitialized(service);
+
+      await expect(service.runSyncAttempt()).rejects.toMatchObject({
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+      });
+      expectNothingWritten();
+    });
+
+    it("refuses in checkoutBranch before switching or rewriting the remote", async () => {
+      mockRaw(adoptedDirectoryWith(LINKED_GIT_DIRS));
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+      setInitialized(service);
+
+      await expect(service.checkoutBranch("main")).rejects.toMatchObject({
+        code: "CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
+      });
+      expectNothingWritten();
+    });
+
+    // Listing is read-only: a linked worktree is still reported, it just can't
+    // be written to.
+    it("still reports the checkout through getWorktrees", async () => {
+      (fs.access as unknown as Mock).mockResolvedValue(undefined);
+      mockRaw(adoptedDirectoryWith(LINKED_GIT_DIRS));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await expect(service.getWorktrees()).resolves.toEqual([{ path: "/tmp/clone-demo", branch: "main" }]);
+      expectNothingWritten();
+    });
+
+    it("adopts a primary checkout whose git dir git reports as an absolute path", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      mockRaw(adoptedDirectoryWith("/tmp/clone-demo/.git\n/tmp/clone-demo/.git\n"));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(gitMock.raw).toHaveBeenCalledWith([
+        "config",
+        "--replace-all",
+        "remote.origin.fetch",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ]);
+    });
+
+    // A checkout reached through a symlinked parent (macOS '/tmp' ->
+    // '/private/tmp') is the same directory spelled differently, not a
+    // different repository.
+    it("adopts a primary checkout reported through a symlinked parent path", async () => {
+      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
+      (fs.realpath as unknown as Mock).mockResolvedValue("/private/tmp/clone-demo/.git");
+      mockRaw(adoptedDirectoryWith("/private/tmp/clone-demo/.git\n/private/tmp/clone-demo/.git\n"));
+
+      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+      await service.initialize();
+
+      expect(gitMock.raw).toHaveBeenCalledWith([
+        "config",
+        "--replace-all",
+        "remote.origin.fetch",
+        "+refs/heads/main:refs/remotes/origin/main",
+      ]);
     });
   });
 });

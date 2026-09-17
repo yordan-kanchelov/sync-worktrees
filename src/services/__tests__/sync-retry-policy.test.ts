@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_CONFIG } from "../../constants";
 import { SyncRetryPolicy } from "../sync-retry-policy";
 
 import type { Config } from "../../types";
@@ -54,6 +55,35 @@ describe("SyncRetryPolicy", () => {
       maxDelayMs: 20,
       backoffMultiplier: 3,
       jitterMs: 7,
+    });
+  });
+
+  it("falls back to the shipped retry defaults when the config configures none", () => {
+    const { policy } = makePolicy();
+
+    const options = policy.createOptions(policy.createContext());
+
+    // Pinned twice on purpose. The literals are the behaviour an unconfigured
+    // user gets, and `jitterMs: 0` is the one that would otherwise flip
+    // silently: a non-zero default adds delay to every retry of every sync
+    // nobody asked to jitter. The DEFAULT_CONFIG comparison is what keeps this
+    // fallback and the config loader's cross-field validator, which reads the
+    // same constants, from drifting into two sets of numbers.
+    expect(options).toMatchObject({
+      maxAttempts: 3,
+      maxLfsRetries: 2,
+      initialDelayMs: 1000,
+      maxDelayMs: 30000,
+      backoffMultiplier: 2,
+      jitterMs: 0,
+    });
+    expect(options).toMatchObject({
+      maxAttempts: DEFAULT_CONFIG.RETRY.MAX_ATTEMPTS,
+      maxLfsRetries: DEFAULT_CONFIG.RETRY.MAX_LFS_RETRIES,
+      initialDelayMs: DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS,
+      maxDelayMs: DEFAULT_CONFIG.RETRY.MAX_DELAY_MS,
+      backoffMultiplier: DEFAULT_CONFIG.RETRY.BACKOFF_MULTIPLIER,
+      jitterMs: DEFAULT_CONFIG.RETRY.JITTER_MS,
     });
   });
 

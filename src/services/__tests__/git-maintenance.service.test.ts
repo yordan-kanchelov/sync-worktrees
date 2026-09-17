@@ -90,14 +90,14 @@ describe("GitMaintenanceService", () => {
       await expect(readState(statePath)).resolves.toMatchObject({ lastSuccessAt: new Date(NOW).toISOString() });
     });
 
-    it("runs forced aggressive cleanup in the clone working directory", async () => {
+    it("runs forced cleanup in the clone working directory", async () => {
       const { factory, raw, factoryMock } = createGitFactory();
       const svc = new GitMaintenanceService(config({ enabled: false }), gitService, logger, factory);
 
       await expect(svc.runNowUnlocked(NOW)).resolves.toBe(true);
 
       expect(factoryMock).toHaveBeenCalledWith(tmpDir);
-      expect(raw).toHaveBeenCalledWith(["gc", "--prune=now"]);
+      expect(raw).toHaveBeenCalledWith(["gc", `--prune=${MAINTENANCE_CONSTANTS.FORCE_CLEAN_PRUNE_EXPIRE}`]);
     });
 
     it("skips when the repo is not initialized (no .git dir)", async () => {
@@ -119,9 +119,32 @@ describe("GitMaintenanceService", () => {
       expect(raw).toHaveBeenCalledWith(["gc", "--prune=now"]);
     });
 
-    it("runs aggressive cleanup immediately even when maintenance is disabled", async () => {
+    it("runs cleanup immediately even when maintenance is disabled", async () => {
       const { factory, raw } = createGitFactory();
       const svc = new GitMaintenanceService(config({ enabled: false }), gitService, logger, factory);
+
+      await expect(svc.runNowUnlocked(NOW)).resolves.toBe(true);
+
+      expect(raw).toHaveBeenCalledWith(["gc", `--prune=${MAINTENANCE_CONSTANTS.FORCE_CLEAN_PRUNE_EXPIRE}`]);
+    });
+
+    // The object store is shared with every checkout, and `--prune=now` deletes
+    // objects a concurrent `git commit` has written but not yet anchored to a
+    // ref. An explicit run still prunes — just not into that window — unless
+    // the config flag that documents the hazard asks for `now`.
+    it("does not prune to `now` on an explicit run unless aggressive asks for it", async () => {
+      const { factory, raw } = createGitFactory();
+      const svc = new GitMaintenanceService(config({ enabled: false }), gitService, logger, factory);
+
+      await expect(svc.runNowUnlocked(NOW)).resolves.toBe(true);
+
+      expect(raw).not.toHaveBeenCalledWith(["gc", "--prune=now"]);
+      expect(raw).not.toHaveBeenCalledWith(["gc"]);
+    });
+
+    it("prunes to `now` on an explicit run when aggressive is set", async () => {
+      const { factory, raw } = createGitFactory();
+      const svc = new GitMaintenanceService(config({ enabled: false, aggressive: true }), gitService, logger, factory);
 
       await expect(svc.runNowUnlocked(NOW)).resolves.toBe(true);
 

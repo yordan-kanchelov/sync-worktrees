@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import packageJson from "../../../package.json" with { type: "json" };
 import { parseArguments } from "../cli";
 
 describe("parseArguments", () => {
@@ -68,10 +69,63 @@ describe("parseArguments", () => {
     const drop = parseArguments(["trash", "--filter", "backend", "--dropKeepRef", "keep-id"]);
     if (drop.command !== "trash") throw new Error("expected trash command");
     expect(drop.dropKeepRef).toBe("keep-id");
+
+    const dropAll = parseArguments(["trash", "--filter", "backend", "--dropAllKeepRefs"]);
+    if (dropAll.command !== "trash") throw new Error("expected trash command");
+    expect(dropAll).toMatchObject({ dropAllKeepRefs: true, dropKeepRef: undefined });
   });
 
-  it("rejects conflicting trash mutations", () => {
-    expect(() => parseArguments(["trash", "--restore", "entry", "--dropKeepRef", "keep"])).toThrow(/process\.exit/);
+  it("parses trash --purge, --json and --wait", () => {
+    const purge = parseArguments(["trash", "--filter", "backend", "--purge", "entry-id", "--wait"]);
+    if (purge.command !== "trash") throw new Error("expected trash command");
+    expect(purge).toMatchObject({ purge: "entry-id", wait: true, restore: undefined });
+
+    const json = parseArguments(["trash", "--filter", "backend", "--json"]);
+    if (json.command !== "trash") throw new Error("expected trash command");
+    expect(json).toMatchObject({ json: true, purge: undefined, wait: undefined });
+  });
+
+  it.each([
+    ["restore against dropKeepRef", ["trash", "--restore", "entry", "--dropKeepRef", "keep"]],
+    ["restore against dropAllKeepRefs", ["trash", "--restore", "entry", "--dropAllKeepRefs"]],
+    ["dropKeepRef against dropAllKeepRefs", ["trash", "--dropKeepRef", "keep", "--dropAllKeepRefs"]],
+    ["purge against restore", ["trash", "--purge", "entry", "--restore", "entry"]],
+    ["purge against dropKeepRef", ["trash", "--purge", "entry", "--dropKeepRef", "keep"]],
+    ["purge against dropAllKeepRefs", ["trash", "--purge", "entry", "--dropAllKeepRefs"]],
+    // --json describes the listing; an action produces no listing to describe.
+    ["json against restore", ["trash", "--json", "--restore", "entry"]],
+    ["json against purge", ["trash", "--json", "--purge", "entry"]],
+    ["json against dropKeepRef", ["trash", "--json", "--dropKeepRef", "keep"]],
+    ["json against dropAllKeepRefs", ["trash", "--json", "--dropAllKeepRefs"]],
+    // --wait is about the repository lock, which the listing never takes.
+    ["wait against json", ["trash", "--wait", "--json"]],
+    ["wait against dropKeepRef", ["trash", "--wait", "--dropKeepRef", "keep"]],
+    ["wait against dropAllKeepRefs", ["trash", "--wait", "--dropAllKeepRefs"]],
+  ])("rejects conflicting trash mutations: %s", (_label, argv) => {
+    expect(() => parseArguments(argv)).toThrow(/process\.exit/);
+  });
+
+  // `--help` is the CLI's own reference, and it is the only one that ships with
+  // the binary rather than with the README. A subcommand that exists but is not
+  // listed there is invisible: `trash` was added in 5.2.0 and went unmentioned
+  // in the README's Subcommands list until now, which is exactly the failure
+  // this pins on the side that the suite can see.
+  it("lists every subcommand in --help", () => {
+    expect(() => parseArguments(["--help"])).toThrow(/process\.exit/);
+
+    const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+
+    expect(output).toContain("sync-worktrees init");
+    expect(output).toContain("sync-worktrees list");
+    expect(output).toContain("sync-worktrees trash");
+  });
+
+  it("prints the package version for --version", () => {
+    expect(() => parseArguments(["--version"])).toThrow(/process\.exit/);
+
+    const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+
+    expect(output.trim()).toBe(packageJson.version);
   });
 
   it("rejects removed flag --repoUrl under strict()", () => {

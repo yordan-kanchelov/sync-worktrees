@@ -29,7 +29,7 @@ jobs:
         uses: ./.github/actions/setup-node-pnpm
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
       # npm OIDC trusted publishing requires npm CLI >= 11.5.1; Node 22 ships
       # with npm 10.x. Upgrade before `changeset publish` shells out to npm.

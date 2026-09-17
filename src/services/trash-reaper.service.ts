@@ -4,6 +4,7 @@ import * as path from "path";
 import { GIT_CONSTANTS } from "../constants";
 import { formatBytes } from "../utils/disk-space";
 import { getErrorMessage } from "../utils/lfs-error";
+import { removeEmptiedTrashContainer, removeTrashPayload, trashDeleteHint } from "../utils/trash-container";
 import { computeTrashRootHash } from "../utils/trash-root-hash";
 
 import { summarizeTrashEntries } from "./trash.service";
@@ -14,9 +15,28 @@ import type { RemovalAuditService } from "./removal-audit.service";
 import type { TrashEntry, TrashService } from "./trash.service";
 import type { Config } from "../types";
 
+export interface ReapOptions {
+  /**
+   * True only when this tick's `fetch --all --prune` completed, so every
+   * `refs/remotes/*` ref reflects the remote as of this tick. Without it the
+   * reaper cannot tell a remote-tracking ref that still exists from one git has
+   * simply not pruned yet, and never releases a keep ref on its say-so.
+   */
+  remoteRefsFresh?: boolean;
+}
+
 export interface TrashReapResult {
   deleted: number;
   orphanedRefsDeleted: number;
+  /** Entries present on disk that the caller's purge selection did not name. */
+  skippedNotSelected: number;
+  /**
+   * Permanent `refs/sync-worktrees/keep/<id>` refs minted on the way out, for
+   * entries whose commits were on no remote. Recorded when the ref is created,
+   * not when the payload delete succeeds: the ref is what protects the commits,
+   * and it exists either way.
+   */
+  keepRefsMinted: string[];
   errors: string[];
 }
 
@@ -25,6 +45,15 @@ export interface TrashReapResult {
 // only manifested entries whose realpath stays under the trash root, and only
 // after the attempt is durably recorded in the audit log.
 export class TrashReaperService {
+  // Unrecognized containers and legacy flat pin refs are steady states the
+  // reaper deliberately never acts on, so repeating the warning on every tick
+  // (hourly, for as long as the process lives) is noise that buries the lines
+  // that do need attention. Warn when the situation first appears and stay
+  // quiet until it changes; the trash listing and the force-clean preview
+  // report invalid entries independently, so nothing becomes invisible.
+  private warnedInvalidPaths = new Set<string>();
+  private warnedLegacyFlatRefs = false;
+
   constructor(
     private readonly config: Config,
     private readonly trashService: TrashService,
@@ -39,16 +68,53 @@ export class TrashReaperService {
 
   // Disabled trash means "don't touch my trash" — existing entries are left
   // alone rather than aged out behind the user's back.
-  async reapExpiredUnlocked(now: Date = new Date()): Promise<TrashReapResult> {
-    return this.reapUnlocked(now, false);
+  //
+  // `remoteRefsFresh` says whether this tick's `fetch --all --prune` completed,
+  // which is what licenses the keep-ref re-check below. It defaults to false so
+  // every caller that cannot vouch for the remote-tracking refs gets the
+  // unconditional keep-ref behaviour.
+  async reapExpiredUnlocked(now: Date = new Date(), options: ReapOptions = {}): Promise<TrashReapResult> {
+    return this.reapUnlocked(now, null, options.remoteRefsFresh ?? false, true);
   }
 
-  async purgeAllUnlocked(): Promise<TrashReapResult> {
-    return this.reapUnlocked(new Date(), true);
+  // Purges exactly the entries named by `entryIds` — the set a force-clean
+  // confirmation was shown — regardless of expiry. Ids whose entry is no longer
+  // there (reaped since, or half-deleted so its manifest no longer parses) are
+  // simply not found among the listed entries and cost nothing; entries that
+  // are there but unnamed are left alone and counted in `skippedNotSelected`.
+  //
+  // No keep refs: force clean's whole point is that the confirmation covered
+  // the recovery refs too, and it deletes them in the same breath — minting new
+  // ones here would put back what the person just asked to be rid of.
+  async purgeAllUnlocked(entryIds: readonly string[]): Promise<TrashReapResult> {
+    return this.reapUnlocked(new Date(), new Set(entryIds), false, false);
   }
 
-  private async reapUnlocked(now: Date, purgeAll: boolean): Promise<TrashReapResult> {
-    const result: TrashReapResult = { deleted: 0, orphanedRefsDeleted: 0, errors: [] };
+  // One named entry, ahead of its expiry, with the reap path's keep-ref
+  // protection intact. The difference from purgeAllUnlocked is deliberate: a
+  // person deleting a single entry has confirmed that entry, not the commits
+  // behind it, and a `keepPinOnReap` entry exists precisely because those
+  // commits were on no remote. `remoteRefsFresh` is false — this runs from a
+  // CLI invocation that has fetched nothing, so the re-check never gets to
+  // release the anchor on the strength of a stale remote-tracking ref.
+  async purgeEntryUnlocked(entryId: string): Promise<TrashReapResult> {
+    return this.reapUnlocked(new Date(), new Set([entryId]), false, true);
+  }
+
+  private async reapUnlocked(
+    now: Date,
+    purgeIds: ReadonlySet<string> | null,
+    remoteRefsFresh: boolean,
+    honorKeepPin: boolean,
+  ): Promise<TrashReapResult> {
+    const purgeAll = purgeIds !== null;
+    const result: TrashReapResult = {
+      deleted: 0,
+      orphanedRefsDeleted: 0,
+      skippedNotSelected: 0,
+      keepRefsMinted: [],
+      errors: [],
+    };
     if (!purgeAll && !this.trashService.isEnabled()) return result;
 
     let realRoot: string;
@@ -71,11 +137,19 @@ export class TrashReaperService {
 
     const { entries, invalid } = await this.trashService.listEntries();
     for (const invalidPath of invalid) {
+      if (this.warnedInvalidPaths.has(invalidPath)) continue;
       this.logger.warn(`⚠️ Trash reaper: leaving unrecognized entry '${invalidPath}' alone (no valid manifest)`);
     }
+    // Rebuilt rather than added to, so an entry that is repaired and later
+    // breaks again is reported again instead of staying silently suppressed.
+    this.warnedInvalidPaths = new Set(invalid);
 
     const reapedIds = new Set<string>();
     for (const entry of entries) {
+      if (purgeIds !== null && !purgeIds.has(entry.manifest.id)) {
+        result.skippedNotSelected++;
+        continue;
+      }
       const expiresAt = new Date(entry.manifest.expiresAt);
       if (Number.isNaN(expiresAt.getTime())) {
         this.logger.warn(`⚠️ Trash reaper: entry '${entry.manifest.id}' has an unparseable expiry; skipping`);
@@ -101,10 +175,16 @@ export class TrashReaperService {
       // deleting anything. On failure defer the whole reap to the next run —
       // these commits may be the only copy left anywhere.
       let keepRef: string | null = null;
-      if (!purgeAll && entry.manifest.keepPinOnReap && entry.manifest.headOid) {
+      if (
+        honorKeepPin &&
+        entry.manifest.keepPinOnReap &&
+        entry.manifest.headOid &&
+        !(await this.commitsReachedARemote(entry.manifest.headOid, remoteRefsFresh))
+      ) {
         keepRef = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${entry.manifest.id}`;
         try {
           await this.gitService.updateRef(keepRef, entry.manifest.headOid);
+          result.keepRefsMinted.push(keepRef);
         } catch (error) {
           this.logger.warn(
             `⚠️ Trash reaper: cannot create keep ref '${keepRef}' for '${entry.manifest.id}'; deferring reap: ${getErrorMessage(error)}`,
@@ -132,32 +212,34 @@ export class TrashReaperService {
         continue;
       }
 
+      // Payload first (see removeTrashPayload): a refusal here leaves the
+      // manifest in place, so the entry stays listed and expired — this run
+      // reports it with a hint, the next one retries it.
       try {
-        await fs.rm(entry.containerPath, { recursive: true, force: true });
+        await removeTrashPayload(entry.containerPath);
       } catch (error) {
-        this.logger.warn(`⚠️ Trash reaper: failed to delete '${entry.manifest.id}': ${getErrorMessage(error)}`);
-        result.errors.push(`${entry.manifest.id}: ${getErrorMessage(error)}`);
-        await this.removalAudit
-          .record({
-            action: auditAction,
-            result: "failure",
-            path: entry.manifest.originalPath,
-            trashId: entry.manifest.id,
-            error: getErrorMessage(error),
-          })
-          .catch(() => undefined);
+        await this.reportDeleteFailure(entry, auditAction, error, result.errors);
         continue;
       }
 
+      // The pin outlives the payload only until here. Releasing it before the
+      // manifest goes means a refused container delete can no longer strand a
+      // ref that nothing would come back for: the sweep below keys on the
+      // container name, which still exists.
       if (entry.manifest.pinRef) {
-        await this.gitService
-          .deleteRef(entry.manifest.pinRef)
-          .catch((error: unknown) => {
-            result.errors.push(`${entry.manifest.pinRef}: ${getErrorMessage(error)}`);
-            this.logger.warn(
-              `⚠️ Trash reaper: failed to delete pin ref '${entry.manifest.pinRef}': ${getErrorMessage(error)}`,
-            );
-          });
+        await this.gitService.deleteRef(entry.manifest.pinRef).catch((error: unknown) => {
+          result.errors.push(`${entry.manifest.pinRef}: ${getErrorMessage(error)}`);
+          this.logger.warn(
+            `⚠️ Trash reaper: failed to delete pin ref '${entry.manifest.pinRef}': ${getErrorMessage(error)}`,
+          );
+        });
+      }
+
+      try {
+        await removeEmptiedTrashContainer(entry.containerPath);
+      } catch (error) {
+        await this.reportDeleteFailure(entry, auditAction, error, result.errors);
+        continue;
       }
 
       reapedIds.add(entry.manifest.id);
@@ -198,6 +280,65 @@ export class TrashReaperService {
     return result;
   }
 
+  // The keep ref exists because, at the moment the worktree was pruned, its
+  // HEAD commits were on no remote. That can stop being true while the entry
+  // sits in the trash: the branch is pushed again, or the commits land on one
+  // that is. Asking the same question the entry's own bundle was decided on
+  // (`rev-list --count <oid> --not --remotes`, see createBundleFromRef) keeps
+  // the permanent ref for the entries that still need it.
+  //
+  // Narrow on purpose, and NOT a fix for keep refs accumulating: a squash or
+  // rebase merge rewrites the commits, so the originals stay reachable from no
+  // remote ref and still get a keep ref. What this skips is the entry whose own
+  // commits are now on a remote — nothing there is worth a permanent anchor.
+  //
+  // Anything but a cleanly parsed zero mints the ref: a rev-list that failed, a
+  // count that could not be read, an oid git cannot resolve.
+  //
+  // `remoteRefsFresh` is the other half of the proof. A `refs/remotes/*` ref
+  // that `fetch --prune` has not dropped yet still makes its commits reachable,
+  // so a zero read against a stale ref set would release the anchor for commits
+  // the remote no longer has — measured: after the branch is deleted on the
+  // remote the count reads 0 until the next `fetch --prune`, and 2 again after
+  // it. The caller passes true only for a tick whose `fetch --all --prune`
+  // completed; a failed fetch, or the LFS fallback that fetches branch by
+  // branch and so prunes only the branches it names, leaves it false and the
+  // ref is minted exactly as before.
+  private async commitsReachedARemote(headOid: string, remoteRefsFresh: boolean): Promise<boolean> {
+    if (!remoteRefsFresh) return false;
+    try {
+      if ((await this.gitService.countCommitsNotOnAnyRemote(headOid)) !== 0) return false;
+      this.logger.info(
+        `   ${headOid} is reachable from a remote-tracking ref; no permanent keep ref needed for these commits`,
+      );
+      return true;
+    } catch (error) {
+      this.logger.debug(`Trash reaper: could not re-check '${headOid}' against the remotes: ${getErrorMessage(error)}`);
+      return false;
+    }
+  }
+
+  private async reportDeleteFailure(
+    entry: TrashEntry,
+    auditAction: "trash_reap" | "trash_purge",
+    error: unknown,
+    errors: string[],
+  ): Promise<void> {
+    const message = getErrorMessage(error);
+    this.logger.warn(`⚠️ Trash reaper: failed to delete '${entry.manifest.id}': ${message}`);
+    this.logger.warn(`   ${trashDeleteHint(entry.containerPath)}`);
+    errors.push(`${entry.manifest.id}: ${message}`);
+    await this.removalAudit
+      .record({
+        action: auditAction,
+        result: "failure",
+        path: entry.manifest.originalPath,
+        trashId: entry.manifest.id,
+        error: message,
+      })
+      .catch(() => undefined);
+  }
+
   // Pin refs whose trash container is gone would pin objects forever (failed
   // ref delete during restore, manually emptied trash). Keyed on container
   // existence, NOT manifest validity — an invalid-manifest entry still owns
@@ -216,15 +357,16 @@ export class TrashReaperService {
     }
 
     const ownPrefix = `${GIT_CONSTANTS.TRASH_REF_PREFIX}${this.getTrashRootHash()}/`;
-    let warnedLegacy = false;
 
     for (const ref of refs) {
       if (!ref.startsWith(GIT_CONSTANTS.TRASH_REF_PREFIX)) continue;
       if (!ref.startsWith(ownPrefix)) {
         const suffix = ref.slice(GIT_CONSTANTS.TRASH_REF_PREFIX.length);
-        if (suffix.length > 0 && !suffix.includes("/") && !warnedLegacy) {
-          this.logger.warn("⚠️ Trash reaper: leaving legacy flat trash pin refs alone");
-          warnedLegacy = true;
+        if (suffix.length > 0 && !suffix.includes("/") && !this.warnedLegacyFlatRefs) {
+          this.logger.warn(
+            "⚠️ Trash reaper: leaving legacy flat trash pin refs alone; each is released when its own trash entry is restored or reaped",
+          );
+          this.warnedLegacyFlatRefs = true;
         }
         continue;
       }
@@ -258,8 +400,14 @@ export class TrashReaperService {
 
     const summary = summarizeTrashEntries(remaining);
     if (summary.totalSizeBytes > warnSizeBytes) {
+      // The byte total covers only the entries that have been measured. Sizing
+      // runs off the repository lock, at the tail of a sync, so anything this
+      // very tick trashed is still `sizeBytes: null` here and contributes
+      // nothing — saying so keeps the number from reading as the whole of the
+      // trash when it is a floor under it.
+      const unmeasured = summary.unknownSizeCount > 0 ? `, plus ${summary.unknownSizeCount} not yet measured` : "";
       this.logger.warn(
-        `⚠️ Trash holds ${formatBytes(summary.totalSizeBytes)} across ${summary.itemCount} entries ` +
+        `⚠️ Trash holds at least ${formatBytes(summary.totalSizeBytes)} across ${summary.itemCount} entries${unmeasured} ` +
           `(threshold ${formatBytes(warnSizeBytes)}). Entries expire ${this.trashService.getRetentionDays()} days after removal.`,
       );
     }

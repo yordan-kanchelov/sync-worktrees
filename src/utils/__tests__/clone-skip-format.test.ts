@@ -72,7 +72,7 @@ describe("formatCloneSkipReason", () => {
         deepenedTo: 1000,
       }),
     ).toBe(
-      "unable to classify origin/main after deepening shallow history to 1000 commits — remove or raise 'depth' to unshallow",
+      "unable to classify origin/main after deepening shallow history to 1000 commits — remove 'depth' to unshallow",
     );
   });
 

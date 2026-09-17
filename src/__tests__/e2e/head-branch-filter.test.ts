@@ -80,7 +80,6 @@ describe("HEAD branch filtering (E2E)", () => {
         repositories: [{
           name: "test-repo",
           repoUrl: "file://${bareRepo}",
-          repoPath: "${tempDir}/repo",
           worktreeDir: "${worktreeDir}",
           bareRepoDir: "${bareRepoDir}"
         }]

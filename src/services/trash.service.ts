@@ -2,13 +2,18 @@ import { randomBytes } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
 
+import pLimit from "p-limit";
+
 import { DEFAULT_CONFIG, GIT_CONSTANTS, PATH_CONSTANTS, TRASH_CONSTANTS } from "../constants";
-import { TrashOperationError } from "../errors";
+import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { atomicWriteFile } from "../utils/atomic-write";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { filenameTimestamp } from "../utils/filename-timestamp";
+import { isGitCreatableBranchName, isGitObjectId } from "../utils/git-validation";
 import { getErrorMessage } from "../utils/lfs-error";
+import { copyTreePreservingSymlinks } from "../utils/preserving-copy";
+import { hasPayloadPendingDeletion, removeTrashContainer, trashDeleteHint } from "../utils/trash-container";
 import { computeTrashRootHash } from "../utils/trash-root-hash";
 
 import { PathResolutionService } from "./path-resolution.service";
@@ -53,6 +58,9 @@ export interface TrashEntry {
   containerPath: string;
   payloadPath: string;
 }
+
+/** Outcome of releasing the legacy `.diverged/` keep ref an adopted entry replaced. */
+export type LegacyKeepRefRelease = "released" | "absent" | "rejected";
 
 export interface TrashSummary {
   itemCount: number;
@@ -142,7 +150,6 @@ export class TrashService {
         `cannot create keep-on-reap trash entry for '${options.dirPath}': HEAD commit could not be resolved`,
       );
     }
-    const sizeBytes = await calculateDirectorySize(options.dirPath).catch(() => null);
 
     // Non-recursive container mkdir + EEXIST retry: the undo path below may
     // rm -rf the container, so it must never adopt one it didn't create.
@@ -157,7 +164,10 @@ export class TrashService {
       originalPath: path.resolve(options.originalPath ?? options.dirPath),
       branch: options.branch ?? null,
       reason: options.reason,
-      sizeBytes,
+      // Never measured here: the scan is the single most expensive thing in
+      // the trash pipeline and every caller of this method holds the repo
+      // lock. listEntriesWithSizes fills it in later, off the lock.
+      sizeBytes: null,
       headOid,
       pinRef: null,
       bundleFile: null,
@@ -210,12 +220,14 @@ export class TrashService {
         );
       }
     }
-    // headOid was resolved before the (potentially slow) size scan and bundle
-    // above. A commit made in that window would lose every protection at once
-    // — pin, bundle, worktree reflog, branch ref — the moment the removal
-    // pipeline runs `branch -D`, so re-verify HEAD and fail closed while the
-    // source directory is still untouched. Explicit-headOid callers (legacy
-    // adoption) are exempt: their source is not a live worktree.
+    // headOid was resolved before the bundle above. A commit made in that
+    // window would lose every protection at once — pin, bundle, worktree
+    // reflog, branch ref — the moment the removal pipeline runs `branch -D`,
+    // so re-verify HEAD and fail closed while the source directory is still
+    // untouched. Nothing slower than the bundle belongs between the two, which
+    // is why no size scan runs anywhere in this method (listEntriesWithSizes).
+    // Explicit-headOid callers (legacy adoption) are exempt: their source is
+    // not a live worktree.
     if (headOid !== null && options.headOid === undefined) {
       let currentHead: string | null;
       try {
@@ -309,6 +321,91 @@ export class TrashService {
     return { entries, invalid };
   }
 
+  /**
+   * {@link listEntries}, with every `sizeBytes` that is still `null` measured
+   * and written back to its manifest.
+   *
+   * The size is informational — the reaper's accumulated-trash warning and the
+   * force-clean confirmation's byte total are its only readers, and no
+   * removal, restore or reap consults it — and it is also by far the most
+   * expensive thing the trash pipeline does: {@link calculateDirectorySize}
+   * execs `du` over the whole payload, `node_modules` and all. So it is
+   * measured nowhere near the repository lock. Every caller of
+   * {@link trashDirectory} holds that lock; the callers of this method must
+   * not, and today are the tail of a sync, once its exclusive operation has
+   * released the lock, and the force-clean preview, which is built outside the
+   * repo mutex.
+   *
+   * Best effort per entry: a payload that cannot be scanned, or a size that
+   * cannot be written back, leaves that entry at `null` — the value every
+   * consumer reports as an unknown size rather than as zero — and the next
+   * call tries again.
+   */
+  async listEntriesWithSizes(): Promise<{ entries: TrashEntry[]; invalid: string[] }> {
+    const listing = await this.listEntries();
+    // Bounded, not serial. Before the scan moved off the repository lock it ran
+    // inside the removal fan-out, so a tick that pruned forty worktrees sized
+    // maxWorktreeRemoval of them at a time; scanning them one after another
+    // here would multiply the wall clock of a large prune by that factor. Each
+    // entry is its own container, so concurrent scans touch disjoint paths and
+    // the manifest read-back in measurePayload cannot race another scan.
+    const limit = pLimit(
+      this.config.parallelism?.maxWorktreeRemoval ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL,
+    );
+    await Promise.all(
+      listing.entries.map((entry) =>
+        limit(async () => {
+          if (entry.manifest.sizeBytes !== null) return;
+          entry.manifest.sizeBytes = await this.measurePayload(entry);
+        }),
+      ),
+    );
+    return listing;
+  }
+
+  // Holding no repo lock is the point, so the entry can be restored or reaped
+  // out from under this at any moment. Hence: a payload already set aside for
+  // deletion is not scanned at all, and the measurement is merged into the
+  // manifest as it reads back now rather than into the copy the scan started
+  // from — a container that has since been removed has no manifest left to
+  // read, and `atomicWriteFile` creates no directories, so a write that loses
+  // the race fails instead of resurrecting a deleted entry.
+  private async measurePayload(entry: TrashEntry): Promise<number | null> {
+    if (await hasPayloadPendingDeletion(entry.containerPath)) return null;
+
+    let sizeBytes: number;
+    try {
+      sizeBytes = await calculateDirectorySize(entry.payloadPath);
+    } catch (error) {
+      this.logger.debug(`Could not size trash payload for '${entry.manifest.id}': ${getErrorMessage(error)}`);
+      return null;
+    }
+
+    try {
+      const current = await this.readManifest(entry.containerPath);
+      if (current === null) return null;
+      await this.writeManifest(entry.containerPath, { ...current, sizeBytes });
+    } catch (error) {
+      // Reported as unknown rather than as a number only this process knows:
+      // one rule — the size is whatever the manifest says — keeps the preview
+      // total and the reaper's warning from disagreeing.
+      this.logger.debug(`Could not record trash payload size for '${entry.manifest.id}': ${getErrorMessage(error)}`);
+      return null;
+    }
+    return sizeBytes;
+  }
+
+  private async assertNotLocked(dirPath: string): Promise<void> {
+    const lock = await this.gitService.getWorktreeLock(dirPath);
+    if (!lock.locked) return;
+
+    const target = path.resolve(dirPath);
+    const because = lock.reason !== undefined ? `: ${lock.reason}` : "";
+    throw new WorktreeNotCleanError(target, [
+      `the worktree is locked${because}; unlock it first with 'git worktree unlock ${target}'`,
+    ]);
+  }
+
   // The full reversible-removal sequence shared by prune and manual removal:
   // payload to trash, dangling registration cleared, branch ref deleted.
   // A ref-delete failure is a hygiene problem, not a failed removal — the
@@ -320,6 +417,11 @@ export class TrashService {
     reason: TrashReason;
     keepPinOnReap?: boolean;
   }): Promise<{ entry: TrashEntry; branchRefError?: string }> {
+    // Before anything moves: git refuses to unregister a locked worktree even
+    // with --force, so trashing one would rename the whole directory into
+    // .trash/ and rename it straight back on every tick. Refuse up front and
+    // leave the worktree untouched.
+    await this.assertNotLocked(options.dirPath);
     const entry = await this.trashDirectory(options);
     // force is safe here: the directory was already moved to trash, so only
     // the dangling registration is being cleared.
@@ -400,6 +502,15 @@ export class TrashService {
     }
 
     if ((await probePathExists(payloadPath)) !== "exists") {
+      // A reap that already set the payload aside has committed this entry to
+      // deletion; it is finishable, not restorable, and saying so beats
+      // "missing" for a user who can still see files under the container.
+      if (await hasPayloadPendingDeletion(containerPath)) {
+        throw new TrashOperationError(
+          "restore",
+          `entry '${id}' is already being deleted: its payload has been set aside and a later run finishes it. Copy anything you still need out of '${containerPath}' by hand`,
+        );
+      }
       throw new TrashOperationError("restore", `payload missing or unverifiable for '${id}' at '${payloadPath}'`);
     }
     const destinationProbe = await probePathExists(manifest.originalPath);
@@ -421,17 +532,28 @@ export class TrashService {
         this.logger.warn(
           `⚠️ Trash entry '${id}' has no pinned commit; restoring files only — the directory will not be a registered worktree.`,
         );
+        // Not a hypothetical: an unregistered directory sitting where a synced
+        // branch's worktree belongs is exactly what clearStaleWorktreeDirectory
+        // treats as stale, and with trash enabled that means straight back into
+        // .trash/ under a fresh id and reason "orphan". Saying so here is the
+        // only warning the person gets before it happens.
+        this.logger.warn(
+          `   If '${manifest.branch}' is still in this repository's synced set, the next sync finds an unregistered directory at '${manifest.originalPath}' and moves it back to trash as a new 'orphan' entry. Copy what you need out of it first, or exclude the branch.`,
+        );
       }
       await fs.rename(payloadPath, manifest.originalPath);
     }
 
     // The payload is back in place — from here on, cleanup failures must not
-    // fail the restore (a rejected retry would see "payload missing").
-    await fs
-      .rm(containerPath, { recursive: true, force: true })
-      .catch((error: unknown) =>
-        this.logger.warn(`⚠️ Failed to remove restored trash container '${containerPath}': ${getErrorMessage(error)}`),
-      );
+    // fail the restore (a rejected retry would see "payload missing"). The
+    // container is normally empty but for its manifest by now, since both
+    // restore paths move the payload out; only the cross-device fallback in
+    // movePayloadInto leaves files here to delete, so this keeps the reaper's
+    // ordering for the case that still needs it.
+    await removeTrashContainer(containerPath).catch((error: unknown) => {
+      this.logger.warn(`⚠️ Failed to remove restored trash container '${containerPath}': ${getErrorMessage(error)}`);
+      this.logger.warn(`   ${trashDeleteHint(containerPath)}`);
+    });
     if (manifest.pinRef) {
       await this.gitService
         .deleteRef(manifest.pinRef)
@@ -455,9 +577,7 @@ export class TrashService {
     return manifest;
   }
 
-  async deleteTrashedBranchRef(
-    manifest: Pick<TrashManifest, "branch" | "id" | "pinRef" | "headOid">,
-  ): Promise<void> {
+  async deleteTrashedBranchRef(manifest: Pick<TrashManifest, "branch" | "id" | "pinRef" | "headOid">): Promise<void> {
     if (!manifest.branch) return;
     // Without a pin the branch ref may be the last thing keeping the trashed
     // commits out of gc — leave it as a hygiene problem rather than risk them.
@@ -489,6 +609,41 @@ export class TrashService {
     }
   }
 
+  // The pre-trash `.diverged/` flow held its backup with a permanent
+  // `refs/sync-worktrees/keep/<dirname>` ref and recorded the name in the
+  // copied `.diverged-info.json`. Adoption replaces that single ref with this
+  // entry's own protection — a pin ref, plus a bundle whenever the commits are
+  // not already on a remote — so the legacy ref becomes redundant. Never
+  // before: trashDirectory places both before it resolves and restores the
+  // source directory on every failure inside it, so a caller that has an entry
+  // in hand is past the only point where releasing would be a loss.
+  //
+  // `candidate` comes from an unvalidated JSON.parse of a file the user can
+  // edit, so it is never the authority for what gets deleted: the ref name is
+  // re-derived from this entry's own manifest and the candidate only has to
+  // match it exactly. Exact equality, not a prefix test — a prefix check would
+  // accept `refs/sync-worktrees/keep/../../heads/main`, and `refs/heads/main`
+  // must never be deletable by editing a JSON file.
+  async releaseAdoptedKeepRef(entry: TrashEntry, candidate: unknown): Promise<LegacyKeepRefRelease> {
+    if (candidate === undefined || candidate === null) return "absent";
+    const { manifest } = entry;
+    // bundleFile is deliberately not required: createBundleFromRef returns
+    // nothing to bundle exactly when the commits are already on a remote,
+    // which is the case where the legacy ref protects the least.
+    if (
+      typeof candidate !== "string" ||
+      manifest.source !== ".diverged" ||
+      manifest.keepPinOnReap !== true ||
+      manifest.pinRef === null ||
+      !manifest.legacyOriginalName ||
+      candidate !== `${GIT_CONSTANTS.KEEP_REF_PREFIX}${manifest.legacyOriginalName}`
+    ) {
+      return "rejected";
+    }
+    await this.gitService.deleteRef(candidate);
+    return "released";
+  }
+
   private async restoreAsWorktree(manifest: TrashManifest, payloadPath: string): Promise<void> {
     const branch = manifest.branch as string;
     const headOid = manifest.headOid as string;
@@ -507,9 +662,12 @@ export class TrashService {
       createdBranch = true;
     }
 
+    let payloadMoved = false;
     try {
       await this.gitService.addWorktreeNoCheckout(branch, manifest.originalPath);
-      await this.copyPayloadOver(payloadPath, manifest.originalPath);
+      await this.movePayloadInto(payloadPath, manifest.originalPath, () => {
+        payloadMoved = true;
+      });
       await this.gitService.resetWorktreeIndex(manifest.originalPath);
       // The payload was checked out under the sparse profile when it was
       // trashed; the fresh registration must carry the same sparse config or
@@ -519,7 +677,34 @@ export class TrashService {
           .getSparseCheckoutService()
           .applyToWorktree(manifest.originalPath, this.config.sparseCheckout);
       }
+      // `git branch <name> <sha>` set no upstream; point the branch at
+      // origin/<branch> when it is known so pull/status work as before.
+      // Best-effort: the worktree is complete either way.
+      try {
+        await this.gitService.trackRemoteBranchIfExists(branch, manifest.originalPath);
+      } catch (upstreamError) {
+        this.logger.warn(`⚠️ Could not set the upstream of restored '${branch}': ${getErrorMessage(upstreamError)}`);
+      }
     } catch (error) {
+      // The rollback below deletes the half-built worktree — and once the
+      // payload has been moved into it, that directory holds the only copy of
+      // the user's files. Put them back in the container first, by the reverse
+      // of the same rename, so a failed restore still leaves a complete,
+      // restorable entry exactly as it did when restore worked by copying.
+      if (payloadMoved) {
+        try {
+          await fs.rename(manifest.originalPath, payloadPath);
+        } catch (rollbackError) {
+          // Deleting the directory now would destroy the payload, so nothing
+          // is rolled back: the worktree stays registered, the branch stays,
+          // and the files stay where a `git reset` finishes the job by hand.
+          throw new TrashOperationError(
+            "restore",
+            `failed to recreate worktree for '${manifest.id}': ${getErrorMessage(error)}; the payload could not be returned to the trash container either (${getErrorMessage(rollbackError)}), so the files are left at '${manifest.originalPath}' with the worktree registered — finish by hand with 'git -C ${manifest.originalPath} reset'`,
+            error instanceof Error ? error : undefined,
+          );
+        }
+      }
       await this.gitService
         .removeWorktree(manifest.originalPath, { force: true })
         .catch((rollbackError: unknown) =>
@@ -540,11 +725,83 @@ export class TrashService {
     }
   }
 
-  // The payload's top-level .git link points at a pruned admin dir; the fresh
-  // one written by `worktree add --no-checkout` must survive the overlay.
+  /**
+   * Puts the payload back at `destination`, which `worktree add --no-checkout`
+   * has just created. Trashing was a single rename and so is this: the fresh
+   * directory holds exactly one entry, the `.git` file (measured on git 2.43),
+   * and restore() has already refused a destination that existed, so there is
+   * nothing in there to preserve but that link. Take it, drop the directory,
+   * rename the payload into its place and write the link back over the stale
+   * one the payload carries — the README's manual recipe, which repairs that
+   * link after its `cp -R`, in O(1) rather than O(payload) under the
+   * repository lock. Git is unbothered by the replacement: its admin dir
+   * addresses the checkout by path, so an identical `.git` at the same path
+   * leaves `worktree list`, `reset` and `status` working (measured).
+   *
+   * `onMoved` fires the instant the container stops holding the payload, and
+   * before anything that can fail afterwards, so the caller's rollback always
+   * knows whether the files it is about to delete are the only copy. It never
+   * fires on the cross-device path, where the entry is left complete.
+   */
+  private async movePayloadInto(payloadPath: string, destination: string, onMoved: () => void): Promise<void> {
+    const gitLinkPath = path.join(destination, PATH_CONSTANTS.GIT_DIR);
+    const gitLink = await fs.readFile(gitLinkPath);
+
+    // Only ever the directory `worktree add --no-checkout` just made, holding
+    // exactly its own `.git` — restore() has already refused a destination
+    // that existed. Checked rather than assumed: the next line is a recursive
+    // delete and the invariant that makes it safe lives in another file.
+    const existing = await fs.readdir(destination);
+    if (existing.length !== 1 || existing[0] !== PATH_CONSTANTS.GIT_DIR) {
+      throw new TrashOperationError(
+        "restore",
+        `refusing to replace '${destination}': expected only the '${PATH_CONSTANTS.GIT_DIR}' link git just registered, found ${existing.length} entries`,
+      );
+    }
+
+    // The payload's own `.git` is corrected BEFORE the move, not after. Both
+    // orders cost one rename; only this one leaves no instant at which a crash
+    // strands files at `destination` that describe themselves wrongly. Writing
+    // it afterwards left two such windows: killed before the rewrite, the
+    // restored worktree carried the payload's link to a pruned admin dir;
+    // killed mid-rewrite, it had no `.git` at all and the registration read
+    // `prunable`. Neither loses data, but both need `git worktree repair` by
+    // hand and leave a payload-less trash entry whose retry reports the
+    // payload missing. Now a crash before the rename leaves the payload whole
+    // in the container carrying a link that is merely early, and a crash after
+    // it leaves a complete worktree.
+    //
+    // Removed rather than overwritten because a payload's `.git` can be a
+    // directory, which `writeFile` cannot replace — the copy path drops it the
+    // same way, through the filter in copyPayloadOver.
+    const payloadGitLinkPath = path.join(payloadPath, PATH_CONSTANTS.GIT_DIR);
+    await fs.rm(payloadGitLinkPath, { recursive: true, force: true });
+    await fs.writeFile(payloadGitLinkPath, gitLink);
+
+    try {
+      await fs.rm(destination, { recursive: true, force: true });
+      await fs.rename(payloadPath, destination);
+    } catch (error) {
+      // EXDEV only. Every other failure propagates: silently falling back
+      // would trade the O(1) move this exists for back into the O(payload)
+      // copy under the repository lock, with nothing to say it happened.
+      if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+      // The trash root lives under worktreeDir, so the two are normally one
+      // filesystem — but a bind mount or a symlinked worktreeDir can still
+      // split them. Rebuild what the rm above removed and copy instead.
+      await fs.mkdir(destination, { recursive: true });
+      await fs.writeFile(gitLinkPath, gitLink);
+      await this.copyPayloadOver(payloadPath, destination);
+      return;
+    }
+    onMoved();
+  }
+
+  // The cross-device fallback for movePayloadInto, overlaying rather than
+  // moving. The payload's top-level .git points at a pruned admin dir; the
+  // fresh link already written into the destination must survive the copy.
   private async copyPayloadOver(payloadPath: string, destination: string): Promise<void> {
-    await fs.cp(payloadPath, destination, {
-      recursive: true,
+    await copyTreePreservingSymlinks(payloadPath, destination, {
       force: true,
       filter: (source) => !(path.dirname(source) === payloadPath && path.basename(source) === PATH_CONSTANTS.GIT_DIR),
     });
@@ -596,11 +853,11 @@ export class TrashService {
         !Number.isFinite(Date.parse(parsed.expiresAt)) ||
         typeof parsed.originalPath !== "string" ||
         !path.isAbsolute(parsed.originalPath) ||
-        !(typeof parsed.branch === "string" || parsed.branch === null) ||
+        !this.isRestorableBranch(parsed.branch) ||
         !["prune", "orphan", "diverged-replace", "manual", "legacy-adopt"].includes(parsed.reason as string) ||
         !(typeof parsed.sizeBytes === "number" || parsed.sizeBytes === null) ||
         (typeof parsed.sizeBytes === "number" && (!Number.isFinite(parsed.sizeBytes) || parsed.sizeBytes < 0)) ||
-        !(typeof parsed.headOid === "string" || parsed.headOid === null) ||
+        !(parsed.headOid === null || (typeof parsed.headOid === "string" && isGitObjectId(parsed.headOid))) ||
         !this.isOwnPinRef(parsed.pinRef, id) ||
         (parsed.pinRef !== null && parsed.headOid === null) ||
         !(
@@ -631,14 +888,57 @@ export class TrashService {
     }
   }
 
+  // `branch` and `headOid` reach git as positional arguments — `git branch
+  // <branch> <headOid>` in restoreAsWorktree, `git worktree add ... <branch>`
+  // right after it, `git update-ref <keepRef> <headOid>` in the reaper — and
+  // git's option parser permutes, so an option-shaped value in either slot is
+  // read as an option rather than refused. Measured on git 2.43.0: in a bare
+  // repo whose HEAD is refs/heads/main, both `git branch -m <sha>` and
+  // `git branch <name> -m` rename main, taking HEAD with them, and
+  // `git update-ref <ref> -d` deletes the ref it was asked to create. The `--`
+  // separators the git wrappers now pass are the other half of this; neither
+  // defence is a reason to drop the other.
+  //
+  // Real branch names cannot look like options, so only a hand-edited or
+  // corrupted manifest lands here — the same threat model isOwnPinRef below is
+  // written against. Rejecting the whole manifest (rather than only refusing
+  // the restore) is what keeps every other reader of `branch` honest too, and
+  // matches how every other structurally impossible field is treated here.
+  // The price is that such an entry is never listed, restored OR reaped — not
+  // even by force clean, which purges only the ids the preview collected from
+  // the VALID entries — so its payload and pin ref stay until someone deletes
+  // the container by hand; that is the standing treatment of an unparseable
+  // manifest, it is reported by both the trash listing and the reaper, and this
+  // tool never writes one (trash-migration refuses to adopt a legacy entry
+  // whose recorded branch or commit would produce it).
+  //
+  // That price is only acceptable while `isGitCreatableBranchName` is provably
+  // NO STRICTER than git. This whole policy rests on that one invariant: make
+  // the predicate reject a name git accepts and every entry carrying such a
+  // branch becomes permanently unreachable, silently, on upgrade. Its first
+  // version broke exactly this by delegating to the stricter creation-time
+  // validator. Do not reintroduce that delegation; the corpus test against real
+  // `git check-ref-format --branch` is what holds the line.
+  private isRestorableBranch(branch: unknown): boolean {
+    if (branch === null) return true;
+    return typeof branch === "string" && isGitCreatableBranchName(branch);
+  }
+
   // A pin ref must belong to this entry, so a hand-edited manifest can never
-  // aim the reaper's deleteRef at something like refs/heads/main. The root-hash
-  // segment is checked for shape only, not for equality with the current trash
-  // root: relocating worktreeDir must not turn every existing entry into
-  // unrecognized content that is never reaped and never releases its pin.
+  // aim the reaper's deleteRef at something like refs/heads/main. Two layouts
+  // are accepted: `<prefix><rootHash>/<id>` as written today, and the flat
+  // `<prefix><id>` written before pins were namespaced per trash root —
+  // rejecting the flat one stranded every entry made before that upgrade as
+  // unrecognized content, never listed, restored or reaped. Both end at this
+  // entry's own id, which is a single directory name read out of the trash
+  // root and so contains no separator: the ref can never leave the trash
+  // namespace. The root-hash segment is checked for shape only, not for
+  // equality with the current trash root: relocating worktreeDir must not turn
+  // every existing entry into unrecognized content either.
   private isOwnPinRef(pinRef: unknown, id: string): boolean {
     if (pinRef === null) return true;
     if (typeof pinRef !== "string") return false;
+    if (pinRef === `${GIT_CONSTANTS.TRASH_REF_PREFIX}${id}`) return true;
     const suffix = `/${id}`;
     if (!pinRef.startsWith(GIT_CONSTANTS.TRASH_REF_PREFIX) || !pinRef.endsWith(suffix)) return false;
     const rootHash = pinRef.slice(GIT_CONSTANTS.TRASH_REF_PREFIX.length, pinRef.length - suffix.length);
@@ -646,7 +946,15 @@ export class TrashService {
   }
 
   private async undoPartialTrash(containerPath: string, pinRef: string | null): Promise<void> {
-    await fs.rm(containerPath, { recursive: true, force: true }).catch(() => undefined);
+    // Same ordering as the reaper's, for the same reason: a refused delete
+    // here must leave a container that still reads as a trash entry — one that
+    // lists, reports its size and ages out — rather than unrecognized content
+    // that nothing ever comes back for.
+    await removeTrashContainer(containerPath).catch((error: unknown) =>
+      this.logger.warn(
+        `⚠️ Could not clean up the trash container '${containerPath}'; it keeps its manifest and ages out with the retention window: ${getErrorMessage(error)}`,
+      ),
+    );
     if (pinRef) {
       await this.gitService.deleteRef(pinRef).catch(() => undefined);
     }

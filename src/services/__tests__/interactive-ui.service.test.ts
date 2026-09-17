@@ -4,11 +4,12 @@ import * as path from "path";
 import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AppEventEmitter } from "../../utils/app-events";
 import { calculateDirectorySize, formatBytes } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
 
 import type { Config } from "../../types";
-import type { WorktreeSyncService } from "../worktree-sync.service";
+import { WorktreeSyncService } from "../worktree-sync.service";
 import type * as ChildProcessModule from "child_process";
 import type * as FsModule from "fs";
 import type * as cron from "node-cron";
@@ -125,7 +126,7 @@ describe("InteractiveUIService", () => {
         updateLastSyncTime: vi.fn(),
         setStatus: vi.fn(),
       };
-      return { unmount: mockUnmount };
+      return { unmount: mockUnmount, waitUntilExit: vi.fn(() => new Promise<void>(() => {})) };
     });
 
     const mockConfig: Config = {
@@ -143,7 +144,9 @@ describe("InteractiveUIService", () => {
       isCloneMode: vi.fn<any>().mockReturnValue(false),
       isSyncInProgress: vi.fn<any>().mockReturnValue(false),
       getRemoteBranches: vi.fn<any>(),
+      getDefaultBranch: vi.fn<any>().mockResolvedValue("main"),
       checkoutBranch: vi.fn<any>().mockResolvedValue(undefined),
+      createAndPushBranch: vi.fn<any>().mockResolvedValue(undefined),
       runQueuedRepoOperation: vi
         .fn<any>()
         .mockImplementation(async (op: any) => ({ started: true, value: await op() })),
@@ -154,6 +157,8 @@ describe("InteractiveUIService", () => {
         unknownTrashSizes: 0,
         invalidTrashEntries: 0,
         keepRefs: 1,
+        trashEntryIds: ["entry-a"],
+        keepRefNames: ["refs/sync-worktrees/keep/entry-a"],
       }),
       forceClean: vi.fn<any>().mockResolvedValue({
         trashEntries: 0,
@@ -161,8 +166,13 @@ describe("InteractiveUIService", () => {
         unknownTrashSizes: 0,
         invalidTrashEntries: 0,
         keepRefs: 0,
+        trashEntryIds: [],
+        keepRefNames: [],
         trashDeleted: 1,
         keepRefsDeleted: 1,
+        keepRefsRetained: 0,
+        skippedNewEntries: 0,
+        skippedNewKeepRefs: 0,
         gcSucceeded: true,
         errors: [],
       }),
@@ -193,13 +203,13 @@ describe("InteractiveUIService", () => {
     it("should initialize with single sync service", () => {
       const service = new InteractiveUIService([mockSyncService], undefined, "0 * * * *");
       expect(service).toBeDefined();
-      service.destroy();
+      void service.destroy();
     });
 
     it("should initialize with multiple sync services", () => {
       const service = new InteractiveUIService([mockSyncService, mockSyncService], undefined, "0 * * * *");
       expect(service).toBeDefined();
-      service.destroy();
+      void service.destroy();
     });
 
     it("should forward service progress events with the repository name", () => {
@@ -223,7 +233,7 @@ describe("InteractiveUIService", () => {
         processed: undefined,
         total: undefined,
       });
-      service.destroy();
+      void service.destroy();
     });
 
     it("should be able to emit events after initialization", () => {
@@ -240,7 +250,7 @@ describe("InteractiveUIService", () => {
       expect(statusSpy).toHaveBeenCalledWith("syncing");
       expect(updateSpy).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -250,7 +260,7 @@ describe("InteractiveUIService", () => {
 
       expect(mockSyncService.updateLogger).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should inject loggers into multiple sync services", () => {
@@ -267,7 +277,7 @@ describe("InteractiveUIService", () => {
       expect(mockSyncService.updateLogger).toHaveBeenCalled();
       expect(mockSyncService2.updateLogger).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -281,7 +291,7 @@ describe("InteractiveUIService", () => {
 
       expect(updateSpy).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should not throw when no listeners", () => {
@@ -289,7 +299,7 @@ describe("InteractiveUIService", () => {
 
       expect(() => service.updateLastSyncTime()).not.toThrow();
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -303,7 +313,7 @@ describe("InteractiveUIService", () => {
 
       expect(setStatusSpy).toHaveBeenCalledWith("syncing");
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should handle both idle and syncing statuses", () => {
@@ -317,7 +327,7 @@ describe("InteractiveUIService", () => {
       expect(setStatusSpy).toHaveBeenCalledWith("idle");
       expect(setStatusSpy).toHaveBeenCalledWith("syncing");
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -392,17 +402,117 @@ describe("InteractiveUIService", () => {
       await expect(service.destroy()).resolves.toBeUndefined();
       expect(mockUnmount).toHaveBeenCalled();
     });
+
+    const collectLogs = (): { events: AppEventEmitter; messages: string[] } => {
+      const events = new AppEventEmitter();
+      const messages: string[] = [];
+      events.on("addLog", ({ message }) => void messages.push(message));
+      return { events, messages };
+    };
+
+    // The two timeouts are a policy, not an accident: a signal has a watchdog
+    // behind it and must not sit on a 30s wait, while `q` is a person who asked
+    // to leave and can afford to let a fetch land.
+    it("keeps the 2s timeout for the signal path and the 30s timeout for the q path", async () => {
+      mockSyncService.isSyncInProgress.mockReturnValue(true);
+      const fast = collectLogs();
+      const slow = collectLogs();
+      const fastService = new InteractiveUIService([mockSyncService], undefined, undefined, undefined, fast.events);
+      const slowService = new InteractiveUIService([mockSyncService], undefined, undefined, undefined, slow.events);
+      fast.events.emit("uiReady");
+      slow.events.emit("uiReady");
+      fast.messages.length = 0;
+      slow.messages.length = 0;
+
+      vi.useFakeTimers();
+      try {
+        const fastShutdown = fastService.destroy(true);
+        const slowShutdown = slowService.destroy();
+
+        await vi.advanceTimersByTimeAsync(1900);
+        expect(fast.messages.some((message) => message.startsWith("Warning: Timeout"))).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await fastShutdown;
+        expect(fast.messages).toContain(
+          "Warning: Timeout waiting for sync operations to complete after 2.0s. Proceeding with potential data loss risk.",
+        );
+        expect(slow.messages.some((message) => message.startsWith("Warning: Timeout"))).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(27000);
+        expect(slow.messages.some((message) => message.startsWith("Warning: Timeout"))).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await slowShutdown;
+        expect(slow.messages).toContain(
+          "Warning: Timeout waiting for sync operations to complete after 30.0s. Proceeding with potential data loss risk.",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reports the wait while it is still waiting, not after everything is torn down", async () => {
+      mockSyncService.isSyncInProgress.mockReturnValue(true);
+      const { events, messages } = collectLogs();
+      const service = new InteractiveUIService([mockSyncService], undefined, undefined, undefined, events);
+      events.emit("uiReady");
+      messages.length = 0;
+
+      vi.useFakeTimers();
+      try {
+        const shutdown = service.destroy(true);
+        await vi.advanceTimersByTimeAsync(10);
+        // Emitted while the interface is still mounted and listening, which is
+        // the whole point: isDestroyed is set after the wait, not before it.
+        expect(messages).toContain(
+          "Waiting for 1 in-progress sync(s) to finish... Press q or Ctrl+C again to quit now.",
+        );
+        expect(mockUnmount).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(2500);
+        await shutdown;
+        expect(mockUnmount).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ignores a key repeat inside the guard window but honours a deliberate second quit", async () => {
+      mockSyncService.isSyncInProgress.mockReturnValue(true);
+      const service = new InteractiveUIService([mockSyncService]);
+
+      const shutdown = service.destroy();
+      let settled = false;
+      void shutdown.then(() => {
+        settled = true;
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      void service.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(settled).toBe(false);
+
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      void service.destroy();
+
+      const outcome = await Promise.race([
+        shutdown.then(() => "shut down"),
+        new Promise((resolve) => setTimeout(() => resolve("still waiting"), 3000)),
+      ]);
+      expect(outcome).toBe("shut down");
+    });
   });
 
   describe("registerCronJob", () => {
     it("should stop registered cron jobs on destroy", async () => {
       const service = new InteractiveUIService([mockSyncService]);
-      const stopSpy = vi.fn();
-      service.registerCronJob({ stop: stopSpy } as unknown as cron.ScheduledTask);
+      const destroySpy = vi.fn();
+      service.registerCronJob({ stop: vi.fn(), destroy: destroySpy } as unknown as cron.ScheduledTask);
 
       await service.destroy();
 
-      expect(stopSpy).toHaveBeenCalled();
+      expect(destroySpy).toHaveBeenCalled();
     });
   });
 
@@ -415,7 +525,7 @@ describe("InteractiveUIService", () => {
 
       expect(mockSyncService.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should sync multiple services", async () => {
@@ -434,7 +544,7 @@ describe("InteractiveUIService", () => {
       expect(mockSyncService.sync).toHaveBeenCalled();
       expect(mockService2.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should handle sync errors gracefully", async () => {
@@ -444,7 +554,48 @@ describe("InteractiveUIService", () => {
 
       await expect(onManualSync()).resolves.not.toThrow();
 
-      service.destroy();
+      void service.destroy();
+    });
+
+    it("logs a repo whose lock could not be taken as a failure, not a skip", async () => {
+      // An unwritable state dir is not contention: the daemon must surface it
+      // at error level with the path and errno, never as "Sync skipped".
+      const lockService = {
+        sync: vi.fn<any>().mockResolvedValue({
+          started: false,
+          reason: "lock_unavailable",
+          path: "/state/sync-worktrees/locks",
+          code: "ENOTDIR",
+          error: "ENOTDIR: not a directory, mkdir '/state/sync-worktrees/locks'",
+        }),
+        initialize: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+        updateLogger: vi.fn<any>(),
+        clearRecordedSkips: vi.fn<any>(),
+        getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+        config: { name: "alpha", worktreeDir: "/repo/alpha", repoUrl: "u" },
+      };
+
+      const service = new InteractiveUIService([lockService as any]);
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry));
+      service.getEvents().emit("uiReady");
+
+      const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
+      await onManualSync();
+
+      const failureLogs = logs.filter((l) => l.message.includes("/state/sync-worktrees/locks"));
+      expect(failureLogs.length).toBeGreaterThan(0);
+      for (const log of failureLogs) {
+        expect(log.level).toBe("error");
+        expect(log.message).toMatch(/^Failed to sync repository 'alpha'/);
+        expect(log.message).toContain("ENOTDIR");
+      }
+      expect(logs.some((l) => /^Sync skipped for/.test(l.message))).toBe(false);
+      expect(logs.some((l) => /another process/i.test(l.message))).toBe(false);
+
+      void service.destroy();
     });
 
     it("clears, collects, and logs clone-mode skips per cycle", async () => {
@@ -485,7 +636,7 @@ describe("InteractiveUIService", () => {
         ]),
       );
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("updates last-sync timestamp even when only clone-mode phase skips occurred", async () => {
@@ -509,7 +660,7 @@ describe("InteractiveUIService", () => {
 
       expect(updateSpy).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("updates last-sync timestamp and logs at info when only per-action worktree skips occurred", async () => {
@@ -562,7 +713,7 @@ describe("InteractiveUIService", () => {
         expect(log.message).not.toMatch(/^Sync skipped for/);
       }
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -574,7 +725,7 @@ describe("InteractiveUIService", () => {
 
       expect(mockSyncService.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should set status to syncing then idle", async () => {
@@ -587,7 +738,7 @@ describe("InteractiveUIService", () => {
       expect(statusChanges).toContain("syncing");
       expect(statusChanges[statusChanges.length - 1]).toBe("idle");
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should update last sync time after sync", async () => {
@@ -599,7 +750,7 @@ describe("InteractiveUIService", () => {
 
       expect(updateSpy).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should run services in parallel respecting maxParallel limit", async () => {
@@ -639,7 +790,7 @@ describe("InteractiveUIService", () => {
       // Max concurrent should respect the limit
       expect(maxConcurrent).toBeLessThanOrEqual(2);
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should use default parallelism when maxParallel not specified", async () => {
@@ -674,7 +825,7 @@ describe("InteractiveUIService", () => {
       // Default is 2, so max concurrent should be at most 2
       expect(maxConcurrent).toBeLessThanOrEqual(2);
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should handle errors in parallel sync without affecting other services", async () => {
@@ -707,7 +858,7 @@ describe("InteractiveUIService", () => {
       expect(successService.sync).toHaveBeenCalled();
       expect(failingService.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should log per-repository sync failures", async () => {
@@ -729,7 +880,7 @@ describe("InteractiveUIService", () => {
         level: "error",
       });
 
-      service.destroy();
+      void service.destroy();
     });
   });
 
@@ -745,7 +896,7 @@ describe("InteractiveUIService", () => {
 
       expect(setStatusSpy).toHaveBeenCalledWith("idle");
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should reload config and sync when config path provided", async () => {
@@ -770,7 +921,7 @@ describe("InteractiveUIService", () => {
       expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalled();
       expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalled();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("preserves clone-mode skips recorded during reload initialization", async () => {
@@ -805,7 +956,7 @@ describe("InteractiveUIService", () => {
         ]),
       );
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should handle reload errors gracefully", async () => {
@@ -816,7 +967,7 @@ describe("InteractiveUIService", () => {
 
       await expect(onReload()).resolves.not.toThrow();
 
-      service.destroy();
+      void service.destroy();
     });
 
     it("should prevent concurrent reloads (re-entry guard)", async () => {
@@ -857,7 +1008,7 @@ describe("InteractiveUIService", () => {
       // loadConfigFile should only be called once (second reload was skipped)
       expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalledTimes(1);
 
-      service.destroy();
+      void service.destroy();
     });
 
     describe("cron job management on reload", () => {
@@ -876,21 +1027,27 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockSyncService, mockSyncService], "/test/config.js", "0 * * * *");
         const cronJobsSpy = vi.fn();
-        (service as any).cronJobs = [{ stop: cronJobsSpy }, { stop: cronJobsSpy }];
+        (service as any).cronJobs = [
+          { stop: vi.fn(), destroy: cronJobsSpy },
+          { stop: vi.fn(), destroy: cronJobsSpy },
+        ];
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
         expect(cronJobsSpy).toHaveBeenCalledTimes(2);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should not duplicate cron jobs when config load fails before cancel", async () => {
         mockConfigLoaderInstance.loadConfigFile.mockRejectedValue(new Error("Failed to load config"));
 
         const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
-        const preExistingJob = { stop: vi.fn() };
+        // destroy() as well as stop(): the teardown at the end of this test
+        // calls it, and a double without it only reaches cancelCronJobs' catch,
+        // which would turn a missing method into a warning nobody reads.
+        const preExistingJob = { stop: vi.fn(), destroy: vi.fn() };
         (service as any).cronJobs = [preExistingJob];
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
@@ -900,7 +1057,7 @@ describe("InteractiveUIService", () => {
         expect(cronJobs).toHaveLength(1);
         expect(preExistingJob.stop).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should create new cron jobs after reload (grouped by schedule)", async () => {
@@ -932,7 +1089,7 @@ describe("InteractiveUIService", () => {
         expect(cronJobs).toBeDefined();
         expect(cronJobs.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should handle reload with different number of repositories", async () => {
@@ -965,7 +1122,7 @@ describe("InteractiveUIService", () => {
         cronJobs = (service as any).cronJobs;
         expect(cronJobs.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should not create cron jobs when runOnce is true", async () => {
@@ -989,7 +1146,7 @@ describe("InteractiveUIService", () => {
         const cronJobs = (service as any).cronJobs;
         expect(cronJobs).toEqual([]);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should handle mixed runOnce configurations", async () => {
@@ -1028,7 +1185,7 @@ describe("InteractiveUIService", () => {
         // 2 non-runOnce repos with same schedule = 1 grouped cron job
         expect(cronJobs.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1065,7 +1222,7 @@ describe("InteractiveUIService", () => {
 
         expect((service as any).repositoryCount).toBe(2);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should update repository count after reload with more repos", async () => {
@@ -1104,7 +1261,7 @@ describe("InteractiveUIService", () => {
 
         expect((service as any).repositoryCount).toBe(3);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should emit updateRepositoryCount event after reload", async () => {
@@ -1131,7 +1288,7 @@ describe("InteractiveUIService", () => {
         expect(repoCountSpy).toHaveBeenCalledWith(1);
         expect(mockRender).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1165,7 +1322,7 @@ describe("InteractiveUIService", () => {
 
         expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should timeout after 30 seconds if sync never completes", async () => {
@@ -1196,7 +1353,7 @@ describe("InteractiveUIService", () => {
 
         expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
         vi.useRealTimers();
       });
 
@@ -1223,7 +1380,7 @@ describe("InteractiveUIService", () => {
         expect(newServices).not.toBe(oldServices);
         expect(newServices.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should initialize and sync all new services after reload", async () => {
@@ -1257,7 +1414,7 @@ describe("InteractiveUIService", () => {
         expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(4);
         expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalledTimes(2);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should handle multiple reload cycles", async () => {
@@ -1319,7 +1476,7 @@ describe("InteractiveUIService", () => {
         expect((service as any).repositoryCount).toBe(1);
         expect((service as any).cronJobs.length).toBe(1);
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1352,7 +1509,7 @@ describe("InteractiveUIService", () => {
           expect.objectContaining({ maxAttempts: 5 }),
         );
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should re-inject loggers after reload", async () => {
@@ -1370,14 +1527,20 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockSyncService], "/test/config.js");
 
-        mockWorktreeSyncServiceInstance.updateLogger.mockClear();
+        const constructed = vi.mocked(WorktreeSyncService);
+        constructed.mockClear();
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        expect(mockWorktreeSyncServiceInstance.updateLogger).toHaveBeenCalled();
+        // The reloaded services are built with the panel logger already in
+        // their config, rather than constructed on the console default and
+        // corrected afterwards -- initialize() logs before any correction
+        // could run.
+        expect(constructed).toHaveBeenCalledTimes(1);
+        expect(constructed.mock.calls[0][0].logger).toBeDefined();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should emit updateCronSchedule event after reload", async () => {
@@ -1403,7 +1566,7 @@ describe("InteractiveUIService", () => {
 
         expect(cronScheduleSpy).toHaveBeenCalledWith("*/30 * * * *");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should not re-render UI on reload (uses events instead)", async () => {
@@ -1427,7 +1590,7 @@ describe("InteractiveUIService", () => {
         // render should only be called once (in constructor), not again on reload
         expect(mockRender).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
     });
   });
@@ -1477,6 +1640,13 @@ describe("InteractiveUIService", () => {
         branchExists: vi.fn().mockResolvedValue({ local: false, remote: false }),
         createBranch: vi.fn().mockResolvedValue(undefined),
         pushBranch: vi.fn().mockResolvedValue(undefined),
+        // Derived from the name, never a constant: the rollback's
+        // compare-and-swap has to be on the commit THIS attempt created, and a
+        // stand-in that answers the same oid for every branch would let a
+        // rollback that reuses a stale oid pass.
+        getLocalBranchCommit: vi.fn(async (name: string) => `oid-${name}`),
+        deleteLocalBranchIfAt: vi.fn().mockResolvedValue(undefined),
+        getBareRepoPath: vi.fn().mockReturnValue("/test/.bare/app"),
         getWorktrees: vi.fn().mockResolvedValue([
           { path: "/test/worktrees/main", branch: "main" },
           { path: "/test/worktrees/develop", branch: "develop" },
@@ -1517,7 +1687,7 @@ describe("InteractiveUIService", () => {
         expect(repos[0]).toEqual({ index: 0, name: "repo-1", repoUrl: "https://github.com/test/repo1.git" });
         expect(repos[1]).toEqual({ index: 1, name: "repo-2", repoUrl: "https://github.com/test/repo2.git" });
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should use fallback name when name is not set", () => {
@@ -1531,7 +1701,7 @@ describe("InteractiveUIService", () => {
 
         expect(repos[0].name).toBe("repo-0");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1554,7 +1724,7 @@ describe("InteractiveUIService", () => {
           error: undefined,
         });
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should calculate only checkout size for clone-mode repositories", async () => {
@@ -1571,7 +1741,7 @@ describe("InteractiveUIService", () => {
         expect(usage.bareSizeBytes).toBe(0);
         expect(usage.worktreeSizeBytes).toBe(1024);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return N/A when all repository size paths fail", async () => {
@@ -1586,7 +1756,7 @@ describe("InteractiveUIService", () => {
         expect(usage.sizeFormatted).toBe("N/A");
         expect(usage.error).toContain("ENOENT");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should mark the size as a lower bound when only some paths fail", async () => {
@@ -1601,7 +1771,7 @@ describe("InteractiveUIService", () => {
         expect(usage.sizeBytes).toBe(1024);
         expect(usage.error).toContain("ENOENT");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw for invalid repo index", async () => {
@@ -1609,7 +1779,7 @@ describe("InteractiveUIService", () => {
 
         await expect(service.getRepositoryDiskUsage(-1)).rejects.toThrow("Invalid repository index: -1");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1622,7 +1792,7 @@ describe("InteractiveUIService", () => {
         expect(branches).toEqual(["main", "develop", "feature/test"]);
         expect(mockSyncService.getRemoteBranches).toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return empty array if service not initialized", async () => {
@@ -1633,7 +1803,7 @@ describe("InteractiveUIService", () => {
         expect(branches).toEqual([]);
         expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should discover remote branches for uninitialized clone-mode repos", async () => {
@@ -1647,7 +1817,7 @@ describe("InteractiveUIService", () => {
         expect(branches).toEqual(["main", "feature/fresh-clone"]);
         expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return empty array if uninitialized clone-mode branch discovery fails", async () => {
@@ -1661,7 +1831,7 @@ describe("InteractiveUIService", () => {
         expect(branches).toEqual([]);
         expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw error for invalid repo index", async () => {
@@ -1670,28 +1840,44 @@ describe("InteractiveUIService", () => {
         await expect(service.getBranchesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
         await expect(service.getBranchesForRepo(5)).rejects.toThrow("Invalid repository index: 5");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
     describe("getDefaultBranchForRepo", () => {
-      it("should return default branch for valid repo index", () => {
+      it("should return default branch for valid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        const branch = service.getDefaultBranchForRepo(0);
+        const branch = await service.getDefaultBranchForRepo(0);
 
         expect(branch).toBe("main");
-        expect(mockGitService.getDefaultBranch).toHaveBeenCalled();
+        expect(mockSyncService.getDefaultBranch).toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
-      it("should throw error for invalid repo index", () => {
+      it("should return the tracked branch for a clone-mode repo, not GitService's constant", async () => {
+        // GitService.initialize() never runs in clone mode, so its default
+        // branch is the 'main' the constructor set. Reading it here made the
+        // wizard pre-select and label a branch the clone does not track.
+        mockSyncService.isCloneMode.mockReturnValue(true);
+        mockSyncService.getDefaultBranch.mockResolvedValue("develop");
         const service = new InteractiveUIService([mockSyncService]);
 
-        expect(() => service.getDefaultBranchForRepo(-1)).toThrow("Invalid repository index: -1");
-        expect(() => service.getDefaultBranchForRepo(5)).toThrow("Invalid repository index: 5");
+        const branch = await service.getDefaultBranchForRepo(0);
 
-        service.destroy();
+        expect(branch).toBe("develop");
+        expect(mockGitService.getDefaultBranch).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it("should throw error for invalid repo index", async () => {
+        const service = new InteractiveUIService([mockSyncService]);
+
+        await expect(service.getDefaultBranchForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
+        await expect(service.getDefaultBranchForRepo(5)).rejects.toThrow("Invalid repository index: 5");
+
+        void service.destroy();
       });
     });
 
@@ -1705,7 +1891,7 @@ describe("InteractiveUIService", () => {
         expect(mockGitService.createBranch).toHaveBeenCalledWith("feature/new", "main");
         expect(mockGitService.pushBranch).toHaveBeenCalledWith("feature/new");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should append suffix if branch already exists", async () => {
@@ -1721,7 +1907,198 @@ describe("InteractiveUIService", () => {
         expect(result.finalName).toBe("feature/test-2");
         expect(mockGitService.createBranch).toHaveBeenCalledTimes(3);
 
-        service.destroy();
+        void service.destroy();
+      });
+
+      // The wizard submits the name it displayed, so a typed `x` whose name was
+      // taken arrives here ALREADY suffixed. Appending to what it was handed
+      // would offer `x-1-1` and then `x-1-2`; the sequence the user was shown,
+      // and the only one that reads as a suffix walk, is `x-1`, `x-2`, `x-3`.
+      it("continues the suffix it was handed instead of restarting the walk under it", async () => {
+        mockGitService.createBranch
+          .mockRejectedValueOnce(new Error("already exists"))
+          .mockRejectedValueOnce(new Error("already exists"))
+          .mockResolvedValueOnce(undefined);
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "x-1");
+
+        expect(result).toEqual({ success: true, finalName: "x-3" });
+        expect(mockGitService.createBranch).toHaveBeenNthCalledWith(1, "x-1", "main");
+        expect(mockGitService.createBranch).toHaveBeenNthCalledWith(2, "x-2", "main");
+        expect(mockGitService.createBranch).toHaveBeenNthCalledWith(3, "x-3", "main");
+        expect(mockGitService.createBranch.mock.calls.map((call: string[]) => call[0])).not.toContain("x-1-1");
+
+        void service.destroy();
+      });
+
+      // One collision after the wizard's own: the whole visible sequence is
+      // `x-1` then `x-2`, which is what the picker would have offered next.
+      it("takes a name the wizard already suffixed once to the next suffix, not a nested one", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("stale info: refs/heads/x-1"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "x-1");
+
+        expect(result).toEqual({ success: true, finalName: "x-2" });
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(1, "x-1");
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(2, "x-2");
+        expect(mockGitService.pushBranch).toHaveBeenCalledTimes(2);
+
+        void service.destroy();
+      });
+
+      // A trailing `-<n>` is a suffix to continue; nothing else is. A name that
+      // merely ends in a hyphen or a non-number keeps the walk at `-1`.
+      it("starts the walk at -1 for a name that does not end in a number", async () => {
+        mockGitService.createBranch.mockRejectedValueOnce(new Error("already exists")).mockResolvedValueOnce(undefined);
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "release-rc");
+
+        expect(result).toEqual({ success: true, finalName: "release-rc-1" });
+
+        void service.destroy();
+      });
+
+      // The name the result carries is the branch that was actually tried. A
+      // failure reported under the caller's name points at a branch this call
+      // never touched — here `x` was never pushed, `x-1` was.
+      it("names the branch it actually attempted when the failure is not a collision", async () => {
+        mockGitService.createBranch.mockRejectedValueOnce(new Error("already exists"));
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("connection reset"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "x");
+
+        expect(result.success).toBe(false);
+        expect(result.finalName).toBe("x-1");
+        expect(result.error).toContain("could not push 'x-1'");
+
+        void service.destroy();
+      });
+
+      it("names the last branch it attempted when every attempt collides", async () => {
+        mockGitService.createBranch.mockRejectedValue(new Error("already exists"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "x");
+
+        expect(result.success).toBe(false);
+        expect(result.finalName).toBe("x-9");
+        expect(result.error).toContain("after 10 attempts");
+        expect(mockGitService.createBranch).toHaveBeenCalledTimes(10);
+
+        void service.destroy();
+      });
+
+      // A push that never landed must not leave the local branch behind: the
+      // wizard offers the same name again, and the next attempt would collide
+      // with this attempt's own leftover and quietly produce '<name>-1' while
+      // '<name>' is still nowhere on the remote.
+      it("deletes the branch it just created when the push fails, and names the push failure", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("remote rejected: pre-receive hook declined"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/new");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("could not push 'feature/new'");
+        expect(result.error).toContain("pre-receive hook declined");
+        // Compare-and-swap on the commit THIS attempt created the branch at.
+        expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenCalledWith("feature/new", "oid-feature/new");
+
+        void service.destroy();
+      });
+
+      // The create-only lease reports a name that turned out to be on origin
+      // as "stale info". Phrased as the collision it is, so the loop suffixes
+      // and retries instead of handing the user git's wording.
+      it("retries under a suffix when the lease refuses a name that is already on origin", async () => {
+        mockGitService.pushBranch
+          .mockRejectedValueOnce(new Error("stale info: refs/heads/feature/x"))
+          .mockRejectedValueOnce(new Error("stale info: refs/heads/feature/x-1"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result).toEqual({ success: true, finalName: "feature/x-2" });
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(1, "feature/x");
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(2, "feature/x-1");
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(3, "feature/x-2");
+        // Every rollback swaps on ITS OWN attempt's commit. Re-reading the
+        // first attempt's oid would pass against a stand-in that answers the
+        // same value for every name, and would leave the second attempt's
+        // branch behind against a real repository.
+        expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenNthCalledWith(1, "feature/x", "oid-feature/x");
+        expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenNthCalledWith(2, "feature/x-1", "oid-feature/x-1");
+
+        void service.destroy();
+      });
+
+      // The branch is left in place when it cannot be removed, so the message
+      // has to say so rather than let the user believe it was cleaned up.
+      it("reports the leftover branch when the rollback itself fails", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("connection reset"));
+        mockGitService.deleteLocalBranchIfAt.mockRejectedValueOnce(new Error("ref moved"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/new");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("is still in the bare repository");
+        // The branch is in `.bare/<repo>`, which the user never cd's into, so
+        // the command has to name the repository it is to be run against.
+        expect(result.error).toContain('git -C "/test/.bare/app" branch -D feature/new');
+
+        void service.destroy();
+      });
+
+      // git's stderr for an https remote embeds the credential in the URL it
+      // failed on, and this message is shown in the wizard's result pane.
+      it("redacts the credential out of the push failure and appends the auth hint", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(
+          new Error(
+            "fatal: unable to access 'https://x-access-token:ghp_sUp3rSecret@github.com/acme/app.git/': " +
+              "Authentication failed for 'https://x-access-token:ghp_sUp3rSecret@github.com/acme/app.git/'",
+          ),
+        );
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/new");
+
+        expect(result.success).toBe(false);
+        expect(result.error).not.toContain("ghp_sUp3rSecret");
+        expect(result.error).not.toContain("x-access-token");
+        expect(result.error).toContain("https://***@github.com/acme/app.git/");
+        expect(result.error).toContain("Hint: ");
+
+        void service.destroy();
+      });
+
+      // The retry exists to get past a name that is taken. It must not run
+      // once this attempt has left a branch behind: suffixing past the leftover
+      // recreates the exact defect this flow is about — '<name>' orphaned
+      // locally and never pushed while '<name>-1' is created instead — and it
+      // would discard the only message that names the leftover.
+      it("stops instead of suffixing past a branch the rollback could not remove", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("stale info: refs/heads/feature/x"));
+        mockGitService.deleteLocalBranchIfAt.mockRejectedValueOnce(new Error("ref moved"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result.success).toBe(false);
+        expect(result.finalName).toBe("feature/x");
+        // The collision wording is still there — and so is the notice that the
+        // retry would otherwise have thrown away with it.
+        expect(result.error).toContain("already exists on origin");
+        expect(result.error).toContain("The local branch 'feature/x' is still in the bare repository");
+        expect(result.error).toContain('git -C "/test/.bare/app" branch -D feature/x');
+        expect(mockGitService.pushBranch).toHaveBeenCalledTimes(1);
+        expect(mockGitService.createBranch).toHaveBeenCalledTimes(1);
+
+        void service.destroy();
       });
 
       it("should return error for invalid repo index", async () => {
@@ -1731,7 +2108,7 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("Invalid repository index");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should handle git errors gracefully", async () => {
@@ -1743,7 +2120,7 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toBe("Git error");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should serialize branch creation through the queued repo lock", async () => {
@@ -1753,7 +2130,7 @@ describe("InteractiveUIService", () => {
         // Branch+push must run behind any in-flight sync to avoid racing git's refs.
         expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return a failure (not throw) when another process holds the repo lock", async () => {
@@ -1766,7 +2143,97 @@ describe("InteractiveUIService", () => {
         expect(result.error).toMatch(/repository lock/i);
         expect(mockGitService.createBranch).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
+      });
+
+      // Clone-mode repositories have no bare repository, and GitService's
+      // createBranch/pushBranch both run in one — through `bareRepoPath`,
+      // which falls back to the RELATIVE '.bare/<repo name>' when bareRepoDir
+      // is undefined, as it deliberately is in clone mode. That path is either
+      // missing (simple-git's constructor: "Cannot use simple-git on a
+      // directory that does not exist") or, under a working directory holding
+      // a bare store of the same repository name, somebody else's refs.
+      it("creates the branch inside the clone for clone-mode repositories", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          isCloneMode: vi.fn().mockReturnValue(true),
+          createAndPushBranch: vi.fn().mockResolvedValue(undefined),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result).toEqual({ success: true, finalName: "feature/x" });
+        expect(cloneService.createAndPushBranch).toHaveBeenCalledWith("main", "feature/x");
+        expect(mockGitService.createBranch).not.toHaveBeenCalled();
+        expect(mockGitService.pushBranch).not.toHaveBeenCalled();
+
+        // ...and the wizard's follow-up switches the clone in place rather
+        // than adding a worktree — the branch it just pushed is now real.
+        await service.createWorktreeForBranch(0, "feature/x");
+        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/x", { allowConfigDrift: true });
+        expect(mockGitService.addWorktree).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it("suffixes the name when the clone-mode path reports a collision", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          isCloneMode: vi.fn().mockReturnValue(true),
+          createAndPushBranch: vi
+            .fn()
+            .mockRejectedValueOnce(new Error("branch 'feature/x' already exists on the remote of 'app'"))
+            .mockResolvedValueOnce(undefined),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result).toEqual({ success: true, finalName: "feature/x-1" });
+        expect(cloneService.createAndPushBranch).toHaveBeenNthCalledWith(2, "main", "feature/x-1");
+
+        void service.destroy();
+      });
+
+      it("surfaces the clone-mode failure message unchanged", async () => {
+        const cloneService = {
+          ...mockSyncService,
+          isCloneMode: vi.fn().mockReturnValue(true),
+          createAndPushBranch: vi
+            .fn()
+            .mockRejectedValue(new Error("Cannot create 'feature/x' in 'app': '/srv/app' is not a git clone.")),
+        };
+        const service = new InteractiveUIService([cloneService as any]);
+
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("'app'");
+        expect(result.error).not.toContain("simple-git");
+
+        void service.destroy();
+      });
+
+      it("names the cause instead of blaming another process when the repo lock is unavailable", async () => {
+        (mockSyncService.runQueuedRepoOperation as any).mockResolvedValueOnce({
+          started: false,
+          reason: "lock_unavailable",
+          path: "/state/sync-worktrees/locks",
+          code: "EACCES",
+          error: "EACCES: permission denied, mkdir '/state/sync-worktrees/locks'",
+        });
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/new");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("/state/sync-worktrees/locks");
+        expect(result.error).toContain("EACCES");
+        expect(result.error).not.toMatch(/another process|try again/i);
+        expect(mockGitService.createBranch).not.toHaveBeenCalled();
+
+        void service.destroy();
       });
     });
 
@@ -1778,7 +2245,7 @@ describe("InteractiveUIService", () => {
         expect(worktrees).toHaveLength(2);
         expect(worktrees[0]).toEqual({ path: "/test/worktrees/main", branch: "main" });
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw error for invalid repo index", async () => {
@@ -1786,7 +2253,7 @@ describe("InteractiveUIService", () => {
 
         await expect(service.getWorktreesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should use the service worktree provider for clone-mode repositories", async () => {
@@ -1804,7 +2271,7 @@ describe("InteractiveUIService", () => {
         expect(cloneService.getWorktrees).toHaveBeenCalled();
         expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1826,7 +2293,7 @@ describe("InteractiveUIService", () => {
         expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/clone", true);
         expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1840,7 +2307,7 @@ describe("InteractiveUIService", () => {
           expect.stringMatching(/^\/test\/worktrees\/feature-new-[a-f0-9]{8}$/),
         );
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should checkout the branch for clone-mode repositories", async () => {
@@ -1858,7 +2325,7 @@ describe("InteractiveUIService", () => {
         expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new", { allowConfigDrift: true });
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw error for invalid repo index", async () => {
@@ -1868,7 +2335,7 @@ describe("InteractiveUIService", () => {
           "Invalid repository index: -1",
         );
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should serialize worktree creation through the queued repo lock", async () => {
@@ -1877,7 +2344,7 @@ describe("InteractiveUIService", () => {
 
         expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw when another process holds the repo lock", async () => {
@@ -1887,7 +2354,7 @@ describe("InteractiveUIService", () => {
         await expect(service.createWorktreeForBranch(0, "feature/new")).rejects.toThrow(/repository lock/i);
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1905,7 +2372,7 @@ describe("InteractiveUIService", () => {
         expect(mockSyncService.initializeUnlocked).toHaveBeenCalledTimes(1);
         expect(mockSyncService.initialize).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should not re-initialize when already initialized", async () => {
@@ -1917,7 +2384,7 @@ describe("InteractiveUIService", () => {
         expect(mockSyncService.initializeUnlocked).not.toHaveBeenCalled();
         expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw when another process holds the repo lock", async () => {
@@ -1926,7 +2393,7 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
         await expect(service.fetchForRepo(0)).rejects.toThrow(/repository lock/i);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("is a no-op for clone-mode repos (branch discovery is live at picker open)", async () => {
@@ -1939,7 +2406,7 @@ describe("InteractiveUIService", () => {
         expect(mockGitService.fetchAll).not.toHaveBeenCalled();
         expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -1966,7 +2433,7 @@ describe("InteractiveUIService", () => {
 
         expect(result.success).toBe(true);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should split EDITOR values that include flags so spawn gets a real binary name", () => {
@@ -1983,7 +2450,240 @@ describe("InteractiveUIService", () => {
           expect.objectContaining({ detached: true }),
         );
 
-        service.destroy();
+        void service.destroy();
+      });
+
+      it.each([["vim"], ["vi"], ["nvim"], ["nano"], ["pico"], ["micro"], ["helix"], ["hx"], ["kak"]])(
+        "refuses %s, which has no TTY when spawned detached",
+        (editor) => {
+          process.env.EDITOR = editor;
+          delete process.env.VISUAL;
+          mockSpawn.mockClear();
+
+          const service = new InteractiveUIService([mockSyncService]);
+          const result = service.openEditorInWorktree("/test/worktrees/main");
+
+          expect(result.success).toBe(false);
+          expect(result.error).toContain(`'${editor}' is a terminal editor`);
+          expect(result.error).toContain("Terminal mode");
+          expect(mockSpawn).not.toHaveBeenCalled();
+
+          void service.destroy();
+        },
+      );
+
+      it("refuses a terminal editor given by absolute path", () => {
+        process.env.EDITOR = "/usr/local/bin/nvim";
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/test/worktrees/main");
+
+        expect(result.success).toBe(false);
+        expect(mockSpawn).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it("refuses the terminal editor named by VISUAL when EDITOR is unset", () => {
+        delete process.env.EDITOR;
+        process.env.VISUAL = "vim";
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/test/worktrees/main");
+
+        expect(result.success).toBe(false);
+        expect(mockSpawn).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it("lets the flag decide for emacs, which is a GUI editor until -nw says otherwise", () => {
+        delete process.env.VISUAL;
+        const service = new InteractiveUIService([mockSyncService]);
+
+        process.env.EDITOR = "emacs";
+        mockSpawn.mockClear();
+        expect(service.openEditorInWorktree("/wt").success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith("emacs", ["/wt"], expect.objectContaining({ detached: true }));
+
+        for (const flag of ["-nw", "--no-window-system", "-t", "--tty"]) {
+          process.env.EDITOR = `emacs ${flag}`;
+          mockSpawn.mockClear();
+          const result = service.openEditorInWorktree("/wt");
+          expect(result.success, `emacs ${flag} should be refused`).toBe(false);
+          expect(mockSpawn).not.toHaveBeenCalled();
+        }
+
+        void service.destroy();
+      });
+
+      it.each([["vim"], ["vi"]])("lets -g override the basename for %s, whose parser defines it", (editor) => {
+        process.env.EDITOR = `${editor} -g`;
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith(editor, ["-g", "/wt"], expect.objectContaining({ detached: true }));
+
+        void service.destroy();
+      });
+
+      // -g is vim's GUI flag and nobody else's: nano and pico read it as --showcursor (verified
+      // against `nano --help` on this box), helix as --grammar, emacs as --geometry, and nvim
+      // has no -g at all. Treating it as GUI-forcing everywhere spawned into the void exactly
+      // the TTY-less editors this refusal exists for.
+      it.each([
+        ["nano", "-g"],
+        ["pico", "-g"],
+        ["helix", "-g"],
+        ["hx", "-g"],
+        ["kak", "-g"],
+        ["nvim", "-g"],
+        ["vim", "--gui"],
+      ])("still refuses '%s %s', where the flag is not this editor's GUI flag", (editor, flag) => {
+        process.env.EDITOR = `${editor} ${flag}`;
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success, `${editor} ${flag} should still be refused`).toBe(false);
+        expect(mockSpawn).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      // An explicit terminal flag is the user saying what they want, and a flag that means
+      // something else to this editor does not get to overrule it.
+      it.each([["emacs -nw -g"], ["emacs -g -nw"], ["emacs --gui -t"], ["emacsclient -nw -g"]])(
+        "refuses '%s', because the terminal flag wins over the GUI one",
+        (value) => {
+          process.env.EDITOR = value;
+          delete process.env.VISUAL;
+          mockSpawn.mockClear();
+
+          const service = new InteractiveUIService([mockSyncService]);
+          const result = service.openEditorInWorktree("/wt");
+
+          expect(result.success, `${value} should be refused`).toBe(false);
+          expect(mockSpawn).not.toHaveBeenCalled();
+
+          void service.destroy();
+        },
+      );
+
+      it("fails open: an editor nobody recognises is still launched", () => {
+        process.env.EDITOR = "some-unknown-editor";
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith(
+          "some-unknown-editor",
+          ["/wt"],
+          expect.objectContaining({ detached: true }),
+        );
+
+        void service.destroy();
+      });
+
+      it("keeps a quoted EDITOR path with spaces as one argv entry", () => {
+        process.env.EDITOR = '"/Applications/My Editor.app/Contents/MacOS/ed" --new-window';
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith(
+          "/Applications/My Editor.app/Contents/MacOS/ed",
+          ["--new-window", "/wt"],
+          expect.objectContaining({ detached: true }),
+        );
+
+        void service.destroy();
+      });
+
+      it("reports a whitespace-only EDITOR instead of quietly editing with something else", () => {
+        process.env.EDITOR = "   ";
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("whitespace only");
+        expect(mockSpawn).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it.each([
+        ["unset", undefined],
+        ["empty", ""],
+      ])("still falls back to the default editor when EDITOR is %s", (_label, value) => {
+        if (value === undefined) delete process.env.EDITOR;
+        else process.env.EDITOR = value;
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith("code", ["/wt"], expect.objectContaining({ detached: true }));
+
+        void service.destroy();
+      });
+
+      // The refusal names Terminal mode as the remedy, so it asks whether one resolves first:
+      // on a headless host none does, and sending the user there is a second dead end.
+      it.each([
+        [false, "no emulator is available", "use Terminal mode"],
+        [true, "use Terminal mode", "no emulator is available"],
+      ])("words the refusal for a host where an emulator resolves=%s", (resolves, present, absent) => {
+        const platform = process.platform;
+        const envOverride = process.env.SYNC_WORKTREES_TERMINAL;
+        const envTerminal = process.env.TERMINAL;
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        delete process.env.TERMINAL;
+        mockSpawnSync.mockImplementation((...args: unknown[]) => ({
+          status: resolves && (args[1] as string[])[0] === "konsole" ? 0 : 1,
+          stdout: "",
+          stderr: "",
+        }));
+        process.env.EDITOR = "vim";
+        delete process.env.VISUAL;
+
+        const service = new InteractiveUIService([mockSyncService]);
+        try {
+          const result = service.openEditorInWorktree("/wt");
+
+          expect(result.success).toBe(false);
+          expect(result.error).toContain(present);
+          expect(result.error).not.toContain(absent);
+        } finally {
+          Object.defineProperty(process, "platform", { value: platform });
+          if (envOverride === undefined) delete process.env.SYNC_WORKTREES_TERMINAL;
+          else process.env.SYNC_WORKTREES_TERMINAL = envOverride;
+          if (envTerminal === undefined) delete process.env.TERMINAL;
+          else process.env.TERMINAL = envTerminal;
+          mockSpawnSync.mockImplementation(() => ({ status: 1, stdout: "", stderr: "" }));
+          void service.destroy();
+        }
       });
     });
 
@@ -2030,13 +2730,19 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "open");
         expect(call).toBeDefined();
-        const args = call[1] as string[];
-        expect(args.slice(0, 5)).toEqual(["-na", "Ghostty.app", "--args", "-e", "sh"]);
-        expect(args[5]).toBe("-c");
-        expect(args[6]).toContain("my-repo-feat-x");
-        expect(args[6]).toContain("/worktrees/feat-x");
+        // Whole argv, not a prefix: a stray flag after --args would slip past a slice() check
+        // and change what Ghostty is actually told to run.
+        expect(call[1]).toEqual([
+          "-na",
+          "Ghostty.app",
+          "--args",
+          "-e",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'my-repo-feat-x-[0-9a-f]+' -c '\/worktrees\/feat-x'$/),
+        ]);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should use osascript on darwin and include tmux session name of <repo>-<branch>", () => {
@@ -2058,7 +2764,7 @@ describe("InteractiveUIService", () => {
         expect(call[1][1]).toContain("my-repo-feat-x");
         expect(call[1][1]).toContain("/test/worktrees/feat-x");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should honour SYNC_WORKTREES_TERMINAL env override", () => {
@@ -2075,14 +2781,183 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "alacritty");
         expect(call).toBeDefined();
-        const args = call[1] as string[];
-        expect(args.slice(0, 3)).toEqual(["-e", "sh", "-c"]);
-        const tmuxCmd = args[args.length - 1];
-        expect(tmuxCmd).toContain("tmux new-session -A -s");
-        expect(tmuxCmd).toContain("repo-branch");
-        expect(tmuxCmd).toContain("/path");
+        expect(call[1]).toEqual([
+          "-e",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
 
-        service.destroy();
+        void service.destroy();
+      });
+
+      it.each([
+        ["gnome-terminal", "--"],
+        ["mate-terminal", "--"],
+        ["xfce4-terminal", "-x"],
+        ["konsole", "-e"],
+        ["alacritty", "-e"],
+        ["kitty", "-e"],
+        ["xterm", "-e"],
+      ])("gives $TERMINAL=%s the %s its own option parser accepts", (terminal, flag) => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        process.env.TERMINAL = terminal;
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openTerminalInWorktree(0, "/path", "branch");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === terminal);
+        expect(call, `${terminal} was never spawned`).toBeDefined();
+        // Whole-argv equality, not toContain: a stray extra "-e" would slip past a substring check.
+        expect(call[1]).toEqual([
+          flag,
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+        expect(call[1]).toHaveLength(4);
+
+        void service.destroy();
+      });
+
+      it("uses the same per-emulator rule when probing candidates as it does for $TERMINAL", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        delete process.env.TERMINAL;
+        mockSpawnSync.mockImplementation((...args: unknown[]) => ({
+          status: (args[1] as string[])[0] === "gnome-terminal" ? 0 : 1,
+          stdout: "",
+          stderr: "",
+        }));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openTerminalInWorktree(0, "/path", "branch");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
+        expect(call).toBeDefined();
+        expect(call[1]).toEqual([
+          "--",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      it("keeps a $TERMINAL emulator's own flags and still appends the right exec flag", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        process.env.TERMINAL = "gnome-terminal --hide-menubar";
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
+        expect(call).toBeDefined();
+        expect(call[1]).toEqual([
+          "--hide-menubar",
+          "--",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      it("keeps a quoted SYNC_WORKTREES_TERMINAL path with spaces as one argv entry", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        process.env.SYNC_WORKTREES_TERMINAL = '"/Applications/My Term.app/Contents/MacOS/term" -e';
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(
+          ([cmd]) => cmd === "/Applications/My Term.app/Contents/MacOS/term",
+        );
+        expect(call, "the quoted path was split into several argv entries").toBeDefined();
+        expect(call[1]).toEqual([
+          "-e",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      it("supplies the exec flag for a bare SYNC_WORKTREES_TERMINAL that carries none", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        process.env.SYNC_WORKTREES_TERMINAL = "gnome-terminal";
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
+        expect(call).toBeDefined();
+        expect(call[1]).toEqual([
+          "--",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      // The override used to consult the exec-flag table only when it carried no args of its
+      // own, so a user who added one flag of theirs lost the exec flag altogether -- the
+      // original "-e sh -c" defect wearing a different hat.
+      it("gives an override that carries its own flags the exec flag as well", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        process.env.SYNC_WORKTREES_TERMINAL = "gnome-terminal --tab";
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
+        expect(call, "gnome-terminal was never spawned").toBeDefined();
+        expect(call[1]).toEqual([
+          "--tab",
+          "--",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      it.each([
+        ["SYNC_WORKTREES_TERMINAL", "alacritty -e"],
+        ["TERMINAL", "alacritty -e"],
+        ["SYNC_WORKTREES_TERMINAL", "xfce4-terminal -x"],
+        ["TERMINAL", "gnome-terminal --"],
+      ])("adds no second exec flag when %s=%s already has one", (variable, value) => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        delete process.env.TERMINAL;
+        process.env[variable] = value;
+        const [command, flag] = value.split(" ");
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === command);
+        expect(call, `${command} was never spawned`).toBeDefined();
+        // Exactly one: a second flag would be read as an argument to the first.
+        expect(call[1]).toEqual([
+          flag,
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
       });
 
       it("should return error for invalid repository index", () => {
@@ -2092,7 +2967,7 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("Invalid repository index");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return error when spawn throws synchronously", () => {
@@ -2109,7 +2984,7 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("ENOENT");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -2120,14 +2995,14 @@ describe("InteractiveUIService", () => {
 
         expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should skip for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
         await expect(service.copyBranchFiles(-1, "main", "feature/new")).resolves.not.toThrow();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should skip if worktrees not found", async () => {
@@ -2143,7 +3018,7 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockServiceWithFiles as any]);
         await expect(service.copyBranchFiles(0, "main", "feature/new")).resolves.not.toThrow();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -2159,7 +3034,7 @@ describe("InteractiveUIService", () => {
           undefined,
         );
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("releases the recorded keep ref through the locked discard operation", async () => {
@@ -2174,7 +3049,7 @@ describe("InteractiveUIService", () => {
           path.join("/test/worktrees", ".diverged", "2024-01-15-feature-x-abc123"),
           "refs/sync-worktrees/keep/2024-01-15-feature-x-abc123",
         );
-        service.destroy();
+        void service.destroy();
       });
 
       it("should throw for invalid repo index", async () => {
@@ -2183,7 +3058,7 @@ describe("InteractiveUIService", () => {
         await expect(service.deleteDivergedDirectory(-1, "test")).rejects.toThrow("Invalid repository index: -1");
         await expect(service.deleteDivergedDirectory(5, "test")).rejects.toThrow("Invalid repository index: 5");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should reject path traversal attempts", async () => {
@@ -2195,7 +3070,7 @@ describe("InteractiveUIService", () => {
         );
         expect(fs.rm).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should reject deeply nested traversal attempts", async () => {
@@ -2207,7 +3082,7 @@ describe("InteractiveUIService", () => {
         );
         expect(fs.rm).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
 
       it.each([
@@ -2223,7 +3098,7 @@ describe("InteractiveUIService", () => {
         await expect(service.deleteDivergedDirectory(0, badName)).rejects.toThrow();
         expect(fs.rm).not.toHaveBeenCalled();
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -2237,7 +3112,7 @@ describe("InteractiveUIService", () => {
         const result2 = await service.getDivergedDirectoriesForRepo(5);
         expect(result2).toEqual([]);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should return empty array when .diverged directory does not exist", async () => {
@@ -2247,7 +3122,7 @@ describe("InteractiveUIService", () => {
         const result = await service.getDivergedDirectoriesForRepo(0);
         expect(result).toEqual([]);
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should parse entries from .diverged directory with metadata files", async () => {
@@ -2265,7 +3140,7 @@ describe("InteractiveUIService", () => {
         expect(result[0].divergedAt).toBe("2024-01-15T10:00:00Z");
         expect(result[0].sizeFormatted).toBe("1.0 KB");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should fallback to parsing directory name when metadata file is missing", async () => {
@@ -2280,7 +3155,7 @@ describe("InteractiveUIService", () => {
         expect(result[0].originalBranch).toBe("my-branch");
         expect(result[0].divergedAt).toBe("2024-03-20");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should filter out non-directory entries", async () => {
@@ -2297,7 +3172,7 @@ describe("InteractiveUIService", () => {
         expect(result).toHaveLength(1);
         expect(result[0].name).toBe("a-dir");
 
-        service.destroy();
+        void service.destroy();
       });
 
       it("should sort entries by divergedAt descending", async () => {
@@ -2315,7 +3190,7 @@ describe("InteractiveUIService", () => {
         expect(result[0].divergedAt).toBe("2024-06-15");
         expect(result[1].divergedAt).toBe("2024-01-01");
 
-        service.destroy();
+        void service.destroy();
       });
     });
 
@@ -2331,7 +3206,15 @@ describe("InteractiveUIService", () => {
             maxConcurrent = Math.max(maxConcurrent, concurrent);
             await new Promise((resolve) => setTimeout(resolve, 10));
             concurrent--;
-            return { trashEntries: 0, trashBytes: 0, unknownTrashSizes: 0, invalidTrashEntries: 0, keepRefs: 0 };
+            return {
+              trashEntries: 0,
+              trashBytes: 0,
+              unknownTrashSizes: 0,
+              invalidTrashEntries: 0,
+              keepRefs: 0,
+              trashEntryIds: [],
+              keepRefNames: [],
+            };
           }),
         }));
         const ui = new InteractiveUIService(services as any, undefined, undefined, 1);
@@ -2339,7 +3222,95 @@ describe("InteractiveUIService", () => {
         await ui.getForceCleanPreview();
 
         expect(maxConcurrent).toBe(1);
-        ui.destroy();
+        void ui.destroy();
+      });
+
+      it("skips a repository the confirmation did not name and passes each selection through", async () => {
+        const second = {
+          ...mockSyncService,
+          config: { ...mockSyncService.config, name: "repo-2" },
+          forceClean: vi.fn<any>(),
+        } as any;
+        const ui = new InteractiveUIService([mockSyncService, second]);
+
+        const results = await ui.forceClean([
+          { repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: ["refs/sync-worktrees/keep/ref-a"] },
+        ]);
+
+        expect(mockSyncService.forceClean).toHaveBeenCalledWith({
+          repoIndex: 0,
+          trashEntryIds: ["entry-a"],
+          keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
+        });
+        expect(second.forceClean).not.toHaveBeenCalled();
+        expect(results[1]).toMatchObject({ repoIndex: 1, error: "skipped: cleanup preview was unavailable" });
+
+        void ui.destroy();
+      });
+
+      it("logs what a purge left behind because the preview never showed it", async () => {
+        const ui = new InteractiveUIService([mockSyncService]);
+        mockSyncService.forceClean.mockResolvedValue({
+          trashEntries: 1,
+          trashBytes: 0,
+          unknownTrashSizes: 0,
+          invalidTrashEntries: 0,
+          keepRefs: 1,
+          trashDeleted: 1,
+          keepRefsDeleted: 1,
+          keepRefsRetained: 0,
+          skippedNewEntries: 1,
+          skippedNewKeepRefs: 1,
+          gcSucceeded: true,
+          gcSkipped: false,
+          errors: [],
+        });
+        const logs: Array<{ message: string; level: string }> = [];
+        ui.getEvents().on("addLog", (entry: { message: string; level: string }) => logs.push(entry));
+        ui.getEvents().emit("uiReady");
+
+        await ui.forceClean([{ repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] }]);
+
+        expect(logs).toContainEqual(
+          expect.objectContaining({
+            level: "warn",
+            message: expect.stringContaining("left 1 trash entries and 1 recovery refs added after the preview"),
+          }),
+        );
+
+        void ui.destroy();
+      });
+
+      // A gc the busy probe held back is not a gc that ran and failed; the log
+      // line has to keep the two apart or every skip reads as a broken repo.
+      it("logs a gc held back by the busy probe as skipped, not failed", async () => {
+        const ui = new InteractiveUIService([mockSyncService]);
+        mockSyncService.forceClean.mockResolvedValue({
+          trashEntries: 0,
+          trashBytes: 0,
+          unknownTrashSizes: 0,
+          invalidTrashEntries: 0,
+          keepRefs: 0,
+          trashDeleted: 1,
+          keepRefsDeleted: 0,
+          keepRefsRetained: 0,
+          skippedNewEntries: 0,
+          skippedNewKeepRefs: 0,
+          gcSucceeded: false,
+          gcSkipped: true,
+          errors: ["git gc skipped, git is busy in: /w/feature-1 (index.lock)"],
+        });
+        const logs: Array<{ message: string; level: string }> = [];
+        ui.getEvents().on("addLog", (entry: { message: string; level: string }) => logs.push(entry));
+        ui.getEvents().emit("uiReady");
+
+        await ui.forceClean([{ repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] }]);
+
+        const message = logs.map((entry) => entry.message).join("\n");
+        expect(message).toContain("GC skipped");
+        expect(message).not.toContain("GC failed");
+
+        void ui.destroy();
       });
 
       it("previews and cleans every configured repository while preserving partial failures", async () => {
@@ -2352,7 +3323,12 @@ describe("InteractiveUIService", () => {
         const ui = new InteractiveUIService([mockSyncService, failingService]);
 
         const preview = await ui.getForceCleanPreview();
-        const result = await ui.forceClean();
+        // Both repos are named in the confirmation here, so repo-2's own
+        // failure — not a missing selection — is what has to survive.
+        const result = await ui.forceClean([
+          { repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] },
+          { repoIndex: 1, trashEntryIds: [], keepRefNames: [] },
+        ]);
 
         expect(preview).toEqual([
           expect.objectContaining({ repoIndex: 0, preview: expect.objectContaining({ trashEntries: 1 }) }),
@@ -2363,7 +3339,7 @@ describe("InteractiveUIService", () => {
           expect.objectContaining({ repoIndex: 1, repoName: "repo-2", error: "locked" }),
         ]);
 
-        ui.destroy();
+        void ui.destroy();
       });
     });
   });

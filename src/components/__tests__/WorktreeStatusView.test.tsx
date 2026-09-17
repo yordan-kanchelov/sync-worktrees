@@ -2,7 +2,8 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import WorktreeStatusView, { WorktreeStatusViewProps } from "../WorktreeStatusView";
+import type { WorktreeStatusViewProps } from "../WorktreeStatusView";
+import WorktreeStatusView from "../WorktreeStatusView";
 import type { WorktreeStatusResult } from "../../services/worktree-status.service";
 import type { WorktreeStatusEntry, DivergedDirectoryInfo, RepositoryDiskUsage } from "../../types";
 
@@ -18,6 +19,7 @@ const makeStatus = (overrides: Partial<WorktreeStatusResult> = {}): WorktreeStat
   fullyPushedUpstreamDeleted: false,
   canRemove: true,
   reasons: [],
+  divergence: null,
   ...overrides,
 });
 
@@ -101,6 +103,138 @@ describe("WorktreeStatusView", () => {
     cleanup();
   });
 
+  // An async loader that returns [] is a legitimate answer (clone mode before
+  // the first sync, or a repo whose every status probe rejected), not a reason
+  // to ask again: the effect used to re-fire on every commit where the list was
+  // still empty, so the modal spun git spawns and renders until it was closed.
+  describe("empty status list", () => {
+    const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+    it("loads once and stays on the empty state", async () => {
+      const getWorktreeStatusForRepo = vi.fn(async () => {
+        await delay(20);
+        return [];
+      });
+      const { lastFrame } = render(
+        <WorktreeStatusView
+          {...defaultProps}
+          repositories={[{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }]}
+          getWorktreeStatusForRepo={getWorktreeStatusForRepo}
+        />,
+      );
+
+      await delay(500);
+
+      expect(getWorktreeStatusForRepo).toHaveBeenCalledTimes(1);
+      expect(lastFrame()).toContain("No worktrees found");
+    });
+
+    // The loop the guard is actually for. `App` passes `getWorktreeStatusForRepo`
+    // as an arrow written in its JSX, so the prop -- and with it the
+    // `useCallback` that wraps it and the effect that depends on that -- is a
+    // new identity on every App render, and App re-renders on every log line. A
+    // test that hands the view one stable `vi.fn()` never re-runs the effect at
+    // all and would pass with no guard in place.
+    it("loads once although the loader prop is a new function on every render", async () => {
+      const load = vi.fn(async (repoIndex: number) => {
+        expect(repoIndex).toBe(0);
+        await delay(20);
+        return [];
+      });
+      const props = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      };
+      const { rerender, lastFrame } = render(
+        <WorktreeStatusView {...props} getWorktreeStatusForRepo={(index) => load(index)} />,
+      );
+
+      for (let i = 0; i < 10; i++) {
+        rerender(<WorktreeStatusView {...props} getWorktreeStatusForRepo={(index) => load(index)} />);
+        await delay(20);
+      }
+
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(lastFrame()).toContain("No worktrees found");
+    });
+
+    // The loader runs from an effect, which is a commit later than the
+    // keystroke: without a loading state of its own that first frame says there
+    // are no worktrees, for a repository nothing has looked at yet.
+    it("does not flash the empty state between the keypress and the load", async () => {
+      const getWorktreeStatusForRepo = vi.fn(async () => {
+        await delay(50);
+        return [];
+      });
+      const { stdin, frames } = render(
+        <WorktreeStatusView {...defaultProps} getWorktreeStatusForRepo={getWorktreeStatusForRepo} />,
+      );
+
+      stdin.write("\r");
+      await delay(20);
+      expect(frames.some((frame) => frame.includes("No worktrees found"))).toBe(false);
+
+      await delay(300);
+      expect(frames.some((frame) => frame.includes("No worktrees found"))).toBe(true);
+      // And there it stays: the empty state is the answer, not a sign that the
+      // load has not happened yet.
+      expect(getWorktreeStatusForRepo).toHaveBeenCalledTimes(1);
+    });
+
+    // Going back to the project list forgets what was loaded, so the same
+    // repository can be opened again and is probed again rather than showing
+    // the list the view cleared on the way out.
+    it("loads again when the same repository is picked a second time", async () => {
+      const getWorktreeStatusForRepo = vi.fn(async () => {
+        await delay(20);
+        return [];
+      });
+      const { stdin, lastFrame } = render(
+        <WorktreeStatusView {...defaultProps} getWorktreeStatusForRepo={getWorktreeStatusForRepo} />,
+      );
+
+      stdin.write("\r");
+      await delay(300);
+      expect(getWorktreeStatusForRepo).toHaveBeenCalledTimes(1);
+
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await delay(300);
+
+      expect(getWorktreeStatusForRepo).toHaveBeenCalledTimes(2);
+      expect(getWorktreeStatusForRepo).toHaveBeenLastCalledWith(0);
+      expect(lastFrame()).toContain("No worktrees found");
+    });
+
+    it("loads once more when another repository is selected", async () => {
+      const getWorktreeStatusForRepo = vi.fn(async () => {
+        await delay(20);
+        return [];
+      });
+      const { stdin, lastFrame } = render(
+        <WorktreeStatusView {...defaultProps} getWorktreeStatusForRepo={getWorktreeStatusForRepo} />,
+      );
+
+      stdin.write("\r");
+      await delay(300);
+      expect(getWorktreeStatusForRepo).toHaveBeenCalledTimes(1);
+      expect(getWorktreeStatusForRepo).toHaveBeenLastCalledWith(0);
+
+      // ESC back to the project list, then pick the second repository.
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await delay(300);
+
+      expect(getWorktreeStatusForRepo).toHaveBeenCalledTimes(2);
+      expect(getWorktreeStatusForRepo).toHaveBeenLastCalledWith(1);
+      expect(lastFrame()).toContain("No worktrees found");
+    });
+  });
+
   describe("rendering", () => {
     it("should render view title", () => {
       const { lastFrame } = render(<WorktreeStatusView {...defaultProps} />);
@@ -156,6 +290,46 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).toContain("2.00 KB");
     });
 
+    it("keeps a disk-usage result that resolves after a re-render with a fresh repositories array", async () => {
+      let resolveUsage: (usage: RepositoryDiskUsage) => void = () => {};
+      const getRepositoryDiskUsage = vi.fn().mockImplementation(
+        () =>
+          new Promise<RepositoryDiskUsage>((resolve) => {
+            resolveUsage = resolve;
+          }),
+      );
+      const singleRepo = [{ index: 0, name: "repo-1", repoUrl: "https://example.com/repo-1.git" }];
+
+      const { lastFrame, rerender } = render(
+        <WorktreeStatusView
+          {...defaultProps}
+          repositories={singleRepo}
+          getRepositoryDiskUsage={getRepositoryDiskUsage}
+        />,
+      );
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Size: calculating");
+
+      // What App does on every addLog/setSyncProgress/setDiskSpace event:
+      // same repositories, brand new array identity.
+      rerender(
+        <WorktreeStatusView
+          {...defaultProps}
+          repositories={[...singleRepo]}
+          getRepositoryDiskUsage={getRepositoryDiskUsage}
+        />,
+      );
+      await waitForStateUpdate();
+
+      resolveUsage(makeDiskUsage(0, "1.00 KB"));
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(getRepositoryDiskUsage).toHaveBeenCalledTimes(1);
+      expect(lastFrame()).toContain("1.00 KB");
+      expect(lastFrame()).not.toContain("Size: calculating");
+    });
+
     it("should show repository disk usage in the selected status header", async () => {
       const singleRepoProps = {
         ...defaultProps,
@@ -170,6 +344,91 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).toContain("Repository:");
       expect(lastFrame()).toContain("single-repo");
       expect(lastFrame()).toContain("1.00 KB");
+    });
+  });
+
+  describe("a worktree whose status probe failed", () => {
+    const singleRepoProps = () => ({
+      ...defaultProps,
+      repositories: [{ index: 0, name: "single-repo", repoUrl: "https://example.com/repo.git" }],
+    });
+
+    const unprobed = (branch: string, message: string): WorktreeStatusEntry => ({
+      branch,
+      path: `/worktrees/${branch}`,
+      status: makeStatus({ isClean: false, canRemove: false, reasons: [message] }),
+      error: message,
+    });
+
+    it("shows the failure on the row instead of flags derived from nothing", async () => {
+      const props = singleRepoProps();
+      props.getWorktreeStatusForRepo = vi
+        .fn()
+        .mockResolvedValue([makeEntry("main"), unprobed("feature/x", "fatal: not a git repository")]);
+
+      const { lastFrame } = render(<WorktreeStatusView {...props} />);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("feature/x");
+      expect(lastFrame()).toContain("! status unknown");
+      // The row that probed fine still reads as it always did.
+      expect(lastFrame()).toContain("main");
+      expect(lastFrame()).toContain("✓");
+    });
+
+    it("counts the worktrees it could not probe, so a short list cannot pass for a whole one", async () => {
+      const props = singleRepoProps();
+      props.getWorktreeStatusForRepo = vi
+        .fn()
+        .mockResolvedValue([makeEntry("main"), unprobed("feature/x", "EAGAIN"), unprobed("feature/y", "EAGAIN")]);
+
+      const { lastFrame } = render(<WorktreeStatusView {...props} />);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("2 of 3 worktrees could not be probed");
+    });
+
+    it("says nothing about probes when every one of them answered", async () => {
+      const props = singleRepoProps();
+
+      const { lastFrame } = render(<WorktreeStatusView {...props} />);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("could not be probed");
+      expect(lastFrame()).not.toContain("status unknown");
+    });
+
+    it("counts and marks a worktree whose probe failed without a message", async () => {
+      const props = singleRepoProps();
+      props.getWorktreeStatusForRepo = vi.fn().mockResolvedValue([makeEntry("main"), unprobed("feature/x", "")]);
+
+      const { lastFrame } = render(<WorktreeStatusView {...props} />);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      // One predicate for the count and for the row. On truthiness the count
+      // said one worktree could not be probed while the row beneath it rendered
+      // ordinary status flags for that same worktree.
+      expect(lastFrame()).toContain("1 of 2 worktrees could not be probed");
+      expect(lastFrame()).toContain("! status unknown");
+    });
+
+    it("repeats the failure in the expanded detail panel", async () => {
+      const props = singleRepoProps();
+      props.getWorktreeStatusForRepo = vi
+        .fn()
+        .mockResolvedValue([unprobed("feature/x", "EMFILE: too many open files")]);
+
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...props} />);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Status probe failed: EMFILE: too many open files");
     });
   });
 

@@ -56,3 +56,69 @@ export function parseWheelEvent(input: string): WheelDirection | null {
       return null;
   }
 }
+
+export interface MouseTrackingStream {
+  write(data: string): unknown;
+}
+
+export interface MouseTrackingExitTarget {
+  once(event: "exit", listener: () => void): unknown;
+  removeListener(event: "exit", listener: () => void): unknown;
+}
+
+export interface MouseTracking {
+  enable(): void;
+  disable(): void;
+}
+
+/**
+ * Owns the tracking mode for the lifetime of the interface, outside React.
+ *
+ * The enable/disable pair cannot live in a component effect: Ink's `unmount()`
+ * sets its `isUnmounted` latch *before* it tears the React tree down, and
+ * `writeToStdout` returns early once that latch is set, so a cleanup-time write
+ * is discarded on every exit path. The shell then inherits DECSET 1000/1006 and
+ * turns every click into `[<0;12;7M` garbage.
+ *
+ * `disable()` is idempotent and is also armed on `process` "exit", so a path
+ * that never reaches the service's teardown — an uncaught exception, an
+ * explicit `process.exit` — still restores the terminal.
+ */
+export function createMouseTracking(
+  stream: MouseTrackingStream,
+  exitTarget: MouseTrackingExitTarget = process,
+): MouseTracking {
+  let active = false;
+
+  const restore = (): void => {
+    if (!active) return;
+    active = false;
+    try {
+      stream.write(MOUSE_TRACKING_DISABLE);
+    } catch {
+      // Best effort: during teardown the stream may already be destroyed.
+    }
+  };
+
+  const onProcessExit = (): void => restore();
+
+  return {
+    enable(): void {
+      if (active) return;
+      // Armed before the write, so a stream that throws still gets the
+      // disable attempted on the way out rather than being left tracking.
+      active = true;
+      exitTarget.once("exit", onProcessExit);
+      try {
+        stream.write(MOUSE_TRACKING_ENABLE);
+      } catch {
+        // Best effort, as above.
+      }
+    },
+    disable(): void {
+      if (!active) return;
+      restore();
+      exitTarget.removeListener("exit", onProcessExit);
+    },
+  };
+}

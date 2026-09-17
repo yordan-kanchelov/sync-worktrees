@@ -3,12 +3,7 @@ import { Box, Text, useInput, usePaste } from "ink";
 import { isMouseSequence } from "../utils/mouse";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
-import type {
-  WorktreeStatusEntry,
-  DivergedDirectoryInfo,
-  RepositoryListEntry,
-  RepositoryDiskUsage,
-} from "../types";
+import type { WorktreeStatusEntry, DivergedDirectoryInfo, RepositoryListEntry, RepositoryDiskUsage } from "../types";
 import { getErrorMessage } from "../utils/lfs-error";
 
 export type { WorktreeStatusEntry };
@@ -25,9 +20,7 @@ export interface WorktreeStatusViewProps {
 }
 
 type RepositoryDiskUsageState =
-  | { status: "loading" }
-  | { status: "ready"; usage: RepositoryDiskUsage }
-  | { status: "error" };
+  { status: "loading" } | { status: "ready"; usage: RepositoryDiskUsage } | { status: "error" };
 
 type ListItem =
   | { type: "worktree"; entry: WorktreeStatusEntry }
@@ -106,14 +99,17 @@ const getStatusSummary = (status: WorktreeStatusResult): string => {
 
   if (!status.isClean && details) {
     const fileCount =
-      details.modifiedFiles + details.deletedFiles + details.renamedFiles + details.createdFiles + details.conflictedFiles + details.untrackedFiles;
+      details.modifiedFiles +
+      details.deletedFiles +
+      details.renamedFiles +
+      details.createdFiles +
+      details.conflictedFiles +
+      details.untrackedFiles;
     if (fileCount > 0) parts.push(`${fileCount} changed`);
   }
   if (status.hasUnpushedCommits && details?.unpushedCommitCount) {
     parts.push(
-      status.fullyPushedUpstreamDeleted
-        ? "pushed, remote branch deleted"
-        : `${details.unpushedCommitCount} unpushed`,
+      status.fullyPushedUpstreamDeleted ? "pushed, remote branch deleted" : `${details.unpushedCommitCount} unpushed`,
     );
   }
   if (status.hasStashedChanges && details?.stashCount) {
@@ -158,8 +154,18 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [entryFilter, setEntryFilter] = useState("");
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  // What ends the "not loaded yet" state is a load that finished, not a
+  // non-empty list: a repo with no worktrees (clone mode before the first sync)
+  // and one whose every status probe rejected both leave the list at [], and
+  // keying the effect on `entries.length === 0` re-fired the loader on every
+  // commit for as long as the modal stayed open -- a git spawn and a readdir of
+  // .diverged per round trip, forever. Keyed by repository index so picking
+  // another project still loads exactly once, and reset when ESC goes back to
+  // that choice.
+  const loadedForRepoRef = useRef<number | null>(null);
   const [repoDiskUsage, setRepoDiskUsage] = useState<Record<number, RepositoryDiskUsageState>>({});
   const requestedDiskUsageRef = useRef<Set<number>>(new Set());
+  const mountedRef = useRef(true);
 
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -183,6 +189,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     const lowerFilter = entryFilter.toLowerCase();
     return divergedEntries.filter((entry) => entry.originalBranch.toLowerCase().includes(lowerFilter));
   }, [divergedEntries, entryFilter]);
+
+  // One predicate for all three readers -- the count, the row's `!` and the
+  // detail line. On truthiness an `error: ""` was counted above the list and
+  // then rendered as an ordinary status row, so the count and the rows
+  // disagreed about the same entry.
+  const unprobedCount = useMemo(() => entries.filter((entry) => entry.error !== undefined).length, [entries]);
 
   const combinedList = useMemo((): ListItem[] => {
     const items: ListItem[] = filteredEntries.map((entry) => ({ type: "worktree" as const, entry }));
@@ -216,7 +228,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         setExpandedEntry(null);
         setConfirmDelete(null);
       } catch (err) {
-        setError(`Failed to load worktree status: ${err}`);
+        setError(`Failed to load worktree status: ${String(err)}`);
         setStep("ERROR");
       }
       setLoading(false);
@@ -224,15 +236,25 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     [getWorktreeStatusForRepo, getDivergedDirectoriesForRepo],
   );
 
+  // Unmount, not "this effect run". `repositories` is a fresh array on every
+  // App render (getRepositoryList() maps syncServices), so the effect re-runs
+  // on every addLog/setSyncProgress/setDiskSpace event. A per-run cancelled
+  // flag therefore discarded the in-flight du result, while the re-run skipped
+  // the index it had already recorded in requestedDiskUsageRef -- so nothing
+  // ever replaced `calculating...` until the modal was closed and reopened.
   useEffect(() => {
-    if (!getRepositoryDiskUsage) return undefined;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
-    let cancelled = false;
+  useEffect(() => {
+    if (!getRepositoryDiskUsage) return;
+
     const indexesToLoad = repositories
       .map((repo) => repo.index)
       .filter((repoIndex) => !requestedDiskUsageRef.current.has(repoIndex));
-
-    if (indexesToLoad.length === 0) return undefined;
 
     for (const repoIndex of indexesToLoad) {
       requestedDiskUsageRef.current.add(repoIndex);
@@ -240,28 +262,30 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
       void getRepositoryDiskUsage(repoIndex)
         .then((usage) => {
-          if (cancelled) return;
+          if (!mountedRef.current) return;
           setRepoDiskUsage((prev) => ({ ...prev, [repoIndex]: { status: "ready", usage } }));
         })
         .catch(() => {
-          if (cancelled) return;
+          if (!mountedRef.current) return;
           setRepoDiskUsage((prev) => ({
             ...prev,
             [repoIndex]: { status: "error" },
           }));
         });
     }
-
-    return () => {
-      cancelled = true;
-    };
   }, [repositories, getRepositoryDiskUsage]);
 
+  // One loader call per selected repository, from one place. `loadStatus` is a
+  // fresh function on every App render (getWorktreeStatusForRepo is an arrow in
+  // App's JSX), so this effect runs constantly; the ref is what makes that
+  // free.
   useEffect(() => {
-    if (step === "VIEW_STATUS" && entries.length === 0 && !loading && selectedRepoIndexRef.current >= 0) {
-      loadStatus(selectedRepoIndexRef.current);
-    }
-  }, [step, entries.length, loading, loadStatus]);
+    const repoIndex = selectedRepoIndexRef.current;
+    if (step !== "VIEW_STATUS" || repoIndex < 0) return;
+    if (loadedForRepoRef.current === repoIndex) return;
+    loadedForRepoRef.current = repoIndex;
+    void loadStatus(repoIndex);
+  }, [step, loadStatus]);
 
   const navigateUp = useCallback(() => {
     setSelectedEntryIndex((prev) => {
@@ -333,6 +357,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
           setExpandedEntry(null);
           setConfirmDelete(null);
           selectedRepoIndexRef.current = -1;
+          loadedForRepoRef.current = null;
           setStep("SELECT_PROJECT");
         } else {
           onClose();
@@ -352,8 +377,10 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
           selectedRepoIndexRef.current = selectedRepo.index;
+          // The effect owns the call; this only keeps the first frame of the
+          // next step from claiming there are no worktrees before it runs.
+          setLoading(true);
           setStep("VIEW_STATUS");
-          loadStatus(selectedRepo.index);
         }
       } else if (key.backspace || key.delete) {
         setProjectFilter((prev) => prev.slice(0, -1));
@@ -461,6 +488,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     return (
       <Box flexDirection="column" marginLeft={4} marginTop={0} marginBottom={1}>
         <Text dimColor>Path: {entry.path}</Text>
+        {entry.error !== undefined && <Text color="red"> Status probe failed: {entry.error}</Text>}
         {details && (
           <>
             {details.modifiedFiles > 0 && <Text color="yellow"> Modified: {details.modifiedFiles}</Text>}
@@ -487,9 +515,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
           </>
         )}
         {status.upstreamGone && <Text color="red"> Remote branch has been deleted</Text>}
-        {status.reasons.length > 0 && (
-          <Text dimColor> Reasons: {status.reasons.join(", ")}</Text>
-        )}
+        {status.reasons.length > 0 && <Text dimColor> Reasons: {status.reasons.join(", ")}</Text>}
       </Box>
     );
   };
@@ -544,13 +570,20 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
     return (
       <Box flexDirection="column" gap={1}>
-        <Box>
-          <Text>Filter: </Text>
-          <Text color="cyan">{entryFilter || "_"}</Text>
-          <Text dimColor>
-            {" "}
-            ({filteredCount}/{entries.length + divergedEntries.length} matches)
-          </Text>
+        <Box flexDirection="column">
+          <Box>
+            <Text>Filter: </Text>
+            <Text color="cyan">{entryFilter || "_"}</Text>
+            <Text dimColor>
+              {" "}
+              ({filteredCount}/{entries.length + divergedEntries.length} matches)
+            </Text>
+          </Box>
+          {unprobedCount > 0 && (
+            <Text color="red">
+              ⚠ {unprobedCount} of {entries.length} worktrees could not be probed
+            </Text>
+          )}
         </Box>
         <Box flexDirection="column">
           {filteredCount === 0 ? (
@@ -577,16 +610,18 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                   return (
                     <Box key={item.entry.path} flexDirection="column">
                       <Box>
-                        <Text color={isSelected ? "cyan" : undefined}>
-                          {isSelected ? "> " : "  "}
-                        </Text>
+                        <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "> " : "  "}</Text>
                         <Box width={24}>
                           <Text color={isSelected ? "cyan" : undefined}>{item.entry.branch}</Text>
                         </Box>
                         <Text> </Text>
-                        {getStatusFlags(item.entry.status)}
-                        {summary && (
-                          <Text dimColor> {summary}</Text>
+                        {item.entry.error !== undefined ? (
+                          <Text color="red">! status unknown</Text>
+                        ) : (
+                          <>
+                            {getStatusFlags(item.entry.status)}
+                            {summary && <Text dimColor> {summary}</Text>}
+                          </>
                         )}
                       </Box>
                       {isExpanded && renderDetailPanel(item.entry)}
@@ -602,16 +637,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                 return (
                   <Box key={item.entry.path} flexDirection="column">
                     <Box>
-                      <Text color={isSelected ? "cyan" : undefined}>
-                        {isSelected ? "> " : "  "}
-                      </Text>
+                      <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "> " : "  "}</Text>
                       {isConfirming ? (
                         deleting ? (
                           <Text color="yellow">Deleting...</Text>
                         ) : (
-                          <Text color="red">
-                            Delete {item.entry.name}? (y/n)
-                          </Text>
+                          <Text color="red">Delete {item.entry.name}? (y/n)</Text>
                         )
                       ) : (
                         <>
@@ -620,7 +651,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                             <Text color={isSelected ? "cyan" : undefined}>{item.entry.originalBranch}</Text>
                           </Box>
                           <Text dimColor> {item.entry.sizeFormatted.padStart(10)}</Text>
-                          <Text dimColor>  (diverged {dateStr})</Text>
+                          <Text dimColor> (diverged {dateStr})</Text>
                         </>
                       )}
                     </Box>
@@ -695,7 +726,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
             <Text>
               Repository: <Text color="cyan">{selectedRepo.name}</Text>
             </Text>
-            {getRepositoryDiskUsage && <Text dimColor>  </Text>}
+            {getRepositoryDiskUsage && <Text dimColor> </Text>}
             {renderRepositoryDiskUsage(selectedRepo.index)}
           </Box>
         )}

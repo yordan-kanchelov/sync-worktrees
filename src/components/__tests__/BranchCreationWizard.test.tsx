@@ -2,7 +2,8 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import BranchCreationWizard, { BranchCreationWizardProps } from "../BranchCreationWizard";
+import type { BranchCreationWizardProps } from "../BranchCreationWizard";
+import BranchCreationWizard from "../BranchCreationWizard";
 
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -16,7 +17,7 @@ describe("BranchCreationWizard", () => {
         { index: 1, name: "repo-2", repoUrl: "https://example.com/repo-2.git" },
       ],
       getBranchesForRepo: vi.fn().mockResolvedValue(["main", "develop", "feature/test"]),
-      getDefaultBranchForRepo: vi.fn().mockReturnValue("main"),
+      getDefaultBranchForRepo: vi.fn().mockResolvedValue("main"),
       createAndPushBranch: vi.fn().mockResolvedValue({ success: true, finalName: "new-branch" }),
       onClose: vi.fn(),
       onComplete: vi.fn(),
@@ -120,6 +121,44 @@ describe("BranchCreationWizard", () => {
       expect(lastFrame()).toContain("(default)");
     });
 
+    it("should pre-select and mark the default branch when it is not the first one", async () => {
+      // Clone-mode repos commonly track something other than the list's first
+      // entry; pressing Enter straight away must create from the branch the
+      // repository actually follows.
+      const props: BranchCreationWizardProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "single-repo", repoUrl: "https://example.com/repo.git" }],
+        getBranchesForRepo: vi.fn().mockResolvedValue(["main", "develop"]),
+        getDefaultBranchForRepo: vi.fn().mockResolvedValue("develop"),
+      };
+      const { lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("> develop (default)");
+      expect(lastFrame()).not.toContain("> main");
+    });
+
+    it("should keep the branch list when the default branch cannot be resolved", async () => {
+      // Resolving a clone's default branch can hit the network; a failure
+      // costs the marker, never the list the user came here to pick from.
+      const props: BranchCreationWizardProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "single-repo", repoUrl: "https://example.com/repo.git" }],
+        getBranchesForRepo: vi.fn().mockResolvedValue(["main", "develop"]),
+        getDefaultBranchForRepo: vi.fn().mockRejectedValue(new Error("ls-remote failed")),
+      };
+      const { lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("> main");
+      expect(lastFrame()).toContain("develop");
+      expect(lastFrame()).not.toContain("(default)");
+    });
+
     it("should go back to project selection on ESC", async () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...defaultProps} />);
 
@@ -191,6 +230,77 @@ describe("BranchCreationWizard", () => {
       await waitForStateUpdate();
 
       expect(singleRepoProps.createAndPushBranch).toHaveBeenCalledWith(0, "main", "feature/newthing");
+    });
+  });
+
+  describe("colliding name", () => {
+    const singleRepo = (overrides: Partial<BranchCreationWizardProps> = {}): BranchCreationWizardProps => ({
+      ...defaultProps,
+      repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      getBranchesForRepo: vi.fn().mockResolvedValue(["x"]),
+      getDefaultBranchForRepo: vi.fn().mockResolvedValue("x"),
+      ...overrides,
+    });
+
+    // The step displayed `will create: x-1` and then submitted `x`. In worktree
+    // mode that name has no local head whenever the filters hid it, so nothing
+    // collided and the push moved the branch that was already on the remote.
+    it("submits the suffixed name it displayed, not the name that was typed", async () => {
+      const props = singleRepo();
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      stdin.write("\r"); // Select base branch
+      await waitForStateUpdate();
+
+      stdin.write("x");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Name exists, will create:");
+      expect(lastFrame()).toContain("x-1");
+
+      stdin.write("\r"); // Submit
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(props.createAndPushBranch).toHaveBeenCalledWith(0, "x", "x-1");
+    });
+
+    it("keeps walking the suffix until the name is free", async () => {
+      const props = singleRepo({ getBranchesForRepo: vi.fn().mockResolvedValue(["x", "x-1", "x-2"]) });
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      stdin.write("x");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("x-3");
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(props.createAndPushBranch).toHaveBeenCalledWith(0, "x", "x-3");
+    });
+
+    it("submits the typed name unchanged when nothing collides", async () => {
+      const props = singleRepo();
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      stdin.write("y");
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("Name exists");
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(props.createAndPushBranch).toHaveBeenCalledWith(0, "x", "y");
     });
   });
 
@@ -285,7 +395,7 @@ describe("BranchCreationWizard", () => {
       const createAndPushBranch = vi.fn().mockResolvedValue({ success: true, finalName: "new-branch" });
       const onBranchCreated = vi.fn();
       const getBranchesForRepo = vi.fn().mockResolvedValue(["main", "develop"]);
-      const getDefaultBranchForRepo = vi.fn().mockReturnValue("main");
+      const getDefaultBranchForRepo = vi.fn().mockResolvedValue("main");
       const props: BranchCreationWizardProps = {
         ...defaultProps,
         repositories: [
@@ -334,9 +444,7 @@ describe("BranchCreationWizard", () => {
       await waitForStateUpdate();
 
       expect(createAndPushBranch).toHaveBeenCalledWith(2, "main", "my-feature");
-      expect(onBranchCreated).toHaveBeenCalledWith(
-        expect.objectContaining({ repoIndex: 2 }),
-      );
+      expect(onBranchCreated).toHaveBeenCalledWith(expect.objectContaining({ repoIndex: 2 }));
     });
   });
 

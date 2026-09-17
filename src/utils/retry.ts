@@ -1,3 +1,4 @@
+import { isGitAuthErrorFromError } from "./git-auth-error";
 import { isLfsErrorFromError } from "./lfs-error";
 
 interface ErrorWithCode {
@@ -59,6 +60,14 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
       return true;
     }
 
+    // Credentials git could not obtain, a key ssh could not use or a host key
+    // it could not confirm: checked before the generic remote-repository
+    // patterns below, which these messages also contain. Retrying cannot help
+    // and costs minutes of backoff.
+    if (isGitAuthErrorFromError(error)) {
+      return false;
+    }
+
     if (err.message?.includes("Could not read from remote repository")) {
       return true;
     }
@@ -104,7 +113,7 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
           const err = error as Error;
           throw new Error(
             `LFS error retry limit exceeded (${opts.maxLfsRetries} attempts). ` +
-              `Consider using --skip-lfs option to bypass LFS downloads.`,
+              `Consider setting 'skipLfs: true' for this repository (or under 'defaults') to bypass LFS downloads.`,
             { cause: err },
           );
         }

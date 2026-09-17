@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { isCaseInsensitiveFs, normalizePathForCompare, pathsEqual } from "../path-compare";
+import {
+  isCaseInsensitiveFs,
+  isPathEqualOrInside,
+  isPathStrictlyInside,
+  normalizePathForCompare,
+  pathsEqual,
+} from "../path-compare";
 
 describe("isCaseInsensitiveFs", () => {
   it("returns true for darwin", () => {
@@ -44,5 +50,43 @@ describe("pathsEqual", () => {
     const rel = "src/foo";
     const abs = `${process.cwd()}/src/foo`;
     expect(pathsEqual(rel, abs, "linux")).toBe(true);
+  });
+});
+
+describe("isPathStrictlyInside", () => {
+  it("is true for a descendant on a segment boundary", () => {
+    expect(isPathStrictlyInside("/x/inner", "/x", "linux")).toBe(true);
+    expect(isPathStrictlyInside("/x/a/b/c", "/x", "linux")).toBe(true);
+  });
+
+  it("is false for a sibling that merely shares a string prefix", () => {
+    expect(isPathStrictlyInside("/xy", "/x", "linux")).toBe(false);
+    expect(isPathStrictlyInside("/x-bare", "/x", "linux")).toBe(false);
+  });
+
+  it("is false for the same path and for the parent of the base", () => {
+    expect(isPathStrictlyInside("/x", "/x", "linux")).toBe(false);
+    expect(isPathStrictlyInside("/", "/x", "linux")).toBe(false);
+  });
+
+  it("treats the filesystem root as containing everything", () => {
+    expect(isPathStrictlyInside("/x", "/", "linux")).toBe(true);
+  });
+
+  it("folds case on darwin only", () => {
+    expect(isPathStrictlyInside("/Users/Me/wt/sub", "/users/me/wt", "darwin")).toBe(true);
+    expect(isPathStrictlyInside("/Users/Me/wt/sub", "/users/me/wt", "linux")).toBe(false);
+  });
+});
+
+describe("isPathEqualOrInside", () => {
+  it("is true for the same path and for a descendant", () => {
+    expect(isPathEqualOrInside("/x", "/x", "linux")).toBe(true);
+    expect(isPathEqualOrInside("/x/inner", "/x", "linux")).toBe(true);
+  });
+
+  it("is false for a prefix sibling and for an ancestor", () => {
+    expect(isPathEqualOrInside("/xy", "/x", "linux")).toBe(false);
+    expect(isPathEqualOrInside("/x", "/x/inner", "linux")).toBe(false);
   });
 });

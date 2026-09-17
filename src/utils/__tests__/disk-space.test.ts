@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
+import pLimit from "p-limit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { calculateDirectorySize, calculateSyncDiskSpace, formatBytes } from "../disk-space";
@@ -207,6 +208,75 @@ describe("disk-space", () => {
 
       const result = await calculateSyncDiskSpace([path1, path2], []);
       expect(result).toBe("1.00 KB");
+    });
+
+    it("hands every directory to `measure` at once, so the bound is the caller's", async () => {
+      // This function does not bound anything, and this pins that rather than
+      // claiming otherwise: it fans `repoPaths.concat(worktreeDirs)` into one
+      // `Promise.all`, so N directories means N simultaneous calls to whatever
+      // `measure` it was given. The shipped caller passes DiskUsageCache's
+      // bounded measure -- see the second half of this test, and
+      // "bounds the disk walks by the repository parallelism it was given" in
+      // interactive-ui.status-fanout-and-disk.test.ts for the real caller.
+      let inFlight = 0;
+      let peak = 0;
+      const release: Array<() => void> = [];
+
+      const total = calculateSyncDiskSpace(["/bare-a", "/bare-b"], ["/wt-a", "/wt-b"], () => {
+        // Recorded from inside the walk: what actually overlapped, not what the
+        // caller was handed.
+        inFlight += 1;
+        if (inFlight > peak) peak = inFlight;
+        return new Promise<number>((resolve) => {
+          release.push(() => {
+            inFlight -= 1;
+            resolve(256);
+          });
+        });
+      });
+
+      for (let tick = 0; tick < 4; tick++) await Promise.resolve();
+      expect(peak).toBe(4);
+
+      for (const done of release) done();
+      expect(await total).toBe("1.00 KB");
+    });
+
+    it("overlaps exactly as far as the measure it is given allows", async () => {
+      // The same four directories through a measure that bounds itself at two,
+      // which is what `DiskUsageCache(2)` does for the shipped caller. Measured
+      // on a 197 MB, 50,407-path six-directory workspace: 101 ms in sequence,
+      // 48 ms through that bound, 29 ms unbounded.
+      const limit = pLimit(2);
+      let inFlight = 0;
+      let peak = 0;
+
+      const total = await calculateSyncDiskSpace(["/bare-a", "/bare-b"], ["/wt-a", "/wt-b"], (dirPath) =>
+        limit(async () => {
+          inFlight += 1;
+          if (inFlight > peak) peak = inFlight;
+          await Promise.resolve();
+          inFlight -= 1;
+          return dirPath.length > 0 ? 256 : 0;
+        }),
+      );
+
+      expect(peak).toBe(2);
+      expect(total).toBe("1.00 KB");
+    });
+
+    it("uses the measure it is given, so a caller can cache the walks", async () => {
+      const fastFolderSize = (await import("fast-folder-size")).default;
+      const walked: string[] = [];
+
+      const result = await calculateSyncDiskSpace(["/bare-a"], ["/wt-a"], (dirPath) => {
+        walked.push(dirPath);
+        return Promise.resolve(512);
+      });
+
+      expect(walked).toEqual(["/bare-a", "/wt-a"]);
+      expect(result).toBe("1.00 KB");
+      expect(vi.mocked(fastFolderSize)).not.toHaveBeenCalled();
     });
   });
 });

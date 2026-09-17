@@ -1,0 +1,13 @@
+---
+"sync-worktrees": minor
+---
+
+`sync-worktrees init` no longer reports success for a config file that cannot be loaded. Three ways it could write one, each of which printed `✅ Configuration saved`, offered MCP registration and exited 0, leaving the failure to surface on the next run:
+
+- `--config x.cjs` got `export default config;`, which the loader reads with `require()`: `Failed to load config file: Unexpected token 'export'`.
+- The default `.js` target inside a package whose nearest `package.json` declares `"type": "commonjs"` failed identically — verified on Node 22 and 24, an explicit `type` turns off the module-syntax detection that otherwise re-parses such a file as ESM.
+- Answering the worktree-directory prompt with the config file's own directory wrote `worktreeDir: "./"`; the default `bareRepoDir` `.bare/<name>` then sat inside `worktreeDir` and the next run died on `bareRepoDir/worktreeDir must not overlap`.
+
+The generator now emits `module.exports = config;` when Node will parse the target as CommonJS (a `.cjs` extension, or any other extension whose nearest `package.json` says `"type": "commonjs"`) and keeps `export default config;` otherwise, so the file it writes is the path the user asked for rather than a substitute with a different extension. The wizard rejects a worktree-mode directory equal to the config's own directory and warns for clone mode, where `git clone` refuses a destination that exists and is not empty. `init` then loads the file it just wrote through the same `ConfigLoaderService.buildRepositories` entry point a sync run uses: if it does not load, the command prints the loader's error and exits 1, and the file is left on disk to inspect or fix rather than deleted. Finally, a `SyntaxError: Unexpected token 'export'` from any config now carries a hint naming the file and the fix (`add "type": "module" … or use .mjs/.cjs`), appended to the original message rather than replacing it.
+
+Upgrading: `init` can now fail where it used to succeed — the wizard refuses a worktree directory it previously accepted, and the command exits 1 instead of 0 when the file it wrote does not load. Both only ever fire on a config that would have failed on the next run anyway; nothing else about `init`'s output, or about the contents of a config it already wrote correctly, changes. Verified by reproducing all three failures against the built CLI in real temp directories on Node 22 and Node 24 and re-running the same three afterwards, and by generator tests that load each generated file in a real `node` child process — Vitest resolves `import()` through its own pipeline, so an in-process load alone would not prove Node accepts the file.

@@ -63,6 +63,14 @@ export function buildInstructions(snapshot?: ServerSnapshot): string {
   return `${SERVER_INSTRUCTIONS} Connect-time: ${fields.join(" ")}.`;
 }
 
+// Every tool input is a `z.strictObject`, never a plain `z.object`: a plain
+// object silently strips keys it does not declare, and the SDK hands the
+// stripped `data` to the handler. A caller that sent `repo_name` instead of
+// `repoName` would then act on the *current* repo and be told it succeeded.
+// Strict turns that into an InvalidParams error, and because zod puts the
+// offending key in the issue message (`Unrecognized key: "repo_name"`) —
+// Standard Schema drops the structured `keys` array, but not the message —
+// the name survives all the way to the client's `isError` result.
 export function createServer(context: RepositoryContext, snapshot?: ServerSnapshot): McpServer {
   const server = new McpServer(
     {
@@ -121,7 +129,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     {
       description:
         "Detect sync-worktrees structure from path (default: CWD). Reads .git, resolves bare repo, walks up to auto-load sync-worktrees.config.{js,mjs,cjs,ts}. Returns: configuredRepositories (server-wide loaded-config inventory; independent of params.path), bareRepoPath, allWorktrees, siblingRepositories, currentWorktreePath, configPath, capabilities {available,reason}, notes. Lean configuredRepositories entries are mode-discriminated: clone → {name, mode:'clone', checkoutPath, isCurrent}; worktree → {name, mode:'worktree', worktreeDir, isCurrent}. detailed=true adds repoUrl, branch?, sparseCheckout?, localReady, plus bareRepoDir for worktree mode. Use at session start or to bootstrap from unknown checkout.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         path: z.string().optional().describe("Directory to inspect. Default: server CWD."),
         detailed: z
           .boolean()
@@ -136,7 +144,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
           .boolean()
           .optional()
           .describe(
-            "Enrich entries with label, divergence, staleHint. Adds 1 git status + rev-list per worktree. Labels here are metadata-blind (no sync metadata is loaded), so a fully-pushed branch whose remote was deleted shows 'dirty'; list_worktrees gives the authoritative label/safeToRemove. Default: false.",
+            "Enrich entries with label, divergence, staleHint. Adds one status check per worktree. Labels here are metadata-blind (no sync metadata is loaded), so a fully-pushed branch whose remote was deleted shows 'dirty'; list_worktrees gives the authoritative label/safeToRemove. Default: false.",
           ),
       }),
       outputSchema: detectContextOutputSchema,
@@ -155,7 +163,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     {
       description:
         "List worktrees with status. No repoName + config loaded = all configured repos grouped by repoName. With repoName = single repo. Entries: {path, branch, isCurrent, label (clean|dirty|stale|current|unknown), status, divergence, safeToRemove, lastSyncAt, sizeBytes}.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         repoName: z.string().optional().describe("Repo name. Omit + config loaded = list all configured repos."),
         includeSize: z
           .boolean()
@@ -180,7 +188,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     {
       description:
         "Detailed status for one worktree: dirty files, unpushed commits, stashes, upstream gone, ops in progress. Returns: status + divergence {ahead,behind} + resolved path.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         path: z.string().describe(`Worktree path. ${PATH_DESCRIBE_SUFFIX}`),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
         includeDetails: z
@@ -203,8 +211,8 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "create_worktree",
     {
       description:
-        "Worktree-mode only; clone-mode repos error here. Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Returns: {success, branchName, worktreePath, created, pushed}.",
-      inputSchema: z.object({
+        "Worktree-mode only; clone-mode repos error here. Create worktree for a branch. Existing branch (local/remote) = checkout. New branch = create from baseBranch + push to origin (default). baseBranch required only for new branches — pass defensively if unsure. push=false opts out. Preconditions: repo initialized (auto-runs). Never moves, trashes or deletes an existing directory: errors with code TARGET_EXISTS when the target path exists on disk but is not a registered worktree (clean it up manually or via sync). Errors with code BRANCH_FILTERED when branchInclude/branchExclude/branchMaxAge exclude the branch, since sync prunes worktrees outside the filtered set; force=true creates it anyway. Safe to retry: a call whose worktree is already registered adds nothing and answers worktreeExisted=true, so the checkout is a previous call's, not fresh — re-read or update_worktree it rather than assuming it is clean. Returns: {success, branchName, worktreePath, created, worktreeExisted, pushed, warning}.",
+      inputSchema: z.strictObject({
         branchName: z.string().describe("Branch name. Slashes/special chars sanitized for dir name."),
         baseBranch: z
           .string()
@@ -212,7 +220,18 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
           .describe(
             "Base for new branch. Required if branchName doesn't exist locally or remotely; ignored otherwise.",
           ),
-        push: z.boolean().optional().describe("Push new branch to origin. Default: true. Ignored if branch existed."),
+        push: z
+          .boolean()
+          .optional()
+          .describe(
+            "Push new branch to origin. Default: true. Ignored if branch existed. push=false leaves a local-only branch that the next sync prunes (worktree trashed, branch ref deleted) until it is pushed; see `warning`.",
+          ),
+        force: z
+          .boolean()
+          .optional()
+          .describe(
+            "Create even when the branch filters exclude the branch. Default: false. `warning` still names the filter.",
+          ),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
       outputSchema: createWorktreeOutputSchema,
@@ -220,7 +239,13 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
         title: "Create worktree",
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        // The target path is a pure function of the branch name, so a repeat
+        // call cannot add a second anything. The branch already exists (the
+        // first call created it), so `created` is false and the push is not
+        // reattempted either; addWorktree finds the path registered and
+        // returns. Repeating is a no-op, which is what this hint promises —
+        // unlike `sync`, whose work depends on what origin has since done.
+        idempotentHint: true,
         openWorldHint: true,
       },
     },
@@ -231,8 +256,8 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "sync",
     {
       description:
-        "Repo-wide sync: fetch, create worktrees for new remote branches, remove pruned (clean only), fast-forward existing. Emits progress. In worktree mode: single worktree? Use update_worktree. Single create? Use create_worktree. Preconditions: config loaded + repo initialized (auto-runs). Returns: {success, duration, skips}.",
-      inputSchema: z.object({
+        "Repo-wide sync: fetch, create worktrees for new remote branches, remove pruned (clean only), fast-forward existing. Emits progress. In worktree mode: single worktree? Use update_worktree. Single create? Use create_worktree. Preconditions: config loaded + repo initialized (auto-runs). Returns: {success, duration, failed, failures, outcome, skips}. success=false when any action failed (failed>0; details in failures) — the call itself still completes, so check success rather than isError.",
+      inputSchema: z.strictObject({
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
       outputSchema: syncOutputSchema,
@@ -251,8 +276,8 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "update_worktree",
     {
       description:
-        "Worktree-mode only; clone-mode repos error here; use sync to update the checkout. Fast-forward one worktree to upstream. No merge, no rebase, aborts if not fast-forwardable. Whole repo? Use sync.",
-      inputSchema: z.object({
+        "Worktree-mode only; clone-mode repos error here; use sync to update the checkout. Fast-forward one worktree to upstream. No merge, no rebase, aborts if not fast-forwardable. Whole repo? Use sync. Errors with code DETACHED_HEAD when the worktree has no branch checked out — there is nothing to fast-forward; check a branch out there first. Returns: {success, worktreePath, updated}; updated=false when the worktree already matched origin/<branch> and nothing was merged.",
+      inputSchema: z.strictObject({
         path: z.string().describe(`Worktree path to fast-forward. ${PATH_DESCRIBE_SUFFIX}`),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
@@ -273,7 +298,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     {
       description:
         "Initialize repo: clone as bare if missing, create main worktree. Idempotent. Emits progress. Preconditions: config loaded. Returns: {success, defaultBranch, worktreeDir}.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
       outputSchema: initializeOutputSchema,
@@ -293,7 +318,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     {
       description:
         "Load/reload sync-worktrees JS config for this server process. Replaces previously loaded repos. Uses configPath, SYNC_WORKTREES_CONFIG, an already detected config, or a launch-CWD auto-detect fallback. For first discovery from an arbitrary project path, call detect_context with path. Returns: {configPath, currentRepository, repositories: [{name, repoUrl, worktreeDir, source}]}.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         configPath: z
           .string()
           .optional()
@@ -318,7 +343,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     {
       description:
         "Set current repo for tool calls that omit repoName. Applies to this server process. Preconditions: load_config called.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         repoName: z.string().describe("Repo name from loaded config repositories[].name."),
       }),
       outputSchema: setCurrentRepositoryOutputSchema,

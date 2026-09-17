@@ -1,0 +1,38 @@
+---
+"sync-worktrees": major
+---
+
+**Breaking: the supported Node floor is now 24.** `engines.node` moves from `>=22.0.0` to `>=24.0.0`, and the PR test matrix drops its Node 22 leg. In exchange, `sync-worktrees.config.ts` is a real config format rather than a claim: the MCP server has advertised auto-loading `sync-worktrees.config.{js,mjs,cjs,ts}` — in its instructions and again in the `detect_context` description — while `CONFIG_FILE_NAMES` listed only js/mjs/cjs, so the walk-up never looked for a `.ts` file and `detect_context` reported `configPath: null` for one sitting next to the caller. The CLI's own `findConfigInCwd` shares that list and had the same blind spot.
+
+Nothing but the name list was missing. The loader already runs a config through `import()`, and Node has stripped type annotations by default since 22.18, so `.ts` was one array entry away from working end to end — measured here on Node 22.22.2 and pinned by tests that drive the bundled loader from a child `node` process rather than from vitest. That distinction is the whole reason the new suite is shaped the way it is: under vitest a dynamic `import()` is served by Vite, which *compiles* TypeScript with esbuild and would happily load an `enum` or a `namespace`. Node does not compile. A test that stayed in-process would pass on exactly the inputs a user's `node` run rejects.
+
+**If you are on Node 22:** upgrade to Node 24 or newer, or pin `sync-worktrees@5` — 5.3.1 remains installable and supported on Node 22. Nothing in a config file or on the command line has to change.
+
+**Why major rather than minor.** Raising a floor removes support. On a Node 22 runtime that installs 5.3.1 today, `>=24.0.0` is a hard `EBADENGINE` install failure wherever `engine-strict=true` is configured; with npm's default it is an `EBADENGINE` *warning* and the install still proceeds, so the honest claim is that it breaks some installs outright and silently un-supports the rest. The guarantee is what changes: 5.3.1 is tested on Node 22 on every PR, 6.0.0 is tested on no Node 22 at all, because this change removes the matrix leg that did it. A Node 22 user tracking `^5` would be carried onto a release with zero coverage on their runtime by the next dependency bump — which is precisely the failure mode that put the Node 22 leg in the matrix in the first place. Withdrawing a runtime a currently-supported release works on is what a major is for; it releases as 6.0.0, not 5.4.0. The `.ts` support riding along would have been a minor on its own.
+
+**Non-erasable syntax gets an explanation.** Node erases types, it does not compile them, so `enum`, `namespace`, parameter properties and decorators are refused outright — on Node 24 as much as on 22 — with `code: "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX"` and a message about "strip-only mode" that tells a config author neither why nor what to do. `typeStrippingHint` appends the missing half, keyed on the code rather than on Node's wording, and reaches the reload path too because `workerEvalError` already carries `code` across the worker boundary. A config author now sees:
+
+```
+Failed to load config file: TypeScript enum is not supported in strip-only mode
+  (/path/sync-worktrees.config.ts:1) (hint: Node runs TypeScript by erasing type
+  annotations, so syntax that emits code cannot run. Rewrite it in erasable syntax
+  — a plain object, a union of string literals, 'as const' — or use a .js/.mjs config)
+```
+
+It is not restricted to `.ts` paths: a `.js` config that imports a `.ts` sibling raises the same code from the sibling, and the same advice holds.
+
+**`.mts` and `.cts` are deliberately left out.** Node loads a `.mts` config fine — that was checked, not assumed — but every extra name costs another stat per directory on every level of the walk-up, and adding `.mts` without `.cts` is arbitrary while adding `.cts` needs loader work (the require/import split keys off `endsWith(".cjs")`). The one case `.mts` would buy is ESM-TypeScript under a `"type": "commonjs"` package.json, where a `.ts` file is parsed as CommonJS and `export default` is a hard `SyntaxError`; the existing `moduleSyntaxHint` already fires there and names the fix, which a new test pins. Four names is also exactly what the MCP instructions and `detect_context` advertise — a fifth would be a fifth claim to keep true.
+
+**`init` keeps writing `.js`, on purpose.** The generated file already carries `// @ts-check` and a `/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */` annotation, so it is type-checked in an editor without being TypeScript; `.ts` would buy the wizard's output nothing and would cost it a second module-system branch. `.ts` is for a hand-written config in a project that is already TypeScript. Discovery order is unchanged with `.ts` appended last, so a directory holding both a `.js` and a `.ts` config still loads the `.js` one — pinned by a test, along with the exact four-name list. The CLI's own "no config file found" message is now built from that list instead of restating it: it named `sync-worktrees.config.{js,mjs,cjs}` while `findConfigInCwd`, which reads the same constant, already searched for `.ts` — so the one place a user is told what to create disagreed with what the CLI would find. Deriving it is the same fix as pinning the list.
+
+**Everything else that stated a Node version moved with the floor**, because leaving one behind is the same class of bug this fixes: `README.md`'s Requirements section, the site's Quick Start card and `llms.txt`. The esbuild target stays `node22` — a downlevel target below the floor runs fine on 24 and says nothing about what the package supports, while raising it would emit syntax that could not be verified on the container this was written on. `tsconfig.json` stays at `target`/`lib` `ES2022` for the same reason in reverse: it gates which language and library features the *type checker* permits, nothing in the codebase needs an ES2023+ builtin, and raising it is a licence to use APIs no test exercises.
+
+---
+
+Two unrelated documentation fixes ride along.
+
+`list_worktrees` had a fallback error that hid its own cause. When a configured repository has never been cloned, `git worktree list` runs against a bare directory that is not there and simple-git rejects with "Cannot use simple-git on a directory that does not exist"; with nothing detected on disk to fall back to, the handler threw `Cannot list worktrees - service not initialized and no detected context` — the two things that did not work, and neither the cause nor the remedy. In a multi-repo listing that string is what lands in `repositories[name].error`, sitting next to repositories that listed fine. It now names the repository, quotes the underlying failure and points at `initialize`. The `catch` had discarded its error binding entirely, so this was not a wording change.
+
+That path was also untested, and not by omission: `makeCtx` in `handlers.test.ts` resolved its discovered context with `opts.discovered ?? makeDiscovered()`, so the one test that passed `discovered: null` to reach the throw was silently handed a full context and asserted the *other* branch. Fixed to `=== undefined`, and the test rewritten to assert what it always meant to.
+
+Finally, the README's MCP section said an omitted `repoName` falls back to "the first entry in the config". It has not since repository selection was reworked: a config with several repositories leaves `currentRepo` null, and the call fails with the ambiguity error listing the names to choose from. Only a config with exactly one repository auto-selects. The line now says so.

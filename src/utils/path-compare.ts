@@ -29,3 +29,31 @@ export function normalizePathForCompare(p: string, platform: NodeJS.Platform = p
 export function pathsEqual(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
   return normalizePathForCompare(a, platform) === normalizePathForCompare(b, platform);
 }
+
+/**
+ * True when `child` resolves to a path strictly inside `parent`, on a path
+ * segment boundary: `/x/inner` is inside `/x`, but `/xy` is not, and a path is
+ * never inside itself. Uses {@link normalizePathForCompare} semantics.
+ */
+export function isPathStrictlyInside(
+  child: string,
+  parent: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const resolvedChild = normalizePathForCompare(child, platform);
+  const resolvedParent = normalizePathForCompare(parent, platform);
+  if (resolvedChild === resolvedParent) return false;
+  const prefix = resolvedParent.endsWith(path.sep) ? resolvedParent : resolvedParent + path.sep;
+  return resolvedChild.startsWith(prefix);
+}
+
+/**
+ * True when `child` is the same path as `parent` or strictly inside it.
+ */
+export function isPathEqualOrInside(
+  child: string,
+  parent: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return pathsEqual(child, parent, platform) || isPathStrictlyInside(child, parent, platform);
+}

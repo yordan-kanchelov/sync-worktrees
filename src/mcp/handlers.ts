@@ -3,21 +3,32 @@ import * as path from "path";
 import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG } from "../constants";
+import { SyncWorktreesError } from "../errors";
 import { PathResolutionService } from "../services/path-resolution.service";
 import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { WorktreeStatusService } from "../services/worktree-status.service";
+import { filterBranchesByName } from "../utils/branch-filter";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
+import { filterBranchesByAge } from "../utils/date-filter";
 import { calculateDirectorySize } from "../utils/disk-space";
+import { probePathExists } from "../utils/file-exists";
 import { isValidGitBranchName } from "../utils/git-validation";
 import { pathsEqual } from "../utils/path-compare";
 
-import { CapabilityUnavailableError, SyncInProgressError, formatToolResponse } from "./utils";
-import { deriveLabel, deriveSafeToRemove, getDivergence } from "./worktree-summary";
+import {
+  CapabilityUnavailableError,
+  RepoLockUnavailableError,
+  SyncInProgressError,
+  WorktreeDetachedError,
+  WorktreeTargetExistsError,
+  formatToolResponse,
+} from "./utils";
+import { deriveLabel, deriveSafeToRemove } from "./worktree-summary";
 
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
 import type { HandlerContext } from "./utils";
-import type { WorktreeLabel } from "./worktree-summary";
-import type { ProgressEvent } from "../services/worktree-sync.service";
+import type { Divergence, WorktreeLabel } from "./worktree-summary";
+import type { ProgressEvent, RepoOperationNotStarted } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
 type CapabilityKey = keyof Capabilities;
@@ -26,24 +37,39 @@ type WorktreePathParams = RepoScopedParams & { path: string };
 type RepoService = Awaited<ReturnType<RepositoryContext["getService"]>>;
 type RepoGitService = ReturnType<RepoService["getGitService"]>;
 type Limit = ReturnType<typeof pLimit>;
-type RepoWorktree = { path: string; branch: string };
+type RepoWorktree = { path: string; branch: string; detached?: boolean; head?: string; locked?: boolean };
 type ListedWorktree = {
   path: string;
   branch: string;
   isCurrent: boolean;
   label: WorktreeLabel;
   status: Awaited<ReturnType<RepoGitService["getFullWorktreeStatus"]>> | null;
-  divergence: Awaited<ReturnType<typeof getDivergence>>;
+  divergence: Divergence | null;
   safeToRemove: ReturnType<typeof deriveSafeToRemove>;
   lastSyncAt: string | null;
   sizeBytes: number | null;
 };
+type RepoWorktreeListing = { worktrees: ListedWorktree[]; error?: string };
 
 const pathResolution = new PathResolutionService();
 const CLONE_MODE_WORKTREE_MUTATION_REASON =
   "clone-mode repositories have a single checkout; use sync for clone-mode updates";
 
-function ensureCapability(discovered: DiscoveredRepoContext | null, key: CapabilityKey, toolName: string): void {
+function ensureCapability(
+  ctx: RepositoryContext,
+  repoName: string | undefined,
+  discovered: DiscoveredRepoContext | null,
+  key: CapabilityKey,
+  toolName: string,
+): void {
+  // Gate on the entry's durable capabilities before consulting the discovery
+  // cache: every mutating tool clears that cache, so an empty `discovered`
+  // must never read as "allowed" (it used to let sync/initialize run against
+  // an auto-detected repo right after update_worktree or create_worktree).
+  const base = ctx.getBaseCapabilities(repoName)?.[key];
+  if (base && !base.available) {
+    throw new CapabilityUnavailableError(toolName, base.reason ? [base.reason] : (discovered?.notes ?? []));
+  }
   if (!discovered) return;
   const cap = discovered.capabilities[key];
   if (!cap.available) {
@@ -58,7 +84,6 @@ async function getReadyService(
   options: {
     capability?: CapabilityKey;
     toolName?: string;
-    ensureInitialized?: boolean;
   } = {},
 ): Promise<{ discovered: DiscoveredRepoContext | null; service: RepoService; git: RepoGitService }> {
   if (!repoName) {
@@ -66,19 +91,29 @@ async function getReadyService(
   }
   const discovered = ctx.getDiscoveredContext(repoName);
   if (options.capability && options.toolName) {
-    ensureCapability(discovered, options.capability, options.toolName);
+    ensureCapability(ctx, repoName, discovered, options.capability, options.toolName);
   }
 
   const service = await ctx.getService(repoName);
-  if (options.ensureInitialized && !service.isInitialized()) {
-    await service.initialize();
-  }
 
   return {
     discovered,
     service,
     git: service.getGitService(),
   };
+}
+
+// Contention (in_progress, locked) is SYNC_IN_PROGRESS and retryable; an
+// unavailable lock is a distinct, non-retryable failure that names its cause.
+function notStartedError(
+  ctx: RepositoryContext,
+  repoName: string | undefined,
+  result: RepoOperationNotStarted,
+): SyncInProgressError | RepoLockUnavailableError {
+  const name = ctx.getEntry(repoName)?.name ?? repoName ?? "unknown";
+  return result.reason === "lock_unavailable"
+    ? new RepoLockUnavailableError(name, result)
+    : new SyncInProgressError(name);
 }
 
 async function runExclusiveRepoOperation<T>(
@@ -89,8 +124,7 @@ async function runExclusiveRepoOperation<T>(
 ): Promise<T> {
   const result = await service.runExclusiveRepoOperation(operation);
   if (!result.started) {
-    const name = ctx.getEntry(repoName)?.name ?? repoName ?? "unknown";
-    throw new SyncInProgressError(name);
+    throw notStartedError(ctx, repoName, result);
   }
   return result.value;
 }
@@ -99,28 +133,75 @@ async function ensureRepoWorktreePath(
   ctx: RepositoryContext,
   params: WorktreePathParams,
   service: RepoService,
-  git: RepoGitService,
 ): Promise<string> {
-  return (await ensureRepoWorktree(ctx, params, service, git)).path;
+  return (await ensureRepoWorktree(ctx, params, service)).path;
 }
 
+/**
+ * Resolves `params.path` to a registered worktree of this repository.
+ *
+ * `fresh` skips the discovery snapshot and asks git for the listing. That
+ * snapshot is a plain field with no freshness check: a `git checkout -b` inside
+ * a worktree touches only that worktree's own admin HEAD, so neither the
+ * detection mtime cache nor `invalidateDiscovered` ever notices, and the branch
+ * name recorded when the session first detected the repository can outlive the
+ * checkout it described. A stale name is harmless to a tool that only labels or
+ * locates a worktree, but not to one that then acts on the branch: merging
+ * origin/<stale name> into a worktree that has since been moved to another
+ * branch fast-forwards *that* branch to the wrong tip, silently, whenever the
+ * new branch has no commits of its own. Callers that mutate must pass `fresh`.
+ *
+ * `includeDetached` widens the fresh listing to worktrees with no branch
+ * checked out, which git otherwise omits. Without it a detached worktree — a
+ * path this repository really does have registered — comes back as "not a
+ * registered worktree", which is both wrong and useless to act on. The
+ * resolved worktree then carries `detached` and its HEAD oid, and it is the
+ * caller's job to refuse it: `branch` is the empty string for such an entry.
+ */
 async function ensureRepoWorktree(
   ctx: RepositoryContext,
   params: WorktreePathParams,
   service: RepoService,
-  git: RepoGitService,
+  options: { fresh?: boolean; includeDetached?: boolean } = {},
 ): Promise<RepoWorktree> {
   const targetPath = params.path;
-  const discovered = ctx.getDiscoveredContext(params.repoName);
-  if (discovered?.allWorktrees.length) {
-    const match = discovered.allWorktrees.find((w) => pathsEqual(w.path, targetPath));
-    if (match) return { path: path.resolve(match.path), branch: match.branch };
+  if (!options.fresh) {
+    const discovered = ctx.getDiscoveredContext(params.repoName);
+    if (discovered?.allWorktrees.length) {
+      const match = discovered.allWorktrees.find((w) => pathsEqual(w.path, targetPath));
+      // No `detached`/`head` here, and `branch` is the snapshot's DISPLAY label:
+      // for a detached worktree that is the pseudo-name `(detached abc1234)`,
+      // which is not a ref and must never reach fetchBranch/updateWorktree.
+      // Safe only while every non-`fresh` caller uses `.path` alone, which is
+      // what the rule above enforces — a mutating caller added here would
+      // resurrect exactly the bug this branch is not allowed to cause.
+      if (match) return { path: path.resolve(match.path), branch: match.branch };
+    }
   }
 
   try {
-    const worktrees = await getWorktreesFromService(service, git);
+    const worktrees = await service.getWorktrees({ includeDetached: options.includeDetached === true });
     const match = worktrees.find((w) => pathsEqual(w.path, targetPath));
-    if (match) return { path: path.resolve(match.path), branch: match.branch };
+    // A detached registration whose checkout is gone reads as absent here, the
+    // way `getWorktrees` already drops the prunable detached rows: there is no
+    // directory in which to act on "check out a branch", so DETACHED_HEAD would
+    // name a remedy that cannot be performed. Git computes `prunable` for every
+    // registration EXCEPT a locked one, so only a locked row can reach this
+    // point with its checkout deleted — which is the documented use of
+    // `git worktree lock`, a worktree on media that is not always mounted — and
+    // it is the only shape the listing itself cannot answer for. An
+    // unverifiable path ("unknown") keeps the detached answer rather than
+    // inventing an absence.
+    const vanished =
+      match?.detached === true && match.locked === true && (await probePathExists(match.path)) === "missing";
+    if (match && !vanished) {
+      return {
+        path: path.resolve(match.path),
+        branch: match.branch,
+        ...(match.detached === true && { detached: true }),
+        ...(match.head !== undefined && { head: match.head }),
+      };
+    }
   } catch (err) {
     const cause = err instanceof Error ? err.message : String(err);
     throw new Error(`Could not verify worktree membership: ${cause}`);
@@ -130,8 +211,7 @@ async function ensureRepoWorktree(
 }
 
 function isCloneModeService(service: RepoService): boolean {
-  const candidate = service as RepoService & { isCloneMode?: () => boolean };
-  return typeof candidate.isCloneMode === "function" && candidate.isCloneMode();
+  return service.isCloneMode();
 }
 
 function ensureWorktreeModeService(service: RepoService, toolName: string): void {
@@ -140,17 +220,26 @@ function ensureWorktreeModeService(service: RepoService, toolName: string): void
   }
 }
 
-async function getWorktreesFromService(
-  service: RepoService,
-  git: { getWorktrees: () => Promise<Array<{ path: string; branch: string }>> },
-): Promise<Array<{ path: string; branch: string }>> {
-  const candidate = service as RepoService & {
-    getWorktrees?: () => Promise<Array<{ path: string; branch: string }>>;
-  };
-  if (typeof candidate.getWorktrees === "function") {
-    return candidate.getWorktrees();
+/**
+ * `addWorktree` treats a directory at the target path that is not a registered
+ * worktree as an orphan and moves it to trash (or deletes it when trash is
+ * disabled). That recovery is right for sync, but `create_worktree` is
+ * advertised as non-destructive and the MCP surface has no trash access, so an
+ * unregistered directory at the target path is refused here instead: nothing
+ * is moved or deleted from the MCP path. A registered path is left to
+ * `addWorktree`, which short-circuits on an existing worktree.
+ */
+async function ensureWorktreeTargetAvailable(worktreePath: string, registered: RepoWorktree[]): Promise<void> {
+  if (registered.some((w) => pathsEqual(w.path, worktreePath))) return;
+
+  const probe = await probePathExists(worktreePath);
+  if (probe === "missing") return;
+  if (probe === "unknown") {
+    throw new Error(
+      `Cannot verify whether '${path.resolve(worktreePath)}' exists; refusing to create a worktree there`,
+    );
   }
-  return git.getWorktrees();
+  throw new WorktreeTargetExistsError(path.resolve(worktreePath));
 }
 
 export async function handleDetectContext(
@@ -178,18 +267,24 @@ export async function handleDetectContext(
     return formatToolResponse(response);
   }
 
-  const statusService = new WorktreeStatusService();
-  const statusLimit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
+  // One enricher for every list in this response, so a worktree that appears
+  // in both `allWorktrees` and `allWorktreesByRepo[<current repo>]` -- which is
+  // every worktree of the current repo, since the two lists come from separate
+  // `worktree list --porcelain` reads of the same repository -- is probed once
+  // and both lists report the same answer.
+  const enrich = createWorktreeEnricher(
+    new WorktreeStatusService(),
+    pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
+  );
 
-  const enriched = await enrichDetectedWorktrees(response.allWorktrees, statusService, statusLimit);
+  const enriched = await enrichDetectedWorktrees(response.allWorktrees, enrich);
   let allWorktreesByRepo = response.allWorktreesByRepo;
 
   if (allWorktreesByRepo) {
     const entries = await Promise.all(
-      Object.entries(allWorktreesByRepo).map(async ([repoName, worktrees]) => [
-        repoName,
-        await enrichDetectedWorktrees(worktrees, statusService, statusLimit),
-      ]),
+      Object.entries(allWorktreesByRepo).map(
+        async ([repoName, worktrees]) => [repoName, await enrichDetectedWorktrees(worktrees, enrich)] as const,
+      ),
     );
     allWorktreesByRepo = Object.fromEntries(entries);
   }
@@ -197,33 +292,42 @@ export async function handleDetectContext(
   return formatToolResponse({ ...response, allWorktrees: enriched, allWorktreesByRepo });
 }
 
+type WorktreeEnrichment = Pick<DiscoveredWorktree, "label" | "divergence" | "staleHint">;
+type WorktreeEnricher = (worktree: DiscoveredWorktree) => Promise<WorktreeEnrichment>;
+
+// Memoizes on the two inputs the enrichment actually reads -- the worktree's
+// path and whether it is the current one -- rather than on the path alone, so
+// two listings that disagreed about `isCurrent` would each still get the label
+// they asked for instead of silently sharing one. The promise is stored, not
+// the result, so concurrent callers join the probe already in flight.
+function createWorktreeEnricher(statusService: WorktreeStatusService, limit: Limit): WorktreeEnricher {
+  const started = new Map<string, Promise<WorktreeEnrichment>>();
+
+  return (wt) => {
+    const key = `${wt.isCurrent ? "1" : "0"}${path.resolve(wt.path)}`;
+    const existing = started.get(key);
+    if (existing !== undefined) return existing;
+
+    const pending = limit(async (): Promise<WorktreeEnrichment> => {
+      const status = await statusService.getFullWorktreeStatus(wt.path, false).catch(() => null);
+      return {
+        label: status ? deriveLabel(status, wt.isCurrent) : wt.isCurrent ? "current" : "unknown",
+        divergence: status?.divergence ?? null,
+        staleHint: status?.upstreamGone ?? false,
+      };
+    });
+    started.set(key, pending);
+    return pending;
+  };
+}
+
 async function enrichDetectedWorktrees(
   worktrees: DiscoveredWorktree[],
-  statusService: WorktreeStatusService,
-  limit: Limit,
+  enrich: WorktreeEnricher,
 ): Promise<DiscoveredWorktree[]> {
   if (worktrees.length === 0) return worktrees;
 
-  return Promise.all(
-    worktrees.map((wt) =>
-      limit(async () => {
-        const [status, divergence] = await Promise.all([
-          statusService.getFullWorktreeStatus(wt.path, false).catch(() => null),
-          getDivergence(wt.path),
-        ]);
-        return {
-          ...wt,
-          label: status
-            ? deriveLabel(status, wt.isCurrent)
-            : wt.isCurrent
-              ? ("current" as const)
-              : ("unknown" as const),
-          divergence,
-          staleHint: status?.upstreamGone ?? false,
-        };
-      }),
-    ),
-  );
+  return Promise.all(worktrees.map(async (wt) => ({ ...wt, ...(await enrich(wt)) })));
 }
 
 export async function handleListWorktrees(
@@ -237,10 +341,10 @@ export async function handleListWorktrees(
     const statusLimit = pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
     const repositories = await Promise.all(
       configuredRepoNames.map((repoName) =>
-        limit(async () => {
+        limit(async (): Promise<[string, RepoWorktreeListing]> => {
           try {
             const worktrees = await listWorktreesForRepo(ctx, repoName, params.includeSize, statusLimit);
-            return [repoName, { worktrees }] as const;
+            return [repoName, { worktrees }];
           } catch (err) {
             return [
               repoName,
@@ -248,7 +352,7 @@ export async function handleListWorktrees(
                 worktrees: [],
                 error: err instanceof Error ? err.message : String(err),
               },
-            ] as const;
+            ];
           }
         }),
       ),
@@ -274,12 +378,24 @@ async function listWorktreesForRepo(
 
   let worktrees: Array<{ path: string; branch: string }>;
   try {
-    worktrees = await getWorktreesFromService(service, git);
-  } catch {
+    worktrees = await service.getWorktrees();
+  } catch (err) {
     if (discovered) {
       worktrees = discovered.allWorktrees.map((w) => ({ path: w.path, branch: w.branch }));
     } else {
-      throw new Error("Cannot list worktrees - service not initialized and no detected context");
+      // The common way here is a configured repository that has never been
+      // cloned: `git worktree list` runs against a bare directory that does not
+      // exist, and simple-git rejects with "Cannot use simple-git on a directory
+      // that does not exist". Detection found nothing either, so there is no
+      // fallback list. Reporting only that combination told the caller the two
+      // things that did NOT work and neither the cause nor the remedy — and in
+      // a multi-repo listing this string is what lands in `repositories[name]
+      // .error`, next to repos that listed fine. Name both.
+      const cause = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Cannot list worktrees for '${repoName ?? ctx.getCurrentRepo() ?? "current repository"}': ${cause}. ` +
+          `Nothing was detected on disk either. If the repository has not been cloned yet, run 'initialize' first`,
+      );
     }
   }
 
@@ -291,9 +407,8 @@ async function listWorktreesForRepo(
         const resolvedPath = path.resolve(wt.path);
         const isCurrent = currentPath !== null && pathsEqual(wt.path, currentPath);
 
-        const [status, divergence, metadata, sizeBytes] = await Promise.all([
+        const [status, metadata, sizeBytes] = await Promise.all([
           git.getFullWorktreeStatus(wt.path, false).catch(() => null),
-          getDivergence(wt.path),
           git.getWorktreeMetadata(wt.path).catch(() => null),
           includeSize ? calculateDirectorySize(wt.path).catch(() => null) : Promise.resolve(null),
         ]);
@@ -304,7 +419,7 @@ async function listWorktreesForRepo(
           isCurrent,
           label: status ? deriveLabel(status, isCurrent) : isCurrent ? "current" : "unknown",
           status,
-          divergence,
+          divergence: status?.divergence ?? null,
           safeToRemove: status ? deriveSafeToRemove(status) : { safe: false, reason: "status unavailable" },
           lastSyncAt: metadata?.lastSyncDate ?? null,
           sizeBytes,
@@ -325,22 +440,79 @@ export async function handleGetWorktreeStatus(
     capability: "getStatus",
     toolName: "get_worktree_status",
   });
-  const resolvedPath = await ensureRepoWorktreePath(ctx, params, service, git);
-  const [status, divergence] = await Promise.all([
-    git.getFullWorktreeStatus(params.path, params.includeDetails ?? false),
-    getDivergence(params.path),
-  ]);
+  const resolvedPath = await ensureRepoWorktreePath(ctx, params, service);
+  const status = await git.getFullWorktreeStatus(params.path, params.includeDetails ?? false);
 
+  // `divergence` rides in on the spread: it is a field of the status result now.
   return formatToolResponse({
     path: resolvedPath,
     ...status,
-    divergence,
   });
+}
+
+// The sync planner prunes every registered worktree whose branch is missing from
+// the FILTERED remote branch list, and a worktree created seconds ago is clean,
+// has nothing unpushed and no gone upstream — so canRemove is true and the next
+// tick moves it to .trash and deletes its local branch ref. Handing back a
+// checkout the daemon is configured to throw away is never what the caller
+// meant, so the branch is measured against the same filters the runner applies.
+// Returns the sentence naming the offending filter, or null.
+//
+// getRemoteBranchesWithActivity is one `for-each-ref` over refs/remotes in the
+// local ref store (no network, the same read the runner does), and it only runs
+// when branchMaxAge is configured and origin actually carries the branch. A
+// branch with no origin/<branch> has no activity to judge: it is local-only,
+// which pruneRiskWarning covers instead.
+async function branchPrunedBySync(
+  config: { branchInclude?: string[]; branchExclude?: string[]; branchMaxAge?: string },
+  git: RepoGitService,
+  branchName: string,
+  remoteExists: boolean,
+): Promise<string | null> {
+  const { branchInclude, branchExclude, branchMaxAge } = config;
+  // Most repositories configure no filters at all, and then sync keeps every
+  // remote branch: nothing to enforce, and nothing below worth spending.
+  if (!branchInclude && !branchExclude && !branchMaxAge) return null;
+  // The runner keeps the default branch in the inventory whatever the filters
+  // say — its worktree is where every fetch runs — for as long as origin still
+  // carries it. Refusing it here would refuse a worktree sync never prunes.
+  // getDefaultBranch() is the cached name, and only a sync re-resolves it, so
+  // between an origin-side rename and the next sync the NEW default is refused
+  // here although the runner would retain it. That errs closed, names the
+  // filter, and force: true still opens it.
+  if (remoteExists && branchName === git.getDefaultBranch()) return null;
+
+  const excluded = (filter: string, value: unknown): string =>
+    `'${branchName}' is excluded by ${filter} ${JSON.stringify(value)}, so the next sync would remove this worktree and delete the local branch ref.`;
+
+  if (filterBranchesByName([branchName], branchInclude).length === 0) return excluded("branchInclude", branchInclude);
+  if (filterBranchesByName([branchName], undefined, branchExclude).length === 0) {
+    return excluded("branchExclude", branchExclude);
+  }
+  if (!branchMaxAge || !remoteExists) return null;
+  const activity = (await git.getRemoteBranchesWithActivity()).filter((b) => b.branch === branchName);
+  return activity.length > 0 && filterBranchesByAge(activity, branchMaxAge).length === 0
+    ? excluded("branchMaxAge", branchMaxAge)
+    : null;
+}
+
+// force is an escape hatch, not a mute button: a forced creation still reports
+// the filter that will claim it, and a branch that exists nowhere on origin is
+// reported the same way whether push was declined or the push failed.
+function pruneRiskWarning(branchName: string, exclusion: string | null, localOnly: boolean): string | undefined {
+  const parts: string[] = [];
+  if (exclusion) parts.push(`${exclusion} Created anyway because force: true was passed.`);
+  if (localOnly) {
+    parts.push(
+      `'${branchName}' exists only locally, so the next sync removes it and its branch ref until it is pushed.`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 export async function handleCreateWorktree(
   ctx: RepositoryContext,
-  params: { branchName: string; baseBranch?: string; push?: boolean; repoName?: string },
+  params: { branchName: string; baseBranch?: string; push?: boolean; force?: boolean; repoName?: string },
   _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
   const { branchName, baseBranch } = params;
@@ -365,15 +537,9 @@ export async function handleCreateWorktree(
     await git.fetchAll();
     const existence = await git.branchExists(branchName);
 
-    let created = false;
-    let pushed = false;
-
-    if (!existence.local && !existence.remote) {
-      if (!baseBranch) {
-        throw new Error(`Branch '${branchName}' does not exist. Provide 'baseBranch' to create it.`);
-      }
-      await git.createBranch(branchName, baseBranch);
-      created = true;
+    const exclusion = await branchPrunedBySync(service.config, git, branchName, existence.remote);
+    if (exclusion && !params.force) {
+      throw new SyncWorktreesError(`${exclusion} Adjust the config or pass force: true.`, "BRANCH_FILTERED");
     }
 
     const worktreeDir = service.config.worktreeDir;
@@ -385,6 +551,24 @@ export async function handleCreateWorktree(
         `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
       );
     }
+    // Past the collision guard a registration at this path is this branch's
+    // own, so addWorktree below is a no-op and the response would otherwise be
+    // byte-identical to a fresh checkout. A retrying agent has to be able to
+    // tell the two apart before it trusts the checkout's contents.
+    const worktreeExisted = existing.some((w) => pathsEqual(w.path, worktreePath));
+    await ensureWorktreeTargetAvailable(worktreePath, existing);
+
+    let created = false;
+    let pushed = false;
+
+    if (!existence.local && !existence.remote) {
+      if (!baseBranch) {
+        throw new Error(`Branch '${branchName}' does not exist. Provide 'baseBranch' to create it.`);
+      }
+      await git.createBranch(branchName, baseBranch);
+      created = true;
+    }
+
     await git.addWorktree(branchName, worktreePath);
     ctx.invalidateDiscovered();
 
@@ -398,8 +582,10 @@ export async function handleCreateWorktree(
           branchName,
           worktreePath: path.resolve(worktreePath),
           created: true,
+          worktreeExisted,
           pushed: false,
           pushError: err instanceof Error ? err.message : String(err),
+          warning: pruneRiskWarning(branchName, exclusion, true),
         });
       }
     }
@@ -409,7 +595,9 @@ export async function handleCreateWorktree(
       branchName,
       worktreePath: path.resolve(worktreePath),
       created,
+      worktreeExisted,
       pushed,
+      warning: pruneRiskWarning(branchName, exclusion, !existence.remote && !pushed),
     });
   });
 }
@@ -429,7 +617,7 @@ export async function handleSync(
     const start = Date.now();
     const result = await service.sync();
     if (!result.started) {
-      throw new SyncInProgressError(ctx.getEntry(params.repoName)?.name ?? params.repoName ?? "unknown");
+      throw notStartedError(ctx, params.repoName, result);
     }
     const duration = Date.now() - start;
     ctx.invalidateDiscovered();
@@ -444,9 +632,18 @@ export async function handleSync(
       ...reason,
       message: formatCloneSkipReason(reason),
     }));
+    // Per-action failures (a worktree that could not be removed, a sparse
+    // checkout that could not be applied, ...) are recorded on the outcome
+    // instead of rejecting sync(). The CLI's --runOnce turns them into exit
+    // code 1; mirror that here so `success` is not a lie, while the call
+    // itself still completed, so isError stays false.
+    const failed = outcome.counts.failed;
+    const failures = outcome.actions.filter((action) => action.kind === "failed");
     return formatToolResponse({
-      success: true,
+      success: failed === 0,
       duration,
+      failed,
+      failures,
       outcome: {
         ...outcome,
         durationMs: outcome.durationMs ?? duration,
@@ -473,15 +670,29 @@ export async function handleUpdateWorktree(
     if (!service.isInitialized()) {
       await service.initializeUnlocked();
     }
-    const worktree = await ensureRepoWorktree(ctx, params, service, git);
+    // `fresh`: the branch this resolves to is the ref the fast-forward below
+    // merges, so it has to be the branch the worktree is on now, not the one
+    // the session's discovery snapshot remembers.
+    //
+    // `includeDetached`: git's default listing omits a worktree with no branch
+    // checked out, so a detached one used to answer "not a registered worktree"
+    // — for a path that is registered. Asking for it costs nothing (it is the
+    // same `worktree list --porcelain`, and the flag and the HEAD oid are both
+    // in the rows already parsed) and lets the refusal below name the real
+    // problem and the remedy instead.
+    const worktree = await ensureRepoWorktree(ctx, params, service, { fresh: true, includeDetached: true });
+    if (worktree.detached === true) {
+      throw new WorktreeDetachedError(worktree.path, worktree.head);
+    }
 
     await git.fetchBranch(worktree.branch);
-    await git.updateWorktree(worktree.path);
+    const { updated } = await git.updateWorktree(worktree.path, worktree.branch);
     ctx.invalidateDiscovered();
 
     return formatToolResponse({
       success: true,
       worktreePath: worktree.path,
+      updated,
     });
   });
 }
@@ -564,6 +775,61 @@ export async function handleSetCurrentRepository(
   });
 }
 
+// A progressToken's `progress` "MUST increase with each notification, even if
+// the total is unknown" (MCP spec, notifications/progress). The SDK does not
+// enforce it — it handles the notification with a bare `break` — so keeping
+// that promise is on this side.
+//
+// Only a phase's item count drives the arithmetic, and those counts do not
+// increase on their own: they restart at 1 in every phase, and in every stage
+// of a phase (the prune checks, then the removals that passed them). So each
+// counted run is carried on top of everything reported before it — `progress`
+// is that offset plus the event's `processed`.
+//
+// Everything else is one tick, git's transfer events included. Those carry a
+// percentage their message already spells out, and they count objects rather
+// than items: a 1200-object clone would otherwise add 1200 to a sync of three
+// branches, once per transfer stage, leaving a client's bar to fill and reset
+// five times over one sync. They also open every stage on `0% (0/1200)`, which
+// as a counted run reports the progress before it a second time and breaks the
+// one rule this function exists to keep.
+function createProgressSequencer(): (event: ProgressEvent) => { progress: number; total?: number } {
+  let progress = 0;
+  let offset = 0;
+  let lastProcessed = 0;
+  let lastTotal: number | undefined;
+  let lastSentTotal = 0;
+
+  return (event: ProgressEvent): { progress: number; total?: number } => {
+    // `progress` is a percentage, which only a git transfer event carries.
+    const counted = event.progress === undefined && event.processed !== undefined && event.processed > 0;
+    if (!counted) {
+      progress += 1;
+      offset = progress;
+      lastProcessed = 0;
+      lastTotal = undefined;
+      return { progress };
+    }
+
+    const processed = event.processed!;
+    // A restart — a new phase, the next stage of the same phase, or a total
+    // that changed under it — begins a run of its own above what was reported.
+    if (event.total !== lastTotal || processed <= lastProcessed) offset = progress;
+    lastProcessed = processed;
+    lastTotal = event.total;
+    progress = offset + processed;
+
+    // A denominator the progress does not fit inside says nothing, so it is
+    // left out rather than sent as a number already overshot.
+    if (event.total === undefined || event.total < processed) return { progress };
+    // Separately: a run abandoned before it reached its total would leave the
+    // next run's denominator below the one already sent — a total that shrinks
+    // under a client mid-sync. The last one sent is a floor.
+    lastSentTotal = Math.max(lastSentTotal, offset + event.total);
+    return { progress, total: lastSentTotal };
+  };
+}
+
 function attachProgressReporter(
   service: {
     onProgress?: (listener: (event: ProgressEvent) => void) => () => void;
@@ -574,15 +840,16 @@ function attachProgressReporter(
   if (token === undefined || !handlerContext) return () => {};
   if (!service.onProgress) return () => {};
 
-  let progressCounter = 0;
+  const nextProgress = createProgressSequencer();
   const unsubscribe = service.onProgress((event) => {
-    progressCounter++;
+    const { progress, total } = nextProgress(event);
     void handlerContext.mcpReq
       .notify({
         method: "notifications/progress",
         params: {
           progressToken: token,
-          progress: progressCounter,
+          progress,
+          ...(total !== undefined && { total }),
           message: `[${event.phase}] ${event.message}`,
         },
       })

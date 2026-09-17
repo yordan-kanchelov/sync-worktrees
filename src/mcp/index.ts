@@ -1,11 +1,14 @@
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
+import { warnIfUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
+
 import { RepositoryContext } from "./context";
 import { createServer } from "./server";
 
 import type { DiscoveredRepoContext } from "./context";
 
 async function main(): Promise<void> {
+  warnIfUnitTestShortcutEnabled((message) => process.stderr.write(`[sync-worktrees-mcp] ${message}\n`));
   const context = new RepositoryContext();
 
   const configPath = process.env.SYNC_WORKTREES_CONFIG;

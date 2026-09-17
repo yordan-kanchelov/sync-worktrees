@@ -35,3 +35,9 @@ site/public/demo.gif
 # MCP stdio integration-test build dirs (bundled inside the repo so the spawned
 # server resolves node_modules; removed in the test's finally block)
 .mcp-stdio-test-*
+
+# E2E scratch trees (real git repositories, created under the repo root by
+# clone-mode.e2e and config-file.e2e; removed when the run finishes). Ignored
+# so a suite in flight does not make the working tree look dirty, and so a
+# stray `git add -A` during one cannot commit a throwaway repository.
+tmp-e2e-*/

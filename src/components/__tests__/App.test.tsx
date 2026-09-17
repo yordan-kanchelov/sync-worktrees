@@ -2,11 +2,12 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import App, { AppProps } from "../App";
+import type { AppProps } from "../App";
+import App from "../App";
 import { AppEventEmitter } from "../../utils/app-events";
 
 // Helper to wait for React state updates
-const waitForStateUpdate = () => new Promise(resolve => setTimeout(resolve, 100));
+const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 describe("App", () => {
   let defaultProps: AppProps;
@@ -21,9 +22,11 @@ describe("App", () => {
       onManualSync: vi.fn(),
       onReload: vi.fn(),
       onQuit: vi.fn().mockResolvedValue(undefined),
-      getRepositoryList: vi.fn().mockReturnValue([{ index: 0, name: "test-repo", repoUrl: "https://example.com/repo.git" }]),
+      getRepositoryList: vi
+        .fn()
+        .mockReturnValue([{ index: 0, name: "test-repo", repoUrl: "https://example.com/repo.git" }]),
       getBranchesForRepo: vi.fn().mockResolvedValue(["main", "develop"]),
-      getDefaultBranchForRepo: vi.fn().mockReturnValue("main"),
+      getDefaultBranchForRepo: vi.fn().mockResolvedValue("main"),
       createAndPushBranch: vi.fn().mockResolvedValue({ success: true, finalName: "test-branch" }),
       getWorktreesForRepo: vi.fn().mockResolvedValue([{ path: "/worktrees/main", branch: "main" }]),
       openEditorInWorktree: vi.fn().mockReturnValue({ success: true }),
@@ -40,6 +43,8 @@ describe("App", () => {
             unknownTrashSizes: 0,
             invalidTrashEntries: 1,
             keepRefs: 1,
+            trashEntryIds: ["entry-a", "entry-b"],
+            keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
           },
         },
       ]),
@@ -53,8 +58,13 @@ describe("App", () => {
             unknownTrashSizes: 0,
             invalidTrashEntries: 1,
             keepRefs: 0,
+            trashEntryIds: [],
+            keepRefNames: [],
             trashDeleted: 2,
             keepRefsDeleted: 1,
+            keepRefsRetained: 0,
+            skippedNewEntries: 0,
+            skippedNewKeepRefs: 0,
             gcSucceeded: true,
             errors: [],
           },
@@ -80,10 +90,27 @@ describe("App", () => {
 
       expect(lastFrame()).toContain("Running");
     });
-
   });
 
   describe("event subscriptions", () => {
+    // index.ts kicks off the daemon's startup sync in the same synchronous turn
+    // as InteractiveUIService's constructor — the turn render() runs in. Log
+    // lines survive a late mount either way, because addLog buffers until
+    // `uiReady` and flushLogBuffer replays in call order; setStatus and
+    // setSyncProgress have no buffer at all. Emitted before this effect has
+    // subscribed they are dropped on the floor, and the status bar would read
+    // Running for the whole of the first sync with an empty progress panel.
+    // Ink flushes a mount effect synchronously inside render(); pin it, because
+    // that is what makes the startup sync's status reach the screen.
+    it("emits uiReady before render() returns", () => {
+      const seen: string[] = [];
+      appEvents.on("uiReady", () => seen.push("uiReady"));
+
+      render(<App {...defaultProps} />);
+
+      expect(seen).toEqual(["uiReady"]);
+    });
+
     it("should respond to appEvents on mount", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
@@ -205,21 +232,33 @@ describe("App", () => {
     });
   });
 
-
   describe("updateLastSyncTime functionality", () => {
-    it("should update last sync time and set status to idle", async () => {
-      const { lastFrame } = render(<App {...defaultProps} />);
+    // The stamp is not the end of the sync. The service emits it from inside a
+    // cycle, and with cycles overlapping, the one that stamps is not
+    // necessarily the last one out: ending the sync here put the bar back to
+    // `Running` and took another cycle's progress rows off the screen mid-fetch.
+    it("does not end the sync or clear the progress rows when the last sync time is stamped", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
 
       await waitForStateUpdate();
 
       appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "repo-a", phase: "fetch", message: "fetch receiving: 40%" });
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Syncing...");
+      expect(lastFrame()).toContain("[repo-a] fetch receiving: 40%");
 
       appEvents.emit("updateLastSyncTime");
       await waitForStateUpdate();
+      expect(lastFrame()).toContain("Syncing...");
+      expect(lastFrame()).toContain("[repo-a] fetch receiving: 40%");
+      expect(lastFrame()).not.toContain("N/A");
+
+      // `setStatus` is the one gate, and it still ends it.
+      appEvents.emit("setStatus", "idle");
+      await waitForStateUpdate();
       expect(lastFrame()).toContain("Running");
-      expect(lastFrame()).not.toContain("Syncing...");
+      expect(lastFrame()).not.toContain("[repo-a] fetch receiving: 40%");
     });
 
     it("should show last sync time after update", async () => {
@@ -276,6 +315,45 @@ describe("App", () => {
       stdin.write("q");
 
       expect(onQuit).toHaveBeenCalled();
+    });
+
+    it("does not quit when Esc is pressed on the main screen", async () => {
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} />);
+
+      await waitForStateUpdate();
+
+      stdin.write("\x1b");
+      // Ink v7 buffers a lone ESC and flushes it as `key.escape` after a 20ms
+      // debounce (to disambiguate it from the start of an escape sequence), so
+      // this has to wait rather than assert on the next tick.
+      await waitForStateUpdate();
+
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(lastFrame()).toContain("Repositories:");
+    });
+
+    it("does not quit on the Esc that follows the one closing the help screen", async () => {
+      // Esc is this interface's "back out" key everywhere it is bound, so it
+      // arrives in runs: one to close the screen, and whatever the hand adds.
+      // The extra ones have to land on nothing.
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} />);
+
+      await waitForStateUpdate();
+
+      stdin.write("?");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Keyboard Shortcuts");
+
+      stdin.write("\x1b");
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("Keyboard Shortcuts");
+
+      stdin.write("\x1b");
+      await waitForStateUpdate();
+
+      expect(onQuit).not.toHaveBeenCalled();
     });
 
     it("should toggle help modal when ? is pressed", async () => {
@@ -366,6 +444,15 @@ describe("App", () => {
       await waitForStateUpdate();
 
       expect(defaultProps.forceClean).toHaveBeenCalledTimes(1);
+      // `y` authorizes the set behind the counts it just read out, so that is
+      // what reaches the service — not "whatever is in the trash by then".
+      expect(defaultProps.forceClean).toHaveBeenCalledWith([
+        {
+          repoIndex: 0,
+          trashEntryIds: ["entry-a", "entry-b"],
+          keepRefNames: ["refs/sync-worktrees/keep/ref-a"],
+        },
+      ]);
       expect(lastFrame()).toContain("deleted 2 trash and 1 refs");
     });
 
@@ -604,6 +691,106 @@ describe("App", () => {
       expect(frame).toContain("First log");
       expect(frame).toContain("Second log");
       expect(frame).toContain("Third log");
+    });
+
+    // A message with newlines in it rendered as several rows out of a panel
+    // that had budgeted one, which is how the frame grew past the terminal.
+    it("splits a multi-line message into one entry per line", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Synchronization finished.\nElapsed: 1.2s", level: "info" });
+      await waitForStateUpdate();
+
+      const frame = lastFrame();
+      expect(frame).toContain("Synchronization finished.");
+      expect(frame).toContain("Elapsed: 1.2s");
+      expect(frame).toContain("(2 entries)");
+    });
+
+    // A terminator is not a line of its own: the panel would spend a row on it.
+    it("does not turn a trailing newline into an empty entry", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Synchronization finished.\n", level: "info" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("(1 entries)");
+      // One entry and one row: the newline that used to survive into the entry
+      // rendered as a second row and pushed the frame past the terminal.
+      expect(lastFrame()!.split("\n")).toHaveLength(24);
+    });
+
+    // Nor a leading one, and both multi-line producers open with one:
+    // `Logger.table` wraps its content in newlines at both ends, and the sync
+    // failure line starts with one.
+    it("does not turn a leading newline into an empty entry", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "\nphase\tms\nfetch\t1200\n", level: "info" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("(2 entries)");
+      expect(lastFrame()).toContain("fetch");
+    });
+  });
+
+  // The frame is sized to the terminal: one row over and Ink stops rendering
+  // incrementally, clears the whole screen on every render and scrolls the top
+  // row out of view.
+  describe("frame height", () => {
+    it("fills exactly the terminal height once the log panel is full", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      for (let i = 0; i < 100; i++) {
+        appEvents.emit("addLog", { message: `Log line ${i}`, level: "info" });
+      }
+      await waitForStateUpdate();
+
+      const frame = lastFrame()!;
+      expect(frame.split("\n")).toHaveLength(24);
+      expect(frame).toContain("📋 Logs");
+      expect(frame).toContain("uit");
+    });
+
+    it("stays at the terminal height while syncing with progress rows", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
+
+      await waitForStateUpdate();
+
+      for (let i = 0; i < 100; i++) {
+        appEvents.emit("addLog", { message: `Log line ${i}`, level: "info" });
+      }
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "repo-a", phase: "fetch", message: "fetch receiving" });
+      await waitForStateUpdate();
+
+      const frame = lastFrame()!;
+      expect(frame).toContain("[repo-a] fetch receiving");
+      expect(frame.split("\n")).toHaveLength(24);
+    });
+
+    it("stays at the terminal height when a log entry carries newlines", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      for (let i = 0; i < 100; i++) {
+        appEvents.emit("addLog", { message: `Log line ${i}`, level: "info" });
+      }
+      appEvents.emit("addLog", { message: "phase\ttook\nfetch\t1.2s\nprune\t0.3s\ncreate\t2.0s", level: "info" });
+      await waitForStateUpdate();
+
+      const frame = lastFrame()!;
+      expect(frame.split("\n")).toHaveLength(24);
+      expect(frame).toContain("📋 Logs");
     });
   });
   describe("mouse wheel", () => {

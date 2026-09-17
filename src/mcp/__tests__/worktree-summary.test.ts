@@ -15,6 +15,7 @@ function makeStatus(overrides: Partial<WorktreeStatusResult> = {}): WorktreeStat
     fullyPushedUpstreamDeleted: false,
     canRemove: true,
     reasons: [],
+    divergence: null,
     ...overrides,
   };
 }

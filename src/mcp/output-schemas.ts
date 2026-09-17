@@ -25,7 +25,7 @@ const divergenceSchema = z
     behind: z.number().describe("Commits on the upstream not on this branch."),
   })
   .nullable()
-  .describe("null when the worktree has no upstream or rev-list failed.");
+  .describe("null when the worktree has no upstream ref to compare against.");
 
 const capabilityStateSchema = z.looseObject({
   available: z.boolean(),
@@ -86,6 +86,7 @@ const worktreeStatusShape = {
     .describe("Commits look unpushed only because the upstream ref was deleted after they landed."),
   canRemove: z.boolean(),
   reasons: z.array(z.string()),
+  divergence: divergenceSchema,
   details: z
     .looseObject({})
     .optional()
@@ -165,7 +166,6 @@ export const listWorktreesOutputSchema = z.looseObject({
 export const getWorktreeStatusOutputSchema = z.looseObject({
   path: z.string().describe("Resolved absolute worktree path."),
   ...worktreeStatusShape,
-  divergence: divergenceSchema,
 });
 
 export const createWorktreeOutputSchema = z.looseObject({
@@ -173,13 +173,50 @@ export const createWorktreeOutputSchema = z.looseObject({
   branchName: z.string(),
   worktreePath: z.string(),
   created: z.boolean().describe("The branch was newly created (vs. an existing local/remote branch checked out)."),
+  worktreeExisted: z
+    .boolean()
+    .describe(
+      "The path was already a registered worktree before this call. Its contents are a previous call's, not a fresh checkout — unless its directory had gone, which this call rebuilds.",
+    ),
   pushed: z.boolean(),
   pushError: z.string().optional().describe("Present only when success=false."),
+  warning: z.string().optional().describe("The next sync would prune this worktree: local-only or filtered branch."),
+});
+
+const syncOutcomeScopeSchema = z.enum(["repo", "branch", "worktree", "sparse-checkout"]);
+
+const syncOutcomeActionSchema = z.looseObject({
+  kind: z.enum(["created", "removed", "updated", "noop", "skipped", "preserved-diverged", "failed"]),
+  branch: z.string().optional(),
+  path: z.string().optional(),
+  scope: syncOutcomeScopeSchema.optional(),
+  reason: z.string().optional(),
+  message: z.string().optional(),
+  warning: z.string().optional(),
+  error: z.string().optional(),
+  preservedPath: z.string().optional(),
+});
+
+const syncFailedActionSchema = z.looseObject({
+  kind: z.literal("failed"),
+  scope: syncOutcomeScopeSchema,
+  error: z.string(),
+  reason: z.string().optional().describe("Machine-readable cause, e.g. remove_failed, sync_failed."),
+  branch: z.string().optional(),
+  path: z.string().optional(),
 });
 
 export const syncOutputSchema = z.looseObject({
-  success: z.boolean(),
+  success: z
+    .boolean()
+    .describe(
+      "false when any action failed (failed > 0), matching the CLI's non-zero exit. The call itself still completed, so isError stays false.",
+    ),
   duration: z.number().describe("Wall-clock milliseconds."),
+  failed: z.number().describe("Number of failed actions; equals outcome.counts.failed."),
+  failures: z
+    .array(syncFailedActionSchema)
+    .describe("The failed entries of outcome.actions, so callers need not filter them out."),
   outcome: z.looseObject({
     repoName: z.string().optional(),
     mode: z.enum(["clone", "worktree"]),
@@ -193,19 +230,7 @@ export const syncOutputSchema = z.looseObject({
       failed: z.number(),
       noop: z.number(),
     }),
-    actions: z.array(
-      z.looseObject({
-        kind: z.enum(["created", "removed", "updated", "noop", "skipped", "preserved-diverged", "failed"]),
-        branch: z.string().optional(),
-        path: z.string().optional(),
-        scope: z.enum(["repo", "branch", "worktree", "sparse-checkout"]).optional(),
-        reason: z.string().optional(),
-        message: z.string().optional(),
-        warning: z.string().optional(),
-        error: z.string().optional(),
-        preservedPath: z.string().optional(),
-      }),
-    ),
+    actions: z.array(syncOutcomeActionSchema),
     durationMs: z.number().optional(),
   }),
   skips: z.array(
@@ -219,6 +244,9 @@ export const syncOutputSchema = z.looseObject({
 export const updateWorktreeOutputSchema = z.looseObject({
   success: z.boolean(),
   worktreePath: z.string(),
+  updated: z
+    .boolean()
+    .describe("Whether the fast-forward moved HEAD. false when the worktree already matched origin/<branch>."),
 });
 
 export const initializeOutputSchema = z.looseObject({

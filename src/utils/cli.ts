@@ -8,19 +8,22 @@ export const CLI_COMMANDS = {
   TRASH: "trash",
 } as const;
 
-export type CliCommand = (typeof CLI_COMMANDS)[keyof typeof CLI_COMMANDS];
-
 export type CliOptions =
   | { command: typeof CLI_COMMANDS.RUN; config?: string; runOnce: boolean }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
   | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string }
-  | {
-      command: typeof CLI_COMMANDS.TRASH;
-      config?: string;
-      filter?: string;
-      restore?: string;
-      dropKeepRef?: string;
-    };
+  | ({ command: typeof CLI_COMMANDS.TRASH; config?: string } & TrashCliOptions);
+
+/** Everything `sync-worktrees trash` accepts beyond `--config`. */
+export interface TrashCliOptions {
+  filter?: string;
+  restore?: string;
+  purge?: string;
+  dropKeepRef?: string;
+  dropAllKeepRefs?: boolean;
+  json?: boolean;
+  wait?: boolean;
+}
 
 export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptions {
   let parsed: CliOptions | undefined;
@@ -100,7 +103,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
     )
     .command(
       CLI_COMMANDS.TRASH,
-      "List trash entries or restore one for a single repository",
+      "List, restore, or permanently delete trash entries for a single repository",
       (y) =>
         y
           .option("config", {
@@ -121,14 +124,51 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
             type: "string",
             description: "Delete a permanent keep ref by its listed name.",
           })
-          .conflicts("restore", "dropKeepRef"),
+          .option("dropAllKeepRefs", {
+            type: "boolean",
+            description: "Delete every listed permanent keep ref behind one confirmation.",
+          })
+          .option("purge", {
+            type: "string",
+            description: "Permanently delete the trash entry with this id, ahead of its expiry.",
+          })
+          .option("json", {
+            type: "boolean",
+            description: "Print the listing as JSON instead of a table.",
+          })
+          .option("wait", {
+            type: "boolean",
+            description:
+              "With --restore or --purge, wait for a repository lock another process holds instead of failing immediately.",
+          })
+          .conflicts("restore", "dropKeepRef")
+          .conflicts("restore", "dropAllKeepRefs")
+          .conflicts("restore", "purge")
+          .conflicts("dropKeepRef", "dropAllKeepRefs")
+          .conflicts("dropKeepRef", "purge")
+          .conflicts("dropAllKeepRefs", "purge")
+          // --json describes the listing, so pairing it with an action would
+          // promise structured output for something that does not produce any.
+          .conflicts("json", "restore")
+          .conflicts("json", "purge")
+          .conflicts("json", "dropKeepRef")
+          .conflicts("json", "dropAllKeepRefs")
+          // --wait is about the repository lock, which only the two operations
+          // that take it can be made to wait for.
+          .conflicts("wait", "json")
+          .conflicts("wait", "dropKeepRef")
+          .conflicts("wait", "dropAllKeepRefs"),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.TRASH,
           config: args.config,
           filter: args.filter,
           restore: args.restore,
+          purge: args.purge,
           dropKeepRef: args.dropKeepRef,
+          dropAllKeepRefs: args.dropAllKeepRefs,
+          json: args.json,
+          wait: args.wait,
         };
       },
     )
