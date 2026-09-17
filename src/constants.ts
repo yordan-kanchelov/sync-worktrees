@@ -213,10 +213,21 @@ export const METADATA_CONSTANTS = {
   DIVERGED_REASON: "diverged-history-with-changes",
 } as const;
 
+// DEFAULT_EXEC_FLAG makes most emulators run their trailing argv as a program; the emulators in
+// EXEC_FLAG_OVERRIDES take one string after `-e` instead, so `-e sh -c <cmd>` would run a bare
+// `sh` or die on the unknown `-c`. Kept beside LINUX_CANDIDATES so the two cannot drift, and
+// above the statement rather than on the members: esbuild ships a comment that leads an
+// object-literal member (scripts/smoke-test.mjs), and these two cost 278 bytes there.
 export const TERMINAL_CONSTANTS = {
   ENV_OVERRIDE: "SYNC_WORKTREES_TERMINAL",
   ENV_FALLBACK: "TERMINAL",
   LINUX_CANDIDATES: ["gnome-terminal", "konsole", "alacritty", "kitty", "xterm"],
+  DEFAULT_EXEC_FLAG: "-e",
+  EXEC_FLAG_OVERRIDES: {
+    "gnome-terminal": "--",
+    "mate-terminal": "--",
+    "xfce4-terminal": "-x",
+  },
 } as const;
 
 export const HOOK_CONSTANTS = {

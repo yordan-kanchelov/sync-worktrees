@@ -309,7 +309,7 @@ Running `sync-worktrees` without `runOnce` drops you into an interactive termina
 
 ### Wizards
 
-- **Open wizard (`o`)** — select a worktree across all configured repos with live filtering (just type to narrow the list). Press `Tab` to flip between **Terminal** mode (launches a new terminal window attached to a `tmux` session in the worktree) and **Editor** mode (launches `$EDITOR` / `$VISUAL`, falling back to `code`). Re-opening the same worktree attaches to the existing tmux session instead of creating a duplicate.
+- **Open wizard (`o`)** — select a worktree across all configured repos with live filtering (just type to narrow the list). Press `Tab` to flip between **Terminal** mode (launches a new terminal window attached to a `tmux` session in the worktree) and **Editor** mode (launches `$EDITOR` / `$VISUAL`, falling back to `code`). Re-opening the same worktree attaches to the existing tmux session instead of creating a duplicate. Editor mode needs a **GUI editor**: the editor is launched detached with no terminal attached to it, so a terminal editor (`vim`, `nano`, `helix`, `emacs -nw`, …) has no TTY to draw on. Those are refused, pointing at Terminal mode (tmux gives an editor a real terminal) if an emulator resolves here.
 - **Branch creation wizard (`c`)** — pick a repo, pick a base branch from a live-filtered list, type the new branch name. Names are validated against Git's rules; if the desired name already exists, a numeric suffix (`-2`, `-3`, …) is suggested automatically.
 - **Worktree status view (`w`)** — flat list of every worktree across every configured repo, each tagged with status flags:
 
@@ -330,9 +330,11 @@ Running `sync-worktrees` without `runOnce` drops you into an interactive termina
 
 | Variable                  | Purpose                                                                                                                                                                    | Default behavior                                                            |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `SYNC_WORKTREES_TERMINAL` | Override the terminal launcher on any platform. Value is a command string; the tmux invocation is appended via `sh -c`. Example: `SYNC_WORKTREES_TERMINAL="alacritty -e"`. | See per-platform defaults below.                                            |
-| `TERMINAL`                | Linux-only fallback when `SYNC_WORKTREES_TERMINAL` is unset. Same format.                                                                                                  | Probes `gnome-terminal`, `konsole`, `alacritty`, `kitty`, `xterm` in order. |
-| `EDITOR` / `VISUAL`       | Editor mode launcher.                                                                                                                                                      | Falls back to `code`.                                                       |
+| `SYNC_WORKTREES_TERMINAL` | Override the terminal launcher on any platform. Value is a command string ending in the emulator's "run this program" flag; the tmux invocation is appended via `sh -c`. Example: `SYNC_WORKTREES_TERMINAL="alacritty -e"`. Give a bare command and the right flag is supplied for you. | See per-platform defaults below.                                            |
+| `TERMINAL`                | Linux-only fallback when `SYNC_WORKTREES_TERMINAL` is unset. Name the emulator only — the exec flag is appended for you.                                                    | Probes `gnome-terminal`, `konsole`, `alacritty`, `kitty`, `xterm` in order. |
+| `EDITOR` / `VISUAL`       | Editor mode launcher. Must be a GUI editor (see the Open wizard above).                                                                                                    | Falls back to `code`.                                                       |
+
+All three are split the way a shell would split them, so a path containing spaces can be quoted: `SYNC_WORKTREES_TERMINAL='"/Applications/My Term.app/Contents/MacOS/term" -e'`. The appended exec flag is chosen per emulator, because `-e` does not mean the same thing everywhere: `gnome-terminal` and `mate-terminal` take `--`, `xfce4-terminal` takes `-x`, and everything else takes `-e`.
 
 Per-platform terminal defaults (when no env override is set):
 

@@ -2254,6 +2254,239 @@ describe("InteractiveUIService", () => {
 
         void service.destroy();
       });
+
+      it.each([["vim"], ["vi"], ["nvim"], ["nano"], ["pico"], ["micro"], ["helix"], ["hx"], ["kak"]])(
+        "refuses %s, which has no TTY when spawned detached",
+        (editor) => {
+          process.env.EDITOR = editor;
+          delete process.env.VISUAL;
+          mockSpawn.mockClear();
+
+          const service = new InteractiveUIService([mockSyncService]);
+          const result = service.openEditorInWorktree("/test/worktrees/main");
+
+          expect(result.success).toBe(false);
+          expect(result.error).toContain(`'${editor}' is a terminal editor`);
+          expect(result.error).toContain("Terminal mode");
+          expect(mockSpawn).not.toHaveBeenCalled();
+
+          void service.destroy();
+        },
+      );
+
+      it("refuses a terminal editor given by absolute path", () => {
+        process.env.EDITOR = "/usr/local/bin/nvim";
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/test/worktrees/main");
+
+        expect(result.success).toBe(false);
+        expect(mockSpawn).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it("refuses the terminal editor named by VISUAL when EDITOR is unset", () => {
+        delete process.env.EDITOR;
+        process.env.VISUAL = "vim";
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/test/worktrees/main");
+
+        expect(result.success).toBe(false);
+        expect(mockSpawn).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it("lets the flag decide for emacs, which is a GUI editor until -nw says otherwise", () => {
+        delete process.env.VISUAL;
+        const service = new InteractiveUIService([mockSyncService]);
+
+        process.env.EDITOR = "emacs";
+        mockSpawn.mockClear();
+        expect(service.openEditorInWorktree("/wt").success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith("emacs", ["/wt"], expect.objectContaining({ detached: true }));
+
+        for (const flag of ["-nw", "--no-window-system", "-t", "--tty"]) {
+          process.env.EDITOR = `emacs ${flag}`;
+          mockSpawn.mockClear();
+          const result = service.openEditorInWorktree("/wt");
+          expect(result.success, `emacs ${flag} should be refused`).toBe(false);
+          expect(mockSpawn).not.toHaveBeenCalled();
+        }
+
+        void service.destroy();
+      });
+
+      it.each([["vim"], ["vi"]])("lets -g override the basename for %s, whose parser defines it", (editor) => {
+        process.env.EDITOR = `${editor} -g`;
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith(editor, ["-g", "/wt"], expect.objectContaining({ detached: true }));
+
+        void service.destroy();
+      });
+
+      // -g is vim's GUI flag and nobody else's: nano and pico read it as --showcursor (verified
+      // against `nano --help` on this box), helix as --grammar, emacs as --geometry, and nvim
+      // has no -g at all. Treating it as GUI-forcing everywhere spawned into the void exactly
+      // the TTY-less editors this refusal exists for.
+      it.each([
+        ["nano", "-g"],
+        ["pico", "-g"],
+        ["helix", "-g"],
+        ["hx", "-g"],
+        ["kak", "-g"],
+        ["nvim", "-g"],
+        ["vim", "--gui"],
+      ])("still refuses '%s %s', where the flag is not this editor's GUI flag", (editor, flag) => {
+        process.env.EDITOR = `${editor} ${flag}`;
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success, `${editor} ${flag} should still be refused`).toBe(false);
+        expect(mockSpawn).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      // An explicit terminal flag is the user saying what they want, and a flag that means
+      // something else to this editor does not get to overrule it.
+      it.each([["emacs -nw -g"], ["emacs -g -nw"], ["emacs --gui -t"], ["emacsclient -nw -g"]])(
+        "refuses '%s', because the terminal flag wins over the GUI one",
+        (value) => {
+          process.env.EDITOR = value;
+          delete process.env.VISUAL;
+          mockSpawn.mockClear();
+
+          const service = new InteractiveUIService([mockSyncService]);
+          const result = service.openEditorInWorktree("/wt");
+
+          expect(result.success, `${value} should be refused`).toBe(false);
+          expect(mockSpawn).not.toHaveBeenCalled();
+
+          void service.destroy();
+        },
+      );
+
+      it("fails open: an editor nobody recognises is still launched", () => {
+        process.env.EDITOR = "some-unknown-editor";
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith(
+          "some-unknown-editor",
+          ["/wt"],
+          expect.objectContaining({ detached: true }),
+        );
+
+        void service.destroy();
+      });
+
+      it("keeps a quoted EDITOR path with spaces as one argv entry", () => {
+        process.env.EDITOR = '"/Applications/My Editor.app/Contents/MacOS/ed" --new-window';
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith(
+          "/Applications/My Editor.app/Contents/MacOS/ed",
+          ["--new-window", "/wt"],
+          expect.objectContaining({ detached: true }),
+        );
+
+        void service.destroy();
+      });
+
+      it("reports a whitespace-only EDITOR instead of quietly editing with something else", () => {
+        process.env.EDITOR = "   ";
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("whitespace only");
+        expect(mockSpawn).not.toHaveBeenCalled();
+
+        void service.destroy();
+      });
+
+      it.each([
+        ["unset", undefined],
+        ["empty", ""],
+      ])("still falls back to the default editor when EDITOR is %s", (_label, value) => {
+        if (value === undefined) delete process.env.EDITOR;
+        else process.env.EDITOR = value;
+        delete process.env.VISUAL;
+        mockSpawn.mockClear();
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openEditorInWorktree("/wt");
+
+        expect(result.success).toBe(true);
+        expect(mockSpawn).toHaveBeenCalledWith("code", ["/wt"], expect.objectContaining({ detached: true }));
+
+        void service.destroy();
+      });
+
+      // The refusal names Terminal mode as the remedy, so it asks whether one resolves first:
+      // on a headless host none does, and sending the user there is a second dead end.
+      it.each([
+        [false, "no emulator is available", "use Terminal mode"],
+        [true, "use Terminal mode", "no emulator is available"],
+      ])("words the refusal for a host where an emulator resolves=%s", (resolves, present, absent) => {
+        const platform = process.platform;
+        const envOverride = process.env.SYNC_WORKTREES_TERMINAL;
+        const envTerminal = process.env.TERMINAL;
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        delete process.env.TERMINAL;
+        mockSpawnSync.mockImplementation((...args: unknown[]) => ({
+          status: resolves && (args[1] as string[])[0] === "konsole" ? 0 : 1,
+          stdout: "",
+          stderr: "",
+        }));
+        process.env.EDITOR = "vim";
+        delete process.env.VISUAL;
+
+        const service = new InteractiveUIService([mockSyncService]);
+        try {
+          const result = service.openEditorInWorktree("/wt");
+
+          expect(result.success).toBe(false);
+          expect(result.error).toContain(present);
+          expect(result.error).not.toContain(absent);
+        } finally {
+          Object.defineProperty(process, "platform", { value: platform });
+          if (envOverride === undefined) delete process.env.SYNC_WORKTREES_TERMINAL;
+          else process.env.SYNC_WORKTREES_TERMINAL = envOverride;
+          if (envTerminal === undefined) delete process.env.TERMINAL;
+          else process.env.TERMINAL = envTerminal;
+          mockSpawnSync.mockImplementation(() => ({ status: 1, stdout: "", stderr: "" }));
+          void service.destroy();
+        }
+      });
     });
 
     describe("openTerminalInWorktree", () => {
@@ -2299,11 +2532,17 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "open");
         expect(call).toBeDefined();
-        const args = call[1] as string[];
-        expect(args.slice(0, 5)).toEqual(["-na", "Ghostty.app", "--args", "-e", "sh"]);
-        expect(args[5]).toBe("-c");
-        expect(args[6]).toContain("my-repo-feat-x");
-        expect(args[6]).toContain("/worktrees/feat-x");
+        // Whole argv, not a prefix: a stray flag after --args would slip past a slice() check
+        // and change what Ghostty is actually told to run.
+        expect(call[1]).toEqual([
+          "-na",
+          "Ghostty.app",
+          "--args",
+          "-e",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'my-repo-feat-x-[0-9a-f]+' -c '\/worktrees\/feat-x'$/),
+        ]);
 
         void service.destroy();
       });
@@ -2344,12 +2583,181 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "alacritty");
         expect(call).toBeDefined();
-        const args = call[1] as string[];
-        expect(args.slice(0, 3)).toEqual(["-e", "sh", "-c"]);
-        const tmuxCmd = args[args.length - 1];
-        expect(tmuxCmd).toContain("tmux new-session -A -s");
-        expect(tmuxCmd).toContain("repo-branch");
-        expect(tmuxCmd).toContain("/path");
+        expect(call[1]).toEqual([
+          "-e",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      it.each([
+        ["gnome-terminal", "--"],
+        ["mate-terminal", "--"],
+        ["xfce4-terminal", "-x"],
+        ["konsole", "-e"],
+        ["alacritty", "-e"],
+        ["kitty", "-e"],
+        ["xterm", "-e"],
+      ])("gives $TERMINAL=%s the %s its own option parser accepts", (terminal, flag) => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        process.env.TERMINAL = terminal;
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openTerminalInWorktree(0, "/path", "branch");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === terminal);
+        expect(call, `${terminal} was never spawned`).toBeDefined();
+        // Whole-argv equality, not toContain: a stray extra "-e" would slip past a substring check.
+        expect(call[1]).toEqual([
+          flag,
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+        expect(call[1]).toHaveLength(4);
+
+        void service.destroy();
+      });
+
+      it("uses the same per-emulator rule when probing candidates as it does for $TERMINAL", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        delete process.env.TERMINAL;
+        mockSpawnSync.mockImplementation((...args: unknown[]) => ({
+          status: (args[1] as string[])[0] === "gnome-terminal" ? 0 : 1,
+          stdout: "",
+          stderr: "",
+        }));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = service.openTerminalInWorktree(0, "/path", "branch");
+
+        expect(result.success).toBe(true);
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
+        expect(call).toBeDefined();
+        expect(call[1]).toEqual([
+          "--",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      it("keeps a $TERMINAL emulator's own flags and still appends the right exec flag", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        process.env.TERMINAL = "gnome-terminal --hide-menubar";
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
+        expect(call).toBeDefined();
+        expect(call[1]).toEqual([
+          "--hide-menubar",
+          "--",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      it("keeps a quoted SYNC_WORKTREES_TERMINAL path with spaces as one argv entry", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        process.env.SYNC_WORKTREES_TERMINAL = '"/Applications/My Term.app/Contents/MacOS/term" -e';
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(
+          ([cmd]) => cmd === "/Applications/My Term.app/Contents/MacOS/term",
+        );
+        expect(call, "the quoted path was split into several argv entries").toBeDefined();
+        expect(call[1]).toEqual([
+          "-e",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      it("supplies the exec flag for a bare SYNC_WORKTREES_TERMINAL that carries none", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        process.env.SYNC_WORKTREES_TERMINAL = "gnome-terminal";
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
+        expect(call).toBeDefined();
+        expect(call[1]).toEqual([
+          "--",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      // The override used to consult the exec-flag table only when it carried no args of its
+      // own, so a user who added one flag of theirs lost the exec flag altogether -- the
+      // original "-e sh -c" defect wearing a different hat.
+      it("gives an override that carries its own flags the exec flag as well", () => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        process.env.SYNC_WORKTREES_TERMINAL = "gnome-terminal --tab";
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
+        expect(call, "gnome-terminal was never spawned").toBeDefined();
+        expect(call[1]).toEqual([
+          "--tab",
+          "--",
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
+
+        void service.destroy();
+      });
+
+      it.each([
+        ["SYNC_WORKTREES_TERMINAL", "alacritty -e"],
+        ["TERMINAL", "alacritty -e"],
+        ["SYNC_WORKTREES_TERMINAL", "xfce4-terminal -x"],
+        ["TERMINAL", "gnome-terminal --"],
+      ])("adds no second exec flag when %s=%s already has one", (variable, value) => {
+        Object.defineProperty(process, "platform", { value: "linux" });
+        delete process.env.SYNC_WORKTREES_TERMINAL;
+        delete process.env.TERMINAL;
+        process.env[variable] = value;
+        const [command, flag] = value.split(" ");
+
+        const service = new InteractiveUIService([mockSyncService]);
+        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+
+        const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === command);
+        expect(call, `${command} was never spawned`).toBeDefined();
+        // Exactly one: a second flag would be read as an argument to the first.
+        expect(call[1]).toEqual([
+          flag,
+          "sh",
+          "-c",
+          expect.stringMatching(/^tmux new-session -A -s 'repo-0-branch-[0-9a-f]+' -c '\/path'$/),
+        ]);
 
         void service.destroy();
       });

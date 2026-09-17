@@ -341,10 +341,10 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T110** — Quitting the TUI SIGTERMs (then SIGKILLs) the whole process group of every
   in-flight `onBranchCreated` hook (e.g. `npm install` in the new worktree) — undocumented,
   contradicts 'fire-and-forget'
-- [ ] **T111** — Editor mode spawns `$EDITOR` detached with stdio ignored, so terminal editors
+- [x] **T111** — Editor mode spawns `$EDITOR` detached with stdio ignored, so terminal editors
   (vim/nvim/nano/emacs -nw — the most common `$EDITOR` values) silently do nothing while the wizard
   reports success and closes
-- [ ] **T112** — `$TERMINAL=gnome-terminal` (and other `$TERMINAL`/`SYNC_WORKTREES_TERMINAL` values
+- [x] **T112** — `$TERMINAL=gnome-terminal` (and other `$TERMINAL`/`SYNC_WORKTREES_TERMINAL` values
   needing `--`) is launched with `-e sh -c <cmd>`, which the probe path already knows is wrong for
   gnome-terminal; command strings are split on whitespace so paths with spaces break
 - [ ] **T113** — NODE_ENV=test silently disables the cross-process lock, and the e2e double-run test
@@ -4287,7 +4287,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   quit path; nothing in the TUI surfaces running hooks. This is a design decision, not a crash,
   hence low.
 
-### [ ] T111. Editor mode spawns `$EDITOR` detached with stdio ignored, so terminal editors (vim/nvim/nano/emacs -nw — the most common `$EDITOR` values) silently do nothing while the wizard reports success and closes
+### [x] T111. Editor mode spawns `$EDITOR` detached with stdio ignored, so terminal editors (vim/nvim/nano/emacs -nw — the most common `$EDITOR` values) silently do nothing while the wizard reports success and closes
 
 - **Category**: workflow · **Subsystem**: tui
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
@@ -4315,7 +4315,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   editor is spawned detached with stdio ignored, dies after ~2 s, and the wizard reports success;
   launcher exit codes are never observed for either editor or terminal mode”.
 
-### [ ] T112. `$TERMINAL=gnome-terminal` (and other `$TERMINAL`/`SYNC_WORKTREES_TERMINAL` values needing `--`) is launched with `-e sh -c <cmd>`, which the probe path already knows is wrong for gnome-terminal; command strings are split on whitespace so paths with spaces break
+### [x] T112. `$TERMINAL=gnome-terminal` (and other `$TERMINAL`/`SYNC_WORKTREES_TERMINAL` values needing `--`) is launched with `-e sh -c <cmd>`, which the probe path already knows is wrong for gnome-terminal; command strings are split on whitespace so paths with spaces break
 
 - **Category**: workflow · **Subsystem**: tui
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
