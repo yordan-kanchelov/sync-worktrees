@@ -26,6 +26,18 @@ describe("HelpModal", () => {
       expect(lastFrame()).toContain("Keyboard Shortcuts");
     });
 
+    it("names q as the only way to quit, and does not offer Esc", () => {
+      const { lastFrame } = render(<HelpModal {...defaultProps} />);
+
+      const quitRow = (lastFrame() ?? "").split("\n").find((line) => line.includes("Gracefully quit"));
+
+      expect(quitRow).toBeDefined();
+      expect(quitRow).toMatch(/\bq\b/);
+      // Esc closes this screen; the main screen ignores it, so listing it here
+      // as a quit key is a promise the App does not keep.
+      expect(quitRow).not.toMatch(/esc/i);
+    });
+
     it("should render close instruction", () => {
       const { lastFrame } = render(<HelpModal {...defaultProps} />);
 

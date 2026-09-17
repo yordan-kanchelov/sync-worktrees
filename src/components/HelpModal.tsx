@@ -154,14 +154,16 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
             <Text>Toggle this help screen</Text>
           </Box>
 
+          {/*
+            `q` alone. Esc is this interface's "back out of what is open" key --
+            it closes this screen, cancels a wizard and steps a wizard back --
+            so binding it to an exit as well would make one Esc too many, or a
+            key repeat, tear down the daemon and the hooks it still has running.
+          */}
           <Box>
             <Box width={15}>
               <Text bold color="yellow">
                 q
-              </Text>
-              <Text> / </Text>
-              <Text bold color="yellow">
-                Esc
               </Text>
             </Box>
             <Text>Gracefully quit</Text>

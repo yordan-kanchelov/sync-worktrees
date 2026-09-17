@@ -317,6 +317,45 @@ describe("App", () => {
       expect(onQuit).toHaveBeenCalled();
     });
 
+    it("does not quit when Esc is pressed on the main screen", async () => {
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} />);
+
+      await waitForStateUpdate();
+
+      stdin.write("\x1b");
+      // Ink v7 buffers a lone ESC and flushes it as `key.escape` after a 20ms
+      // debounce (to disambiguate it from the start of an escape sequence), so
+      // this has to wait rather than assert on the next tick.
+      await waitForStateUpdate();
+
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(lastFrame()).toContain("Repositories:");
+    });
+
+    it("does not quit on the Esc that follows the one closing the help screen", async () => {
+      // Esc is this interface's "back out" key everywhere it is bound, so it
+      // arrives in runs: one to close the screen, and whatever the hand adds.
+      // The extra ones have to land on nothing.
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} />);
+
+      await waitForStateUpdate();
+
+      stdin.write("?");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Keyboard Shortcuts");
+
+      stdin.write("\x1b");
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("Keyboard Shortcuts");
+
+      stdin.write("\x1b");
+      await waitForStateUpdate();
+
+      expect(onQuit).not.toHaveBeenCalled();
+    });
+
     it("should toggle help modal when ? is pressed", async () => {
       const { stdin, lastFrame } = render(<App {...defaultProps} />);
 

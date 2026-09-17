@@ -300,12 +300,14 @@ Running `sync-worktrees` without `runOnce` drops you into an interactive termina
 | `x`         | Force clean trash, recovery refs, and objects  |
 | `r`         | Reload configuration and re-sync               |
 | `?` / `h`   | Toggle help screen                             |
-| `q` / `Esc` | Gracefully quit                                |
+| `q`         | Gracefully quit                                |
 | `j` / `↓`   | Scroll log down one line                       |
 | `k` / `↑`   | Scroll log up one line                         |
 | wheel       | Scroll the log (hold `Shift` to select text)   |
 | `gg`        | Jump to top of log                             |
 | `G`         | Jump to bottom (re-enables auto-scroll)        |
+
+`Esc` backs out rather than quits: it closes the help screen, cancels a wizard or steps one back to the previous question, and does nothing on the main screen. `q` is the only key that quits, and it quits straight away — there is no confirmation, and the interface terminates any hooks it still has running (see [Hooks and file copying](#hooks-and-file-copying)).
 
 ### Wizards
 

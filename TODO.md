@@ -335,7 +335,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   in-progress sync(s)' and timeout warning are dropped by `addLog`
 - [x] **T108** — Reload (`r`) initializes the new services before injecting the UI logger, so
   clone/fetch/init output and warnings of the reload go to the raw console instead of the log panel
-- [ ] **T109** — Docs/help drift: README and the help modal say `Esc` quits, but the main screen
+- [x] **T109** — Docs/help drift: README and the help modal say `Esc` quits, but the main screen
   ignores Esc; README quick start says the TUI 'starts syncing' while the daemon never syncs until the
   first cron tick and no `syncOnStart` option remains
 - [x] **T110** — Quitting the TUI SIGTERMs (then SIGKILLs) the whole process group of every
@@ -4234,7 +4234,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   constructor before any operation). The test `should re-inject loggers after reload` only checks
   that injection happens, not when.
 
-### [ ] T109. Docs/help drift: README and the help modal say `Esc` quits, but the main screen ignores Esc; README quick start says the TUI 'starts syncing' while the daemon never syncs until the first cron tick and no `syncOnStart` option remains
+### [x] T109. Docs/help drift: README and the help modal say `Esc` quits, but the main screen ignores Esc; README quick start says the TUI 'starts syncing' while the daemon never syncs until the first cron tick and no `syncOnStart` option remains
 
 - **Category**: docs · **Subsystem**: tui
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
