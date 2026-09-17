@@ -1250,7 +1250,6 @@ describe("RepositoryContext.getService error messages", () => {
     await expect(ctx.getService()).rejects.toThrow(/loadedRepos=0/);
     await expect(ctx.getService()).rejects.toThrow(/detect_context/);
     await expect(ctx.getService()).rejects.toThrow(/load_config/);
-    await expect(ctx.getService()).rejects.toThrow(/SYNC_WORKTREES_CONFIG/);
   });
 
   it("lists configured repos when multiple are loaded but none selected", async () => {

@@ -286,7 +286,6 @@ describe("stdio protocol", () => {
       const startServer = () => {
         const child = spawn(process.execPath, [entry], {
           cwd: runtimeDir,
-          env: { ...process.env, SYNC_WORKTREES_CONFIG: "" },
           stdio: ["pipe", "pipe", "pipe"],
         });
         children.push(child);

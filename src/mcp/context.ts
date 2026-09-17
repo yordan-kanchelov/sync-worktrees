@@ -889,7 +889,7 @@ export class RepositoryContext {
       parts.push("Recovery: call set_current_repository with one of the repo names above or pass repoName explicitly.");
     } else {
       parts.push(
-        "Recovery: call detect_context {path: <workspace>}, load_config {configPath: <file>}, set SYNC_WORKTREES_CONFIG env var, or pass repoName explicitly.",
+        "Recovery: call detect_context {path: <workspace>}, load_config {configPath: <file>}, or pass repoName explicitly.",
       );
     }
     return parts.join(" ");

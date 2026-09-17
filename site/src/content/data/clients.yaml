@@ -5,7 +5,7 @@
 - id: claude-code
   label: Claude Code
   lang: bash
-  hint: "Use the Claude Code CLI. Append -e SYNC_WORKTREES_CONFIG=... to point at a config."
+  hint: "Use the Claude Code CLI. The server auto-detects your config from the working directory."
   order: 1
 - id: cursor
   label: Cursor
@@ -17,7 +17,7 @@
   label: Windsurf
   lang: json
   useStandardJson: true
-  hint: "Add to your Windsurf MCP config. SYNC_WORKTREES_CONFIG is optional — omit for auto-detect."
+  hint: "Add to your Windsurf MCP config."
   order: 3
 - id: claude-desktop
   label: Claude Desktop
