@@ -21,8 +21,15 @@ sync-worktrees keeps every branch checked out as its own folder — one folder p
 
 ## Docs
 
-- [README](${repo}/blob/main/README.md): Full installation, configuration reference, MCP integration, and TUI keybindings.
-- [Full landing-page text](${site}/llms-full.txt): Hero copy, problem statement, feature descriptions, every MCP config snippet, and FAQ — all as plain text.
+- [README](${repo}/blob/main/README.md): What it is, what it will never do, install and quick start, a multi-repo config, the TUI keys, the MCP server in brief, CLI and exit codes.
+- [Configuration reference](${repo}/blob/main/docs/configuration.md): Config formats and discovery, whole-file settings, branch filtering, authentication, retry and timeouts, parallelism, maintenance, locking.
+- [Clone mode](${repo}/blob/main/docs/clone-mode.md): One branch at a fixed path, and how the \`depth\` fetch cap ratchets.
+- [Sparse checkout](${repo}/blob/main/docs/sparse-checkout.md): Cone and no-cone patterns, one monorepo under several names, updates outside the sparse set.
+- [Trash and recovery](${repo}/blob/main/docs/trash-and-recovery.md): Every path by which sync removes something, diverged branches, the \`.trash/\` layout, keep refs, restoring.
+- [Hooks and file copying](${repo}/blob/main/docs/hooks-and-file-copying.md): \`hooks.onBranchCreated\`, \`filesToCopyOnBranchCreate\`, pattern rules, hook timeout and quit semantics.
+- [Interactive TUI](${repo}/blob/main/docs/tui.md): Every key, the wizards, status flags, terminal and editor launch.
+- [MCP server](${repo}/blob/main/docs/mcp.md): Install in each client, auto-detect, every tool, safety, running parallel agents.
+- [Full landing-page text](${site}/llms-full.txt): Hero copy, problem statement, feature descriptions, every MCP config snippet, FAQ, the README and its docs pages — all as plain text.
 - [Example config](${repo}/blob/main/sync-worktrees.config.example.js): Annotated reference covering worktree mode, clone mode, filtering, retry, and cron scheduling.
 
 ## FAQ
