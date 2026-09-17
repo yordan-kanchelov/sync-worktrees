@@ -8,11 +8,8 @@ const positioning = (await getEntry("positioning", "main"))!.data;
 const npmCmd = commands.npmInstall;
 const repoUrl = "https://github.com/yordan-kanchelov/sync-worktrees";
 ---
-<section class="relative overflow-hidden bg-ink-950 py-20 sm:py-24 text-ink-100">
-  <div class="absolute inset-0 -z-0 section-grid-dark"></div>
-  <div class="absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-accent-500/40 to-transparent"></div>
-
-  <div class="relative mx-auto max-w-3xl px-6 text-center">
+<section class="bg-ink-950 py-20 sm:py-24 text-ink-100">
+  <div class="mx-auto max-w-3xl px-6 text-center">
     <h2 class="text-balance text-4xl font-bold tracking-tight text-white sm:text-5xl">
       {positioning.ctaHeadline}
     </h2>
@@ -36,7 +33,7 @@ const repoUrl = "https://github.com/yordan-kanchelov/sync-worktrees";
       <a
         href="#quickstart"
         data-cta="quickstart"
-        class="inline-flex items-center gap-2 rounded-full bg-accent-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent-400"
+        class="inline-flex items-center gap-2 rounded-md bg-white px-4 py-2 text-sm font-semibold text-ink-900 transition hover:bg-ink-100"
       >
         Read the quick start <Icon name="arrow-right" size={16} />
       </a>

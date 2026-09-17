@@ -26,9 +26,13 @@
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
     "@playwright/test": "^1.60.0",
+    "sharp": "^0.35.4",
     "typescript": "^6.0.3"
   },
   "overrides": {
     "yaml": "^2.8.3"
+  },
+  "allowScripts": {
+    "esbuild@0.27.7": true
   }
 }
