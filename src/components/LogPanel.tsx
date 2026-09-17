@@ -49,7 +49,23 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
 
   const borderLines = 2;
   const headerLine = 1;
-  const visibleLines = Math.max(1, height - borderLines - headerLine);
+  // The `↑ N more` / `↓ N more` rows are rows too. They used to render on top
+  // of a budget that had already been spent, so a panel asked for `height`
+  // rows drew height+1 in follow mode and height+2 parked; the App frame then
+  // outgrew the terminal, Ink fell back to clearing and repainting the whole
+  // screen on every render, and the top row scrolled off.
+  //
+  // Both rows are reserved as soon as the log is longer than the panel, rather
+  // than each one as it happens to show: a viewport whose size depended on the
+  // scroll position would move maxOffset under the reader, and one wheel up
+  // followed by one wheel down would no longer land back on the tail.
+  const contentLines = Math.max(1, height - borderLines - headerLine);
+  // At the smallest height the App will hand out there is one row left over
+  // after the header and a single log line, and two indicator rows drawn into
+  // it land on top of the header: `📋 Logs (40 entries)` came back as
+  // `↑ 33 more aboveries)`. Below that, the two counts share one row.
+  const indicatorLines = logs.length > contentLines ? Math.min(2, Math.max(0, contentLines - 1)) : 0;
+  const visibleLines = Math.max(1, contentLines - indicatorLines);
   const maxOffset = Math.max(0, logs.length - visibleLines);
 
   // Derived, never stored: following always renders the tail, and a parked
@@ -144,8 +160,12 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
 
   const emptyLines = Math.max(0, visibleLines - visibleLogs.length);
 
+  // Fixed height and clipped: the budget above keeps the ordinary frame inside
+  // it, and this bounds what it cannot predict -- an entry that still carries a
+  // newline, a message Ink wraps -- so the frame can never outgrow the row the
+  // App reserved for it.
   return (
-    <Box borderStyle="single" flexDirection="column" flexGrow={1} paddingX={1}>
+    <Box borderStyle="single" flexDirection="column" flexGrow={1} height={height} overflow="hidden" paddingX={1}>
       <Box justifyContent="space-between">
         <Text bold>📋 Logs {logs.length > 0 && <Text dimColor>({logs.length} entries)</Text>}</Text>
         {isActive && (
@@ -155,7 +175,15 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
         )}
       </Box>
 
-      {hasMoreAbove && <Text dimColor>↑ {aboveCount} more above</Text>}
+      {indicatorLines === 2 && hasMoreAbove && <Text dimColor>↑ {aboveCount} more above</Text>}
+
+      {indicatorLines === 1 && (hasMoreAbove || hasMoreBelow) && (
+        <Text dimColor wrap="truncate">
+          {[hasMoreAbove ? `↑ ${aboveCount} more above` : "", hasMoreBelow ? `↓ ${belowCount} more below` : ""]
+            .filter(Boolean)
+            .join("  ")}
+        </Text>
+      )}
 
       {visibleLogs.map((log) => (
         <Text key={log.id} color={getLogColor(log.level)} wrap="truncate">
@@ -167,7 +195,7 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
         <Text key={`empty-${i}`}> </Text>
       ))}
 
-      {hasMoreBelow && <Text dimColor>↓ {belowCount} more below</Text>}
+      {indicatorLines === 2 && hasMoreBelow && <Text dimColor>↓ {belowCount} more below</Text>}
     </Box>
   );
 };

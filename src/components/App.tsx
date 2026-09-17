@@ -68,6 +68,30 @@ export interface LogEntry {
 
 const MAX_LOG_ENTRIES = 5000;
 
+// One entry has to be one row, because that is what the log panel budgets for
+// it. Sync messages carry newlines (`Synchronization finished.\n`, and with
+// `debug` the whole timing table arrives as a single message), and Ink renders
+// each of those as its own row however the entry is wrapped — so the panel drew
+// more rows than it had, the frame outgrew the terminal and Ink repainted the
+// whole screen on every render. Split rather than flatten: the table stays
+// readable and every line stays addressable by the scrollback.
+// A leading or trailing terminator is not a line of its own; a blank line
+// between two rows of a table is, so only the empties at either end go. Both
+// multi-line producers in the codebase open with one -- `Logger.table` wraps
+// its content in newlines on both sides, and the sync failure line starts with
+// one -- so keeping them cost a blank row and an entry off the
+// `📋 Logs (N entries)` count, in the panel where rows are scarcest.
+function splitLogLines(message: string): string[] {
+  const lines = message.split(/\r?\n/);
+  while (lines.length > 1 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  while (lines.length > 1 && lines[0] === "") {
+    lines.shift();
+  }
+  return lines;
+}
+
 const App: React.FC<AppProps> = ({
   events,
   repositoryCount,
@@ -115,17 +139,18 @@ const App: React.FC<AppProps> = ({
 
   const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
     setLogs((prev) => {
+      // Every log line (service loggers, reload/sync failures, wizard errors)
+      // lands here, so a git error that quotes a credential-bearing remote URL
+      // is scrubbed before it reaches the log buffer.
+      const timestamp = new Date();
       const newLogs = [
         ...prev,
-        {
+        ...splitLogLines(redactSecretsInText(message)).map((line) => ({
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          // Every log line (service loggers, reload/sync failures, wizard
-          // errors) lands here, so a git error that quotes a credential-bearing
-          // remote URL is scrubbed before it reaches the log buffer.
-          message: redactSecretsInText(message),
+          message: line,
           level,
-          timestamp: new Date(),
-        },
+          timestamp,
+        })),
       ];
       if (newLogs.length > MAX_LOG_ENTRIES) {
         return newLogs.slice(-MAX_LOG_ENTRIES);
@@ -190,10 +215,16 @@ const App: React.FC<AppProps> = ({
 
   useEffect(() => {
     const unsubscribers = [
+      // A timestamp, and nothing else. This used to end the sync as well, which
+      // made it a second, ungated owner of the status bar: the service stamps
+      // "Last Sync" from inside a cycle (`runSyncCycle` awaits
+      // `recordSyncOutcome` before its `finally`), so the first of two
+      // overlapping cycles to reach it put the bar back to `Running`, blanked
+      // the other cycle's progress rows and re-armed the `s`/`x`/`r` guards
+      // while that cycle was still fetching. `setStatus` -- which the service
+      // drives from a count of the cycles in flight -- is the one gate.
       events.on("updateLastSyncTime", () => {
         setLastSyncTime(new Date());
-        setStatus("idle");
-        setSyncProgressEntries([]);
       }),
       events.on("setStatus", (newStatus: "idle" | "syncing") => {
         setStatus(newStatus);

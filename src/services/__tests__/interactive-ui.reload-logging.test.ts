@@ -13,7 +13,7 @@ import type { Mock } from "vitest";
 // Lines the real service emits while initialize() runs, through sub-services
 // that took their logger from the config when they were built: GitService's
 // fetch announcement and a WorktreeStatusService probe failure.
-const { INIT_INFO, INIT_ERROR, REPO_CONFIG } = vi.hoisted(() => ({
+const { INIT_INFO, INIT_ERROR, REPO_CONFIG, syncControl } = vi.hoisted(() => ({
   INIT_INFO: "Fetching remote branches...",
   INIT_ERROR: "Error reading status for /test/worktrees/feature",
   REPO_CONFIG: {
@@ -23,6 +23,10 @@ const { INIT_INFO, INIT_ERROR, REPO_CONFIG } = vi.hoisted(() => ({
     cronSchedule: "0 * * * *",
     runOnce: false,
   },
+  // Lets one test hold the reload's own sync open and see what a cycle landing
+  // inside it touches. The gate is consumed by the first sync that meets it, so
+  // a second cycle is never blocked by it.
+  syncControl: { gate: undefined as Promise<void> | undefined, syncCalls: 0, clearCalls: 0 },
 }));
 
 // Stands in for WorktreeSyncService with the one behaviour under test: the
@@ -60,6 +64,10 @@ vi.mock("../worktree-sync.service", async () => {
       }
 
       async sync(): Promise<unknown> {
+        syncControl.syncCalls++;
+        const gate = syncControl.gate;
+        syncControl.gate = undefined;
+        if (gate) await gate;
         return { started: true, outcome: { mode: "worktree", counts: { failed: 0, skipped: 0 } } };
       }
 
@@ -71,7 +79,9 @@ vi.mock("../worktree-sync.service", async () => {
         return [];
       }
 
-      clearRecordedSkips(): void {}
+      clearRecordedSkips(): void {
+        syncControl.clearCalls++;
+      }
     },
   };
 });
@@ -103,6 +113,9 @@ describe("InteractiveUIService reload logging", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    syncControl.gate = undefined;
+    syncControl.syncCalls = 0;
+    syncControl.clearCalls = 0;
     (ink.render as unknown as Mock).mockReturnValue({
       unmount: vi.fn(),
       waitUntilExit: vi.fn(() => new Promise<void>(() => {})),
@@ -150,6 +163,57 @@ describe("InteractiveUIService reload logging", () => {
 
     expect(panelLogs).toContain(`[repo-a] ${INIT_INFO}`);
     expect(panelLogs).toContain(`[repo-a] ${INIT_ERROR}`);
+  });
+
+  // A reload runs a sync of its own, so it is one more cycle the status bar has
+  // to account for. Both of its `idle`s used to be unconditional, so a cycle
+  // that finished inside a reload (an overlapping cron tick) put the interface
+  // back to "Running" and blanked the progress panel while the reload was still
+  // initializing repositories.
+  it("keeps the status at syncing while a sync cycle overlaps the reload", async () => {
+    const statuses: Array<"idle" | "syncing"> = [];
+    events.on("setStatus", (status: "idle" | "syncing") => statuses.push(status));
+
+    const onReload = ((ink.render as unknown as Mock).mock.calls[0][0].props as { onReload: () => Promise<void> })
+      .onReload;
+
+    const reloading = onReload();
+    const cycle = uiService.triggerInitialSync();
+    await Promise.all([cycle, reloading]);
+
+    expect(statuses).toEqual(["syncing", "idle"]);
+  });
+
+  // The invariant this change asserts -- a cycle never reaches
+  // clearRecordedSkips() for a repository another cycle is syncing -- has to
+  // hold for the reload too, and the reload is the one cycle that always syncs
+  // every repository. It arms the new cron jobs and only then runs its sync, so
+  // a tick landing in that window is routine; it used to call runSyncServices
+  // directly, outside the claim, and wipe the reload's accumulator.
+  it("keeps an overlapping cycle out of the repositories the reload is syncing", async () => {
+    let release!: () => void;
+    syncControl.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const onReload = ((ink.render as unknown as Mock).mock.calls[0][0].props as { onReload: () => Promise<void> })
+      .onReload;
+    const reloading = onReload();
+    // Wait until the reload is inside its own sync, holding the repository.
+    await vi.waitFor(() => expect(syncControl.syncCalls).toBe(1));
+    const clearsWhileTheReloadOwnsIt = syncControl.clearCalls;
+
+    // What a tick, or an `s`, does while that sync is in flight. The claim is
+    // taken before the cycle's first await, so starting it here is enough --
+    // the reload is then let go, because the parallelism limit is 1 and the
+    // losing cycle otherwise queues behind it rather than reporting anything.
+    const tick = uiService.triggerInitialSync();
+    release();
+    await Promise.all([tick, reloading]);
+
+    expect(syncControl.syncCalls).toBe(1);
+    expect(syncControl.clearCalls).toBe(clearsWhileTheReloadOwnsIt);
+    expect(panelLogs).toContain("A sync is already running; skipping this cycle.");
   });
 
   it("measures the repository again after a reload rather than serving the cached size", async () => {

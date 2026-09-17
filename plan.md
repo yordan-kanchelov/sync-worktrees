@@ -1,6 +1,6 @@
 # Implementation plan — whole-app review (T1–T121)
 
-**110 of 121 done · 1 declined · 10 open — 91% complete.**
+**113 of 121 done · 1 declined · 7 open — 93% complete.**
 
 This file is regenerated from `TODO.md` and this branch's history every time an item merges. It
 is not hand-maintained, because a hand-kept plan drifts from the branch it claims to describe.
@@ -44,22 +44,14 @@ lands here.
 
 | | count |
 |---|---|
-| Merged | 110 |
+| Merged | 113 |
 | Declined | 1 |
-| Open | 10 |
+| Open | 7 |
 
-## In flight
-
-**T41 + T45 + T46** — fixer applying review findings.
-
-The review returned a MUST: the new cycle refcount gated only the `setStatus` channel, so the first of two concurrent cycles to finish still drove the UI to idle through `updateLastSyncTime` and wiped the other cycle's progress rows. A fixer is applying that and six further findings.
 
 ## Remaining
 
-- **T41** — Concurrent sync cycles share one TUI status flag: the first cycle to finish (cron group, overlapping tick, ...
 - **T44** — Branch wizard acts on stale refs and its collision check is decorative: it submits the unsuffixed name, cre...
-- **T45** — OpenEditorWizard and WorktreeStatusView re-run their loader forever when it returns an empty list (no loade...
-- **T46** — LogPanel exceeds its height budget by 1-2 rows in the steady state (plus one row per embedded newline), so ...
 - **T108** — Reload (r) initializes the new services before injecting the UI logger, so clone/fetch/init output and warn...
 - **T109** — Docs/help drift: README and the help modal say Esc quits, but the main screen ignores Esc; README quick sta...
 - **T113** — NODE_ENV=test silently disables the cross-process lock, and the e2e double-run test (spawning dist under th...
@@ -85,7 +77,7 @@ green suite. The last entry belongs to the cluster still in flight above:
 - **T114** — The README promised a catchable SIGTERM the code did not honour; `cleanup()` reported what it *enumerated*, not what it *signalled*; a `timeoutMs` above 2^31-1 silently became a ~1 ms timeout.
 - **T112** — A signal-killed launcher was silently dropped (`code === null`), and `GUI_FORCING_FLAGS` was unscoped, so `emacs -nw -g` still spawned a window.
 - **T25+T88+T106** — The central claim was false: `refresh()` bypassed the TTL but not the in-flight map, so the header's disk total could inherit a walk that began before the force clean that prompted it. Reproduced 5/5 on a real 151k-path tree, overstating by 42-46 MB.
-- **T41+T45+T46** — The cycle refcount gated only the `setStatus` channel; `recordSyncOutcome` reached the UI's idle state through `updateLastSyncTime`, so the first cycle to finish still wiped the other's progress rows — the item's headline failure, and a regression against the parent. Every new test watched the service's event stream rather than what the user sees, which is why it passed.
+- **T41+T45+T46** — The cycle refcount gated only the `setStatus` channel, so `recordSyncOutcome` still reached the UI's idle state through `updateLastSyncTime` and the first cycle to finish wiped the other's progress rows — the item's headline failure, and a regression against the parent. Every new test watched the service's event stream rather than the rendered frame, which is why it passed. Two further finds: a test mock resolved an object where the real function resolves a string, silently unmounting the App mid-test and making every later frame assertion vacuous; and T45's loader guard was pinned by nothing, because every test passed one stable function as the loader while the real caller passes a new arrow on every render.
 
 ## Follow-ups
 

@@ -233,19 +233,32 @@ describe("App", () => {
   });
 
   describe("updateLastSyncTime functionality", () => {
-    it("should update last sync time and set status to idle", async () => {
-      const { lastFrame } = render(<App {...defaultProps} />);
+    // The stamp is not the end of the sync. The service emits it from inside a
+    // cycle, and with cycles overlapping, the one that stamps is not
+    // necessarily the last one out: ending the sync here put the bar back to
+    // `Running` and took another cycle's progress rows off the screen mid-fetch.
+    it("does not end the sync or clear the progress rows when the last sync time is stamped", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
 
       await waitForStateUpdate();
 
       appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "repo-a", phase: "fetch", message: "fetch receiving: 40%" });
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Syncing...");
+      expect(lastFrame()).toContain("[repo-a] fetch receiving: 40%");
 
       appEvents.emit("updateLastSyncTime");
       await waitForStateUpdate();
+      expect(lastFrame()).toContain("Syncing...");
+      expect(lastFrame()).toContain("[repo-a] fetch receiving: 40%");
+      expect(lastFrame()).not.toContain("N/A");
+
+      // `setStatus` is the one gate, and it still ends it.
+      appEvents.emit("setStatus", "idle");
+      await waitForStateUpdate();
       expect(lastFrame()).toContain("Running");
-      expect(lastFrame()).not.toContain("Syncing...");
+      expect(lastFrame()).not.toContain("[repo-a] fetch receiving: 40%");
     });
 
     it("should show last sync time after update", async () => {
@@ -639,6 +652,106 @@ describe("App", () => {
       expect(frame).toContain("First log");
       expect(frame).toContain("Second log");
       expect(frame).toContain("Third log");
+    });
+
+    // A message with newlines in it rendered as several rows out of a panel
+    // that had budgeted one, which is how the frame grew past the terminal.
+    it("splits a multi-line message into one entry per line", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Synchronization finished.\nElapsed: 1.2s", level: "info" });
+      await waitForStateUpdate();
+
+      const frame = lastFrame();
+      expect(frame).toContain("Synchronization finished.");
+      expect(frame).toContain("Elapsed: 1.2s");
+      expect(frame).toContain("(2 entries)");
+    });
+
+    // A terminator is not a line of its own: the panel would spend a row on it.
+    it("does not turn a trailing newline into an empty entry", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Synchronization finished.\n", level: "info" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("(1 entries)");
+      // One entry and one row: the newline that used to survive into the entry
+      // rendered as a second row and pushed the frame past the terminal.
+      expect(lastFrame()!.split("\n")).toHaveLength(24);
+    });
+
+    // Nor a leading one, and both multi-line producers open with one:
+    // `Logger.table` wraps its content in newlines at both ends, and the sync
+    // failure line starts with one.
+    it("does not turn a leading newline into an empty entry", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "\nphase\tms\nfetch\t1200\n", level: "info" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("(2 entries)");
+      expect(lastFrame()).toContain("fetch");
+    });
+  });
+
+  // The frame is sized to the terminal: one row over and Ink stops rendering
+  // incrementally, clears the whole screen on every render and scrolls the top
+  // row out of view.
+  describe("frame height", () => {
+    it("fills exactly the terminal height once the log panel is full", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      for (let i = 0; i < 100; i++) {
+        appEvents.emit("addLog", { message: `Log line ${i}`, level: "info" });
+      }
+      await waitForStateUpdate();
+
+      const frame = lastFrame()!;
+      expect(frame.split("\n")).toHaveLength(24);
+      expect(frame).toContain("📋 Logs");
+      expect(frame).toContain("uit");
+    });
+
+    it("stays at the terminal height while syncing with progress rows", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
+
+      await waitForStateUpdate();
+
+      for (let i = 0; i < 100; i++) {
+        appEvents.emit("addLog", { message: `Log line ${i}`, level: "info" });
+      }
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "repo-a", phase: "fetch", message: "fetch receiving" });
+      await waitForStateUpdate();
+
+      const frame = lastFrame()!;
+      expect(frame).toContain("[repo-a] fetch receiving");
+      expect(frame.split("\n")).toHaveLength(24);
+    });
+
+    it("stays at the terminal height when a log entry carries newlines", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+
+      await waitForStateUpdate();
+
+      for (let i = 0; i < 100; i++) {
+        appEvents.emit("addLog", { message: `Log line ${i}`, level: "info" });
+      }
+      appEvents.emit("addLog", { message: "phase\ttook\nfetch\t1.2s\nprune\t0.3s\ncreate\t2.0s", level: "info" });
+      await waitForStateUpdate();
+
+      const frame = lastFrame()!;
+      expect(frame.split("\n")).toHaveLength(24);
+      expect(frame).toContain("📋 Logs");
     });
   });
   describe("mouse wheel", () => {

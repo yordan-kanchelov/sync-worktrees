@@ -154,6 +154,15 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [entryFilter, setEntryFilter] = useState("");
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  // What ends the "not loaded yet" state is a load that finished, not a
+  // non-empty list: a repo with no worktrees (clone mode before the first sync)
+  // and one whose every status probe rejected both leave the list at [], and
+  // keying the effect on `entries.length === 0` re-fired the loader on every
+  // commit for as long as the modal stayed open -- a git spawn and a readdir of
+  // .diverged per round trip, forever. Keyed by repository index so picking
+  // another project still loads exactly once, and reset when ESC goes back to
+  // that choice.
+  const loadedForRepoRef = useRef<number | null>(null);
   const [repoDiskUsage, setRepoDiskUsage] = useState<Record<number, RepositoryDiskUsageState>>({});
   const requestedDiskUsageRef = useRef<Set<number>>(new Set());
   const mountedRef = useRef(true);
@@ -266,11 +275,17 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     }
   }, [repositories, getRepositoryDiskUsage]);
 
+  // One loader call per selected repository, from one place. `loadStatus` is a
+  // fresh function on every App render (getWorktreeStatusForRepo is an arrow in
+  // App's JSX), so this effect runs constantly; the ref is what makes that
+  // free.
   useEffect(() => {
-    if (step === "VIEW_STATUS" && entries.length === 0 && !loading && selectedRepoIndexRef.current >= 0) {
-      void loadStatus(selectedRepoIndexRef.current);
-    }
-  }, [step, entries.length, loading, loadStatus]);
+    const repoIndex = selectedRepoIndexRef.current;
+    if (step !== "VIEW_STATUS" || repoIndex < 0) return;
+    if (loadedForRepoRef.current === repoIndex) return;
+    loadedForRepoRef.current = repoIndex;
+    void loadStatus(repoIndex);
+  }, [step, loadStatus]);
 
   const navigateUp = useCallback(() => {
     setSelectedEntryIndex((prev) => {
@@ -342,6 +357,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
           setExpandedEntry(null);
           setConfirmDelete(null);
           selectedRepoIndexRef.current = -1;
+          loadedForRepoRef.current = null;
           setStep("SELECT_PROJECT");
         } else {
           onClose();
@@ -361,8 +377,10 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
           selectedRepoIndexRef.current = selectedRepo.index;
+          // The effect owns the call; this only keeps the first frame of the
+          // next step from claiming there are no worktrees before it runs.
+          setLoading(true);
           setStep("VIEW_STATUS");
-          void loadStatus(selectedRepo.index);
         }
       } else if (key.backspace || key.delete) {
         setProjectFilter((prev) => prev.slice(0, -1));

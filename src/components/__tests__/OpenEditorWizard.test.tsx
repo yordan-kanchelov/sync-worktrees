@@ -319,6 +319,138 @@ describe("OpenEditorWizard", () => {
     });
   });
 
+  // An async loader that returns [] is a legitimate answer (clone mode before
+  // the first sync), not a reason to ask again: the effect used to re-fire on
+  // every commit where the list was still empty, so the modal spun git spawns
+  // and renders for as long as it stayed open.
+  describe("empty worktree list", () => {
+    const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+    it("loads once and stays on the empty state", async () => {
+      const getWorktreesForRepo = vi.fn(async () => {
+        await delay(20);
+        return [];
+      });
+      const { lastFrame } = render(
+        <OpenEditorWizard
+          {...defaultProps}
+          repositories={[{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }]}
+          getWorktreesForRepo={getWorktreesForRepo}
+        />,
+      );
+
+      await delay(500);
+
+      expect(getWorktreesForRepo).toHaveBeenCalledTimes(1);
+      expect(lastFrame()).toContain("No worktrees found");
+    });
+
+    // The loop the guard is actually for. `App` passes `getWorktreesForRepo` as
+    // an arrow written in its JSX, so the prop -- and with it the `useCallback`
+    // that wraps it and the effect that depends on that -- is a new identity on
+    // every App render, and App re-renders on every log line. A test that hands
+    // the wizard one stable `vi.fn()` never re-runs the effect at all and would
+    // pass with no guard in place.
+    it("loads once although the loader prop is a new function on every render", async () => {
+      const load = vi.fn(async (repoIndex: number) => {
+        expect(repoIndex).toBe(0);
+        await delay(20);
+        return [];
+      });
+      const props = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      };
+      const { rerender, lastFrame } = render(
+        <OpenEditorWizard {...props} getWorktreesForRepo={(index) => load(index)} />,
+      );
+
+      for (let i = 0; i < 10; i++) {
+        rerender(<OpenEditorWizard {...props} getWorktreesForRepo={(index) => load(index)} />);
+        await delay(20);
+      }
+
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(lastFrame()).toContain("No worktrees found");
+    });
+
+    // The loader runs from an effect, which is a commit later than the
+    // keystroke: without a loading state of its own that first frame says there
+    // are no worktrees, for a repository nothing has looked at yet.
+    it("does not flash the empty state between the keypress and the load", async () => {
+      const getWorktreesForRepo = vi.fn(async () => {
+        await delay(50);
+        return [];
+      });
+      const { stdin, frames } = render(
+        <OpenEditorWizard {...defaultProps} getWorktreesForRepo={getWorktreesForRepo} />,
+      );
+
+      stdin.write("\r");
+      await delay(20);
+      expect(frames.some((frame) => frame.includes("No worktrees found"))).toBe(false);
+
+      await delay(300);
+      expect(frames.some((frame) => frame.includes("No worktrees found"))).toBe(true);
+      // And there it stays: the empty state is the answer, not a sign that the
+      // load has not happened yet.
+      expect(getWorktreesForRepo).toHaveBeenCalledTimes(1);
+    });
+
+    // Going back to the project list forgets what was loaded, so the same
+    // repository can be opened again and is read again rather than showing the
+    // list the wizard cleared on the way out.
+    it("loads again when the same repository is picked a second time", async () => {
+      const getWorktreesForRepo = vi.fn(async () => {
+        await delay(20);
+        return [];
+      });
+      const { stdin, lastFrame } = render(
+        <OpenEditorWizard {...defaultProps} getWorktreesForRepo={getWorktreesForRepo} />,
+      );
+
+      stdin.write("\r");
+      await delay(300);
+      expect(getWorktreesForRepo).toHaveBeenCalledTimes(1);
+
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await delay(300);
+
+      expect(getWorktreesForRepo).toHaveBeenCalledTimes(2);
+      expect(getWorktreesForRepo).toHaveBeenLastCalledWith(0);
+      expect(lastFrame()).toContain("No worktrees found");
+    });
+
+    it("loads once more when another repository is selected", async () => {
+      const getWorktreesForRepo = vi.fn(async () => {
+        await delay(20);
+        return [];
+      });
+      const { stdin, lastFrame } = render(
+        <OpenEditorWizard {...defaultProps} getWorktreesForRepo={getWorktreesForRepo} />,
+      );
+
+      stdin.write("\r");
+      await delay(300);
+      expect(getWorktreesForRepo).toHaveBeenCalledTimes(1);
+      expect(getWorktreesForRepo).toHaveBeenLastCalledWith(0);
+
+      // ESC back to the project list, then pick the second repository.
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await delay(300);
+
+      expect(getWorktreesForRepo).toHaveBeenCalledTimes(2);
+      expect(getWorktreesForRepo).toHaveBeenLastCalledWith(1);
+      expect(lastFrame()).toContain("No worktrees found");
+    });
+  });
+
   describe("footer navigation hints", () => {
     it("should show navigation hints in selection steps", () => {
       const { lastFrame } = render(<OpenEditorWizard {...defaultProps} />);

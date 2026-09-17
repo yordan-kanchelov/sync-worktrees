@@ -35,6 +35,14 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   const [worktreeFilter, setWorktreeFilter] = useState("");
   const [loading, setLoading] = useState(false);
   const [openAction, setOpenAction] = useState<OpenAction>("terminal");
+  // What ends the "not loaded yet" state is a load that finished, not a
+  // non-empty list: a repo with no worktrees (clone mode before the first sync,
+  // a status probe that rejected for every entry) legitimately returns [], and
+  // keying the effect on `worktrees.length === 0` re-fired the loader on every
+  // commit for as long as the modal stayed open -- one `git worktree list` per
+  // round trip, forever. Keyed by repository index so picking another project
+  // still loads exactly once, and reset when ESC goes back to that choice.
+  const loadedForRepoRef = useRef<number | null>(null);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -66,11 +74,17 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     [getWorktreesForRepo],
   );
 
+  // One loader call per selected repository, from one place. `loadWorktrees` is
+  // a fresh function on every App render (getWorktreesForRepo is an arrow in
+  // App's JSX), so this effect runs constantly; the ref is what makes that
+  // free.
   useEffect(() => {
-    if (step === "SELECT_WORKTREE" && worktrees.length === 0 && !loading && selectedRepoIndexRef.current >= 0) {
-      void loadWorktrees(selectedRepoIndexRef.current);
-    }
-  }, [step, worktrees.length, loading, loadWorktrees]);
+    const repoIndex = selectedRepoIndexRef.current;
+    if (step !== "SELECT_WORKTREE" || repoIndex < 0) return;
+    if (loadedForRepoRef.current === repoIndex) return;
+    loadedForRepoRef.current = repoIndex;
+    void loadWorktrees(repoIndex);
+  }, [step, loadWorktrees]);
 
   const handleOpen = () => {
     const worktree = filteredWorktrees[selectedWorktreeIndex];
@@ -104,6 +118,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
           setWorktrees([]);
           setWorktreeFilter("");
           selectedRepoIndexRef.current = -1;
+          loadedForRepoRef.current = null;
           setStep("SELECT_PROJECT");
         } else {
           onClose();
@@ -123,8 +138,10 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
           selectedRepoIndexRef.current = selectedRepo.index;
+          // The effect owns the call; this only keeps the first frame of the
+          // next step from claiming there are no worktrees before it runs.
+          setLoading(true);
           setStep("SELECT_WORKTREE");
-          void loadWorktrees(selectedRepo.index);
         }
       } else if (key.backspace || key.delete) {
         setProjectFilter((prev) => prev.slice(0, -1));

@@ -179,11 +179,12 @@ describe("LogPanel", () => {
       await waitForStateUpdate();
       expect(lastFrame()).not.toContain("(auto)");
 
-      // 7 visible lines -> 27, so the last 27 entries now fit on screen.
+      // 5 visible lines -> 25 (the panel reserves both indicator rows inside
+      // its height), so the last 25 entries now fit on screen.
       rerender(<LogPanel {...defaultProps} logs={manyLogs()} height={30} />);
       await waitForStateUpdate();
 
-      expect(lastFrame()).toContain("Log 13");
+      expect(lastFrame()).toContain("Log 15");
       expect(lastFrame()).toContain("Log 39");
     });
 
@@ -278,6 +279,95 @@ describe("LogPanel", () => {
       await waitForStateUpdate();
 
       expect(lastFrame()).toEqual(initialFrame);
+    });
+  });
+
+  // Row counts, not content: the panel's own tests all asserted what was on
+  // screen, which stayed true while the frame was one or two rows taller than
+  // the height it was handed. That surplus is what pushed the App frame past
+  // the terminal and made Ink clear and repaint the whole screen every render.
+  describe("height budget", () => {
+    const ESC = String.fromCharCode(27);
+    const wheelUp = `${ESC}[<64;10;5M`;
+    const manyLogs = (): LogEntry[] => Array.from({ length: 40 }, (_, i) => createLog(`${i}`, `Log ${i}`));
+
+    it("renders exactly `height` rows while following the tail", async () => {
+      const { lastFrame } = render(<LogPanel {...defaultProps} logs={manyLogs()} height={10} />);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("more above");
+      expect(lastFrame()!.split("\n")).toHaveLength(10);
+      // Clipping a row that was never budgeted for is not the same as fitting:
+      // the indicator lands on top of the header and takes it with it.
+      expect(lastFrame()).toContain("📋 Logs");
+      expect(lastFrame()).toContain("(40 entries)");
+      expect(lastFrame()).toContain("Log 39");
+    });
+
+    it("renders exactly `height` rows when parked between both indicators", async () => {
+      const { stdin, lastFrame } = render(<LogPanel {...defaultProps} logs={manyLogs()} height={10} />);
+      await waitForStateUpdate();
+
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+
+      // Both indicator rows are on screen — the case that used to cost two rows.
+      expect(lastFrame()).toContain("more above");
+      expect(lastFrame()).toContain("more below");
+      expect(lastFrame()!.split("\n")).toHaveLength(10);
+      expect(lastFrame()).toContain("📋 Logs");
+      expect(lastFrame()).toContain("(40 entries)");
+    });
+
+    // The budget can only count entries, so an entry that is several rows on
+    // its own (the `debug` timing table arrives as one message) still overruns
+    // it. App splits those at addLog; what the panel owes is that an
+    // unsplit one cannot reach past its own frame.
+    it("renders exactly `height` rows when an entry still carries newlines", async () => {
+      const table = ["phase        ms", "fetch      1200", "prune       300", "create     2000", "status      450"];
+      const logs = [...manyLogs(), createLog("multi", table.join("\n"))];
+      const { lastFrame } = render(<LogPanel {...defaultProps} logs={logs} height={10} />);
+      await waitForStateUpdate();
+
+      const rows = lastFrame()!.split("\n");
+      expect(rows).toHaveLength(10);
+      // Clipped, not bled: rows the budget did not predict are drawn over the
+      // panel's own bottom border unless the overflow is hidden.
+      expect(rows.at(-1)).toMatch(/^└─+┘$/);
+    });
+
+    it("keeps the budget at a height the App cannot shrink further", async () => {
+      const { lastFrame } = render(<LogPanel {...defaultProps} logs={manyLogs()} height={5} />);
+      await waitForStateUpdate();
+
+      const rows = lastFrame()!.split("\n");
+      expect(rows).toHaveLength(5);
+      expect(rows.at(-1)).toMatch(/^└─+┘$/);
+    });
+
+    // Three interior rows cannot hold a header, a log line and two indicators.
+    // Drawn anyway, the `more above` row landed on top of the header and left
+    // `↑ 33 more aboveries)` on screen; clipped instead, the reader would lose
+    // the `more below` count altogether. At this height the two counts share a
+    // row, so the header survives and neither count is dropped.
+    it("keeps the header and both counts at the App's minimum height", async () => {
+      const { stdin, lastFrame } = render(<LogPanel {...defaultProps} logs={manyLogs()} height={5} />);
+      await waitForStateUpdate();
+
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+      stdin.write(wheelUp);
+      await waitForStateUpdate();
+
+      const rows = lastFrame()!.split("\n");
+      expect(rows).toHaveLength(5);
+      expect(lastFrame()).toContain("📋 Logs");
+      expect(lastFrame()).toContain("(40 entries)");
+      expect(lastFrame()).toContain("more above");
+      expect(lastFrame()).toContain("more below");
+      expect(rows.at(-1)).toMatch(/^└─+┘$/);
     });
   });
 

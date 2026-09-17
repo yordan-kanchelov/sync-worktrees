@@ -305,7 +305,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 
 ### Batch 7 — TUI and process lifecycle
 
-- [ ] **T41** — Concurrent sync cycles share one TUI status flag: the first cycle to finish (cron
+- [x] **T41** — Concurrent sync cycles share one TUI status flag: the first cycle to finish (cron
   group, overlapping tick, or a fail-fast skip) flips the UI to idle, wipes the running cycle's
   progress rows and re-enables the `s`/`x`/`r` guards
 - [x] **T42** — Ctrl+C in the TUI unmounts Ink (default `exitOnCtrlC`) but never runs `destroy()`:
@@ -318,9 +318,9 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   the unsuffixed name, `createBranch` only detects local heads, `push -u` can silently fast-forward an
   existing remote branch, and a failed push leaves an orphan local branch that makes the next attempt
   create `<name>-1`
-- [ ] **T45** — OpenEditorWizard and WorktreeStatusView re-run their loader forever when it returns
+- [x] **T45** — OpenEditorWizard and WorktreeStatusView re-run their loader forever when it returns
   an empty list (no `loaded` guard), spinning React renders and git/fs calls while the modal is open
-- [ ] **T46** — LogPanel exceeds its height budget by 1-2 rows in the steady state (plus one row per
+- [x] **T46** — LogPanel exceeds its height budget by 1-2 rows in the steady state (plus one row per
   embedded newline), so the App frame is taller than the terminal and Ink falls back to a
   full-terminal clear on every render, scrolling the top row off
 - [x] **T25** — TUI worktree status view fans out getFullWorktreeStatus over every worktree with no
@@ -2007,7 +2007,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   moves an unregistered directory at the target path into trash, or `rm -rf`s it when trash is
   disabled.
 
-### [ ] T41. Concurrent sync cycles share one TUI status flag: the first cycle to finish (cron group, overlapping tick, or a fail-fast skip) flips the UI to idle, wipes the running cycle's progress rows and re-enables the `s`/`x`/`r` guards
+### [x] T41. Concurrent sync cycles share one TUI status flag: the first cycle to finish (cron group, overlapping tick, or a fail-fast skip) flips the UI to idle, wipes the running cycle's progress rows and re-enables the `s`/`x`/`r` guards
 
 - **Category**: correctness · **Subsystem**: tui
 - **Severity**: Medium · **Verification**: finder's evidence and code citations, not independently
@@ -2183,7 +2183,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   branch stays in the bare repo, so the next attempt with the same name is diverted to `<name>-1`
   while `<name>` is never pushed”.
 
-### [ ] T45. OpenEditorWizard and WorktreeStatusView re-run their loader forever when it returns an empty list (no `loaded` guard), spinning React renders and git/fs calls while the modal is open
+### [x] T45. OpenEditorWizard and WorktreeStatusView re-run their loader forever when it returns an empty list (no `loaded` guard), spinning React renders and git/fs calls while the modal is open
 
 - **Category**: performance · **Subsystem**: tui
 - **Severity**: Medium · **Verification**: finder's evidence and code citations, not independently
@@ -2218,7 +2218,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   getWorktreesForRepo in a tight loop (≈40 calls/s, each a `git worktree list` in worktree mode)
   whenever the selected repo has zero worktrees”.
 
-### [ ] T46. LogPanel exceeds its height budget by 1-2 rows in the steady state (plus one row per embedded newline), so the App frame is taller than the terminal and Ink falls back to a full-terminal clear on every render, scrolling the top row off
+### [x] T46. LogPanel exceeds its height budget by 1-2 rows in the steady state (plus one row per embedded newline), so the App frame is taller than the terminal and Ink falls back to a full-terminal clear on every render, scrolling the top row off
 
 - **Category**: performance · **Subsystem**: tui
 - **Severity**: Medium · **Verification**: finder's evidence and code citations, not independently

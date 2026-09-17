@@ -129,7 +129,11 @@ export class InteractiveUIService {
   private diskUsage: DiskUsageCache;
   private maxRepositories: number;
   private reloadInProgress = false;
-  private syncCycleInFlight = false;
+  // Which repositories a cycle currently owns, and how many cycles are running.
+  // Both are properties of the set of cycles in flight, not of whichever one
+  // happens to finish first -- see runSyncCycle.
+  private syncingServices = new Set<WorktreeSyncService>();
+  private activeSyncCycles = 0;
   private isDestroyed = false;
   private events: AppEventEmitter;
   private ownsEvents: boolean;
@@ -420,16 +424,28 @@ export class InteractiveUIService {
     }
     this.reloadInProgress = true;
     let cronJobsCancelled = false;
+    // A reload runs a sync of its own, so it is a cycle as far as the status
+    // bar is concerned — and it is not the only one that can be running. Both
+    // of its `idle`s used to be unconditional, which put whichever of the two
+    // finished first in a position to blank the other's progress rows and
+    // re-arm the `s`/`x`/`r` guards mid-fetch. Opened here rather than after
+    // the wait below, so that every exit from this method closes it exactly
+    // once — including the one that leaves because there is no config file.
+    this.beginSyncCycle();
+    let cycleOpen = true;
+    const closeCycle = (): void => {
+      if (!cycleOpen) return;
+      cycleOpen = false;
+      this.endSyncCycle();
+    };
     try {
       if (!this.configPath) {
-        this.setStatus("idle");
         return;
       }
 
       await this.waitForInProgressSyncs();
 
       this.addLog("Reloading configuration...");
-      this.setStatus("syncing");
 
       // Validate and load new config BEFORE canceling old cron jobs
       // to prevent a window with no cron running on validation failure
@@ -500,15 +516,22 @@ export class InteractiveUIService {
       this.events.emit("updateRepositoryCount", this.repositoryCount);
       this.events.emit("updateCronSchedule", this.cronSchedule);
 
+      // The reload's sync is a cycle like any other, so it claims the
+      // repositories it is about to sync. `setupCronJobs()` just above has
+      // already armed the new schedules, so a tick landing inside this await is
+      // routine — and without the claim it would reach clearRecordedSkips() for
+      // every repository the reload is syncing, which is the one thing the
+      // claim exists to prevent.
+      const claimed = this.claimForCycle(this.syncServices);
       const {
         failures,
         skipped,
         clonePhaseSkips: syncClonePhaseSkips,
         attempted,
-      } = await this.runSyncServices(this.syncServices);
+      } = await this.runSyncServices(claimed).finally(() => this.releaseFromCycle(claimed));
       const clonePhaseSkips = [...initClonePhaseSkips, ...syncClonePhaseSkips];
       await this.recordSyncOutcome({ failures, skipped, attempted });
-      this.setStatus("idle");
+      closeCycle();
 
       for (const skip of skipped) {
         this.addLog(`Sync skipped for '${skip.repo}': ${skip.reason}`, "warn");
@@ -530,8 +553,8 @@ export class InteractiveUIService {
       if (cronJobsCancelled) {
         this.setupCronJobs();
       }
-      this.setStatus("idle");
     } finally {
+      closeCycle();
       this.reloadInProgress = false;
     }
   }
@@ -1354,39 +1377,90 @@ export class InteractiveUIService {
     }
   }
 
+  private repoLabel(service: WorktreeSyncService): string {
+    return (service.config as RepositoryConfig).name || service.config.repoUrl;
+  }
+
+  // A cycle takes the repositories no other cycle holds, and leaves the rest to
+  // the cycle that holds them.
+  private claimForCycle(services: WorktreeSyncService[]): WorktreeSyncService[] {
+    const claimed = services.filter((service) => !this.syncingServices.has(service));
+    for (const service of claimed) {
+      this.syncingServices.add(service);
+    }
+    return claimed;
+  }
+
+  private releaseFromCycle(services: WorktreeSyncService[]): void {
+    for (const service of services) {
+      this.syncingServices.delete(service);
+    }
+  }
+
+  // Status is a property of the set of cycles in flight: the first one in says
+  // "syncing", and only the last one out says "idle".
+  private beginSyncCycle(): void {
+    this.activeSyncCycles += 1;
+    if (this.activeSyncCycles === 1) {
+      this.setStatus("syncing");
+    }
+  }
+
+  private endSyncCycle(): void {
+    if (this.activeSyncCycles > 0) {
+      this.activeSyncCycles -= 1;
+    }
+    if (this.activeSyncCycles === 0) {
+      this.setStatus("idle");
+    }
+  }
+
   private async runSyncCycle(
     services: WorktreeSyncService[],
     options: { logErrors: boolean },
   ): Promise<Array<{ repo: string; error: string }>> {
-    // One cycle at a time, per UI service. The daemon now starts a sync and
-    // arms the cron jobs in the same breath, so a tick landing inside the
-    // startup cycle is routine rather than the rare `s`-during-a-sync it used
-    // to be. WorktreeSyncService's repoMutex already refuses the second
-    // caller's work (`in_progress`), so nothing raced the repository itself —
-    // but the losing cycle still got far enough to do two things it should not:
-    // runSyncServices calls clearRecordedSkips() on every service before it
-    // learns it cannot run, wiping the clone-mode skips the in-flight cycle had
-    // accumulated (sync() clears that accumulator inside the lock precisely so
-    // a losing caller cannot truncate the winner's payload), and this method's
-    // `finally` drove the status back to "idle" and blanked the progress panel
-    // while the first cycle was still fetching. Skipping outright is what the
-    // tick means anyway: the work is already being done.
-    if (this.syncCycleInFlight) {
+    // Cycles overlap by design: the daemon starts a sync and arms the cron jobs
+    // in the same breath, node-cron leaves the next tick free to land inside a
+    // slow one, two schedules put two groups on the same minute, and `s` starts
+    // one by hand. Two things must not be shared across them.
+    //
+    // The repository is the first. WorktreeSyncService's repoMutex already
+    // refuses the second caller's work (`in_progress`), so nothing races the
+    // repository itself — but the losing cycle still got far enough to call
+    // clearRecordedSkips() on every service before it learned it could not run,
+    // wiping the clone-mode skips the in-flight cycle had accumulated (sync()
+    // clears that accumulator inside the lock precisely so a loser cannot
+    // truncate the winner's payload). So a cycle claims only the repositories
+    // no other cycle holds, and reports the rest as the skips they are —
+    // without which a second cron group would starve behind the first for as
+    // long as it ran.
+    //
+    // The status is the second. It belongs to the set of cycles in flight, not
+    // to whichever finishes first: driving it from this method's `finally`
+    // blanked a running cycle's progress rows and re-armed the `s`/`x`/`r`
+    // guards while that cycle was still fetching.
+    const claimed = this.claimForCycle(services);
+    if (claimed.length === 0) {
       this.addLog("A sync is already running; skipping this cycle.", "info");
       return [];
     }
-    this.syncCycleInFlight = true;
-    this.setStatus("syncing");
+    const claimedSet = new Set(claimed);
+    const deferred = services
+      .filter((service) => !claimedSet.has(service))
+      .map((service) => ({ repo: this.repoLabel(service), reason: "sync skipped: in_progress" }));
+
+    this.beginSyncCycle();
 
     try {
-      const { failures, skipped, partialSkips, clonePhaseSkips, attempted } = await this.runSyncServices(services);
+      const { failures, skipped, partialSkips, clonePhaseSkips, attempted } = await this.runSyncServices(claimed);
+      const allSkipped = [...deferred, ...skipped];
 
       if (options.logErrors) {
         for (const failure of failures) {
           this.addLog(`Failed to sync repository '${failure.repo}': ${failure.error}`, "error");
         }
       }
-      for (const skip of skipped) {
+      for (const skip of allSkipped) {
         this.addLog(`Sync skipped for '${skip.repo}': ${skip.reason}`, "warn");
       }
       for (const skip of clonePhaseSkips) {
@@ -1399,11 +1473,11 @@ export class InteractiveUIService {
         this.addLog(`${partial.repo}: ${partial.reason}`, "info");
       }
 
-      await this.recordSyncOutcome({ failures, skipped, attempted });
+      await this.recordSyncOutcome({ failures, skipped: allSkipped, attempted: attempted + deferred.length });
       return failures;
     } finally {
-      this.setStatus("idle");
-      this.syncCycleInFlight = false;
+      this.releaseFromCycle(claimed);
+      this.endSyncCycle();
     }
   }
 
@@ -1428,22 +1502,34 @@ export class InteractiveUIService {
   }> {
     const syncResults = await Promise.allSettled(
       services.map((service) => {
-        const repoName = (service.config as RepositoryConfig).name || service.config.repoUrl;
+        const repoName = this.repoLabel(service);
         return this.limit(async () => {
           service.clearRecordedSkips();
+          // A sync that fail-fasted never owned this repository, so it has no
+          // progress row of its own to close: the row on screen belongs to
+          // whoever does own it — another cycle, another process, an
+          // interactive operation holding the repo mutex — and `completed`
+          // would take that row away mid-fetch. Everything else, including a
+          // sync that threw, still has to close its row.
+          let ownedProgressRow = true;
           try {
             if (!service.isInitialized()) {
               await service.initialize();
             }
             const result = await service.sync();
+            if (result?.started === false) {
+              ownedProgressRow = false;
+            }
             return { service, result };
           } finally {
-            this.events.emit("setSyncProgress", {
-              repo: repoName,
-              phase: "complete",
-              message: "Finished",
-              completed: true,
-            });
+            if (ownedProgressRow) {
+              this.events.emit("setSyncProgress", {
+                repo: repoName,
+                phase: "complete",
+                message: "Finished",
+                completed: true,
+              });
+            }
           }
         }).catch((error) => {
           throw Object.assign(error instanceof Error ? error : new Error(String(error)), { repoName });
@@ -1457,7 +1543,7 @@ export class InteractiveUIService {
     const clonePhaseSkips: Array<{ repo: string; reason: string }> = [];
     for (let i = 0; i < syncResults.length; i++) {
       const result = syncResults[i];
-      const repoName = (services[i].config as RepositoryConfig).name || services[i].config.repoUrl;
+      const repoName = this.repoLabel(services[i]);
       if (result.status === "rejected") {
         const fallbackName = (result.reason as { repoName?: string })?.repoName ?? repoName;
         const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
