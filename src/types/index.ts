@@ -343,12 +343,15 @@ export interface Config {
    * ConfigLoaderService.resolveRepositoryConfig when it is given the full
    * repository list — not a user-facing field.
    *
-   * Its one consumer is the `filesToCopyOnBranchCreate` expansion, which globs
-   * the config file's directory and must not read out of another repository's
-   * checkout; see FileCopyOptions.excludeDirs. A config the loader cannot see
-   * the whole of (a hand-built Config, a single repository resolved on its own)
-   * leaves this unset, and the copy falls back to excluding the destination and
-   * this repository's own directories, plus the name-based defaults.
+   * Its one consumer is the `filesToCopyOnBranchCreate` expansion, which must
+   * not read out of another repository's checkout whichever directory it is
+   * pointed at: the base branch's worktree in worktree mode, the config file's
+   * own directory in clone mode — the layout that made this list necessary,
+   * since there that directory is the parent of every checkout. See
+   * FileCopyOptions.excludeDirs. A config the loader cannot see the whole of (a
+   * hand-built Config, a single repository resolved on its own) leaves this
+   * unset, and the copy falls back to excluding the destination and this
+   * repository's own directories, plus the name-based defaults.
    */
   __configuredRepoDirs?: string[];
 }

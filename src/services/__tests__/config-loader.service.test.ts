@@ -2688,6 +2688,52 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
     });
   });
 
+  describe("filesToCopyOnBranchCreate validation", () => {
+    const withPatterns = (patterns: string) => `
+        export default {
+          repositories: [{
+            name: "test-repo",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "./worktrees",
+            filesToCopyOnBranchCreate: ${patterns}
+          }]
+        };
+      `;
+
+    it("rejects a leading '!' and says what it means here instead", async () => {
+      // sparseCheckout.exclude gives '!' the gitignore meaning; the copy
+      // expands with negation off, so the same entry would quietly look inside
+      // a directory named '!node_modules' and report zero matches.
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(configPath, withPatterns(`["!node_modules/**"]`));
+
+      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+        "'filesToCopyOnBranchCreate' in Repository 'test-repo' does not support '!' negation (invalid at index 0: " +
+          "'!node_modules/**'). Every entry names files to copy; there is nothing to subtract from. Unlike " +
+          "'sparseCheckout.exclude', a leading '!' here is part of the filename -- to name a file whose name " +
+          "starts with it, escape the '!' ('\\\\!node_modules/**' in a JavaScript config file).",
+      );
+    });
+
+    it("accepts the escaped spelling of a filename that starts with '!'", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(configPath, withPatterns(`["\\\\!important.json"]`));
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.repositories[0].filesToCopyOnBranchCreate).toEqual(["\\!important.json"]);
+    });
+
+    it("accepts a leading extglob, which glob reads as one", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(configPath, withPatterns(`["!(dist)/.env"]`));
+
+      const config = await configLoader.loadConfigFile(configPath);
+
+      expect(config.repositories[0].filesToCopyOnBranchCreate).toEqual(["!(dist)/.env"]);
+    });
+  });
+
   describe("hooks configuration validation", () => {
     it("should accept valid hooks configuration in repository", async () => {
       const configPath = path.join(tempDir, "config.js");

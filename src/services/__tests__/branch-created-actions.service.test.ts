@@ -59,6 +59,58 @@ describe("BranchCreatedActionsService.copyFiles", () => {
     });
   });
 
+  describe("zero-match diagnostic", () => {
+    const runWith = async (result: {
+      copied: string[];
+      skipped: string[];
+      errors: { file: string; error: string }[];
+    }) => {
+      const lines: Array<{ message: string; level: string }> = [];
+      const fileCopyService = new FileCopyService();
+      vi.spyOn(fileCopyService, "copyFiles").mockResolvedValue(result);
+
+      await new BranchCreatedActionsService(fileCopyService).copyFiles({
+        config: makeConfig({ filesToCopyOnBranchCreate: ["build/local.settings.json", ".npmrc"] }),
+        branchName: "feature",
+        worktreePath: "/ws/api/feature",
+        sourceDir: "/ws/api/main",
+        logger: new Logger({ outputFn: (message, level) => void lines.push({ message, level }) }),
+      });
+
+      return lines;
+    };
+
+    it("names the patterns and the directory they were resolved against when nothing matched", async () => {
+      const lines = await runWith({ copied: [], skipped: [], errors: [] });
+
+      expect(lines).toEqual([
+        {
+          level: "info",
+          message:
+            "📋 Copy for 'feature' matched 0 files for patterns [build/local.settings.json, .npmrc] in /ws/api/main",
+        },
+      ]);
+    });
+
+    it("says nothing about zero matches when a file was copied", async () => {
+      const lines = await runWith({ copied: [".npmrc"], skipped: [], errors: [] });
+
+      expect(lines.map((line) => line.message)).toEqual(["📋 Copied 1 file(s) to 'feature': .npmrc"]);
+    });
+
+    it("says nothing about zero matches when every match was already at the destination", async () => {
+      const lines = await runWith({ copied: [], skipped: [".npmrc"], errors: [] });
+
+      expect(lines).toEqual([]);
+    });
+
+    it("says nothing about zero matches when the patterns failed to expand", async () => {
+      const lines = await runWith({ copied: [], skipped: [], errors: [{ file: ".npmrc", error: "EACCES" }] });
+
+      expect(lines.map((line) => line.level)).toEqual(["warn", "warn"]);
+    });
+  });
+
   describe("on a real tree", () => {
     let tempDir: string;
 

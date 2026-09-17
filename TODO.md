@@ -355,13 +355,13 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
   config, and completion logs omit which hook finished
 - [ ] **T115** — Repository initialization failures are logged without the repository name in both
   runOnce and reload paths, so with parallel init the user cannot tell which repo failed
-- [ ] **T116** — FileCopyService silently applies a hard-coded ignore list (dist/, build/, .next/,
+- [x] **T116** — FileCopyService silently applies a hard-coded ignore list (dist/, build/, .next/,
   coverage/, …) even to explicit file patterns, swallows glob errors, and a zero-match copy produces
   no log line at all
 - [x] **T117** — Reload/cancel stops cron tasks with `stop()` but never `destroy()`s them; node-cron
   v4's module-level registry retains every stopped task (and, through its closure, every previous
   generation of WorktreeSyncService instances) for the life of the daemon
-- [ ] **T48** — Docs drift: README says hooks/file copy run for every newly created worktree and
+- [x] **T48** — Docs drift: README says hooks/file copy run for every newly created worktree and
   that copy globs resolve relative to the config directory; in code both fire only from the TUI branch
   wizard, and the TUI copies from the base-branch worktree (clone mode: config dir) — sync- and
   MCP-created worktrees never get either
@@ -2306,7 +2306,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   (already used for the audit log) or next to the target directory, and use `~/.local/state` rather
   than `~/.cache` for the fallback.
 
-### [ ] T48. Docs drift
+### [x] T48. Docs drift
 
 - **Decision**: **correct the documentation to match the code** rather than widening the feature -- running user shell commands unattended on every cron tick and over MCP is a materially different security posture than running them when a person clicks. Also log when a copy pass matches zero files, so the misconfiguration stops being silent.: README says hooks/file copy run for every newly created worktree and that copy globs resolve relative to the config directory; in code both fire only from the TUI branch wizard, and the TUI copies from the base-branch worktree (clone mode: config dir) — sync- and MCP-created worktrees never get either
 
@@ -4431,7 +4431,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: Round-1 #9/#23 are about branch/path context in sync-phase skips; init
   failures were not covered.
 
-### [ ] T116. FileCopyService silently applies a hard-coded ignore list (dist/, build/, .next/, coverage/, …) even to explicit file patterns, swallows glob errors, and a zero-match copy produces no log line at all
+### [x] T116. FileCopyService silently applies a hard-coded ignore list (dist/, build/, .next/, coverage/, …) even to explicit file patterns, swallows glob errors, and a zero-match copy produces no log line at all
 
 - **Category**: workflow · **Subsystem**: process
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

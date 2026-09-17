@@ -1147,6 +1147,22 @@ export class ConfigLoaderService {
           `'filesToCopyOnBranchCreate' in ${context} must contain only non-empty strings (invalid at index ${i})`,
         );
       }
+      // The copy expands with negation turned off, so a leading `!` is a
+      // filename character here -- while the neighbouring `sparseCheckout`
+      // option does give it the gitignore meaning. Carrying that idiom across
+      // otherwise buys silence: the entry then names something whose own name
+      // begins with `!`, nothing of the sort is there, and the pass reports
+      // zero matches without saying why. An extglob (`!(dist)/x`) is left
+      // alone: glob reads it as one, and the expansion measures it against the
+      // default ignore names like any other pattern that wanders.
+      if (pattern.startsWith("!") && !pattern.startsWith("!(")) {
+        throw new Error(
+          `'filesToCopyOnBranchCreate' in ${context} does not support '!' negation (invalid at index ${i}: ` +
+            `'${pattern}'). Every entry names files to copy; there is nothing to subtract from. ` +
+            `Unlike 'sparseCheckout.exclude', a leading '!' here is part of the filename -- to name a file ` +
+            `whose name starts with it, escape the '!' ('\\\\!${pattern.slice(1)}' in a JavaScript config file).`,
+        );
+      }
     }
   }
 

@@ -214,6 +214,133 @@ describe("FileCopyService", () => {
       expect(result.copied).toEqual(["src.md"]);
     });
 
+    it("copies a literal path out of an ignored directory while a magic pattern still skips it", async () => {
+      // The default names are there for the pattern that wanders. A path the
+      // config file spelled in full wanders nowhere, and answering it with
+      // silence because a directory on the way is called `build` overrides the
+      // only person who knows what that file is.
+      await fs.mkdir(path.join(sourceDir, "build"), { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "build", "local.settings.json"), "literal");
+      await fs.writeFile(path.join(sourceDir, "app.json"), "root");
+
+      const literal = await service.copyFiles(sourceDir, destDir, ["build/local.settings.json"]);
+      expect(literal.copied).toEqual(["build/local.settings.json"]);
+      await expect(fs.readFile(path.join(destDir, "build", "local.settings.json"), "utf-8")).resolves.toBe("literal");
+
+      const magic = await service.copyFiles(sourceDir, path.join(tempDir, "dest-magic"), ["**/*.json"]);
+      expect(magic.copied).toEqual(["app.json"]);
+    });
+
+    it("copies a literal path out of a bookkeeping directory the walk would never enter", async () => {
+      await fs.mkdir(path.join(sourceDir, "coverage"), { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "coverage", ".nycrc"), "{}");
+
+      const result = await service.copyFiles(sourceDir, destDir, ["coverage/.nycrc"]);
+
+      expect(result.copied).toEqual(["coverage/.nycrc"]);
+    });
+
+    it("reads a one-character class as the class glob makes of it, and the escaped form as the name", async () => {
+      // glob's own hasMagic is the verdict, so "magic-free" means what the
+      // expansion will do with the string, not whether it holds a character
+      // that can be magic: `a[1].json` can only produce `a1.json`, which is why
+      // it counts as magic-free -- and glob still reads it as a class.
+      await fs.mkdir(path.join(sourceDir, "build"), { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "build", "a1.json"), "class");
+      await fs.writeFile(path.join(sourceDir, "build", "a[1].json"), "brackets");
+
+      const asClass = await service.copyFiles(sourceDir, destDir, ["build/a[1].json"]);
+      expect(asClass.copied).toEqual(["build/a1.json"]);
+
+      const asName = await service.copyFiles(sourceDir, path.join(tempDir, "dest-escaped"), ["build/a\\[1\\].json"]);
+      expect(asName.copied).toEqual(["build/a[1].json"]);
+    });
+
+    it("applies the default names to a leading extglob, which spells no path at all", async () => {
+      // `!(dist)/.env` names every top-level directory except one, so it is the
+      // wandering kind however little punctuation it looks like it has. The
+      // verdict has to be taken under the options glob expands with, or this
+      // pattern reads as a negated literal `(dist)/.env`, is handed the empty
+      // ignore set, and then walks the dependency tree and the bare repository
+      // on the strength of having named nothing.
+      for (const dir of ["node_modules", ".bare", "dist", "api"]) {
+        await fs.mkdir(path.join(sourceDir, dir), { recursive: true });
+        await fs.writeFile(path.join(sourceDir, dir, ".env"), dir);
+      }
+
+      const result = await service.copyFiles(sourceDir, destDir, ["!(dist)/.env"]);
+
+      expect(result.copied).toEqual(["api/.env"]);
+      await expect(fs.stat(path.join(destDir, "node_modules", ".env"))).rejects.toThrow();
+      await expect(fs.stat(path.join(destDir, ".bare", ".env"))).rejects.toThrow();
+    });
+
+    it("applies the default names to a wandering pattern that starts with a '#'", async () => {
+      // The other half of taking the verdict under glob's own parse: glob
+      // expands with comments off, so `#cache/...` is a directory name here and
+      // not the start of a comment. Read as a comment the pattern would be
+      // magic-free -- and glob would walk it anyway.
+      await fs.mkdir(path.join(sourceDir, "#cache", "node_modules"), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, "#cache", "keep"), { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "#cache", "node_modules", ".env"), "dependency");
+      await fs.writeFile(path.join(sourceDir, "#cache", "keep", ".env"), "kept");
+
+      const result = await service.copyFiles(sourceDir, destDir, ["#cache/**/.env"]);
+
+      expect(result.copied).toEqual(["#cache/keep/.env"]);
+    });
+
+    it("treats a brace pattern as the paths it spells, one per alternative", async () => {
+      // Brace expansion turns one string into a fixed list of strings, and each
+      // entry of that list is as spelled-out as a pattern with no braces at
+      // all: two paths the config file named on one line.
+      await fs.mkdir(path.join(sourceDir, "build"), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, "dist"), { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "build", "x.json"), "build");
+      await fs.writeFile(path.join(sourceDir, "dist", "x.json"), "dist");
+
+      const result = await service.copyFiles(sourceDir, destDir, ["{build,dist}/x.json"]);
+
+      expect(result.copied.sort()).toEqual(["build/x.json", "dist/x.json"]);
+    });
+
+    it("applies the default names to a brace pattern as soon as one alternative wanders", async () => {
+      await fs.mkdir(path.join(sourceDir, "build"), { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "build", "b.json"), "swallowed");
+      await fs.writeFile(path.join(sourceDir, "a.json"), "kept");
+
+      const result = await service.copyFiles(sourceDir, destDir, ["{a.json,**/b.json}"]);
+
+      expect(result.copied).toEqual(["a.json"]);
+    });
+
+    it("names a file whose name starts with ! when the ! is escaped", async () => {
+      // glob expands with `nonegate`, so a leading `!` is a filename character
+      // here and not the negation `sparseCheckout.exclude` gives it. The
+      // config loader rejects the unescaped spelling all the same -- in a
+      // config file it far more often means the negation -- so this escaped
+      // one is what names the file.
+      await fs.writeFile(path.join(sourceDir, "!important.json"), "bang");
+
+      const result = await service.copyFiles(sourceDir, destDir, ["\\!important.json"]);
+
+      expect(result.copied).toEqual(["!important.json"]);
+    });
+
+    it("reports a pattern too long to parse instead of throwing out of the copy", async () => {
+      // The verdict is taken on the way into the expansion, and minimatch
+      // refuses a pattern over 64 KiB. Both are inside the reporting, so an
+      // unexpandable pattern is a named error and the rest of the list is still
+      // expanded.
+      await fs.writeFile(path.join(sourceDir, ".npmrc"), "registry=");
+      const tooLong = "a".repeat(70000);
+
+      const result = await service.copyFiles(sourceDir, destDir, [tooLong, ".npmrc"]);
+
+      expect(result.errors).toEqual([{ file: tooLong, error: "pattern is too long" }]);
+      expect(result.copied).toEqual([".npmrc"]);
+    });
+
     it("should ignore the directories this tool creates for its own bookkeeping", async () => {
       for (const dir of [".bare/tools", ".trash/abc/payload", ".removed/old", ".diverged/old"]) {
         await fs.mkdir(path.join(sourceDir, dir), { recursive: true });

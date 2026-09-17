@@ -48,6 +48,17 @@ export class BranchCreatedActionsService {
           logger.warn(`  - ${err.file}: ${err.error}`);
         }
       }
+      if (result.copied.length === 0 && result.skipped.length === 0 && result.errors.length === 0) {
+        // Configured and looking in the wrong place otherwise reads exactly
+        // like not configured at all — both say nothing — and the first is the
+        // one the user has to go and fix. Naming the patterns and the directory
+        // they were resolved against is what makes it fixable: the directory is
+        // the base branch's worktree in worktree mode and the config file's own
+        // directory in clone mode, which is the part people get wrong.
+        logger.info(
+          `📋 Copy for '${branchName}' matched 0 files for patterns [${patterns.join(", ")}] in ${sourceDir}`,
+        );
+      }
     } catch (error) {
       logger.error(`Failed to copy files to '${branchName}': ${String(error)}`);
     }
