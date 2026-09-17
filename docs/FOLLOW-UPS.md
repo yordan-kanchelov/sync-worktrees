@@ -1,6 +1,6 @@
 # Follow-ups
 
-404 items found while implementing the `TODO.md` audit (T1–T121) and deliberately left
+404 items found while implementing the [6.0.0 review](6.0.0-review.md) (T1–T121) and deliberately left
 out of scope at the time. None of them is a regression from that work: they are pre-existing
 behaviour, latent hazards, test gaps, and notes that would have widened a cluster's diff beyond
 the item it was implementing.
