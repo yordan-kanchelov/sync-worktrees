@@ -1,6 +1,5 @@
 ---
 import { getCollection, getEntry } from "astro:content";
-import Icon from "./Icon.astro";
 import CopyButton from "./CopyButton.astro";
 import { Code } from "astro:components";
 
@@ -20,20 +19,16 @@ const mcpTools = (await getCollection("mcpTools"))
   .sort((a, b) => a.data.order - b.data.order)
   .map((t) => [t.data.name, t.data.desc] as const);
 ---
-<section id="agents" class="relative overflow-hidden bg-ink-950 py-20 sm:py-28 text-ink-100">
-  <div class="absolute inset-0 -z-0 section-grid-dark"></div>
-  <div class="absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-accent-500/40 to-transparent"></div>
-
+<section id="mcp" class="relative overflow-hidden bg-ink-950 py-20 sm:py-28 text-ink-100">
+  <span id="agents" class="sr-only"></span>
   <div class="relative mx-auto max-w-6xl px-6">
     <div class="mx-auto max-w-2xl text-center">
-      <div class="inline-flex items-center gap-2 rounded-full border border-ink-700 bg-ink-900/60 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-accent-300">
-        <Icon name="sparkle" size={12} /> AI agents
-      </div>
+      <p class="font-mono text-xs uppercase tracking-wide text-ink-400">Optional MCP</p>
       <h2 class="mt-4 text-balance text-4xl font-bold tracking-tight text-white sm:text-5xl">
-        Your workspace, exposed over MCP.
+        The folders are real. MCP is extra.
       </h2>
       <p class="mt-4 text-balance text-lg text-ink-300">
-        A second binary, <code class="font-mono text-base text-accent-300">sync-worktrees-mcp</code>, speaks MCP over stdio. Wire it into any client; your agent lists, creates, inspects, and syncs worktrees directly.
+        Anything that can <code class="font-mono text-base text-ink-100">cd</code> already works. A second binary, <code class="font-mono text-base text-ink-100">sync-worktrees-mcp</code>, speaks MCP over stdio if a client wants to list, create, or sync worktrees without guessing paths.
       </p>
       <p class="mx-auto mt-4 inline-flex items-center gap-2 rounded-full border border-ink-700 bg-ink-900/60 px-3 py-1 text-xs text-ink-400">
         Prerequisite: a loaded sync-worktrees config, or running from a managed worktree.
@@ -80,20 +75,17 @@ const mcpTools = (await getCollection("mcpTools"))
           Example workflow
         </div>
         <h3 class="mt-4 text-2xl font-bold text-white sm:text-3xl">
-          Fix <code class="font-mono text-xl text-accent-300">backend/release-2.4</code> from <code class="font-mono text-xl text-accent-300">frontend/main</code>.
+          Open <code class="font-mono text-xl text-ink-100">backend/release-2.4</code> while you sit in <code class="font-mono text-xl text-ink-100">frontend/main</code>.
         </h3>
         <p class="mt-4 text-ink-300">
-          You're in <code class="font-mono text-sm text-accent-300">worktrees/frontend/main</code>. You tell the agent: <span class="text-ink-200">"inspect <code class="font-mono text-sm text-accent-300">backend/release-2.4</code>, branch a fix, and sync it."</span> It chains the tools itself:
+          Both are directories. An editor, a shell, or an MCP client can use them. If you do wire up MCP, the tools look like this:
         </p>
         <ol class="mt-4 space-y-2 text-sm text-ink-300">
-          <li class="flex gap-3"><span class="font-mono text-accent-300">1</span><span><code class="font-mono text-accent-300">detect_context</code> — finds the configured <code class="font-mono text-accent-300">backend</code> repo, no path hunting</span></li>
-          <li class="flex gap-3"><span class="font-mono text-accent-300">2</span><span><code class="font-mono text-accent-300">get_worktree_status</code> — reads <code class="font-mono text-accent-300">release-2.4</code></span></li>
-          <li class="flex gap-3"><span class="font-mono text-accent-300">3</span><span><code class="font-mono text-accent-300">create_worktree</code> — branches the fix</span></li>
-          <li class="flex gap-3"><span class="font-mono text-accent-300">4</span><span><code class="font-mono text-accent-300">sync</code> — fetches, creates, prunes</span></li>
+          <li class="flex gap-3"><span class="font-mono text-ink-400">1</span><span><code class="font-mono text-ink-100">list_worktrees</code> — status across repos</span></li>
+          <li class="flex gap-3"><span class="font-mono text-ink-400">2</span><span><code class="font-mono text-ink-100">get_worktree_status</code> — one branch in detail</span></li>
+          <li class="flex gap-3"><span class="font-mono text-ink-400">3</span><span><code class="font-mono text-ink-100">create_worktree</code> — branch a fix</span></li>
+          <li class="flex gap-3"><span class="font-mono text-ink-400">4</span><span><code class="font-mono text-ink-100">sync</code> — fetch, create, prune</span></li>
         </ol>
-        <p class="mt-4 text-sm text-ink-400">
-          No "where's the other repo?" — <code class="font-mono text-xs text-accent-300">detect_context</code> returns every configured repo and worktree, each with a <code class="font-mono text-xs text-accent-300">{`{ available, reason }`}</code> capability flag.
-        </p>
       </div>
 
       <div class="rounded-2xl border border-ink-800 bg-ink-900/40 p-5">

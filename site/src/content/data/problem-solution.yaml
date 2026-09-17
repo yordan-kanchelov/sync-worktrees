@@ -12,12 +12,8 @@
   order: 3
 - id: without-4
   side: without
-  text: "Re-explain to Claude or Cursor which directory holds which branch"
-  order: 4
-- id: without-5
-  side: without
   text: "Onboard new hires through a brittle copy-paste setup doc"
-  order: 5
+  order: 4
 - id: with-1
   side: with
   text: "Clean branches fast-forward themselves on a schedule — no manual `git fetch`"
@@ -32,13 +28,9 @@
   order: 3
 - id: with-4
   side: with
-  text: "Multi-repo search is one `grep -r` across the workspace"
+  text: "Open `frontend/feature-login` and `backend/feature-login` at the same time"
   order: 4
 - id: with-5
   side: with
-  text: "AI agents call `detect_context` and see every repo at once"
-  order: 5
-- id: with-6
-  side: with
   text: "New machine: one config, one command, the whole workspace appears"
-  order: 6
+  order: 5
