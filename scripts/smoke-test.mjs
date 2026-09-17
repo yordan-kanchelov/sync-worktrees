@@ -318,13 +318,23 @@ async function checkTarballContents() {
   if (result.code !== 0) {
     fail(`npm pack --dry-run failed (${describeExit(result)})`, { stdout: result.stdout, stderr: result.stderr });
   }
-  let files;
-  let unpackedSize;
+  let parsed;
   try {
-    [{ files, unpackedSize }] = JSON.parse(result.stdout);
+    parsed = JSON.parse(result.stdout);
   } catch (error) {
     fail(`could not parse npm pack --dry-run --json output: ${error.message}`, { stdout: result.stdout });
   }
+  // `npm pack --json` changed shape in npm 12: up to npm 11 it printed an array
+  // with one entry per packed package, and it now prints an object keyed by
+  // package name. The release job installs npm@latest before publishing (OIDC
+  // trusted publishing needs npm >= 11.5.1) while `pnpm smoke` locally and in
+  // PR CI runs whatever npm ships with Node, so both shapes reach this check
+  // and reading only the array one fails the release and nothing else.
+  const [packed] = Array.isArray(parsed) ? parsed : Object.values(parsed ?? {});
+  if (packed === null || typeof packed !== "object") {
+    fail("npm pack --dry-run --json output describes no packed package", { stdout: result.stdout });
+  }
+  const { files, unpackedSize } = packed;
   if (!Array.isArray(files)) {
     fail("npm pack --dry-run --json output has no files array", { stdout: result.stdout });
   }
