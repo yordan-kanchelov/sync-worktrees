@@ -16,11 +16,13 @@ import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { HookExecutionService } from "./hook-execution.service";
 import { PathResolutionService } from "./path-resolution.service";
 import type { LogOutputFn, LogLevel } from "./logger.service";
+import type { WorktreeStatusResult } from "./worktree-status.service";
 import { Logger } from "./logger.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/lfs-error";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
+import { DiskUsageCache } from "../utils/disk-usage-cache";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
 import { createMouseTracking } from "../utils/mouse";
@@ -28,7 +30,7 @@ import type { MouseTracking } from "../utils/mouse";
 import { resolveMode } from "../utils/repo-mode";
 import { shellEscape } from "../utils/shell-escape";
 import * as fs from "fs/promises";
-import { calculateDirectorySize, formatBytes } from "../utils/disk-space";
+import { formatBytes } from "../utils/disk-space";
 import { formatDuration } from "../utils/timing";
 import { GIT_CONSTANTS, METADATA_CONSTANTS, TERMINAL_CONSTANTS } from "../constants";
 import type {
@@ -85,6 +87,26 @@ function isTerminalEditor(command: string, args: string[]): boolean {
   return !(VIM_BASENAMES.has(base) && args.some((arg) => VIM_GUI_FLAGS.has(arg)));
 }
 
+function unprobedWorktreeStatus(reason: string): WorktreeStatusResult {
+  // A probe that rejected answered nothing, so every flag reads unknown and
+  // canRemove stays false -- the same fail-closed shape WorktreeStatusService
+  // itself returns when its path probe cannot say. The row is rendered from
+  // `error`, not from these, but any other reader must not mistake "we could
+  // not look" for "there is nothing here".
+  return {
+    isClean: false,
+    hasUnpushedCommits: true,
+    hasStashedChanges: true,
+    hasOperationInProgress: true,
+    hasModifiedSubmodules: true,
+    upstreamGone: false,
+    fullyPushedUpstreamDeleted: false,
+    canRemove: false,
+    reasons: [reason],
+    divergence: null,
+  };
+}
+
 export interface InteractiveUIRuntime {
   stdout: NodeJS.WriteStream;
   stdin: NodeJS.ReadStream;
@@ -104,7 +126,8 @@ export class InteractiveUIService {
   private branchCreatedActions = new BranchCreatedActionsService();
   private pathResolution = new PathResolutionService();
   private limit: ReturnType<typeof pLimit>;
-  private maxProgressLines: number;
+  private diskUsage: DiskUsageCache;
+  private maxRepositories: number;
   private reloadInProgress = false;
   private syncCycleInFlight = false;
   private isDestroyed = false;
@@ -139,8 +162,13 @@ export class InteractiveUIService {
     this.configPath = configPath;
     this.cronSchedule = cronSchedule;
     this.repositoryCount = syncServices.length;
-    this.maxProgressLines = Math.max(1, maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
-    this.limit = pLimit(this.maxProgressLines);
+    // One number, and it is the parallelism setting, not a display one. The
+    // progress pane happens to want one line per repository that can be syncing
+    // at once, so it is fed from here; the disk walks are I/O and must never be
+    // widened by someone lengthening a pane.
+    this.maxRepositories = Math.max(1, maxParallel ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES);
+    this.limit = pLimit(this.maxRepositories);
+    this.diskUsage = new DiskUsageCache(this.maxRepositories);
     this.stdout = runtime.stdout ?? process.stdout;
     this.stdin = runtime.stdin ?? process.stdin;
     this.exitProcess = runtime.exit ?? ((code: number): void => process.exit(code));
@@ -297,7 +325,7 @@ export class InteractiveUIService {
         events={this.events}
         repositoryCount={this.repositoryCount}
         cronSchedule={this.cronSchedule}
-        maxProgressLines={this.maxProgressLines}
+        maxProgressLines={this.maxRepositories}
         onManualSync={() => this.handleManualSync()}
         onReload={() => this.handleReload()}
         onQuit={() => this.handleQuit()}
@@ -448,6 +476,14 @@ export class InteractiveUIService {
       cronJobsCancelled = true;
 
       this.syncServices = newServices;
+      // initialize() above can clone a bare repository or lay down worktrees,
+      // and a cycle in which every repository is skipped never rebuilds the
+      // header total -- so drop what the cache holds for these paths rather
+      // than serve the status view a figure from before the reload.
+      for (const service of newServices) {
+        this.diskUsage.invalidate(service.config.bareRepoDir || getDefaultBareRepoDir(service.config.repoUrl));
+        this.diskUsage.invalidate(service.config.worktreeDir);
+      }
       this.repositoryCount = this.syncServices.length;
       this.subscribeToServiceProgress();
       // Not injectLoggersIntoServices(): these services were built with their
@@ -621,7 +657,9 @@ export class InteractiveUIService {
       );
       const worktreeDirs = this.syncServices.map((service) => service.config.worktreeDir);
 
-      const diskSpace = await calculateSyncDiskSpace(bareRepoDirs, worktreeDirs);
+      const diskSpace = await calculateSyncDiskSpace(bareRepoDirs, worktreeDirs, (dirPath) =>
+        this.diskUsage.refresh(dirPath),
+      );
       this.setDiskSpace(diskSpace);
     } catch (error) {
       this.addLog(`Failed to calculate disk space: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -664,7 +702,7 @@ export class InteractiveUIService {
 
     for (const target of sizeTargets) {
       try {
-        const size = await calculateDirectorySize(target.path);
+        const size = await this.diskUsage.size(target.path);
         if (target.kind === "bare") {
           bareSizeBytes = size;
         } else {
@@ -845,16 +883,39 @@ export class InteractiveUIService {
     const gitService = service.getGitService();
     const worktrees = await this.getWorktreesFromService(service);
 
-    const results = await Promise.allSettled(
-      worktrees.map(async (wt) => {
-        const status = await gitService.getFullWorktreeStatus(wt.path, true);
-        return { branch: wt.branch, path: wt.path, status };
-      }),
+    // WorktreeStatusService already caps the git processes a repository's
+    // probes run at once (maxStatusChecks, shared across every worktree), so
+    // this bounds worktrees in flight rather than processes: without it every
+    // worktree opens a snapshot that then waits its turn on that budget, so a
+    // 300-worktree repository holds 300 half-finished snapshots -- a git client
+    // and a status buffer each -- and no row can finish until nearly all of the
+    // first-phase commands have. Same limit as the sync path's prune probes.
+    const limit = pLimit(
+      Math.max(1, service.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
     );
 
-    return results
-      .filter((r): r is PromiseFulfilledResult<WorktreeStatusEntry> => r.status === "fulfilled")
-      .map((r) => r.value);
+    // Every worktree comes back, probed or not. The `fulfilled` filter this
+    // replaces dropped a rejected probe's worktree from the list entirely, so
+    // the view showed fewer worktrees than the repository has and said nothing
+    // about the ones it had lost.
+    return Promise.all(
+      worktrees.map((wt) =>
+        limit(async (): Promise<WorktreeStatusEntry> => {
+          try {
+            const status = await gitService.getFullWorktreeStatus(wt.path, true);
+            return { branch: wt.branch, path: wt.path, status };
+          } catch (error) {
+            const message = getErrorMessage(error);
+            return {
+              branch: wt.branch,
+              path: wt.path,
+              status: unprobedWorktreeStatus(message),
+              error: message,
+            };
+          }
+        }),
+      ),
+    );
   }
 
   private async getWorktreesFromService(
@@ -911,7 +972,7 @@ export class InteractiveUIService {
           }
         }
 
-        const sizeBytes = await calculateDirectorySize(fullPath).catch(() => 0);
+        const sizeBytes = await this.diskUsage.size(fullPath).catch(() => 0);
         const sizeFormatted = formatBytes(sizeBytes);
 
         return {
@@ -961,6 +1022,14 @@ export class InteractiveUIService {
       // Legacy entries have no keep ref metadata.
     }
     await service.discardDivergedDirectory(targetPath, keepRef);
+    // The directory is gone and the worktree directory that held it is smaller,
+    // so both cached figures are now wrong. Without this the status view served
+    // the repository's old total for a whole TTL -- across closing and
+    // reopening the modal, which is worse than the walk-on-every-open it
+    // replaced. The header total is rebuilt on the next cycle, as it was
+    // before.
+    this.diskUsage.invalidate(targetPath);
+    this.diskUsage.invalidate(worktreeDir);
     this.addLog(`🗑️ Deleted diverged directory: ${name}`, "info");
   }
 

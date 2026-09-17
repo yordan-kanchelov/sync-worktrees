@@ -323,11 +323,11 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [ ] **T46** — LogPanel exceeds its height budget by 1-2 rows in the steady state (plus one row per
   embedded newline), so the App frame is taller than the terminal and Ink falls back to a
   full-terminal clear on every render, scrolling the top row off
-- [ ] **T25** — TUI worktree status view fans out getFullWorktreeStatus over every worktree with no
+- [x] **T25** — TUI worktree status view fans out getFullWorktreeStatus over every worktree with no
   concurrency limit (≥6 git processes each)
-- [ ] **T88** — TUI runs `du` over every bare repo and every worktreeDir after every sync cycle (and
+- [x] **T88** — TUI runs `du` over every bare repo and every worktreeDir after every sync cycle (and
   on each status view open), a full-tree stat walk per tick that is never cached or throttled
-- [ ] **T106** — WorktreeStatusView repository sizes get stuck at `calculating...` when the App
+- [x] **T106** — WorktreeStatusView repository sizes get stuck at `calculating...` when the App
   re-renders while `du` is in flight (effect cleanup discards the result; `repositories` prop is a new
   array on every App render)
 - [x] **T107** — Pressing `q` during a long sync freezes the TUI for up to 30 s with no feedback,
@@ -1411,7 +1411,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `getWorktreesFromBare` maps it away. Verified refusal messages and exit codes with git 2.43 in
   scratch.
 
-### [ ] T25. TUI worktree status view fans out getFullWorktreeStatus over every worktree with no concurrency limit (≥6 git processes each)
+### [x] T25. TUI worktree status view fans out getFullWorktreeStatus over every worktree with no concurrency limit (≥6 git processes each)
 
 - **Category**: performance · **Subsystem**: git
 - **Severity**: Medium · **Verification**: code re-read by the coordinating reviewer
@@ -3566,7 +3566,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `addWorktreeNoCheckout`, then the container is removed; a rename of `payload/` over the registered
   path (with the fresh `.git` link written back) would be O(1).
 
-### [ ] T88. TUI runs `du` over every bare repo and every worktreeDir after every sync cycle (and on each status view open), a full-tree stat walk per tick that is never cached or throttled
+### [x] T88. TUI runs `du` over every bare repo and every worktreeDir after every sync cycle (and on each status view open), a full-tree stat walk per tick that is never cached or throttled
 
 - **Category**: performance · **Subsystem**: trash
 - **Severity**: Low · **Verification**: code re-read by the coordinating reviewer
@@ -4145,7 +4145,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: Existing tests were written per-handler with full mocking; the scratch
   bypass test (see finding 1) demonstrates the missing layer.
 
-### [ ] T106. WorktreeStatusView repository sizes get stuck at `calculating...` when the App re-renders while `du` is in flight (effect cleanup discards the result; `repositories` prop is a new array on every App render)
+### [x] T106. WorktreeStatusView repository sizes get stuck at `calculating...` when the App re-renders while `du` is in flight (effect cleanup discards the result; `repositories` prop is a new array on every App render)
 
 - **Category**: correctness · **Subsystem**: tui
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently

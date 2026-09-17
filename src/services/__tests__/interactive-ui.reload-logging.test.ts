@@ -2,6 +2,7 @@ import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppEventEmitter } from "../../utils/app-events";
+import { calculateDirectorySize } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
@@ -149,5 +150,23 @@ describe("InteractiveUIService reload logging", () => {
 
     expect(panelLogs).toContain(`[repo-a] ${INIT_INFO}`);
     expect(panelLogs).toContain(`[repo-a] ${INIT_ERROR}`);
+  });
+
+  it("measures the repository again after a reload rather than serving the cached size", async () => {
+    // The reload's initialize() can clone a bare repository or lay down
+    // worktrees, and a cycle in which every repository is skipped never
+    // rebuilds the header total -- so the sizes the status view holds for these
+    // paths cannot be carried across it. Same paths on both sides: what is
+    // being pinned is the invalidation, not a change of key.
+    const measured = vi.mocked(calculateDirectorySize);
+
+    await uiService.getRepositoryDiskUsage(0);
+    const walkedBeforeReload = measured.mock.calls.map((call) => call[0]);
+
+    await reload();
+    await uiService.getRepositoryDiskUsage(0);
+
+    expect(walkedBeforeReload).toHaveLength(2);
+    expect(measured.mock.calls.map((call) => call[0])).toEqual([...walkedBeforeReload, ...walkedBeforeReload]);
   });
 });

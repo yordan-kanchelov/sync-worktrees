@@ -391,6 +391,7 @@ export interface WorktreeStatusEntry {
   branch: string;
   path: string;
   status: WorktreeStatusResult;
+  error?: string;
 }
 
 export interface RepositoryListEntry {

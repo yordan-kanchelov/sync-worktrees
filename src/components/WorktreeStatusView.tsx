@@ -156,6 +156,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [loading, setLoading] = useState(false);
   const [repoDiskUsage, setRepoDiskUsage] = useState<Record<number, RepositoryDiskUsageState>>({});
   const requestedDiskUsageRef = useRef<Set<number>>(new Set());
+  const mountedRef = useRef(true);
 
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -179,6 +180,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     const lowerFilter = entryFilter.toLowerCase();
     return divergedEntries.filter((entry) => entry.originalBranch.toLowerCase().includes(lowerFilter));
   }, [divergedEntries, entryFilter]);
+
+  // One predicate for all three readers -- the count, the row's `!` and the
+  // detail line. On truthiness an `error: ""` was counted above the list and
+  // then rendered as an ordinary status row, so the count and the rows
+  // disagreed about the same entry.
+  const unprobedCount = useMemo(() => entries.filter((entry) => entry.error !== undefined).length, [entries]);
 
   const combinedList = useMemo((): ListItem[] => {
     const items: ListItem[] = filteredEntries.map((entry) => ({ type: "worktree" as const, entry }));
@@ -220,15 +227,25 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     [getWorktreeStatusForRepo, getDivergedDirectoriesForRepo],
   );
 
+  // Unmount, not "this effect run". `repositories` is a fresh array on every
+  // App render (getRepositoryList() maps syncServices), so the effect re-runs
+  // on every addLog/setSyncProgress/setDiskSpace event. A per-run cancelled
+  // flag therefore discarded the in-flight du result, while the re-run skipped
+  // the index it had already recorded in requestedDiskUsageRef -- so nothing
+  // ever replaced `calculating...` until the modal was closed and reopened.
   useEffect(() => {
-    if (!getRepositoryDiskUsage) return undefined;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
-    let cancelled = false;
+  useEffect(() => {
+    if (!getRepositoryDiskUsage) return;
+
     const indexesToLoad = repositories
       .map((repo) => repo.index)
       .filter((repoIndex) => !requestedDiskUsageRef.current.has(repoIndex));
-
-    if (indexesToLoad.length === 0) return undefined;
 
     for (const repoIndex of indexesToLoad) {
       requestedDiskUsageRef.current.add(repoIndex);
@@ -236,21 +253,17 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
       void getRepositoryDiskUsage(repoIndex)
         .then((usage) => {
-          if (cancelled) return;
+          if (!mountedRef.current) return;
           setRepoDiskUsage((prev) => ({ ...prev, [repoIndex]: { status: "ready", usage } }));
         })
         .catch(() => {
-          if (cancelled) return;
+          if (!mountedRef.current) return;
           setRepoDiskUsage((prev) => ({
             ...prev,
             [repoIndex]: { status: "error" },
           }));
         });
     }
-
-    return () => {
-      cancelled = true;
-    };
   }, [repositories, getRepositoryDiskUsage]);
 
   useEffect(() => {
@@ -457,6 +470,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     return (
       <Box flexDirection="column" marginLeft={4} marginTop={0} marginBottom={1}>
         <Text dimColor>Path: {entry.path}</Text>
+        {entry.error !== undefined && <Text color="red"> Status probe failed: {entry.error}</Text>}
         {details && (
           <>
             {details.modifiedFiles > 0 && <Text color="yellow"> Modified: {details.modifiedFiles}</Text>}
@@ -538,13 +552,20 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
     return (
       <Box flexDirection="column" gap={1}>
-        <Box>
-          <Text>Filter: </Text>
-          <Text color="cyan">{entryFilter || "_"}</Text>
-          <Text dimColor>
-            {" "}
-            ({filteredCount}/{entries.length + divergedEntries.length} matches)
-          </Text>
+        <Box flexDirection="column">
+          <Box>
+            <Text>Filter: </Text>
+            <Text color="cyan">{entryFilter || "_"}</Text>
+            <Text dimColor>
+              {" "}
+              ({filteredCount}/{entries.length + divergedEntries.length} matches)
+            </Text>
+          </Box>
+          {unprobedCount > 0 && (
+            <Text color="red">
+              ⚠ {unprobedCount} of {entries.length} worktrees could not be probed
+            </Text>
+          )}
         </Box>
         <Box flexDirection="column">
           {filteredCount === 0 ? (
@@ -576,8 +597,14 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                           <Text color={isSelected ? "cyan" : undefined}>{item.entry.branch}</Text>
                         </Box>
                         <Text> </Text>
-                        {getStatusFlags(item.entry.status)}
-                        {summary && <Text dimColor> {summary}</Text>}
+                        {item.entry.error !== undefined ? (
+                          <Text color="red">! status unknown</Text>
+                        ) : (
+                          <>
+                            {getStatusFlags(item.entry.status)}
+                            {summary && <Text dimColor> {summary}</Text>}
+                          </>
+                        )}
                       </Box>
                       {isExpanded && renderDetailPanel(item.entry)}
                     </Box>

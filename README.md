@@ -323,6 +323,7 @@ Running `sync-worktrees` without `runOnce` drops you into an interactive termina
   | `⚠` | Operation in progress (merge/rebase/cherry-pick/revert/bisect)                                                |
   | `⊞`  | Modified submodules                                                                                           |
   | `✗`  | Upstream branch is gone                                                                                       |
+  | `!`  | Status could not be probed; the reason is on the expanded entry, and the list header counts them               |
 
   Press `Enter` on an entry to expand file/commit/stash counts. The view also surfaces `.diverged/` directories preserved from past force-pushes; press `d` (with `y`/`n` confirmation) to delete one after reviewing.
 
