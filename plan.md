@@ -80,16 +80,19 @@ green suite. The last entry belongs to the cluster still in flight above:
 
 ## Follow-ups
 
-175 items found along the way but deliberately left out of scope, recorded separately rather than
-widening a cluster's diff. They include a standing security item: `bin/sync-worktrees.js` does not
-redact credential-bearing URLs.
+404 items found along the way and deliberately left out of scope rather than widening a
+cluster's diff. They are recorded in [`docs/FOLLOW-UPS.md`](docs/FOLLOW-UPS.md), grouped by the
+item that surfaced them. Not a queue — nothing there is triaged, and some entries were overtaken by
+later items. The one standing security entry: `bin/sync-worktrees.js` does not redact
+credential-bearing URLs.
 
 ## Merge history
 
-105 squash-merged clusters. The 12 most recent:
+106 squash-merged clusters. The 12 most recent:
 
 | commit | item | subject |
 |---|---|---|
+| `9ffb07b` | T109 | docs(tui): stop offering Esc as a way to quit, and say what it does instead |
 | `f5eff76` | T108 | fix(tui): show a reloaded repository's progress while it initializes, and name the one that failed |
 | `21bcd9a` | T113 | test(lock): make two real processes contend for the repository lock, and prove the contention was arranged |
 | `3ff580f` | T116 | fix(file-copy): copy the path a pattern spells out, and keep the ignore list on the patterns that wander |
@@ -101,6 +104,5 @@ redact credential-bearing URLs.
 | `3bcb793` | T42 | fix(tui): Ctrl+C exits cleanly and the terminal is restored on every path |
 | `e31a7c0` | T105 | test(mcp): drive the handlers against the real RepositoryContext |
 | `7eb5a9f` | T102 | fix(mcp): a nested repository no longer hides the worktree that encloses it |
-| `6030578` | T101 | perf(mcp): one status probe per worktree, and one per worktree only once |
 
 The full list is `git log claude/app-code-review-optimize-5kr6jf`.
