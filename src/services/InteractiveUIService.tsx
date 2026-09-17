@@ -26,7 +26,7 @@ import { appendGitAuthHint } from "../utils/git-auth-error";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { DiskUsageCache } from "../utils/disk-usage-cache";
-import { getDefaultBareRepoDir, redactSecretsInText } from "../utils/git-url";
+import { getDefaultBareRepoDir, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
 import { createMouseTracking } from "../utils/mouse";
 import type { MouseTracking } from "../utils/mouse";
@@ -250,19 +250,25 @@ export class InteractiveUIService {
     for (const unsubscribe of this.progressUnsubscribers) {
       unsubscribe();
     }
-    this.progressUnsubscribers = this.syncServices.map((service, index) => {
-      const repoName = this.getRepoName(index);
-      if (!service.onProgress) return () => undefined;
-      return service.onProgress((event) => {
-        if (this.isDestroyed) return;
-        this.events.emit("setSyncProgress", {
-          repo: repoName,
-          phase: event.phase,
-          message: event.message,
-          progress: event.progress,
-          processed: event.processed,
-          total: event.total,
-        });
+    this.progressUnsubscribers = this.syncServices.map((service, index) =>
+      this.subscribeToProgress(service, this.getRepoName(index)),
+    );
+  }
+
+  // Pulled out of the loop above so a service can be watched before it joins
+  // `syncServices` — a reload's initialize() is the longest thing the interface
+  // ever waits on and reports the clone it is running through this emitter.
+  private subscribeToProgress(service: WorktreeSyncService, repoName: string): () => void {
+    if (!service.onProgress) return () => undefined;
+    return service.onProgress((event) => {
+      if (this.isDestroyed) return;
+      this.events.emit("setSyncProgress", {
+        repo: repoName,
+        phase: event.phase,
+        message: event.message,
+        progress: event.progress,
+        processed: event.processed,
+        total: event.total,
       });
     });
   }
@@ -477,7 +483,18 @@ export class InteractiveUIService {
             // logger each sub-service was handed when it was built.
             repoConfig.logger = this.createServiceLogger(repoConfig);
             const service = new WorktreeSyncService(repoConfig);
-            await service.initialize();
+            // For the same window and the same reason: a clone reports its
+            // progress through the emitter rather than the logger, and these
+            // services are only watched by subscribeToServiceProgress() once
+            // every initialize() has resolved. Dropped again here — the ones
+            // that survive are re-subscribed below, the ones that failed are
+            // discarded.
+            const unsubscribeProgress = this.subscribeToProgress(service, repoConfig.name || repoConfig.repoUrl);
+            try {
+              await service.initialize();
+            } finally {
+              unsubscribeProgress();
+            }
             return {
               service,
               clonePhaseSkips: service.getRecordedSkips().map((reason) => ({
@@ -491,12 +508,21 @@ export class InteractiveUIService {
 
       const newServices: WorktreeSyncService[] = [];
       const initClonePhaseSkips: Array<{ repo: string; reason: string }> = [];
-      for (const result of initResults) {
+      for (const [index, result] of initResults.entries()) {
         if (result.status === "fulfilled") {
           newServices.push(result.value.service);
           initClonePhaseSkips.push(...result.value.clonePhaseSkips);
         } else {
-          this.addLog(`Failed to initialize repository: ${result.reason}`, "error");
+          // allSettled keeps the order of what it was handed, and it was handed
+          // repositories.map(...), so index is this repository. Its name has to
+          // come from there: a rejected init never returned a service to read
+          // one off, and a git failure ('Permission denied (publickey)') names
+          // nothing the user can find in the config.
+          const failed = repositories[index];
+          this.addLog(
+            `Failed to initialize repository '${failed.name || redactRepoUrl(failed.repoUrl)}': ${result.reason}`,
+            "error",
+          );
         }
       }
 

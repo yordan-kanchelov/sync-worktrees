@@ -6,6 +6,7 @@ import { calculateDirectorySize } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
+import type { AppSyncProgress } from "../../utils/app-events";
 import type { RepositoryConfig } from "../../types";
 import type * as LoggerModule from "../logger.service";
 import type { Mock } from "vitest";
@@ -13,21 +14,57 @@ import type { Mock } from "vitest";
 // Lines the real service emits while initialize() runs, through sub-services
 // that took their logger from the config when they were built: GitService's
 // fetch announcement and a WorktreeStatusService probe failure.
-const { INIT_INFO, INIT_ERROR, REPO_CONFIG, syncControl } = vi.hoisted(() => ({
-  INIT_INFO: "Fetching remote branches...",
-  INIT_ERROR: "Error reading status for /test/worktrees/feature",
-  REPO_CONFIG: {
+const {
+  INIT_INFO,
+  INIT_ERROR,
+  INIT_PROGRESS,
+  SYNC_PROGRESS,
+  INIT_FAILURE,
+  REPO_CONFIG,
+  SECOND_REPO_CONFIG,
+  syncControl,
+} = vi.hoisted(() => {
+  const REPO_CONFIG = {
     name: "repo-a",
     repoUrl: "https://github.com/test/repo.git",
     worktreeDir: "/test/worktrees",
     cronSchedule: "0 * * * *",
     runOnce: false,
-  },
-  // Lets one test hold the reload's own sync open and see what a cycle landing
-  // inside it touches. The gate is consumed by the first sync that meets it, so
-  // a second cycle is never blocked by it.
-  syncControl: { gate: undefined as Promise<void> | undefined, syncCalls: 0, clearCalls: 0 },
-}));
+  };
+  return {
+    INIT_INFO: "Fetching remote branches...",
+    INIT_ERROR: "Error reading status for /test/worktrees/feature",
+    // What initialize() reports through the progress emitter rather than the
+    // logger: the clone that makes a reload take minutes.
+    INIT_PROGRESS: "Cloning bare repository",
+    // What sync() reports through the same emitter, once the reload has
+    // swapped the services in and subscribed to them the usual way.
+    SYNC_PROGRESS: "Updating worktrees",
+    INIT_FAILURE: "Permission denied (publickey)",
+    REPO_CONFIG,
+    SECOND_REPO_CONFIG: {
+      ...REPO_CONFIG,
+      name: "repo-b",
+      repoUrl: "https://github.com/test/second.git",
+      worktreeDir: "/test/worktrees-b",
+    },
+    // Lets one test hold the reload's own sync open and see what a cycle landing
+    // inside it touches. The gate is consumed by the first sync that meets it, so
+    // a second cycle is never blocked by it.
+    syncControl: {
+      gate: undefined as Promise<void> | undefined,
+      syncCalls: 0,
+      clearCalls: 0,
+      // What the config offers the next reload, and which of those repositories
+      // initialize() rejects for.
+      repositories: [REPO_CONFIG] as Array<typeof REPO_CONFIG>,
+      failInit: new Set<string>(),
+      // The reload's call sequence per service, in the order the services
+      // reached each step.
+      trace: [] as string[],
+    },
+  };
+});
 
 // Stands in for WorktreeSyncService with the one behaviour under test: the
 // logger reaches every sub-service by being copied out of the config at
@@ -39,20 +76,34 @@ vi.mock("../worktree-sync.service", async () => {
     WorktreeSyncService: class {
       private logger: LoggerModule.Logger;
       private initialized = false;
+      private progressListeners = new Set<(event: { phase: string; message: string }) => void>();
 
       constructor(public config: RepositoryConfig) {
+        // Recorded from the constructor rather than read off the config later:
+        // the reload assigns the logger onto the very object it then hands the
+        // constructor, so `config.logger` after the fact cannot tell a logger
+        // that was there from one assigned once initialize() had already run.
+        syncControl.trace.push(`${config.logger ? "logger" : "console"}:${config.name}`);
         // Mirrors WorktreeSyncService's own fallback, which passes no name.
         this.logger = config.logger ?? Logger.createDefault(undefined, config.debug);
       }
 
       updateLogger(logger: LoggerModule.Logger): void {
+        syncControl.trace.push(`updateLogger:${this.config.name}`);
         this.logger = logger;
       }
 
       async initialize(): Promise<void> {
+        syncControl.trace.push(`initialize:${this.config.name}`);
         this.initialized = true;
+        for (const listener of this.progressListeners) {
+          listener({ phase: "initialize", message: INIT_PROGRESS });
+        }
         this.logger.info(INIT_INFO);
         this.logger.error(INIT_ERROR);
+        if (syncControl.failInit.has(this.config.name)) {
+          throw new Error(INIT_FAILURE);
+        }
       }
 
       isInitialized(): boolean {
@@ -65,14 +116,20 @@ vi.mock("../worktree-sync.service", async () => {
 
       async sync(): Promise<unknown> {
         syncControl.syncCalls++;
+        for (const listener of this.progressListeners) {
+          listener({ phase: "sync", message: SYNC_PROGRESS });
+        }
         const gate = syncControl.gate;
         syncControl.gate = undefined;
         if (gate) await gate;
         return { started: true, outcome: { mode: "worktree", counts: { failed: 0, skipped: 0 } } };
       }
 
-      onProgress(): () => void {
-        return () => undefined;
+      onProgress(listener: (event: { phase: string; message: string }) => void): () => void {
+        this.progressListeners.add(listener);
+        return () => {
+          this.progressListeners.delete(listener);
+        };
       }
 
       getRecordedSkips(): unknown[] {
@@ -89,11 +146,11 @@ vi.mock("../worktree-sync.service", async () => {
 vi.mock("../config-loader.service", () => ({
   ConfigLoaderService: vi.fn(function () {
     return {
-      buildRepositories: vi.fn().mockResolvedValue({
-        repositories: [{ ...REPO_CONFIG }],
-        configFile: { repositories: [REPO_CONFIG] },
+      buildRepositories: vi.fn(async () => ({
+        repositories: syncControl.repositories.map((repo) => ({ ...repo })),
+        configFile: { repositories: syncControl.repositories },
         configDir: "",
-      }),
+      })),
     };
   }),
 }));
@@ -116,6 +173,9 @@ describe("InteractiveUIService reload logging", () => {
     syncControl.gate = undefined;
     syncControl.syncCalls = 0;
     syncControl.clearCalls = 0;
+    syncControl.repositories = [REPO_CONFIG];
+    syncControl.failInit = new Set<string>();
+    syncControl.trace = [];
     (ink.render as unknown as Mock).mockReturnValue({
       unmount: vi.fn(),
       waitUntilExit: vi.fn(() => new Promise<void>(() => {})),
@@ -145,6 +205,9 @@ describe("InteractiveUIService reload logging", () => {
     for (const method of [console.log, console.warn, console.error]) {
       (method as unknown as Mock).mockClear();
     }
+    // Same for the trace: the UI's own constructor injects a logger into the
+    // service it was handed, which is not part of any reload's sequence.
+    syncControl.trace = [];
     const onReload = ((ink.render as unknown as Mock).mock.calls[0][0].props as { onReload: () => Promise<void> })
       .onReload;
     await onReload();
@@ -163,6 +226,67 @@ describe("InteractiveUIService reload logging", () => {
 
     expect(panelLogs).toContain(`[repo-a] ${INIT_INFO}`);
     expect(panelLogs).toContain(`[repo-a] ${INIT_ERROR}`);
+  });
+
+  // The order is the whole of it, and it is what the earlier test of this could
+  // not see: the reload assigns the logger onto the same config object it hands
+  // the constructor, so a version that assigned it after initialize() still
+  // leaves a logger on the object an "was it injected?" assertion reads. Only
+  // the sequence separates the two, and it has to hold for every repository the
+  // reload builds, not just the first.
+  it("gives every reloaded service its panel logger before that service initializes", async () => {
+    syncControl.repositories = [REPO_CONFIG, SECOND_REPO_CONFIG];
+
+    await reload();
+
+    expect(syncControl.trace).toEqual(["logger:repo-a", "initialize:repo-a", "logger:repo-b", "initialize:repo-b"]);
+  });
+
+  // initialize() is the long part of a reload -- a bare clone of a repository
+  // just added to the config -- and it reports through the progress emitter,
+  // not the logger. Subscribing only once every initialize() had resolved threw
+  // away exactly the progress the user is waiting on.
+  it("shows the progress a reloaded service reports while it is initializing", async () => {
+    const progress: AppSyncProgress[] = [];
+    events.on("setSyncProgress", (event: AppSyncProgress | null) => {
+      if (event) progress.push(event);
+    });
+
+    await reload();
+
+    expect(progress).toContainEqual(expect.objectContaining({ repo: "repo-a", message: INIT_PROGRESS }));
+  });
+
+  // The subscription taken for initialize() is a second one on a service that
+  // subscribeToServiceProgress() is about to watch anyway, so it has to be
+  // dropped when initialize() settles. Left in place, every reload leaves one
+  // more listener on each surviving service and each of that service's progress
+  // events is reported once more than it happened.
+  it("reports a reloaded service's progress once after the reload, not once per reload it survived", async () => {
+    const progress: AppSyncProgress[] = [];
+    events.on("setSyncProgress", (event: AppSyncProgress | null) => {
+      if (event) progress.push(event);
+    });
+
+    await reload();
+
+    expect(syncControl.syncCalls).toBe(1);
+    expect(progress.filter((event) => event.message === SYNC_PROGRESS)).toHaveLength(1);
+  });
+
+  // Six repositories initializing in parallel and one revoked deploy key: the
+  // rejection carries the git error, never the repository it came from, and the
+  // index into the list handed to Promise.allSettled is the only thing that
+  // does.
+  it("names the repository whose initialization failed", async () => {
+    syncControl.repositories = [REPO_CONFIG, SECOND_REPO_CONFIG];
+    syncControl.failInit = new Set(["repo-b"]);
+
+    await reload();
+
+    const failure = panelLogs.find((line) => line.startsWith("Failed to initialize repository"));
+    expect(failure).toContain("'repo-b'");
+    expect(failure).toContain(INIT_FAILURE);
   });
 
   // A reload runs a sync of its own, so it is one more cycle the status bar has

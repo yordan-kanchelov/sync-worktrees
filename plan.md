@@ -1,6 +1,6 @@
 # Implementation plan — whole-app review (T1–T121)
 
-**117 of 121 done · 1 declined · 3 open — 97% complete.**
+**119 of 121 done · 1 declined · 1 open — 98% complete.**
 
 This file is regenerated from `TODO.md` and this branch's history every time an item merges. It
 is not hand-maintained, because a hand-kept plan drifts from the branch it claims to describe.
@@ -44,16 +44,14 @@ lands here.
 
 | | count |
 |---|---|
-| Merged | 117 |
+| Merged | 119 |
 | Declined | 1 |
-| Open | 3 |
+| Open | 1 |
 
 
 ## Remaining
 
-- **T108** — Reload (r) initializes the new services before injecting the UI logger, so clone/fetch/init output and warn...
 - **T109** — Docs/help drift: README and the help modal say Esc quits, but the main screen ignores Esc; README quick sta...
-- **T115** — Repository initialization failures are logged without the repository name in both runOnce and reload paths,...
 
 ## Declined
 
@@ -77,19 +75,21 @@ green suite. The last entry belongs to the cluster still in flight above:
 - **T44** — The fix introduced a regression of its own: making the wizard submit the name it displayed was right, but the service still walked its suffix from the name it was handed, so a second collision produced `x-1-1` instead of `x-2`. Separately, the new rollback was a line-for-line copy of clone mode's — comment included — with exactly the two credential guards deleted, so git's stderr (which embeds the access token for an https remote) reached the wizard's result pane unredacted. A lens also checked the create-only lease against real git 2.43 and found the code's own comment overstated it: git leases only a ref the push would change, so the claim to require the ref's absence was wrong even though the guarantee the fix needs held exactly.
 - **T116 + T48** — The magic gate inverted the protection it was built to provide. `hasMagic` was called bare while glob parses with `nonegate` and `nocomment` on, so a leading `!(...)` extglob was judged a literal path, handed the EMPTY ignore set, and then expanded across every directory — `['!(node_modules)/.env']` copied `node_modules/.env`, and `['!(dist)/config.json']` reached `.bare/config.json`. The README meanwhile promised that an extglob skips exactly those directories. The fixer then found a second instance of the same root cause that no lens had flagged: `#cache/**/.env` is a comment to the bare call and a live pattern to glob.
 - **T113** — A test written to close a gap in the evidence had a gap in its own. It arranges contention with a git shim that parks every fetch until a gate opens — but nothing checked the arrangement had engaged, so with the shim removed entirely it still passed 8/8, and with its match disengaged as a prepended `-c` would do, 5/5. The determinism it advertised was unverified. The changeset also named the wrong lock file: worktree mode takes the bare lock first, so the loser is always ELOCKED on `.bare.lock` and never touches the worktreeDir lock, and the file the test stats is written by its own seed run.
+- **T108 + T115** — Two of the item's four claims had already been fixed by earlier items on this branch, so no production code was written for them. The incumbent test for the half that mattered could not see the defect it was supposed to guard: the reload assigns the logger onto the same object it hands the constructor, so `a logger was present` is true whichever side of `initialize()` the assignment sits on — verified by moving it and watching that test pass. The new order assertion fails there, and a listener leak the first mutation round missed (one extra progress subscription per surviving service, per reload) was pinned rather than left silent.
 
 ## Follow-ups
 
-170 items found along the way but deliberately left out of scope, recorded separately rather than
+173 items found along the way but deliberately left out of scope, recorded separately rather than
 widening a cluster's diff. They include a standing security item: `bin/sync-worktrees.js` does not
 redact credential-bearing URLs.
 
 ## Merge history
 
-103 squash-merged clusters. The 12 most recent:
+104 squash-merged clusters. The 12 most recent:
 
 | commit | item | subject |
 |---|---|---|
+| `21bcd9a` | T113 | test(lock): make two real processes contend for the repository lock, and prove the contention was arranged |
 | `3ff580f` | T116 | fix(file-copy): copy the path a pattern spells out, and keep the ignore list on the patterns that wander |
 | `625e0e2` | T44 | fix(tui): stop the branch wizard advancing a branch that is already on origin |
 | `a123c33` | T41 | fix(tui): claim repositories per cycle, end a sync from the cycle count alone, load a modal's list once, and keep the log panel inside its height |
@@ -101,6 +101,5 @@ redact credential-bearing URLs.
 | `7eb5a9f` | T102 | fix(mcp): a nested repository no longer hides the worktree that encloses it |
 | `6030578` | T101 | perf(mcp): one status probe per worktree, and one per worktree only once |
 | `bcc769b` | T99 | fix(mcp): a found-but-broken config now reaches the agent |
-| `31ef870` | T98 | fix(mcp): update_worktree names a detached HEAD instead of denying the path |
 
 The full list is `git log claude/app-code-review-optimize-5kr6jf`.

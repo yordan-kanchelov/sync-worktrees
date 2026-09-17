@@ -333,7 +333,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T107** — Pressing `q` during a long sync freezes the TUI for up to 30 s with no feedback,
   then exits mid-sync anyway: `destroy()` sets `isDestroyed` before waiting, so its own 'Waiting for N
   in-progress sync(s)' and timeout warning are dropped by `addLog`
-- [ ] **T108** — Reload (`r`) initializes the new services before injecting the UI logger, so
+- [x] **T108** — Reload (`r`) initializes the new services before injecting the UI logger, so
   clone/fetch/init output and warnings of the reload go to the raw console instead of the log panel
 - [ ] **T109** — Docs/help drift: README and the help modal say `Esc` quits, but the main screen
   ignores Esc; README quick start says the TUI 'starts syncing' while the daemon never syncs until the
@@ -353,7 +353,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T114** — onBranchCreated hooks are killed at a hard-coded, undocumented 60 s timeout (the
   example config's own `pnpm install` hook routinely exceeds it); `setTimeoutMs` is never wired to
   config, and completion logs omit which hook finished
-- [ ] **T115** — Repository initialization failures are logged without the repository name in both
+- [x] **T115** — Repository initialization failures are logged without the repository name in both
   runOnce and reload paths, so with parallel init the user cannot tell which repo failed
 - [x] **T116** — FileCopyService silently applies a hard-coded ignore list (dist/, build/, .next/,
   coverage/, …) even to explicit file patterns, swallows glob errors, and a zero-match copy produces
@@ -4203,7 +4203,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   `should use slow timeout by default…` assert timing only, never user-visible feedback; the
   `isDestroyed` guard was designed for post-teardown safety and is set too early.
 
-### [ ] T108. Reload (`r`) initializes the new services before injecting the UI logger, so clone/fetch/init output and warnings of the reload go to the raw console instead of the log panel
+### [x] T108. Reload (`r`) initializes the new services before injecting the UI logger, so clone/fetch/init output and warnings of the reload go to the raw console instead of the log panel
 
 - **Category**: workflow · **Subsystem**: tui
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
@@ -4408,7 +4408,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
 - **Notes**: Guards checked: F17 fixed only the leaked kill timer. hook-execution.service.test.ts
   tests the timeout mechanism via setTimeoutMs but nothing connects it to user configuration.
 
-### [ ] T115. Repository initialization failures are logged without the repository name in both runOnce and reload paths, so with parallel init the user cannot tell which repo failed
+### [x] T115. Repository initialization failures are logged without the repository name in both runOnce and reload paths, so with parallel init the user cannot tell which repo failed
 
 - **Category**: workflow · **Subsystem**: process
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
