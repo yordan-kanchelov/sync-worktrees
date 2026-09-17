@@ -10,7 +10,9 @@ import { existsSync } from "fs";
 import type { Dirent } from "fs";
 import App from "../components/App";
 import { DEFAULT_CONFIG } from "../constants";
+import { GitOperationError } from "../errors";
 import { WorktreeSyncService } from "./worktree-sync.service";
+import type { GitService } from "./git.service";
 import { ConfigLoaderService } from "./config-loader.service";
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
 import { HookExecutionService } from "./hook-execution.service";
@@ -20,10 +22,11 @@ import type { WorktreeStatusResult } from "./worktree-status.service";
 import { Logger } from "./logger.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/lfs-error";
+import { appendGitAuthHint } from "../utils/git-auth-error";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { DiskUsageCache } from "../utils/disk-usage-cache";
-import { getDefaultBareRepoDir } from "../utils/git-url";
+import { getDefaultBareRepoDir, redactSecretsInText } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
 import { createMouseTracking } from "../utils/mouse";
 import type { MouseTracking } from "../utils/mouse";
@@ -49,6 +52,20 @@ import type {
 const WAIT_SYNC_FAST_TIMEOUT_MS = 2000;
 const WAIT_SYNC_DEFAULT_TIMEOUT_MS = 30000;
 const FORCE_QUIT_GUARD_MS = 500;
+
+/**
+ * Where the collision suffix has already got to. The wizard submits the name
+ * it displayed, so a typed `x` whose name was taken arrives here as `x-1` —
+ * and a suffix appended to that would offer `x-1-1`, then `x-1-2`, instead of
+ * continuing the `x-1`, `x-2`, `x-3` sequence the user was shown. Splitting
+ * the trailing `-<n>` back off makes the service's walk the same walk, wherever
+ * it is picked up. The digits are bounded so an absurd one cannot be counted
+ * past the point where incrementing it stops changing the name.
+ */
+const splitBranchSuffix = (branchName: string): { stem: string; suffix: number } => {
+  const match = /^(.+)-(\d{1,9})$/.exec(branchName);
+  return match ? { stem: match[1], suffix: Number(match[2]) } : { stem: branchName, suffix: 0 };
+};
 
 const DEFAULT_EDITOR = "code";
 // A launcher that exits non-zero inside this window never opened a window; one that exits
@@ -841,6 +858,9 @@ export class InteractiveUIService {
 
     const service = this.syncServices[repoIndex];
     const gitService = service.getGitService();
+    // Every branch a rollback below could not remove. The loop reads it rather
+    // than sniffing the message it is about to discard.
+    const leftovers: string[] = [];
 
     // A clone-mode repo has no bare repository, and GitService's write helpers
     // all run in one — falling back to the relative '.bare/<repo name>', which
@@ -850,32 +870,58 @@ export class InteractiveUIService {
       ? (name: string): Promise<void> => service.createAndPushBranch(baseBranch, name)
       : async (name: string): Promise<void> => {
           await gitService.createBranch(name, baseBranch);
-          await gitService.pushBranch(name);
+          // Read before the push, so the rollback below can compare-and-swap
+          // on the commit this attempt created the branch at.
+          const createdAt = await gitService.getLocalBranchCommit(name);
+          try {
+            await gitService.pushBranch(name);
+          } catch (error) {
+            await this.rollbackUnpushedBranch(gitService, name, createdAt, error, leftovers);
+          }
         };
 
     // Serialize branch+push behind any in-flight sync so it can't race git's
     // index/refs. addWorktree (createWorktreeForBranch) is a separate queued op.
     const result = await service.runQueuedRepoOperation(async () => {
       const maxAttempts = 10;
-      let finalName = branchName;
-      let suffix = 0;
+      // The walk continues from the name handed in rather than restarting
+      // under it: the wizard submits the name it displayed, so a `x` it showed
+      // as `x-1` arrives here as `x-1`, and appending to THAT offers `x-1-1`.
+      const { stem, suffix: startingSuffix } = splitBranchSuffix(branchName);
+      let suffix = startingSuffix;
+      let nextName = branchName;
+      // What the result names is the branch this call actually tried, not the
+      // one the caller asked for: after a suffix walk they are different
+      // names, and reporting the caller's would name a branch nothing was
+      // attempted on.
+      let attemptedName = branchName;
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        attemptedName = nextName;
         try {
-          await createAndPush(finalName);
-          return { success: true, finalName };
+          await createAndPush(attemptedName);
+          return { success: true, finalName: attemptedName };
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
-          if (errorMessage.includes("already exists")) {
+          // A leftover the rollback could not remove is precisely the state
+          // the retry must not run in — it is the defect this whole flow is
+          // about: '<name>' orphaned locally and never pushed while
+          // '<name>-1' is created instead. Retrying would also discard the
+          // message that names it, which is the only place the user is told.
+          if (errorMessage.includes("already exists") && leftovers.length === 0) {
             suffix++;
-            finalName = `${branchName}-${suffix}`;
+            nextName = `${stem}-${suffix}`;
             continue;
           }
-          return { success: false, finalName: branchName, error: errorMessage };
+          return { success: false, finalName: attemptedName, error: errorMessage };
         }
       }
 
-      return { success: false, finalName: branchName, error: `Failed to create branch after ${maxAttempts} attempts` };
+      return {
+        success: false,
+        finalName: attemptedName,
+        error: `Failed to create branch after ${maxAttempts} attempts`,
+      };
     });
 
     if (!result.started) {
@@ -886,6 +932,55 @@ export class InteractiveUIService {
       };
     }
     return result.value;
+  }
+
+  // A push that never landed must not leave the local branch behind: the
+  // wizard reports the failure and offers the same name again, and the next
+  // attempt would then collide with this attempt's own leftover — quietly
+  // creating '<name>-1' while '<name>' is still nowhere on the remote. The
+  // delete is a compare-and-swap on the commit the branch was created at, so a
+  // ref something else moved in the meantime is left alone, and a leftover
+  // that could not be removed is named in the message rather than hidden.
+  private async rollbackUnpushedBranch(
+    gitService: GitService,
+    branchName: string,
+    createdAt: string | null,
+    pushError: unknown,
+    leftovers: string[],
+  ): Promise<never> {
+    // git's stderr for an https remote carries the credential in the URL it
+    // failed on ("unable to access 'https://x-access-token:<token>@…'"), and
+    // this message is shown in the wizard's result pane — the same two guards
+    // clone mode's twin applies, for the same reason.
+    const message = redactSecretsInText(getErrorMessage(pushError));
+    // "stale info" is how the create-only lease reports a ref that exists on
+    // origin after all — it reads as a collision, not as a stale
+    // remote-tracking ref, so it is phrased as one, and the "already exists"
+    // wording sends the loop above round again with a suffixed name.
+    const detail = message.includes("stale info")
+      ? `branch '${branchName}' already exists on origin — it was pushed while this one was being prepared; ` +
+        `choose another name`
+      : `could not push '${branchName}' to origin: ${appendGitAuthHint(message)}`;
+
+    let leftover = "";
+    try {
+      if (createdAt === null) {
+        throw new Error("the commit it was created at could not be read");
+      }
+      await gitService.deleteLocalBranchIfAt(branchName, createdAt);
+    } catch (deleteError) {
+      // With the bare repository named: it is under '.bare/<repo>', a
+      // directory the user never stands in, so a bare `git branch -D` is an
+      // instruction that works nowhere they are likely to run it. Clone mode's
+      // twin names its clone the same way.
+      leftover =
+        ` The local branch '${branchName}' is still in the bare repository — removing it failed ` +
+        `(${getErrorMessage(deleteError)}); delete it with ` +
+        `\`git -C "${path.resolve(gitService.getBareRepoPath())}" branch -D ${branchName}\`.`;
+      leftovers.push(leftover);
+    }
+
+    throw new GitOperationError("push", `${detail}.${leftover}`, pushError instanceof Error ? pushError : undefined);
   }
 
   public async getWorktreesForRepo(repoIndex: number): Promise<Array<{ path: string; branch: string }>> {

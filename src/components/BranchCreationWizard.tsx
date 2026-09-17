@@ -6,6 +6,21 @@ import { isValidGitBranchName } from "../utils/git-validation";
 
 type WizardStep = "SELECT_PROJECT" | "SELECT_BRANCH" | "ENTER_NAME" | "CREATING" | "RESULT";
 
+// The one place the suffix is worked out. The name shown on the ENTER_NAME
+// step and the name submitted to createAndPushBranch both come from here, so
+// the wizard can never display `will create: <name>-1` and then ask for
+// `<name>` — which is what sent the service at a branch that was already on
+// the remote.
+const resolveFreeBranchName = (name: string, taken: readonly string[]): string => {
+  let suffix = 0;
+  let candidate = name;
+  while (taken.includes(candidate)) {
+    suffix++;
+    candidate = `${name}-${suffix}`;
+  }
+  return candidate;
+};
+
 export interface BranchCreationWizardProps {
   repositories: Array<{ index: number; name: string; repoUrl: string }>;
   getBranchesForRepo: (index: number) => Promise<string[]>;
@@ -40,7 +55,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   const [selectedBranchIndex, setSelectedBranchIndex] = useState(0);
   const [branchFilter, setBranchFilter] = useState("");
   const [branchName, setBranchName] = useState("");
-  const [existingSuffix, setExistingSuffix] = useState<number | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [result, setResult] = useState<{ success: boolean; finalName: string; error?: string } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -109,35 +123,20 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
     [getBranchesForRepo, getDefaultBranchForRepo, fetchForRepo],
   );
 
-  const checkBranchExists = useCallback(
-    (name: string) => {
-      if (!name.trim()) {
-        setExistingSuffix(null);
-        setValidationError(null);
-        return;
-      }
+  // The free name for what has been typed so far: derived on every render from
+  // the same two inputs the display reads, never held in state that a
+  // keystroke could leave a render behind.
+  const plannedName = useMemo(() => resolveFreeBranchName(branchName.trim(), branches), [branchName, branches]);
 
-      const validation = isValidGitBranchName(name);
-      if (!validation.valid) {
-        setValidationError(validation.error ?? null);
-        setExistingSuffix(null);
-        return;
-      }
-
+  const validateBranchName = useCallback((name: string) => {
+    if (!name.trim()) {
       setValidationError(null);
+      return;
+    }
 
-      let suffix = 0;
-      let testName = name;
-
-      while (branches.includes(testName)) {
-        suffix++;
-        testName = `${name}-${suffix}`;
-      }
-
-      setExistingSuffix(suffix > 0 ? suffix : null);
-    },
-    [branches],
-  );
+    const validation = isValidGitBranchName(name);
+    setValidationError(validation.valid ? null : (validation.error ?? null));
+  }, []);
 
   useEffect(() => {
     if (step === "SELECT_BRANCH" && !branchesLoadedRef.current && !loading && selectedRepoIndex >= 0) {
@@ -148,9 +147,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
   useEffect(() => {
     if (step === "ENTER_NAME") {
-      checkBranchExists(branchName);
+      validateBranchName(branchName);
     }
-  }, [branchName, step, checkBranchExists]);
+  }, [branchName, step, validateBranchName]);
 
   const handleCreateBranch = async () => {
     const trimmedName = branchName.trim();
@@ -164,8 +163,11 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
     setStep("CREATING");
     const baseBranch = filteredBranches[selectedBranchIndex];
+    // `plannedName`, not `trimmedName`: the name the step above displayed is
+    // the name that gets created.
+    const requestedName = plannedName;
     try {
-      const createResult = await createAndPushBranch(selectedRepoIndex, baseBranch, trimmedName);
+      const createResult = await createAndPushBranch(selectedRepoIndex, baseBranch, requestedName);
       setResult(createResult);
       if (createResult.success && onBranchCreated) {
         onBranchCreated({
@@ -177,7 +179,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
     } catch (err) {
       setResult({
         success: false,
-        finalName: trimmedName,
+        finalName: requestedName,
         error: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -207,7 +209,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         }
       } else if (step === "ENTER_NAME") {
         setBranchName("");
-        setExistingSuffix(null);
         setStep("SELECT_BRANCH");
       } else if (step === "RESULT") {
         onComplete(result?.success ?? false);
@@ -404,7 +405,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
   const renderNameInput = () => {
     const baseBranch = filteredBranches[selectedBranchIndex] || "";
-    const finalName = existingSuffix !== null ? `${branchName}-${existingSuffix}` : branchName;
+    const collides = plannedName !== branchName.trim();
     const endsWithSlash = branchName.endsWith("/");
 
     return (
@@ -424,9 +425,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
             Hint: consecutive slashes (//) are not allowed
           </Text>
         )}
-        {!validationError && !endsWithSlash && existingSuffix !== null && branchName && (
+        {!validationError && !endsWithSlash && collides && branchName && (
           <Text color="yellow">
-            Name exists, will create: <Text color="cyan">{finalName}</Text>
+            Name exists, will create: <Text color="cyan">{plannedName}</Text>
           </Text>
         )}
       </Box>

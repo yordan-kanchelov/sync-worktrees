@@ -233,6 +233,77 @@ describe("BranchCreationWizard", () => {
     });
   });
 
+  describe("colliding name", () => {
+    const singleRepo = (overrides: Partial<BranchCreationWizardProps> = {}): BranchCreationWizardProps => ({
+      ...defaultProps,
+      repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      getBranchesForRepo: vi.fn().mockResolvedValue(["x"]),
+      getDefaultBranchForRepo: vi.fn().mockResolvedValue("x"),
+      ...overrides,
+    });
+
+    // The step displayed `will create: x-1` and then submitted `x`. In worktree
+    // mode that name has no local head whenever the filters hid it, so nothing
+    // collided and the push moved the branch that was already on the remote.
+    it("submits the suffixed name it displayed, not the name that was typed", async () => {
+      const props = singleRepo();
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      stdin.write("\r"); // Select base branch
+      await waitForStateUpdate();
+
+      stdin.write("x");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Name exists, will create:");
+      expect(lastFrame()).toContain("x-1");
+
+      stdin.write("\r"); // Submit
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(props.createAndPushBranch).toHaveBeenCalledWith(0, "x", "x-1");
+    });
+
+    it("keeps walking the suffix until the name is free", async () => {
+      const props = singleRepo({ getBranchesForRepo: vi.fn().mockResolvedValue(["x", "x-1", "x-2"]) });
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      stdin.write("x");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("x-3");
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(props.createAndPushBranch).toHaveBeenCalledWith(0, "x", "x-3");
+    });
+
+    it("submits the typed name unchanged when nothing collides", async () => {
+      const props = singleRepo();
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
+
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      stdin.write("y");
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("Name exists");
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(props.createAndPushBranch).toHaveBeenCalledWith(0, "x", "y");
+    });
+  });
+
   describe("index clamping on filter", () => {
     it("should clamp selected index when filter reduces project list", async () => {
       const manyRepos = {

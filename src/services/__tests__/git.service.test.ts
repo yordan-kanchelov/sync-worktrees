@@ -1166,13 +1166,75 @@ describe("GitService", () => {
       expect(mockGit.revparse).toHaveBeenNthCalledWith(2, ["--verify", "main"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["branch", "--no-track", "feat/new", "main"]);
     });
+
+    // The branch filters (branchMaxAge/branchInclude/branchExclude) mean a
+    // branch that is on origin very often has no local head here, so `git
+    // branch` collides with nothing and the name is taken anyway. Origin is
+    // asked directly, and the answer is phrased "already exists" because that
+    // is the wording the TUI suffixes and retries on.
+    it("refuses a name that is on origin even when no local head collides", async () => {
+      mockGit.revparse.mockResolvedValue("abc123\n" as any);
+      (mockGit.raw as Mock).mockImplementation((args: unknown) =>
+        Array.isArray(args) && args[0] === "ls-remote"
+          ? Promise.resolve(`deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\trefs/heads/feat/new\n`)
+          : Promise.resolve(""),
+      );
+
+      await expect(gitService.createBranch("feat/new", "main")).rejects.toThrow(/already exists on origin/);
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["ls-remote", "--heads", "origin", "refs/heads/feat/new"]);
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["branch", "--no-track", "feat/new", "origin/main"]);
+    });
+
+    // A ref that merely starts with the name is a different branch: the
+    // fully-qualified pattern must not be read as a prefix match.
+    it("does not read a longer remote ref as a collision", async () => {
+      mockGit.revparse.mockResolvedValue("abc123\n" as any);
+      (mockGit.raw as Mock).mockImplementation((args: unknown) =>
+        Array.isArray(args) && args[0] === "ls-remote"
+          ? Promise.resolve(`deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\trefs/heads/feat/new-2\n`)
+          : Promise.resolve(""),
+      );
+
+      await gitService.createBranch("feat/new", "main");
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["ls-remote", "--heads", "origin", "refs/heads/feat/new"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "--no-track", "feat/new", "origin/main"]);
+    });
+
+    // `create_worktree` without a push works offline, and the create-only
+    // lease is what actually protects the remote — so a probe that cannot
+    // reach origin must not stop the branch being created.
+    it("still creates the branch when origin cannot be reached", async () => {
+      mockGit.revparse.mockResolvedValue("abc123\n" as any);
+      (mockGit.raw as Mock).mockImplementation((args: unknown) =>
+        Array.isArray(args) && args[0] === "ls-remote"
+          ? Promise.reject(new Error("fatal: Could not read from remote repository"))
+          : Promise.resolve(""),
+      );
+
+      await expect(gitService.createBranch("feat/new", "main")).resolves.toBeUndefined();
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["ls-remote", "--heads", "origin", "refs/heads/feat/new"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "--no-track", "feat/new", "origin/main"]);
+    });
   });
 
   describe("pushBranch", () => {
-    it("sets the new branch upstream to the same branch on origin", async () => {
+    // `--force-with-lease=<ref>:` with an EMPTY expectation is git's
+    // create-only push: the remote ref must not exist. Without it the push
+    // FAST-FORWARDS a branch that is already on origin whenever its tip is an
+    // ancestor of the base — someone else's branch, and any PR or CI run
+    // pinned to it, moved while the wizard reports a successful creation.
+    it("sets the new branch upstream and refuses to advance a ref that already exists", async () => {
       await gitService.pushBranch("feat/new");
 
-      expect(mockGit.push).toHaveBeenCalledWith(["origin", "feat/new:feat/new", "-u"]);
+      expect(mockGit.push).toHaveBeenCalledWith([
+        "origin",
+        "refs/heads/feat/new:refs/heads/feat/new",
+        "-u",
+        "--force-with-lease=refs/heads/feat/new:",
+      ]);
     });
   });
 

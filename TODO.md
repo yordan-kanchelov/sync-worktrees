@@ -314,7 +314,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T43** — `MOUSE_TRACKING_DISABLE` is never written on any exit path (q, SIGTERM, Ctrl+C): Ink
   marks itself unmounted before React effect cleanups run, so `useStdout().write` in App's cleanup is
   a no-op and the shell inherits a terminal with mouse reporting on
-- [ ] **T44** — Branch wizard acts on stale refs and its collision check is decorative: it submits
+- [x] **T44** — Branch wizard acts on stale refs and its collision check is decorative: it submits
   the unsuffixed name, `createBranch` only detects local heads, `push -u` can silently fast-forward an
   existing remote branch, and a failed push leaves an orphan local branch that makes the next attempt
   create `<name>-1`
@@ -2130,7 +2130,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   reaches stdout. Ink has no built-in mouse mode management to fall back on (grep of ink/build for
   `1000h`/`useMouse` finds none).
 
-### [ ] T44. Branch wizard acts on stale refs and its collision check is decorative: it submits the unsuffixed name, `createBranch` only detects local heads, `push -u` can silently fast-forward an existing remote branch, and a failed push leaves an orphan local branch that makes the next attempt create `<name>-1`
+### [x] T44. Branch wizard acts on stale refs and its collision check is decorative: it submits the unsuffixed name, `createBranch` only detects local heads, `push -u` can silently fast-forward an existing remote branch, and a failed push leaves an orphan local branch that makes the next attempt create `<name>-1`
 
 - **Category**: guardrail · **Subsystem**: tui
 - **Severity**: Medium · **Verification**: finder's evidence and code citations, not independently

@@ -1640,6 +1640,13 @@ describe("InteractiveUIService", () => {
         branchExists: vi.fn().mockResolvedValue({ local: false, remote: false }),
         createBranch: vi.fn().mockResolvedValue(undefined),
         pushBranch: vi.fn().mockResolvedValue(undefined),
+        // Derived from the name, never a constant: the rollback's
+        // compare-and-swap has to be on the commit THIS attempt created, and a
+        // stand-in that answers the same oid for every branch would let a
+        // rollback that reuses a stale oid pass.
+        getLocalBranchCommit: vi.fn(async (name: string) => `oid-${name}`),
+        deleteLocalBranchIfAt: vi.fn().mockResolvedValue(undefined),
+        getBareRepoPath: vi.fn().mockReturnValue("/test/.bare/app"),
         getWorktrees: vi.fn().mockResolvedValue([
           { path: "/test/worktrees/main", branch: "main" },
           { path: "/test/worktrees/develop", branch: "develop" },
@@ -1899,6 +1906,197 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(true);
         expect(result.finalName).toBe("feature/test-2");
         expect(mockGitService.createBranch).toHaveBeenCalledTimes(3);
+
+        void service.destroy();
+      });
+
+      // The wizard submits the name it displayed, so a typed `x` whose name was
+      // taken arrives here ALREADY suffixed. Appending to what it was handed
+      // would offer `x-1-1` and then `x-1-2`; the sequence the user was shown,
+      // and the only one that reads as a suffix walk, is `x-1`, `x-2`, `x-3`.
+      it("continues the suffix it was handed instead of restarting the walk under it", async () => {
+        mockGitService.createBranch
+          .mockRejectedValueOnce(new Error("already exists"))
+          .mockRejectedValueOnce(new Error("already exists"))
+          .mockResolvedValueOnce(undefined);
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "x-1");
+
+        expect(result).toEqual({ success: true, finalName: "x-3" });
+        expect(mockGitService.createBranch).toHaveBeenNthCalledWith(1, "x-1", "main");
+        expect(mockGitService.createBranch).toHaveBeenNthCalledWith(2, "x-2", "main");
+        expect(mockGitService.createBranch).toHaveBeenNthCalledWith(3, "x-3", "main");
+        expect(mockGitService.createBranch.mock.calls.map((call: string[]) => call[0])).not.toContain("x-1-1");
+
+        void service.destroy();
+      });
+
+      // One collision after the wizard's own: the whole visible sequence is
+      // `x-1` then `x-2`, which is what the picker would have offered next.
+      it("takes a name the wizard already suffixed once to the next suffix, not a nested one", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("stale info: refs/heads/x-1"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "x-1");
+
+        expect(result).toEqual({ success: true, finalName: "x-2" });
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(1, "x-1");
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(2, "x-2");
+        expect(mockGitService.pushBranch).toHaveBeenCalledTimes(2);
+
+        void service.destroy();
+      });
+
+      // A trailing `-<n>` is a suffix to continue; nothing else is. A name that
+      // merely ends in a hyphen or a non-number keeps the walk at `-1`.
+      it("starts the walk at -1 for a name that does not end in a number", async () => {
+        mockGitService.createBranch.mockRejectedValueOnce(new Error("already exists")).mockResolvedValueOnce(undefined);
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "release-rc");
+
+        expect(result).toEqual({ success: true, finalName: "release-rc-1" });
+
+        void service.destroy();
+      });
+
+      // The name the result carries is the branch that was actually tried. A
+      // failure reported under the caller's name points at a branch this call
+      // never touched — here `x` was never pushed, `x-1` was.
+      it("names the branch it actually attempted when the failure is not a collision", async () => {
+        mockGitService.createBranch.mockRejectedValueOnce(new Error("already exists"));
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("connection reset"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "x");
+
+        expect(result.success).toBe(false);
+        expect(result.finalName).toBe("x-1");
+        expect(result.error).toContain("could not push 'x-1'");
+
+        void service.destroy();
+      });
+
+      it("names the last branch it attempted when every attempt collides", async () => {
+        mockGitService.createBranch.mockRejectedValue(new Error("already exists"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "x");
+
+        expect(result.success).toBe(false);
+        expect(result.finalName).toBe("x-9");
+        expect(result.error).toContain("after 10 attempts");
+        expect(mockGitService.createBranch).toHaveBeenCalledTimes(10);
+
+        void service.destroy();
+      });
+
+      // A push that never landed must not leave the local branch behind: the
+      // wizard offers the same name again, and the next attempt would collide
+      // with this attempt's own leftover and quietly produce '<name>-1' while
+      // '<name>' is still nowhere on the remote.
+      it("deletes the branch it just created when the push fails, and names the push failure", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("remote rejected: pre-receive hook declined"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/new");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("could not push 'feature/new'");
+        expect(result.error).toContain("pre-receive hook declined");
+        // Compare-and-swap on the commit THIS attempt created the branch at.
+        expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenCalledWith("feature/new", "oid-feature/new");
+
+        void service.destroy();
+      });
+
+      // The create-only lease reports a name that turned out to be on origin
+      // as "stale info". Phrased as the collision it is, so the loop suffixes
+      // and retries instead of handing the user git's wording.
+      it("retries under a suffix when the lease refuses a name that is already on origin", async () => {
+        mockGitService.pushBranch
+          .mockRejectedValueOnce(new Error("stale info: refs/heads/feature/x"))
+          .mockRejectedValueOnce(new Error("stale info: refs/heads/feature/x-1"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result).toEqual({ success: true, finalName: "feature/x-2" });
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(1, "feature/x");
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(2, "feature/x-1");
+        expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(3, "feature/x-2");
+        // Every rollback swaps on ITS OWN attempt's commit. Re-reading the
+        // first attempt's oid would pass against a stand-in that answers the
+        // same value for every name, and would leave the second attempt's
+        // branch behind against a real repository.
+        expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenNthCalledWith(1, "feature/x", "oid-feature/x");
+        expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenNthCalledWith(2, "feature/x-1", "oid-feature/x-1");
+
+        void service.destroy();
+      });
+
+      // The branch is left in place when it cannot be removed, so the message
+      // has to say so rather than let the user believe it was cleaned up.
+      it("reports the leftover branch when the rollback itself fails", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("connection reset"));
+        mockGitService.deleteLocalBranchIfAt.mockRejectedValueOnce(new Error("ref moved"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/new");
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("is still in the bare repository");
+        // The branch is in `.bare/<repo>`, which the user never cd's into, so
+        // the command has to name the repository it is to be run against.
+        expect(result.error).toContain('git -C "/test/.bare/app" branch -D feature/new');
+
+        void service.destroy();
+      });
+
+      // git's stderr for an https remote embeds the credential in the URL it
+      // failed on, and this message is shown in the wizard's result pane.
+      it("redacts the credential out of the push failure and appends the auth hint", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(
+          new Error(
+            "fatal: unable to access 'https://x-access-token:ghp_sUp3rSecret@github.com/acme/app.git/': " +
+              "Authentication failed for 'https://x-access-token:ghp_sUp3rSecret@github.com/acme/app.git/'",
+          ),
+        );
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/new");
+
+        expect(result.success).toBe(false);
+        expect(result.error).not.toContain("ghp_sUp3rSecret");
+        expect(result.error).not.toContain("x-access-token");
+        expect(result.error).toContain("https://***@github.com/acme/app.git/");
+        expect(result.error).toContain("Hint: ");
+
+        void service.destroy();
+      });
+
+      // The retry exists to get past a name that is taken. It must not run
+      // once this attempt has left a branch behind: suffixing past the leftover
+      // recreates the exact defect this flow is about — '<name>' orphaned
+      // locally and never pushed while '<name>-1' is created instead — and it
+      // would discard the only message that names the leftover.
+      it("stops instead of suffixing past a branch the rollback could not remove", async () => {
+        mockGitService.pushBranch.mockRejectedValueOnce(new Error("stale info: refs/heads/feature/x"));
+        mockGitService.deleteLocalBranchIfAt.mockRejectedValueOnce(new Error("ref moved"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.createAndPushBranch(0, "main", "feature/x");
+
+        expect(result.success).toBe(false);
+        expect(result.finalName).toBe("feature/x");
+        // The collision wording is still there — and so is the notice that the
+        // retry would otherwise have thrown away with it.
+        expect(result.error).toContain("already exists on origin");
+        expect(result.error).toContain("The local branch 'feature/x' is still in the bare repository");
+        expect(result.error).toContain('git -C "/test/.bare/app" branch -D feature/x');
+        expect(mockGitService.pushBranch).toHaveBeenCalledTimes(1);
+        expect(mockGitService.createBranch).toHaveBeenCalledTimes(1);
 
         void service.destroy();
       });

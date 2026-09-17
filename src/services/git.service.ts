@@ -224,10 +224,24 @@ export class GitService {
     return this.gitInstances.get(dirPath, `${useLfsSkip ? "1" : "0"}::${kind}`, () =>
       createGitClient(
         dirPath,
-        useLfsSkip ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {},
+        this.buildGitEnv(useLfsSkip),
         this.buildSimpleGitOptions(kind === "network" ? this.getFetchTimeoutMs() : 0),
       ),
     );
+  }
+
+  // Per-client additions layered over the sanitized process environment by
+  // createGitClient. Force a stable C locale so git's stderr is deterministic
+  // English, exactly as clone mode does for its own clients: the push-status
+  // reason a refused lease is recognised by ("stale info"), the missing-ref
+  // classification and the LFS one all match on those strings, and under a
+  // non-English LANG/LC_ALL they stop matching without any other symptom — a
+  // lease rejection would be reported as a hard failure instead of the
+  // collision it is.
+  private buildGitEnv(useLfsSkip: boolean, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { LC_ALL: "C", LANG: "C", ...extra };
+    if (useLfsSkip) env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
+    return env;
   }
 
   // Every client cached for a path that has stopped being this repository's
@@ -321,7 +335,7 @@ export class GitService {
       if (destination !== "unverifiable") await this.writeBareClonePendingMarker();
       const cloneGit = createGitClient(
         undefined,
-        this.isLfsSkipEnabled() ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {},
+        this.buildGitEnv(this.isLfsSkipEnabled()),
         this.buildSimpleGitOptions(this.getCloneTimeoutMs()),
       );
       try {
@@ -765,7 +779,11 @@ export class GitService {
   }
 
   async getRemoteDefaultBranch(repoUrl: string): Promise<string> {
-    const git = createGitClient(undefined, {}, this.buildSimpleGitOptions(this.getFetchTimeoutMs()));
+    const git = createGitClient(
+      undefined,
+      this.buildGitEnv(false),
+      this.buildSimpleGitOptions(this.getFetchTimeoutMs()),
+    );
 
     try {
       const out = await git.raw(["ls-remote", "--symref", repoUrl, "HEAD"]);
@@ -968,7 +986,11 @@ export class GitService {
     const worktreeGit = this.config.sparseCheckout
       ? // `lfs ls-files` reads the index and .gitattributes — a local command,
         // so no inactivity kill, same as the cached client used otherwise.
-        createGitClient(worktreePath, { [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" }, this.buildSimpleGitOptions(0))
+        createGitClient(
+          worktreePath,
+          this.buildGitEnv(false, { [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" }),
+          this.buildSimpleGitOptions(0),
+        )
       : this.getCachedGit(worktreePath);
 
     try {
@@ -2355,9 +2377,43 @@ export class GitService {
     return candidates[0];
   }
 
+  // A live look at origin, not at refs/remotes: the remote-tracking refs are
+  // only as fresh as the last fetch, and `branchMaxAge`/`branchInclude`/
+  // `branchExclude` mean a branch that is on origin very often has no local
+  // head here at all — so the collision check `git branch` performs sees
+  // nothing and the name is taken anyway. A fully-qualified `ls-remote`
+  // pattern matches that one ref and nothing that merely starts with it.
+  async remoteBranchExists(branchName: string): Promise<boolean> {
+    const ref = `${GIT_CONSTANTS.REFS.HEADS}${branchName}`;
+    const output = await this.getCachedNetworkGit(this.bareRepoPath).raw(["ls-remote", "--heads", "origin", ref]);
+    return output
+      .split("\n")
+      .map((line) => line.split(/\s+/)[1] ?? "")
+      .includes(ref);
+  }
+
   async createBranch(branchName: string, baseBranch: string): Promise<void> {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     const baseRef = await this.resolveCreateBranchBaseRef(bareGit, baseBranch);
+
+    // The wording matters: the TUI retries the whole call with a '-1', '-2', …
+    // suffix on exactly "already exists", which is how a local collision has
+    // always behaved, so a remote-only one takes the same route.
+    //
+    // A probe that cannot reach the remote must not stop a branch from being
+    // created — `create_worktree` without a push works offline — so failure
+    // here is not fatal. The create-only lease in pushBranch is what actually
+    // guarantees an existing remote branch is never advanced; this probe only
+    // buys the better message, and the suffix, before anything is written.
+    let onOrigin = false;
+    try {
+      onOrigin = await this.remoteBranchExists(branchName);
+    } catch (error) {
+      this.logger.debug(`Could not ask origin whether '${branchName}' exists: ${getErrorMessage(error)}`);
+    }
+    if (onOrigin) {
+      throw new GitOperationError("branch", `branch '${branchName}' already exists on origin; choose another name`);
+    }
 
     await bareGit.raw(["branch", "--no-track", branchName, baseRef]);
     this.logger.info(`Created branch '${branchName}' from '${baseRef}'`);
@@ -2365,8 +2421,22 @@ export class GitService {
 
   async pushBranch(branchName: string): Promise<void> {
     const bareGit = this.getCachedNetworkGit(this.bareRepoPath);
+    const ref = `${GIT_CONSTANTS.REFS.HEADS}${branchName}`;
 
-    await bareGit.push(["origin", `${branchName}:${branchName}`, "-u"]);
+    // `--force-with-lease` with an EMPTY expected value leases the ref against
+    // "does not exist", so an existing remote ref is never advanced or
+    // force-updated: git rejects the push with "stale info" instead. Without
+    // it, `origin <name>:<name>` FAST-FORWARDS a branch that is already on
+    // origin whenever its tip is an ancestor of the base — silently moving
+    // somebody else's branch, and with it any open PR or CI run pinned to that
+    // ref, while the wizard reports a successful creation.
+    //
+    // It does not require the ref to be absent, because git enforces a lease
+    // only on a ref the push would CHANGE: a remote ref already at exactly
+    // this commit is `[up to date]`, exit 0, and `-u` still sets the upstream.
+    // Nothing moves in that case either, which is the whole guarantee. (Both
+    // directions — ancestor and diverged — verified on git 2.43.)
+    await bareGit.push(["origin", `${ref}:${ref}`, "-u", `--force-with-lease=${ref}:`]);
     this.logger.info(`Pushed branch '${branchName}' to remote`);
   }
 

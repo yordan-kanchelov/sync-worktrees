@@ -258,6 +258,19 @@ describe("GitService git client timeouts", () => {
       });
     });
 
+    // The collision probe talks to origin, so it belongs on the network client
+    // like every other command that does: on the local one a stalled connection
+    // has nothing to end it, and the branch creation behind it hangs forever.
+    it("asks origin whether a branch exists with the fetch block timeout", async () => {
+      const service = newService();
+
+      await service.remoteBranchExists("feature-1");
+
+      const prober = onlyClientThatRan("ls-remote", "--heads", "origin");
+      expect(prober.baseDir).toBe(TEST_PATHS.bareRepo);
+      expect(prober.options.timeout).toEqual({ block: DEFAULT_CONFIG.FETCH_TIMEOUT_MS });
+    });
+
     it("asks the remote for its default branch with the fetch block timeout", async () => {
       // origin/HEAD unreadable: detectDefaultBranch falls through to
       // `remote set-head -a`, the one command there that talks to the remote.
@@ -291,6 +304,26 @@ describe("GitService git client timeouts", () => {
       // network client's options are the local ones plus the block timeout.
       expect(Object.keys(localClient.options).sort()).toEqual(["progress", "unsafe"]);
       expect(Object.keys(networkClient.options).sort()).toEqual(["progress", "timeout", "unsafe"]);
+    });
+
+    // Error classification here matches on git's own stderr — the push-status
+    // reason a refused create-only lease is recognised by ("stale info"), the
+    // missing-remote-ref check, the LFS one. Those strings are translated, so
+    // under a non-English LANG/LC_ALL the matching silently stops firing and a
+    // lease rejection is reported as a hard failure instead of the collision it
+    // is. Clone mode pins the locale on its clients for exactly this reason.
+    it("runs git under a pinned C locale on every client, like clone mode", async () => {
+      const service = newService();
+      await service.initialize();
+
+      await service.fetchAll();
+      await service.checkoutHead(MAIN_WORKTREE_PATH);
+      await service.pushBranch("feature-1");
+
+      expect(built.length).toBeGreaterThan(0);
+      for (const client of built) {
+        expect(client.env).toMatchObject({ LC_ALL: "C", LANG: "C" });
+      }
     });
 
     it("never hands a local command the network client of the same path, or the other way round", async () => {
