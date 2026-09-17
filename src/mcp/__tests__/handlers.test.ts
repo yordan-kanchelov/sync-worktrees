@@ -1938,85 +1938,57 @@ describe("handleGetWorktreeStatus", () => {
 });
 
 describe("handleLoadConfig", () => {
-  it("returns error when no configPath, env var, or discoverable config exists", async () => {
-    const oldEnv = process.env.SYNC_WORKTREES_CONFIG;
-    delete process.env.SYNC_WORKTREES_CONFIG;
-
-    try {
-      const { ctx } = makeCtx({});
-      const result = await invoke(handleLoadConfig, ctx, {});
-      const body = parseResponse(result);
-      expect(body.error).toBe(true);
-      expect(body.message).toContain("detect_context");
-    } finally {
-      if (oldEnv !== undefined) process.env.SYNC_WORKTREES_CONFIG = oldEnv;
-    }
+  it("returns error when no configPath or discoverable config exists", async () => {
+    const { ctx } = makeCtx({});
+    const result = await invoke(handleLoadConfig, ctx, {});
+    const body = parseResponse(result);
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("detect_context");
   });
 
   it("reuses an already detected config path", async () => {
-    const oldEnv = process.env.SYNC_WORKTREES_CONFIG;
-    delete process.env.SYNC_WORKTREES_CONFIG;
+    const { ctx } = makeCtx({ configPath: "/workspace/sync-worktrees.config.js" });
+    const result = await invoke(handleLoadConfig, ctx, {});
+    const body = parseResponse(result);
 
-    try {
-      const { ctx } = makeCtx({ configPath: "/workspace/sync-worktrees.config.js" });
-      const result = await invoke(handleLoadConfig, ctx, {});
-      const body = parseResponse(result);
-
-      expect(body.error).toBeUndefined();
-      expect(ctx.loadConfig).toHaveBeenCalledWith("/workspace/sync-worktrees.config.js");
-      expect(ctx.detectFromPath).not.toHaveBeenCalled();
-    } finally {
-      if (oldEnv !== undefined) process.env.SYNC_WORKTREES_CONFIG = oldEnv;
-    }
+    expect(body.error).toBeUndefined();
+    expect(ctx.loadConfig).toHaveBeenCalledWith("/workspace/sync-worktrees.config.js");
+    expect(ctx.detectFromPath).not.toHaveBeenCalled();
   });
 
   it("auto-detects config from launch CWD when no config is already known", async () => {
-    const oldEnv = process.env.SYNC_WORKTREES_CONFIG;
-    delete process.env.SYNC_WORKTREES_CONFIG;
+    const { ctx } = makeCtx({
+      discovered: makeDiscovered({ configPath: "/workspace/sync-worktrees.config.js" }),
+      launchCwd: "/workspace/repo/main",
+    });
+    const result = await invoke(handleLoadConfig, ctx, {});
+    const body = parseResponse(result);
 
-    try {
-      const { ctx } = makeCtx({
-        discovered: makeDiscovered({ configPath: "/workspace/sync-worktrees.config.js" }),
-        launchCwd: "/workspace/repo/main",
-      });
-      const result = await invoke(handleLoadConfig, ctx, {});
-      const body = parseResponse(result);
-
-      expect(body.error).toBeUndefined();
-      expect(ctx.detectFromPath).toHaveBeenCalledWith("/workspace/repo/main");
-      expect(ctx.loadConfig).toHaveBeenCalledWith("/workspace/sync-worktrees.config.js");
-    } finally {
-      if (oldEnv !== undefined) process.env.SYNC_WORKTREES_CONFIG = oldEnv;
-    }
+    expect(body.error).toBeUndefined();
+    expect(ctx.detectFromPath).toHaveBeenCalledWith("/workspace/repo/main");
+    expect(ctx.loadConfig).toHaveBeenCalledWith("/workspace/sync-worktrees.config.js");
   });
 
   it("surfaces the real parse error when detection finds a config that fails to load", async () => {
-    const oldEnv = process.env.SYNC_WORKTREES_CONFIG;
-    delete process.env.SYNC_WORKTREES_CONFIG;
+    // detectFromPath only records configs that loaded successfully, so a
+    // found-but-broken config is only reachable via the findConfigUpward
+    // fallback — without it the user would get the unhelpful generic
+    // "configPath required" message instead of the parse error.
+    const { ctx } = makeCtx({
+      launchCwd: "/workspace/repo/main",
+      loadConfigImpl: async () => {
+        throw new Error("Unexpected token '}' in sync-worktrees.config.js");
+      },
+    });
+    (ctx as any).findConfigUpward.mockResolvedValue("/workspace/sync-worktrees.config.js");
 
-    try {
-      // detectFromPath only records configs that loaded successfully, so a
-      // found-but-broken config is only reachable via the findConfigUpward
-      // fallback — without it the user would get the unhelpful generic
-      // "configPath required" message instead of the parse error.
-      const { ctx } = makeCtx({
-        launchCwd: "/workspace/repo/main",
-        loadConfigImpl: async () => {
-          throw new Error("Unexpected token '}' in sync-worktrees.config.js");
-        },
-      });
-      (ctx as any).findConfigUpward.mockResolvedValue("/workspace/sync-worktrees.config.js");
+    const result = await invoke(handleLoadConfig, ctx, {});
+    const body = parseResponse(result);
 
-      const result = await invoke(handleLoadConfig, ctx, {});
-      const body = parseResponse(result);
-
-      expect(body.error).toBe(true);
-      expect(body.message).toContain("Unexpected token");
-      expect(body.message).not.toContain("configPath required");
-      expect(ctx.loadConfig).toHaveBeenCalledWith("/workspace/sync-worktrees.config.js");
-    } finally {
-      if (oldEnv !== undefined) process.env.SYNC_WORKTREES_CONFIG = oldEnv;
-    }
+    expect(body.error).toBe(true);
+    expect(body.message).toContain("Unexpected token");
+    expect(body.message).not.toContain("configPath required");
+    expect(ctx.loadConfig).toHaveBeenCalledWith("/workspace/sync-worktrees.config.js");
   });
 
   it("loads from explicit path", async () => {

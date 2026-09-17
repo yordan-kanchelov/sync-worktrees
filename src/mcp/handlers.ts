@@ -731,14 +731,10 @@ export async function handleLoadConfig(
   params: { configPath?: string },
   _handlerContext?: HandlerContext,
 ): Promise<CallToolResult> {
-  const configPath =
-    params.configPath ??
-    process.env.SYNC_WORKTREES_CONFIG ??
-    ctx.getConfigPath() ??
-    (await detectConfigFromLaunchCwd(ctx));
+  const configPath = params.configPath ?? ctx.getConfigPath() ?? (await detectConfigFromLaunchCwd(ctx));
   if (!configPath) {
     throw new Error(
-      "configPath required (or set SYNC_WORKTREES_CONFIG env var, call detect_context with a path, or launch from a sync-worktrees workspace)",
+      "configPath required (or call detect_context with a path, or launch the server from inside a sync-worktrees workspace)",
     );
   }
   await ctx.loadConfig(configPath);

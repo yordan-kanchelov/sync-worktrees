@@ -11,19 +11,12 @@ async function main(): Promise<void> {
   warnIfUnitTestShortcutEnabled((message) => process.stderr.write(`[sync-worktrees-mcp] ${message}\n`));
   const context = new RepositoryContext();
 
-  const configPath = process.env.SYNC_WORKTREES_CONFIG;
-  if (configPath) {
-    try {
-      await context.loadConfig(configPath);
-      process.stderr.write(`[sync-worktrees-mcp] Loaded config: ${configPath}\n`);
-    } catch (err) {
-      process.stderr.write(`[sync-worktrees-mcp] Failed to load SYNC_WORKTREES_CONFIG: ${(err as Error).message}\n`);
-    }
-  }
-
   let discovered: DiscoveredRepoContext | null = null;
   try {
     discovered = await context.detectFromPath(process.cwd());
+    if (discovered.configPath) {
+      process.stderr.write(`[sync-worktrees-mcp] Auto-loaded config: ${discovered.configPath}\n`);
+    }
     if (discovered.isWorktree) {
       process.stderr.write(
         `[sync-worktrees-mcp] Auto-detected ${discovered.kind} worktree at ${discovered.currentWorktreePath} (branch: ${discovered.currentBranch})\n`,

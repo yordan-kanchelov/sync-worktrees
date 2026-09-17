@@ -7,8 +7,8 @@ const execFileAsync = promisify(execFile);
 
 const MCP_SERVER_NAME = "sync-worktrees";
 
-// Auto-detect mode only: the server locates the bare repo from its CWD, so one
-// entry works across every repo. Deliberately no SYNC_WORKTREES_CONFIG binding.
+// The server auto-detects the bare repo and config from its CWD, so one entry
+// works across every repo.
 const MCP_ADD_ARGS = ["mcp", "add", MCP_SERVER_NAME, "--", "npx", "-y", "-p", "sync-worktrees", "sync-worktrees-mcp"];
 
 interface McpClient {

@@ -384,7 +384,6 @@ async function createSandbox() {
       HOME: dir,
       XDG_STATE_HOME: path.join(dir, "state"),
       XDG_CONFIG_HOME: path.join(dir, "config"),
-      SYNC_WORKTREES_CONFIG: "",
     },
   };
 }

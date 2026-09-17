@@ -120,16 +120,13 @@ Install the sync-worktrees MCP server with your client.
   "mcpServers": {
     "sync-worktrees": {
       "command": "npx",
-      "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"],
-      "env": {
-        "SYNC_WORKTREES_CONFIG": "/absolute/path/to/sync-worktrees.config.js"
-      }
+      "args": ["-y", "-p", "sync-worktrees", "sync-worktrees-mcp"]
     }
   }
 }
 ```
 
-If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. `SYNC_WORKTREES_CONFIG` is optional — without it the server runs in **auto-detect mode**: when the client's CWD sits inside a worktree managed by sync-worktrees, the server locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require the repository to be listed in a loaded config (or call `load_config` at runtime); they stay unavailable for auto-detected repositories no matter which other tools have run.
+If installed globally, replace `command` with `sync-worktrees-mcp` and drop `args`. No config path is needed: the server runs in **auto-detect mode**. It walks up from the client's CWD and loads the first `sync-worktrees.config.{js,mjs,cjs,ts}` it finds, and when the CWD sits inside a worktree managed by sync-worktrees, it locates the bare repo, enumerates sibling worktrees, and enables per-worktree operations. `sync` and `initialize` require the repository to be listed in a loaded config — for a config that is not in the CWD or one of its parent directories, call `load_config` with its path at runtime. They stay unavailable for auto-detected repositories no matter which other tools have run.
 
 <details>
 <summary>Claude Code</summary>
@@ -139,8 +136,6 @@ Use the Claude Code CLI:
 ```bash
 claude mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp
 ```
-
-To pass a config path, append `-e SYNC_WORKTREES_CONFIG=/absolute/path/to/sync-worktrees.config.js` to the command.
 
 </details>
 

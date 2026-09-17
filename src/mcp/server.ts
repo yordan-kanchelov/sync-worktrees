@@ -317,14 +317,12 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "load_config",
     {
       description:
-        "Load/reload sync-worktrees JS config for this server process. Replaces previously loaded repos. Uses configPath, SYNC_WORKTREES_CONFIG, an already detected config, or a launch-CWD auto-detect fallback. For first discovery from an arbitrary project path, call detect_context with path. Returns: {configPath, currentRepository, repositories: [{name, repoUrl, worktreeDir, source}]}.",
+        "Load/reload sync-worktrees JS config for this server process. Replaces previously loaded repos. Uses configPath, an already detected config, or a launch-CWD auto-detect fallback. For first discovery from an arbitrary project path, call detect_context with path. Returns: {configPath, currentRepository, repositories: [{name, repoUrl, worktreeDir, source}]}.",
       inputSchema: z.strictObject({
         configPath: z
           .string()
           .optional()
-          .describe(
-            "Config file path. Falls back to SYNC_WORKTREES_CONFIG, an already detected config, or launch-CWD auto-detect.",
-          ),
+          .describe("Config file path. Falls back to an already detected config, or launch-CWD auto-detect."),
       }),
       outputSchema: loadConfigOutputSchema,
       annotations: {
