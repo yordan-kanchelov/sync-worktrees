@@ -1,6 +1,6 @@
 # Implementation plan — whole-app review (T1–T121)
 
-**116 of 121 done · 1 declined · 4 open — 96% complete.**
+**117 of 121 done · 1 declined · 3 open — 97% complete.**
 
 This file is regenerated from `TODO.md` and this branch's history every time an item merges. It
 is not hand-maintained, because a hand-kept plan drifts from the branch it claims to describe.
@@ -44,16 +44,15 @@ lands here.
 
 | | count |
 |---|---|
-| Merged | 116 |
+| Merged | 117 |
 | Declined | 1 |
-| Open | 4 |
+| Open | 3 |
 
 
 ## Remaining
 
 - **T108** — Reload (r) initializes the new services before injecting the UI logger, so clone/fetch/init output and warn...
 - **T109** — Docs/help drift: README and the help modal say Esc quits, but the main screen ignores Esc; README quick sta...
-- **T113** — NODE_ENV=test silently disables the cross-process lock, and the e2e double-run test (spawning dist under th...
 - **T115** — Repository initialization failures are logged without the repository name in both runOnce and reload paths,...
 
 ## Declined
@@ -77,19 +76,21 @@ green suite. The last entry belongs to the cluster still in flight above:
 - **T41+T45+T46** — The cycle refcount gated only the `setStatus` channel, so `recordSyncOutcome` still reached the UI's idle state through `updateLastSyncTime` and the first cycle to finish wiped the other's progress rows — the item's headline failure, and a regression against the parent. Every new test watched the service's event stream rather than the rendered frame, which is why it passed. Two further finds: a test mock resolved an object where the real function resolves a string, silently unmounting the App mid-test and making every later frame assertion vacuous; and T45's loader guard was pinned by nothing, because every test passed one stable function as the loader while the real caller passes a new arrow on every render.
 - **T44** — The fix introduced a regression of its own: making the wizard submit the name it displayed was right, but the service still walked its suffix from the name it was handed, so a second collision produced `x-1-1` instead of `x-2`. Separately, the new rollback was a line-for-line copy of clone mode's — comment included — with exactly the two credential guards deleted, so git's stderr (which embeds the access token for an https remote) reached the wizard's result pane unredacted. A lens also checked the create-only lease against real git 2.43 and found the code's own comment overstated it: git leases only a ref the push would change, so the claim to require the ref's absence was wrong even though the guarantee the fix needs held exactly.
 - **T116 + T48** — The magic gate inverted the protection it was built to provide. `hasMagic` was called bare while glob parses with `nonegate` and `nocomment` on, so a leading `!(...)` extglob was judged a literal path, handed the EMPTY ignore set, and then expanded across every directory — `['!(node_modules)/.env']` copied `node_modules/.env`, and `['!(dist)/config.json']` reached `.bare/config.json`. The README meanwhile promised that an extglob skips exactly those directories. The fixer then found a second instance of the same root cause that no lens had flagged: `#cache/**/.env` is a comment to the bare call and a live pattern to glob.
+- **T113** — A test written to close a gap in the evidence had a gap in its own. It arranges contention with a git shim that parks every fetch until a gate opens — but nothing checked the arrangement had engaged, so with the shim removed entirely it still passed 8/8, and with its match disengaged as a prepended `-c` would do, 5/5. The determinism it advertised was unverified. The changeset also named the wrong lock file: worktree mode takes the bare lock first, so the loser is always ELOCKED on `.bare.lock` and never touches the worktreeDir lock, and the file the test stats is written by its own seed run.
 
 ## Follow-ups
 
-166 items found along the way but deliberately left out of scope, recorded separately rather than
+170 items found along the way but deliberately left out of scope, recorded separately rather than
 widening a cluster's diff. They include a standing security item: `bin/sync-worktrees.js` does not
 redact credential-bearing URLs.
 
 ## Merge history
 
-102 squash-merged clusters. The 12 most recent:
+103 squash-merged clusters. The 12 most recent:
 
 | commit | item | subject |
 |---|---|---|
+| `3ff580f` | T116 | fix(file-copy): copy the path a pattern spells out, and keep the ignore list on the patterns that wander |
 | `625e0e2` | T44 | fix(tui): stop the branch wizard advancing a branch that is already on origin |
 | `a123c33` | T41 | fix(tui): claim repositories per cycle, end a sync from the cycle count alone, load a modal's list once, and keep the log panel inside its height |
 | `8f74f93` | T25 | fix(tui): bound the status fan-out, show what it could not probe, and stop the disk total inheriting a walk that predates the change |
@@ -101,6 +102,5 @@ redact credential-bearing URLs.
 | `6030578` | T101 | perf(mcp): one status probe per worktree, and one per worktree only once |
 | `bcc769b` | T99 | fix(mcp): a found-but-broken config now reaches the agent |
 | `31ef870` | T98 | fix(mcp): update_worktree names a detached HEAD instead of denying the path |
-| `4595568` | T104 | fix(mcp): create_worktree reports a pre-existing worktree and is idempotent |
 
 The full list is `git log claude/app-code-review-optimize-5kr6jf`.

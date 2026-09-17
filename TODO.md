@@ -347,7 +347,7 @@ Items marked `[~]` wait on the product decisions listed near the end of the docu
 - [x] **T112** — `$TERMINAL=gnome-terminal` (and other `$TERMINAL`/`SYNC_WORKTREES_TERMINAL` values
   needing `--`) is launched with `-e sh -c <cmd>`, which the probe path already knows is wrong for
   gnome-terminal; command strings are split on whitespace so paths with spaces break
-- [ ] **T113** — NODE_ENV=test silently disables the cross-process lock, and the e2e double-run test
+- [x] **T113** — NODE_ENV=test silently disables the cross-process lock, and the e2e double-run test
   (spawning dist under the inherited NODE_ENV=test) therefore never exercises locking; no test
   anywhere runs two real processes against one repo
 - [x] **T114** — onBranchCreated hooks are killed at a hard-coded, undocumented 60 s timeout (the
@@ -4343,7 +4343,7 @@ what the subsystem reviewers reported incidentally. Expect more documentation dr
   only; gnome-terminal is only tested implicitly through the candidate loop. Not verified
   empirically (no gnome-terminal available), hence moderate confidence.
 
-### [ ] T113. NODE_ENV=test silently disables the cross-process lock, and the e2e double-run test (spawning dist under the inherited NODE_ENV=test) therefore never exercises locking; no test anywhere runs two real processes against one repo
+### [x] T113. NODE_ENV=test silently disables the cross-process lock, and the e2e double-run test (spawning dist under the inherited NODE_ENV=test) therefore never exercises locking; no test anywhere runs two real processes against one repo
 
 - **Category**: testing · **Subsystem**: process
 - **Severity**: Low · **Verification**: finder's evidence and code citations, not independently
