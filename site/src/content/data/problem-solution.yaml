@@ -28,7 +28,7 @@
   order: 3
 - id: with-4
   side: with
-  text: "Open `frontend/feature-login-df7c7aeb` and `backend/feature-login-df7c7aeb` at the same time — the same branch name gets the same folder name in every repo"
+  text: "Open the same branch in `frontend/` and `backend/` at the same time — one folder per branch, at the same path in every repo"
   order: 4
 - id: with-5
   side: with
