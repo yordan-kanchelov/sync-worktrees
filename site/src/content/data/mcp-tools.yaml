@@ -6,7 +6,7 @@
   order: 1
 - id: list_worktrees
   name: list_worktrees
-  desc: "Every worktree with a status label (clean, dirty, stale), whether it is safe to remove, and when it last synced — across all repos, or one."
+  desc: "Every worktree with its status, whether it is safe to remove, and when it last synced — across all repos, or one."
   order: 2
 - id: get_worktree_status
   name: get_worktree_status
@@ -14,7 +14,7 @@
   order: 3
 - id: create_worktree
   name: create_worktree
-  desc: "Worktree mode only. Check out a branch in its own directory; a new branch is pushed create-only, so an existing remote branch is never moved."
+  desc: "Worktree mode only. Check out a branch in its own directory; a new branch is pushed by default, create-only, so an existing remote branch is never moved."
   order: 4
 - id: update_worktree
   name: update_worktree
@@ -30,7 +30,7 @@
   order: 7
 - id: load_config
   name: load_config
-  desc: "Load or switch the config at runtime, when the server cannot find one from where it started."
+  desc: "Load or switch the active config at runtime."
   order: 8
 - id: set_current_repository
   name: set_current_repository
