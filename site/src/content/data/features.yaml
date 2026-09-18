@@ -21,7 +21,7 @@
 - id: safety
   icon: shield
   title: Safety by default
-  body: "It won't touch your work: a dirty worktree is never fast-forwarded, pruned or replaced, and any worktree it does remove goes to `.trash/`, restorable for 30 days. A branch that diverged — a force-push, or a teammate's push while you had local commits — is never merged or overwritten: commits of your own are pinned in `.trash/` and a fresh checkout of upstream takes its place."
+  body: "It won't touch your work: a dirty worktree is never fast-forwarded, pruned or replaced, and anything it does remove moves to `.trash/`, restorable for 30 days unless you turn trash off. A diverged branch is never merged or overwritten — your commits are pinned in `.trash/` and a fresh checkout replaces the folder, or it is reset in place if you have committed nothing since the last sync."
   order: 5
 - id: mcp-server
   icon: command

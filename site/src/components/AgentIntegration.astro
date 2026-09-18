@@ -31,7 +31,7 @@ const mcpTools = (await getCollection("mcpTools"))
         Anything that can <code class="font-mono text-base text-ink-100">cd</code> already works. A second binary, <code class="font-mono text-base text-ink-100">sync-worktrees-mcp</code>, speaks MCP over stdio if a client wants to list, create, or sync worktrees without guessing paths.
       </p>
       <p class="mx-auto mt-4 inline-flex items-center gap-2 rounded-full border border-ink-700 bg-ink-900/60 px-3 py-1 text-xs text-ink-400">
-        Works from any managed worktree; <code class="font-mono">sync</code> and <code class="font-mono">initialize</code> also need your config in a parent directory.
+        Works from any managed worktree; <code class="font-mono">sync</code> and <code class="font-mono">initialize</code> also need your config, found from a parent directory or loaded at runtime.
       </p>
     </div>
 
