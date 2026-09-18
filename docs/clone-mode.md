@@ -58,7 +58,8 @@ changes an existing clone wholesale: the next sync unshallows it with `git fetch
 the remedy when a sync reports it cannot classify the tracked branch. In short: raising `depth` deepens, lowering it
 does not shorten, removing it unshallows on the next sync.
 
-Two other fetches re-apply the configured value verbatim, and `--depth` below the current depth shortens:
+Three fetches escape the ratchet — the deepen budget uses the target it picked, and two others re-apply the configured
+value verbatim — and in each case a `--depth` below the current depth shortens the clone:
 
 - The deepen budget refetches at `--depth 50`, `200` or `1000` when it cannot classify the tracked branch, so a clone
   grown past the target it picks is cut back to it — and when the budget cannot settle the question either, because a

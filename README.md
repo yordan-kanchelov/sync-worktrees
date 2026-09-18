@@ -123,10 +123,11 @@ diverged worktree that is reset in place, a stash):
 
 ### What it costs
 
-- **Disk:** one bare repository per entry plus one full checkout per branch that passes the filters (LFS content
-  included unless `skipLfs: true`), plus whatever `.trash/` holds for its 30-day retention (`trash.retentionDays`; set
-  `trash.warnSizeBytes` to be warned when it grows). 200 live branches × a 300 MB checkout is 60 GB; bound it with
-  `branchMaxAge`, `branchInclude`/`branchExclude` and `sparseCheckout`. The TUI's status bar shows the total.
+- **Disk:** one bare repository per entry plus one checkout per branch that passes the filters — a full working tree
+  unless `sparseCheckout` narrows it, with LFS content included unless `skipLfs: true` — plus whatever `.trash/` holds
+  for its 30-day retention (`trash.retentionDays`; set `trash.warnSizeBytes` to be warned when it grows). 200 live
+  branches × a 300 MB checkout is 60 GB; bound it with `branchMaxAge`, `branchInclude`/`branchExclude` and
+  `sparseCheckout`. The TUI's status bar shows the total.
 - **Network:** one `git fetch` per repository per tick (`--all --prune` in worktree mode), plus local status probes.
 - **Processes:** up to about 40 concurrent git processes by default, tunable — see
   [Parallelism](./docs/configuration.md#parallelism).

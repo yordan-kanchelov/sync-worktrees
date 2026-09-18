@@ -51,7 +51,9 @@ tick.
 ## Repository entries
 
 - Relative `worktreeDir` and `bareRepoDir` paths resolve from the config file's location. `bareRepoDir` defaults to
-  `.bare/<name>`, where `<name>` is the repository name taken from `repoUrl`.
+  `.bare/<name>`, where `<name>` is the repository name taken from `repoUrl`. It is a worktree-mode setting: a
+  clone-mode entry has no bare repository and rejects `bareRepoDir` outright, so the two rules below that name one do
+  not apply to it (see [Clone mode](./clone-mode.md)).
 - If the bare repository at `bareRepoDir` already exists, its `origin` must be `repoUrl` (compared ignoring `.git`, a
   trailing slash and scheme/host case); otherwise initialization fails naming both URLs. Run
   `git -C <bareRepoDir> remote set-url origin <repoUrl>` or point `bareRepoDir` at a fresh directory.
@@ -92,8 +94,9 @@ must come from a source that needs no prompt:
 
 - **HTTPS** — a git credential helper (`git config --global credential.helper <helper>`, or your platform's keychain /
   credential manager) that already holds credentials for the remote. An askpass program (`GIT_ASKPASS`, `core.askPass`)
-  keeps working. A remote that would prompt fails within a second with git's message plus a hint naming the fix, and
-  that failure is not retried.
+  keeps working. With `GIT_TERMINAL_PROMPT=0` in force, a remote that would prompt fails within a second with git's
+  message plus a hint naming the fix, and that failure is not retried; if you exported the variable yourself, git
+  prompts as it normally would and a run with no terminal waits instead.
 - **SSH** — a key loaded into `ssh-agent` (or one without a passphrase) and the host already present in
   `~/.ssh/known_hosts`. A key the remote rejects or a host key that does not match fails at once with a hint and is not
   retried. Known limitation: `GIT_TERMINAL_PROMPT=0` covers git's own prompts only; ssh reads a key passphrase or an
