@@ -9,13 +9,13 @@ const commands = (await getEntry("commands", "main"))!.data;
 const steps = [
   {
     title: "Install",
-    body: "Global npm install. Node 24+, Git (plus `git-lfs` for LFS repos, or `skipLfs: true`), macOS or Linux; `tmux` only for the TUI's open-in-terminal wizard.",
+    body: "Global npm install. Node 24+, Git (and `git-lfs` for LFS repos), macOS or Linux; `tmux` only for the TUI's open-in-terminal wizard.",
     code: commands.npmInstall,
     lang: "bash",
   },
   {
     title: "Run the init wizard",
-    body: "Writes sync-worktrees.config.js where you run it; `init` defaults `worktreeDir` to `./<repo>` (the examples above set `./worktrees/<repo>`). Add more repos later.",
+    body: "Writes `sync-worktrees.config.js` where you run it, with your first repository in it. Add more by editing the file.",
     code: `cd ~/projects/my-sync-dir\n${commands.init}`,
     lang: "bash",
   },

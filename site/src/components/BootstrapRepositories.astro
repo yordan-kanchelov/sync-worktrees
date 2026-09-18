@@ -45,7 +45,7 @@ const highlights: { title: string; body: string; href?: string; linkText?: strin
   },
   {
     title: "Same layout on every machine",
-    body: "Commit the config to a small workspace repo of its own (a three-line `.gitignore` keeps out the `.bare/` and worktree folders the tool writes beside it). A new laptop or a new teammate gets the same folders, same names.",
+    body: "Commit the config to a small workspace repo of its own (a small `.gitignore` keeps out the `.bare/` and worktree folders the tool writes beside it). A new laptop or a new teammate gets the same folders, same names.",
     href: "https://github.com/yordan-kanchelov/sync-worktrees#team-workspace",
     linkText: "Team workspace in the README →",
   },
@@ -64,7 +64,7 @@ const highlights: { title: string; body: string; href?: string; linkText?: strin
     </div>
 
     <p class="mx-auto mt-10 max-w-2xl text-center text-sm text-ink-500">
-      Git objects are stored once per repository entry in <code class="font-mono text-xs">.bare/</code>. Anything sync removes goes to a reversible <code class="font-mono text-xs">.trash/</code> first (30 days, <code class="font-mono text-xs">sync-worktrees trash --restore</code>); a replaced diverged checkout goes there too, with its commits pinned for recovery. Dirty trees are never touched and unpushed commits are never discarded.
+      Git objects are stored once per repository entry in <code class="font-mono text-xs">.bare/</code>. Anything sync removes — including a diverged checkout it replaces, its commits pinned — goes to a reversible <code class="font-mono text-xs">.trash/</code> first (30 days, <code class="font-mono text-xs">sync-worktrees trash --restore</code>).
     </p>
 
     <div class="mt-6 grid gap-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-start">
