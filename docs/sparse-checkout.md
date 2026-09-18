@@ -1,11 +1,12 @@
 # Sparse checkout
 
 For monorepos where you need a subset of folders, `sparseCheckout` materializes only the paths you list, and the same
-repository can be listed more than once with different patterns. Back to the [README](../README.md#configuration).
+repository can be listed more than once with different patterns. The [README](../README.md#configuration) names the
+setting and links here.
 
 Set `sparseCheckout` on a repository entry. The tool runs `git worktree add --no-checkout`, configures sparse-checkout,
-then materializes only the included paths. The same repository URL can be listed multiple times under different `name`s
-with different sparse patterns to build domain-grouped layouts.
+then materializes only the included paths. Listing the same `repoUrl` under different `name`s with different patterns
+builds domain-grouped layouts:
 
 ```javascript
 // @ts-check

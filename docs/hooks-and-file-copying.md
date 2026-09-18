@@ -5,11 +5,9 @@ wizard; a worktree the sync or the MCP server creates gets neither. This page is
 [example config](../sync-worktrees.config.example.js) shows them in place, and the [README](../README.md#configuration)
 names them.
 
-**Both run only when you create a branch yourself, from the interactive UI's branch wizard.** A worktree the sync
-creates for a branch that turned up on the remote gets neither, and neither does one the MCP `create_worktree` tool
-creates: a hook is an arbitrary shell command, and running one unattended on every cron tick — or on an agent's say-so —
-is a different thing from running it because a person pressed a key. The one exception is clone mode's initial copy,
-below.
+The wizard-only rule is deliberate: a hook is an arbitrary shell command, and running one unattended on every cron tick
+— or on an agent's say-so — is a different thing from running it because a person pressed a key. The one exception is
+clone mode's initial copy, below.
 
 If your per-branch bootstrap (`.env.local`, `npm ci`) lives here, a worktree created by the sync or by an agent will not
 have it: run those steps yourself after `create_worktree`, or create the branch from the TUI (`c`) and hand the agent

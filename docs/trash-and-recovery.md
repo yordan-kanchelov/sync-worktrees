@@ -1,8 +1,9 @@
 # Trash and recovery
 
-Every worktree sync-worktrees removes — pruned because its branch is gone upstream or filtered out, replaced after a
-force-push, or found unregistered at a managed path — goes to `.trash/` first, where it can be listed, restored or
-purged for 30 days. This page is the full reference; the [README](../README.md#what-it-will-never-do) has the summary.
+Every worktree sync-worktrees removes — pruned because its branch is gone upstream or filtered out, replaced because its
+branch diverged, or found unregistered at a managed path — goes to `.trash/` first by default, where it can be listed,
+restored or purged for 30 days. This page is the full reference; the [README](../README.md#what-it-will-never-do) has
+the summary.
 
 **Contents:** [What sync can remove](#what-sync-can-remove) · [Diverged branches](#diverged-branches-force-pushes) ·
 [Trash layout and pin refs](#trash-layout-and-pin-refs) · [Force clean from the TUI](#force-clean-from-the-tui-x) · [The
@@ -19,7 +20,7 @@ which anything leaves your disk:
 | Prune | The remote branch is gone, or `branchInclude`/`branchExclude`/`branchMaxAge` no longer match it | Clean only: no uncommitted changes, no unpushed commits, no stash, no in-progress operation, no modified submodules, not detached. Re-checked immediately before removal; an audit record is written first, and an unwritable audit log blocks the removal | `.trash/<id>/` as `prune`, 30 days, a pin ref keeps the commits | `git worktree remove` — permanent | `sync-worktrees trash --restore <id>` |
 | Fully pushed, then deleted upstream | As above, but the worktree holds commits on no remote *now* that were fully pushed before the remote branch was deleted (a squash merge) | Same gate; this is the one case with unpushed commits that is removable | `.trash/` with the pin promoted to a permanent keep ref on expiry | Kept with a warning, never removed | `--restore`, or the keep ref |
 | Stale directory at a managed path | A directory sits at `<worktreeDir>/<sanitized-branch>` for a branch sync is about to create, and git does not list it as a worktree | None is possible — it is not a checkout git can inspect | `.trash/<id>/` as `orphan` | Quarantined in place if it contains `.git`; **deleted outright** otherwise | `--restore` (trash on only) |
-| Diverged branch (a force-push, or someone else pushed the branch) | The worktree has commits of its own *and* upstream has commits it lacks, and something was committed there since the last sync | Skipped while a stash is present (dirty worktrees never reach this point); reset in place instead of moved when its content already matches upstream or nothing was committed since the last sync | `.trash/<id>/` as `diverged-replace`, commits pinned, `Keep on reap`; a fresh checkout of upstream takes its place | `.diverged/<date>-<branch>-<id>/`, commit held by a keep ref | `--restore`, or `git push --force-with-lease` from the copy |
+| Diverged branch (a force-push, or someone else pushed the branch) | The worktree has commits of its own *and* upstream has commits it lacks | Skipped while a stash is present (dirty worktrees never reach this point); reset in place instead of moved when its content already matches upstream or its HEAD is still the commit the last sync left it at (a reset that would touch ignored files, or a tree that is not clean, falls back to the move) | `.trash/<id>/` as `diverged-replace`, commits pinned, `Keep on reap`; a fresh checkout of upstream takes its place | `.diverged/<date>-<branch>-<id>/`, commit held by a keep ref | Recover the commits from the entry (see [Diverged branches](#diverged-branches-force-pushes)). After a force-push you mean to undo: push them with `--force-with-lease`. After someone else's push: rebase or cherry-pick them onto the new upstream and push — a force-push here would erase their work. `--restore` is refused while the fresh checkout occupies the path |
 | `d` on a `.diverged/` entry in the TUI status view | You press `d` and confirm `y` | — | n/a (`.diverged/` is only written while trash is disabled) | Deleted | None |
 | Trash expiry | An entry passes `retentionDays` | The reaper runs at the tail of every sync attempt, failed ones included; commits on no remote are kept | Entry deleted; never-pushed commits promoted to `refs/sync-worktrees/keep/<id>` | n/a | The keep ref |
 | `x` in the TUI (force clean) | You press `x` and confirm `y` | Deletes only what the preview counted; the `gc` is skipped when a lock or an unfinished operation is found | Entries and keep refs deleted, then `git gc` | n/a | None — irreversible |
@@ -37,44 +38,61 @@ deleting anything. Keep trash enabled on any `worktreeDir` you also use by hand.
 
 A worktree's branch has diverged when it has commits of its own *and* `origin/<branch>` has commits it lacks. That is
 what a force-push produces, and also what a teammate pushing to the same branch produces while you have local commits.
-When a sync finds one, and something was committed there since the last sync, it moves the worktree aside before
-creating a fresh one from the new upstream. With trash enabled (the default) the copy lands in `.trash/` as a
-`diverged-replace` entry: it ages out under the retention policy, can be restored as a full worktree with
-`sync-worktrees trash --restore <id>`, and its commits stay pinned past expiry (`Keep on reap`, see below). No data
-loss; you can review the old state later.
+When a sync finds one, it moves the worktree aside before creating a fresh one from the new upstream. With trash
+enabled (the default) the copy lands in `.trash/` as a `diverged-replace` entry: it ages out under the retention policy
+and its commits stay pinned past expiry (`Keep on reap`, see below). No data loss; the commits are one `git branch`
+away, as shown below.
 
-Two cases are handled without moving anything: clean rebases where file content matches the upstream are auto-applied
-with no detour through `.diverged/`. Diverged-but-no-local-commits is also handled without preservation, since there's
-no user work to keep. A worktree with a stash is skipped with a warning until the stash is popped or dropped, and a
-dirty worktree never reaches this point (it is skipped by the update phase first).
+Two cases are reset in place without moving anything: a worktree whose tree content already matches upstream (a clean
+rebase), and one whose HEAD is still the commit the last sync left it at — sync records that commit when it creates,
+fast-forwards or resets a worktree, so a worktree with no record counts as having local work. The reset itself refuses
+when it would touch ignored files that upstream also writes, when the tree is not clean (submodules included), or when
+HEAD moved since the probe; a refused reset falls back to the move. A worktree with a stash is skipped with a warning
+until the stash is popped or dropped, and a dirty worktree never reaches this point (it is skipped by the update phase
+first).
+
+### Recovering the commits
+
+The moved copy is not a working checkout any more: its `.git` link points at a worktree registration the sync removed,
+so `git` inside it answers "not a git repository". Recover through the bare repository instead. The entry's
+`manifest.json` holds the `branch` and the `headOid`, and the pin ref keeps that commit alive:
+
+```bash
+sync-worktrees trash --filter <repository-name>                    # find the entry; note its headOid
+git -C <bare-repo> branch feature-x-recovered <headOid>            # a branch on your old tip
+git -C <bare-repo> log --oneline origin/feature-x..feature-x-recovered   # the commits only you had
+```
+
+Then, in the fresh checkout of the branch, pick the case that applies:
+
+- **Someone else pushed the branch** while you had local commits: replay yours on top of theirs and push —
+  `git cherry-pick origin/feature-x..feature-x-recovered`, then `git push`. A force-push here would erase their commits.
+- **A force-push you mean to undo**: put your tip back and overwrite the rewrite —
+  `git reset --hard feature-x-recovered`, then `git push --force-with-lease origin feature-x`.
+
+`--restore` is refused for a `diverged-replace` entry while the fresh checkout occupies its path, and a restored copy
+would still be diverged, so the next sync would move it again; recovering the commits by name is the shorter route.
+Delete `feature-x-recovered` once the branch is pushed.
 
 ### When trash is disabled
 
-With `trash.enabled: false` the worktree is moved to a hidden `.diverged/` directory instead, and a keep ref holds its
-commit:
+With `trash.enabled: false` the worktree is moved to a hidden `.diverged/` directory instead, and a keep ref
+(`refs/sync-worktrees/keep/<name>`) holds its commit:
 
 ```
 my-repo-worktrees/
 ├── main/
-├── feature-a/
+├── feature-a-0a5491ed/
 └── .diverged/
-    └── 2024-01-15-feature-x-lq3k9a2/
-        ├── .diverged-info.json
+    └── 2024-01-15-feature-x-c791eb83-lq3k9a2/
+        ├── .diverged-info.json        # the branch, its commit and the keep ref
         └── [all your local files]
 ```
 
-Reviewing a diverged worktree:
-
-```bash
-cd my-repo-worktrees/.diverged/2024-01-15-feature-x-lq3k9a2
-git diff origin/feature-x
-
-# keep local: git push --force-with-lease
-# discard: use `d` on the entry in the TUI worktree status view
-```
-
-The TUI's worktree status view (`w`) lists `.diverged/` directories and offers a guided delete (`d` with `y`/`n`
-confirmation) once you've decided.
+Recover the same way, from the keep ref named in `.diverged-info.json`
+(`git -C <bare-repo> branch feature-x-recovered refs/sync-worktrees/keep/<name>`); the copy itself is not a git
+checkout. The TUI's worktree status view (`w`) lists `.diverged/` directories and offers a guided delete (`d` with
+`y`/`n` confirmation) once you've decided.
 
 ## Trash layout and pin refs
 
@@ -84,9 +102,9 @@ reversible by default:
 ```
 my-repo-worktrees/
 ├── main/
-├── feature-a/
+├── feature-a-0a5491ed/
 └── .trash/
-    └── 2026-06-06T18-30-00-000Z-feature-x-a1b2c3/
+    └── 2026-06-06T18-30-00-000Z-feature-x-c791eb83-a1b2c3/
         ├── manifest.json     # branch, reason, original path, HEAD commit, expiry
         └── payload/          # the directory exactly as it was, including uncommitted work
 ```
@@ -214,7 +232,9 @@ shows as `worktree` is rebuilt as a registered worktree on its branch; one shown
 directory, because without a pin ref the trashed commits may already be gone. That second case has a consequence worth
 knowing before you use it: if the branch is still in the repository's synced set, the next sync finds an unregistered
 directory where its worktree belongs and moves it straight back to trash as a new `orphan` entry. The warning on the
-restore says so; copy what you need out of the directory, or exclude the branch, before the next tick.
+restore says so; copy what you need out of the directory, or exclude the branch, before the next tick. A
+`diverged-replace` entry cannot be restored while the fresh checkout occupies its path (the restore says so); recover
+its commits as described under [Diverged branches](#diverged-branches-force-pushes) instead.
 
 If you would rather do it by hand, read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then
 either copy `payload/` wherever you need the files, or rebuild the worktree yourself:

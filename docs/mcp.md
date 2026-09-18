@@ -53,7 +53,7 @@ claude mcp add --scope user sync-worktrees -- npx -y -p sync-worktrees sync-work
 
 `--scope user` makes the server available in every project on your machine. Claude Code's default scope is `local`,
 which loads a server only in the project (directory) you added it from — and every worktree is a different directory, so
-a locally scoped server added in `feature-a/` is absent when you launch Claude Code in `feature-b/`.
+a locally scoped server added in `feature-a-0a5491ed/` is absent when you launch Claude Code in `feature-b-0a88c085/`.
 
 </details>
 
@@ -188,17 +188,21 @@ No config path is needed: the server runs in **auto-detect mode**.
   `sync-worktrees.config.{js,mjs,cjs,ts}` it finds, and when that directory sits inside a worktree managed by
   sync-worktrees it locates the bare repo, enumerates sibling worktrees and enables per-worktree operations.
 - Without a config it still serves `detect_context`, `list_worktrees`, `get_worktree_status`, `create_worktree` and
-  `update_worktree` for the repository it detected.
+  `update_worktree` for the repository it detected (the last two when the bare repository has an `origin` URL and the
+  registered worktrees agree on a `worktreeDir`; otherwise `capabilities` names the reason).
 - With a config that lists the repository it also serves `sync` and `initialize`. They stay unavailable for
   auto-detected repositories no matter which other tools have run.
-- A config that is not in the CWD or one of its parents is loaded at runtime with `load_config {configPath}`, or found
-  with `detect_context {path}`: detection walks up from the path it is given, not only from the CWD.
+- A config that is not in the CWD or one of its parents is loaded at runtime with `load_config {configPath}`, or —
+  while no config is loaded yet — found with `detect_context {path}`, which walks up from the path it is given. Once a
+  config is loaded, `detect_context {path}` never loads another one; `load_config {configPath}` switches, and replaces
+  the loaded repositories.
 
 | Launched from | The server finds | What the agent should do |
 | --- | --- | --- |
 | A worktree under the directory holding the config | The config and the repository; every tool is available | Nothing |
-| A worktree from which no config is reachable by walking up (an absolute `worktreeDir` outside the config's tree, for example) | The repository only: the worktree tools work, `sync` and `initialize` are refused with "no config file loaded (running in auto-detect mode)" | `load_config {configPath}` |
-| `~`, or any directory that is not inside a checkout | Nothing: `detect_context` answers "No .git file found in path or any parent directory", every capability is `available: false`, and a bare `load_config` fails with "configPath required" | `detect_context {path: "<any worktree>"}` (detection walks up from the path it is given, loads the config and selects the repository) or `load_config {configPath}` |
+| The directory holding the config, or any directory under it that is not a worktree (the workspace root, where `sync-worktrees` itself is run) | The config, auto-loaded, with every repository it lists; a single repository is selected. `detect_context` still answers `isWorktree: false` with every capability `available: false` — that block describes the probed path, not the server; read `configPath` and `configuredRepositories` instead, and every tool works | Nothing (`set_current_repository`, or pass `repoName`, when the config lists several repositories) |
+| A worktree from which no config is reachable by walking up (an absolute `worktreeDir` outside the config's tree, for example) | The repository only: the worktree tools work, `sync` and `initialize` are refused with code `CAPABILITY_UNAVAILABLE` ("no config file loaded (running in auto-detect mode)") | `load_config {configPath}` |
+| A directory with no config above it and no checkout above it (`~`, say) | Nothing: `detect_context` answers "No .git file found in path or any parent directory", every capability is `available: false`, and a bare `load_config` fails with "configPath required" | `detect_context {path: "<any worktree>"}` (walks up from that path, loads the config and selects the repository) or `load_config {configPath}` |
 
 ## Available tools
 
@@ -224,18 +228,36 @@ than dropped, so a snake_case or misspelled `repoName` fails loudly instead of s
 The same context is also served as the `sync-worktrees://workspace` resource (JSON, re-probed on every read, never
 cached) for clients that read resources instead of calling a tool.
 
+### Error codes
+
+Every failed call returns `{ error: true, code, message }` (with `isError`); branch on `code`:
+
+| Code                     | Meaning                                                                                                              | What to do                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `CAPABILITY_UNAVAILABLE` | The tool is not available for this repository from here; the message carries the reason                              | Usually `load_config {configPath}`; read `capabilities.<tool>.reason`      |
+| `SYNC_IN_PROGRESS`       | Another sync or operation holds the repository                                                                       | Retry                                                                      |
+| `LOCK_UNAVAILABLE`       | The repository lock could not be created or taken (`ENOTDIR`, `EACCES`, `EROFS`, `ENOSPC`, …); nothing ran          | Fix the path the message names; retrying will not help                     |
+| `TARGET_EXISTS`          | `create_worktree`'s target directory exists but is not a registered worktree                                         | Clean the path up, or let `sync` reconcile it                              |
+| `BRANCH_FILTERED`        | `create_worktree` refused a branch `branchInclude`/`branchExclude`/`branchMaxAge` would prune                        | Adjust the config, or pass `force: true` (the response then warns)         |
+| `DETACHED_HEAD`          | `update_worktree` on a worktree with no branch checked out                                                           | Check a branch out there and call again                                    |
+
+Anything else is `INTERNAL_ERROR` (a thrown `Error` with its message) or `UNKNOWN_ERROR`.
+
 ## Safety
 
-- No tool deletes, trashes, restores or purges a worktree, and trash entries are not exposed at all — listing, restoring
-  and purging are human operations. The one removal path is `sync`, which runs the same safety-gated prune the CLI runs:
-  a worktree goes only when it is clean and fully pushed and its branch is gone upstream or excluded by your filters,
-  and it goes to `.trash/` (30 days, restorable with `sync-worktrees trash`), never to `rm -rf`. `sync` is registered
-  with `destructiveHint: true`, so a client that confirms destructive tools prompts before running it. `create_worktree`
-  with `push: false` leaves a local-only branch that the next `sync` prunes — to trash — until it is pushed.
-- `create_worktree` rejects sanitized-path collisions (e.g. `feature/foo` vs `feature-foo` both resolving to
-  `feature-foo/`) before touching disk, and errors with code `TARGET_EXISTS` when its target directory already exists
-  but is not a registered worktree — it never moves an existing directory to trash or deletes it (clean the path up
-  manually or let `sync` reconcile it).
+- No tool deletes, trashes, restores or purges a worktree directly, and trash entries are not exposed at all — listing,
+  restoring and purging are human operations. The only removal paths are `sync`'s own: it runs the same sync the CLI
+  runs, so the same prune, stale-directory sweep and diverged replace apply, with the gates and destinations in
+  [What sync can remove](./trash-and-recovery.md#what-sync-can-remove). With trash enabled (the default) nothing is
+  deleted outright — everything lands in `.trash/` for 30 days, restorable with `sync-worktrees trash`; with
+  `trash.enabled: false` the same prune is a permanent `git worktree remove`, and a stale non-git directory at a managed
+  path is deleted outright. `sync` is registered with `destructiveHint: true`, so a client that confirms destructive
+  tools prompts before running it. `create_worktree` with `push: false` leaves a local-only branch that the next `sync`
+  prunes — to trash — until it is pushed.
+- `create_worktree` refuses, before touching disk, when the target path is already registered to a different branch
+  (`Sanitized worktree path … collides with existing branch …`), and errors with code `TARGET_EXISTS` when its target
+  directory already exists but is not a registered worktree — it never moves an existing directory to trash or deletes
+  it (clean the path up manually or let `sync` reconcile it).
 - `sync` prunes every worktree outside the filtered branch set, so `create_worktree` refuses one it would take away
   again: `BRANCH_FILTERED` for a branch `branchInclude`/`branchExclude`/`branchMaxAge` exclude (`force: true`
   overrides), and a `warning` for a local-only branch until it is pushed.
@@ -260,8 +282,9 @@ recovery](./trash-and-recovery.md#what-sync-can-remove).
 The workflow the server is built for: one branch per agent, each in its own directory, several sessions at once.
 
 1. **One branch per agent.** `create_worktree {branchName: "feat/a", baseBranch: "main"}` creates the branch, checks it
-   out at `<worktreeDir>/feat-a/` and pushes it straight away (unless `push: false`), so the next sync keeps it rather
-   than pruning a local-only branch.
+   out at `<worktreeDir>/feat-a-d54ad782/` (the branch name flattened plus eight hex characters of its SHA-256 — take
+   `worktreePath` from the response rather than building it) and pushes it straight away (unless `push: false`), so the
+   next sync keeps it rather than pruning a local-only branch.
 2. **Start the agent there.** `cd` to the `worktreePath` in the response, or use the TUI's `o` → Terminal, which opens a
    `tmux` session in the worktree. Register the server at user scope (Claude Code: `--scope user`, see above) so it
    exists in every worktree, not only the one you added it from.
@@ -273,9 +296,15 @@ The workflow the server is built for: one branch per agent, each in its own dire
 5. **Two agents, one repository.** `create_worktree`, `update_worktree`, `sync` and `initialize` take the repository
    lock, so they are serialized across sessions and processes. The loser gets `SYNC_IN_PROGRESS`, which is retryable;
    `LOCK_UNAVAILABLE` means the lock could not be created at all and retrying will not help until the path it names is
-   fixed.
-6. **The schedule will not move an agent's work.** A scheduled sync fast-forwards an agent's worktree only when it is
-   clean and fully pushed; one with edits or unpushed commits is skipped — never merged, rebased or reset.
+   fixed. If you relocate the lock with `SYNC_WORKTREES_LOCK_DIR`, set it in the client's `env` for the server too —
+   the server does not inherit your shell's export, and without it the agent's operations stop contending with your
+   ticks.
+6. **The schedule touches an agent's work in one case.** A scheduled sync fast-forwards an agent's worktree only when
+   it is clean and fully pushed; edits or unpushed commits are skipped — unless `origin/<branch>` has also moved
+   (someone pushed to the agent's branch): then the worktree is diverged, and it is moved to `.trash/` with its commits
+   pinned and a fresh checkout of upstream takes its place (reset in place only when its content already matches
+   upstream). One branch per agent, and push before anyone else touches it. See
+   [Diverged branches](./trash-and-recovery.md#diverged-branches-force-pushes).
 7. **Bootstrap is yours.** `hooks.onBranchCreated` and `filesToCopyOnBranchCreate` run only from the TUI's branch
    wizard, so a worktree an agent created has no `.env.local` and no `npm ci` yet: have the agent run those steps after
    `create_worktree`, or create the branch from the TUI (`c`) and hand the agent the path. See [Hooks and file

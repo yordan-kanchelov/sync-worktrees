@@ -1,11 +1,12 @@
 # Interactive TUI
 
 Running `sync-worktrees` with no arguments opens the terminal UI; this page lists every key, the three wizards, the
-status flags, and how terminal and editor launch is configured. Back to the [README](../README.md#interactive-tui).
+status flags, and how terminal and editor launch is configured. The [README](../README.md#interactive-tui) has the
+eight keys you will use most.
 
-Running `sync-worktrees` without `runOnce` drops you into an interactive terminal UI with live log streaming, manual
-sync triggers, and wizards for the common operations. It syncs once on startup (see `defaults.syncOnStart` in the
-[configuration reference](./configuration.md#whole-file-settings)) and then on the cron schedule; `s` triggers the same
+The UI has live log streaming, manual sync triggers, and wizards for the common operations. It syncs once on startup
+(see `defaults.syncOnStart` in the [configuration reference](./configuration.md#whole-file-settings)) and then on the
+cron schedule; `s` triggers the same
 cycle by hand. Cycles do not pile up on one repository: a tick that finds a repository already syncing skips that
 repository and says so in the log, and `s` is ignored while the status line reads `syncing`. A tick the machine slept
 through is not replayed — the next tick, or an `s`, runs the cycle. There is no headless mode: without `--runOnce` this
@@ -23,7 +24,7 @@ sync cycle and on reload.
 | `c`         | Create a new branch (wizard)                   |
 | `o`         | Open a worktree in terminal or editor (wizard) |
 | `w`         | View worktree status across repos              |
-| `x`         | Force clean trash, recovery refs, and objects  |
+| `x`         | [Force clean](./trash-and-recovery.md#force-clean-from-the-tui-x): trash, recovery refs, and objects |
 | `r`         | Reload configuration and re-sync               |
 | `?` / `h`   | Toggle help screen                             |
 | `q`         | Gracefully quit                                |
@@ -64,7 +65,7 @@ copying](./hooks-and-file-copying.md)).
   | `⚠`  | Operation in progress (merge/rebase/cherry-pick/revert/bisect)                                                |
   | `⊞`  | Modified submodules                                                                                           |
   | `✗`  | Upstream branch is gone                                                                                       |
-  | `!`  | Status could not be probed; the reason is on the expanded entry, and the list header counts them               |
+  | `!`  | Status could not be probed; the reason is on the expanded entry, and the list header counts them              |
 
   Press `Enter` on an entry to expand file/commit/stash counts. The view also surfaces `.diverged/` directories
   preserved from past force-pushes while trash was disabled (see [Trash and
