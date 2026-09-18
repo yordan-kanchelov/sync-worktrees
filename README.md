@@ -104,8 +104,9 @@ sibling, a single-branch dev clone. See [Clone mode](./docs/clone-mode.md).
   HEAD — and "removed" means moved to `.trash/`, restorable for 30 days (`trash.enabled: false` deletes it instead).
 - **Silently overwrite diverged commits.** If a branch has commits of its own *and* new upstream commits (a force-push,
   or someone else pushed the same branch), the worktree is moved to `.trash/` with its commits pinned (to `.diverged/`
-  when trash is disabled) and a fresh checkout of upstream takes its place. To get the commits back, recover them from
-  the trash entry and rebase or cherry-pick them in the fresh checkout — see
+  when trash is disabled) and a fresh checkout of upstream takes its place — or, when you made no commits since the
+  last sync or your tree already matches upstream, it is simply reset in place. To get the commits back, recover them
+  from the trash entry and rebase or cherry-pick them in the fresh checkout — see
   [Diverged branches](./docs/trash-and-recovery.md#diverged-branches-force-pushes).
 - **Touch directories outside the paths it manages.** Sync looks only at the worktrees git lists and at the exact path
   where a managed branch's worktree belongs. A directory already sitting at that path that is not a registered worktree

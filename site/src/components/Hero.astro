@@ -99,22 +99,24 @@ const starLabel =
           <span class="ml-2 font-mono text-xs text-ink-400">sync-worktrees</span>
         </div>
         <div class="space-y-1 p-4 font-mono text-xs leading-5 text-ink-200">
-          <!-- Abridged real log lines from a one-shot run (src/index.ts, git.service.ts, worktree-mode-sync-runner.ts). -->
+          <!-- Abridged real log lines from a one-shot run, in an order it can print: every repository is initialised
+               (clone, default-branch worktree) before any sync starts (src/index.ts runMultipleRepositories), then the
+               two syncs interleave (git.service.ts, worktree-mode-sync-runner.ts). -->
           <div class="sw-line" style="animation-delay:0s"><span class="text-ink-500">$</span> sync-worktrees --runOnce</div>
           <div class="sw-line text-ink-300" style="animation-delay:0.35s">🔄 Syncing 2 repositories...</div>
           <div class="sw-line" style="animation-delay:0.7s"><span class="text-ink-500">[frontend]</span> <span class="text-emerald-400">✅</span> Clone successful.</div>
-          <div class="sw-line" style="animation-delay:1.05s"><span class="text-ink-500">[frontend]</span> Step 2: Creating 1 new worktrees...</div>
-          <div class="sw-line" style="animation-delay:1.4s"><span class="text-ink-500">[frontend]</span> &nbsp;&nbsp;<span class="text-emerald-400">✅</span> Created worktree for 'feature/login'</div>
-          <div class="sw-line" style="animation-delay:1.75s"><span class="text-ink-500">[backend]</span> <span class="text-emerald-400">✅</span> Clone successful.</div>
+          <div class="sw-line" style="animation-delay:1.05s"><span class="text-ink-500">[backend]</span> <span class="text-emerald-400">✅</span> Clone successful.</div>
+          <div class="sw-line" style="animation-delay:1.4s"><span class="text-ink-500">[frontend]</span> Step 2: Creating 1 new worktrees...</div>
+          <div class="sw-line" style="animation-delay:1.75s"><span class="text-ink-500">[frontend]</span> &nbsp;&nbsp;<span class="text-emerald-400">✅</span> Created worktree for 'feature/login'</div>
           <div class="sw-line" style="animation-delay:2.1s"><span class="text-ink-500">[backend]</span> &nbsp;&nbsp;<span class="text-emerald-400">✅</span> Created worktree for 'release/next'</div>
           <div class="sw-line mt-2 border-t border-ink-800 pt-2 text-ink-400" style="animation-delay:2.6s">worktrees/</div>
           <div class="sw-line text-ink-200" style="animation-delay:2.85s">├─&nbsp;frontend/</div>
-          <div class="sw-line text-ink-400" style="animation-delay:3s">│&nbsp;&nbsp;├─&nbsp;main</div>
-          <div class="sw-line text-ink-400" style="animation-delay:3.15s">│&nbsp;&nbsp;└─&nbsp;feature-login-df7c7aeb</div>
+          <div class="sw-line text-ink-400" style="animation-delay:3s">│&nbsp;&nbsp;├─&nbsp;main/</div>
+          <div class="sw-line text-ink-400" style="animation-delay:3.15s">│&nbsp;&nbsp;└─&nbsp;feature-login-df7c7aeb/</div>
           <div class="sw-line text-ink-200" style="animation-delay:3.35s">└─&nbsp;backend/</div>
-          <div class="sw-line text-ink-400" style="animation-delay:3.5s">&nbsp;&nbsp;&nbsp;├─&nbsp;main</div>
-          <div class="sw-line text-ink-400" style="animation-delay:3.65s">&nbsp;&nbsp;&nbsp;└─&nbsp;release-next-36d47e0c</div>
-          <div class="sw-line pt-2 text-ink-500" style="animation-delay:4.1s">main keeps its name; every other branch folder is &lt;branch&gt;-&lt;8-hex hash&gt;, stable per branch</div>
+          <div class="sw-line text-ink-400" style="animation-delay:3.5s">&nbsp;&nbsp;&nbsp;├─&nbsp;main/</div>
+          <div class="sw-line text-ink-400" style="animation-delay:3.65s">&nbsp;&nbsp;&nbsp;└─&nbsp;release-next-36d47e0c/</div>
+          <div class="sw-line pt-2 text-ink-500" style="animation-delay:4.1s"># feature/login → feature-login-df7c7aeb: one fixed path per branch, the same on every machine (the default branch keeps its name)</div>
         </div>
       </div>
     </div>

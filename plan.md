@@ -399,15 +399,16 @@ the OG text changed, and the README/docs link checker still runs.
 
 ### Status (Phase 2)
 
-Site iteration S1 complete; awaiting the S2 review.
+Site iteration S2 complete; awaiting the S3 review. S1: five REQUEST CHANGES (63 findings → 32 pain points). S2:
+three APPROVE, two REQUEST CHANGES with no blockers (20 findings → 17 pain points, 16 fixed, 1 declined).
 
-| Critic               | Verdict (S1)    | Blockers | Majors | Minors | Nits |
+| Critic               | Verdict (S2)    | Blockers | Majors | Minors | Nits |
 | -------------------- | --------------- | -------: | -----: | -----: | ---: |
-| consistency-auditor  | REQUEST CHANGES |        4 |      5 |      7 |    5 |
-| skeptic              | REQUEST CHANGES |        4 |      4 |      3 |    1 |
-| first-look           | REQUEST CHANGES |        2 |      2 |      4 |    2 |
-| agent-user           | REQUEST CHANGES |        1 |      5 |      4 |    0 |
-| team-lead            | REQUEST CHANGES |        3 |      5 |      2 |    0 |
+| consistency-auditor  | APPROVE         |        0 |      0 |      2 |    5 |
+| skeptic              | REQUEST CHANGES |        0 |      2 |      1 |    2 |
+| first-look           | REQUEST CHANGES |        0 |      1 |      3 |    3 |
+| agent-user           | APPROVE         |        0 |      0 |      2 |    2 |
+| team-lead            | APPROVE         |        0 |      0 |      3 |    1 |
 
 ### Site iteration S1 — 2026-09-18
 
@@ -533,3 +534,66 @@ before the site copy changed; folder names were computed by reproducing `sanitiz
 - `src/utils/mcp-registration.ts:53`: `init`'s own `claude mcp add sync-worktrees -- npx …` omits `--scope user`,
   so the wizard registers the server for one directory while the README, docs and site now say `--scope user`.
 - The Phase 1 code items (a)–(f) above still stand.
+
+### Site iteration S2 — 2026-09-18
+
+Precision round on top of commit 4dc6c1d; no restructuring. Every fact re-read in `src/` before the wording changed.
+
+#### Critic verdicts
+
+| Critic               | Verdict         | Blockers | Majors | Minors | Nits |
+| -------------------- | --------------- | -------: | -----: | -----: | ---: |
+| consistency-auditor  | APPROVE         |        0 |      0 |      2 |    5 |
+| skeptic              | REQUEST CHANGES |        0 |      2 |      1 |    2 |
+| first-look           | REQUEST CHANGES |        0 |      1 |      3 |    3 |
+| agent-user           | APPROVE         |        0 |      0 |      2 |    2 |
+| team-lead            | APPROVE         |        0 |      0 |      3 |    1 |
+
+#### Pain points
+
+| ID   | Raised by                 | Severity | Pain point                                                                                                                                   | Decision | Where fixed                                                                                                                                                                                                                                                                           |
+| ---- | ------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S-33 | FL-11                     | major    | The features grid renders `body` as plain text, so the backticks S1 added to `features.yaml` showed literally (an S1 regression)            | Fix      | `BootstrapRepositories.astro` features grid: `set:html={inlineCodeToHtml(body)}`; `dist/index.html` grepped for a literal backtick after the build                                                                                                                                    |
+| S-34 | SK-13                     | major    | Hero transcript order impossible: every repository is initialised (clone, default-branch worktree) before any sync prints `Step 2`         | Fix      | `Hero.astro`: both `✅ Clone successful.` lines first, then `Step 2` / the two `Created worktree` lines; source comment says why. Verified `src/index.ts:75-96` (init `Promise.allSettled`) before `:112-116` (sync)                                                                    |
+| S-35 | SK-14, CA-23              | major    | Safety card, FAQ 05 and FAQ 07 say a diverged worktree "is moved to `.trash/` with its commits pinned"; two cases are reset in place first | Fix      | One parenthetical in each (no commits since the last sync, or tree already matches upstream → reset in place), matching `docs/trash-and-recovery.md` "Diverged branches"; README bullet 3 given the same clause so the README and site stay consistent. Verified runner `:1352-1369` (`treesIdentical \|\| !hasLocalChanges` → `resetToUpstream`), `:1376-1413`; card's first clause now says "unless upstream moved too — the diverged case" |
+| S-36 | FL-12, CA-28              | minor    | Bootstrap config's `release-*` never matches the hero's `release/next` (anchored glob)                                                        | Fix      | `branchInclude: ["main", "feature/*", "release/*"]`. Verified `branch-filter.ts` (anchored `^…$`)                                                                                                                                                                                      |
+| S-37 | AU-11, TL-11, CA-22       | minor    | FAQ 03 "the only removal path is `sync`'s own prune" undercounts the three paths                                                             | Fix      | FAQ 03: prune, stale-directory sweep and diverged replace, into `.trash/` by default, `sync` flagged destructive                                                                                                                                                                       |
+| S-38 | CA-24, SK-17              | nit      | "every tool also accepts repoName" — `detect_context` and `load_config` do not                                                               | Fix      | `mcp-tools.yaml`: "every repo-targeting tool"                                                                                                                                                                                                                                         |
+| S-39 | TL-13, CA-27              | minor    | Bootstrap footer promises `--restore` for a replaced diverged checkout, which is refused while the fresh checkout occupies the path          | Fix      | Footer: `--restore` for what sync removes; "a replaced diverged checkout goes there too, with its commits pinned for recovery"                                                                                                                                                         |
+| S-40 | FL-13, TL-14              | minor    | Hero caption reads like a footnote in angle-bracket notation; "main" where the README says "the default branch"; tree slashes inconsistent | Fix      | Caption is a shell comment reusing the concrete pair (`# feature/login → feature-login-df7c7aeb: one fixed path per branch, the same on every machine (the default branch keeps its name)`); every directory in the tree carries a trailing slash; "Stable paths" card says "The default branch (`main/` here)" |
+| S-41 | FL-17, TL-12              | minor    | Quick start step 1 omits `git-lfs`                                                                                                           | Fix      | "Git (plus `git-lfs` for LFS repos, or `skipLfs: true`)"                                                                                                                                                                                                                              |
+| S-42 | FL-16                     | nit      | "see the README's Team workspace section" without a link                                                                                     | Fix      | Highlights gained optional `href`/`linkText` rendered as an `<a>` outside `inlineCodeToHtml`; the card links `README#team-workspace` (heading exists)                                                                                                                                  |
+| S-43 | AU-13                     | nit      | Example workflow starts with `list_worktrees` while the card says "Call first" for `detect_context`                                          | Fix      | Example workflow now five steps, `detect_context` first                                                                                                                                                                                                                               |
+| S-44 | AU-14                     | nit      | "(`.trash/` by default)" without the non-default                                                                                             | Fix      | "(`.trash/` by default, permanent with `trash.enabled: false`)"                                                                                                                                                                                                                       |
+| S-45 | SK-15                     | minor    | FAQ 04's sparse-set update rule is cone-mode only                                                                                            | Fix      | "(cone mode; no-cone always fast-forwards)". Verified runner `:1155-1158`                                                                                                                                                                                                              |
+| S-46 | SK-16, CA-26, CA-25       | nit      | FAQ 07 "every phase" (a sparse widening applies on a dirty tree) and "deleted outright only with trash disabled" (a `.git` is quarantined)   | Fix      | FAQ 07: "the fast-forward, diverged and prune phases (widening a sparse checkout adds files and leaves modified ones alone)"; "(with trash disabled: quarantined in place if it holds a `.git`, deleted outright otherwise)". Verified runner `:154-170`, `git.service.ts:1880-1889` |
+| S-47 | FL-15                     | minor    | `init` defaults `worktreeDir` to `./<repo>`, the page's configs set `./worktrees/<repo>`; nothing says so                                   | Fix      | Quick start step 2: "`init` defaults `worktreeDir` to `./<repo>` (the examples above set `./worktrees/<repo>`)". The page's configs keep `./worktrees/` so the hero tree, the showcase and the Bootstrap config stay one picture                                                       |
+| S-48 | AU-12                     | minor    | VS Code hint "paste the standard JSON config manually" — the critic believes VS Code's `mcp.json` keys servers under `servers`              | Fix      | Key name unverified (VS Code's docs are unreachable from this environment), so both the hint and `docs/mcp.md`'s VS Code block now say "add the server through VS Code's MCP settings (see its guide), with the same command and args"; no key name asserted                       |
+| S-49 | FL-14                     | nit      | Prefix the tree with `$ tree -d worktrees`                                                                                                   | Decline  | See Declined                                                                                                                                                                                                                                                                          |
+
+#### Changes made
+
+- `site/src/components/Hero.astro`: transcript reordered to a printable sequence; trailing slashes on every tree
+  directory; caption as a shell comment with the concrete pair.
+- `site/src/components/BootstrapRepositories.astro`: features grid rendered through `inlineCodeToHtml`;
+  `branchInclude` uses `release/*`; highlights support an optional link (Team workspace in the README); "Stable
+  paths" says "The default branch (`main/` here)"; footer distinguishes `--restore` from recovery by pinned commits.
+- `site/src/components/QuickStart.astro`: `git-lfs` in step 1; `init`'s default `worktreeDir` in step 2.
+- `site/src/components/AgentIntegration.astro`: `detect_context` first in the example workflow; "permanent with
+  `trash.enabled: false`".
+- `site/src/content/data/features.yaml` (safety card), `faq/03`, `faq/04`, `faq/05`, `faq/07`, `mcp-tools.yaml`,
+  `clients.yaml` (VS Code hint) as listed above.
+- `docs/mcp.md`: VS Code block no longer says to paste the standard JSON.
+- `README.md`: bullet 3 carries the reset-in-place clause.
+
+#### Declined
+
+- **S-49 / FL-14: a `$ tree -d worktrees` prompt before the tree.** Real `tree -d` output uses `├──`, prints the
+  root without a slash and ends with an "N directories" line; drawing the hero tree as that command's output would
+  promise a format the page does not reproduce. The border and colour change already mark the tree as the result.
+
+#### Carried to next iteration
+
+- Whether the reordered transcript and the shell-comment caption read as intended to the first-look and skeptic
+  critics; the VS Code key name (S-48) stays unverified until someone with access to VS Code's documentation
+  confirms it.

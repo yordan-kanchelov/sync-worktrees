@@ -34,5 +34,5 @@
   order: 8
 - id: set_current_repository
   name: set_current_repository
-  desc: "Pick the active repo when several are configured; every tool also accepts repoName."
+  desc: "Pick the active repo when several are configured; every repo-targeting tool also accepts repoName."
   order: 9
