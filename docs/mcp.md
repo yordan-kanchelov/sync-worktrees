@@ -199,10 +199,10 @@ No config path is needed: the server runs in **auto-detect mode**.
 
 | Launched from | The server finds | What the agent should do |
 | --- | --- | --- |
-| A worktree under the directory holding the config | The config and the repository; every tool is available | Nothing |
+| A worktree under the directory holding the config | The config and the repository; every tool is available (worktree mode — a clone-mode repository gets `sync` and `initialize` but not `create_worktree` / `update_worktree`) | Nothing |
 | The directory holding the config, or any directory under it that is not a worktree (the workspace root, where `sync-worktrees` itself is run) | The config, auto-loaded, with every repository it lists; a single repository is selected. `detect_context` still answers `isWorktree: false` with every capability `available: false` — that block describes the probed path, not the server; read `configPath` and `configuredRepositories` instead, and every tool works | Nothing (`set_current_repository`, or pass `repoName`, when the config lists several repositories) |
 | A worktree from which no config is reachable by walking up (an absolute `worktreeDir` outside the config's tree, for example) | The repository only: the worktree tools work, `sync` and `initialize` are refused with code `CAPABILITY_UNAVAILABLE` ("no config file loaded (running in auto-detect mode)") | `load_config {configPath}` |
-| A directory with no config above it and no checkout above it (`~`, say) | Nothing: `detect_context` answers "No .git file found in path or any parent directory", every capability is `available: false`, and a bare `load_config` fails with "configPath required" | `detect_context {path: "<any worktree>"}` (walks up from that path, loads the config and selects the repository) or `load_config {configPath}` |
+| A directory with no config above it and no checkout above it (`~`, say) | Nothing: `detect_context` answers "No .git file found in path or any parent directory", every capability is `available: false`, and a bare `load_config` fails with "configPath required" | `detect_context {path: "<a worktree under the directory holding the config>"}` (walks up from that path, loads the config and selects the repository), or `load_config {configPath}` (required when the worktree lives outside the config's tree) |
 
 ## Available tools
 
@@ -211,8 +211,8 @@ No config path is needed: the server runs in **auto-detect mode**.
 | `detect_context`         | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report config-driven sibling repositories and capabilities. Pass `includeAllWorktrees: true` to include every configured repo's worktrees keyed by repo name. |
 | `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`/`unknown` — the last when the status probe failed), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
 | `get_worktree_status`    | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress).                                                                                                                                 |
-| `create_worktree`        | Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`. `worktreeExisted` is true when the worktree was already there (a no-op retry).   |
-| `update_worktree`        | Fast-forward one worktree to match upstream. `updated` is false when there was nothing to merge.                                                                                                                                  |
+| `create_worktree`        | Worktree mode only (a clone-mode repository answers `CAPABILITY_UNAVAILABLE` — use `sync`). Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`. `worktreeExisted` is true when the worktree was already there (a no-op retry). |
+| `update_worktree`        | Worktree mode only (a clone-mode repository answers `CAPABILITY_UNAVAILABLE` — use `sync`). Fast-forward one worktree to match upstream. `updated` is false when there was nothing to merge.                                     |
 | `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. `success` is false (with `failed`/`failures` listed) when any action failed, matching the CLI's exit code 1.                     |
 | `initialize`             | Clone the bare repo and create the main worktree. Requires config. Streams progress.                                                                                                                                              |
 | `load_config`            | Load or reload a config file at runtime.                                                                                                                                                                                          |
@@ -234,14 +234,16 @@ Every failed call returns `{ error: true, code, message }` (with `isError`); bra
 
 | Code                     | Meaning                                                                                                              | What to do                                                                 |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `CAPABILITY_UNAVAILABLE` | The tool is not available for this repository from here; the message carries the reason                              | Usually `load_config {configPath}`; read `capabilities.<tool>.reason`      |
+| `CAPABILITY_UNAVAILABLE` | The tool is not available for this repository from here; the message carries the reason                              | Read `capabilities.<tool>.reason`: usually `load_config {configPath}`, or `sync` for a clone-mode repository |
 | `SYNC_IN_PROGRESS`       | Another sync or operation holds the repository                                                                       | Retry                                                                      |
-| `LOCK_UNAVAILABLE`       | The repository lock could not be created or taken (`ENOTDIR`, `EACCES`, `EROFS`, `ENOSPC`, …); nothing ran          | Fix the path the message names; retrying will not help                     |
+| `LOCK_UNAVAILABLE`       | The repository lock could not be created or taken (`ENOTDIR`, `EACCES`, `EROFS`, `ENOSPC`, …); nothing ran           | Fix the path the message names; retrying will not help                     |
 | `TARGET_EXISTS`          | `create_worktree`'s target directory exists but is not a registered worktree                                         | Clean the path up, or let `sync` reconcile it                              |
 | `BRANCH_FILTERED`        | `create_worktree` refused a branch `branchInclude`/`branchExclude`/`branchMaxAge` would prune                        | Adjust the config, or pass `force: true` (the response then warns)         |
 | `DETACHED_HEAD`          | `update_worktree` on a worktree with no branch checked out                                                           | Check a branch out there and call again                                    |
 
-Anything else is `INTERNAL_ERROR` (a thrown `Error` with its message) or `UNKNOWN_ERROR`.
+Anything else carries the underlying error's own code — `CONFIG_FILE_NOT_FOUND` or `CONFIG_VALIDATION_FAILED` from
+`load_config`, `GIT_*` from a git failure — with `INTERNAL_ERROR` for a plain thrown `Error` and `UNKNOWN_ERROR` for
+anything that is not an `Error`; read `message`.
 
 ## Safety
 
@@ -252,8 +254,7 @@ Anything else is `INTERNAL_ERROR` (a thrown `Error` with its message) or `UNKNOW
   deleted outright — everything lands in `.trash/` for 30 days, restorable with `sync-worktrees trash`; with
   `trash.enabled: false` the same prune is a permanent `git worktree remove`, and a stale non-git directory at a managed
   path is deleted outright. `sync` is registered with `destructiveHint: true`, so a client that confirms destructive
-  tools prompts before running it. `create_worktree` with `push: false` leaves a local-only branch that the next `sync`
-  prunes — to trash — until it is pushed.
+  tools prompts before running it.
 - `create_worktree` refuses, before touching disk, when the target path is already registered to a different branch
   (`Sanitized worktree path … collides with existing branch …`), and errors with code `TARGET_EXISTS` when its target
   directory already exists but is not a registered worktree — it never moves an existing directory to trash or deletes
@@ -273,9 +274,6 @@ Anything else is `INTERNAL_ERROR` (a thrown `Error` with its message) or `UNKNOW
 - `update_worktree` errors with code `DETACHED_HEAD` when the worktree has no branch checked out: there is nothing for a
   fast-forward to move, and the message names the path and the commit HEAD sits on. Check a branch out there and call it
   again.
-
-Full details of what a sync removes and where it goes: [Trash and
-recovery](./trash-and-recovery.md#what-sync-can-remove).
 
 ## Parallel agents on parallel branches
 
@@ -300,10 +298,11 @@ The workflow the server is built for: one branch per agent, each in its own dire
    the server does not inherit your shell's export, and without it the agent's operations stop contending with your
    ticks.
 6. **The schedule touches an agent's work in one case.** A scheduled sync fast-forwards an agent's worktree only when
-   it is clean and fully pushed; edits or unpushed commits are skipped — unless `origin/<branch>` has also moved
-   (someone pushed to the agent's branch): then the worktree is diverged, and it is moved to `.trash/` with its commits
-   pinned and a fresh checkout of upstream takes its place (reset in place only when its content already matches
-   upstream). One branch per agent, and push before anyone else touches it. See
+   it is clean and fully pushed. Uncommitted edits are always skipped. Unpushed commits are skipped too — unless
+   `origin/<branch>` has also moved (someone pushed to the agent's branch): then the worktree is diverged, and it is
+   moved to `.trash/` with its commits pinned and a fresh checkout of upstream takes its place (reset in place instead
+   when its content already matches upstream, or when nothing was committed there since the last sync — a bare
+   force-push). One branch per agent, and push before anyone else touches it. See
    [Diverged branches](./trash-and-recovery.md#diverged-branches-force-pushes).
 7. **Bootstrap is yours.** `hooks.onBranchCreated` and `filesToCopyOnBranchCreate` run only from the TUI's branch
    wizard, so a worktree an agent created has no `.env.local` and no `npm ci` yet: have the agent run those steps after

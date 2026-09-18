@@ -48,8 +48,8 @@ repeated-slash normalization the tool already applies, so `apps/web/` and `./app
 left alone: a slash and a glob mean something there.
 
 **Duplicate `repoUrl` handling:** The first entry per `repoUrl` keeps the URL-derived bare path (`.bare/<repo-slug>`).
-Subsequent duplicate entries auto-derive `bareRepoDir` from `name` (`.bare/<name>`). Pin `bareRepoDir` explicitly on
-duplicate entries if you want config order to be irrelevant.
+Subsequent duplicate entries auto-derive `bareRepoDir` from `name` (`.bare/<name>`), so a repository listed twice stores
+its history twice. Pin `bareRepoDir` explicitly on duplicate entries if you want config order to be irrelevant.
 
 ## Updates that touch nothing in the sparse set
 

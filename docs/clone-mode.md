@@ -39,24 +39,24 @@ has no ancestors to offer the server as `have`s — once the remote tip stops be
 a force-push or a rebase does, an uncapped fetch has to pack the new tip's whole ancestry. The ratchet is there because
 `git fetch --depth N` re-applies N to the ref it fetches rather than capping at it: passed verbatim, the configured
 value takes a clone that has just been deepened straight back to one commit, which cuts the parent link needed to tell a
-fast-forward from a divergence, so every remote advance would buy another 50-commit deepen that the next tick throws
-away. In short: raising `depth` deepens, lowering it does not shorten, removing it unshallows on the next sync.
+fast-forward from a divergence, so every remote advance would buy another deepen that the next tick throws away.
+
+**The deepen budget.** When a sync fetch cannot tell whether the tracked branch fast-forwarded or diverged — the clone
+is too shallow to reach a common ancestor — the sync deepens it in steps, `--depth 50`, then `200`, then `1000`,
+stopping at the first that settles the question. Only steps above `depth` are used.
 
 Both numbers are **ancestry levels**, not commits — `--depth N` keeps every commit within N parent steps of the fetched
 tip, so one level of a merge-built history holds several — and the clone is measured from `origin/<branch>` rather than
 from HEAD, so the window a `--depth D` fetch produced measures back as exactly D and history widens only when the deepen
 budget or a raised `depth` widens it. (HEAD is the fallback for a first sync, before `origin/<branch>` exists.)
 
-**The deepen budget.** When a sync fetch cannot tell whether the tracked branch fast-forwarded or diverged — the clone
-is too shallow to reach a common ancestor — the sync deepens it in steps, `--depth 50`, then `200`, then `1000`,
-stopping at the first that settles the question. Only steps above `depth` are used.
-
 Editing `depth` reaches an existing clone, asymmetrically. Raising it raises the cap, so the next sync fetch deepens a
 shorter clone up to the new value. Raising it also **shrinks the deepen budget**, which only uses targets above `depth`:
 at 1000 or more there is no budget left, and a clone that cannot be classified can then only be skipped. Lowering
 `depth` cannot shorten an existing clone through the sync fetch, which takes the larger of the two. Removing `depth`
 changes an existing clone wholesale: the next sync unshallows it with `git fetch --unshallow --no-tags`, which is also
-the remedy when a sync reports it cannot classify the tracked branch.
+the remedy when a sync reports it cannot classify the tracked branch. In short: raising `depth` deepens, lowering it
+does not shorten, removing it unshallows on the next sync.
 
 Two other fetches re-apply the configured value verbatim, and `--depth` below the current depth shortens:
 

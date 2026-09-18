@@ -6,9 +6,9 @@ eight keys you will use most.
 
 The UI has live log streaming, manual sync triggers, and wizards for the common operations. It syncs once on startup
 (see `defaults.syncOnStart` in the [configuration reference](./configuration.md#whole-file-settings)) and then on the
-cron schedule; `s` triggers the same
-cycle by hand. Cycles do not pile up on one repository: a tick that finds a repository already syncing skips that
-repository and says so in the log, and `s` is ignored while the status line reads `syncing`. A tick the machine slept
+cron schedule; `s` triggers the same cycle by hand. Cycles do not pile up on one repository: a tick that finds a
+repository already syncing skips that repository and says so in the log, and `s` is ignored while the status line reads
+`syncing`. A tick the machine slept
 through is not replayed — the next tick, or an `s`, runs the cycle. There is no headless mode: without `--runOnce` this
 UI is what runs, so leave it open in a `tmux` or `screen` window if you want it to keep going after you close the
 terminal (see [Running it unattended](../README.md#running-it-unattended)).

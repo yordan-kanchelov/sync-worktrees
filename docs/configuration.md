@@ -137,7 +137,10 @@ non-negative whole numbers of milliseconds, and anything else is a config valida
 For repositories with Git LFS issues or large files you don't need, set `skipLfs: true` in `defaults` or per repository.
 The tool also falls back to LFS-free operation on LFS-specific failures: a worktree checkout that fails its smudge
 filter (`git worktree add`) is retried once with LFS downloads disabled for the rest of that sync, and an LFS failure
-that ends the whole sync attempt is retried the same way up to `retry.maxLfsRetries` times.
+that ends the whole sync attempt is retried the same way up to `retry.maxLfsRetries` times. Worktrees created after
+the fallback hold LFS pointer files instead of content; the run still exits 0 (the fallback is recorded as
+`lfs_skip_enabled` and logged, not failed) and a later sync does not fetch the content into files it does not touch —
+run `git lfs pull` in those worktrees, or fix LFS access and recreate them.
 
 ## Parallelism
 

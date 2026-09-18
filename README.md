@@ -26,7 +26,7 @@ sync-worktrees init             # wizard → writes sync-worktrees.config.js
 sync-worktrees                  # TUI: syncs now, then hourly; add --runOnce for a one-shot
 ```
 
-With one repository declared, the directory holding the config becomes (`init` defaults `worktreeDir` to `./<repo>`):
+With one repository declared and `init`'s default `worktreeDir` (`./<repo>`), the directory holding the config becomes:
 
 ```
 .
@@ -111,7 +111,9 @@ sibling, a single-branch dev clone. See [Clone mode](./docs/clone-mode.md).
   is treated as stale and moved to `.trash/` — with trash disabled, quarantined in place if it holds a `.git` and
   **deleted outright** otherwise.
 - **Run your hooks unattended.** `hooks.onBranchCreated` and `filesToCopyOnBranchCreate` run only when you create a
-  branch from the TUI's wizard, never on a tick or from an agent.
+  branch from the TUI's wizard, never on a tick or from an agent (the one exception: clone mode copies
+  `filesToCopyOnBranchCreate` once into the fresh clone — no hook command runs; see
+  [Hooks and file copying](./docs/hooks-and-file-copying.md)).
 
 Every removal path, its gate, where it goes and how to undo it, including the exceptions (a squash-merged branch, a
 diverged worktree that is reset in place, a stash):
@@ -147,7 +149,9 @@ repository and writes `sync-worktrees.config.js` in the current directory (`.mjs
 to add repositories, edit that file and add entries under `repositories` — see [Configuration](#configuration).
 
 `sync-worktrees` with no arguments opens the [interactive TUI](#interactive-tui), syncs once straight away, then keeps
-syncing on the schedule from your config — hourly by default (`defaults.cronSchedule`). Press `q` to quit.
+syncing on the schedule from your config — hourly by default (`defaults.cronSchedule`). Press `q` to quit. To start a
+branch, press `c` in the TUI (it creates the folder and pushes); don't `git checkout -b` inside a managed folder — see
+[Team workspace](#team-workspace), step 4.
 
 For a one-shot run (CI, scripts, ad-hoc), add `--runOnce`: it syncs every repository once and exits 0 on success, 1 if
 any repository failed (see [Exit codes](#exit-codes)). sync-worktrees sets `GIT_TERMINAL_PROMPT=0` (unless you exported
@@ -241,9 +245,10 @@ The onboarding pitch, concretely:
 3. A new hire runs `git clone <workspace> && cd <workspace> && sync-worktrees --runOnce` (or `sync-worktrees` for the
    TUI), and `sync-worktrees list` to confirm what the config resolved to.
 4. Start a branch with `c` in the TUI (it creates the folder and pushes), or with `git worktree add` plus a push before
-   the next sync: a branch that exists only locally is clean and has nothing unpushed, so the next tick prunes it to
-   `.trash/`. Don't `git checkout -b` inside a managed folder — the sync manages one folder per branch by the branch git
-   reports there, so a `main/` switched to another branch stops being `main`, and nothing recreates it.
+   the next sync: a freshly cut branch that exists only locally has nothing unpushed, so the next tick prunes it to
+   `.trash/`; once it carries commits it is kept but warned about every tick — push either way. Don't `git checkout -b`
+   inside a managed folder — the sync manages one folder per branch by the branch git reports there, so a `main/`
+   switched to another branch stops being `main`, and nothing recreates it.
 5. What stays manual: `hooks.onBranchCreated` and `filesToCopyOnBranchCreate` run only for branches created from the
    TUI wizard, so `.env` files and `npm install` for the worktrees the sync creates are still per-worktree steps.
 
@@ -252,16 +257,16 @@ The onboarding pitch, concretely:
 `sync-worktrees` with no arguments opens an Ink-based terminal UI: live logs, a manual sync trigger, wizards for the
 common operations, and a status view across every repository.
 
-| Key       | Action                                                                                                       |
-| --------- | ------------------------------------------------------------------------------------------------------------ |
-| `s`       | Sync all repositories now                                                                                    |
-| `c`       | Create a branch (wizard: repo, base branch, name)                                                            |
-| `o`       | Open a worktree in a terminal (`tmux`) or a GUI editor                                                       |
-| `w`       | Worktree status across repos, with flags per worktree                                                        |
+| Key       | Action                                                                                                          |
+| --------- | --------------------------------------------------------------------------------------------------------------- |
+| `s`       | Sync all repositories now                                                                                       |
+| `c`       | Create a branch (wizard: repo, base branch, name)                                                               |
+| `o`       | Open a worktree in a terminal (`tmux`) or a GUI editor                                                          |
+| `w`       | Worktree status across repos, with flags per worktree                                                           |
 | `x`       | [Force clean](./docs/trash-and-recovery.md#force-clean-from-the-tui-x): purge trash and recovery refs, `git gc` |
-| `r`       | Reload the config and re-sync                                                                                |
-| `?` / `h` | Help                                                                                                         |
-| `q`       | Quit (`Esc` only backs out of what is open)                                                                  |
+| `r`       | Reload the config and re-sync                                                                                   |
+| `?` / `h` | Help                                                                                                            |
+| `q`       | Quit (`Esc` only backs out of what is open)                                                                     |
 
 Every key, the wizards, the status flags, and the terminal/editor launch variables: [Interactive TUI](./docs/tui.md).
 
@@ -288,11 +293,14 @@ from the client's working directory to find your config and the worktree it was 
 `detect_context`, `list_worktrees`, `get_worktree_status`, `create_worktree`, `update_worktree`, `sync`, `initialize`,
 `load_config`, `set_current_repository`.
 
-What an agent cannot do through it: delete, trash, restore or purge anything directly — the only removal paths are
-`sync`'s own, the same prune, stale-directory sweep and diverged replace the CLI runs, with the same gates and
-destinations (`.trash/` by default, permanent with `trash.enabled: false`), and `sync` is flagged destructive so clients
-can prompt; move an existing remote branch (pushes are create-only); overwrite an existing directory; create a branch
-your filters would prune again (unless it passes `force: true`, which the response then warns about).
+What an agent cannot do through it:
+
+- delete, trash, restore or purge anything directly — the only removal paths are `sync`'s own, the same prune,
+  stale-directory sweep and diverged replace the CLI runs, with the same gates and destinations (`.trash/` by default,
+  permanent with `trash.enabled: false`), and `sync` is flagged destructive so clients can prompt;
+- move an existing remote branch (pushes are create-only);
+- overwrite an existing directory;
+- create a branch your filters would prune again (unless it passes `force: true`, which the response then warns about).
 
 Setup for every client, what the server sees from where it is launched, the full tool table, safety in detail, and a
 recipe for parallel agents on parallel branches: [MCP server](./docs/mcp.md).
@@ -302,7 +310,7 @@ recipe for parallel agents on parallel branches: [MCP server](./docs/mcp.md).
 | Option      | Alias | Description                                                                                                                       | Default |
 | ----------- | ----- | --------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | `--config`  | `-c`  | Path to JavaScript config file (auto-detected in CWD when omitted)                                                                | -       |
-| `--runOnce` | -     | Run a sync once and exit, overriding the config's [`runOnce`](./docs/configuration.md#whole-file-settings) for this invocation | `false` |
+| `--runOnce` | -     | Run a sync once and exit, overriding the config's [`runOnce`](./docs/configuration.md#whole-file-settings) for this invocation    | `false` |
 | `--help`    | `-h`  | Show help                                                                                                                         | -       |
 | `--version` | -     | Print version                                                                                                                     | -       |
 
