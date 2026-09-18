@@ -71,7 +71,7 @@ export const GET: APIRoute = async () => {
     "",
     "## AI agents",
     "",
-    "sync-worktrees ships a Model Context Protocol server (sync-worktrees-mcp) that any MCP client can speak to over stdio. Setup per client:",
+    "sync-worktrees ships an optional Model Context Protocol server (sync-worktrees-mcp) that any MCP client can speak to over stdio. Setup per client:",
     "",
     ...clients.flatMap((x) => {
       const code = x.data.useStandardJson ? c.standardJson : (x.data.code ?? c.claudeMcpAdd);

@@ -9,9 +9,10 @@ against `src/`, and records everything here. The loop stops when no critic has a
 every remaining minor or nit is either fixed or declined with a reason below. Positioning follows the site rewrite (PR
 #120): human-first Git workspace tool, MCP optional and last.
 
-## Status
+## Status (Phase 1 — README and docs)
 
-**Converged after iteration 3 (2026-09-18).**
+**Converged after iteration 3 (2026-09-18).** Phase 2 (the site) has its own status table under the "Phase 2 — site
+alignment" heading at the end of this file.
 
 | Critic      | Final verdict | Blockers | Majors | Minors | Nits |
 | ----------- | ------------- | -------: | -----: | -----: | ---: |
@@ -386,3 +387,149 @@ wording changed.
   --json` (and the table) could carry `headOid` and `pinRef`, which the recovery recipe currently reads from
   `manifest.json`. (f) The LFS fallback is recorded as a noop (`lfs_skip_enabled`), so a run that left pointer files
   behind exits 0; a CI owner may want it surfaced as a skip or a warning in the summary line.
+
+## Phase 2 — site alignment
+
+The owner wants the marketing site under `site/` to agree with the README, the docs and the source ("until we update
+the site as well so we don't see disagreements"). Same loop, five personas (consistency-auditor, skeptic, first-look,
+agent-user, team-lead), same truth order (`src/`, then README/docs, then the site), the file scope and verification
+steps from the Phase 2 addendum: `cd site && npm run build` must pass, the rendered `dist/index.html` and
+`dist/llms-full.txt` are grepped for every fixed fact, the regenerated `site/public/og-image.png` is restored unless
+the OG text changed, and the README/docs link checker still runs.
+
+### Status (Phase 2)
+
+Site iteration S1 complete; awaiting the S2 review.
+
+| Critic               | Verdict (S1)    | Blockers | Majors | Minors | Nits |
+| -------------------- | --------------- | -------: | -----: | -----: | ---: |
+| consistency-auditor  | REQUEST CHANGES |        4 |      5 |      7 |    5 |
+| skeptic              | REQUEST CHANGES |        4 |      4 |      3 |    1 |
+| first-look           | REQUEST CHANGES |        2 |      2 |      4 |    2 |
+| agent-user           | REQUEST CHANGES |        1 |      5 |      4 |    0 |
+| team-lead            | REQUEST CHANGES |        3 |      5 |      2 |    0 |
+
+### Site iteration S1 — 2026-09-18
+
+On top of commit 3a0a793. 63 findings → 32 pain points: 30 fixed, 2 declined. Every fact was re-read in `src/`
+before the site copy changed; folder names were computed by reproducing `sanitizeBranchName` in `node -e`.
+
+#### Decisions
+
+- **Folder names.** Real names, shown once each with a one-line caption: `feature/login` → `feature-login-df7c7aeb`
+  and, for the second example branch, the dot-free `release/next` → `release-next-36d47e0c` (the old `release-2.4`
+  would render as `release-2_4-a7bed77b`, because `sanitizeBranchName` rewrites every character outside
+  `[a-zA-Z0-9_-]` to `_`; teaching that rule in a hero is not worth the confusion, so the rule went into the README's
+  naming clause instead). The default branch stays `main`. The problem/solution bullet now uses the same suffix in
+  both repos on purpose — the hash is of the branch name, so the same branch gets the same folder everywhere, which
+  is the "stable paths" claim demonstrated rather than undermined.
+- **Hero transcript.** Real log lines under `$ sync-worktrees --runOnce`, because the plain command opens the TUI:
+  `🔄 Syncing 2 repositories...` (`src/index.ts:73`), `[frontend] ✅ Clone successful.` (`git.service.ts:356`, with
+  the logger's `[repo] ` prefix, `logger.service.ts:32-34`), `[frontend] Step 2: Creating 1 new worktrees...`
+  (`worktree-mode-sync-runner.ts:506`), `[frontend]   ✅ Created worktree for 'feature/login'` (`:556`), then the
+  tree. The invented `✓ cloned frontend`, `✓ frontend/main` and `workspace ready` lines are gone; the transcript ends
+  on the tree instead of a fabricated summary line (the real summary reads `📊 Processed 2 repos: 2 synced, 0 with
+  clone-mode skips, 0 failed`, `src/index.ts:196-201`, which is true but unhelpful in a hero).
+- **"One config" showcase.** Now the smallest config the loader accepts — `name`, an scp-style `repoUrl`
+  (`git@github.com:acme/frontend.git`, `git-url.ts:50`) and `worktreeDir: "./worktrees/<repo>"` per entry, with
+  the `@satisfies` annotation and `export default` — so the `worktrees/` root the tree draws is what that config
+  produces. Caption: "Declare your repos once. Commit the file to a small workspace repo of its own …".
+- **Section order.** `WhenNotToUse` moved above `AgentIntegration` in `index.astro`: the README puts "When not to
+  use it" in Why and MCP last; the MCP band's heading size is unchanged (it is the page's one dark section).
+- **Demo GIF.** Not embedded (declined, see below). **OG image.** Untouched: it echoes the headline, the subhead's
+  first sentence and "One config rebuilds the workspace", none of which changed; the regenerated PNG was restored
+  with `git checkout`.
+
+#### Pain points
+
+| ID   | Raised by                          | Severity | Pain point                                                                                                                                  | Decision | Where fixed                                                                                                                                                                                                                                                                                                                                                              |
+| ---- | ---------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| S-1  | CA-1, SK-4, FL-1, TL-6             | blocker  | Plain branch folder names in seven places; on disk every non-default folder is `<stem>-<8 hex>`                                             | Fix      | `Hero.astro` transcript and tree (+ caption line), `BootstrapRepositories.astro` "Stable paths" card, `problem-solution.yaml` with-4, `AgentIntegration.astro` example heading. README naming clause extended with the `_` rule and the 80-character stem cap (`path-resolution.service.ts:9-20`). Suffixes from `node -e` reproducing the function                    |
+| S-2  | CA-2, SK-3, FL-3, AU-10, TL-1      | blocker  | `.diverged/` named as the default destination; the page never says `.trash/`                                                                | Fix      | `features.yaml` safety card, `BootstrapRepositories.astro` centred line, FAQ 05 (`.diverged/` only when trash is disabled). Verified `worktree-mode-sync-runner.ts:1483-1514`, `constants.ts:90-92`                                                                                                                                                                       |
+| S-3  | CA-3, SK-2, AU-1                   | blocker  | `%APPDATA%` Windows path in the Claude Desktop hint                                                                                          | Fix      | `clients.yaml` Claude Desktop hint (macOS path, "Windows is not supported: the package declares os: darwin, linux"). Verified `package.json` `os`                                                                                                                                                                                                                       |
+| S-4  | CA-4, SK-6, FL-2, TL-2             | blocker  | "Disk usage scales with working-tree size, not branch count" on the card and in FAQ 02                                                       | Fix      | `features.yaml` worktree-mode card, FAQ 02 (history once; each branch a full checkout; 200 × 300 MB = 60 GB; the filters). Verified `worktree-sync-planner.ts:83` (one worktree per planned branch), README "What it costs"                                                                                                                                              |
+| S-5  | SK-1, CA-9, FL-6, TL-7             | blocker  | The "One config" showcase does not load (no URL scheme, no `worktreeDir`) and its caption promises branches                                 | Fix      | `Hero.astro` showcase and caption (see Decisions). Verified `git-url.ts:46-55`, `config-loader.service.ts:588-598`                                                                                                                                                                                                                                                       |
+| S-6  | SK-5, FL-7, CA U-3                 | major    | The animated transcript shows lines the tool never prints, under a command that opens the TUI                                                | Fix      | `Hero.astro` (see Decisions)                                                                                                                                                                                                                                                                                                                                             |
+| S-7  | CA-5, SK-7, FL-4, TL-3             | major    | heroDiskNote "left alone"; unpushed commits described as always refused; FAQ 07 "never merge or rebase" without the diverged exception      | Fix      | `positioning.yaml` heroDiskNote (README's words), `features.yaml` safety card, FAQ 05, FAQ 07. Verified runner `:1136-1151,1352-1413`                                                                                                                                                                                                                                    |
+| S-8  | CA-6, SK-8, FL-8, AU-2             | major    | `claude mcp add` without `--scope user`; the hint never says why                                                                            | Fix      | `commands.yaml` claudeMcpAdd (propagates to the tab, `llms.txt`, `llms-full.txt`), `clients.yaml` Claude Code hint. Grounded in Claude Code's MCP docs (Phase 1 P-9). Code note: `src/utils/mcp-registration.ts:53` (init's own registration) also omits the scope — follow-up                                                                                          |
+| S-9  | CA-7, SK-9, FL-9, AU-3, AU-6       | major    | Four tools in FAQ 03, six on the card, nine in the README                                                                                   | Fix      | `mcp-tools.yaml` lists all nine with a source comment; FAQ 03 names all nine. Verified nine `registerTool` calls in `src/mcp/server.ts`                                                                                                                                                                                                                                  |
+| S-10 | CA-8, FL-3, FL-5                   | major    | The site never says removals are reversible                                                                                                 | Fix      | `.trash/`, 30 days and `sync-worktrees trash --restore` in the Bootstrap line, the safety card, FAQ 05 and FAQ 07                                                                                                                                                                                                                                                       |
+| S-11 | AU-4                               | major    | `create_worktree` blurb reads as if the push is opt-in; omits create-only and worktree-mode-only                                            | Fix      | `mcp-tools.yaml` create_worktree (and update_worktree "worktree mode only"). Verified `handlers.ts:519`, `git.service.ts:2418,2439`, `context.ts:931-934`                                                                                                                                                                                                                |
+| S-12 | AU-5, CA-14                        | major    | No "what an agent cannot do", no link to docs/mcp.md; the prerequisite pill overpromises                                                     | Fix      | `AgentIntegration.astro`: four condensed bullets, `sync` flagged destructive, link to `docs/mcp.md`; pill reworded (worktree tools from any managed worktree; `sync`/`initialize` need the config or `load_config`). FAQ 03 links the docs page too                                                                                                                      |
+| S-13 | CA-5, SK-11, TL-4                  | major    | FAQ 05 says force-push-only and "uncommitted work"; the gate list is short; "removed" with no destination                                    | Fix      | FAQ 05 rewritten (diverged trigger incl. a teammate's push; dirty trees never reach it; stash skip; six-condition gate; `.trash/` 30 days; TUI status view)                                                                                                                                                                                                              |
+| S-14 | TL-5, SK-12, FL-5                  | major    | FAQ 07: the diverged exception missing, "pushed with `--no-track`" names the wrong mechanism, the swept-directory caveat absent              | Fix      | FAQ 07 rewritten (dirty skipped by every phase; diverged replace; six-condition gate; `.trash/`; swept directory in one sentence; `--no-track` at creation, create-only push). Verified `git.service.ts:2418,2439,1232-1245,1836-1889`                                                                                                                                     |
+| S-15 | TL-8                               | major    | FAQ 04 omits the per-entry bare repo, LFS per checkout and the sparse-set update rule                                                        | Fix      | FAQ 04 rewritten; the unverified "multi-million-line" dropped (see Dropped)                                                                                                                                                                                                                                                                                              |
+| S-16 | CA-10, AU-8                        | minor    | `list_worktrees` label set omits `unknown` and the grouped-across-repos behaviour                                                            | Fix      | `mcp-tools.yaml` list_worktrees. Verified `server.ts:165`                                                                                                                                                                                                                                                                                                                |
+| S-17 | CA-11, SK-10                       | minor    | Removal gate lists four of six conditions                                                                                                   | Fix      | Safety card, FAQ 05, FAQ 07 name modified submodules and detached HEAD. Verified `worktree-status.service.ts:306-321`                                                                                                                                                                                                                                                    |
+| S-18 | CA-12                              | minor    | "Every remote branch" without the filter qualifier (card, meta description, llms.txt)                                                       | Fix      | `features.yaml` worktree-mode, `positioning.yaml` metaDescription, `llms.txt.ts`; the hero headline stays as the README's own tagline                                                                                                                                                                                                                                   |
+| S-19 | CA-13                              | minor    | "Clean branches fast-forward themselves"                                                                                                    | Fix      | `problem-solution.yaml` with-1: "Clean, fully pushed branches …"                                                                                                                                                                                                                                                                                                         |
+| S-20 | CA-15, TL-9                        | minor    | FAQ 06 never says there is no headless daemon; QuickStart step 3 wording                                                                     | Fix      | FAQ 06 rewritten (TUI in tmux, `--runOnce` on a timer, lock-held skip exits 0); `QuickStart.astro` step 3 body                                                                                                                                                                                                                                                          |
+| S-21 | CA-16                              | minor    | Requirements on the page omit Git and tmux                                                                                                  | Fix      | `QuickStart.astro` step 1 body                                                                                                                                                                                                                                                                                                                                          |
+| S-22 | CA (ordering)                      | minor    | The MCP band sits above "When not to use it", against the README's emphasis                                                                 | Fix      | `index.astro` order: Quick start → When not to use → MCP → FAQ                                                                                                                                                                                                                                                                                                          |
+| S-23 | AU-7                               | minor    | `detect_context` last on the card and without its cross-repo map                                                                            | Fix      | `mcp-tools.yaml` order 1 with the docs wording (`includeAllWorktrees`, capabilities block)                                                                                                                                                                                                                                                                              |
+| S-24 | AU-9                               | minor    | Cursor hint treats global and per-project files as equivalent; Codex hint starts with a dangling "Or"                                        | Fix      | `clients.yaml` Cursor and Codex hints                                                                                                                                                                                                                                                                                                                                    |
+| S-25 | TL-10                              | minor    | "Commit the file" without saying where, or about the `.gitignore`                                                                           | Fix      | Hero caption ("a small workspace repo of its own"), Bootstrap "Same layout" card (three-line `.gitignore`, "see the README's Team workspace section"). A hyperlink inside that card is not possible through `inlineCodeToHtml`, so it is a text reference; the docs link lives in the MCP section and FAQ 03                                                              |
+| S-26 | CA-17, AU-8                        | nit      | "sync — fetch, create, prune" drops "update"                                                                                                | Fix      | `AgentIntegration.astro` step 4                                                                                                                                                                                                                                                                                                                                          |
+| S-27 | CA-18                              | nit      | `llms.txt` "ships an MCP server" (not optional), "monorepo sibling dependencies"                                                            | Fix      | `llms.txt.ts` intro paragraph; `llms-full.txt.ts` "AI agents" intro says optional too                                                                                                                                                                                                                                                                                    |
+| S-28 | CA-19                              | nit      | llmsFullIntro does not describe what the file contains                                                                                      | Fix      | `positioning.yaml` llmsFullIntro                                                                                                                                                                                                                                                                                                                                         |
+| S-29 | CA-20                              | nit      | Bootstrap config's `branchExclude: ["wip-*", "tmp-*"]` can never match after the include                                                     | Fix      | `branchExclude: ["feature/wip-*"]`. Verified `branch-filter.ts` (anchored patterns, include first)                                                                                                                                                                                                                                                                       |
+| S-30 | CA-21                              | nit      | ctaHeadline "checked out and current" over-promises for branches with local commits                                                          | Fix      | "Every branch, checked out and kept in sync."                                                                                                                                                                                                                                                                                                                            |
+| S-31 | FL-10                              | nit      | The demo GIF is copied into `dist/` but referenced nowhere                                                                                  | Decline  | See Declined                                                                                                                                                                                                                                                                                                                                                             |
+| S-32 | CA (ordering, heading size)        | nit      | Drop the MCP heading a size                                                                                                                 | Decline  | See Declined                                                                                                                                                                                                                                                                                                                                                             |
+
+#### Changes made
+
+- `site/src/components/Hero.astro`: loadable showcase config; real `--runOnce` transcript; tree with real folder
+  names and a naming caption; "Declare your repos once … a small workspace repo of its own".
+- `site/src/components/BootstrapRepositories.astro`: `.trash/` safety line (per-entry `.bare/`, 30 days, restore,
+  never touched / never discarded); "Stable paths" and "Same layout" cards; `branchExclude` fixed; card bodies now
+  render inline code through `inlineCodeToHtml`.
+- `site/src/components/QuickStart.astro`: step 1 names Git and tmux; step 3 says TUI now-then-hourly, `--runOnce`
+  for CI or a timer.
+- `site/src/components/AgentIntegration.astro`: pill reworded; example path `backend/release-next-36d47e0c`;
+  "sync — fetch, create, prune, update"; "What an agent cannot do through it" (four bullets) and a `docs/mcp.md`
+  link.
+- `site/src/pages/index.astro`: `WhenNotToUse` before `AgentIntegration`.
+- `site/src/content/data/positioning.yaml`: heroDiskNote, metaDescription, ctaHeadline, llmsFullIntro.
+- `site/src/content/data/features.yaml`: worktree-mode and safety cards.
+- `site/src/content/data/problem-solution.yaml`: with-1 and with-4.
+- `site/src/content/data/mcp-tools.yaml`: nine tools, `detect_context` first, push semantics, `unknown` label,
+  worktree-mode-only notes, a source comment.
+- `site/src/content/data/clients.yaml`: Claude Code, Cursor, Claude Desktop, Codex hints.
+- `site/src/content/data/commands.yaml`: `claudeMcpAdd` with `--scope user`.
+- `site/src/content/faq/02-vs-cloning.md`, `03-mcp-agents.md`, `04-monorepos.md`, `05-force-push-delete.md`,
+  `06-cron.md`, `07-uncommitted-safety.md`: rewritten as listed above (FAQ 01 unchanged).
+- `site/src/pages/llms.txt.ts`, `site/src/pages/llms-full.txt.ts`: "every selected branch", "optional MCP server",
+  "dependency siblings".
+- `README.md`: the naming clause under "What you get" now states the `_` rewrite and the 80-character stem cap.
+
+#### Dropped
+
+- Hero transcript lines `✓ cloned frontend`, `✓ frontend/main`, `✓ backend/release-2.4`, `workspace ready`: the tool
+  never prints them (grep of `src/`).
+- FAQ 04 "multi-million-line monorepos": an unverified number (CA U-2); the mechanism stays.
+- FAQ 05 "uncommitted work is never silently lost" as the diverged-case promise: dirty worktrees never reach that
+  path (`runner:1136-1137`); FAQ 07 now carries the uncommitted-work promise where it is true.
+
+#### Declined
+
+- **S-31 / FL-10: embed the README's demo GIF.** It shows a log panel scrolling clone progress (Phase 1, FL-1), not
+  the folders; the hero already carries real log lines and the real tree, and a 517 KB animation under it would
+  push the config showcase down for no new information. Copying it into `dist/` is `prebuild` in
+  `site/package.json`, which is outside this phase's files; left as is.
+- **S-32: drop the MCP heading a size.** Placement was the disagreement with the README's emphasis and is fixed by
+  the reorder; the band is the page's only dark section and its heading size is a design choice, not a claim.
+
+#### Carried to next iteration
+
+- Whether the real `--runOnce` transcript still reads as a demo to the first-look critic, and whether the naming
+  caption under the tree is enough for the "stable paths" claim.
+- The four Phase 1 follow-ups about the site (Hero names, `.diverged/` in FAQ 05 / `features.yaml` / Bootstrap,
+  the `clients.yaml` Windows path, the `features.yaml` / FAQ 02 disk claim) are addressed by S1; the Phase 1 list is
+  left as written, and the list below is the live one.
+
+#### Follow-ups (code, for the owner)
+
+- `src/utils/mcp-registration.ts:53`: `init`'s own `claude mcp add sync-worktrees -- npx …` omits `--scope user`,
+  so the wizard registers the server for one directory while the README, docs and site now say `--scope user`.
+- The Phase 1 code items (a)–(f) above still stand.

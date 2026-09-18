@@ -1,24 +1,38 @@
+# The nine tools sync-worktrees-mcp registers (src/mcp/server.ts), in the order an agent meets them.
+# Full table, launch situations, error codes and safety: docs/mcp.md.
+- id: detect_context
+  name: detect_context
+  desc: "Call first. Resolve which config and repo a path belongs to, list sibling worktrees and configured repos, and report per-tool capabilities {available, reason}; includeAllWorktrees: true returns every configured repo's worktrees."
+  order: 1
 - id: list_worktrees
   name: list_worktrees
-  desc: "Status-labelled list (clean / dirty / stale / current), divergence, safeToRemove, last sync."
-  order: 1
+  desc: "Status-labelled list (clean / dirty / stale / current / unknown), divergence, safeToRemove, last sync; without repoName, grouped across every configured repo."
+  order: 2
 - id: get_worktree_status
   name: get_worktree_status
   desc: "Per-worktree detail: dirty files, unpushed commits, stashes, operation in progress."
-  order: 2
+  order: 3
 - id: create_worktree
   name: create_worktree
-  desc: "Create a worktree for a branch. Optionally branch from baseBranch and publish with --no-track + push -u."
-  order: 3
-- id: sync
-  name: sync
-  desc: "Full sync cycle: fetch, create, prune, update."
+  desc: "Worktree mode only. Check out a branch in its own directory; a new branch is created from baseBranch with --no-track and pushed to origin unless push: false — create-only, so an existing remote branch is never moved."
   order: 4
 - id: update_worktree
   name: update_worktree
-  desc: "Fast-forward one worktree to match upstream."
+  desc: "Fast-forward one worktree to match upstream. Worktree mode only."
   order: 5
-- id: detect_context
-  name: detect_context
-  desc: "Resolve which config and repo a path belongs to, and which operations are available there."
+- id: sync
+  name: sync
+  desc: "Full sync cycle: fetch, create, prune, update. Needs a loaded config; flagged destructive so clients can prompt."
   order: 6
+- id: initialize
+  name: initialize
+  desc: "Clone the bare repo and create the default-branch worktree. Needs a loaded config."
+  order: 7
+- id: load_config
+  name: load_config
+  desc: "Load or switch the config at runtime, for a config outside the walk-up path."
+  order: 8
+- id: set_current_repository
+  name: set_current_repository
+  desc: "Pick the active repo when several are configured; every tool also accepts repoName."
+  order: 9

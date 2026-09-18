@@ -5,13 +5,13 @@
 - id: claude-code
   label: Claude Code
   lang: bash
-  hint: "Use the Claude Code CLI. The server auto-detects your config from the working directory."
+  hint: "Use the Claude Code CLI. --scope user makes the server available in every worktree (the default scope is the one directory you ran it from). It finds your config by walking up from the working directory."
   order: 1
 - id: cursor
   label: Cursor
   lang: json
   useStandardJson: true
-  hint: "Paste into ~/.cursor/mcp.json (global) or .cursor/mcp.json (per-project)."
+  hint: "Paste into ~/.cursor/mcp.json (global) or .cursor/mcp.json (per-project). Use the global file if you work across worktrees — a per-project file lives in one checkout."
   order: 2
 - id: windsurf
   label: Windsurf
@@ -23,7 +23,7 @@
   label: Claude Desktop
   lang: json
   useStandardJson: true
-  hint: "Edit claude_desktop_config.json (~/Library/Application Support/Claude on macOS, %APPDATA%/Claude on Windows), then restart."
+  hint: "Edit claude_desktop_config.json (macOS: ~/Library/Application Support/Claude/), paste the standard config, then restart Claude Desktop. Windows is not supported: the package declares os: darwin, linux."
   order: 4
 - id: vscode
   label: VS Code
@@ -35,7 +35,7 @@
   label: Codex
   lang: bash
   code: "codex mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp"
-  hint: "Or edit ~/.codex/config.toml directly."
+  hint: "Use the Codex CLI, or add the equivalent [mcp_servers.sync-worktrees] block to ~/.codex/config.toml."
   order: 6
 - id: cline
   label: Cline

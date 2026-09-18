@@ -40,8 +40,9 @@ With one repository declared and `init`'s default `worktreeDir` (`./<repo>`), th
 ```
 
 Every remote branch that passes your filters is a real checkout you can `cd` into, build in and open in an editor. A
-folder is named after its branch with `/` turned into `-`, plus eight hex characters of the branch name's SHA-256, so
-the name is stable and unique per branch; only the default branch sits at its plain name. A branch that appears
+folder is named after its branch with `/` turned into `-` (any other character outside letters, digits, `_` and `-`
+becomes `_`, and the stem is capped at 80 characters), plus eight hex characters of the branch name's SHA-256, so the
+name is stable and unique per branch; only the default branch sits at its plain name. A branch that appears
 upstream gets a folder on the next sync; a branch deleted upstream has its folder moved to a reversible `.trash/`;
 clean, fully pushed folders are fast-forwarded. The layout is the same on every machine that runs the same config.
 

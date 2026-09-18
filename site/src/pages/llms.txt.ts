@@ -17,7 +17,7 @@ export const GET: APIRoute = async () => {
 
 > ${p.llmsSummary}
 
-sync-worktrees keeps every branch checked out as its own folder — one folder per branch, shared Git object storage underneath — and ships an MCP server (\`sync-worktrees-mcp\`) so AI tools like ${clientList} can list, create, inspect, and sync worktrees through tool calls. A per-repo clone mode instead keeps a single branch checked out at a fixed path (no \`.bare/\`, no per-branch folders) — for monorepo sibling dependencies that expect fixed relative paths. Runs as a one-shot sync or an interactive Ink-based TUI with cron scheduling. MIT licensed, Node 24+, macOS and Linux.
+sync-worktrees keeps every selected branch checked out as its own folder — one folder per branch, shared Git object storage underneath — and ships an optional MCP server (\`sync-worktrees-mcp\`) so AI tools like ${clientList} can list, create, inspect, and sync worktrees through tool calls. A per-repo clone mode instead keeps a single branch checked out at a fixed path (no \`.bare/\`, no per-branch folders) — for dependency siblings that expect a fixed relative path. Runs as a one-shot sync or an interactive Ink-based TUI with cron scheduling. MIT licensed, Node 24+, macOS and Linux.
 
 ## Docs
 
