@@ -2,11 +2,11 @@
 # Full table, launch situations, error codes and safety: docs/mcp.md.
 - id: detect_context
   name: detect_context
-  desc: "Call first. Resolve which config and repo a path belongs to, list sibling worktrees and configured repos, and report per-tool capabilities {available, reason}; includeAllWorktrees: true returns every configured repo's worktrees."
+  desc: "Call first. Works out which config and repo a path belongs to, lists the worktrees around it, and reports which tools work from there."
   order: 1
 - id: list_worktrees
   name: list_worktrees
-  desc: "Status-labelled list (clean / dirty / stale / current / unknown), divergence, safeToRemove, last sync; without repoName, grouped across every configured repo."
+  desc: "Every worktree with its status, whether it is safe to remove, and when it last synced — across all repos, or one."
   order: 2
 - id: get_worktree_status
   name: get_worktree_status
@@ -14,7 +14,7 @@
   order: 3
 - id: create_worktree
   name: create_worktree
-  desc: "Worktree mode only. Check out a branch in its own directory; a new branch is created from baseBranch with --no-track and pushed to origin unless push: false — create-only, so an existing remote branch is never moved."
+  desc: "Worktree mode only. Check out a branch in its own directory; a new branch is pushed by default, create-only, so an existing remote branch is never moved."
   order: 4
 - id: update_worktree
   name: update_worktree
@@ -30,9 +30,9 @@
   order: 7
 - id: load_config
   name: load_config
-  desc: "Load or switch the config at runtime, for a config outside the walk-up path."
+  desc: "Load or switch the active config at runtime."
   order: 8
 - id: set_current_repository
   name: set_current_repository
-  desc: "Pick the active repo when several are configured; every repo-targeting tool also accepts repoName."
+  desc: "Pick the active repo when several are configured."
   order: 9

@@ -23,7 +23,7 @@
   label: Claude Desktop
   lang: json
   useStandardJson: true
-  hint: "Edit claude_desktop_config.json (macOS: ~/Library/Application Support/Claude/), paste the standard config, then restart Claude Desktop. Windows is not supported: the package declares os: darwin, linux."
+  hint: "Edit claude_desktop_config.json (macOS: ~/Library/Application Support/Claude/), paste the standard config, then restart Claude Desktop. macOS and Linux only — Windows is not supported."
   order: 4
 - id: vscode
   label: VS Code

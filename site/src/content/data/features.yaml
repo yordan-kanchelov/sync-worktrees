@@ -1,7 +1,7 @@
 - id: worktree-mode
   icon: git-branch
   title: Worktree mode
-  body: "Every remote branch that passes your filters gets its own directory, all sharing one Git database. History is stored once; each branch still costs a full checkout, so bound the set with `branchMaxAge`, include/exclude globs and sparse checkout."
+  body: "Every remote branch that passes your filters gets its own directory, all sharing one Git database. History is stored once, but each branch still costs a working tree — that is what the filters are for."
   order: 1
 - id: clone-mode
   icon: clone
@@ -21,7 +21,7 @@
 - id: safety
   icon: shield
   title: Safety by default
-  body: "It won't touch your work: fast-forward always skips a dirty worktree, and skips one with unpushed commits unless upstream moved too (the diverged case); removal also refuses stashes, in-progress operations, modified submodules and a detached HEAD, and means a move to `.trash/` (restorable for 30 days). A branch that diverged — a force-push, or a teammate's push while you had local commits — is moved to `.trash/` with its commits pinned and a fresh checkout takes its place (or, when you made no commits since the last sync or your tree already matches upstream, simply reset in place), never merged or overwritten."
+  body: "It won't touch your work: a dirty worktree is never fast-forwarded, pruned or replaced, and anything it does remove moves to `.trash/`, restorable for 30 days by default — turn trash off and removals are permanent. A diverged branch is never merged or overwritten: your commits are pinned before a fresh checkout replaces the folder, or it is reset in place if you have committed nothing since the last sync."
   order: 5
 - id: mcp-server
   icon: command
