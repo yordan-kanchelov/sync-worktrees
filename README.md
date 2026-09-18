@@ -298,8 +298,9 @@ from the client's working directory to find your config and the worktree it was 
 What an agent cannot do through it:
 
 - delete, trash, restore or purge anything directly — the only removal paths are `sync`'s own, the same prune,
-  stale-directory sweep and diverged replace the CLI runs, with the same gates and destinations (`.trash/` by default,
-  permanent with `trash.enabled: false`), and `sync` is flagged destructive so clients can prompt;
+  stale-directory sweep and diverged replace the CLI runs, with the same gates and destinations (`.trash/` by default;
+  with `trash.enabled: false` a prune is permanent and a diverged worktree goes to `.diverged/` instead), and `sync` is
+  flagged destructive so clients can prompt;
 - move an existing remote branch (pushes are create-only);
 - overwrite an existing directory;
 - create a branch your filters would prune again (unless it passes `force: true`, which the response then warns about).

@@ -42,6 +42,12 @@ each writes findings as `ID | severity | where | problem | evidence | fix`. The 
 with a reason, runs the link check, appends an iteration section here, and stops when all five approve with no blocker
 or major and nothing minor left undeclared.
 
+For the site phase, the same loop with a consistency-auditor in place of the tech-writer, plus two gates: `cd site &&
+npm run build` must pass, and the rendered `site/dist/index.html` and `site/dist/llms-full.txt` are grepped for every
+fixed fact (and for literal backticks, which mean a card is rendering Markdown as plain text). The build regenerates
+`site/public/og-image.png`, so run `git checkout -- site/public/og-image.png` before committing unless the OG text in
+`site/scripts/generate-og-image.mjs` changed.
+
 ## Target structure
 
 ### README outline (368 lines after iteration 3)
@@ -365,17 +371,9 @@ wording changed.
 
 ### Follow-ups outside this loop's files
 
-- `site/src/components/Hero.astro` (the animated `worktrees/` tree and the `✓ frontend/feature-login` lines) and
-  `BootstrapRepositories.astro` ("Jump straight to `./worktrees/frontend/feature-login`") show plain branch folder
-  names; on disk every non-default branch folder carries the `-<8 hex>` suffix (`feature-login-df7c7aeb`).
-- `site/src/content/faq/05-force-push-delete.md`, `site/src/content/data/features.yaml` (`safety`),
-  `site/src/components/BootstrapRepositories.astro`: say force-push survivors go to `.diverged/`; the default is
-  `.trash/` (`.diverged/` only with `trash.enabled: false`). FAQ 05 also describes only the force-push trigger.
-- `site/src/content/data/clients.yaml:26`: Claude Desktop hint gives a Windows path; the package declares
-  `os: ["darwin", "linux"]`.
-- `site/src/content/data/features.yaml` (`worktree-mode`) and `faq/02-vs-cloning.md`: "disk usage scales with
-  working-tree size, not branch count" is wrong for working trees (one full checkout per branch); the README says
-  `bare + branches × checkout` instead.
+- The four site items recorded here after iteration 3 (plain branch folder names in the Hero and Bootstrap copy,
+  `.diverged/` named as the default destination, the Claude Desktop Windows path, the "scales with working-tree size"
+  disk claim) were fixed in Phase 2, site iteration S1, and are no longer open.
 - Code, for the owner: (a) the diverged path (`worktree-mode-sync-runner.ts:1149,1321–1409`) triggers on any
   `ahead > 0 && behind > 0`, not only after a force-push — documented as such; if force-push-only is the intent, that is
   a code change. (b) `cron.schedule` at `InteractiveUIService.tsx:307` passes no `suppressMissedWarning` /
@@ -399,16 +397,23 @@ the OG text changed, and the README/docs link checker still runs.
 
 ### Status (Phase 2)
 
-Site iteration S2 complete; awaiting the S3 review. S1: five REQUEST CHANGES (63 findings → 32 pain points). S2:
-three APPROVE, two REQUEST CHANGES with no blockers (20 findings → 17 pain points, 16 fixed, 1 declined).
+**Converged after site iteration S3 (2026-09-18).**
 
-| Critic               | Verdict (S2)    | Blockers | Majors | Minors | Nits |
-| -------------------- | --------------- | -------: | -----: | -----: | ---: |
-| consistency-auditor  | APPROVE         |        0 |      0 |      2 |    5 |
-| skeptic              | REQUEST CHANGES |        0 |      2 |      1 |    2 |
-| first-look           | REQUEST CHANGES |        0 |      1 |      3 |    3 |
-| agent-user           | APPROVE         |        0 |      0 |      2 |    2 |
-| team-lead            | APPROVE         |        0 |      0 |      3 |    1 |
+| Critic               | Final verdict (S3) | Blockers | Majors | Minors | Nits |
+| -------------------- | ------------------ | -------: | -----: | -----: | ---: |
+| consistency-auditor  | APPROVE            |        0 |      0 |      0 |    1 |
+| skeptic              | APPROVE            |        0 |      0 |      0 |    2 |
+| first-look           | APPROVE            |        0 |      0 |      1 |    2 |
+| agent-user           | APPROVE            |        0 |      0 |      0 |    2 |
+| team-lead            | APPROVE            |        0 |      0 |      1 |    0 |
+
+Stop criterion, restated and met: all five critics approve with zero blockers and zero majors, and every minor and nit
+from S3 is either fixed (5 of 6 pain points) or declined with a reason (S-53, a documentation URL that cannot be
+checked from here). The history: S1 (five REQUEST CHANGES, 63 findings → 32 pain points) aligned the site's facts with
+the README, docs and source; S2 (three APPROVE, 20 findings → 17 pain points, no blockers) was precision; S3 (five
+APPROVE, 11 findings → 6 pain points) was the closing pass. No statement on the site, in `llms.txt`, in the site half
+of `llms-full.txt`, in the meta description or in the JSON-LD disagrees with `README.md`, `docs/*.md` or `src/` as of
+this iteration; the remaining follow-ups are code items for the owner, listed under site iteration S3.
 
 ### Site iteration S1 — 2026-09-18
 
@@ -526,8 +531,8 @@ before the site copy changed; folder names were computed by reproducing `sanitiz
 - Whether the real `--runOnce` transcript still reads as a demo to the first-look critic, and whether the naming
   caption under the tree is enough for the "stable paths" claim.
 - The four Phase 1 follow-ups about the site (Hero names, `.diverged/` in FAQ 05 / `features.yaml` / Bootstrap,
-  the `clients.yaml` Windows path, the `features.yaml` / FAQ 02 disk claim) are addressed by S1; the Phase 1 list is
-  left as written, and the list below is the live one.
+  the `clients.yaml` Windows path, the `features.yaml` / FAQ 02 disk claim) are addressed by S1; they were removed
+  from the Phase 1 list when the phase converged (S3), and the code list under S3 is the live one.
 
 #### Follow-ups (code, for the owner)
 
@@ -594,6 +599,75 @@ Precision round on top of commit 4dc6c1d; no restructuring. Every fact re-read i
 
 #### Carried to next iteration
 
-- Whether the reordered transcript and the shell-comment caption read as intended to the first-look and skeptic
-  critics; the VS Code key name (S-48) stays unverified until someone with access to VS Code's documentation
-  confirms it.
+- Both confirmed in S3: the transcript order and the caption drew no findings, and the agent-user critic verified the
+  VS Code key from the `microsoft/vscode-docs` source (S-48 closed as verified under S3, S-52).
+
+### Site iteration S3 — 2026-09-18
+
+Closing pass on top of commit 16b39b6: all five critics approved with zero blockers and zero majors. Every remaining
+minor and nit is fixed below except one URL question that cannot be checked from this environment.
+
+#### Critic verdicts
+
+| Critic               | Verdict | Blockers | Majors | Minors | Nits |
+| -------------------- | ------- | -------: | -----: | -----: | ---: |
+| consistency-auditor  | APPROVE |        0 |      0 |      0 |    1 |
+| skeptic              | APPROVE |        0 |      0 |      0 |    2 |
+| first-look           | APPROVE |        0 |      0 |      1 |    2 |
+| agent-user           | APPROVE |        0 |      0 |      0 |    2 |
+| team-lead            | APPROVE |        0 |      0 |      1 |    0 |
+
+#### Pain points
+
+| ID   | Raised by             | Severity | Pain point                                                                                                                                       | Decision | Where fixed                                                                                                                                                                                                                                                                                         |
+| ---- | --------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S-50 | FL-18, SK-19, TL-15   | minor    | Safety card's "(unless upstream moved too — the diverged case)" reads as qualifying "uncommitted changes" as well as "unpushed commits"          | Fix      | `features.yaml` safety: "fast-forward always skips a dirty worktree, and skips one with unpushed commits unless upstream moved too (the diverged case)". Verified runner `:1137` (`dirty_worktree` skip) precedes `:1147-1149` (ahead-and-behind → diverged)                                    |
+| S-51 | CA-29, SK-18          | nit      | "permanent with `trash.enabled: false`" over-generalises: the prune and a non-git stale directory are permanent, a diverged replace goes to `.diverged/` with a keep ref, a stale directory holding `.git` is quarantined | Fix      | `AgentIntegration.astro` cannot-do bullet and README's matching MCP bullet: "(`.trash/` by default; with `trash.enabled: false` a prune is permanent and a diverged worktree goes to `.diverged/` instead)". Verified runner `:885` (`removeWorktree`), `:1507-1516` (`.diverged/` + `updateRef(keepRef)`), `git.service.ts:1881-1889` (quarantine, else `fs.rm`) |
+| S-52 | AU-15                 | nit      | VS Code hint and docs block deliberately vague about the config key (S-48); the critic verified it from the `microsoft/vscode-docs` source        | Fix      | `clients.yaml` VS Code hint and `docs/mcp.md` VS Code block: the same command and args under the `servers` key in `.vscode/mcp.json`, or the user-level `mcp.json` via **MCP: Open User Configuration**; the hint stays backtick-free because client hints render as plain text. S-48 closed as verified, crediting `docs/agent-customization/mcp-servers.md` in the `microsoft/vscode-docs` repository (first example `{ "servers": { … } }`; `code --add-mcp` documented) |
+| S-53 | AU-16                 | nit      | The docs' VS Code guide URL (`/docs/copilot/chat/mcp-servers`) may now live at `/docs/agent-customization/mcp-servers`                           | Decline  | See Declined                                                                                                                                                                                                                                                                                        |
+| S-54 | FL-19                 | nit      | Clone-mode card writes `.bare/` in plain text while its neighbours render inline code                                                            | Fix      | `features.yaml` clone-mode: backticks around `.bare/`                                                                                                                                                                                                                                               |
+| S-55 | FL-20                 | nit      | Two example organisations on one page (`acme` in the hero showcase, `company` in the Bootstrap config and the README)                            | Fix      | `Hero.astro` showcase: `git@github.com:company/frontend.git`, `…/backend.git`                                                                                                                                                                                                                       |
+
+#### Changes made
+
+- `site/src/content/data/features.yaml`: safety card binds the diverged exception to unpushed commits only;
+  clone-mode card renders `.bare/` as code.
+- `site/src/components/AgentIntegration.astro`: the trash-off clause names what is permanent and where a diverged
+  worktree goes instead.
+- `site/src/content/data/clients.yaml`: VS Code hint names the `servers` key, `.vscode/mcp.json` and the user-level
+  file.
+- `site/src/components/Hero.astro`: showcase org is `company`, matching the Bootstrap config and the README.
+- `docs/mcp.md`: VS Code block names the `servers` key and says `mcp.json` does not use `mcpServers`; the guide URL is
+  unchanged (S-53).
+- `README.md`: the MCP "cannot do" bullet carries the same trash-off clause as the site.
+- `plan.md`: this section; Phase 2 status set to converged; the fixed site items removed from the Phase 1 follow-ups
+  list; two site-phase lines under "How to re-run this loop".
+
+#### Declined
+
+- **S-53 / AU-16: repoint the VS Code guide link at `/docs/agent-customization/mcp-servers`.** `code.visualstudio.com`
+  is blocked from this environment, so neither the redirect nor the new path's anchor could be confirmed; the current
+  link is Microsoft's own path, still referenced from their `learn/` pages, and the "Add an MCP server" heading exists
+  on the current page. Left as is until someone with a browser confirms the redirect; noted for the owner below.
+
+#### Carried to next iteration
+
+- None: Phase 2 is converged (see Status).
+
+#### Follow-ups (code and external, for the owner)
+
+- `src/utils/mcp-registration.ts:53`: `init`'s own `claude mcp add sync-worktrees -- npx …` omits `--scope user`,
+  so the wizard registers the server for one directory while the README, docs and site say `--scope user`.
+- The diverged path (`worktree-mode-sync-runner.ts:1149,1321–1409`) triggers on any `ahead > 0 && behind > 0`, not
+  only after a force-push; documented as such everywhere. If force-push-only is the intent, that is a code change.
+- The runner's log line at `worktree-mode-sync-runner.ts:1381–1384` still tells the user to `cd` into the moved copy
+  and `git diff`, which cannot work (the copy's `.git` link points at a removed registration); the docs now recover
+  through the bare repository and the pinned commit.
+- `cron.schedule` at `InteractiveUIService.tsx:307` passes no `suppressMissedWarning` / `execution:missed` handling,
+  so node-cron's default warning after a laptop wakes is likely (unverified here).
+- `init` could offer to write the `.gitignore` the README and site now recommend.
+- `sync-worktrees trash --json` (and the table) could carry `headOid` and `pinRef`, which the recovery recipe reads
+  from `manifest.json`.
+- The LFS fallback is recorded as a noop (`lfs_skip_enabled`), so a run that left pointer files behind exits 0; a CI
+  owner may want it surfaced as a skip or a warning in the summary line.
+- `docs/mcp.md`'s VS Code guide link may have moved (S-53); confirm the redirect and repoint it.

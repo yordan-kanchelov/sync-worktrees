@@ -96,9 +96,10 @@ Use the VS Code CLI:
 code --add-mcp '{"name":"sync-worktrees","command":"npx","args":["-y","-p","sync-worktrees","sync-worktrees-mcp"]}'
 ```
 
-Or add the server through VS Code's MCP settings, following the VS Code MCP install
-[guide](https://code.visualstudio.com/docs/copilot/chat/mcp-servers#_add-an-mcp-server), with the same command and
-args as the **standard config** above (VS Code's own config file has its own layout).
+Or put the same command and args as the **standard config** above under the `servers` key in `.vscode/mcp.json` (or
+the user-level `mcp.json`, opened with **MCP: Open User Configuration**) — VS Code's `mcp.json` uses `servers`, not
+`mcpServers`. See the VS Code MCP install
+[guide](https://code.visualstudio.com/docs/copilot/chat/mcp-servers#_add-an-mcp-server).
 
 </details>
 

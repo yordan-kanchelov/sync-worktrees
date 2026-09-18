@@ -29,7 +29,7 @@
   label: VS Code
   lang: bash
   code: "code --add-mcp '{\"name\":\"sync-worktrees\",\"command\":\"npx\",\"args\":[\"-y\",\"-p\",\"sync-worktrees\",\"sync-worktrees-mcp\"]}'"
-  hint: "Uses VS Code's built-in MCP support (Copilot Chat). Or add the server through VS Code's MCP settings (see its guide), with the same command and args."
+  hint: "Uses VS Code's built-in MCP support (Copilot Chat). Or put the same command and args under the servers key in .vscode/mcp.json (or the user-level mcp.json: MCP: Open User Configuration)."
   order: 5
 - id: codex
   label: Codex
