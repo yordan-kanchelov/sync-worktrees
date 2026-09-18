@@ -14,7 +14,7 @@ export function inlineCodeToHtml(s: string): string {
   );
 }
 
-/** Flatten inline markdown to plain text — for FAQ JSON-LD and llms plain sections. */
+/** Flatten inline markdown to plain text, for FAQ JSON-LD and llms plain sections. */
 export function mdToPlainText(s: string): string {
   return s
     .replace(/`([^`]+)`/g, "$1")

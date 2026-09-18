@@ -33,7 +33,7 @@ export const GET: APIRoute = async () => {
   const faqs = (await getCollection("faq")).sort(byOrder);
 
   const lines = [
-    "# sync-worktrees — full landing-page text",
+    "# sync-worktrees: full landing-page text",
     "",
     p.llmsFullIntro,
     "",
@@ -57,7 +57,7 @@ export const GET: APIRoute = async () => {
     "",
     "## Features",
     "",
-    ...features.map((f) => `- **${f.data.title}** — ${mdToPlainText(f.data.body)}`),
+    ...features.map((f) => `- **${f.data.title}**: ${mdToPlainText(f.data.body)}`),
     "",
     "## Quick start",
     "",
@@ -79,7 +79,7 @@ export const GET: APIRoute = async () => {
     }),
     "### MCP tools",
     "",
-    ...tools.map((t) => `- \`${t.data.name}\` — ${t.data.desc}`),
+    ...tools.map((t) => `- \`${t.data.name}\`: ${t.data.desc}`),
     "",
     "---",
     "",

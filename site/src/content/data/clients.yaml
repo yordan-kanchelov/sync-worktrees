@@ -1,4 +1,4 @@
-# MCP client roster + per-client setup snippets — single source for the
+# MCP client roster and per-client setup snippets: the single source for the
 # AgentIntegration tabs, and the client labels reused in llms.txt / llms-full.
 # claude-code has no `code`: it resolves to commands.claudeMcpAdd at render so the
 # install command lives in exactly one place.
@@ -11,7 +11,7 @@
   label: Cursor
   lang: json
   useStandardJson: true
-  hint: "Paste into ~/.cursor/mcp.json (global) or .cursor/mcp.json (per-project). Use the global file if you work across worktrees — a per-project file lives in one checkout."
+  hint: "Paste into ~/.cursor/mcp.json (global) or .cursor/mcp.json (per-project). Use the global file if you work across worktrees; a per-project file lives in one checkout."
   order: 2
 - id: windsurf
   label: Windsurf
@@ -23,7 +23,7 @@
   label: Claude Desktop
   lang: json
   useStandardJson: true
-  hint: "Edit claude_desktop_config.json (macOS: ~/Library/Application Support/Claude/), paste the standard config, then restart Claude Desktop. macOS and Linux only — Windows is not supported."
+  hint: "Edit claude_desktop_config.json (macOS: ~/Library/Application Support/Claude/), paste the standard config, then restart Claude Desktop. macOS and Linux only; Windows is not supported."
   order: 4
 - id: vscode
   label: VS Code
@@ -51,7 +51,7 @@
         }
       }
     }
-  hint: "Edit cline_mcp_settings.json — see Cline's MCP configuration docs."
+  hint: "Edit cline_mcp_settings.json. See Cline's MCP configuration docs."
   order: 7
 - id: opencode
   label: opencode

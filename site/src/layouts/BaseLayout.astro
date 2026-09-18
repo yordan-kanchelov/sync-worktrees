@@ -123,24 +123,40 @@ const softwareJsonLd = {
         });
       });
 
-      // simple tab switcher for [data-tabs]
+      // tab switcher for [data-tabs], with the arrow-key navigation a roving
+      // tabindex requires: without it, every tab but the selected one is
+      // unreachable from the keyboard.
       document.querySelectorAll("[data-tabs]").forEach((root) => {
-        const buttons = root.querySelectorAll("[role='tab']");
-        const panels = root.querySelectorAll("[role='tabpanel']");
-        buttons.forEach((btn) => {
-          btn.addEventListener("click", () => {
-            const id = btn.getAttribute("data-tab");
-            (window as any).posthog?.capture("agent_tab_selected", { agent: id });
-            buttons.forEach((b) => {
-              const selected = b.getAttribute("data-tab") === id;
-              b.setAttribute("aria-selected", String(selected));
-              b.setAttribute("tabindex", selected ? "0" : "-1");
-            });
-            panels.forEach((p) => {
-              const matches = p.getAttribute("data-panel") === id;
-              if (matches) p.removeAttribute("hidden");
-              else p.setAttribute("hidden", "");
-            });
+        const buttons = Array.from(root.querySelectorAll("[role='tab']"));
+        const panels = Array.from(root.querySelectorAll("[role='tabpanel']"));
+
+        const select = (id: string | null) => {
+          (window as any).posthog?.capture("agent_tab_selected", { agent: id });
+          buttons.forEach((b) => {
+            const selected = b.getAttribute("data-tab") === id;
+            b.setAttribute("aria-selected", String(selected));
+            b.setAttribute("tabindex", selected ? "0" : "-1");
+          });
+          panels.forEach((p) => {
+            if (p.getAttribute("data-panel") === id) p.removeAttribute("hidden");
+            else p.setAttribute("hidden", "");
+          });
+        };
+
+        buttons.forEach((btn, index) => {
+          btn.addEventListener("click", () => select(btn.getAttribute("data-tab")));
+          btn.addEventListener("keydown", (event) => {
+            const key = (event as KeyboardEvent).key;
+            const last = buttons.length - 1;
+            let next = -1;
+            if (key === "ArrowRight") next = index === last ? 0 : index + 1;
+            else if (key === "ArrowLeft") next = index === 0 ? last : index - 1;
+            else if (key === "Home") next = 0;
+            else if (key === "End") next = last;
+            if (next === -1) return;
+            event.preventDefault();
+            select(buttons[next].getAttribute("data-tab"));
+            (buttons[next] as HTMLElement).focus();
           });
         });
       });

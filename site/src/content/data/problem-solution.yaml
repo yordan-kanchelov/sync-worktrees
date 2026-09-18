@@ -16,7 +16,7 @@
   order: 4
 - id: with-1
   side: with
-  text: "Clean, fully pushed branches fast-forward themselves on a schedule — no manual `git fetch`"
+  text: "Clean, fully pushed branches fast-forward themselves on a schedule, with no manual `git fetch`"
   order: 1
 - id: with-2
   side: with
@@ -28,7 +28,7 @@
   order: 3
 - id: with-4
   side: with
-  text: "Open the same branch in `frontend/` and `backend/` at the same time — one folder per branch, at the same path in every repo"
+  text: "Open the same branch in `frontend/` and `backend/` at the same time: one folder per branch, at the same path in every repo"
   order: 4
 - id: with-5
   side: with

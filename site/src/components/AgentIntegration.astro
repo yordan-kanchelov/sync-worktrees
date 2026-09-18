@@ -41,7 +41,9 @@ const mcpTools = (await getCollection("mcpTools"))
           <button
             type="button"
             role="tab"
+            id={`mcp-tab-${t.id}`}
             data-tab={t.id}
+            aria-controls={`mcp-panel-${t.id}`}
             aria-selected={i === 0 ? "true" : "false"}
             tabindex={i === 0 ? 0 : -1}
             class="tab-button rounded-lg px-3 py-1.5 text-sm font-medium text-ink-300 transition hover:text-white"
@@ -54,7 +56,10 @@ const mcpTools = (await getCollection("mcpTools"))
       {tabs.map((t, i) => (
         <div
           role="tabpanel"
+          id={`mcp-panel-${t.id}`}
           data-panel={t.id}
+          aria-labelledby={`mcp-tab-${t.id}`}
+          tabindex="0"
           hidden={i === 0 ? undefined : true}
           class="tab-panel p-4 sm:p-5"
         >
@@ -81,17 +86,17 @@ const mcpTools = (await getCollection("mcpTools"))
           Both are directories. An editor, a shell, or an MCP client can use them. If you do wire up MCP, the tools look like this:
         </p>
         <ol class="mt-4 space-y-2 text-sm text-ink-300">
-          <li class="flex gap-3"><span class="font-mono text-ink-400">1</span><span><code class="font-mono text-ink-100">detect_context</code> — the map: config, repos, worktrees, what works from here</span></li>
-          <li class="flex gap-3"><span class="font-mono text-ink-400">2</span><span><code class="font-mono text-ink-100">list_worktrees</code> — status across repos</span></li>
-          <li class="flex gap-3"><span class="font-mono text-ink-400">3</span><span><code class="font-mono text-ink-100">get_worktree_status</code> — one branch in detail</span></li>
-          <li class="flex gap-3"><span class="font-mono text-ink-400">4</span><span><code class="font-mono text-ink-100">create_worktree</code> — branch a fix</span></li>
-          <li class="flex gap-3"><span class="font-mono text-ink-400">5</span><span><code class="font-mono text-ink-100">sync</code> — fetch, create, prune, update</span></li>
+          <li class="flex gap-3"><span class="font-mono text-ink-400">1</span><span><code class="font-mono text-ink-100">detect_context</code>: config, repos, worktrees, and what works from here</span></li>
+          <li class="flex gap-3"><span class="font-mono text-ink-400">2</span><span><code class="font-mono text-ink-100">list_worktrees</code>: status across repos</span></li>
+          <li class="flex gap-3"><span class="font-mono text-ink-400">3</span><span><code class="font-mono text-ink-100">get_worktree_status</code>: one branch in detail</span></li>
+          <li class="flex gap-3"><span class="font-mono text-ink-400">4</span><span><code class="font-mono text-ink-100">create_worktree</code>: branch a fix</span></li>
+          <li class="flex gap-3"><span class="font-mono text-ink-400">5</span><span><code class="font-mono text-ink-100">sync</code>: fetch, create, prune, update</span></li>
         </ol>
 
         <h3 class="mt-10 text-lg font-semibold text-white">What an agent cannot do through it</h3>
         <ul class="mt-3 space-y-2 text-sm text-ink-300">
-          <li class="flex gap-3"><span class="text-ink-500">–</span><span>Delete, trash, restore or purge anything directly. The only removal paths are <code class="font-mono text-ink-100">sync</code>'s own, with the same gates and destinations as the CLI — and <code class="font-mono text-ink-100">sync</code> is flagged destructive so clients can prompt.</span></li>
-          <li class="flex gap-3"><span class="text-ink-500">–</span><span>Move an existing remote branch — pushes are create-only.</span></li>
+          <li class="flex gap-3"><span class="text-ink-500">–</span><span>Delete, trash, restore or purge anything directly. The only removal paths are <code class="font-mono text-ink-100">sync</code>'s own, with the same gates and destinations as the CLI. <code class="font-mono text-ink-100">sync</code> is flagged destructive, so clients can prompt.</span></li>
+          <li class="flex gap-3"><span class="text-ink-500">–</span><span>Move an existing remote branch. Pushes are create-only.</span></li>
           <li class="flex gap-3"><span class="text-ink-500">–</span><span>Overwrite an existing directory.</span></li>
           <li class="flex gap-3"><span class="text-ink-500">–</span><span>Create a branch your filters would prune again, unless it passes <code class="font-mono text-ink-100">force: true</code>.</span></li>
         </ul>
