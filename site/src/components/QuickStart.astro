@@ -9,19 +9,19 @@ const commands = (await getEntry("commands", "main"))!.data;
 const steps = [
   {
     title: "Install",
-    body: "Global npm install. Node 24+, macOS or Linux.",
+    body: "Global npm install. Node 24+, Git (plus `git-lfs` for LFS repos, or `skipLfs: true`), macOS or Linux; `tmux` only for the TUI's open-in-terminal wizard.",
     code: commands.npmInstall,
     lang: "bash",
   },
   {
     title: "Run the init wizard",
-    body: "Writes sync-worktrees.config.js where you run it. Add more repos later.",
+    body: "Writes sync-worktrees.config.js where you run it; `init` defaults `worktreeDir` to `./<repo>` (the examples above set `./worktrees/<repo>`). Add more repos later.",
     code: `cd ~/projects/my-sync-dir\n${commands.init}`,
     lang: "bash",
   },
   {
     title: "Launch the TUI — or sync once",
-    body: "Bare command = interactive UI + cron. `--runOnce` for CI.",
+    body: "Plain command = TUI that syncs now, then hourly. `--runOnce` for CI or a cron/systemd timer.",
     code: `# interactive TUI + cron\n${commands.runTui}\n# one-shot\n${commands.runOnce}`,
     lang: "bash",
   },

@@ -3,6 +3,7 @@ import { getCollection } from "astro:content";
 import { Code } from "astro:components";
 import CopyButton from "./CopyButton.astro";
 import Icon from "./Icon.astro";
+import { inlineCodeToHtml } from "../lib/markdown-inline";
 
 const features = (await getCollection("features"))
   .sort((a, b) => a.data.order - b.data.order)
@@ -13,8 +14,8 @@ const configCode = `// sync-worktrees.config.js
 /** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
 const config = {
   defaults: {
-    branchInclude: ["main", "feature/*", "release-*"],
-    branchExclude: ["wip-*", "tmp-*"],
+    branchInclude: ["main", "feature/*", "release/*"],
+    branchExclude: ["feature/wip-*"],
   },
   repositories: [
     {
@@ -33,18 +34,20 @@ const config = {
 
 export default config;`;
 
-const highlights = [
+const highlights: { title: string; body: string; href?: string; linkText?: string }[] = [
   {
     title: "Selected branches only",
     body: "Keep main, feature, and release branches while excluding wip branches or stale branches by age.",
   },
   {
     title: "Stable paths",
-    body: "Jump straight to ./worktrees/frontend/feature-login instead of checking out and stashing.",
+    body: "The default branch (`main/` here) keeps its name; every other branch gets `<branch>-<8 hex>`, the same on every machine. `cd ./worktrees/frontend/feature-login-df7c7aeb` instead of checking out and stashing.",
   },
   {
     title: "Same layout on every machine",
-    body: "Commit the config. A new laptop or a new teammate gets the same folders, same names.",
+    body: "Commit the config to a small workspace repo of its own (a three-line `.gitignore` keeps out the `.bare/` and worktree folders the tool writes beside it). A new laptop or a new teammate gets the same folders, same names.",
+    href: "https://github.com/yordan-kanchelov/sync-worktrees#team-workspace",
+    linkText: "Team workspace in the README →",
   },
 ];
 ---
@@ -61,7 +64,7 @@ const highlights = [
     </div>
 
     <p class="mx-auto mt-10 max-w-2xl text-center text-sm text-ink-500">
-      Git objects are stored once in <code class="font-mono text-xs">.bare/</code>; force-push survivors move to <code class="font-mono text-xs">.diverged/</code> instead of being overwritten.
+      Git objects are stored once per repository entry in <code class="font-mono text-xs">.bare/</code>. Anything sync removes goes to a reversible <code class="font-mono text-xs">.trash/</code> first (30 days, <code class="font-mono text-xs">sync-worktrees trash --restore</code>); a replaced diverged checkout goes there too, with its commits pinned for recovery. Dirty trees are never touched and unpushed commits are never discarded.
     </p>
 
     <div class="mt-6 grid gap-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-start">
@@ -89,14 +92,19 @@ const highlights = [
           Why this removes the tax
         </div>
         <div class="mt-5 grid gap-4 sm:grid-cols-3 lg:grid-cols-1">
-          {highlights.map(({ title, body }) => (
+          {highlights.map(({ title, body, href, linkText }) => (
             <div class="flex gap-3">
               <span class="mt-1 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-accent-100 text-accent-700 ring-1 ring-accent-200">
                 <Icon name="check" size={12} />
               </span>
               <div>
                 <h4 class="text-sm font-semibold text-ink-900">{title}</h4>
-                <p class="mt-1 text-sm leading-relaxed text-ink-600">{body}</p>
+                <p class="mt-1 text-sm leading-relaxed text-ink-600" set:html={inlineCodeToHtml(body)} />
+                {href && (
+                  <a href={href} class="mt-1 inline-block text-sm font-medium text-ink-700 underline decoration-ink-300 underline-offset-4 hover:text-ink-900">
+                    {linkText}
+                  </a>
+                )}
               </div>
             </div>
           ))}
@@ -108,7 +116,7 @@ const highlights = [
       {features.map(({ title, body }) => (
         <div>
           <h3 class="font-mono text-xs uppercase tracking-wide text-ink-500">{title}</h3>
-          <p class="mt-1 text-sm leading-relaxed text-ink-600">{body}</p>
+          <p class="mt-1 text-sm leading-relaxed text-ink-600" set:html={inlineCodeToHtml(body)} />
         </div>
       ))}
     </div>

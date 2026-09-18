@@ -16,7 +16,7 @@
   order: 4
 - id: with-1
   side: with
-  text: "Clean branches fast-forward themselves on a schedule — no manual `git fetch`"
+  text: "Clean, fully pushed branches fast-forward themselves on a schedule — no manual `git fetch`"
   order: 1
 - id: with-2
   side: with
@@ -28,7 +28,7 @@
   order: 3
 - id: with-4
   side: with
-  text: "Open `frontend/feature-login` and `backend/feature-login` at the same time"
+  text: "Open `frontend/feature-login-df7c7aeb` and `backend/feature-login-df7c7aeb` at the same time — the same branch name gets the same folder name in every repo"
   order: 4
 - id: with-5
   side: with

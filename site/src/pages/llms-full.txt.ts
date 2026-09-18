@@ -2,8 +2,26 @@ import type { APIRoute } from "astro";
 import { getCollection, getEntry } from "astro:content";
 import { mdToPlainText } from "../lib/markdown-inline";
 import readme from "../../../README.md?raw";
+import docsConfiguration from "../../../docs/configuration.md?raw";
+import docsCloneMode from "../../../docs/clone-mode.md?raw";
+import docsSparseCheckout from "../../../docs/sparse-checkout.md?raw";
+import docsTrashAndRecovery from "../../../docs/trash-and-recovery.md?raw";
+import docsHooksAndFileCopying from "../../../docs/hooks-and-file-copying.md?raw";
+import docsTui from "../../../docs/tui.md?raw";
+import docsMcp from "../../../docs/mcp.md?raw";
 
 const byOrder = (a: { data: { order: number } }, b: { data: { order: number } }) => a.data.order - b.data.order;
+
+// The README's reference pages, in the order the README's Documentation section links them.
+const docs = [
+  { title: "Configuration reference", path: "docs/configuration.md", text: docsConfiguration },
+  { title: "Clone mode", path: "docs/clone-mode.md", text: docsCloneMode },
+  { title: "Sparse checkout", path: "docs/sparse-checkout.md", text: docsSparseCheckout },
+  { title: "Trash and recovery", path: "docs/trash-and-recovery.md", text: docsTrashAndRecovery },
+  { title: "Hooks and file copying", path: "docs/hooks-and-file-copying.md", text: docsHooksAndFileCopying },
+  { title: "Interactive TUI", path: "docs/tui.md", text: docsTui },
+  { title: "MCP server", path: "docs/mcp.md", text: docsMcp },
+];
 
 export const GET: APIRoute = async () => {
   const p = (await getEntry("positioning", "main"))!.data;
@@ -53,7 +71,7 @@ export const GET: APIRoute = async () => {
     "",
     "## AI agents",
     "",
-    "sync-worktrees ships a Model Context Protocol server (sync-worktrees-mcp) that any MCP client can speak to over stdio. Setup per client:",
+    "sync-worktrees ships an optional Model Context Protocol server (sync-worktrees-mcp) that any MCP client can speak to over stdio. Setup per client:",
     "",
     ...clients.flatMap((x) => {
       const code = x.data.useStandardJson ? c.standardJson : (x.data.code ?? c.claudeMcpAdd);
@@ -74,6 +92,11 @@ export const GET: APIRoute = async () => {
     "",
     readme.trim(),
     "",
+    "---",
+    "",
+    "## Docs",
+    "",
+    ...docs.flatMap((d) => [`### ${d.title} (canonical, ${d.path})`, "", d.text.trim(), ""]),
   ];
 
   const text = lines.join("\n").replace(/\n{3,}/g, "\n\n") + "\n";
