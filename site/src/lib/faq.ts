@@ -1,6 +1,6 @@
 import { mdToPlainText } from "./markdown-inline";
 
-/** "01-worktree-vs-sync" → "worktree-vs-sync" — keeps the file-ordering prefix out of URLs. */
+/** "01-worktree-vs-sync" -> "worktree-vs-sync": keeps the file-ordering prefix out of URLs. */
 export function faqSlug(id: string): string {
   return id.replace(/^\d+-/, "");
 }

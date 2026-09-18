@@ -6,7 +6,7 @@
   order: 1
 - id: list_worktrees
   name: list_worktrees
-  desc: "Every worktree with its status, whether it is safe to remove, and when it last synced — across all repos, or one."
+  desc: "Every worktree with its status, whether it is safe to remove, and when it last synced, across all repos or one."
   order: 2
 - id: get_worktree_status
   name: get_worktree_status

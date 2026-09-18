@@ -1,12 +1,12 @@
 - id: worktree-mode
   icon: git-branch
   title: Worktree mode
-  body: "Every remote branch that passes your filters gets its own directory, all sharing one Git database. History is stored once, but each branch still costs a working tree — that is what the filters are for."
+  body: "Every remote branch that passes your filters gets its own directory, all sharing one Git database. History is stored once, but each branch still costs a working tree. That is what the filters are for."
   order: 1
 - id: clone-mode
   icon: clone
   title: Clone mode
-  body: "When one checkout is enough, get a single branch checked out at a fixed path — no `.bare/`, no per-branch subfolders. First-class alternative for dependency siblings."
+  body: "When one checkout is enough, get a single branch checked out at a fixed path: no `.bare/`, no per-branch subfolders. Use it for a dependency sibling that expects a fixed relative path."
   order: 2
 - id: tui
   icon: monitor
@@ -21,7 +21,7 @@
 - id: safety
   icon: shield
   title: Safety by default
-  body: "It won't touch your work: a dirty worktree is never fast-forwarded, pruned or replaced, and anything it does remove moves to `.trash/`, restorable for 30 days by default — turn trash off and removals are permanent. A diverged branch is never merged or overwritten: your commits are pinned before a fresh checkout replaces the folder, or it is reset in place if you have committed nothing since the last sync."
+  body: "It won't touch your work: a dirty worktree is never fast-forwarded, pruned or replaced, and anything it does remove moves to `.trash/`, restorable for 30 days by default. Turn trash off and removals are permanent. A diverged branch is never merged or overwritten: your commits are pinned before a fresh checkout replaces the folder, or it is reset in place if you have committed nothing since the last sync."
   order: 5
 - id: mcp-server
   icon: command
