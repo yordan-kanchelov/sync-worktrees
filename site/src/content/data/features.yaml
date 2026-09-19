@@ -21,7 +21,7 @@
 - id: safety
   icon: shield
   title: Safety by default
-  body: "It won't touch work in progress: a worktree with uncommitted changes is never updated, removed or replaced, and nothing is merged or rebased for you. Folders it removes are recoverable by default."
+  body: "It won't touch work in progress: a worktree with uncommitted changes is never removed or replaced, and a sync leaves it alone instead of updating it. Nothing is merged or rebased for you, and folders it removes are recoverable by default."
   order: 5
 - id: mcp-server
   icon: command
