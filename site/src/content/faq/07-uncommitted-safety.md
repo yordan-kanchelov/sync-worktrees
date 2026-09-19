@@ -1,6 +1,6 @@
 ---
 question: "Is it safe with uncommitted work?"
-order: 7
+order: 1
 ---
 
-Yes. Uncommitted and untracked changes are never touched: a dirty worktree is skipped by the fast-forward, diverged and prune phases (widening a sparse checkout adds files and leaves modified ones alone). A clean worktree is fast-forwarded only when it has nothing unpushed. The one case where sync replaces a folder is a diverged branch, where you have commits *and* upstream has commits you lack. That folder is moved to `.trash/` with its commits pinned, and a fresh checkout of upstream takes its place; when you made no commits since the last sync, or your tree already matches upstream, it is reset in place instead. Either way it is never merged or rebased for you. Removal refuses dirty trees, unpushed commits, stashes, in-progress operations (merge/rebase/cherry-pick/revert/bisect), modified submodules or a detached HEAD, and removal is a move to `.trash/` (30 days by default, `sync-worktrees trash --restore`) unless you turn trash off. The one thing sync cannot tell apart is a plain directory you left at a managed branch's path: it is swept to `.trash/` when that branch's worktree is created (with trash disabled: quarantined in place if it holds a `.git`, deleted outright otherwise), so keep trash on in any folder you also use by hand. Branches you create from the TUI are pushed create-only, so an existing remote branch is never moved.
+Yes: dirty and untracked work is never touched. A clean tree with nothing unpushed can fast-forward. Diverged committed work goes to `.trash/`, not a silent overwrite; [force-push or deleted upstream](/faq/force-push-delete/) covers that case. Keep trash on if you also leave random dirs in the workspace.
