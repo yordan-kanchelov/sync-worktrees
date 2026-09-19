@@ -1,6 +1,8 @@
 ---
-question: "Is there an MCP server?"
-order: 3
+question: "Do I need MCP or an AI client?"
+order: 7
 ---
 
-Yes, optional. The folders on disk are ordinary directories, so `cd`, your editor, and a shell already work. The bundled `sync-worktrees-mcp` binary is extra: nine tools over MCP (stdio) for clients that speak it, namely `detect_context`, `list_worktrees`, `get_worktree_status`, `create_worktree`, `update_worktree`, `sync`, `initialize`, `load_config` and `set_current_repository`. No tool deletes anything directly: `sync` is the only one that removes a worktree, with the same checks as the CLI, and it is flagged destructive so clients can prompt. Setup per client, what the server sees from where it is launched, every tool, safety and a parallel-agents recipe: [docs/mcp.md](https://github.com/yordan-kanchelov/sync-worktrees/blob/main/docs/mcp.md). Skip it if you don't use an MCP client.
+No. The folders are ordinary directories, so `cd` already works, and MCP is an optional extra.
+
+See [docs/mcp.md](https://github.com/yordan-kanchelov/sync-worktrees/blob/main/docs/mcp.md).
