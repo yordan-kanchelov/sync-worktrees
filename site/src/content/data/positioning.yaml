@@ -2,7 +2,7 @@ main:
   heroHeadlineLine1: "Keep every branch checked out."
   heroHeadlineLine2: "Switching is just cd."
   heroSubhead: "turns each Git branch, in every repo you declare, into a folder on disk, kept in sync with the remote. A new machine is one config file."
-  heroDiskNote: "Git history is stored once. Dirty trees are never touched; unpushed commits are never discarded."
+  heroDiskNote: "Git history is stored once. Work in progress is never touched; unpushed commits are never discarded."
   metaTitle: "sync-worktrees · keep every branch checked out"
   metaDescription: "Keep every Git branch you select, across every repo, checked out as a folder you can cd into. Auto-synced with the remote. One config file rebuilds the whole workspace on a new machine."
   ogImageAlt: "sync-worktrees · keep every branch checked out"
