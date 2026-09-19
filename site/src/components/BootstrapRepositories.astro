@@ -63,11 +63,7 @@ const highlights: { title: string; body: string; href?: string; linkText?: strin
       </p>
     </div>
 
-    <p class="mx-auto mt-10 max-w-2xl text-center text-sm text-ink-500">
-      Git objects are stored once per repository entry in <code class="font-mono text-xs">.bare/</code>. Anything sync removes, including a diverged checkout it replaces with its commits pinned, goes to a reversible <code class="font-mono text-xs">.trash/</code> first: 30 days by default, restored with <code class="font-mono text-xs">sync-worktrees trash --restore</code>. Turn trash off and removals are permanent.
-    </p>
-
-    <div class="mt-6 grid gap-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-start">
+    <div class="mt-10 grid gap-6 lg:grid-cols-[1.05fr_0.95fr] lg:items-start">
       <div class="min-w-0 overflow-hidden rounded-2xl border border-ink-200 bg-white shadow-sm">
         <div class="flex flex-wrap items-center justify-between gap-3 border-b border-ink-200 bg-ink-50 px-4 py-3">
           <div class="flex items-center gap-3">
@@ -120,5 +116,9 @@ const highlights: { title: string; body: string; href?: string; linkText?: strin
         </div>
       ))}
     </div>
+
+    <p class="mt-8 text-sm text-ink-500">
+      <a href="https://github.com/yordan-kanchelov/sync-worktrees/blob/main/docs/trash-and-recovery.md" class="font-medium text-ink-600 underline decoration-ink-300 underline-offset-4 hover:text-ink-900">How removal and recovery work →</a>
+    </p>
   </div>
 </section>

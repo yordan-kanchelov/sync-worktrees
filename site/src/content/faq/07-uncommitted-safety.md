@@ -3,4 +3,4 @@ question: "Is it safe with uncommitted work?"
 order: 1
 ---
 
-Yes: dirty and untracked work is never touched. A clean tree with nothing unpushed can fast-forward. Diverged committed work goes to `.trash/`, not a silent overwrite; [force-push or deleted upstream](/faq/force-push-delete/) covers that case. Keep trash on if you also leave random dirs in the workspace.
+Yes: uncommitted and untracked work is never touched. A clean tree with nothing unpushed can fast-forward. Committed work that has drifted from upstream is set aside, not silently overwritten; [force-push or deleted upstream](/faq/force-push-delete/) covers that case. If you keep your own folders in the workspace, leave recovery on.
