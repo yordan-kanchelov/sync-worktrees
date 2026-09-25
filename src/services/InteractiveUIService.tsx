@@ -21,13 +21,14 @@ import type { LogOutputFn, LogLevel } from "./logger.service";
 import type { WorktreeStatusResult } from "./worktree-status.service";
 import { Logger } from "./logger.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 import { appendGitAuthHint } from "../utils/git-auth-error";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { DiskUsageCache } from "../utils/disk-usage-cache";
 import { getDefaultBareRepoDir, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
+import type { LastSyncOutcome } from "../utils/app-events";
 import { createMouseTracking } from "../utils/mouse";
 import type { MouseTracking } from "../utils/mouse";
 import { resolveMode } from "../utils/repo-mode";
@@ -137,6 +138,7 @@ export class InteractiveUIService {
   private syncServices: WorktreeSyncService[];
   private configPath?: string;
   private readonly debugOverride: boolean;
+  private repositoryFilter?: string;
   private cronSchedule?: string;
   private cronJobs: cron.ScheduledTask[] = [];
   private repositoryCount: number;
@@ -208,6 +210,15 @@ export class InteractiveUIService {
     setTimeout(() => {
       this.addLog("🚀 sync-worktrees UI initialized", "info");
     }, 100);
+  }
+
+  /**
+   * The `--filter` the CLI started with. A config reload rebuilds the
+   * repository list from the file, and without this it would quietly widen a
+   * filtered session back to every repository.
+   */
+  public setRepositoryFilter(filter: string | undefined): void {
+    this.repositoryFilter = filter;
   }
 
   public getEvents(): AppEventEmitter {
@@ -293,7 +304,7 @@ export class InteractiveUIService {
     this.logBuffer = [];
   }
 
-  public setupCronJobs(): void {
+  private groupBySchedule(): Map<string, WorktreeSyncService[]> {
     const scheduleGroups = new Map<string, WorktreeSyncService[]>();
 
     for (const service of this.syncServices) {
@@ -306,8 +317,22 @@ export class InteractiveUIService {
       }
       scheduleGroups.get(schedule)!.push(service);
     }
+    return scheduleGroups;
+  }
 
-    for (const [schedule, services] of scheduleGroups) {
+  // Every schedule a cron job runs on, which is what "Next Sync" is computed
+  // across. Repositories on different schedules used to blank it.
+  private getScheduledCronExpressions(): string[] {
+    return [...this.groupBySchedule().keys()];
+  }
+
+  public setupCronJobs(): void {
+    // A reload that was already past its checks when `q` was pressed ends
+    // here, and so does its failure path: re-arming would bring back the jobs
+    // the shutdown just released and keep the daemon syncing while it exits.
+    if (this.shutdown !== null) return;
+
+    for (const [schedule, services] of this.groupBySchedule()) {
       const task = cron.schedule(schedule, async () => {
         await this.runSyncCycle(services, { logErrors: false });
       });
@@ -355,7 +380,7 @@ export class InteractiveUIService {
       <App
         events={this.events}
         repositoryCount={this.repositoryCount}
-        cronSchedule={this.cronSchedule}
+        cronSchedule={this.getScheduledCronExpressions()}
         maxProgressLines={this.maxRepositories}
         onManualSync={() => this.handleManualSync()}
         onReload={() => this.handleReload()}
@@ -374,6 +399,7 @@ export class InteractiveUIService {
         deleteDivergedDirectory={(repoIndex: number, name: string) => this.deleteDivergedDirectory(repoIndex, name)}
         getForceCleanPreview={() => this.getForceCleanPreview()}
         forceClean={(selections: ForceCleanRepositorySelection[]) => this.forceClean(selections)}
+        getRunningHookCount={() => this.hookExecutionService.getActiveCount()}
         openEditorInWorktree={(path: string) => this.openEditorInWorktree(path)}
         openTerminalInWorktree={(repoIndex: number, path: string, branchName: string) =>
           this.openTerminalInWorktree(repoIndex, path, branchName)
@@ -469,6 +495,10 @@ export class InteractiveUIService {
       if (!this.configPath) {
         return;
       }
+      if (this.shutdown !== null) {
+        this.addLog("Shutting down; reload ignored.", "info");
+        return;
+      }
 
       await this.waitForInProgressSyncs();
 
@@ -477,7 +507,17 @@ export class InteractiveUIService {
       // Validate and load new config BEFORE canceling old cron jobs
       // to prevent a window with no cron running on validation failure
       const configLoader = new ConfigLoaderService();
-      const { repositories } = await configLoader.buildRepositories(this.configPath, { debug: this.debugOverride });
+      const { repositories } = await configLoader.buildRepositories(this.configPath, {
+        debug: this.debugOverride,
+        filter: this.repositoryFilter,
+      });
+      // An edit that leaves the --filter matching nothing would otherwise
+      // surface below as "No repositories could be initialized", which blames
+      // the repositories rather than the filter. Either way the old services
+      // and their cron jobs stay in place.
+      if (repositories.length === 0 && this.repositoryFilter) {
+        throw new Error(`No repositories match filter: ${this.repositoryFilter}`);
+      }
 
       const initResults = await Promise.allSettled(
         repositories.map((repoConfig) =>
@@ -534,6 +574,14 @@ export class InteractiveUIService {
         throw new Error("No repositories could be initialized from the configuration");
       }
 
+      // `q` pressed while the new config was loading: the shutdown has already
+      // released the cron jobs and is waiting on the syncs it could see, so
+      // swapping in services and syncing them now would outlive that wait.
+      if (this.shutdown !== null) {
+        this.addLog("Shutting down; reload abandoned.", "info");
+        return;
+      }
+
       // Cancel old cron jobs only after new config is validated and services initialized
       this.cancelCronJobs();
       cronJobsCancelled = true;
@@ -561,7 +609,7 @@ export class InteractiveUIService {
       this.setupCronJobs();
 
       this.events.emit("updateRepositoryCount", this.repositoryCount);
-      this.events.emit("updateCronSchedule", this.cronSchedule);
+      this.events.emit("updateCronSchedule", this.getScheduledCronExpressions());
 
       // The reload's sync is a cycle like any other, so it claims the
       // repositories it is about to sync. `setupCronJobs()` just above has
@@ -705,6 +753,11 @@ export class InteractiveUIService {
   public updateLastSyncTime(): void {
     if (this.isDestroyed) return;
     this.events.emit("updateLastSyncTime");
+  }
+
+  public setLastSyncOutcome(outcome: LastSyncOutcome): void {
+    if (this.isDestroyed) return;
+    this.events.emit("setLastSyncOutcome", outcome);
   }
 
   public setStatus(status: "idle" | "syncing"): void {
@@ -1564,6 +1617,15 @@ export class InteractiveUIService {
     // to whichever finishes first: driving it from this method's `finally`
     // blanked a running cycle's progress rows and re-armed the `s`/`x`/`r`
     // guards while that cycle was still fetching.
+    //
+    // And none starts once quitting has begun: `s` stays live while `q` waits
+    // for the running sync, and a cycle started now would be one more thing
+    // that wait has to outlast.
+    if (this.shutdown !== null) {
+      // The key handler already put the bar on "syncing" for this press.
+      if (this.activeSyncCycles === 0) this.setStatus("idle");
+      return [];
+    }
     const claimed = this.claimForCycle(services);
     if (claimed.length === 0) {
       this.addLog("A sync is already running; skipping this cycle.", "info");
@@ -1613,6 +1675,15 @@ export class InteractiveUIService {
   }): Promise<void> {
     const allSkipped =
       outcome.attempted > 0 && outcome.skipped.length === outcome.attempted && outcome.failures.length === 0;
+    // Before the early return: a cycle in which nothing ran leaves "Last Sync"
+    // where it was, but the bar still has to stop claiming the last one was OK.
+    this.setLastSyncOutcome(
+      outcome.failures.length > 0
+        ? { kind: "failed", count: outcome.failures.length }
+        : outcome.skipped.length > 0
+          ? { kind: "skipped", count: outcome.skipped.length }
+          : { kind: "ok" },
+    );
     if (allSkipped) return;
     this.updateLastSyncTime();
     await this.calculateAndUpdateDiskSpace();

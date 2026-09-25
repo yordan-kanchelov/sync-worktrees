@@ -33,7 +33,7 @@ describe("CLI without a terminal", () => {
 
   // Ink used to print "Raw mode is not supported" with a stack trace, and the
   // process exited 0 having synced nothing.
-  it("refuses to start the dashboard, exits non-zero and points at --runOnce", async () => {
+  it("refuses to start the dashboard, exits non-zero and points at --run-once", async () => {
     const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
     await fs.writeFile(
       configPath,
@@ -44,7 +44,7 @@ describe("CLI without a terminal", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("needs a terminal");
-    expect(result.stderr).toContain("--runOnce");
+    expect(result.stderr).toContain("--run-once");
     expect(result.stderr).not.toContain("Raw mode");
   });
 

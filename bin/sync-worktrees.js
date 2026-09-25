@@ -2,6 +2,10 @@
 
 import process from "node:process";
 
+import { warnOnUnsupportedNode } from "./node-version.js";
+
+warnOnUnsupportedNode("sync-worktrees");
+
 process.env.NODE_ENV ??= "production";
 // chalk (the dashboard's colours) honours FORCE_COLOR but not NO_COLOR, and
 // decides once, at import time — so translate before the bundle is loaded.

@@ -38,7 +38,7 @@ Two settings describe the process rather than a repository. One process runs eve
 under `defaults` only; setting either on a repository entry is a validation error.
 
 - `defaults.runOnce` (default `false`) — sync every repository once and exit instead of opening the interactive UI and
-  its schedule. `--runOnce` on the command line turns it on for one invocation without editing the config.
+  its schedule. `--run-once` on the command line turns it on for one invocation without editing the config.
 - `defaults.syncOnStart` (default `true`) runs one sync as soon as the interactive UI starts, before the first cron tick
   — the same cycle a tick would run, so a restart after a config change takes effect immediately instead of a schedule
   period later. Set it to `false` to wait for the schedule. It has no effect under `runOnce`, which already syncs once
@@ -62,6 +62,14 @@ tick.
   when the config loads, naming both entries and the path. A `worktreeDir` nested inside another entry's `worktreeDir`
   loads with a warning.
 - Repository-specific settings override `defaults`.
+
+### Worktree folder names
+
+In worktree mode every branch gets a folder directly under `worktreeDir`, named from the branch name: `/` becomes `-`,
+any other character outside letters, digits, `_` and `-` becomes `_`, and that stem is capped at 80 characters. The name
+then ends in `-` plus the first eight hex characters of the branch name's SHA-256, so it is stable across machines and
+unique per branch even when two names sanitize to the same stem: `feature/login` is always
+`feature-login-df7c7aeb`. Only the default branch keeps its plain name (`main/`).
 
 ## Branch filtering
 
@@ -87,9 +95,9 @@ defaults: {
 
 ## Authentication
 
-sync-worktrees runs every git command non-interactively — on a scheduled tick in the interactive UI, in a `--runOnce`
+sync-worktrees runs every git command non-interactively — on a scheduled tick in the interactive UI, in a `--run-once`
 started by cron, or inside the MCP server, nobody can answer a prompt — so it sets `GIT_TERMINAL_PROMPT=0` — unless you
-have exported that variable yourself, which is left alone so `--runOnce` in a terminal can still prompt. Credentials
+have exported that variable yourself, which is left alone so `--run-once` in a terminal can still prompt. Credentials
 must come from a source that needs no prompt:
 
 - **HTTPS** — a git credential helper (`git config --global credential.helper <helper>`, or your platform's keychain /
@@ -125,7 +133,7 @@ Leave `retry` out and a sync runs with these defaults:
 A `retry` block may sit at the top level, under `defaults` or on one repository, and the three merge field by field with
 the repository winning: `retry: { maxAttempts: "unlimited" }` keeps trying instead of stopping at three,
 `retry: { maxDelayMs: 60000 }` caps a single delay at a minute. When the attempts run out the sync fails — the
-interactive UI logs it and waits for the next cron fire, while `--runOnce` exits 1.
+interactive UI logs it and waits for the next cron fire, while `--run-once` exits 1.
 
 Two inactivity timeouts guard the git commands that talk to the remote: `fetchTimeoutMs` (default 5 minutes — `fetch`,
 `push`, `ls-remote`, `remote set-head`) and `cloneTimeoutMs` (default 15 minutes — the initial clone, and the
@@ -133,8 +141,10 @@ Two inactivity timeouts guard the git commands that talk to the remote: `fetchTi
 bytes a clone would). Each kills its command when no output arrives inside the window, so a stalled connection ends the
 attempt instead of hanging the sync forever; `0` disables one. Local commands never carry them: `git worktree add`
 prints nothing while it checks out a large repository, and killing it there would fail a creation that only needed more
-time. Set either on a repository entry or under `defaults` (the entry wins, as everywhere else); both must be
-non-negative whole numbers of milliseconds, and anything else is a config validation error. Both knobs are shown in
+time. Set either on a repository entry or under `defaults` (the entry wins, as everywhere else); each must be `0` or a
+whole number of milliseconds from `1000` to `2147483647` (Node's timer ceiling — a larger value would fire after 1 ms
+and kill every command it guards, and anything under a second is almost always a value given in seconds). Anything else
+is a config validation error. Both knobs are shown in
 [`sync-worktrees.config.example.js`](../sync-worktrees.config.example.js).
 
 For repositories with Git LFS issues or large files you don't need, set `skipLfs: true` in `defaults` or per repository.
@@ -215,14 +225,14 @@ defaults: {
 
 ## Locking
 
-Every sync runs under a cross-process repository lock, so the interactive UI's ticks, a `--runOnce` from a shell or a
+Every sync runs under a cross-process repository lock, so the interactive UI's ticks, a `--run-once` from a shell or a
 timer and the MCP server never operate on the same checkout at once. A run that finds the lock held is skipped with a
 warning; a run that cannot create or take the lock fails and names the path and errno.
 
 The lock file lives next to the checkout, in `<parent of worktreeDir>/.sync-worktrees-locks/<hash>.lock`, with
-`worktreeDir` resolved through symlinks first. Nothing in the environment feeds into that path: a `--runOnce` started by
-cron, launchd or a systemd timer with a minimal environment, a shell whose dotfiles export `XDG_STATE_HOME`, and `sudo`
-with or without `-E` all contend for the same file as long as they point at the same `worktreeDir`. Worktree-mode
+`worktreeDir` resolved through symlinks first. Nothing in the environment feeds into that path: a `--run-once` started
+by cron, launchd or a systemd timer with a minimal environment, a shell whose dotfiles export `XDG_STATE_HOME`, and
+`sudo` with or without `-E` all contend for the same file as long as they point at the same `worktreeDir`. Worktree-mode
 repositories additionally lock the bare repository directory. Locks are never placed under `~/.cache` or inside
 `worktreeDir` itself.
 

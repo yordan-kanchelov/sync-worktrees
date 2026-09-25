@@ -173,3 +173,39 @@ describe("Logger colours", () => {
     expect(console.log).toHaveBeenCalledWith("red hook output");
   });
 });
+
+// `--quiet` exists for cron, where every stdout line is mailed to someone:
+// only what needs a human's attention may get through.
+describe("Logger quiet mode", () => {
+  it("drops info, debug and table output but keeps warnings and errors", () => {
+    const logger = Logger.createDefault("repo", true, { quiet: true });
+
+    logger.info("📦 Repository: repo");
+    logger.debug("probing");
+    logger.table("| a | b |");
+    logger.warn("⚠️ skipped a dirty worktree");
+    logger.error("❌ sync failed", new Error("boom"));
+
+    expect(console.log).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith("[repo] ⚠️ skipped a dirty worktree");
+    expect(console.error).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(console.error).mock.calls[0][0])).toContain("[repo] ❌ sync failed");
+  });
+
+  it("stays quiet through withPassthrough", () => {
+    const passthrough = vi.fn();
+    const logger = new Logger({ quiet: true }).withPassthrough(passthrough);
+
+    logger.info("routine");
+    logger.warn("needs attention");
+
+    expect(passthrough).toHaveBeenCalledTimes(1);
+    expect(passthrough).toHaveBeenCalledWith("needs attention", "warn");
+  });
+
+  it("is off by default", () => {
+    Logger.createDefault().info("routine");
+
+    expect(console.log).toHaveBeenCalledWith("routine");
+  });
+});

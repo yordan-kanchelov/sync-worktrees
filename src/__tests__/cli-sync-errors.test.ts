@@ -32,6 +32,7 @@ vi.mock("../services/InteractiveUIService", () => ({
       addLog: vi.fn(),
       calculateAndUpdateDiskSpace: vi.fn(),
       destroy: vi.fn(),
+      setRepositoryFilter: vi.fn(),
       setupCronJobs: vi.fn(),
       triggerInitialSync: vi.fn(async () => {}),
     };
@@ -136,14 +137,14 @@ describe("sync-worktrees run error reporting", () => {
 
   // systemd, docker, CI, `< /dev/null`: Ink printed "Raw mode is not
   // supported" with a stack and the process exited 0 having synced nothing.
-  it("refuses to start the dashboard without a terminal and points at --runOnce", async () => {
+  it("refuses to start the dashboard without a terminal and points at --run-once", async () => {
     mocks.hasInteractiveTerminal.mockReturnValue(false);
 
     expect(await runAndCaptureExit()).toBe(1);
 
     const stderr = errors.join("\n");
     expect(stderr).toContain("needs a terminal");
-    expect(stderr).toContain("--runOnce");
+    expect(stderr).toContain("--run-once");
     expect(mocks.constructService).not.toHaveBeenCalled();
   });
 
@@ -249,6 +250,49 @@ describe("sync-worktrees run error reporting", () => {
     expect(stderr).toContain("Error loading config file");
     expect(stderr).not.toContain("s3cr3t-token");
     expect(stderr).toContain("https://***@example.com/org/repo.git");
+  });
+  // `--filter` narrows a sync the way it narrows `list`, and a filter that
+  // selects nothing is answered the same way: a typo, not a clean no-op run.
+  it("passes --filter to the loader and fails when it matches nothing", async () => {
+    process.argv.push("--filter", "nope");
+    mocks.buildRepositories.mockResolvedValue({ configFile: { repositories: [] }, repositories: [] });
+
+    expect(await runAndCaptureExit()).toBe(1);
+
+    expect(mocks.buildRepositories).toHaveBeenCalledWith("/test/sync-worktrees.config.js", {
+      debug: false,
+      filter: "nope",
+    });
+    expect(errors.join("\n")).toContain("No repositories match filter: nope");
+    expect(mocks.constructService).not.toHaveBeenCalled();
+  });
+
+  it("syncs only what --filter matched", async () => {
+    process.argv.push("-f", "app");
+
+    expect(await runAndCaptureExit()).toBeUndefined();
+
+    expect(mocks.buildRepositories).toHaveBeenCalledWith("/test/sync-worktrees.config.js", {
+      debug: false,
+      filter: "app",
+    });
+    expect(mocks.constructService).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the 'Using config' line under --quiet", async () => {
+    process.argv.push("--quiet");
+
+    expect(await runAndCaptureExit()).toBeUndefined();
+
+    const stdout = vi.mocked(console.log).mock.calls.flat().map(String).join("\n");
+    expect(stdout).not.toContain("Using config");
+  });
+
+  it("prints the 'Using config' line without --quiet", async () => {
+    expect(await runAndCaptureExit()).toBeUndefined();
+
+    const stdout = vi.mocked(console.log).mock.calls.flat().map(String).join("\n");
+    expect(stdout).toContain("Using config");
   });
 });
 

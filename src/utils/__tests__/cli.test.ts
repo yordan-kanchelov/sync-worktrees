@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import packageJson from "../../../package.json" with { type: "json" };
-import { parseArguments } from "../cli";
+import { describeParseFailure, parseArguments } from "../cli";
 
 describe("parseArguments", () => {
   beforeEach(() => {
@@ -173,5 +173,166 @@ describe("parseArguments", () => {
     expect(() => parseArguments(["--list"])).toThrow(/process\.exit/);
     const output = (console.error as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join(" ");
     expect(output).toContain("sync-worktrees list");
+  });
+  describe("kebab-case flags with camelCase aliases", () => {
+    it.each([["--run-once"], ["--runOnce"]])("parses %s", (flag) => {
+      const opts = parseArguments([flag]);
+      if (opts.command !== "run") throw new Error("expected run command");
+      expect(opts.runOnce).toBe(true);
+    });
+
+    it.each([
+      ["--drop-keep-ref", "--drop-all-keep-refs"],
+      ["--dropKeepRef", "--dropAllKeepRefs"],
+    ])("parses trash %s and %s", (dropOne, dropAll) => {
+      const one = parseArguments(["trash", dropOne, "keep-id"]);
+      if (one.command !== "trash") throw new Error("expected trash command");
+      expect(one.dropKeepRef).toBe("keep-id");
+
+      const all = parseArguments(["trash", dropAll]);
+      if (all.command !== "trash") throw new Error("expected trash command");
+      expect(all.dropAllKeepRefs).toBe(true);
+    });
+
+    it.each([
+      ["kebab", ["trash", "--restore", "entry", "--drop-keep-ref", "keep"]],
+      ["mixed", ["trash", "--drop-keep-ref", "keep", "--dropAllKeepRefs"]],
+      ["kebab against json", ["trash", "--json", "--drop-all-keep-refs"]],
+    ])("keeps trash conflicts across spellings: %s", (_label, argv) => {
+      expect(() => parseArguments(argv)).toThrow(/process\.exit/);
+    });
+
+    it("shows only the kebab-case spelling in --help", () => {
+      expect(() => parseArguments(["trash", "--help"])).toThrow(/process\.exit/);
+      const trashHelp = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+      expect(trashHelp).toContain("--drop-keep-ref");
+      expect(trashHelp).toContain("--drop-all-keep-refs");
+      expect(trashHelp).not.toContain("dropKeepRef");
+
+      vi.mocked(console.log).mockClear();
+      expect(() => parseArguments(["--help"])).toThrow(/process\.exit/);
+      const rootHelp = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+      expect(rootHelp).toContain("--run-once");
+      expect(rootHelp).not.toContain("--runOnce");
+    });
+
+    it("still rejects a flag neither spelling names", () => {
+      expect(() => parseArguments(["--run-onse"])).toThrow(/process\.exit/);
+      expect(() => parseArguments(["--runonce"])).toThrow(/process\.exit/);
+    });
+  });
+
+  describe("sync command", () => {
+    it("accepts `sync` as an explicit name for the default command", () => {
+      const opts = parseArguments(["sync", "--run-once", "--config", "/etc/sync.config.js"]);
+      if (opts.command !== "run") throw new Error("expected run command");
+      expect(opts).toMatchObject({ runOnce: true, config: "/etc/sync.config.js" });
+    });
+
+    it("defaults --filter to unset and --quiet to off", () => {
+      const opts = parseArguments([]);
+      if (opts.command !== "run") throw new Error("expected run command");
+      expect(opts.filter).toBeUndefined();
+      expect(opts.quiet).toBe(false);
+    });
+
+    it.each([[["--filter", "backend-*", "--quiet"]], [["-f", "backend-*", "-q"]]])(
+      "parses the sync filter and quiet flags: %j",
+      (argv) => {
+        const opts = parseArguments(argv);
+        if (opts.command !== "run") throw new Error("expected run command");
+        expect(opts).toMatchObject({ filter: "backend-*", quiet: true });
+      },
+    );
+
+    it("keeps --quiet off the subcommands", () => {
+      expect(() => parseArguments(["list", "--quiet"])).toThrow(/process\.exit/);
+    });
+  });
+
+  describe("help text", () => {
+    it("carries examples and a link to the docs", () => {
+      expect(() => parseArguments(["--help"])).toThrow(/process\.exit/);
+      const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+
+      expect(output).toContain("Examples:");
+      expect(output).toContain("sync-worktrees --run-once");
+      expect(output).toContain("--restore <id>");
+      expect(output).toContain("frontend-*");
+      expect(output).toContain("https://github.com/yordan-kanchelov/sync-worktrees/tree/main/docs");
+      expect(output).toContain("sync-worktrees completion");
+    });
+  });
+
+  describe("shell completion", () => {
+    it("prints a completion script", () => {
+      expect(() => parseArguments(["completion"])).toThrow(/process\.exit\(0\)/);
+      const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+      expect(output).toContain("--get-yargs-completions");
+      expect(output).toContain("sync-worktrees");
+    });
+
+    it("completes the root command's flags at the top level", () => {
+      expect(() => parseArguments(["--get-yargs-completions", "sync-worktrees", "--"])).toThrow(/process\.exit/);
+      const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n").split("\n");
+      expect(output).toEqual(expect.arrayContaining(["--run-once", "--filter", "--quiet", "--config"]));
+      expect(output).not.toContain("--c");
+    });
+
+    it("completes a subcommand's own flags", () => {
+      expect(() => parseArguments(["--get-yargs-completions", "sync-worktrees", "trash", "--"])).toThrow(
+        /process\.exit/,
+      );
+      const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n").split("\n");
+      expect(output).toEqual(expect.arrayContaining(["--restore", "--drop-keep-ref", "--drop-all-keep-refs"]));
+      expect(output).not.toContain("--run-once");
+      expect(output).not.toContain("--f");
+    });
+  });
+
+  describe("unknown-argument suggestions", () => {
+    const stderrOf = (): string => (console.error as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+
+    it.each([
+      ["lst", "sync-worktrees list"],
+      ["tarsh", "sync-worktrees trash"],
+      ["int", "sync-worktrees init"],
+    ])("suggests a command for %s", (typo, suggestion) => {
+      expect(() => parseArguments([typo])).toThrow(/process\.exit\(1\)/);
+      expect(stderrOf()).toContain(`Did you mean '${suggestion}'?`);
+    });
+
+    it.each([
+      ["--runonce", "--run-once"],
+      ["--quite", "--quiet"],
+      ["--filtr", "--filter"],
+    ])("suggests a flag for %s", (typo, suggestion) => {
+      expect(() => parseArguments([typo])).toThrow(/process\.exit\(1\)/);
+      expect(stderrOf()).toContain(`Did you mean '${suggestion}'?`);
+    });
+
+    it("suggests a trash flag from its camelCase misspelling", () => {
+      expect(() => parseArguments(["trash", "--dropKeepRefs", "x"])).toThrow(/process\.exit\(1\)/);
+      expect(stderrOf()).toContain("Did you mean '--drop-keep-ref'?");
+    });
+
+    it("names a misplaced flag once, as typed, with no suggestion", () => {
+      expect(() => parseArguments(["list", "--runOnce"])).toThrow(/process\.exit\(1\)/);
+      const stderr = stderrOf();
+      expect(stderr).toContain("Unknown argument: runOnce");
+      expect(stderr).not.toContain("run-once");
+      expect(stderr).not.toContain("Did you mean");
+    });
+
+    it("does not 'correct' a real command given in the wrong place", () => {
+      expect(() => parseArguments(["trash", "list"])).toThrow(/process\.exit\(1\)/);
+      expect(stderrOf()).toContain("Unknown argument: list");
+      expect(stderrOf()).not.toContain("Did you mean");
+    });
+
+    it("stays silent when nothing is close", () => {
+      expect(describeParseFailure("Unknown argument: xyzzy", ["xyzzy"])).toEqual(["Unknown argument: xyzzy"]);
+      expect(describeParseFailure("Not enough arguments", [])).toEqual(["Not enough arguments"]);
+    });
   });
 });

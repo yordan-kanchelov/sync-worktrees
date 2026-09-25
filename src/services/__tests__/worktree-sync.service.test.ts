@@ -2685,6 +2685,22 @@ describe("WorktreeSyncService", () => {
       expect(deleteBranchOrder).toBeLessThan(addOrder);
     });
 
+    it("warns when the keep ref of a preservation that never moved the worktree cannot be removed", async () => {
+      mockGitService.compareTreeContent.mockResolvedValue(false);
+      mockGitService.getWorktreeMetadata.mockResolvedValue({ lastSyncCommit: "old-commit" } as any);
+      mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
+      const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      (fs.rename as Mock<any>).mockRejectedValue(denied);
+      mockGitService.deleteRef.mockRejectedValueOnce(new Error("ref locked"));
+
+      await service.sync();
+
+      expect(mockGitService.deleteRef).toHaveBeenCalledWith(expect.stringMatching(/^refs\/sync-worktrees\/keep\//));
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/Failed to remove rollback keep ref 'refs\/sync-worktrees\/keep\/.*': ref locked/),
+      );
+    });
+
     it("restores a moved diverged worktree when deleting its stale branch fails", async () => {
       mockGitService.compareTreeContent.mockResolvedValue(false);
       mockGitService.getWorktreeMetadata.mockResolvedValue({ lastSyncCommit: "old-commit" } as any);

@@ -4,14 +4,25 @@
 
 [![npm version](https://img.shields.io/npm/v/sync-worktrees)](https://www.npmjs.com/package/sync-worktrees)
 [![website](https://img.shields.io/badge/website-sync--worktrees.com-0a7ea4)](https://sync-worktrees.com)
-[![node](https://img.shields.io/badge/node-%E2%89%A5%2024-brightgreen)](#install-and-quick-start)
+[![node](https://img.shields.io/npm/node/v/sync-worktrees)](#install-and-quick-start)
 [![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#install-and-quick-start)
-[![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![license](https://img.shields.io/github/license/yordan-kanchelov/sync-worktrees)](./LICENSE)
 [![release](https://github.com/yordan-kanchelov/sync-worktrees/actions/workflows/release.yml/badge.svg)](https://github.com/yordan-kanchelov/sync-worktrees/actions/workflows/release.yml)
 
 sync-worktrees turns each Git branch, in every repository you declare, into a folder on disk and keeps it in sync with
 the remote. Git history is stored once per repository; dirty trees are never touched and unpushed commits are never
 discarded. A new machine is one config file.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/demo-dark.gif">
+  <source media="(prefers-color-scheme: light)" srcset="./assets/demo-light.gif">
+  <img alt="Demo: the config, the TUI syncing two repositories, the worktree status view, one folder per branch, then a
+    one-shot sync that adds a new upstream branch and moves a deleted one to .trash/"
+    src="https://raw.githubusercontent.com/yordan-kanchelov/sync-worktrees/main/assets/demo-dark.gif" width="1000">
+</picture>
+
+**Before:** `git stash && git checkout feature/login`, rebuild, and back again later. **After:**
+`cd frontend/feature-login-df7c7aeb`, while every other branch stays checked out and built.
 
 **Contents:** [What you get](#what-you-get) · [Why](#why-sync-worktrees) · [How it works](#how-it-works) ·
 [What it will never do](#what-it-will-never-do) · [Install and quick start](#install-and-quick-start) ·
@@ -24,7 +35,7 @@ discarded. A new machine is one config file.
 ```bash
 npm install -g sync-worktrees   # Node 24+, macOS or Linux
 sync-worktrees init             # wizard → writes sync-worktrees.config.js
-sync-worktrees                  # TUI: syncs now, then hourly; add --runOnce for a one-shot
+sync-worktrees                  # TUI: syncs now, then hourly; add --run-once for a one-shot
 ```
 
 With one repository declared and `init`'s default `worktreeDir` (`./<repo>`), the directory holding the config becomes:
@@ -41,15 +52,12 @@ With one repository declared and `init`'s default `worktreeDir` (`./<repo>`), th
 ```
 
 Every remote branch that passes your filters is a real checkout you can `cd` into, build in and open in an editor.
-Folder names come from the branch name: `/` becomes `-`, any other character outside letters, digits, `_` and `-`
-becomes `_`, and the stem is capped at 80 characters. The name then ends in eight hex characters of the branch name's
-SHA-256, so it is stable and unique per branch. Only the default branch keeps its plain name.
+A folder is named after its branch, made path-safe and suffixed with a short hash, identically on every machine; only
+the default branch keeps its plain name ([naming rules](./docs/configuration.md#worktree-folder-names)).
 
 On each sync, a branch that appeared upstream gets a folder, the folder of a branch deleted upstream moves to a
 reversible `.trash/`, and folders that are clean and fully pushed are fast-forwarded. The layout is the same on every
 machine that runs the same config.
-
-![sync-worktrees demo](./assets/sync-worktrees-demo-optimized.gif)
 
 ## Why sync-worktrees
 
@@ -97,57 +105,36 @@ single-branch dev clone. See [Clone mode](./docs/clone-mode.md).
 
 ### What it will never do
 
-- **Merge, rebase or reset a checkout you are working in.** An existing worktree is fast-forwarded only when it has no
-  uncommitted or untracked changes and no unpushed commits; one with unpushed commits is skipped, unless upstream has
-  moved too. That is the diverged case below. `updateExistingWorktrees: false` skips the fast-forward phase altogether
-  (worktrees are still created and pruned).
-- **Remove a worktree that is not clean.** A worktree whose branch is gone upstream (or filtered out) is removed only
-  when it has no uncommitted changes, unpushed commits, stashes, in-progress operations, modified submodules or detached
-  HEAD. "Removed" means moved to `.trash/`, restorable for 30 days (`trash.enabled: false` deletes it instead).
-- **Silently overwrite diverged commits.** If a branch has commits of its own *and* new upstream commits (a force-push,
-  or someone else pushed the same branch), the worktree is moved to `.trash/` with its commits pinned (to `.diverged/`
-  when trash is disabled) and a fresh checkout of upstream takes its place. When you made no commits since the last
-  sync, or your tree already matches upstream, it is reset in place instead. To get the commits back, recover them
-  from the trash entry and rebase or cherry-pick them in the fresh checkout. See
-  [Diverged branches](./docs/trash-and-recovery.md#diverged-branches-force-pushes).
-- **Touch directories outside the paths it manages.** Sync looks only at the worktrees git lists and at the exact path
-  where a managed branch's worktree belongs. A directory already sitting at that path that is not a registered worktree
-  is treated as stale and moved to `.trash/`. With trash disabled, sync quarantines it in place if it holds a `.git`
-  and **deletes it outright** otherwise.
-- **Run your hooks unattended.** `hooks.onBranchCreated` and `filesToCopyOnBranchCreate` run only when you create a
-  branch from the TUI's wizard, never on a tick or from an agent. The one exception is clone mode, which copies
-  `filesToCopyOnBranchCreate` once into the fresh clone; no hook command runs. See
-  [Hooks and file copying](./docs/hooks-and-file-copying.md).
+- **Merge, rebase or reset a checkout you are working in:** only clean, fully pushed worktrees are fast-forwarded.
+- **Remove a worktree that is not clean:** a gone branch's folder moves to a restorable `.trash/`, and only if clean.
+- **Silently overwrite diverged commits:** they are pinned in `.trash/` before a fresh checkout takes the folder
+  ([Diverged branches](./docs/trash-and-recovery.md#diverged-branches-force-pushes)).
+- **Touch directories outside the paths it manages:** only registered worktrees and each branch's own folder path.
+- **Run your hooks unattended:** hooks run only for branches you create in the TUI
+  ([Hooks and file copying](./docs/hooks-and-file-copying.md)).
 
-Every removal path, its gate, where it goes and how to undo it, including the exceptions (a squash-merged branch, a
-diverged worktree that is reset in place, a stash):
+Every removal path, its gate, where it goes and how to undo it, including the exceptions:
 [Trash and recovery](./docs/trash-and-recovery.md#what-sync-can-remove).
 
 ### What it costs
 
-- **Disk:** one bare repository per entry, one checkout per branch that passes the filters, and whatever `.trash/`
-  holds for its 30-day retention (`trash.retentionDays`; set `trash.warnSizeBytes` to be warned when it grows). Each
-  checkout is a full working tree unless `sparseCheckout` narrows it, and carries LFS content unless `skipLfs: true`.
-  200 live branches × a 300 MB checkout is 60 GB. Bound it with `branchMaxAge`, `branchInclude`/`branchExclude` and
-  `sparseCheckout`; the TUI's status bar shows the total.
-- **Network:** one `git fetch` per repository per tick (`--all --prune` in worktree mode), plus local status probes.
-- **Processes:** up to about 40 concurrent git processes by default, tunable. See
-  [Parallelism](./docs/configuration.md#parallelism).
+- **Disk:** a full checkout per branch plus 30 days of `.trash/` (200 branches × 300 MB is 60 GB); bound it with
+  [filters](./docs/configuration.md#branch-filtering) and [sparse checkout](./docs/sparse-checkout.md).
+- **Network:** one `git fetch` per repository per tick.
+- **Processes:** up to about 40 concurrent git processes by default
+  ([Parallelism](./docs/configuration.md#parallelism)).
 
 ## Install and quick start
 
 Requirements:
 
-- Node.js 24 or newer
+- Node.js 24 or newer. npm only warns when installing on an older Node; both commands then print a warning at start-up
+  and carry on, untested. On Node 22, `sync-worktrees@5` is the supported line
 - Git; `git-lfs` on any machine syncing a repository that uses LFS (or set `skipLfs: true`)
 - macOS or Linux. Windows is not supported: `package.json` declares `os: ["darwin", "linux"]`, so npm refuses the
   install there
 - `tmux`, only for the TUI's terminal-open wizard
 - An MCP-capable client, only for the optional `sync-worktrees-mcp` server
-
-```bash
-npm install -g sync-worktrees
-```
 
 The three commands under [What you get](#what-you-get) are the whole setup: `sync-worktrees init` walks you through one
 repository and writes `sync-worktrees.config.js` in the current directory (`.mjs`, `.cjs` and `.ts` are also accepted);
@@ -158,7 +145,7 @@ syncing on the schedule from your config, hourly by default (`defaults.cronSched
 branch, press `c` in the TUI; it creates the folder and pushes. Don't `git checkout -b` inside a managed folder. See
 [Team workspace](#team-workspace), step 4.
 
-For a one-shot run (CI, scripts, ad-hoc), add `--runOnce`: it syncs every repository once and exits 0 on success, 1 if
+For a one-shot run (CI, scripts, ad-hoc), add `--run-once`: it syncs every repository once and exits 0 on success, 1 if
 any repository failed (see [Exit codes](#exit-codes)). sync-worktrees sets `GIT_TERMINAL_PROMPT=0` (unless you exported
 it yourself), so credentials must come from a credential helper or `ssh-agent`. See
 [Authentication](./docs/configuration.md#authentication).
@@ -167,7 +154,8 @@ If the config lives elsewhere, pass it explicitly:
 
 ```bash
 sync-worktrees --config /path/to/sync-worktrees.config.js
-sync-worktrees --config /path/to/sync-worktrees.config.js --runOnce
+sync-worktrees --config /path/to/sync-worktrees.config.js --run-once
+sync-worktrees --run-once --filter backend     # just the repositories the filter matches
 sync-worktrees list --config ./config.js --filter "frontend-*"
 ```
 
@@ -175,11 +163,13 @@ sync-worktrees list --config ./config.js --filter "frontend-*"
 
 - **Laptop.** Leave the TUI running in a `tmux` or `screen` window. A tick the machine slept through is not replayed;
   the next tick, or `s`, runs the cycle, and `syncOnStart` covers restarts.
-- **Build box, no terminal.** There is no headless daemon: without `--runOnce` the TUI is what runs, and when stdin
+- **Build box, no terminal.** There is no headless daemon: without `--run-once` the TUI is what runs, and when stdin
   or stdout is not a terminal (piping through `tee` included) it refuses to start and exits 1. Put
-  `sync-worktrees --runOnce` on a cron line or a systemd/launchd timer instead. Two runs that overlap on one checkout
-  do not collide: the second skips that repository and exits 0.
-- **Concurrency.** One cross-process lock per checkout; the TUI's ticks, `--runOnce` and the MCP server all contend for
+  `sync-worktrees --run-once --quiet` on a cron line or a systemd/launchd timer instead; `--quiet` cuts a clean run to
+  its one summary line instead of a few dozen. Cron still mails that line; warnings and errors go to stderr, so
+  `sync-worktrees --run-once --quiet >/dev/null` mails only when something needs attention. Two runs that overlap on
+  one checkout do not collide: the second skips that repository and exits 0.
+- **Concurrency.** One cross-process lock per checkout; the TUI's ticks, `--run-once` and the MCP server all contend for
   it, and the loser skips and says so. See [Locking](./docs/configuration.md#locking).
 
 ## Configuration
@@ -220,21 +210,9 @@ const config = {
 export default config;
 ```
 
-Repository settings override `defaults`; the default branch is always kept regardless of filters. Where each setting is
-documented:
-
-| Topic                                                                                                | Where                                                                     |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Config formats and discovery, whole-file settings (`runOnce`, `syncOnStart`), repository entries     | [Configuration reference](./docs/configuration.md)                        |
-| Branch filtering (`branchInclude`, `branchExclude`, `branchMaxAge`)                                  | [Branch filtering](./docs/configuration.md#branch-filtering)              |
-| Credentials for HTTPS and SSH                                                                        | [Authentication](./docs/configuration.md#authentication)                  |
-| Retry, LFS, `fetchTimeoutMs`, `cloneTimeoutMs`                                                       | [Retry, LFS and timeouts](./docs/configuration.md#retry-lfs-and-timeouts) |
-| Parallelism, maintenance (`git gc`), locking                                                         | [Parallelism](./docs/configuration.md#parallelism) and the sections after |
-| One branch at a fixed path; `depth` and the ratcheted fetch cap                                      | [Clone mode](./docs/clone-mode.md)                                        |
-| Cone and no-cone patterns, one monorepo under several names, updates outside the sparse set          | [Sparse checkout](./docs/sparse-checkout.md)                              |
-| Every removal path, diverged branches, the `.trash/` layout, keep refs, restoring                    | [Trash and recovery](./docs/trash-and-recovery.md)                        |
-| `hooks.onBranchCreated`, `filesToCopyOnBranchCreate`, pattern rules, hook timeout and quit semantics | [Hooks and file copying](./docs/hooks-and-file-copying.md)                |
-| Every setting, annotated                                                                             | [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js)  |
+Repository settings override `defaults`; the default branch is always kept regardless of filters. Every setting is
+annotated in [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js) and explained in the
+[documentation](./docs/README.md).
 
 ### Team workspace
 
@@ -248,7 +226,7 @@ Onboarding, step by step:
 2. Keep credentials out of it: HTTPS through a credential helper, SSH through `ssh-agent`
    ([Authentication](./docs/configuration.md#authentication)); a private URL can come from `process.env`. URLs that do
    carry a token are redacted in logs and in `sync-worktrees list` output.
-3. A new hire runs `git clone <workspace> && cd <workspace> && sync-worktrees --runOnce` (or `sync-worktrees` for the
+3. A new hire runs `git clone <workspace> && cd <workspace> && sync-worktrees --run-once` (or `sync-worktrees` for the
    TUI), and `sync-worktrees list` to confirm what the config resolved to.
 4. Start a branch with `c` in the TUI (it creates the folder and pushes), or with `git worktree add` plus a push
    before the next sync. A freshly cut branch that exists only locally has nothing unpushed, so the next tick prunes it
@@ -272,7 +250,7 @@ common operations, and a status view across every repository.
 | `x`       | [Force clean](./docs/trash-and-recovery.md#force-clean-from-the-tui-x): purge trash and recovery refs, `git gc` |
 | `r`       | Reload the config and re-sync                                                                                   |
 | `?` / `h` | Help                                                                                                            |
-| `q`       | Quit (`Esc` only backs out of what is open)                                                                     |
+| `q`       | Quit; asks first while a sync or hook is running (`Esc` only backs out of what is open)                         |
 
 Every key, the wizards, the status flags, and the terminal/editor launch variables: [Interactive TUI](./docs/tui.md).
 
@@ -315,13 +293,19 @@ recipe for parallel agents on parallel branches: [MCP server](./docs/mcp.md).
 
 ## CLI reference
 
-| Option      | Alias | Description                                                                                                                       | Default |
-| ----------- | ----- | --------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `--config`  | `-c`  | Path to JavaScript config file (auto-detected in CWD when omitted)                                                                | -       |
-| `--runOnce` | -     | Run a sync once and exit, overriding the config's [`runOnce`](./docs/configuration.md#whole-file-settings) for this invocation    | `false` |
-| `--debug`   | -     | Log debug output and full error details (stack, git's whole output), overriding the config's `debug`                              | `false` |
-| `--help`    | `-h`  | Show help                                                                                                                         | -       |
-| `--version` | `-V`  | Print version                                                                                                                     | -       |
+| Option       | Alias | Description                                                                                                                    | Default |
+| ------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| `--config`   | `-c`  | Path to JavaScript config file (auto-detected in CWD when omitted)                                                             | -       |
+| `--run-once` | -     | Run a sync once and exit, overriding the config's [`runOnce`](./docs/configuration.md#whole-file-settings) for this invocation | `false` |
+| `--debug`    | -     | Log debug output and full error details (stack, git's whole output), overriding the config's `debug`                           | `false` |
+| `--filter`   | `-f`  | Only sync repositories whose name matches (wildcards, comma-separated; same matching as `list`). Exits 1 if nothing matches    | -       |
+| `--quiet`    | `-q`  | One-shot runs: print only warnings, errors and the final summary line (the TUI ignores it)                                     | `false` |
+| `--help`     | `-h`  | Show help                                                                                                                      | -       |
+| `--version`  | `-V`  | Print version                                                                                                                  | -       |
+
+Flags are kebab-case; the camelCase spellings from earlier releases (`--runOnce`, `--dropKeepRef`, `--dropAllKeepRefs`)
+keep working. `sync-worktrees sync` is an explicit name for the default command, and a mistyped command or flag gets a
+"did you mean" hint.
 
 A failed git command is reported as its one `fatal:` line; `--debug` (or `debug: true`) prints everything. Colour
 follows [`NO_COLOR`](https://no-color.org) and `FORCE_COLOR`, and is stripped from log lines when stdout is not a
@@ -338,37 +322,34 @@ Subcommands:
 
   ```bash
   sync-worktrees trash [--config <path>] [--filter|-f <pattern>] [--json] \
-    [--restore <id> | --purge <id> | --dropKeepRef <name> | --dropAllKeepRefs] [--wait]
+    [--restore <id> | --purge <id> | --drop-keep-ref <name> | --drop-all-keep-refs] [--wait]
   ```
 
   Flags, listing columns and the `--json` shape:
   [The `trash` subcommand](./docs/trash-and-recovery.md#the-trash-subcommand).
 
+- `sync-worktrees completion` prints a bash/zsh completion script for commands and flags:
+
+  ```bash
+  sync-worktrees completion >> ~/.bashrc   # or ~/.zshrc
+  ```
+
 ### Exit codes
 
-- `sync-worktrees --runOnce` exits **0** when every repository synced, or was skipped because another process held its
+- `sync-worktrees --run-once` exits **0** when every repository synced, or was skipped because another process held its
   lock (whoever holds it is syncing it) or a clone-mode skip applied. It exits **1** when any repository failed to
   initialize, failed its sync after the retries, recorded a failed action (a rejected sparse pattern, for instance), or
   could not create its lock file at all. Ctrl-C exits **130** after cleanup.
-- `sync-worktrees` without `--runOnce`, and `sync-worktrees init`, exit **1** with a one-line explanation when stdin or
-  stdout is not a terminal (systemd, docker, CI, `< /dev/null`).
-- `sync-worktrees list` exits 1 when `--filter` matches nothing or the config does not load; `sync-worktrees trash`
-  exits 1 on an expected failure (unknown id, occupied destination, a lock another process holds, a declined
-  confirmation) with one `❌` line.
+- `sync-worktrees` without `--run-once`, and `sync-worktrees init`, exit **1** with a one-line explanation when stdin
+  or stdout is not a terminal (systemd, docker, CI, `< /dev/null`).
+- `sync-worktrees list` and `sync-worktrees --filter` exit 1 when `--filter` matches nothing or the config does not
+  load; `sync-worktrees trash` exits 1 on an expected failure (unknown id, occupied destination, a lock another process
+  holds, a declined confirmation) with one `❌` line.
 
 ## Documentation
 
-- [Configuration reference](./docs/configuration.md): config formats and discovery, whole-file settings, repository
-  entries, branch filtering, authentication, retry and timeouts, parallelism, maintenance, locking.
-- [Clone mode](./docs/clone-mode.md): one branch at a fixed path, plus `depth` and its ratcheted fetch cap.
-- [Sparse checkout](./docs/sparse-checkout.md): cone and no-cone patterns, one monorepo under several names, updates
-  outside the sparse set.
-- [Trash and recovery](./docs/trash-and-recovery.md): every removal path, diverged branches, the `.trash/` layout,
-  keep refs, restoring.
-- [Hooks and file copying](./docs/hooks-and-file-copying.md): `hooks.onBranchCreated`, `filesToCopyOnBranchCreate`,
-  pattern rules, hook timeout and quit semantics.
-- [Interactive TUI](./docs/tui.md): every key, the wizards, status flags, terminal and editor launch.
-- [MCP server](./docs/mcp.md): install in each client, auto-detect, every tool, safety, parallel agents.
+- [docs/](./docs/README.md): one reference page per topic: configuration, clone mode, sparse checkout, trash and
+  recovery, hooks and file copying, the TUI, the MCP server.
 - [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js): every setting, annotated.
 - [CHANGELOG.md](./CHANGELOG.md): what changed in each release.
 - [sync-worktrees.com](https://sync-worktrees.com): the landing page, the same FAQ, and

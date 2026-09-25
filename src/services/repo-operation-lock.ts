@@ -4,7 +4,7 @@ import * as path from "path";
 import * as lockfile from "proper-lockfile";
 
 import { DEFAULT_CONFIG } from "../constants";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 import { getWorktreeDirLockTarget } from "../utils/lock-path";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";

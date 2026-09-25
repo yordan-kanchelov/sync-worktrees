@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runMultipleRepositories } from "../index";
 import { InteractiveUIService } from "../services/InteractiveUIService";
+import { WorktreeSyncService } from "../services/worktree-sync.service";
 
 import type { ConfigFile, RepositoryConfig, SyncOutcomeCounts } from "../types";
 
@@ -337,5 +338,64 @@ describe("runMultipleRepositories", () => {
     expect(vi.mocked(InteractiveUIService)).not.toHaveBeenCalled();
     expect(mocks.triggerInitialSync).not.toHaveBeenCalled();
     expect(mocks.sync).toHaveBeenCalledTimes(1);
+  });
+
+  // --quiet is for cron, which mails whatever reaches stdout: the per-repo
+  // loggers go quiet, the banner goes, and the one summary line stays.
+  it("under --quiet, builds quiet repository loggers and keeps only the summary line", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+
+    await runMultipleRepositories(configFile, [repo], undefined, { quiet: true });
+
+    expect(mocks.createLogger).toHaveBeenCalledWith(repo.name, repo.debug, { quiet: true });
+    const infoLines = mocks.logger.info.mock.calls.map((args) => String(args[0]));
+    expect(infoLines.some((line) => line.includes("Syncing"))).toBe(false);
+    expect(infoLines.filter((line) => line.includes("Processed"))).toHaveLength(1);
+    // No leading blank line: it separated the summary from output that --quiet dropped.
+    expect(infoLines.find((line) => line.includes("Processed"))).toMatch(/^📊 Processed 1 repo in /);
+  });
+
+  it("prints the banner and builds loud repository loggers without --quiet", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+
+    await runMultipleRepositories(configFile, [repo]);
+
+    expect(mocks.createLogger).toHaveBeenCalledWith(repo.name, repo.debug, { quiet: undefined });
+    expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("Syncing 1 repository..."));
+  });
+
+  it("hands each service its logger without writing it into the loaded configuration", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+    const loaded: RepositoryConfig = { ...repo };
+
+    await runMultipleRepositories(configFile, [loaded]);
+
+    expect(loaded.logger).toBeUndefined();
+    expect(vi.mocked(WorktreeSyncService)).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "repo-a", logger: mocks.logger }),
+    );
+  });
+
+  it("keeps a logger the configuration already carries", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+    const ownLogger = { ...mocks.logger };
+    const loaded = { ...repo, logger: ownLogger } as unknown as RepositoryConfig;
+
+    await runMultipleRepositories(configFile, [loaded]);
+
+    expect(loaded.logger).toBe(ownLogger);
+    expect(vi.mocked(WorktreeSyncService)).toHaveBeenCalledWith(expect.objectContaining({ logger: ownLogger }));
   });
 });

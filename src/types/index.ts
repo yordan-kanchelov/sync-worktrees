@@ -424,7 +424,7 @@ export interface DivergedDirectoryInfo {
 }
 
 /**
- * What one batch `--dropAllKeepRefs` run did. Per-ref best effort, like the
+ * What one batch `--drop-all-keep-refs` run did. Per-ref best effort, like the
  * force-clean loop it mirrors: a ref that could not be deleted is reported and
  * the rest still go.
  */
