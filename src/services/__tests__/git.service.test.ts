@@ -2629,7 +2629,7 @@ describe("GitService", () => {
       );
       expect(worktreeCommands("add")).toHaveLength(1);
       // The add created refs/heads/feature-1 (--track -b), so rollback deletes it too.
-      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "feature-1"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "--", "feature-1"]);
     });
 
     it("rolls back and rethrows a metadata failure on the stale-registration retry path", async () => {
@@ -2682,7 +2682,7 @@ describe("GitService", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", worktreePath, "feature-1"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", worktreePath]);
       // The plain add reused an existing branch, so rollback must leave it alone.
-      expect(mockGit.raw).not.toHaveBeenCalledWith(["branch", "-D", "feature-1"]);
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["branch", "-D", "--", "feature-1"]);
     });
   });
 
