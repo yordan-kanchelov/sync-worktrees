@@ -2821,7 +2821,7 @@ describe("WorktreeSyncService", () => {
       const written = findDivergedInfoWrite();
       expect(written).toBeDefined();
       expect(written!.info.keepRef).toBeNull();
-      expect(written!.info.instruction).toContain("trash --restore");
+      expect(written!.info.instruction).toContain("trash restore");
       expect(written!.info.instruction).not.toContain("keep ref");
     });
 

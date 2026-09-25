@@ -14,8 +14,21 @@ recovery](./trash-and-recovery.md) and [Hooks and file copying](./hooks-and-file
 
 ## File formats and discovery
 
-Discovery tries `sync-worktrees.config.js`, `.mjs`, `.cjs` and `.ts`, in that order — the CLI in the current directory,
-the MCP server walking up from it. A `.ts` config is run by Node directly, with no build step, so it must use erasable
+Discovery tries `sync-worktrees.config.js`, `.mjs`, `.cjs` and `.ts`, in that order, in each directory from the
+current one upwards; the first directory with a match wins. The CLI stops at your home directory when it starts inside
+it (like a git ceiling directory: a config in `~` is found, one in `/home` or `/` is not); the MCP server walks to the
+filesystem root. The CLI resolves its config in this order:
+
+1. `--config <path>`.
+2. The `SYNC_WORKTREES_CONFIG` environment variable, relative to the current directory. An empty value counts as unset;
+   a path that does not exist is an error naming the variable, not a fall-through to discovery.
+3. Discovery, as above.
+
+`sync-worktrees` (unless `--quiet`) and `sync-worktrees list` print the file they used, and say when it came from a
+parent directory or the variable. `trash` says so on stderr whenever the path did not come from `--config`. The MCP
+server does not read `SYNC_WORKTREES_CONFIG` (see [MCP server](./mcp.md)).
+
+A `.ts` config is run by Node directly, with no build step, so it must use erasable
 syntax only (no `enum`, `namespace`, parameter properties or decorators). `init` writes `.js`, which is already
 type-checked through its `@satisfies` JSDoc.
 
@@ -31,6 +44,17 @@ so the value a config file exports has to be plain data — strings, numbers, bo
 `RegExp`, `Map`, `Set` and `BigInt`. A function cannot cross that boundary, and neither can a symbol, a `WeakMap` or a
 `Proxy`; no setting takes any of them (`hooks.onBranchCreated` and the branch filters are arrays of strings), and a
 reload that finds one fails with a message naming the value, leaving the previously loaded config running.
+
+Every load validates the whole file and reports every problem it finds at once, one line each, naming the setting by its
+path in the file and the repository it belongs to:
+
+```text
+Invalid configuration for 'repositories[1].cronSchedule' (repository 'api'): '0 * *' is not a valid cron expression
+Invalid configuration for 'defaults.retry.maxAttempts': must be 'unlimited' or a positive safe integer, got 0
+```
+
+A key the loader does not know is not an error: it is ignored with a warning, and a near miss gets a suggestion
+(`Unknown config key 'updateExistingWorktree' in repository 'web' is ignored (did you mean 'updateExistingWorktrees'?)`).
 
 ## Whole-file settings
 

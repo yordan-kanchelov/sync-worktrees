@@ -382,7 +382,10 @@ export default {
 
       expect(output).toMatch(/is on branch 'sidebranch', expected 'master'/);
       expect(output).toContain("Clone-mode skips");
-      expect(output).toMatch(/clone is on 'sidebranch', expected 'master' \(since process start\)/);
+      // run-once initializes before the sync operation, and the operation re-detects the
+      // mismatch itself (worktree-sync.service clears the init token), so the summary line
+      // carries the sync-phase wording, not "(since process start)".
+      expect(output).toMatch(/mismatch — clone is on 'sidebranch', expected 'master' — update 'branch'/);
       expect(output).toMatch(/Processed 1 repo in \S+: 0 synced, 1 with clone-mode skips, 0 failed/);
       expect(output).not.toContain("CONFIG_CLONE_BRANCH_MISMATCH");
     },
@@ -450,7 +453,8 @@ export default {
       }).trim();
       expect(mainHead).toBe("main");
 
-      const lockDir = path.join(configDir, ".sync-worktrees-state");
+      // Lock files live next to (never inside) each worktreeDir: both repos' parent is configDir.
+      const lockDir = path.join(configDir, ".sync-worktrees-locks");
       const lockExists = await fs
         .access(lockDir)
         .then(() => true)

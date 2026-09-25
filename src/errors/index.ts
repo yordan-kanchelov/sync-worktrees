@@ -92,12 +92,45 @@ export class ConfigError extends SyncWorktreesError {
   }
 }
 
+/** One problem the config validation found. */
+export interface ConfigValidationIssue {
+  /** Where, as a path into the config file: `repositories[1].cronSchedule`, `defaults.retry.maxAttempts`. */
+  field: string;
+  reason: string;
+  /** The `name` of the repository entry the field sits in, when it has one; only ever read into the message. */
+  repository?: string;
+}
+
+/** Issues past this many are counted rather than listed, so one systematic mistake cannot flood the terminal. */
+const MAX_LISTED_VALIDATION_ISSUES = 10;
+
+function formatConfigValidationIssue({ field, reason, repository }: ConfigValidationIssue): string {
+  const where = repository === undefined ? "" : ` (repository '${repository}')`;
+  return `Invalid configuration for '${field}'${where}: ${reason}`;
+}
+
+/**
+ * A config that failed validation. `field` and `reason` describe the first
+ * problem; `issues` holds every problem found, and the message lists them one
+ * per line in the same shape.
+ */
 export class ConfigValidationError extends ConfigError {
-  constructor(
-    public readonly field: string,
-    public readonly reason: string,
-  ) {
-    super(`Invalid configuration for '${field}': ${reason}`, "VALIDATION_FAILED");
+  public readonly field: string;
+  public readonly reason: string;
+  public readonly issues: readonly ConfigValidationIssue[];
+
+  constructor(field: string, reason: string);
+  constructor(issues: readonly [ConfigValidationIssue, ...ConfigValidationIssue[]]);
+  constructor(fieldOrIssues: string | readonly [ConfigValidationIssue, ...ConfigValidationIssue[]], reason?: string) {
+    const issues =
+      typeof fieldOrIssues === "string" ? [{ field: fieldOrIssues, reason: reason ?? "" }] : [...fieldOrIssues];
+    const lines = issues.slice(0, MAX_LISTED_VALIDATION_ISSUES).map(formatConfigValidationIssue);
+    const unlisted = issues.length - lines.length;
+    if (unlisted > 0) lines.push(`... and ${unlisted} more ${unlisted === 1 ? "problem" : "problems"}`);
+    super(lines.join("\n"), "VALIDATION_FAILED");
+    this.field = issues[0].field;
+    this.reason = issues[0].reason;
+    this.issues = issues;
   }
 }
 

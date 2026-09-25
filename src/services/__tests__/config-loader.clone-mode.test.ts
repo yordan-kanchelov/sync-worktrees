@@ -162,7 +162,10 @@ describe("ConfigLoaderService - clone mode", () => {
       };
     `);
 
-    await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/depth.*clone/);
+    await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
+      "Invalid configuration for 'repositories[0].depth' (repository 'demo'): " +
+        "only supported when mode is 'clone' (inherited from defaults.depth)",
+    );
   });
 
   it("rejects direct branch on a worktree-mode repo (#3)", async () => {
@@ -201,7 +204,8 @@ describe("ConfigLoaderService - clone mode", () => {
     `);
 
     await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-      /branch.*only supported when mode is 'clone'/,
+      "Invalid configuration for 'repositories[0].branch' (repository 'demo'): " +
+        "only supported when mode is 'clone' (inherited from defaults.branch)",
     );
   });
 
@@ -282,7 +286,8 @@ describe("ConfigLoaderService - clone mode", () => {
     `);
 
     await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-      /branchInclude.*not supported when mode is 'clone'/,
+      "Invalid configuration for 'repositories[0].branchInclude' (repository 'demo'): " +
+        "not supported when mode is 'clone' (inherited from defaults.branchInclude)",
     );
   });
 

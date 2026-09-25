@@ -377,14 +377,14 @@ describe("TrashMigrationService", () => {
       // ...and the instruction no longer points at a TUI view that lists only
       // `.diverged/` directories, which this payload has left.
       expect(info.instruction).not.toContain("TUI");
-      expect(info.instruction).toContain(`sync-worktrees trash --restore ${id}`);
+      expect(info.instruction).toContain(`sync-worktrees trash restore ${id}`);
       // An adopted backup is keepPinOnReap: the reaper mints a permanent
       // `keep/<id>` for its never-pushed commits rather than letting expiry
       // collect them, so only the FILES age out. An instruction that says
       // discarding needs nothing done would be the same defect as the TUI one
       // above — a payload describing a flow that does not apply to it.
       expect(info.instruction).not.toContain("nothing to do");
-      expect(info.instruction).toContain(`sync-worktrees trash --drop-keep-ref ${id}`);
+      expect(info.instruction).toContain(`sync-worktrees trash drop-keep-ref ${id}`);
       expect(info.trashId).toBe(id);
       // Everything else the diverge flow recorded is preserved verbatim.
       expect(info.originalBranch).toBe("feat");

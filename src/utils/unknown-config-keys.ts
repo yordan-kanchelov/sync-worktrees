@@ -1,50 +1,23 @@
-import type {
-  Config,
-  ConfigFile,
-  HooksConfig,
-  MaintenanceConfig,
-  ParallelismConfig,
-  RepositoryConfig,
-  RetryConfig,
-  SparseCheckoutConfig,
-  TrashConfig,
-} from "../types";
-
 /**
- * Compile-time proof that an inventory below covers its interface exactly.
+ * Why the loader warns about unknown keys rather than rejecting them, and how often.
  *
- * `satisfies readonly (keyof X)[]` on each list rejects a name that is not a
- * real key; `Assert<IsNever<Exclude<keyof X, listed>>>` rejects a real key that
- * nobody listed. Together they pin the list to `keyof X` in both directions, so
- * the inventory cannot be "hand-maintained" in the sense that matters: adding a
- * field to `Config` (or to any nested block) and forgetting this file is a
- * `tsc --noEmit` error on both `tsconfig.json` and `tsconfig.spec.json`, which
- * is `pnpm typecheck` and a required CI step. This is the same shape the public
- * config surface is pinned with in types/__tests__/public-config-types.test.ts.
- *
- * They are also what keeps the scan's depth honest. It stops one level down
- * because the surface stops there: the six nested interfaces hold only scalars
- * and string arrays, so there is no third level to walk. A new nested object
- * one level down forces its owner's list to grow here, which is where whoever
- * adds it meets NESTED_KNOWN_KEYS; a new nested object on `Config` itself grows
- * SHARED_CONFIG_KEYS and nothing forces the NESTED_KNOWN_KEYS entry, so that is
- * the one direction left to remember.
- *
- * Why the loader warns rather than rejects, and how often.
- *
- * `validateConfigFile` inspects only keys it knows, so a repository carrying
+ * The config schema (services/config-schema.ts) validates the keys it knows
+ * and lets any other key through, so a repository carrying
  * `updateExistingWorktree` — the plural dropped — validates clean, is discarded
  * by `resolveRepositoryConfig`, and the checkout it was meant to freeze goes on
  * being fast-forwarded with nothing said; the generated config's `@satisfies`
  * header catches that in a TypeScript-aware editor and never at load time.
  *
  * A warning, not a rejection: the file is user-written JavaScript that has
- * always tolerated a stray field. The scan runs last, so a real error still
- * fails first, and once per `loadConfigFile` — once per `list` or `run`, neither
- * of which re-reads the file per tick. A reload (the TUI's `r`, a repeat MCP
- * `load_config`) warns again on purpose: that file was just edited. Nothing is
- * cached between loads, so this shares no state with
- * `configPathsEvaluatedInProcess`.
+ * always tolerated a stray field. The scan runs after validation, so a real
+ * error still fails first, and once per `loadConfigFile` — once per `list` or
+ * `run`, neither of which re-reads the file per tick. A reload (the TUI's `r`,
+ * a repeat MCP `load_config`) warns again on purpose: that file was just
+ * edited. Nothing is cached between loads.
+ *
+ * The inventory of known keys is not written down here: `KNOWN_CONFIG_KEYS` in
+ * config-schema.ts reads it off the schema's own shapes, so a key the schema
+ * validates is by construction a key this scan accepts.
  *
  * Where the lines land: `ConfigLoaderService`'s logger sinks the loader's
  * warnings and nothing else, and unset it falls through to `console.warn`,
@@ -52,152 +25,16 @@ import type {
  * Both are stderr, which is not incidental — `RepositoryContext` loads config
  * files inside the MCP stdio server, whose stdout carries the JSON-RPC stream,
  * and passes an explicit stderr logger for that reason.
- *
- * This prose sits on a non-exported declaration on purpose: esbuild strips
- * statement-level comments from both bundles and tsc copies nothing from here
- * into the `.d.ts`, so it costs no shipped bytes. The same text inside
- * `ConfigLoaderService`'s class body was paid for three times over.
  */
-type Assert<T extends true> = T;
-type IsNever<T> = [T] extends [never] ? true : false;
 
-/**
- * Everything `Config` declares that a user is meant to write, at either level.
- *
- * "Accepted" here means "not reported as unknown", which is not the same as
- * "valid there": `runOnce` and `syncOnStart` are whole-file switches over one
- * process and `validateConfigFile` rejects both on a repository entry, naming
- * the `defaults` key to use instead. They stay on this one list rather than a
- * defaults-only third list because the exhaustiveness proof below is what makes
- * the inventory self-maintaining, a third list would have to be woven into it
- * for no user-visible gain, and the scan runs last anyway — the validation
- * error fires first, so the choice can never change what the user is told.
- */
-const SHARED_CONFIG_KEYS = [
-  "repoUrl",
-  "worktreeDir",
-  "cronSchedule",
-  "runOnce",
-  "syncOnStart",
-  "bareRepoDir",
-  "retry",
-  "parallelism",
-  "branchMaxAge",
-  "branchInclude",
-  "branchExclude",
-  "skipLfs",
-  "updateExistingWorktrees",
-  "debug",
-  "filesToCopyOnBranchCreate",
-  "hooks",
-  "sparseCheckout",
-  "maintenance",
-  "trash",
-  "mode",
-  "branch",
-  "depth",
-  "fetchTimeoutMs",
-  "cloneTimeoutMs",
-] as const satisfies readonly (keyof Config)[];
-
-/**
- * Set by the loader or read only in-process, never written in a config file.
- * Listed rather than omitted so the exhaustiveness check below still covers
- * them: a new `Config` field must be classified as user-facing or internal,
- * it cannot simply go unmentioned. They are accepted in silence — reporting
- * `__configFileDir` as *unknown* would be the wrong word for it.
- */
-const INTERNAL_CONFIG_KEYS = [
-  "logger",
-  "__configFileDir",
-  "__configuredRepoDirs",
-] as const satisfies readonly (keyof Config)[];
-
-/** `defaults` is a `Partial<Config>`: everything above, and nothing repository-only. */
-export const KNOWN_DEFAULTS_KEYS: readonly string[] = [...SHARED_CONFIG_KEYS, ...INTERNAL_CONFIG_KEYS];
-
-/** A repository entry is a `Config` plus its `name`. */
-export const KNOWN_REPOSITORY_KEYS: readonly string[] = ["name", ...KNOWN_DEFAULTS_KEYS];
-
-/** The four blocks the file itself may carry. */
-export const KNOWN_TOP_LEVEL_KEYS = [
-  "repositories",
-  "defaults",
-  "retry",
-  "parallelism",
-] as const satisfies readonly (keyof ConfigFile)[];
-
-const KNOWN_RETRY_KEYS = [
-  "maxAttempts",
-  "maxLfsRetries",
-  "initialDelayMs",
-  "maxDelayMs",
-  "backoffMultiplier",
-  "jitterMs",
-] as const satisfies readonly (keyof RetryConfig)[];
-
-const KNOWN_PARALLELISM_KEYS = [
-  "maxRepositories",
-  "maxWorktreeCreation",
-  "maxWorktreeUpdates",
-  "maxWorktreeRemoval",
-  "maxStatusChecks",
-  "maxBranchFetches",
-] as const satisfies readonly (keyof ParallelismConfig)[];
-
-const KNOWN_SPARSE_CHECKOUT_KEYS = [
-  "include",
-  "exclude",
-  "mode",
-  "skipUpdateWhenOutsideSparse",
-] as const satisfies readonly (keyof SparseCheckoutConfig)[];
-
-const KNOWN_TRASH_KEYS = [
-  "enabled",
-  "retentionDays",
-  "warnSizeBytes",
-  "migrateLegacy",
-] as const satisfies readonly (keyof TrashConfig)[];
-
-const KNOWN_MAINTENANCE_KEYS = [
-  "enabled",
-  "interval",
-  "aggressive",
-] as const satisfies readonly (keyof MaintenanceConfig)[];
-
-const KNOWN_HOOKS_KEYS = ["onBranchCreated", "timeoutMs"] as const satisfies readonly (keyof HooksConfig)[];
-
-type _RepositoryKeysComplete = Assert<
-  IsNever<
-    Exclude<
-      keyof RepositoryConfig,
-      "name" | (typeof SHARED_CONFIG_KEYS)[number] | (typeof INTERNAL_CONFIG_KEYS)[number]
-    >
-  >
->;
-type _TopLevelKeysComplete = Assert<IsNever<Exclude<keyof ConfigFile, (typeof KNOWN_TOP_LEVEL_KEYS)[number]>>>;
-type _RetryKeysComplete = Assert<IsNever<Exclude<keyof RetryConfig, (typeof KNOWN_RETRY_KEYS)[number]>>>;
-type _ParallelismKeysComplete = Assert<
-  IsNever<Exclude<keyof ParallelismConfig, (typeof KNOWN_PARALLELISM_KEYS)[number]>>
->;
-type _SparseCheckoutKeysComplete = Assert<
-  IsNever<Exclude<keyof SparseCheckoutConfig, (typeof KNOWN_SPARSE_CHECKOUT_KEYS)[number]>>
->;
-type _TrashKeysComplete = Assert<IsNever<Exclude<keyof TrashConfig, (typeof KNOWN_TRASH_KEYS)[number]>>>;
-type _MaintenanceKeysComplete = Assert<
-  IsNever<Exclude<keyof MaintenanceConfig, (typeof KNOWN_MAINTENANCE_KEYS)[number]>>
->;
-type _HooksKeysComplete = Assert<IsNever<Exclude<keyof HooksConfig, (typeof KNOWN_HOOKS_KEYS)[number]>>>;
-
-/** Every block that is an object, and the keys it accepts. */
-export const NESTED_KNOWN_KEYS: Readonly<Record<string, readonly string[]>> = {
-  retry: KNOWN_RETRY_KEYS,
-  parallelism: KNOWN_PARALLELISM_KEYS,
-  sparseCheckout: KNOWN_SPARSE_CHECKOUT_KEYS,
-  trash: KNOWN_TRASH_KEYS,
-  maintenance: KNOWN_MAINTENANCE_KEYS,
-  hooks: KNOWN_HOOKS_KEYS,
-};
+/** The keys each level of a config file accepts. */
+export interface KnownConfigKeys {
+  topLevel: readonly string[];
+  defaults: readonly string[];
+  repository: readonly string[];
+  /** Every block that is an object, and the keys it accepts; the same at every level. */
+  nested: Readonly<Record<string, readonly string[]>>;
+}
 
 export interface UnknownConfigKey {
   /** Reads inside the message: "in repository 'web'", "in defaults", "at the top level". */
@@ -273,7 +110,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * `{ maxStatusChecks: Number(process.env.X) || undefined }` produces — is a
  * known key here, exactly as it is for `resolveRepositoryConfig`.
  */
-function collectFrom(target: Record<string, unknown>, known: readonly string[], location: string): UnknownConfigKey[] {
+function collectFrom(
+  target: Record<string, unknown>,
+  known: readonly string[],
+  nested: KnownConfigKeys["nested"],
+  location: string,
+): UnknownConfigKey[] {
   const found: UnknownConfigKey[] = [];
 
   for (const key of Object.keys(target)) {
@@ -281,7 +123,7 @@ function collectFrom(target: Record<string, unknown>, known: readonly string[], 
       found.push({ location, keyPath: key, suggestion: suggestConfigKey(key, known) });
       continue;
     }
-    const nestedKnown = NESTED_KNOWN_KEYS[key];
+    const nestedKnown = Object.hasOwn(nested, key) ? nested[key] : undefined;
     const value = target[key];
     if (!nestedKnown || !isPlainObject(value)) continue;
     for (const nestedKey of Object.keys(value)) {
@@ -298,21 +140,21 @@ function collectFrom(target: Record<string, unknown>, known: readonly string[], 
 }
 
 /**
- * Every key of a validated config file that nothing reads. Called after the
- * known-key validation, so each repository already has a string `name`.
+ * Every key of a validated config file that nothing reads. Called after
+ * validation, so each repository already has a string `name`.
  */
-export function collectUnknownConfigKeys(config: Record<string, unknown>): UnknownConfigKey[] {
-  const found = collectFrom(config, KNOWN_TOP_LEVEL_KEYS, "at the top level");
+export function collectUnknownConfigKeys(config: Record<string, unknown>, known: KnownConfigKeys): UnknownConfigKey[] {
+  const found = collectFrom(config, known.topLevel, known.nested, "at the top level");
 
   if (isPlainObject(config.defaults)) {
-    found.push(...collectFrom(config.defaults, KNOWN_DEFAULTS_KEYS, "in defaults"));
+    found.push(...collectFrom(config.defaults, known.defaults, known.nested, "in defaults"));
   }
 
   const repositories = Array.isArray(config.repositories) ? config.repositories : [];
   repositories.forEach((repo: unknown, index: number) => {
     if (!isPlainObject(repo)) return;
     const location = typeof repo.name === "string" ? `in repository '${repo.name}'` : `in repository at index ${index}`;
-    found.push(...collectFrom(repo, KNOWN_REPOSITORY_KEYS, location));
+    found.push(...collectFrom(repo, known.repository, known.nested, location));
   });
 
   return found;

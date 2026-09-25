@@ -1,13 +1,25 @@
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 
+import {
+  buildTrashCommand,
+  legacyFlagReplacement,
+  parseBareTrash,
+  TRASH_FLAG_NAMES,
+  TRASH_SUBCOMMAND_NAMES,
+} from "../cli/trash-command";
+
+import { CONFIG_OPTION_DESCRIPTION } from "./config-discovery";
 import { suggestConfigKey } from "./unknown-config-keys";
+
+import type { TrashCliOptions } from "../cli/trash-command";
 
 export const CLI_COMMANDS = {
   RUN: "run",
   INIT: "init",
   LIST: "list",
   TRASH: "trash",
+  DOCTOR: "doctor",
 } as const;
 
 export type CliOptions =
@@ -20,25 +32,23 @@ export type CliOptions =
       quiet: boolean;
     }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
-  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string }
-  | ({ command: typeof CLI_COMMANDS.TRASH; config?: string } & TrashCliOptions);
+  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string; json: boolean }
+  | ({ command: typeof CLI_COMMANDS.TRASH; config?: string } & TrashCliOptions)
+  | { command: typeof CLI_COMMANDS.DOCTOR; config?: string; filter?: string; json: boolean; quiet: boolean };
 
-/** Everything `sync-worktrees trash` accepts beyond `--config`. */
-export interface TrashCliOptions {
-  filter?: string;
-  restore?: string;
-  purge?: string;
-  dropKeepRef?: string;
-  dropAllKeepRefs?: boolean;
-  json?: boolean;
-  wait?: boolean;
-}
+export type { TrashCliOptions };
 
 const DOCS_URL = "https://github.com/yordan-kanchelov/sync-worktrees/tree/main/docs";
 
 /** The words a user can type as the first argument, for "did you mean" hints. */
 /** The commands other than the default one; `sync` is the default command's explicit name. */
-const SUBCOMMAND_NAMES = [CLI_COMMANDS.INIT, CLI_COMMANDS.LIST, CLI_COMMANDS.TRASH, "completion"] as const;
+const SUBCOMMAND_NAMES = [
+  CLI_COMMANDS.INIT,
+  CLI_COMMANDS.LIST,
+  CLI_COMMANDS.TRASH,
+  CLI_COMMANDS.DOCTOR,
+  "completion",
+] as const;
 const COMMAND_NAMES = ["sync", ...SUBCOMMAND_NAMES] as const;
 
 /** Every long flag any command accepts, in its canonical kebab-case spelling. */
@@ -49,12 +59,7 @@ const FLAG_NAMES = [
   "filter",
   "quiet",
   "force",
-  "restore",
-  "purge",
-  "drop-keep-ref",
-  "drop-all-keep-refs",
-  "json",
-  "wait",
+  ...TRASH_FLAG_NAMES,
   "help",
   "version",
 ] as const;
@@ -69,6 +74,26 @@ function toKebabCase(name: string): string {
 function wasTyped(name: string, argv: readonly string[]): boolean {
   const flag = name.length === 1 ? `-${name}` : `--${name}`;
   return argv.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
+
+/** For a trash flag given to a subcommand that does not take it: where it does belong. */
+const TRASH_FLAG_HOMES: Readonly<Record<string, string>> = {
+  json: "'trash list'",
+  wait: "'trash restore' and 'trash purge'",
+  all: "'trash purge'",
+};
+
+/**
+ * Whether argv runs `trash`: a "trash" word that is not the value of the flag
+ * before it (`list -f trash` filters on a repository called trash). A flag
+ * spelled `--flag=value` carries its own value, so the word after it is free.
+ */
+function namesTrashCommand(argv: readonly string[]): boolean {
+  return argv.some((arg, i) => {
+    if (arg !== CLI_COMMANDS.TRASH) return false;
+    const previous = argv[i - 1];
+    return previous === undefined || !previous.startsWith("-") || previous.includes("=");
+  });
 }
 
 /**
@@ -96,7 +121,15 @@ export function describeParseFailure(message: string, argv: readonly string[]): 
 
   const names = [...unknown.values()].map(({ name }) => name);
   const lines = [`Unknown argument${names.length === 1 ? "" : "s"}: ${names.join(", ")}`];
+  const underTrash = namesTrashCommand(argv);
   for (const { name, positional } of unknown.values()) {
+    if (positional && underTrash && name !== CLI_COMMANDS.TRASH) {
+      // `trash restor <id>`: the typo is a trash subcommand, not a top-level one.
+      if ((TRASH_SUBCOMMAND_NAMES as readonly string[]).includes(name)) continue;
+      const subcommand = suggestConfigKey(name, TRASH_SUBCOMMAND_NAMES);
+      if (subcommand) lines.push(`💡 Did you mean 'sync-worktrees trash ${subcommand}'?`);
+      continue;
+    }
     if (positional) {
       // A real command in the wrong place (`trash list`) is not a typo.
       if ((COMMAND_NAMES as readonly string[]).includes(name)) continue;
@@ -105,6 +138,20 @@ export function describeParseFailure(message: string, argv: readonly string[]): 
       continue;
     }
     const kebab = toKebabCase(name);
+    // `trash restore <id> --purge <id>`: the old action flags only work without a subcommand.
+    const replacement = underTrash ? legacyFlagReplacement(kebab) : undefined;
+    if (replacement) {
+      lines.push(
+        `💡 --${kebab} is the old spelling of '${replacement}' and cannot be combined with a trash subcommand.`,
+      );
+      continue;
+    }
+    // `trash restore <id> --json`: a real trash flag where that form does not take it.
+    const home = underTrash ? TRASH_FLAG_HOMES[kebab] : undefined;
+    if (home) {
+      lines.push(`💡 --${kebab} belongs to ${home}.`);
+      continue;
+    }
     if ((FLAG_NAMES as readonly string[]).includes(kebab)) continue;
     const flag = suggestConfigKey(kebab, FLAG_NAMES);
     if (flag) lines.push(`💡 Did you mean '--${flag}'?`);
@@ -153,7 +200,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           .option("config", {
             alias: "c",
             type: "string",
-            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+            description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("run-once", {
             type: "boolean",
@@ -218,18 +265,24 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           .option("config", {
             alias: "c",
             type: "string",
-            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+            description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("filter", {
             alias: "f",
             type: "string",
             description: "Filter repositories by name (wildcards, comma-separated).",
+          })
+          .option("json", {
+            type: "boolean",
+            description: "Print the repositories as a JSON array instead of a report.",
+            default: false,
           }),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.LIST,
           config: args.config,
           filter: args.filter,
+          json: args.json,
         };
       },
     )
@@ -237,70 +290,46 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
       CLI_COMMANDS.TRASH,
       "List, restore, or permanently delete trash entries for a single repository",
       (y) =>
+        buildTrashCommand(y, (options) => {
+          parsed = { command: CLI_COMMANDS.TRASH, ...options };
+        }),
+      (args) => {
+        parsed = { command: CLI_COMMANDS.TRASH, ...parseBareTrash(args) };
+      },
+    )
+    .command(
+      CLI_COMMANDS.DOCTOR,
+      "Check Node, git, the config and each repository's remote and directories",
+      (y) =>
         y
           .option("config", {
             alias: "c",
             type: "string",
-            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+            description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("filter", {
             alias: "f",
             type: "string",
-            description: "Select exactly one repository by name.",
-          })
-          .option("restore", {
-            type: "string",
-            description: "Restore the trash entry with this id.",
-          })
-          .option("drop-keep-ref", {
-            type: "string",
-            description: "Delete a permanent keep ref by its listed name.",
-          })
-          .option("drop-all-keep-refs", {
-            type: "boolean",
-            description: "Delete every listed permanent keep ref behind one confirmation.",
-          })
-          .option("purge", {
-            type: "string",
-            description: "Permanently delete the trash entry with this id, ahead of its expiry.",
+            description: "Only check repositories whose name matches (wildcards, comma-separated).",
           })
           .option("json", {
             type: "boolean",
-            description: "Print the listing as JSON instead of a table.",
+            description: "Print the checks as a JSON array instead of a report.",
+            default: false,
           })
-          .option("wait", {
+          .option("quiet", {
+            alias: "q",
             type: "boolean",
-            description:
-              "With --restore or --purge, wait for a repository lock another process holds instead of failing immediately.",
-          })
-          .conflicts("restore", "drop-keep-ref")
-          .conflicts("restore", "drop-all-keep-refs")
-          .conflicts("restore", "purge")
-          .conflicts("drop-keep-ref", "drop-all-keep-refs")
-          .conflicts("drop-keep-ref", "purge")
-          .conflicts("drop-all-keep-refs", "purge")
-          // --json describes the listing, so pairing it with an action would
-          // promise structured output for something that does not produce any.
-          .conflicts("json", "restore")
-          .conflicts("json", "purge")
-          .conflicts("json", "drop-keep-ref")
-          .conflicts("json", "drop-all-keep-refs")
-          // --wait is about the repository lock, which only the two operations
-          // that take it can be made to wait for.
-          .conflicts("wait", "json")
-          .conflicts("wait", "drop-keep-ref")
-          .conflicts("wait", "drop-all-keep-refs"),
+            description: "Print only warnings, failures and the summary line (ignored with --json).",
+            default: false,
+          }),
       (args) => {
         parsed = {
-          command: CLI_COMMANDS.TRASH,
+          command: CLI_COMMANDS.DOCTOR,
           config: args.config,
           filter: args.filter,
-          restore: args.restore,
-          purge: args.purge,
-          dropKeepRef: args.dropKeepRef,
-          dropAllKeepRefs: args.dropAllKeepRefs,
           json: args.json,
-          wait: args.wait,
+          quiet: args.quiet,
         };
       },
     )
@@ -308,12 +337,15 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
     .example("$0 --run-once", "Sync once and exit (cron, CI)")
     .example("$0 --run-once -q -f backend", "Sync one repo; print only problems and the summary")
     .example('$0 list --filter "frontend-*"', "Show which repositories a filter matches")
-    .example("$0 trash -f backend --restore <id>", "Restore a worktree from the trash")
+    .example("$0 trash restore <id>", "Restore a worktree from the trash")
+    .example("$0 doctor", "Check Node, git, the config, each remote and the directories")
     .example("$0 completion >> ~/.bashrc", "Install shell completion")
     .epilog(`Documentation: ${DOCS_URL}`)
     .demandCommand(0, 0)
     .fail((msg, err) => {
-      if (err) throw err;
+      // A .check() that returns a message hands it over as `err` too; that is
+      // a usage error to report, not an exception.
+      if (err && typeof (err as unknown) !== "string") throw err;
       const subcommandFlag = argv.find((arg) => arg === "--init" || arg === "--list");
       if (subcommandFlag) {
         const subcommand = subcommandFlag.slice(2);

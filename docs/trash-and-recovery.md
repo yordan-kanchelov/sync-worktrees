@@ -17,14 +17,14 @@ which anything leaves your disk:
 
 | Removal path | Trigger | Gate | Trash on (the default) | With `trash.enabled: false` | Undo |
 | --- | --- | --- | --- | --- | --- |
-| Prune | The remote branch is gone, or `branchInclude`/`branchExclude`/`branchMaxAge` no longer match it | Clean only: no uncommitted changes, no unpushed commits, no stash of its own (made on its branch), no in-progress operation, no modified submodules, not detached. Re-checked immediately before removal; an audit record is written first, and an unwritable audit log blocks the removal | `.trash/<id>/` as `prune`, 30 days, a pin ref keeps the commits | `git worktree remove` — permanent | `sync-worktrees trash --restore <id>` |
-| Fully pushed, then deleted upstream | As above, but the worktree holds commits on no remote *now* that were fully pushed before the remote branch was deleted (a squash merge) | Same gate; this is the one case with unpushed commits that is removable | `.trash/` with the pin promoted to a permanent keep ref on expiry | Kept with a warning, never removed | `--restore`, or the keep ref |
-| Stale directory at a managed path | A directory sits at `<worktreeDir>/<sanitized-branch>` for a branch sync is about to create, and git does not list it as a worktree | None is possible — it is not a checkout git can inspect | `.trash/<id>/` as `orphan` | Quarantined to a sibling `.removed/` folder; an empty directory is removed | `--restore` (trash on only) |
-| Diverged branch (a force-push, or someone else pushed the branch) | The worktree has commits of its own *and* upstream has commits it lacks | Skipped while a stash is present (dirty worktrees never reach this point); reset in place instead of moved when its content already matches upstream or its HEAD is still the commit the last sync left it at (a reset that would touch ignored files, or a tree that is not clean, falls back to the move) | `.trash/<id>/` as `diverged-replace`, commits pinned, `Keep on reap`; a fresh checkout of upstream takes its place | `.diverged/<date>-<branch>-<id>/`, commit held by a keep ref | Recover the commits from the entry — see [Diverged branches](#diverged-branches-force-pushes) for the two cases (a teammate's push vs a force-push you mean to undo); `--restore` is refused while the fresh checkout occupies the path |
+| Prune | The remote branch is gone, or `branchInclude`/`branchExclude`/`branchMaxAge` no longer match it | Clean only: no uncommitted changes, no unpushed commits, no stash of its own (made on its branch), no in-progress operation, no modified submodules, not detached. Re-checked immediately before removal; an audit record is written first, and an unwritable audit log blocks the removal | `.trash/<id>/` as `prune`, 30 days, a pin ref keeps the commits | `git worktree remove` — permanent | `sync-worktrees trash restore <id>` |
+| Fully pushed, then deleted upstream | As above, but the worktree holds commits on no remote *now* that were fully pushed before the remote branch was deleted (a squash merge) | Same gate; this is the one case with unpushed commits that is removable | `.trash/` with the pin promoted to a permanent keep ref on expiry | Kept with a warning, never removed | `trash restore`, or the keep ref |
+| Stale directory at a managed path | A directory sits at `<worktreeDir>/<sanitized-branch>` for a branch sync is about to create, and git does not list it as a worktree | None is possible — it is not a checkout git can inspect | `.trash/<id>/` as `orphan` | Quarantined to a sibling `.removed/` folder; an empty directory is removed | `trash restore` (trash on only) |
+| Diverged branch (a force-push, or someone else pushed the branch) | The worktree has commits of its own *and* upstream has commits it lacks | Skipped while a stash is present (dirty worktrees never reach this point); reset in place instead of moved when its content already matches upstream or its HEAD is still the commit the last sync left it at (a reset that would touch ignored files, or a tree that is not clean, falls back to the move) | `.trash/<id>/` as `diverged-replace`, commits pinned, `Keep on reap`; a fresh checkout of upstream takes its place | `.diverged/<date>-<branch>-<id>/`, commit held by a keep ref | Recover the commits from the entry — see [Diverged branches](#diverged-branches-force-pushes) for the two cases (a teammate's push vs a force-push you mean to undo); `trash restore` is refused while the fresh checkout occupies the path |
 | `Ctrl-D` on a `.diverged/` entry in the TUI status view | You press `Ctrl-D` and confirm `y` | — | n/a (`.diverged/` is only written while trash is disabled) | Deleted | None |
 | Trash expiry | An entry passes `retentionDays` | The reaper runs at the tail of every sync attempt, failed ones included; commits on no remote are kept | Entry deleted; never-pushed commits promoted to `refs/sync-worktrees/keep/<id>` | n/a | The keep ref |
 | `x` in the TUI (force clean) | You press `x`, type `clean` and press `Enter` | Deletes only what the preview counted; the `gc` is skipped when a lock or an unfinished operation is found | Entries and keep refs deleted, then `git gc` | n/a | None — irreversible |
-| `trash --purge <id>` | You type the id back | Interactive TTY; for a `Keep on reap` entry the keep ref is minted first | Entry deleted | n/a | The keep ref |
+| `trash purge <id>` (or `--all`) | You type the id back (`purge <count>` for `--all`) | Interactive TTY; for a `Keep on reap` entry the keep ref is minted first | Entry deleted | n/a | The keep ref |
 
 Sync never infers ownership from a directory's name. The only directories it touches are the worktrees git lists for the
 bare repository, the exact path where a managed branch's worktree belongs, and its own `.trash/`, `.removed/` and
@@ -58,7 +58,7 @@ so `git` inside it answers "not a git repository". Recover through the bare repo
 `manifest.json` holds the `branch` and the `headOid`, and the pin ref keeps that commit alive:
 
 ```bash
-sync-worktrees trash --filter <repository-name>                    # find the entry's id
+sync-worktrees trash list --filter <repository-name>               # find the entry's id
 cat <worktreeDir>/.trash/<id>/manifest.json                        # its branch and headOid
 git -C <bare-repo> branch feature-x-recovered <headOid>            # a branch on your old tip
 git -C <bare-repo> log --oneline origin/feature-x..feature-x-recovered   # the commits only you had
@@ -73,7 +73,7 @@ Then, in the fresh checkout of the branch, pick the case that applies:
   tick: in between, the worktree is diverged again, and a sync landing in the gap would move it a second time (commits
   pinned again).
 
-`--restore` is refused for a `diverged-replace` entry while the fresh checkout occupies its path, and a restored copy
+`trash restore` is refused for a `diverged-replace` entry while the fresh checkout occupies its path, and a restored copy
 would still be diverged, so the next sync would move it again; recovering the commits by name is the shorter route.
 Delete `feature-x-recovered` once the branch is pushed.
 
@@ -160,32 +160,37 @@ trash you confirmed:
 ## The `trash` subcommand
 
 ```bash
-sync-worktrees trash --filter <repository-name>                                   # table of entries + keep refs
-sync-worktrees trash --filter <repository-name> --json                            # the same listing, machine-readable
-sync-worktrees trash --filter <repository-name> --restore <id>
-sync-worktrees trash --filter <repository-name> --purge <id>                      # permanent, typed confirmation
-sync-worktrees trash --filter <repository-name> --restore <id> --wait             # also valid with --purge
-sync-worktrees trash --filter <repository-name> --drop-keep-ref <listed-keep-name>
-sync-worktrees trash --filter <repository-name> --drop-all-keep-refs
+sync-worktrees trash list -f <repository-name>                      # table of entries + keep refs (`trash` alone does the same)
+sync-worktrees trash list -f <repository-name> --json               # the same listing, machine-readable
+sync-worktrees trash restore <id> -f <repository-name>
+sync-worktrees trash restore <id> -f <repository-name> --wait       # --wait also works on purge
+sync-worktrees trash purge <id> -f <repository-name>                # permanent, typed confirmation
+sync-worktrees trash purge --all -f <repository-name>               # every listed entry, one typed confirmation
+sync-worktrees trash drop-keep-ref <listed-keep-name> -f <repository-name>
+sync-worktrees trash drop-all-keep-refs -f <repository-name>
 ```
 
 Every invocation needs **exactly one** matched repository (`--filter`, alias `-f`, is how you narrow a multi-repo config
 down to it; anything else exits 1 with the count it matched), and that repository must be in worktree mode — clone mode
-never removes its checkout, so a clone-mode repository is rejected. With no operation flag the command prints the trash
-listing and any permanent keep refs.
+never removes its checkout, so a clone-mode repository is rejected. `--config`/`-c` and `--filter`/`-f` go before or
+after the subcommand. With no subcommand, `trash` is `trash list`.
 
-- `--restore <id>` puts an entry's payload back at its original path.
-- `--purge <id>` permanently deletes one entry ahead of its expiry.
-- `--drop-keep-ref <name>` deletes one listed permanent keep ref; `--drop-all-keep-refs` deletes every listed one behind
-  a single confirmation.
-- `--json` prints the listing as JSON instead of a table.
-- `--wait` applies to `--restore` and `--purge` — the two operations that take the repository lock — and retries a lock
+- `list` prints the trash listing and any permanent keep refs; `--json` prints it as JSON instead of a table.
+- `restore <id>` puts an entry's payload back at its original path.
+- `purge <id>` permanently deletes one entry ahead of its expiry; `purge --all` deletes every listed entry behind one
+  confirmation.
+- `drop-keep-ref <name>` deletes one listed permanent keep ref; `drop-all-keep-refs` deletes every listed one behind a
+  single confirmation.
+- `--wait` belongs to `restore` and `purge` — the two operations that take the repository lock — and retries a lock
   another process holds for up to two minutes instead of failing immediately.
-- `--restore`, `--purge`, `--drop-keep-ref` and `--drop-all-keep-refs` are mutually exclusive. `--json` describes the
-  listing, so it is rejected alongside any of them, and `--wait` is rejected alongside `--json`, `--drop-keep-ref` or
-  `--drop-all-keep-refs`.
-- `--purge`, `--drop-keep-ref` and `--drop-all-keep-refs` each need an interactive TTY and a typed confirmation;
-  `--restore` needs neither.
+- `purge`, `drop-keep-ref` and `drop-all-keep-refs` each need an interactive TTY and a typed confirmation; `restore`
+  needs neither. An empty id or name is rejected rather than read as "no action", so `trash purge "$ID"` with `$ID`
+  unset fails instead of printing a listing.
+
+The flag spellings from before the subcommands (`trash --restore <id>`, `--purge <id>`, `--drop-keep-ref <name>`,
+`--drop-all-keep-refs`, and their camelCase forms) still work, with their old rules: one of them at a time, none with
+`--json`, and `--wait` only with `--restore` or `--purge`. Each run prints a one-line hint on stderr naming the
+subcommand to use instead; stdout is unchanged. They cannot be combined with a subcommand.
 
 The listing is a table of `Id`, `Branch / path`, `Reason`, `Size`, `Expires`, `Restores as` and `Keep on reap`; an empty
 trash says so rather than printing nothing. `Size` reads `—` for a payload nothing has measured yet — sizes are gathered
@@ -201,16 +206,19 @@ a `du` of its own. `Restores as` is `worktree` when the entry still has its bran
 Expected failures — no entry with that id, a destination that already exists, a repository lock another process holds —
 print one `❌ <message>` line and exit 1; only an unexpected error prints a stack.
 
-`--restore` and `--purge` take the repository lock, which a running interactive UI holds for the length of a sync.
+`restore` and `purge` take the repository lock, which a running interactive UI holds for the length of a sync.
 Without `--wait` they fail immediately and say so. With `--wait` they retry the lock for up to two minutes and then give
 up with the same message — a bound, not "block until it frees up", so a scripted invocation always terminates. Both
-locks a worktree-mode repository takes share that one window rather than getting it each.
+locks a worktree-mode repository takes share that one window rather than getting it each. `purge --all` takes the lock
+once per entry, and each gets the full window.
 
-`--purge <id>` deletes one entry ahead of its expiry, through the same path the expiry reaper uses: it needs an
+`purge <id>` deletes one entry ahead of its expiry, through the same path the expiry reaper uses: it needs an
 interactive TTY, the entry's id typed back, and it writes a `trash_purge` audit record before touching anything. For a
 `Keep on reap` entry the permanent `refs/sync-worktrees/keep/<id>` ref is created **first** and the files are deleted
 only if that succeeds — those commits are on no remote, so the payload and the pin can be the only copy in existence.
-Deleting the whole trash instead is the TUI's `x` (force clean, above), which also drops the recovery refs and runs a
+`purge --all` does exactly that for each entry the listing showed, after you type `purge <count>` back: an entry
+trashed while the prompt was open is not touched, and one that fails is reported and left listed while the rest go
+ahead (the command then exits 1). Unlike the TUI's `x` (force clean, above), it keeps the recovery refs and runs no
 `gc`.
 
 ## Permanent keep refs
@@ -223,7 +231,7 @@ that failed, a count that could not be read.
 
 That re-check is narrow, and is not a cure for keep refs accumulating. A squash or rebase merge puts the branch's
 *content* on the default branch as a new commit, so the original commits stay reachable from no remote ref and still
-earn a permanent ref — one per pruned branch, for as long as the repository lives. `--drop-all-keep-refs` is the way
+earn a permanent ref — one per pruned branch, for as long as the repository lives. `trash drop-all-keep-refs` is the way
 back: it lists what is there, takes one typed confirmation for the whole set, and deletes the refs it listed. Refs a
 `.diverged/` directory still relies on are retained and named, refs minted while the confirmation was on screen are left
 alone, and a ref another git process has locked is reported without stopping the rest. The commits behind a dropped ref
@@ -231,7 +239,7 @@ become collectable by the next `git gc`.
 
 ## Restoring
 
-`sync-worktrees trash --filter <name> --restore <id>` puts the payload back at its original path. An entry the listing
+`sync-worktrees trash restore <id> --filter <name>` puts the payload back at its original path. An entry the listing
 shows as `worktree` is rebuilt as a registered worktree on its branch; one shown as `files only` is restored as a plain
 directory, because without a pin ref the trashed commits may already be gone. That second case has a consequence worth
 knowing before you use it: if the branch is still in the repository's synced set, the next sync finds an unregistered
@@ -252,7 +260,7 @@ git -C <bare-repo> worktree repair <originalPath>
 git -C <originalPath> reset       # index at HEAD, payload shows as unstaged changes
 ```
 
-Discarding one entry is `--purge <id>` (above), not `rm -rf`: removing the container by hand leaves its pin ref behind
+Discarding one entry is `trash purge <id>` (above), not `rm -rf`: removing the container by hand leaves its pin ref behind
 until the reaper's next sweep, and for a `Keep on reap` entry it destroys the only copy of commits that reached no
 remote.
 

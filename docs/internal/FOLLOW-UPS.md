@@ -922,10 +922,11 @@ One standing security item, which is the only entry here flagged as such:
   recoverable at '<ref>' (<oid>)" through the repo logger AND the CLI prints "Commits kept at
   '<ref>' (<oid>)". Same ref, same oid, twice. The real fix is a quiet-by-default logger for
   one-shot commands — service `info` logs interleaving with CLI output is the underlying issue.
-- `--restore ""` / `--purge ""` fall through to a listing and exit 0 (truthiness check), so a script
+- _Resolved: an empty or blank id/name is a parse error (exit 1) in both the subcommand and the deprecated flag
+  forms, and dispatch is on a typed action rather than on truthiness._ `--restore ""` / `--purge ""` fall through to a listing and exit 0 (truthiness check), so a script
   running `--purge "$ID"` with an unset variable gets a table and a success exit. On a destructive
   flag that deserves an explicit rejection.
-- The `--wait` announcement tests `options.restore !== undefined` while dispatch tests truthiness,
+- _Resolved: the announcement and the dispatch both read the one parsed action._ The `--wait` announcement tests `options.restore !== undefined` while dispatch tests truthiness,
   so `--restore "" --wait` announces a wait and then prints a listing.
 - `purgeAll` in `reapUnlocked` is now a misnomer — it means "selection-based", not "all", and drives
   the audit action, the expiry skip and the wording. Rename to `isSelection`.
@@ -939,7 +940,7 @@ One standing security item, which is the only entry here flagged as such:
   `wait: true`. Harmless for a one-shot CLI, confusing to read.
 - `runList`/`runSync` catch broadly and `process.exit(1)`; `trash` now uses a narrow catch plus
   `process.exitCode`. Converging them is a small separate cleanup.
-- `--purge` takes one id, not a list — clearing several entries means one confirmation each.
+- _Resolved: `trash purge --all` purges every listed entry behind one typed `purge <count>`._ `--purge` takes one id, not a list — clearing several entries means one confirmation each.
 
 ## T90 — real-git trash coverage (leftovers, not done)
 - `restoreAsWorktree` calls `createBranchAt` OUTSIDE its own try/catch, so when the pinned commit is
@@ -1042,14 +1043,16 @@ The T33 worker's reported 1,432,411 bytes therefore includes 574 B that CI does 
   essentially every fetch. Mirrors the pre-existing `validateDepth` (which allows `depth: 1`), so it
   is house-consistent and was left alone. If a floor is wanted, both validators should get one
   together.
-- **FU-T33-2. `retry` validation is much looser than `depth`/timeouts.** `initialDelayMs`,
+- **FU-T33-2. `retry` validation is much looser than `depth`/timeouts.** _Resolved: every retry field refuses NaN and
+  Infinity and the two counts must be safe integers, all through the one numeric rule in `config-schema.ts`._ `initialDelayMs`,
   `maxDelayMs`, `jitterMs`, `maxLfsRetries` are checked only for `typeof === "number"` plus a bound,
   so `1.5`, `NaN` and `Infinity` all pass (`NaN < 0` is false). `retry.maxAttempts` likewise accepts
   `2.5`. Same class of hole T33 just closed for the timeouts.
 - **FU-T33-3. `trash.retentionDays` / `warnSizeBytes` use `Number.isFinite`, not
   `Number.isSafeInteger`**, so `retentionDays: 0.5` is accepted. Third inconsistent validator style
   in the same file. FU-T33-2 and -3 together argue for one shared numeric validator.
-- **FU-T33-4. `validateDepth` carries the same redundant `typeof` arm** that `validateTimeoutMs`
+- **FU-T33-4. `validateDepth` carries the same redundant `typeof` arm** _Resolved: both validators are gone; `depth` and
+  the timeouts are zod number rules in `config-schema.ts`._ that `validateTimeoutMs`
   does (unreachable at runtime — `Number.isSafeInteger` never coerces — but load-bearing for type
   narrowing). Noting so nobody "fixes" one without the other.
 - **FU-T33-5. The `defaults` half of T31's drop guard is weaker than the repository half**
@@ -1063,6 +1066,8 @@ The T33 worker's reported 1,432,411 bytes therefore includes 574 B that CI does 
 - **FU-T33-7. `src/services/__tests__/git.service.test.ts` contains 21 literal NUL bytes**
   (intentional `for-each-ref -z` fixtures). Harmless, but `grep` treats the file as binary and
   silently skips it, so a plain `grep -rn <symbol> src` under-reports. Use `grep -a`.
+  (D2 moved those fixtures, with the ref-inventory tests, to
+  `src/services/__tests__/branch-ref.service.test.ts`.)
 - **Still open from T31, unchanged by T33: the shipped example is not type-checked by CI.** Its
   `// @ts-check` + `@satisfies {SyncWorktreesConfig}` is decorative — `tsconfig.json` includes only
   `src/**/*`, eslint runs it without type information, and there is no self-link at
@@ -1248,7 +1253,9 @@ tsc copies into the `.d.ts` where no consumer can use it — still the cheapest 
   this path, because `fullyPushedUpstreamDeleted` requires `recordedRefGone` and in the
   matched-nothing scenario the remote branch still exists. Any doc or audit text saying pruning is
   "recoverable within retentionDays" is wrong for `trash.enabled: false`.
-- **FU-T91-3. `maxAttempts` / `maxLfsRetries` now throw two different error classes.** The legacy
+- **FU-T91-3. `maxAttempts` / `maxLfsRetries` now throw two different error classes.** _Resolved: config validation is
+  one zod schema (`config-schema.ts`) and every failure is a `ConfigValidationError` listing all the problems found, with
+  `repositories[1].retry.maxAttempts`-style paths._ The legacy
   bound arm throws a plain `Error`, the new integer arm throws `ConfigValidationError`, so a caller
   catching `ConfigValidationError` to render `field`/`reason` gets it for only half the failures
   (`maxAttempts: 0` vs `maxAttempts: 0.5`). Accepted trade-off here — unifying would change pinned
@@ -1388,7 +1395,8 @@ Related, and FIXED by T93: `runList` and `runSync`'s load catch previously print
 
 ## T94 + T96 follow-ups
 
-- **FU-T94-1. `trash --filter`'s `-f` alias is unpinned** — deleting it fails no test (same for
+- **FU-T94-1. `trash --filter`'s `-f` alias is unpinned** — _Resolved for `trash`: the subcommand parse tests use
+  `-f`._ Deleting it fails no test (same for
   `list`). The README's new text does not claim short aliases for `trash`, so nothing is
   contradicted, but the alias could vanish silently.
 - **FU-T94-2. `repo.branch = branch.trim()` is unpinned** — removing the trim survives. Whitespace
@@ -1396,7 +1404,8 @@ Related, and FIXED by T93: `runList` and `runSync`'s load catch previously print
 - **FU-T94-3.** The init URL validator still calls `safeRepoName(value)` on the RAW string. Harmless
   only because `extractRepoNameFromUrl` trims internally. Inconsistent with the two sibling checks
   in the same validator, which now read `value.trim()`.
-- **FU-T94-4.** `trash --wait` on a bare listing parses and does nothing — no `.conflicts()` against
+- **FU-T94-4.** _Resolved for the subcommands: `--wait` exists only on `trash restore` and `trash purge`, so
+  `trash list --wait` is an unknown argument; the deprecated bare form keeps its old leniency._ `trash --wait` on a bare listing parses and does nothing — no `.conflicts()` against
   the no-op listing, and `lockWaitMs` is read only by restore/purge. Harmless; the README wording
   deliberately avoids over-promising ("applies to --restore and --purge" rather than "is only valid
   with").
@@ -2129,4 +2138,4 @@ behaviour it is defending is correct.**
   - Files failing on that error: `bare-origin-mismatch`, `concurrent-runs`, `diverged-branch-reservation`, `double-run` (3 tests), `head-branch-filter` (2), `node-env-independence.e2e` (2), `skip-lfs-global-ignore.e2e`, `stale-registration`, `worktree-dir-collision.e2e` (all under `src/__tests__/e2e/`).
   - `src/mcp/__tests__/context.broken-config.test.ts` ("carries the note on an unmanaged worktree context…", `expected 'unmanaged' to be 'managed'`) is very likely the same mismatch, in `detectFromPath`'s path matching.
   - `src/__tests__/e2e/unshallow-inactivity-timeout.e2e.test.ts:151` ("still kills an unshallow that goes quiet…", the clone is no longer shallow after the kill) is a separate failure and has not been diagnosed. The test's `sleep` shim and how the process is killed may behave differently on darwin.
-  - When all of these pass on macOS, remove `continue-on-error` from the "Run Tests with Coverage" step in `pr.yml`.
+  - When all of these pass on macOS, remove `continue-on-error` from the "Run Tests with Coverage" step in `pr.yml` and from the "Run E2E Tests (with network)" step in `nightly.yml`.

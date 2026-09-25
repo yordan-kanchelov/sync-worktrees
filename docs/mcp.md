@@ -37,7 +37,8 @@ shell, and prefer the global install with `sync-worktrees-mcp` as `command` and 
 not your shell's.
 
 **Upgrading from 6.x:** remove any `SYNC_WORKTREES_CONFIG` entry from the client's `env` (or the `-e` flag on
-`claude mcp add`); 7.0.0 ignores it without a warning. A config outside the walk-up path is loaded with
+`claude mcp add`); the server has ignored it without a warning since 7.0.0. (The `sync-worktrees` CLI does read the
+variable; the MCP server does not.) A config outside the walk-up path is loaded with
 `load_config {configPath}` instead.
 
 <!-- Keep these blocks in step with site/src/content/data/clients.yaml, in the same order. -->
