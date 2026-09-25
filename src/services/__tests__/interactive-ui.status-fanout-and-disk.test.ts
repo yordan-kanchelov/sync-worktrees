@@ -112,7 +112,7 @@ describe("getWorktreeStatusForRepo", () => {
     });
     const ui = new InteractiveUIService([service], undefined, undefined, 2, new AppEventEmitter());
 
-    const entries = await ui.getWorktreeStatusForRepo(0);
+    const entries = await ui.operations.getWorktreeStatusForRepo(0);
 
     expect(recorder.peak).toBe(5);
     expect(recorder.calls).toHaveLength(50);
@@ -129,7 +129,7 @@ describe("getWorktreeStatusForRepo", () => {
     });
     const ui = new InteractiveUIService([service], undefined, undefined, 2, new AppEventEmitter());
 
-    await ui.getWorktreeStatusForRepo(0);
+    await ui.operations.getWorktreeStatusForRepo(0);
 
     expect(recorder.peak).toBe(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
   });
@@ -147,7 +147,7 @@ describe("getWorktreeStatusForRepo", () => {
     });
     const ui = new InteractiveUIService([service], undefined, undefined, 2, new AppEventEmitter());
 
-    const entries = await ui.getWorktreeStatusForRepo(0);
+    const entries = await ui.operations.getWorktreeStatusForRepo(0);
 
     // The whole list, in order: the bug this pins was a short list that looked
     // complete, so a prefix check would not have caught it.
@@ -182,7 +182,7 @@ describe("getWorktreeStatusForRepo", () => {
     });
     const ui = new InteractiveUIService([service], undefined, undefined, 2, new AppEventEmitter());
 
-    const [entry] = await ui.getWorktreeStatusForRepo(0);
+    const [entry] = await ui.operations.getWorktreeStatusForRepo(0);
 
     expect(entry.status.canRemove).toBe(false);
     expect(entry.error).toBe("EAGAIN");
@@ -217,8 +217,8 @@ describe("disk usage measurement", () => {
   it("walks each directory once for the status view, however many times it is opened", async () => {
     const ui = new InteractiveUIService([makePlainService("repo-a")], undefined, undefined, 2, new AppEventEmitter());
 
-    const first = await ui.getRepositoryDiskUsage(0);
-    const second = await ui.getRepositoryDiskUsage(0);
+    const first = await ui.operations.getRepositoryDiskUsage(0);
+    const second = await ui.operations.getRepositoryDiskUsage(0);
 
     expect(first.sizeBytes).toBe(2048);
     expect(second.sizeBytes).toBe(2048);
@@ -244,7 +244,7 @@ describe("disk usage measurement", () => {
     const ui = new InteractiveUIService([makePlainService("repo-a")], undefined, undefined, 2, events);
 
     const header = ui.calculateAndUpdateDiskSpace();
-    const view = ui.getRepositoryDiskUsage(0);
+    const view = ui.operations.getRepositoryDiskUsage(0);
     release?.();
     const [, usage] = await Promise.all([header, view]);
 
@@ -272,7 +272,7 @@ describe("disk usage measurement", () => {
 
     await ui.calculateAndUpdateDiskSpace();
     const callsAfterHeader = mocks.directorySizes.mock.calls.length;
-    const usage = await ui.getRepositoryDiskUsage(0);
+    const usage = await ui.operations.getRepositoryDiskUsage(0);
 
     expect(callsAfterHeader).toBe(2);
     expect(mocks.directorySizes).toHaveBeenCalledTimes(2);
@@ -324,7 +324,7 @@ describe("disk usage measurement", () => {
     mocks.directorySizes.mockImplementation(() => Promise.reject(new Error("du: cannot read directory")));
     const ui = new InteractiveUIService([makePlainService("repo-a")], undefined, undefined, 2, new AppEventEmitter());
 
-    const usage = await ui.getRepositoryDiskUsage(0);
+    const usage = await ui.operations.getRepositoryDiskUsage(0);
 
     expect(usage.sizeBytes).toBeNull();
     expect(usage.sizeFormatted).toBe("N/A");
@@ -370,8 +370,8 @@ describe(".diverged directory sizes", () => {
     await fs.mkdir(diverged, { recursive: true });
     const ui = new InteractiveUIService([makeDivergedService()], undefined, undefined, 2, new AppEventEmitter());
 
-    const first = await ui.getDivergedDirectoriesForRepo(0);
-    const second = await ui.getDivergedDirectoriesForRepo(0);
+    const first = await ui.operations.getDivergedDirectoriesForRepo(0);
+    const second = await ui.operations.getDivergedDirectoriesForRepo(0);
 
     // Two opens, one walk: the listing used to walk every `.diverged/`
     // directory again on each open, and all of them at once besides.
@@ -387,11 +387,11 @@ describe(".diverged directory sizes", () => {
     const ui = new InteractiveUIService([makeDivergedService()], undefined, undefined, 2, new AppEventEmitter());
     const bare = path.join(root, "bare");
 
-    await ui.getRepositoryDiskUsage(0);
-    await ui.getDivergedDirectoriesForRepo(0);
-    await ui.deleteDivergedDirectory(0, name);
-    const usage = await ui.getRepositoryDiskUsage(0);
-    const remaining = await ui.getDivergedDirectoriesForRepo(0);
+    await ui.operations.getRepositoryDiskUsage(0);
+    await ui.operations.getDivergedDirectoriesForRepo(0);
+    await ui.operations.deleteDivergedDirectory(0, name);
+    const usage = await ui.operations.getRepositoryDiskUsage(0);
+    const remaining = await ui.operations.getDivergedDirectoriesForRepo(0);
 
     expect(remaining).toEqual([]);
     expect(usage.sizeBytes).toBe(2048);
