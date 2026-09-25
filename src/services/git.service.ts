@@ -1937,13 +1937,11 @@ export class GitService {
     refScans?: RefScanScope,
   ): Promise<WorktreeStatusResult> {
     const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
-    return this.statusService.getFullWorktreeStatus(
-      worktreePath,
-      includeDetails,
-      metadata?.lastSyncCommit,
-      metadata?.lastKnownRemoteTip,
+    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails, {
+      lastSyncCommit: metadata?.lastSyncCommit,
+      lastKnownRemoteTip: metadata?.lastKnownRemoteTip,
       refScans,
-    );
+    });
   }
 
   /** Map of remote branch name (without "origin/") → tip oid, from the bare repo. */

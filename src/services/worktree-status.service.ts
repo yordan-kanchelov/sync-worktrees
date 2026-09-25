@@ -209,6 +209,10 @@ interface WorktreeSnapshot {
   status: Awaited<ReturnType<SimpleGit["status"]>> | null;
   currentBranch: string | null;
   detached: boolean;
+  // A plain detached HEAD: detached with no rebase or bisect in progress (and
+  // the operation probe answered). Only then is the unpushed gate waived; a
+  // paused rebase also reads as detached but sits on the branch's own commits.
+  plainDetached: boolean;
   upstream: UpstreamState;
   // lastKnownRemoteTip's ref is verifiably absent from a scan that saw
   // remote-tracking refs (none at all may mean a failed fetch: fail closed).
@@ -225,6 +229,15 @@ interface WorktreeSnapshot {
   operationProbeUnknown: boolean;
   gitDir: string | null;
   untrackedNotIgnored: string[];
+}
+
+export interface FullWorktreeStatusOptions {
+  /** HEAD as of the last sync; commits made since then count as unpushed. */
+  lastSyncCommit?: string;
+  /** The upstream ref and tip recorded while it existed (squash-merge override). */
+  lastKnownRemoteTip?: LastKnownRemoteTip;
+  /** Shares one ref scan between every worktree probed with it in one pass. */
+  refScans?: RefScanScope;
 }
 
 export interface WorktreeStatusServiceConfig {
@@ -305,9 +318,7 @@ export class WorktreeStatusService {
   async getFullWorktreeStatus(
     worktreePath: string,
     includeDetails = false,
-    lastSyncCommit?: string,
-    lastKnownRemoteTip?: LastKnownRemoteTip,
-    refScans?: RefScanScope,
+    { lastSyncCommit, lastKnownRemoteTip, refScans }: FullWorktreeStatusOptions = {},
   ): Promise<WorktreeStatusResult> {
     const pathProbe = await probePathExists(worktreePath);
     if (pathProbe === "missing") {
@@ -349,7 +360,7 @@ export class WorktreeStatusService {
     // on lastSyncCommit alone hides unpushed work when metadata records HEAD.
     const anyRemoteUnpushed = (snap.unpushedAnyRemoteCount ?? 1) > 0;
     const sinceSyncUnpushed = snap.sinceSyncChecked && (snap.sinceSyncCount ?? 1) > 0;
-    const hasUnpushedCommits = !snap.detached && (anyRemoteUnpushed || sinceSyncUnpushed);
+    const hasUnpushedCommits = !snap.plainDetached && (anyRemoteUnpushed || sinceSyncUnpushed);
     // "Unpushed" override for squash-merge + branch deletion: only when the
     // recorded upstream ref is verifiably gone (see recordedRefGone) AND HEAD
     // is an ancestor of the tip recorded while the ref still existed.
@@ -472,18 +483,28 @@ export class WorktreeStatusService {
       refScan.hasRemoteRefs &&
       !refScan.refs.has(`${REMOTE_TRACKING_PREFIX}${lastKnownRemoteTip.ref}`);
 
+    // A rebase or bisect in progress also prints `## HEAD (no branch)`, so it
+    // reads as detached; its HEAD is the branch being worked on, replayed or
+    // not, and must not waive the unpushed gate. An unanswered operation probe
+    // counts as one in progress (fail closed).
+    const operationProbe = gitDirResult ? await this.detectOperationFile(gitDirResult) : { file: null, unknown: false };
+    const operationRunning = gitDirResult === null || operationProbe.file !== null || operationProbe.unknown;
+    const plainDetached = detached && !operationRunning;
+
     let unpushedAnyRemoteCount: number | null = null;
     let sinceSyncCount: number | null = null;
     let headPushedToRecordedTip: boolean | null = null;
-    if (currentBranch) {
+    // The probes below all ask about HEAD, so they run for a checked-out branch
+    // and for a detached HEAD mid-operation alike.
+    if (currentBranch || (detached && !plainDetached)) {
       const [anyRemoteResult, sinceSyncResult, recordedTipResult] = await Promise.all([
         // HEAD, never the short branch name: git resolves a bare name through
         // refs/tags/<name> before refs/heads/<name>, so a tag sharing the
         // branch's name (`git checkout -b 1.4.2 1.4.2`) answers for the tag —
         // with nothing but `warning: refname '<name>' is ambiguous.` on stderr
         // and exit 0 — and local-only commits count as zero, which would let
-        // the prune pipeline remove the worktree. The branch is checked out
-        // here (currentBranch is null when detached), so HEAD is exactly its tip.
+        // the prune pipeline remove the worktree. HEAD is the checked-out
+        // branch's tip, or where a paused rebase or bisect has it.
         this.runGit(() => git.raw(["rev-list", "--count", "HEAD", "--not", "--remotes"])).then(
           (raw) => ({ ok: true as const, value: raw }),
           (error: unknown) => ({ ok: false as const, error }),
@@ -526,13 +547,10 @@ export class WorktreeStatusService {
       }
     }
 
-    const operationProbe = gitDirResult ? await this.detectOperationFile(gitDirResult) : { file: null, unknown: false };
-
     // A failed status leaves the checked-out branch unknown (undefined), which
     // counts every stash that names a branch; so does a rebase or bisect in
     // progress, whose HEAD is detached while the stashes made before it name
     // the branch being worked on. A plain detached HEAD is null.
-    const operationRunning = gitDirResult === null || operationProbe.file !== null || operationProbe.unknown;
     const stashBranch = status === null || (detached && operationRunning) ? undefined : currentBranch;
     const stashTotal = stashResult ? await this.countOwnStashes(git, stashResult, stashBranch) : null;
 
@@ -544,6 +562,7 @@ export class WorktreeStatusService {
       status,
       currentBranch,
       detached,
+      plainDetached,
       upstream,
       recordedRefGone,
       unpushedAnyRemoteCount,
@@ -658,7 +677,7 @@ export class WorktreeStatusService {
     }
     if (snap.untrackedNotIgnored.length > 0) details.untrackedFilesList = snap.untrackedNotIgnored;
     const unpushedCount = snap.unpushedAnyRemoteCount ?? snap.sinceSyncCount;
-    if (!snap.detached && unpushedCount !== null) details.unpushedCommitCount = unpushedCount;
+    if (!snap.plainDetached && unpushedCount !== null) details.unpushedCommitCount = unpushedCount;
     if (snap.stashTotal !== null) details.stashCount = snap.stashTotal;
     const opType = this.operationTypeFromFile(snap.operationFile);
     if (opType) details.operationType = opType;
@@ -808,7 +827,7 @@ export class WorktreeStatusService {
     lastSyncCommit?: string,
     lastKnownRemoteTip?: LastKnownRemoteTip,
   ): Promise<void> {
-    const status = await this.getFullWorktreeStatus(worktreePath, false, lastSyncCommit, lastKnownRemoteTip);
+    const status = await this.getFullWorktreeStatus(worktreePath, false, { lastSyncCommit, lastKnownRemoteTip });
 
     if (!status.canRemove) {
       throw new WorktreeNotCleanError(worktreePath, status.reasons);

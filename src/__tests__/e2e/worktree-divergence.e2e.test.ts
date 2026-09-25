@@ -247,9 +247,7 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     const probeAll = async (refScans?: RefScanScope): Promise<string[]> => {
       await fs.writeFile(shimLog, "");
       const service = new WorktreeStatusService({}, createMockLogger());
-      await Promise.all(
-        worktrees.map((wt) => service.getFullWorktreeStatus(wt, false, undefined, undefined, refScans)),
-      );
+      await Promise.all(worktrees.map((wt) => service.getFullWorktreeStatus(wt, false, { refScans })));
       return spawnedCommands();
     };
     const count = (commands: string[], prefix: string): number =>

@@ -330,7 +330,7 @@ function createWorktreeEnricher(statusService: WorktreeStatusService, limit: Lim
 
     const pending = limit(async (): Promise<WorktreeEnrichment> => {
       const { status, statusError } = await probeWorktreeStatus(
-        statusService.getFullWorktreeStatus(wt.path, false, undefined, undefined, refScans),
+        statusService.getFullWorktreeStatus(wt.path, false, { refScans }),
       );
       return {
         label: status ? deriveLabel(status, wt.isCurrent) : wt.isCurrent ? "current" : "unknown",

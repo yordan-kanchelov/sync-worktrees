@@ -625,6 +625,80 @@ describe("WorktreeStatusService", () => {
       consoleSpy.mockRestore();
     });
 
+    // `git status -b` prints `## HEAD (no branch)` for a paused rebase or
+    // bisect too, so it reads as detached. Its HEAD carries the branch's own
+    // commits, so the unpushed gate is not waived the way it is for a plain
+    // detached HEAD: the HEAD-based probes still run.
+    describe.each(["rebase-merge", "BISECT_LOG"])("detached HEAD with %s in progress", (operationFile) => {
+      const setupPausedOperation = (localOnlyCommits: number): void => {
+        setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/feature"], detached: true });
+        mockGit.raw.mockImplementation((async (...args: any[]) => {
+          const firstArg = Array.isArray(args[0]) ? args[0] : args;
+          if (firstArg[0] === "submodule") return "";
+          if (firstArg[0] === "rev-list" && firstArg.includes("--remotes")) return `${localOnlyCommits}\n`;
+          return "0\n";
+        }) as any);
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (target === "/test/worktree" || String(target).endsWith(operationFile)) return undefined;
+          throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
+        });
+      };
+
+      it("reports local-only commits as unpushed", async () => {
+        setupPausedOperation(2);
+
+        const status = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(unpushedProbeRevisions()).toEqual(["HEAD"]);
+        expect(status.hasUnpushedCommits).toBe(true);
+        expect(status.details?.unpushedCommitCount).toBe(2);
+        expect(status.reasons).toEqual(
+          expect.arrayContaining(["unpushed commits", "operation in progress", "detached HEAD"]),
+        );
+        expect(status.canRemove).toBe(false);
+      });
+
+      it("reports no unpushed commits once every commit is on a remote", async () => {
+        setupPausedOperation(0);
+
+        const status = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(status.hasUnpushedCommits).toBe(false);
+        expect(status.details?.unpushedCommitCount).toBe(0);
+        expect(status.reasons).toContain("detached HEAD");
+        expect(status.canRemove).toBe(false);
+      });
+
+      it("fails closed when the unpushed probe errors", async () => {
+        setupPausedOperation(0);
+        const baseRaw = mockGit.raw.getMockImplementation() as (...args: any[]) => Promise<string>;
+        mockGit.raw.mockImplementation((async (...args: any[]) => {
+          const firstArg = Array.isArray(args[0]) ? args[0] : args;
+          if (firstArg[0] === "rev-list" && firstArg.includes("--remotes")) throw new Error("Git error");
+          return baseRaw(...args);
+        }) as any);
+        const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        const status = await service.getFullWorktreeStatus("/test/worktree");
+
+        expect(status.hasUnpushedCommits).toBe(true);
+        expect(status.reasons).toContain("unpushed commits");
+        consoleSpy.mockRestore();
+      });
+    });
+
+    it("waives the unpushed gate for a plain detached HEAD and runs no unpushed probe", async () => {
+      setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/feature"], detached: true });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree", true);
+
+      expect(unpushedProbeRevisions()).toEqual([]);
+      expect(status.hasUnpushedCommits).toBe(false);
+      expect(status.details?.unpushedCommitCount).toBeUndefined();
+      expect(status.reasons).toContain("detached HEAD");
+      expect(status.canRemove).toBe(false);
+    });
+
     it("treats a failed any-remote unpushed probe as unpushed commits (conservative)", async () => {
       setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/feature"] });
       const baseRaw = mockGit.raw.getMockImplementation() as (...args: any[]) => Promise<string>;
@@ -1061,7 +1135,7 @@ describe("WorktreeStatusService", () => {
         .mockResolvedValueOnce(undefined)
         .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, "abc123");
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastSyncCommit: "abc123" });
 
       expect(status.hasUnpushedCommits).toBe(true);
       expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
@@ -1082,7 +1156,9 @@ describe("WorktreeStatusService", () => {
         .mockResolvedValueOnce(undefined)
         .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, "lastSyncCommit123");
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, {
+        lastSyncCommit: "lastSyncCommit123",
+      });
 
       expect(status.hasUnpushedCommits).toBe(false);
       expect(status.canRemove).toBe(true);
@@ -1161,7 +1237,7 @@ describe("WorktreeStatusService", () => {
         return "0\n";
       }) as any);
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, "headCommitSha");
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastSyncCommit: "headCommitSha" });
 
       expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
       expect(status.hasUnpushedCommits).toBe(true);
@@ -1194,7 +1270,7 @@ describe("WorktreeStatusService", () => {
     it("still allows removal of a genuinely clean, fully pushed worktree with lastSyncCommit", async () => {
       setupCleanWorktreeMocks();
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, "abc123");
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastSyncCommit: "abc123" });
 
       expect(status.hasUnpushedCommits).toBe(false);
       expect(status.canRemove).toBe(true);
@@ -1242,7 +1318,7 @@ describe("WorktreeStatusService", () => {
     it("allows removal when the recorded ref is gone and HEAD is an ancestor of the recorded tip", async () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastKnownRemoteTip: recordedTip });
 
       expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "squashtip123..HEAD"]);
       expect(status.hasUnpushedCommits).toBe(true);
@@ -1254,7 +1330,7 @@ describe("WorktreeStatusService", () => {
     it("blocks removal when no recorded tip exists (pre-feature worktree, lost metadata)", async () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, undefined);
+      const status = await service.getFullWorktreeStatus("/test/worktree", false);
 
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
@@ -1264,7 +1340,7 @@ describe("WorktreeStatusService", () => {
     it("blocks removal when commits were added after the upstream deletion (HEAD not an ancestor)", async () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: false });
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastKnownRemoteTip: recordedTip });
 
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
@@ -1283,7 +1359,7 @@ describe("WorktreeStatusService", () => {
         return "0\n";
       }) as any);
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastKnownRemoteTip: recordedTip });
 
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
@@ -1292,7 +1368,7 @@ describe("WorktreeStatusService", () => {
     it("does not apply the override while the recorded ref still exists on the remote (force-push case)", async () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: true, remoteBranches: ["origin/main", "origin/feature"] });
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastKnownRemoteTip: recordedTip });
 
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
@@ -1303,7 +1379,7 @@ describe("WorktreeStatusService", () => {
     it("fails closed when the remote branch list is empty (fetch may have failed)", async () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: true, remoteBranches: [] });
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastKnownRemoteTip: recordedTip });
 
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
@@ -1313,7 +1389,7 @@ describe("WorktreeStatusService", () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
       header = { current: "HEAD", detached: true, tracking: null, ahead: 0, behind: 0 };
 
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
+      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastKnownRemoteTip: recordedTip });
 
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
@@ -1424,9 +1500,7 @@ describe("WorktreeStatusService", () => {
       const refScans = new RefScanScope();
 
       const results = await Promise.all(
-        ["a", "b", "c", "d"].map((name) =>
-          service.getFullWorktreeStatus(`/test/app/${name}`, false, undefined, undefined, refScans),
-        ),
+        ["a", "b", "c", "d"].map((name) => service.getFullWorktreeStatus(`/test/app/${name}`, false, { refScans })),
       );
 
       expect(mockForEachRef).toHaveBeenCalledTimes(1);
@@ -1440,7 +1514,7 @@ describe("WorktreeStatusService", () => {
 
       await Promise.all(
         ["/test/app/a", "/test/app/b", "/test/lib/a", "/test/lib/b"].map((worktreePath) =>
-          service.getFullWorktreeStatus(worktreePath, false, undefined, undefined, refScans),
+          service.getFullWorktreeStatus(worktreePath, false, { refScans }),
         ),
       );
 
@@ -1464,9 +1538,7 @@ describe("WorktreeStatusService", () => {
       const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       await Promise.all(
-        ["a", "b"].map((name) =>
-          service.getFullWorktreeStatus(`/test/app/${name}`, false, undefined, undefined, refScans),
-        ),
+        ["a", "b"].map((name) => service.getFullWorktreeStatus(`/test/app/${name}`, false, { refScans })),
       );
 
       expect(mockForEachRef).toHaveBeenCalledTimes(2);

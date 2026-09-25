@@ -67,7 +67,7 @@ const worktreeDetailLines = (entry: WorktreeStatusEntry): DetailLine[] => {
       lines.push({ text: ` Modified submodules: ${details.modifiedSubmodules.join(", ")}`, color: "yellow" });
     }
   }
-  if (status.upstreamGone) lines.push({ text: " Remote branch has been deleted", color: "red" });
+  if (status.upstreamGone) lines.push({ text: " Upstream branch no longer exists", color: "red" });
   if (status.reasons.length > 0) lines.push({ text: ` Reasons: ${status.reasons.join(", ")}`, dim: true });
   return lines;
 };
