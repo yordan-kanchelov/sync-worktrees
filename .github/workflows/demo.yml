@@ -50,7 +50,7 @@ jobs:
         run: demo/render.sh
 
       - name: Open a pull request with the new assets
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: chore/demo-assets
           delete-branch: true
