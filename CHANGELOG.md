@@ -1,5 +1,88 @@
 # sync-worktrees
 
+## 7.1.0
+
+### Minor Changes
+
+- e53cf71: CLI ergonomics:
+
+  - Flags are kebab-case in `--help` and the docs (`--run-once`, `--drop-keep-ref`, `--drop-all-keep-refs`); the camelCase
+    spellings keep working.
+  - `sync-worktrees --filter <pattern>` (`-f`) syncs only the repositories the pattern matches, with the same matching as
+    `list`, and exits 1 when nothing matches. The interactive UI keeps the filter across config reloads.
+  - `-q`/`--quiet` limits a one-shot run to warnings, errors and the final summary line, so a clean run prints one line
+    instead of a few dozen. Warnings and errors go to stderr, so `--run-once --quiet >/dev/null` in cron mails only when
+    something needs attention.
+  - `sync-worktrees completion` prints a bash/zsh completion script.
+  - A mistyped command or flag gets a "did you mean" hint, `sync` is an explicit name for the default command, and
+    `--help` now carries examples and a link to the docs.
+
+- 68f8526: CLI fixes and output polish:
+
+  - `--version` (now also `-V`) prints the build's own version. It used to print `unknown`, or another package's version,
+    from a pnpm-installed copy.
+  - Without a terminal (systemd, docker, CI, `< /dev/null`), `sync-worktrees` without `--run-once` exits 1 and says to use
+    `--run-once`. It used to print Ink's "Raw mode is not supported" stack trace and exit 0. `sync-worktrees init` also
+    exits 1 with a message instead of hanging.
+  - A failed git command in `--run-once` is reported as its one `fatal:` line, not about 30 lines of stack and
+    `task.commands`. After any failure the run prints a hint that points to `--debug`. The new `--debug` flag turns on
+    debug logging and full error details for every repository, overriding the config's `debug`, and keeps doing so after
+    the dashboard reloads the config with `r`. A typed failure such as "Cannot fast-forward branch" also carries git's
+    one-line reason.
+  - The bin shim's last-resort error handler now redacts credentials in repository URLs.
+  - `--run-once` output: "1 repository" instead of "1 repositories", no empty `[name]` line before each repository header,
+    and "Fetching latest data from remote..." printed once per sync instead of twice. Zero skip counts are left out of
+    the summary, which also shows the total elapsed time. The "Failed to load config file:" prefix is no longer printed
+    twice.
+  - Colour honours `NO_COLOR` and `FORCE_COLOR`. Log lines have ANSI sequences stripped when stdout is not a terminal.
+
+- f5b7aa1: Packaging: an explicit `exports` map, one shared bundle chunk, and fewer dependencies. The tarball drops from 91 files and ~1.51 MB unpacked to 14 files and ~0.85 MB.
+
+  - **`exports` map.** `package.json` now has `exports` with `.` and `./package.json`. `import("sync-worktrees")` still resolves, and its types are the `SyncWorktreesConfig` family that the README tells you to use in `@satisfies {import("sync-worktrees").SyncWorktreesConfig}`. Those types now also work under `moduleResolution: "nodenext"`: the published `.d.ts` files use explicit `.js` import paths, where before they had none and the types quietly became `any` under `skipLibCheck`. Deep imports such as `sync-worktrees/dist/services/...` are now refused with `ERR_PACKAGE_PATH_NOT_EXPORTED`. They were never documented, but every `dist/` file used to be reachable. Only the declarations the public types need are published now (5 instead of about 80).
+  - **One build, shared chunk.** The CLI and the MCP server are built in one esbuild pass with code splitting, so the code they share (`src/utils`, `src/services`, ...) ships once in `dist/chunk-*.js` instead of twice. `pnpm build` now empties `dist/` before building, and `pnpm watch` runs esbuild in watch mode. It used to run `tsc --watch`, which wrote unbundled JavaScript over `dist/`.
+  - **`sync-worktrees-mcp` bin shim.** The MCP binary is now `bin/sync-worktrees-mcp.js`, which works like `bin/sync-worktrees.js` (`NODE_ENV` defaults to `production`) and then loads `dist/mcp-server.js`. MCP client configs keep working unchanged, because they run the `sync-worktrees-mcp` command.
+  - **Node version warning.** Both binaries print a one-line warning on stderr when Node is older than the `engines` floor (24), because npm only warns about `engines` at install time. The command still runs, and the README now says so.
+  - **Disk usage without `fast-folder-size`.** Directory sizes (TUI status bar, trash sizes, MCP `includeSize`) come from `du -sk`, run without a shell. This drops a dependency whose install script downloads a Windows binary on a package that only supports macOS and Linux. On Linux, sizes now count allocated blocks, as macOS already did, rather than apparent bytes, so small files round up to their block size.
+  - **Dev dependencies removed:** `react-devtools-core` (and its dead esbuild alias and `devtools-stub.js`), `ts-node`, `happy-dom` and `@types/node-cron` (node-cron ships its own types). `packageManager` pins pnpm 10.33.0, and CI's setup action reads it.
+
+- 0a877e2: TUI: log lines are batched into one render every 50ms instead of one render (and a copy of the whole log buffer) per
+  line, and the status bar and log panel no longer re-render for updates that do not concern them. Modals size themselves
+  to the terminal: they are never wider than the window, their lists use the rows the window has instead of a fixed
+  eight, and the help screen compacts and then scrolls on short terminals. Deleting a `.diverged/` entry in the status
+  view is now `Ctrl-D` (was `d`), so `d` can be typed into the filter; lists also accept `Ctrl-N`/`Ctrl-P`. The unused
+  `LogViewer` component is removed.
+
+### Patch Changes
+
+- 41bdb86: Internal cleanup with a few visible effects:
+
+  - MCP `list_worktrees` now says why a worktree's status could not be read (`safeToRemove.reason: "status unavailable: <cause>"`, credentials scrubbed), and `detect_context` with `includeStatus: true` adds a `statusError` field to a worktree whose status probe failed, instead of a bare `unknown` label.
+  - Worktree-creation failures that roll the worktree back (metadata could not be written, upstream could not be set) are now typed errors, so MCP reports them with their own error codes (`WORKTREE_METADATA_FAILED`, `WORKTREE_UPSTREAM_SETUP_FAILED`) instead of `INTERNAL_ERROR`. Messages are unchanged.
+  - An invalid `branchMaxAge` and a failed disk-usage total are reported through the repository's logger (the TUI log pane in interactive mode) instead of bare console output written over the interface, and a throwing TUI event listener is reported through the credential-scrubbing logger.
+
+- 940076b: Make git invocations more robust:
+
+  - Every git client now runs under the C locale (`LC_ALL=C`, `LANG=C`), not only the sync clients, so the status view, metadata, sparse-checkout, maintenance and MCP paths that match git's English messages keep working under a non-English locale.
+  - `fetchTimeoutMs` / `cloneTimeoutMs` must be `0` or a whole number of milliseconds from 1000 to 2147483647. Larger values used to overflow Node's timer and kill every git command after 1 ms; sub-second values killed nearly every fetch.
+  - `git worktree list` is read NUL-terminated (`-z`, git 2.36+, with a fallback for older git), so a worktree path containing a newline is no longer split into two bogus entries.
+  - `git branch -D` calls now pass `--` before branch names.
+  - A pin or keep ref that cannot be removed while rolling back a failed trash or diverged-worktree preservation is now logged as a warning instead of being silently ignored.
+
+- 719ce44: Stashes are now attributed to the worktree they were made in. git keeps one stash list for every worktree of a repository, so a single stash anywhere used to make every worktree report "stashed changes": no worktree could be pruned, every diverged replace was skipped, and MCP labelled every worktree dirty. A stash now counts only for the worktree whose branch it was made on (a detached-HEAD stash counts where its base commit is in the worktree's history).
+
+  With trash disabled, a stale directory at a managed worktree path that has no `.git` is no longer deleted outright: it is quarantined under a sibling `.removed/` folder like one that has a `.git`. Only an empty directory is removed.
+
+- 751e65a: TUI fixes:
+
+  - The status bar says `Idle` instead of `Running`, and shows how the last sync went next to its time: `✓ OK`, `✗ 2 failed` or `⚠ 1 skipped`.
+  - `Next Sync` is shown when repositories use different cron schedules (the earliest next run across all of them).
+  - `s`, `r` and `x` during a sync briefly say a sync is in progress instead of doing nothing.
+  - `q` while a sync, hook or worktree creation is running asks for a second `q` before quitting.
+  - `r` and `s` after `q` no longer restart the cron jobs or start a new sync during shutdown.
+  - Force clean (`x`) says "Nothing to clean" when there is nothing to delete, and otherwise asks you to type `clean` and press Enter instead of a single `y`.
+  - A failed delete of a `.diverged/` directory in the worktree status view is now shown instead of disappearing silently.
+  - Pressing down on an empty filtered list no longer leaves the selection at -1; a single configured repository is loaded by its own index.
+
 ## 7.0.0
 
 ### Major Changes
