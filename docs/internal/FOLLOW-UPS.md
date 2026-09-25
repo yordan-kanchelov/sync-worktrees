@@ -2032,7 +2032,7 @@ behaviour it is defending is correct.**
 - **FU-T102-5 — `isCacheFresh` does not cover what the answer now depends on.** It checks the TTL plus `<adminDir>/HEAD` and `<bare>/worktrees` mtimes. Creating or deleting a nested `.git` between the probed path and the worktree changes the answer and touches neither, so a stale answer can be served for up to `DISCOVERY_CACHE_TTL_MS`.
 - **FU-T102-6 — `findConfiguredCloneEntry` is now O(depth x repos)** instead of O(repos): in-memory `path.resolve` + case-fold per entry per level. Negligible, but a new loop inside a loop.
 - **FU-T102-7 — `readConfiguredCloneWorktree` compares paths with a raw `normalizePathForCompare(a) === normalizePathForCompare(b)`** where the rest of the file uses `pathsEqual`. Same semantics, inconsistent call.
-- **FU-T102-8 — `REVIEW_FINDINGS.md` is tracked at the repo root** and is not in `package.json` `files`, so it does not ship, but it is still in the repository.
+- **FU-T102-8 — `REVIEW_FINDINGS.md` is tracked at the repo root** and is not in `package.json` `files`, so it does not ship, but it is still in the repository. Resolved: moved to `docs/internal/` with the other engineering records.
 - **ENVIRONMENT — simple-git's unsafe-operations plugin blocks `-c protocol.file.allow=…` and any inherited `GIT_EDITOR`**, so a `file://` submodule fixture cannot go through `createGitClient`/`simpleGit`; use `child_process` directly.
 
 ## From T105 (worker + review, 2026-09-16)
