@@ -109,6 +109,12 @@ describe("parseArguments", () => {
       expect(opts).toMatchObject({ filter: "backend", action, deprecatedFlag: flag });
     });
 
+    it("reads the same value given twice as that value", () => {
+      expect(
+        trash(["trash", "--purge", "entry-id", "--purge", "entry-id", "-f", "repo", "--filter", "repo"]),
+      ).toMatchObject({ filter: "repo", action: { kind: "purge", id: "entry-id" }, deprecatedFlag: "--purge" });
+    });
+
     it("carries --wait on the deprecated --purge form", () => {
       expect(trash(["trash", "--purge", "entry-id", "--wait"])).toMatchObject({
         action: { kind: "purge", id: "entry-id" },
@@ -126,6 +132,11 @@ describe("parseArguments", () => {
       ["deprecated --restore with an empty id", ["trash", "--restore", ""]],
       ["deprecated --purge with an empty id", ["trash", "--purge", " "]],
       ["deprecated --drop-keep-ref with an empty name", ["trash", "--drop-keep-ref", ""]],
+      ["deprecated --purge given twice", ["trash", "--purge", "a", "--purge", "b"]],
+      ["deprecated --restore given twice", ["trash", "--restore", "a", "--restore", "b"]],
+      ["deprecated --drop-keep-ref given twice", ["trash", "--drop-keep-ref", "a", "--dropKeepRef", "b"]],
+      ["deprecated --restore with -f given twice", ["trash", "--restore", "x", "-f", "a", "-f", "b"]],
+      ["the bare listing with --config given twice", ["trash", "-c", "a.js", "--config", "b.js"]],
       ["--json on restore", ["trash", "restore", "entry-id", "--json"]],
       ["--wait on list", ["trash", "list", "--wait"]],
       ["--wait on drop-keep-ref", ["trash", "drop-keep-ref", "keep", "--wait"]],
@@ -420,6 +431,29 @@ describe("parseArguments", () => {
     ])("suggests a trash subcommand for %s", (typo, suggestion) => {
       expect(() => parseArguments(["trash", typo, "entry-id"])).toThrow(/process\.exit\(1\)/);
       expect(stderrOf()).toContain(`Did you mean '${suggestion}'?`);
+    });
+
+    it.each([
+      [["trash", "restore", "entry-id", "--json"], "--json belongs to 'trash list'."],
+      [["trash", "list", "--wait"], "--wait belongs to 'trash restore' and 'trash purge'."],
+      [["trash", "restore", "entry-id", "--all"], "--all belongs to 'trash purge'."],
+    ])("names where a misplaced trash flag belongs: %j", (argv, hint) => {
+      expect(() => parseArguments(argv)).toThrow(/process\.exit\(1\)/);
+      expect(stderrOf()).toContain(hint);
+    });
+
+    it("names a repeated deprecated flag instead of listing", () => {
+      expect(() => parseArguments(["trash", "--purge", "a", "--purge", "b"])).toThrow(/process\.exit\(1\)/);
+      expect(stderrOf()).toContain("--purge was given more than once with different values");
+    });
+
+    it("treats 'trash' as a flag's value, not the trash command, after a flag", () => {
+      expect(describeParseFailure("Unknown argument: lst", ["lst", "-f", "trash"])).toContain(
+        "💡 Did you mean 'sync-worktrees list'?",
+      );
+      expect(describeParseFailure("Unknown argument: lst", ["trash", "lst", "-f", "trash"])).toContain(
+        "💡 Did you mean 'sync-worktrees trash list'?",
+      );
     });
 
     it("stays silent when nothing is close", () => {

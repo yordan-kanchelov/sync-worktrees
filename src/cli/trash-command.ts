@@ -73,8 +73,18 @@ interface LegacyTrashArgs {
 
 type RawArgs = Record<string, unknown>;
 
+/**
+ * The one value of a string option. yargs turns a repeated string option into
+ * an array; the same value given twice (`-f repo -f repo`, easy to get from a
+ * shell alias) still means that value, and checkBareTrash rejects differing ones.
+ */
 function stringArg(args: RawArgs, key: string): string | undefined {
   const value = args[key];
+  if (Array.isArray(value)) {
+    const distinct = new Set(value);
+    const [only] = distinct;
+    return distinct.size === 1 && typeof only === "string" ? only : undefined;
+  }
   return typeof value === "string" ? value : undefined;
 }
 
@@ -246,7 +256,19 @@ function camelCase(flag: string): string {
   return flag.replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase());
 }
 
+// String options the bare form reads with stringArg(), which has no single
+// value to return for a repeated option with differing values: `--purge a
+// --purge b` used to become a listing that exited 0, and `-f a -f b` acted with
+// no filter at all. That is a usage error instead.
+const BARE_SINGLE_VALUE = ["config", "filter", "restore", "purge", "drop-keep-ref"] as const;
+
 function checkBareTrash(args: RawArgs): string | true {
+  for (const flag of BARE_SINGLE_VALUE) {
+    const key = camelCase(flag);
+    if (Array.isArray(args[key]) && stringArg(args, key) === undefined) {
+      return `--${flag} was given more than once with different values`;
+    }
+  }
   // A boolean given as --no-json is as absent as one never typed.
   const given = (flag: string): boolean => {
     const value = args[camelCase(flag)];

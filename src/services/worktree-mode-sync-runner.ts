@@ -267,7 +267,7 @@ export class WorktreeModeSyncRunner {
 
   // A diverged replace whose replacement worktree was never created leaves the
   // trashed payload as the only copy of that branch's work. Reserving the branch
-  // keeps sync from taking `originalPath` before the user can `trash --restore`.
+  // keeps sync from taking `originalPath` before the user can `trash restore`.
   //
   // Three deliberate narrowings, each of which was a way to strand a branch:
   //  - `replacedAt` set means the replacement exists, so the reserve is spent.

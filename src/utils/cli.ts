@@ -67,6 +67,26 @@ function wasTyped(name: string, argv: readonly string[]): boolean {
   return argv.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 }
 
+/** For a trash flag given to a subcommand that does not take it: where it does belong. */
+const TRASH_FLAG_HOMES: Readonly<Record<string, string>> = {
+  json: "'trash list'",
+  wait: "'trash restore' and 'trash purge'",
+  all: "'trash purge'",
+};
+
+/**
+ * Whether argv runs `trash`: a "trash" word that is not the value of the flag
+ * before it (`list -f trash` filters on a repository called trash). A flag
+ * spelled `--flag=value` carries its own value, so the word after it is free.
+ */
+function namesTrashCommand(argv: readonly string[]): boolean {
+  return argv.some((arg, i) => {
+    if (arg !== CLI_COMMANDS.TRASH) return false;
+    const previous = argv[i - 1];
+    return previous === undefined || !previous.startsWith("-") || previous.includes("=");
+  });
+}
+
 /**
  * What to print for a failed parse: yargs' message, then "did you mean" hints
  * for an "Unknown argument(s): a, b" failure.
@@ -92,7 +112,7 @@ export function describeParseFailure(message: string, argv: readonly string[]): 
 
   const names = [...unknown.values()].map(({ name }) => name);
   const lines = [`Unknown argument${names.length === 1 ? "" : "s"}: ${names.join(", ")}`];
-  const underTrash = argv.includes(CLI_COMMANDS.TRASH);
+  const underTrash = namesTrashCommand(argv);
   for (const { name, positional } of unknown.values()) {
     if (positional && underTrash && name !== CLI_COMMANDS.TRASH) {
       // `trash restor <id>`: the typo is a trash subcommand, not a top-level one.
@@ -115,6 +135,12 @@ export function describeParseFailure(message: string, argv: readonly string[]): 
       lines.push(
         `💡 --${kebab} is the old spelling of '${replacement}' and cannot be combined with a trash subcommand.`,
       );
+      continue;
+    }
+    // `trash restore <id> --json`: a real trash flag where that form does not take it.
+    const home = underTrash ? TRASH_FLAG_HOMES[kebab] : undefined;
+    if (home) {
+      lines.push(`💡 --${kebab} belongs to ${home}.`);
       continue;
     }
     if ((FLAG_NAMES as readonly string[]).includes(kebab)) continue;
