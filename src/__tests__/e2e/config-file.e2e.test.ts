@@ -132,7 +132,7 @@ export default {
       timeout: 60000,
     });
 
-    expect(output).toContain("Syncing 1 repositories");
+    expect(output).toContain("Syncing 1 repository...");
     expect(output).toContain("Repository: hello-world");
     expect(output).toContain("Clone successful");
     expect(output).toContain("Synchronization finished");

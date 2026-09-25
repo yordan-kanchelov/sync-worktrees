@@ -5,6 +5,12 @@ import { ConfigValidationError } from "../errors";
 const mocks = vi.hoisted(() => ({
   buildRepositories: vi.fn(),
   constructService: vi.fn(),
+  hasInteractiveTerminal: vi.fn(() => true),
+}));
+
+vi.mock("../utils/terminal", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  hasInteractiveTerminal: mocks.hasInteractiveTerminal,
 }));
 
 vi.mock("../services/config-loader.service", () => ({
@@ -16,7 +22,7 @@ vi.mock("../services/config-loader.service", () => ({
 vi.mock("../services/worktree-sync.service", () => ({
   WorktreeSyncService: vi.fn(function (config: unknown) {
     mocks.constructService(config);
-    return { getRecordedSkips: vi.fn(() => []), initialize: vi.fn(), sync: vi.fn() };
+    return { getRecordedSkips: vi.fn(() => []), initialize: vi.fn(), sync: vi.fn(async () => ({ started: true })) };
   }),
 }));
 
@@ -35,7 +41,7 @@ vi.mock("../utils/signal-handlers", () => ({
   setupSignalHandlers: vi.fn(() => ({ register: vi.fn(), dispose: vi.fn() })),
 }));
 
-import { main } from "../index";
+import { main, reportUnhandledError } from "../index";
 
 const originalArgv = process.argv;
 
@@ -56,6 +62,7 @@ describe("sync-worktrees run error reporting", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.hasInteractiveTerminal.mockReturnValue(true);
     process.argv = ["node", "sync-worktrees", "--config", "/test/sync-worktrees.config.js"];
     errors = [];
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -117,9 +124,41 @@ describe("sync-worktrees run error reporting", () => {
     expect(await runAndCaptureExit()).toBe(1);
 
     const stderr = errors.join("\n");
-    expect(stderr).toContain("Error loading config file");
-    expect(stderr).toContain("Unexpected token ']'");
+    expect(stderr).toContain("Error loading config file: Unexpected token ']'");
+    // The loader's own prefix is not repeated after this line's label.
+    expect(stderr).not.toContain("Failed to load config file");
     expect(stderr).not.toContain("Error running sync");
+  });
+
+  // systemd, docker, CI, `< /dev/null`: Ink printed "Raw mode is not
+  // supported" with a stack and the process exited 0 having synced nothing.
+  it("refuses to start the dashboard without a terminal and points at --runOnce", async () => {
+    mocks.hasInteractiveTerminal.mockReturnValue(false);
+
+    expect(await runAndCaptureExit()).toBe(1);
+
+    const stderr = errors.join("\n");
+    expect(stderr).toContain("needs a terminal");
+    expect(stderr).toContain("--runOnce");
+    expect(mocks.constructService).not.toHaveBeenCalled();
+  });
+
+  it("runs a one-shot sync without a terminal", async () => {
+    mocks.hasInteractiveTerminal.mockReturnValue(false);
+    process.argv = ["node", "sync-worktrees", "--config", "/test/sync-worktrees.config.js", "--runOnce"];
+
+    expect(await runAndCaptureExit()).toBeUndefined();
+
+    expect(errors.join("\n")).not.toContain("needs a terminal");
+    expect(mocks.constructService).toHaveBeenCalledTimes(1);
+  });
+
+  it("--debug turns debug on for every repository, over the config", async () => {
+    process.argv = ["node", "sync-worktrees", "--config", "/test/sync-worktrees.config.js", "--runOnce", "--debug"];
+
+    expect(await runAndCaptureExit()).toBeUndefined();
+
+    expect(mocks.constructService).toHaveBeenCalledWith(expect.objectContaining({ name: "app", debug: true }));
   });
 
   // A bug in this tool has nothing useful to say in one line, so it keeps its
@@ -184,5 +223,27 @@ describe("sync-worktrees run error reporting", () => {
     expect(stderr).toContain("Error loading config file");
     expect(stderr).not.toContain("s3cr3t-token");
     expect(stderr).toContain("https://***@example.com/org/repo.git");
+  });
+});
+
+// bin/sync-worktrees.js is what runs in normal use, and its handler printed the
+// raw value: util.inspect of a simple-git failure includes `task.commands`,
+// remote URL and any token in it.
+describe("reportUnhandledError (the bin shim's last-resort handler)", () => {
+  it("scrubs a credential-bearing URL from the message, stack and inspected properties", () => {
+    const lines: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => void lines.push(args.join(" ")));
+    const error = Object.assign(new Error("fatal: https://ci-bot:s3cr3t-token@example.com/org/repo.git"), {
+      task: { commands: ["fetch", "https://ci-bot:s3cr3t-token@example.com/org/repo.git"] },
+    });
+
+    reportUnhandledError(error);
+    vi.restoreAllMocks();
+
+    const output = lines.join("\n");
+    expect(output).toContain("❌ Unhandled error:");
+    expect(output).toContain("https://***@example.com/org/repo.git");
+    expect(output).toContain("commands");
+    expect(output).not.toContain("s3cr3t-token");
   });
 });

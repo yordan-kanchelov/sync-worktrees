@@ -837,7 +837,9 @@ export class GitService {
 
   async fetchAll(): Promise<void> {
     this.assertInitialized();
-    this.logger.info("Fetching latest data from remote...");
+    // debug: the sync runner announces this as its "Step 1", so at info level
+    // every sync printed the same line twice.
+    this.logger.debug("Fetching latest data from remote...");
     await this.fetchFromAnchor(["--all", "--prune", "--progress"]);
   }
 

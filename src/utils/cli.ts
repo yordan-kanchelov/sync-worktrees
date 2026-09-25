@@ -9,7 +9,7 @@ export const CLI_COMMANDS = {
 } as const;
 
 export type CliOptions =
-  | { command: typeof CLI_COMMANDS.RUN; config?: string; runOnce: boolean }
+  | { command: typeof CLI_COMMANDS.RUN; config?: string; runOnce: boolean; debug: boolean }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
   | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string }
   | ({ command: typeof CLI_COMMANDS.TRASH; config?: string } & TrashCliOptions);
@@ -46,12 +46,18 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
             type: "boolean",
             description: "Run a sync once and exit, overriding config runOnce settings for this invocation.",
             default: false,
+          })
+          .option("debug", {
+            type: "boolean",
+            description: "Log debug output and full error details, overriding config debug settings.",
+            default: false,
           }),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.RUN,
           config: args.config,
           runOnce: args.runOnce,
+          debug: args.debug,
         };
       },
     )
@@ -188,7 +194,10 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
     })
     .help()
     .alias("help", "h")
-    .version()
+    // yargs would otherwise look for package.json next to its own install
+    // directory, which from a bundled or pnpm-installed copy is not ours.
+    .version(__SYNC_WORKTREES_VERSION__)
+    .alias("version", "V")
     .parseSync();
 
   if (!parsed) {
