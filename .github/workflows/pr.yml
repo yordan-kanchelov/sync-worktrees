@@ -9,9 +9,16 @@ on:
     paths-ignore:
       - "*.md"
       - "LICENSE"
-      - "CNAME"
       - "assets/**"
       - "site/**"
+
+permissions:
+  contents: read
+
+# A new push to the same PR supersedes the run in progress; there is nothing to learn from finishing it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   check-changeset:
@@ -22,7 +29,7 @@ jobs:
       has-changeset: ${{ steps.check.outputs.has-changeset }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -34,8 +41,9 @@ jobs:
       - name: Check for changeset
         id: check
         run: |
-          # Check if this PR touches any code files
-          git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.(ts|tsx|js|cjs|mjs|json)$' > /dev/null || {
+          # Check if this PR touches any code files. site/ is excluded: it is not part of the
+          # package, and its own package.json/lockfile would otherwise demand a changeset.
+          git diff --name-only origin/${{ github.base_ref }}...HEAD -- . ':(exclude)site/' | grep -E '\.(ts|tsx|js|cjs|mjs|json)$' > /dev/null || {
             echo "No code changes detected, skipping changeset check"
             echo "has-changeset=skip" >> $GITHUB_OUTPUT
             exit 0
@@ -52,15 +60,17 @@ jobs:
           fi
 
   lint-and-test:
-    name: Lint, Type Check & Test (Node ${{ matrix.node-version }})
-    runs-on: ubuntu-latest
+    # The Ubuntu leg keeps its original name, so an existing required status check still matches it.
+    name: Lint, Type Check & Test (Node ${{ matrix.node-version }}${{ matrix.os != 'ubuntu-latest' && format(', {0}', matrix.os) || '' }})
+    runs-on: ${{ matrix.os }}
     needs: check-changeset
     if: ${{ !cancelled() && needs.check-changeset.result != 'failure' && needs.check-changeset.outputs.has-changeset != 'false' }}
     strategy:
-      # Kept as a matrix of one: a failure on one runtime must not hide the result on the other
-      # if a second version is ever added back.
+      # A failure on one OS must not hide the result on the other.
       fail-fast: false
       matrix:
+        # The package declares `os: ["darwin", "linux"]`, so both are tested.
+        os: [ubuntu-latest, macos-latest]
         # 24 is the `engines.node` minimum and the version the release job publishes with.
         # 22 was dropped when the floor was raised: testing a runtime the package refuses to
         # install on is noise, and a `.ts` config relies on type stripping being on by default.
@@ -69,7 +79,7 @@ jobs:
         node-version: [24]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Environment
         uses: ./.github/actions/setup-node-pnpm
@@ -98,9 +108,9 @@ jobs:
 
       - name: Upload Coverage Reports
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          # upload-artifact@v4 rejects a second upload to the same name within a run, so each matrix leg gets its own.
-          name: coverage-report-node${{ matrix.node-version }}
+          # upload-artifact rejects a second upload to the same name within a run, so each matrix leg gets its own.
+          name: coverage-report-${{ matrix.os }}-node${{ matrix.node-version }}
           path: coverage/
           retention-days: 7
