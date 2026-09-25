@@ -922,10 +922,11 @@ One standing security item, which is the only entry here flagged as such:
   recoverable at '<ref>' (<oid>)" through the repo logger AND the CLI prints "Commits kept at
   '<ref>' (<oid>)". Same ref, same oid, twice. The real fix is a quiet-by-default logger for
   one-shot commands — service `info` logs interleaving with CLI output is the underlying issue.
-- `--restore ""` / `--purge ""` fall through to a listing and exit 0 (truthiness check), so a script
+- _Resolved: an empty or blank id/name is a parse error (exit 1) in both the subcommand and the deprecated flag
+  forms, and dispatch is on a typed action rather than on truthiness._ `--restore ""` / `--purge ""` fall through to a listing and exit 0 (truthiness check), so a script
   running `--purge "$ID"` with an unset variable gets a table and a success exit. On a destructive
   flag that deserves an explicit rejection.
-- The `--wait` announcement tests `options.restore !== undefined` while dispatch tests truthiness,
+- _Resolved: the announcement and the dispatch both read the one parsed action._ The `--wait` announcement tests `options.restore !== undefined` while dispatch tests truthiness,
   so `--restore "" --wait` announces a wait and then prints a listing.
 - `purgeAll` in `reapUnlocked` is now a misnomer — it means "selection-based", not "all", and drives
   the audit action, the expiry skip and the wording. Rename to `isSelection`.
@@ -939,7 +940,7 @@ One standing security item, which is the only entry here flagged as such:
   `wait: true`. Harmless for a one-shot CLI, confusing to read.
 - `runList`/`runSync` catch broadly and `process.exit(1)`; `trash` now uses a narrow catch plus
   `process.exitCode`. Converging them is a small separate cleanup.
-- `--purge` takes one id, not a list — clearing several entries means one confirmation each.
+- _Resolved: `trash purge --all` purges every listed entry behind one typed `purge <count>`._ `--purge` takes one id, not a list — clearing several entries means one confirmation each.
 
 ## T90 — real-git trash coverage (leftovers, not done)
 - `restoreAsWorktree` calls `createBranchAt` OUTSIDE its own try/catch, so when the pinned commit is
@@ -1394,7 +1395,8 @@ Related, and FIXED by T93: `runList` and `runSync`'s load catch previously print
 
 ## T94 + T96 follow-ups
 
-- **FU-T94-1. `trash --filter`'s `-f` alias is unpinned** — deleting it fails no test (same for
+- **FU-T94-1. `trash --filter`'s `-f` alias is unpinned** — _Resolved for `trash`: the subcommand parse tests use
+  `-f`._ Deleting it fails no test (same for
   `list`). The README's new text does not claim short aliases for `trash`, so nothing is
   contradicted, but the alias could vanish silently.
 - **FU-T94-2. `repo.branch = branch.trim()` is unpinned** — removing the trim survives. Whitespace
@@ -1402,7 +1404,8 @@ Related, and FIXED by T93: `runList` and `runSync`'s load catch previously print
 - **FU-T94-3.** The init URL validator still calls `safeRepoName(value)` on the RAW string. Harmless
   only because `extractRepoNameFromUrl` trims internally. Inconsistent with the two sibling checks
   in the same validator, which now read `value.trim()`.
-- **FU-T94-4.** `trash --wait` on a bare listing parses and does nothing — no `.conflicts()` against
+- **FU-T94-4.** _Resolved for the subcommands: `--wait` exists only on `trash restore` and `trash purge`, so
+  `trash list --wait` is an unknown argument; the deprecated bare form keeps its old leniency._ `trash --wait` on a bare listing parses and does nothing — no `.conflicts()` against
   the no-op listing, and `lockWaitMs` is read only by restore/purge. Harmless; the README wording
   deliberately avoids over-promising ("applies to --restore and --purge" rather than "is only valid
   with").

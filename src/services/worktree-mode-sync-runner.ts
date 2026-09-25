@@ -267,7 +267,7 @@ export class WorktreeModeSyncRunner {
 
   // A diverged replace whose replacement worktree was never created leaves the
   // trashed payload as the only copy of that branch's work. Reserving the branch
-  // keeps sync from taking `originalPath` before the user can `trash --restore`.
+  // keeps sync from taking `originalPath` before the user can `trash restore`.
   //
   // Three deliberate narrowings, each of which was a way to strand a branch:
   //  - `replacedAt` set means the replacement exists, so the reserve is spent.
@@ -1590,7 +1590,7 @@ export class WorktreeModeSyncRunner {
   3. Discard changes: ${
     keepRef
       ? "use the TUI worktree status view so the keep ref is released safely"
-      : `restore it first with 'sync-worktrees trash --restore' if you want it back, then delete the entry`
+      : `restore it first with 'sync-worktrees trash restore <id>' if you want it back, then delete the entry`
   }
 
   Original worktree location: ${originalPath}`,

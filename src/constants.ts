@@ -78,7 +78,7 @@ export const DEFAULT_CONFIG = {
   CLONE_TIMEOUT_MS: 900_000,
   LOCK_STALE_MS: 600_000,
   LOCK_UPDATE_MS: 30_000,
-  // Budget `sync-worktrees trash --wait` spends on a repository lock another
+  // Budget `sync-worktrees trash restore|purge --wait` spends on a repository lock another
   // process holds. Long enough to outlast an ordinary sync tick, short enough
   // that a scripted invocation that will never get the lock still terminates
   // and reports why — this is a bound, not "block until it frees up".

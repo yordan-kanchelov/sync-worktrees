@@ -356,11 +356,16 @@ Subcommands:
 - `sync-worktrees trash` inspects and recovers reversible removals for exactly one worktree-mode repository:
 
   ```bash
-  sync-worktrees trash [--config <path>] [--filter|-f <pattern>] [--json] \
-    [--restore <id> | --purge <id> | --drop-keep-ref <name> | --drop-all-keep-refs] [--wait]
+  sync-worktrees trash [list] [--json]            # the default
+  sync-worktrees trash restore <id> [--wait]
+  sync-worktrees trash purge <id> [--wait]        # or: purge --all
+  sync-worktrees trash drop-keep-ref <name>
+  sync-worktrees trash drop-all-keep-refs
   ```
 
-  Flags, listing columns and the `--json` shape:
+  Each takes `--config <path>` and `--filter|-f <pattern>`. The older flag forms (`trash --restore <id>`, `--purge`,
+  `--drop-keep-ref`, `--drop-all-keep-refs`) still work and print a one-line hint to the subcommand. Listing columns,
+  confirmations and the `--json` shape:
   [The `trash` subcommand](./docs/trash-and-recovery.md#the-trash-subcommand).
 
 - `sync-worktrees completion` prints a bash/zsh completion script for commands and flags:

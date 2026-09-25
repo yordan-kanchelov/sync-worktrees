@@ -8,6 +8,10 @@ import { fileExists } from "./file-exists";
 /** Names a config file for the CLI when `--config` is not given. The MCP server does not read it. */
 export const CONFIG_PATH_ENV_VAR = "SYNC_WORKTREES_CONFIG";
 
+/** The `--config` help text every command shares, so none of them describes discovery differently. */
+export const CONFIG_OPTION_DESCRIPTION =
+  "Path to the config file. Default: $SYNC_WORKTREES_CONFIG, else the nearest sync-worktrees.config.* in this directory or a parent (up to your home directory).";
+
 /** Where the CLI got its config path from, in precedence order. */
 export type ConfigPathSource = "flag" | "env" | "discovered";
 
