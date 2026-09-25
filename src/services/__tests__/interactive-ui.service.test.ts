@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppEventEmitter } from "../../utils/app-events";
 import { calculateDirectorySize, calculateSyncDiskSpace, formatBytes } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
+import { RefScanScope } from "../worktree-status.service";
 
 import type { Config } from "../../types";
 import { WorktreeSyncService } from "../worktree-sync.service";
@@ -2558,7 +2559,11 @@ describe("InteractiveUIService", () => {
         expect(statuses).toHaveLength(1);
         expect(statuses[0].path).toBe("/test/clone");
         expect(statuses[0].branch).toBe("main");
-        expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/clone", true);
+        expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
+          "/test/clone",
+          true,
+          expect.any(RefScanScope),
+        );
         expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
         void service.destroy();

@@ -362,14 +362,14 @@ branch refs/heads/dirty-branch
             ...mockGit,
             stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
             branch: vi.fn<any>().mockResolvedValue({ current: "old-feature" }),
-            status: vi.fn<any>().mockResolvedValue(cleanStatus),
+            status: vi.fn<any>().mockResolvedValue({ ...cleanStatus, current: "old-feature", detached: false }),
           };
         } else if (pathStr && pathStr.includes("dirty-branch")) {
           return {
             ...mockGit,
             stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
             branch: vi.fn<any>().mockResolvedValue({ current: "dirty-branch" }),
-            status: vi.fn<any>().mockResolvedValue(dirtyStatus),
+            status: vi.fn<any>().mockResolvedValue({ ...dirtyStatus, current: "dirty-branch", detached: false }),
           };
         } else if (pathStr && pathStr.includes(".bare")) {
           // For bare repo (used by addWorktree)

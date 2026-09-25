@@ -19,6 +19,7 @@ import { HookExecutionService } from "./hook-execution.service";
 import { PathResolutionService } from "./path-resolution.service";
 import type { LogOutputFn, LogLevel } from "./logger.service";
 import type { WorktreeStatusResult } from "./worktree-status.service";
+import { RefScanScope } from "./worktree-status.service";
 import { Logger } from "./logger.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/errors";
@@ -1099,11 +1100,14 @@ export class InteractiveUIService {
     // replaces dropped a rejected probe's worktree from the list entirely, so
     // the view showed fewer worktrees than the repository has and said nothing
     // about the ones it had lost.
+    //
+    // One branch/remote-ref scan for the whole refresh, not one per worktree.
+    const refScans = new RefScanScope();
     return Promise.all(
       worktrees.map((wt) =>
         limit(async (): Promise<WorktreeStatusEntry> => {
           try {
-            const status = await gitService.getFullWorktreeStatus(wt.path, true);
+            const status = await gitService.getFullWorktreeStatus(wt.path, true, refScans);
             return { branch: wt.branch, path: wt.path, status };
           } catch (error) {
             const message = getErrorMessage(error);

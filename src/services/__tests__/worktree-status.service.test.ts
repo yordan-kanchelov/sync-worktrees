@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorktreeNotCleanError } from "../../errors";
 import { setEnvVar } from "../../__tests__/test-utils";
 import { GIT_UNSAFE_ALLOWANCES } from "../../utils/git-env";
-import { WorktreeStatusService } from "../worktree-status.service";
+import { RefScanScope, WorktreeStatusService, parseRefScan } from "../worktree-status.service";
 
 import type { SimpleGit } from "simple-git";
 import type { Mock, Mocked } from "vitest";
@@ -15,9 +15,38 @@ import type { Mock, Mocked } from "vitest";
 vi.mock("fs/promises");
 vi.mock("simple-git");
 
+// The `for-each-ref` ref scan's output: each local branch with the full ref it
+// tracks ("" for none), then each remote-tracking ref as "<remote>/<branch>".
+function refScanOutput(upstreams: Record<string, string>, remoteBranches: string[]): string {
+  return [
+    ...Object.entries(upstreams).map(([branch, upstream]) => `refs/heads/${branch}\0${upstream}\0`),
+    ...remoteBranches.map((remoteBranch) => `refs/remotes/${remoteBranch}\0\0`),
+    "",
+  ].join("\n");
+}
+
+// `count` stashes made on main, the branch the default mocks check out.
+function stashesOnMain(count: number): any {
+  return {
+    total: count,
+    all: Array.from({ length: count }, (_, index) => ({
+      hash: `${index}`.padStart(40, "a"),
+      parents: "",
+      subject: `WIP on main: abc123 stash ${index}`,
+    })),
+  };
+}
+
 describe("WorktreeStatusService", () => {
   let service: WorktreeStatusService;
   let mockGit: Mocked<SimpleGit>;
+  // What simple-git parses off the `## <branch>...<upstream> [ahead N, behind
+  // M]` header of `git status -b`, merged into whatever a test's status mock
+  // returns: the snapshot takes the checked-out branch from here.
+  let header: { current: string | null; detached: boolean; tracking: string | null; ahead: number; behind: number };
+  // The repository-wide ref scan, kept apart from `raw` so the per-worktree
+  // subcommand assertions below see only per-worktree commands.
+  let mockForEachRef: Mock<(args: string[]) => Promise<string>>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -38,7 +67,14 @@ describe("WorktreeStatusService", () => {
       env: vi.fn<any>().mockReturnThis(),
     } as any;
 
-    (simpleGit as unknown as Mock).mockReturnValue(mockGit);
+    header = { current: "main", detached: false, tracking: "origin/main", ahead: 0, behind: 0 };
+    mockForEachRef = vi.fn(async () => refScanOutput({ main: "refs/remotes/origin/main" }, ["origin/main"]));
+
+    (simpleGit as unknown as Mock).mockReturnValue({
+      ...mockGit,
+      status: async (...args: any[]) => ({ ...header, ...(await (mockGit.status as any)(...args)) }),
+      raw: (args: string[]) => (args[0] === "for-each-ref" ? mockForEachRef(args) : (mockGit.raw as any)(args)),
+    });
   });
 
   // The revision every `rev-list --count <rev> --not --remotes` probe was
@@ -189,20 +225,10 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
-          return "origin/main\n";
-        }
         if (firstArg[0] === "submodule") {
           return "";
         }
         return "0\n";
-      }) as any);
-      mockGit.branch.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg && firstArg[0] === "-r") {
-          return { all: ["origin/main"] } as any;
-        }
-        return { current: "main", detached: false } as any;
       }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
@@ -234,7 +260,7 @@ describe("WorktreeStatusService", () => {
         not_added: [],
       } as any);
       mockGit.raw.mockResolvedValue("3\n");
-      mockGit.stashList.mockResolvedValue({ total: 1 } as any);
+      mockGit.stashList.mockResolvedValue(stashesOnMain(1));
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
 
@@ -257,22 +283,12 @@ describe("WorktreeStatusService", () => {
       } as any);
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
-          return "origin/main\n";
-        }
         if (firstArg[0] === "submodule") {
           return "";
         }
         return "0\n";
       }) as any);
-      mockGit.branch.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg && firstArg[0] === "-r") {
-          return { all: ["origin/main"] } as any;
-        }
-        return { current: "main", detached: false } as any;
-      }) as any);
-      mockGit.stashList.mockResolvedValue({ total: 1 } as any);
+      mockGit.stashList.mockResolvedValue(stashesOnMain(1));
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
       (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
         if (target === "/test/worktree") return undefined;
@@ -365,20 +381,10 @@ describe("WorktreeStatusService", () => {
         } as any);
         mockGit.raw.mockImplementation((async (...args: any[]) => {
           const firstArg = Array.isArray(args[0]) ? args[0] : args;
-          if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
-            return "origin/main\n";
-          }
           if (firstArg[0] === "submodule") {
             return submoduleStatus;
           }
           return "0\n";
-        }) as any);
-        mockGit.branch.mockImplementation((async (...args: any[]) => {
-          const firstArg = Array.isArray(args[0]) ? args[0] : args;
-          if (firstArg && firstArg[0] === "-r") {
-            return { all: ["origin/main"] } as any;
-          }
-          return { current: "main", detached: false } as any;
         }) as any);
         mockGit.stashList.mockResolvedValue({ total: 0 } as any);
         (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
@@ -451,22 +457,33 @@ describe("WorktreeStatusService", () => {
   });
 
   // upstreamGone and the any-remote unpushed probe come from the same snapshot
-  // getFullWorktreeStatus reads for every other field.
+  // getFullWorktreeStatus reads for every other field. The branch comes off
+  // the status header; what it tracks and whether that ref exists come off
+  // the repository's ref scan.
   describe("getFullWorktreeStatus upstream and unpushed probes", () => {
-    const setupWorktree = (opts: { upstream: string | Error; remoteBranches: string[]; detached?: boolean }): void => {
-      mockGit.branch.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg && firstArg[0] === "-r") return { all: opts.remoteBranches } as any;
-        return opts.detached
-          ? ({ current: "", detached: true } as any)
-          : ({ current: "feature", detached: false } as any);
-      }) as any);
+    const setupWorktree = (opts: {
+      // The full ref branch "feature" tracks, "" for none.
+      upstream: string;
+      remoteBranches: string[];
+      localBranches?: string[];
+      detached?: boolean;
+      ahead?: number;
+      behind?: number;
+    }): void => {
+      header = opts.detached
+        ? { current: "HEAD", detached: true, tracking: null, ahead: 0, behind: 0 }
+        : {
+            current: "feature",
+            detached: false,
+            tracking: opts.upstream.replace(/^refs\/(heads|remotes)\//, "") || null,
+            ahead: opts.ahead ?? 0,
+            behind: opts.behind ?? 0,
+          };
+      const upstreams: Record<string, string> = { feature: opts.upstream };
+      for (const branch of opts.localBranches ?? []) upstreams[branch] = "";
+      mockForEachRef.mockResolvedValue(refScanOutput(upstreams, opts.remoteBranches));
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
-          if (opts.upstream instanceof Error) throw opts.upstream;
-          return `${opts.upstream}\n`;
-        }
         if (firstArg[0] === "submodule") return "";
         return "0\n";
       }) as any);
@@ -476,29 +493,44 @@ describe("WorktreeStatusService", () => {
         .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
     };
 
-    it("reports the upstream as gone when it is missing from the remote branches", async () => {
-      setupWorktree({ upstream: "origin/feature", remoteBranches: ["origin/main"] });
+    it("reports the upstream as gone when it is missing from the remote-tracking refs", async () => {
+      setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/main"] });
 
       const status = await service.getFullWorktreeStatus("/test/worktree");
 
       expect(status.upstreamGone).toBe(true);
       expect(status.reasons).toContain("upstream gone");
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", "feature@{upstream}"]);
+    });
+
+    // FU-T101-2: a pruned upstream makes `rev-parse <b>@{upstream}` exit 128,
+    // so the name the flag needs never arrived. The scan names the configured
+    // upstream whether or not its ref exists, and `git status` prints `[gone]`
+    // with 0/0 there -- which must not read as "in sync".
+    it("reports a pruned upstream as gone with no divergence, not as level", async () => {
+      setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/main"], ahead: 0 });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(status.upstreamGone).toBe(true);
+      expect(status.divergence).toBeNull();
     });
 
     it("does not report the upstream as gone while it still exists on the remote", async () => {
-      setupWorktree({ upstream: "origin/feature", remoteBranches: ["origin/main", "origin/feature"] });
+      setupWorktree({
+        upstream: "refs/remotes/origin/feature",
+        remoteBranches: ["origin/main", "origin/feature"],
+        ahead: 2,
+        behind: 1,
+      });
 
       const status = await service.getFullWorktreeStatus("/test/worktree");
 
       expect(status.upstreamGone).toBe(false);
+      expect(status.divergence).toEqual({ ahead: 2, behind: 1 });
     });
 
     it("does not report the upstream as gone when none is configured", async () => {
-      setupWorktree({
-        upstream: new Error("fatal: no upstream configured for branch 'feature'"),
-        remoteBranches: ["origin/main"],
-      });
+      setupWorktree({ upstream: "", remoteBranches: ["origin/main"] });
 
       const status = await service.getFullWorktreeStatus("/test/worktree");
 
@@ -506,17 +538,95 @@ describe("WorktreeStatusService", () => {
       expect(status.divergence).toBeNull();
     });
 
-    it("never reports a detached HEAD's upstream as gone", async () => {
-      setupWorktree({ upstream: "origin/feature", remoteBranches: ["origin/main"], detached: true });
+    // FU-T101-1: `branch.feature.remote = .` tracks refs/heads/main, which no
+    // remote-tracking list will ever contain.
+    it("does not report a branch tracking an existing local branch as gone", async () => {
+      setupWorktree({
+        upstream: "refs/heads/main",
+        remoteBranches: ["origin/main"],
+        localBranches: ["main"],
+        ahead: 1,
+      });
 
       const status = await service.getFullWorktreeStatus("/test/worktree");
 
       expect(status.upstreamGone).toBe(false);
-      expect(mockGit.raw).not.toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", expect.anything()]);
+      expect(status.reasons).not.toContain("upstream gone");
+      expect(status.divergence).toEqual({ ahead: 1, behind: 0 });
+    });
+
+    it("reports a branch tracking a deleted local branch as gone", async () => {
+      setupWorktree({ upstream: "refs/heads/base", remoteBranches: ["origin/main"] });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(status.upstreamGone).toBe(true);
+      expect(status.divergence).toBeNull();
+    });
+
+    // No remote-tracking refs at all may be a failed fetch rather than a
+    // deletion: fail closed rather than labelling every worktree stale.
+    it("does not call a remote upstream gone when the scan saw no remote-tracking refs", async () => {
+      setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: [] });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(status.upstreamGone).toBe(false);
+      expect(status.divergence).toBeNull();
+    });
+
+    it("cannot say anything about the upstream when the ref scan fails", async () => {
+      setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/main"] });
+      mockForEachRef.mockRejectedValue(new Error("fatal: bad object"));
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const status = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(status.upstreamGone).toBe(false);
+      expect(status.divergence).toBeNull();
+      consoleSpy.mockRestore();
+    });
+
+    it("never reports a detached HEAD's upstream as gone", async () => {
+      setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/main"], detached: true });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(status.upstreamGone).toBe(false);
+      expect(status.divergence).toBeNull();
+    });
+
+    // The branch, whether HEAD is detached and what the branch tracks are all
+    // known without a process of their own.
+    it("spawns no `git branch`, `branch -r` or `rev-parse @{upstream}` per worktree", async () => {
+      setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/feature"] });
+
+      await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(mockGit.branch).not.toHaveBeenCalled();
+      expect(gitSubcommands()).not.toContain("rev-parse");
+      expect(gitSubcommands().sort()).toEqual(["rev-list", "submodule"]);
+      expect(mockForEachRef).toHaveBeenCalledTimes(1);
+    });
+
+    // A failed status leaves the branch unknown: not detached (which would
+    // waive the unpushed gate) and with no branch to probe, so unpushed.
+    it("fails closed on unpushed commits when status cannot be read", async () => {
+      setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/feature"] });
+      mockGit.status.mockRejectedValue(new Error("fatal: index file corrupt"));
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const status = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(status.hasUnpushedCommits).toBe(true);
+      expect(status.canRemove).toBe(false);
+      expect(status.reasons).not.toContain("detached HEAD");
+      expect(status.divergence).toBeNull();
+      consoleSpy.mockRestore();
     });
 
     it("treats a failed any-remote unpushed probe as unpushed commits (conservative)", async () => {
-      setupWorktree({ upstream: "origin/feature", remoteBranches: ["origin/feature"] });
+      setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/feature"] });
       const baseRaw = mockGit.raw.getMockImplementation() as (...args: any[]) => Promise<string>;
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
@@ -536,7 +646,7 @@ describe("WorktreeStatusService", () => {
 
   describe("hasStashedChanges", () => {
     it("should return true when stash exists", async () => {
-      mockGit.stashList.mockResolvedValue({ total: 2 } as any);
+      mockGit.stashList.mockResolvedValue(stashesOnMain(2));
 
       const result = await service.hasStashedChanges("/test/worktree");
 
@@ -635,11 +745,21 @@ describe("WorktreeStatusService", () => {
         expect(revListCalls()).toEqual([]);
       });
 
+      // During a rebase or bisect `git branch` prints `* (no branch, rebasing
+      // feature/a)`, which simple-git parses as a checked-out branch named
+      // "(no". Matching stashes against that name counted none of them.
+      it("counts every named stash when `git branch` reports a rebase in progress", async () => {
+        mockGit.branch.mockResolvedValue({ current: "(no", detached: false } as any);
+        mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on feature/a: abc123 msg" }));
+
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
+      });
+
       it("reports only this worktree's stashes in the status details", async () => {
-        mockGit.branch.mockImplementation((async (args?: string[]) => {
-          if (Array.isArray(args) && args[0] === "-r") return { all: ["origin/feature/a"] } as any;
-          return { current: "feature/a", detached: false } as any;
-        }) as any);
+        header = { current: "feature/a", detached: false, tracking: "origin/feature/a", ahead: 0, behind: 0 };
+        mockForEachRef.mockResolvedValue(
+          refScanOutput({ "feature/a": "refs/remotes/origin/feature/a" }, ["origin/feature/a"]),
+        );
         mockGit.stashList.mockResolvedValue(
           listing(
             { subject: "WIP on main: abc123 msg" },
@@ -656,6 +776,41 @@ describe("WorktreeStatusService", () => {
 
         expect(result.hasStashedChanges).toBe(true);
         expect(result.details?.stashCount).toBe(1);
+      });
+
+      // `git status -b` reports a rebase as `## HEAD (no branch)`: detached.
+      // The stashes made before it name the branch being rebased, so while an
+      // operation is in progress the branch reads as unknown, not as a plain
+      // detached HEAD that owns no named stash.
+      it("counts named stashes during a rebase, whose HEAD reads as detached", async () => {
+        header = { current: "HEAD", detached: true, tracking: null, ahead: 0, behind: 0 };
+        (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+        mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on feature/a: abc123 msg" }));
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (target === "/test/worktree" || String(target).endsWith("rebase-merge")) return undefined;
+          throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
+        });
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.details?.operationType).toBe("rebase");
+        expect(result.details?.stashCount).toBe(1);
+        expect(result.hasStashedChanges).toBe(true);
+      });
+
+      it("does not count another branch's stash against a plain detached HEAD", async () => {
+        header = { current: "HEAD", detached: true, tracking: null, ahead: 0, behind: 0 };
+        (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+        mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on feature/a: abc123 msg" }));
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (target === "/test/worktree") return undefined;
+          throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
+        });
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.details?.stashCount).toBe(0);
+        expect(result.hasStashedChanges).toBe(false);
       });
     });
   });
@@ -808,7 +963,7 @@ describe("WorktreeStatusService", () => {
         not_added: [],
       } as any);
       mockGit.raw.mockResolvedValue("3\n");
-      mockGit.stashList.mockResolvedValue({ total: 1 } as any);
+      mockGit.stashList.mockResolvedValue(stashesOnMain(1));
       (fs.access as Mock<any>)
         .mockResolvedValueOnce(undefined)
         .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
@@ -858,7 +1013,7 @@ describe("WorktreeStatusService", () => {
         not_added: [],
       } as any);
       mockGit.raw.mockResolvedValue("2\n");
-      mockGit.stashList.mockResolvedValue({ total: 1 } as any);
+      mockGit.stashList.mockResolvedValue(stashesOnMain(1));
       (fs.access as Mock<any>)
         .mockResolvedValueOnce(undefined)
         .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
@@ -881,7 +1036,7 @@ describe("WorktreeStatusService", () => {
         not_added: [],
       } as any);
       mockGit.raw.mockResolvedValue("2\n");
-      mockGit.stashList.mockResolvedValue({ total: 1 } as any);
+      mockGit.stashList.mockResolvedValue(stashesOnMain(1));
       (fs.access as Mock<any>)
         .mockResolvedValueOnce(undefined)
         .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
@@ -955,20 +1110,10 @@ describe("WorktreeStatusService", () => {
       mockGit.status.mockResolvedValue(cleanStatus as any);
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
-          return "origin/main\n";
-        }
         if (firstArg[0] === "submodule") {
           return "";
         }
         return "0\n";
-      }) as any);
-      mockGit.branch.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg && firstArg[0] === "-r") {
-          return { all: ["origin/main"] } as any;
-        }
-        return { current: "main", detached: false } as any;
       }) as any);
       mockGit.stashList.mockResolvedValue({ total: 0 } as any);
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
@@ -995,13 +1140,7 @@ describe("WorktreeStatusService", () => {
 
     it("must not report a detached-HEAD worktree as removable", async () => {
       setupCleanWorktreeMocks();
-      mockGit.branch.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg && firstArg[0] === "-r") {
-          return { all: ["origin/main"] } as any;
-        }
-        return { current: "", detached: true } as any;
-      }) as any);
+      header = { current: "HEAD", detached: true, tracking: null, ahead: 0, behind: 0 };
 
       const result = await service.getFullWorktreeStatus("/test/worktree");
 
@@ -1013,9 +1152,6 @@ describe("WorktreeStatusService", () => {
       setupCleanWorktreeMocks();
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
-          return "origin/main\n";
-        }
         if (firstArg[0] === "submodule") {
           return "";
         }
@@ -1034,13 +1170,7 @@ describe("WorktreeStatusService", () => {
 
     it("must probe the worktree's HEAD, never the bare branch name, for unpushed commits", async () => {
       setupCleanWorktreeMocks();
-      mockGit.branch.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg && firstArg[0] === "-r") {
-          return { all: ["origin/main"] } as any;
-        }
-        return { current: "release-1", detached: false } as any;
-      }) as any);
+      header = { current: "release-1", detached: false, tracking: "origin/release-1", ahead: 0, behind: 0 };
 
       await service.getFullWorktreeStatus("/test/worktree");
 
@@ -1088,18 +1218,12 @@ describe("WorktreeStatusService", () => {
 
     const setupGoneUpstreamWorktree = (opts: { headIsAncestorOfTip: boolean; remoteBranches?: string[] }): void => {
       mockGit.status.mockResolvedValue(cleanStatus as any);
-      mockGit.branch.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg && firstArg[0] === "-r") {
-          return { all: opts.remoteBranches ?? ["origin/main"] } as any;
-        }
-        return { current: "feature", detached: false } as any;
-      }) as any);
+      header = { current: "feature", detached: false, tracking: "origin/feature", ahead: 0, behind: 0 };
+      mockForEachRef.mockResolvedValue(
+        refScanOutput({ feature: "refs/remotes/origin/feature" }, opts.remoteBranches ?? ["origin/main"]),
+      );
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
-          throw new Error("fatal: ambiguous argument 'feature@{upstream}': unknown revision or path");
-        }
         if (firstArg[0] === "rev-list" && firstArg[2] === "squashtip123..HEAD") {
           return opts.headIsAncestorOfTip ? "0\n" : "5\n";
         }
@@ -1151,9 +1275,6 @@ describe("WorktreeStatusService", () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
-          throw new Error("fatal: ambiguous argument 'feature@{upstream}': unknown revision or path");
-        }
         if (firstArg[0] === "rev-list" && firstArg[2] === "squashtip123..HEAD") {
           throw new Error("fatal: bad revision 'squashtip123..HEAD'");
         }
@@ -1175,6 +1296,8 @@ describe("WorktreeStatusService", () => {
 
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
+      // The proof is only consulted once the ref is gone, so it is not asked for.
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["rev-list", "--count", "squashtip123..HEAD"]);
     });
 
     it("fails closed when the remote branch list is empty (fetch may have failed)", async () => {
@@ -1188,13 +1311,7 @@ describe("WorktreeStatusService", () => {
 
     it("never applies the override to a detached HEAD", async () => {
       setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
-      mockGit.branch.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg && firstArg[0] === "-r") {
-          return { all: ["origin/main"] } as any;
-        }
-        return { current: "", detached: true } as any;
-      }) as any);
+      header = { current: "HEAD", detached: true, tracking: null, ahead: 0, behind: 0 };
 
       const status = await service.getFullWorktreeStatus("/test/worktree", false, undefined, recordedTip);
 
@@ -1279,6 +1396,109 @@ describe("WorktreeStatusService", () => {
       const env = (mockGit.env as Mock).mock.calls[0]?.[0] as NodeJS.ProcessEnv;
       expect(env).toMatchObject({ PATH: process.env.PATH, GIT_TERMINAL_PROMPT: "0" });
       expect(env).not.toHaveProperty("GIT_LFS_SKIP_SMUDGE");
+    });
+  });
+
+  // refs/heads and refs/remotes live in the common git dir, so every worktree
+  // of a repository would list the same refs. A scope shares one scan per
+  // repository, keyed by the common dir each worktree's `.git` file leads to.
+  describe("RefScanScope", () => {
+    // /test/<repo>/<name> is a linked worktree of the bare repo /test/<repo>/.bare.
+    const linkedWorktreeFs = (): void => {
+      (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => true });
+      (fs.readFile as Mock<any>).mockImplementation(async (file: any) => {
+        const gitFile = /^\/test\/([^/]+)\/([^/]+)\/\.git$/.exec(file);
+        if (gitFile) return `gitdir: /test/${gitFile[1]}/.bare/worktrees/${gitFile[2]}\n`;
+        if (file.endsWith(`${path.sep}commondir`)) return "../..\n";
+        throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
+      });
+      (fs.access as Mock<any>).mockImplementation(async (target: any) => {
+        if (/^\/test\/[^/]+\/[^/]+$/.test(target)) return undefined;
+        throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
+      });
+      mockGit.raw.mockImplementation((async (args: string[]) => (args[0] === "submodule" ? "" : "0\n")) as any);
+    };
+
+    it("scans a repository's refs once for all of its worktrees", async () => {
+      linkedWorktreeFs();
+      const refScans = new RefScanScope();
+
+      const results = await Promise.all(
+        ["a", "b", "c", "d"].map((name) =>
+          service.getFullWorktreeStatus(`/test/app/${name}`, false, undefined, undefined, refScans),
+        ),
+      );
+
+      expect(mockForEachRef).toHaveBeenCalledTimes(1);
+      // The shared scan is the one each worktree was judged by.
+      expect(results.map((result) => result.divergence)).toEqual(Array(4).fill({ ahead: 0, behind: 0 }));
+    });
+
+    it("scans each repository separately", async () => {
+      linkedWorktreeFs();
+      const refScans = new RefScanScope();
+
+      await Promise.all(
+        ["/test/app/a", "/test/app/b", "/test/lib/a", "/test/lib/b"].map((worktreePath) =>
+          service.getFullWorktreeStatus(worktreePath, false, undefined, undefined, refScans),
+        ),
+      );
+
+      expect(mockForEachRef).toHaveBeenCalledTimes(2);
+    });
+
+    // Without a scope nothing is shared: a check that must see the refs as
+    // they are now -- the re-check right before a removal -- scans afresh.
+    it("scans per snapshot without a scope", async () => {
+      linkedWorktreeFs();
+
+      await Promise.all(["a", "b", "c"].map((name) => service.getFullWorktreeStatus(`/test/app/${name}`)));
+
+      expect(mockForEachRef).toHaveBeenCalledTimes(3);
+    });
+
+    it("scans on its own when the common dir cannot be resolved", async () => {
+      linkedWorktreeFs();
+      (fs.stat as Mock<any>).mockRejectedValue(Object.assign(new Error("EACCES"), { code: "EACCES" }));
+      const refScans = new RefScanScope();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await Promise.all(
+        ["a", "b"].map((name) =>
+          service.getFullWorktreeStatus(`/test/app/${name}`, false, undefined, undefined, refScans),
+        ),
+      );
+
+      expect(mockForEachRef).toHaveBeenCalledTimes(2);
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe("parseRefScan", () => {
+    it("keys each local branch's upstream by name and skips symrefs", () => {
+      const scan = parseRefScan(
+        [
+          "refs/heads/feature/x\0refs/remotes/origin/feature/x\0",
+          "refs/heads/local\0refs/heads/main\0",
+          "refs/heads/main\0\0",
+          "refs/remotes/origin/HEAD\0\0refs/remotes/origin/main",
+          "refs/remotes/origin/main\0\0",
+          "",
+        ].join("\n"),
+      );
+
+      expect([...scan.upstreams]).toEqual([
+        ["feature/x", "refs/remotes/origin/feature/x"],
+        ["local", "refs/heads/main"],
+        ["main", ""],
+      ]);
+      expect(scan.refs.has("refs/remotes/origin/HEAD")).toBe(false);
+      expect(scan.refs.has("refs/remotes/origin/main")).toBe(true);
+      expect(scan.hasRemoteRefs).toBe(true);
+    });
+
+    it("notes when there are no remote-tracking refs at all", () => {
+      expect(parseRefScan("refs/heads/main\0\0\n").hasRemoteRefs).toBe(false);
     });
   });
 });

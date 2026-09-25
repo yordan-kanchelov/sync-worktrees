@@ -6,7 +6,7 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { WorktreeStatusService } from "../../services/worktree-status.service";
+import { RefScanScope, WorktreeStatusService } from "../../services/worktree-status.service";
 import { createMockLogger } from "../test-utils";
 
 import type { SimpleGit } from "simple-git";
@@ -43,11 +43,14 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
   // Tracks a local branch (`branch.<name>.remote = "."`), not a remote-tracking
   // ref. `git status -b` prints the same ahead/behind header for it, and the
   // rev-list this replaced answered for it too -- so it is a real divergence,
-  // even though the upstream is nothing `git branch -r` will ever list (which
-  // is separately why upstreamGone reads true here). A guard that demanded a
-  // remote-tracking upstream would quietly turn this into null.
+  // even though the upstream is nothing `git branch -r` will ever list. A
+  // guard that demanded a remote-tracking upstream would quietly turn this
+  // into null, and judging it against the remote-tracking refs used to call
+  // it gone (FU-T101-1).
   const LOCAL_UPSTREAM = "local-upstream";
-  const BRANCHES = [AHEAD, BEHIND, DIVERGED, IN_SYNC, NO_UPSTREAM, GONE, LOCAL_UPSTREAM];
+  // Tracks a local branch that has since been deleted.
+  const LOCAL_GONE = "local-upstream-gone";
+  const BRANCHES = [AHEAD, BEHIND, DIVERGED, IN_SYNC, NO_UPSTREAM, GONE, LOCAL_UPSTREAM, LOCAL_GONE];
 
   const worktreeFor = (branch: string): string => path.join(worktreesDir, branch);
 
@@ -122,6 +125,9 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     // Each branch is main plus its own seed commit, so this one is exactly one
     // commit ahead of the local branch it now tracks.
     await simpleGit(worktreeFor(LOCAL_UPSTREAM)).raw(["branch", "--set-upstream-to=main", LOCAL_UPSTREAM]);
+    await bare.raw(["branch", "doomed-base", "main"]);
+    await simpleGit(worktreeFor(LOCAL_GONE)).raw(["branch", "--set-upstream-to=doomed-base", LOCAL_GONE]);
+    await bare.raw(["branch", "-D", "doomed-base"]);
     await simpleGit(upstream).raw(["branch", "-D", GONE]);
     await bare.fetch(["--prune", "origin"]);
 
@@ -173,7 +179,7 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
 
   // Strictly null, never undefined and never 0/0: a caller distinguishes "no
   // upstream to compare against" from "level with its upstream".
-  it.each([{ branch: NO_UPSTREAM }, { branch: GONE }])(
+  it.each([{ branch: NO_UPSTREAM }, { branch: GONE }, { branch: LOCAL_GONE }])(
     "reports $branch divergence as null rather than zero",
     async ({ branch }) => {
       const service = new WorktreeStatusService({}, createMockLogger());
@@ -203,5 +209,65 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     expect(commands.filter((command) => command.includes("--left-right"))).toEqual([]);
     // One `status` is what carries the answer, and there is only one.
     expect(commands.filter((command) => command.startsWith("status "))).toHaveLength(1);
+  });
+
+  // upstreamGone is judged against the upstream git itself derives from
+  // branch.<b>.remote/merge (see RefScan): a remote-tracking ref for a remote,
+  // a local branch for `remote = .`.
+  it.each([
+    { branch: IN_SYNC, gone: false },
+    { branch: AHEAD, gone: false },
+    { branch: NO_UPSTREAM, gone: false },
+    // FU-T101-1: a healthy branch tracking a local branch is not stale.
+    { branch: LOCAL_UPSTREAM, gone: false },
+    // FU-T101-2: a pruned upstream, where `rev-parse @{upstream}` exits 128.
+    { branch: GONE, gone: true },
+    { branch: LOCAL_GONE, gone: true },
+  ])("reports upstreamGone=$gone for $branch", async ({ branch, gone }) => {
+    const service = new WorktreeStatusService({}, createMockLogger());
+
+    const status = await service.getFullWorktreeStatus(worktreeFor(branch));
+
+    expect(status.upstreamGone).toBe(gone);
+    expect(status.reasons.includes("upstream gone")).toBe(gone);
+  });
+
+  it("confirms the pruned upstream is one `rev-parse @{upstream}` cannot name", async () => {
+    await expect(
+      simpleGit(worktreeFor(GONE)).raw(["rev-parse", "--abbrev-ref", `${GONE}@{upstream}`]),
+    ).rejects.toThrow();
+  });
+
+  // The per-tick cost: what a pass over every worktree of the repository
+  // spawns. `branch`, `branch -r` and `rev-parse @{upstream}` are gone from
+  // every snapshot, and the branch/remote-ref listing runs once for the
+  // repository when the pass shares a RefScanScope.
+  it("scans the repository's refs once per pass, not once per worktree", async () => {
+    const worktrees = BRANCHES.map(worktreeFor);
+    const probeAll = async (refScans?: RefScanScope): Promise<string[]> => {
+      await fs.writeFile(shimLog, "");
+      const service = new WorktreeStatusService({}, createMockLogger());
+      await Promise.all(
+        worktrees.map((wt) => service.getFullWorktreeStatus(wt, false, undefined, undefined, refScans)),
+      );
+      return spawnedCommands();
+    };
+    const count = (commands: string[], prefix: string): number =>
+      commands.filter((command) => command.startsWith(prefix)).length;
+
+    const shared = await probeAll(new RefScanScope());
+    const unshared = await probeAll();
+
+    expect(count(shared, "for-each-ref ")).toBe(1);
+    expect(count(unshared, "for-each-ref ")).toBe(worktrees.length);
+    for (const commands of [shared, unshared]) {
+      expect(count(commands, "status ")).toBe(worktrees.length);
+      expect(count(commands, "branch")).toBe(0);
+      expect(count(commands, "rev-parse")).toBe(0);
+    }
+    // Per worktree: status, stash list, submodule status and one unpushed
+    // rev-list; plus the one scan. It used to be seven per worktree.
+    expect(shared).toHaveLength(4 * worktrees.length + 1);
+    expect(unshared).toHaveLength(5 * worktrees.length);
   });
 });
