@@ -259,7 +259,7 @@ export default {
     expect(dirtyButCurrent).toContain("already up to date with origin/main");
     expect(dirtyButCurrent).not.toContain("working tree has local changes");
     expect(dirtyButCurrent).not.toContain("Clone-mode skips");
-    expect(dirtyButCurrent).toMatch(/Processed 1 repo: 1 synced, 0 with clone-mode skips, 0 failed/);
+    expect(dirtyButCurrent).toMatch(/Processed 1 repo in \S+: 1 synced, 0 failed/);
     // Nothing was touched: the edits are still there and HEAD did not move.
     expect(await fs.readFile(path.join(worktreeDir, "README.md"), "utf-8")).toBe("# Locally edited\n");
     expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeTick);
@@ -272,7 +272,7 @@ export default {
 
     expect(dirtyAndBehind).toContain("working tree has local changes");
     expect(dirtyAndBehind).toContain("Clone-mode skips");
-    expect(dirtyAndBehind).toMatch(/Processed 1 repo: 0 synced, 1 with clone-mode skips, 0 failed/);
+    expect(dirtyAndBehind).toMatch(/Processed 1 repo in \S+: 0 synced, 1 with clone-mode skips, 0 failed/);
     expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeTick);
   }, 90000);
 
@@ -340,7 +340,7 @@ export default {
     });
 
     const remoteBranches = execSync(`git -C "${worktreeDir}" branch -r --list`, { encoding: "utf-8" });
-    expect(output).toMatch(/Processed 1 repo: 1 synced, 0 with clone-mode skips, 0 failed/);
+    expect(output).toMatch(/Processed 1 repo in \S+: 1 synced, 0 failed/);
     expect(remoteBranches).not.toContain("origin/stale-a");
     expect(remoteBranches).not.toContain("origin/stale-c");
     expect(remoteBranches).toContain("origin/main");
@@ -383,7 +383,7 @@ export default {
       expect(output).toMatch(/is on branch 'sidebranch', expected 'master'/);
       expect(output).toContain("Clone-mode skips");
       expect(output).toMatch(/clone is on 'sidebranch', expected 'master' \(since process start\)/);
-      expect(output).toMatch(/Processed 1 repo: 0 synced, 1 with clone-mode skips, 0 failed/);
+      expect(output).toMatch(/Processed 1 repo in \S+: 0 synced, 1 with clone-mode skips, 0 failed/);
       expect(output).not.toContain("CONFIG_CLONE_BRANCH_MISMATCH");
     },
     120000,
@@ -976,7 +976,8 @@ export default {
     }
 
     expect(status).not.toBe(0);
-    expect(output).toContain("CONFIG_CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT");
+    // One line now (no inspected error, so no `code` property): the message is the assertion.
+    expect(output).toContain("it is not a primary checkout");
     expect(output).toContain(path.join(primaryDir, ".git"));
     expect(readPrimary()).toEqual(before);
   }, 60000);

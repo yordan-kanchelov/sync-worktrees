@@ -1,6 +1,8 @@
-import { inspect } from "util";
+import { inspect, stripVTControlCharacters } from "util";
 
+import { summarizeExpectedError } from "../utils/error-summary";
 import { redactSecretsInText } from "../utils/git-url";
+import { colorsEnabled } from "../utils/terminal";
 
 export type LogLevel = "info" | "warn" | "error" | "debug";
 export type LogOutputFn = (message: string, level: LogLevel) => void;
@@ -8,6 +10,8 @@ export type LogOutputFn = (message: string, level: LogLevel) => void;
 export interface LoggerOptions {
   repoName?: string;
   debug?: boolean;
+  /** Strip ANSI sequences (e.g. from hook output). Defaults to on when stdout
+   * is not a terminal or `NO_COLOR` is set; see {@link colorsEnabled}. */
   disableColors?: boolean;
   outputFn?: LogOutputFn;
   /**
@@ -26,14 +30,21 @@ export interface LoggerOptions {
 export class Logger {
   private repoName?: string;
   private debugEnabled: boolean;
+  private disableColors: boolean;
   private outputFn?: LogOutputFn;
   private quiet: boolean;
 
   constructor(options: LoggerOptions = {}) {
     this.repoName = options.repoName;
     this.debugEnabled = options.debug ?? false;
+    this.disableColors = options.disableColors ?? !colorsEnabled();
     this.outputFn = options.outputFn;
     this.quiet = options.quiet ?? false;
+  }
+
+  private scrub(text: string): string {
+    const redacted = redactSecretsInText(text);
+    return this.disableColors ? stripVTControlCharacters(redacted) : redacted;
   }
 
   private prefix(): string {
@@ -42,7 +53,7 @@ export class Logger {
 
   debug(message: string, ...args: unknown[]): void {
     if (!this.debugEnabled || this.quiet) return;
-    const formattedMessage = redactSecretsInText(this.prefix() + this.formatMessage(message, args));
+    const formattedMessage = this.scrub(this.prefix() + this.formatMessage(message, args));
     if (this.outputFn) {
       this.outputFn(formattedMessage, "debug");
     } else {
@@ -52,7 +63,7 @@ export class Logger {
 
   info(message: string, ...args: unknown[]): void {
     if (this.quiet) return;
-    const formattedMessage = redactSecretsInText(this.prefix() + this.formatMessage(message, args));
+    const formattedMessage = this.scrub(this.prefix() + this.formatMessage(message, args));
     if (this.outputFn) {
       this.outputFn(formattedMessage, "info");
     } else {
@@ -61,7 +72,7 @@ export class Logger {
   }
 
   warn(message: string, ...args: unknown[]): void {
-    const formattedMessage = redactSecretsInText(this.prefix() + this.formatMessage(message, args));
+    const formattedMessage = this.scrub(this.prefix() + this.formatMessage(message, args));
     if (this.outputFn) {
       this.outputFn(formattedMessage, "warn");
     } else {
@@ -77,23 +88,25 @@ export class Logger {
       // eslint-disable-next-line @typescript-eslint/no-base-to-string -- non-Error values are logged in their default string form
       formattedMessage += ` ${String(error)}`;
     }
-    formattedMessage = redactSecretsInText(formattedMessage);
+    formattedMessage = this.scrub(formattedMessage);
     if (this.outputFn) {
       this.outputFn(formattedMessage, "error");
     } else if (error) {
       // console.error(message, error) would hand the raw value to util.inspect,
       // whose output (message, stack, simple-git's `task.commands`, ...) can
       // carry a credential-bearing URL. Inspect it here so it can be scrubbed.
-      const detail = typeof error === "string" ? error : inspect(error);
-      console.error(redactSecretsInText(`${this.prefix()}${message} ${detail}`));
+      // A git or typed failure is one line unless debug asks for everything.
+      const summary = this.debugEnabled ? null : summarizeExpectedError(error);
+      const detail = summary ?? (typeof error === "string" ? error : inspect(error));
+      console.error(this.scrub(`${this.prefix()}${message} ${detail}`));
     } else {
-      console.error(redactSecretsInText(this.prefix() + message));
+      console.error(this.scrub(this.prefix() + message));
     }
   }
 
   table(content: string): void {
     if (this.quiet) return;
-    const formattedMessage = redactSecretsInText("\n" + content + "\n");
+    const formattedMessage = this.scrub("\n" + content + "\n");
     if (this.outputFn) {
       this.outputFn(formattedMessage, "info");
     } else {
@@ -118,6 +131,7 @@ export class Logger {
     return new Logger({
       repoName: this.repoName,
       debug: this.debugEnabled,
+      disableColors: this.disableColors,
       quiet: this.quiet,
       outputFn: (msg: string, level: LogLevel): void => {
         if (upstream) {

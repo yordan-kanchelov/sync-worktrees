@@ -163,7 +163,8 @@ sync-worktrees list --config ./config.js --filter "frontend-*"
 
 - **Laptop.** Leave the TUI running in a `tmux` or `screen` window. A tick the machine slept through is not replayed;
   the next tick, or `s`, runs the cycle, and `syncOnStart` covers restarts.
-- **Build box, no terminal.** There is no headless daemon: without `--run-once` the TUI is what runs. Put
+- **Build box, no terminal.** There is no headless daemon: without `--run-once` the TUI is what runs, and when stdin
+  or stdout is not a terminal (piping through `tee` included) it refuses to start and exits 1. Put
   `sync-worktrees --run-once --quiet` on a cron line or a systemd/launchd timer instead; `--quiet` cuts a clean run to
   its one summary line instead of a few dozen. Cron still mails that line; warnings and errors go to stderr, so
   `sync-worktrees --run-once --quiet >/dev/null` mails only when something needs attention. Two runs that overlap on
@@ -296,14 +297,19 @@ recipe for parallel agents on parallel branches: [MCP server](./docs/mcp.md).
 | ------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------ | ------- |
 | `--config`   | `-c`  | Path to JavaScript config file (auto-detected in CWD when omitted)                                                             | -       |
 | `--run-once` | -     | Run a sync once and exit, overriding the config's [`runOnce`](./docs/configuration.md#whole-file-settings) for this invocation | `false` |
+| `--debug`    | -     | Log debug output and full error details (stack, git's whole output), overriding the config's `debug`                           | `false` |
 | `--filter`   | `-f`  | Only sync repositories whose name matches (wildcards, comma-separated; same matching as `list`). Exits 1 if nothing matches    | -       |
 | `--quiet`    | `-q`  | One-shot runs: print only warnings, errors and the final summary line (the TUI ignores it)                                     | `false` |
 | `--help`     | `-h`  | Show help                                                                                                                      | -       |
-| `--version`  | -     | Print version                                                                                                                  | -       |
+| `--version`  | `-V`  | Print version                                                                                                                  | -       |
 
 Flags are kebab-case; the camelCase spellings from earlier releases (`--runOnce`, `--dropKeepRef`, `--dropAllKeepRefs`)
 keep working. `sync-worktrees sync` is an explicit name for the default command, and a mistyped command or flag gets a
 "did you mean" hint.
+
+A failed git command is reported as its one `fatal:` line; `--debug` (or `debug: true`) prints everything. Colour
+follows [`NO_COLOR`](https://no-color.org) and `FORCE_COLOR`, and is stripped from log lines when stdout is not a
+terminal.
 
 Subcommands:
 
@@ -334,6 +340,8 @@ Subcommands:
   lock (whoever holds it is syncing it) or a clone-mode skip applied. It exits **1** when any repository failed to
   initialize, failed its sync after the retries, recorded a failed action (a rejected sparse pattern, for instance), or
   could not create its lock file at all. Ctrl-C exits **130** after cleanup.
+- `sync-worktrees` without `--run-once`, and `sync-worktrees init`, exit **1** with a one-line explanation when stdin
+  or stdout is not a terminal (systemd, docker, CI, `< /dev/null`).
 - `sync-worktrees list` and `sync-worktrees --filter` exit 1 when `--filter` matches nothing or the config does not
   load; `sync-worktrees trash` exits 1 on an expected failure (unknown id, occupied destination, a lock another process
   holds, a declined confirmation) with one `❌` line.

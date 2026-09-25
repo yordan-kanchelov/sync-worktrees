@@ -11,7 +11,14 @@ export const CLI_COMMANDS = {
 } as const;
 
 export type CliOptions =
-  | { command: typeof CLI_COMMANDS.RUN; config?: string; runOnce: boolean; filter?: string; quiet: boolean }
+  | {
+      command: typeof CLI_COMMANDS.RUN;
+      config?: string;
+      runOnce: boolean;
+      debug: boolean;
+      filter?: string;
+      quiet: boolean;
+    }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
   | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string }
   | ({ command: typeof CLI_COMMANDS.TRASH; config?: string } & TrashCliOptions);
@@ -38,6 +45,7 @@ const COMMAND_NAMES = ["sync", ...SUBCOMMAND_NAMES] as const;
 const FLAG_NAMES = [
   "config",
   "run-once",
+  "debug",
   "filter",
   "quiet",
   "force",
@@ -52,7 +60,7 @@ const FLAG_NAMES = [
 ] as const;
 
 /** Root-command flags, which yargs' completion leaves out because `$0` never runs its builder there. */
-const ROOT_FLAG_NAMES = ["config", "run-once", "filter", "quiet"] as const;
+const ROOT_FLAG_NAMES = ["config", "run-once", "debug", "filter", "quiet"] as const;
 
 function toKebabCase(name: string): string {
   return name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
@@ -152,6 +160,11 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
             description: "Run a sync once and exit, overriding config runOnce settings for this invocation.",
             default: false,
           })
+          .option("debug", {
+            type: "boolean",
+            description: "Log debug output and full error details, overriding config debug settings.",
+            default: false,
+          })
           .option("filter", {
             alias: "f",
             type: "string",
@@ -168,6 +181,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           command: CLI_COMMANDS.RUN,
           config: args.config,
           runOnce: args.runOnce,
+          debug: args.debug,
           filter: args.filter,
           quiet: args.quiet,
         };
@@ -313,7 +327,10 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
     })
     .help()
     .alias("help", "h")
-    .version()
+    // yargs would otherwise look for package.json next to its own install
+    // directory, which from a bundled or pnpm-installed copy is not ours.
+    .version(__SYNC_WORKTREES_VERSION__)
+    .alias("version", "V")
     .parseSync();
 
   if (!parsed) {

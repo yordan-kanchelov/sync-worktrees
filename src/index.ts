@@ -26,6 +26,8 @@ import { getErrorMessage } from "./utils/errors";
 import { promptForInitConfig } from "./utils/interactive";
 import { maybeRegisterMcpClients } from "./utils/mcp-registration";
 import { setupSignalHandlers } from "./utils/signal-handlers";
+import { hasInteractiveTerminal } from "./utils/terminal";
+import { formatDuration } from "./utils/timing";
 import { warnIfUnitTestShortcutEnabled } from "./utils/unit-test-shortcut";
 
 import type { CloneSkipReason } from "./services/clone-sync.service";
@@ -38,6 +40,8 @@ export interface RunOptions {
   quiet?: boolean;
   /** The `--filter` the repositories were narrowed by, kept for config reloads. */
   filter?: string;
+  /** `--debug`, kept so a config reload applies it to the reloaded repositories too. */
+  debug?: boolean;
 }
 
 export async function runMultipleRepositories(
@@ -47,7 +51,11 @@ export async function runMultipleRepositories(
   options: RunOptions = {},
 ): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
-  const globalLogger = Logger.createDefault();
+  const startedAt = Date.now();
+  // Debug when any repository has it: the lines this logger prints are about
+  // those repositories, and --debug sets it on all of them.
+  const anyDebug = repositories.some((repo) => repo.debug === true);
+  const globalLogger = Logger.createDefault(undefined, anyDebug);
 
   const runOnce = configFile.defaults?.runOnce ?? false;
   // Read off the config file, not off a resolved repository: this and `runOnce`
@@ -69,7 +77,7 @@ export async function runMultipleRepositories(
     // --quiet keeps. Everything else it says under --quiet is a warning or an
     // error, so only this banner needs holding back by hand.
     if (!options.quiet) {
-      globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
+      globalLogger.info(`\n🔄 Syncing ${countOf(repositories.length, "repository", "repositories")}...`);
     }
 
     const initResults = await Promise.allSettled(
@@ -77,7 +85,10 @@ export async function runMultipleRepositories(
         limit(async () => {
           const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug, { quiet: options.quiet });
 
-          repoLogger.info(`\n📦 Repository: ${repoConfig.name}`);
+          // The blank line goes out unprefixed; "\n📦" through the repo logger
+          // printed a line holding nothing but "[name] ".
+          globalLogger.info("");
+          repoLogger.info(`📦 Repository: ${repoConfig.name}`);
           repoLogger.info(`   URL: ${redactRepoUrl(repoConfig.repoUrl)}`);
           repoLogger.info(`   Worktrees: ${repoConfig.worktreeDir}`);
           if (repoConfig.bareRepoDir) {
@@ -190,19 +201,30 @@ export async function runMultipleRepositories(
         !outcomeFailedNames.has(repoName)
       );
     }).length;
-    const processedRepoWord = repositories.length === 1 ? "repo" : "repos";
-    const skipSummaryLabel = skippedNames.size === skipsByRepo.length ? "with clone-mode skips" : "skipped";
+    const skipSummaryLabel =
+      skipsByRepo.length > 0 && skippedNames.size === skipsByRepo.length ? "with clone-mode skips" : "skipped";
     const partialSuffix = partialSkipNames.size > 0 ? ` (${partialSkipNames.size} with partial skips)` : "";
+    // Only when there are some: "0 with clone-mode skips" on a worktree-only
+    // config described a mode that was not in use.
+    const skippedPart = skippedCount > 0 ? `, ${skippedCount} ${skipSummaryLabel}` : "";
     const failedSuffix = lockUnavailableNames.size > 0 ? ` (${lockUnavailableNames.size} lock unavailable)` : "";
+    const elapsed = formatDuration(Date.now() - startedAt);
     // Under --quiet this is the one line a clean run prints, so it gets no
     // blank line to separate it from output that was never printed.
     const summarySpacer = options.quiet ? "" : "\n";
     globalLogger.info(
-      `${summarySpacer}📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced${partialSuffix}, ${skippedCount} ${skipSummaryLabel}, ${failedCount} failed${failedSuffix}`,
+      `${summarySpacer}📊 Processed ${countOf(repositories.length, "repo", "repos")} in ${elapsed}: ${successCount} synced${partialSuffix}${skippedPart}, ${failedCount} failed${failedSuffix}`,
     );
 
     if (failedCount > 0) {
       process.exitCode = 1;
+      if (!anyDebug) {
+        const cloneHint =
+          initFailures > 0
+            ? " A repository that fails to initialize usually has a wrong repoUrl or missing credentials."
+            : "";
+        globalLogger.info(`💡 Re-run with --debug (or set debug: true) for full error details.${cloneHint}`);
+      }
     }
     runOnceSignalHandle.dispose();
   } else {
@@ -215,7 +237,11 @@ export async function runMultipleRepositories(
     const uniqueSchedules = [...new Set(repositories.map((r) => r.cronSchedule))];
     const displaySchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
     const allServices = Array.from(services.values());
-    const uiService = new InteractiveUIService(allServices, configPath, displaySchedule, maxParallel);
+    // --debug was applied to `repositories` on load; the dashboard loads the
+    // config again on `r`, so it has to be told to apply it there as well.
+    const uiService = new InteractiveUIService(allServices, configPath, displaySchedule, maxParallel, undefined, {
+      debug: options.debug,
+    });
     if (options.filter) {
       uiService.setRepositoryFilter(options.filter);
     }
@@ -253,6 +279,16 @@ export async function runMultipleRepositories(
   }
 }
 
+function countOf(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+// The loader already says "Failed to load config file: ..." for a file it
+// could not evaluate; the label in front of it must not say so a second time.
+function configLoadErrorMessage(error: unknown): string {
+  return redactSecretsInText(getErrorMessage(error).replace(/^Failed to load config file: /, ""));
+}
+
 async function runList(configPath: string, filter?: string): Promise<void> {
   const configLoader = new ConfigLoaderService();
 
@@ -281,7 +317,7 @@ async function runList(configPath: string, filter?: string): Promise<void> {
       console.log("");
     });
   } catch (error) {
-    console.error("❌ Error loading config file:", redactSecretsInText(getErrorMessage(error)));
+    console.error("❌ Error loading config file:", configLoadErrorMessage(error));
     process.exit(1);
   }
 }
@@ -430,7 +466,7 @@ async function executeTrash(configPath: string, options: TrashCliOptions): Promi
   try {
     ({ repositories } = await configLoader.buildRepositories(configPath, { filter: options.filter }));
   } catch (error) {
-    throw new TrashCliError(`Error loading config file: ${getErrorMessage(error)}`);
+    throw new TrashCliError(`Error loading config file: ${configLoadErrorMessage(error)}`);
   }
   if (repositories.length !== 1) {
     throw new TrashCliError(
@@ -563,17 +599,16 @@ async function purgeTrashEntry(
 
 async function loadRunConfig(
   configPath: string,
-  runOnceOverride: boolean,
-  filter?: string,
+  overrides: { runOnce: boolean; debug: boolean; filter?: string },
 ): Promise<{ configFile: ConfigFile; repositories: RepositoryConfig[] }> {
   const configLoader = new ConfigLoaderService();
-  const { repositories, configFile } = await configLoader.buildRepositories(
-    configPath,
-    filter ? { filter } : undefined,
-  );
+  const { repositories, configFile } = await configLoader.buildRepositories(configPath, {
+    debug: overrides.debug,
+    filter: overrides.filter,
+  });
   return {
     repositories,
-    configFile: runOnceOverride
+    configFile: overrides.runOnce
       ? { ...configFile, defaults: { ...(configFile.defaults ?? {}), runOnce: true } }
       : configFile,
   };
@@ -596,6 +631,8 @@ async function resolveConfigOrExit(cliPath: string | undefined): Promise<string>
   return resolved;
 }
 
+const CONFIG_DOCS_URL = "https://github.com/yordan-kanchelov/sync-worktrees/blob/main/docs/configuration.md";
+
 function exitConfigExists(targetPath: string): never {
   console.error(`\n❌ Config file already exists: ${targetPath}`);
   console.error(`💡 Re-run with --force to overwrite.`);
@@ -604,6 +641,14 @@ function exitConfigExists(targetPath: string): never {
 
 async function runInit(configPath: string | undefined, force: boolean): Promise<void> {
   const targetPath = configPath ? path.resolve(configPath) : getDefaultConfigPath();
+
+  // Without a terminal the prompts can never be answered: the process used to
+  // sit there and then die with Node's "unsettled top-level await" warning.
+  if (!hasInteractiveTerminal()) {
+    console.error("❌ 'sync-worktrees init' is an interactive wizard and needs a terminal (stdin and stdout).");
+    console.error(`💡 Run it from a terminal, or write the config by hand: ${CONFIG_DOCS_URL}`);
+    process.exit(1);
+  }
 
   // Preflight before prompts so user isn't asked 5 questions just to fail at write.
   // The atomic `wx` write below is still the source of truth — it closes the TOCTOU
@@ -658,14 +703,25 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
 
   let loaded: { configFile: ConfigFile; repositories: RepositoryConfig[] };
   try {
-    loaded = await loadRunConfig(configPath, options.runOnce, options.filter);
+    loaded = await loadRunConfig(configPath, options);
   } catch (error) {
     if (error instanceof ConfigFileNotFoundError) {
       console.error(`\n❌ Config file not found: ${error.configPath}`);
       console.error(`💡 Run 'sync-worktrees init --config ${displayPath}' to create one.`);
       process.exit(1);
     }
-    console.error("❌ Error loading config file:", redactSecretsInText(getErrorMessage(error)));
+    console.error("❌ Error loading config file:", configLoadErrorMessage(error));
+    process.exit(1);
+  }
+
+  // The dashboard reads keys in raw mode and draws on stdout. Without a
+  // terminal (systemd, docker, CI, `< /dev/null`) Ink printed "Raw mode is not
+  // supported" with a stack and the process exited 0 having synced nothing.
+  if (loaded.configFile.defaults?.runOnce !== true && !hasInteractiveTerminal()) {
+    console.error("❌ The interactive dashboard needs a terminal, and stdin or stdout is not one.");
+    console.error(
+      "💡 For unattended runs use 'sync-worktrees --run-once' (or runOnce: true in the config) from cron, a systemd timer or CI.",
+    );
     process.exit(1);
   }
 
@@ -678,6 +734,7 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
 
   try {
     await runMultipleRepositories(loaded.configFile, loaded.repositories, configPath, {
+      debug: options.debug,
       quiet: options.quiet,
       filter: options.filter,
     });
@@ -734,11 +791,19 @@ function isMainEntrypoint(): boolean {
   }
 }
 
+/**
+ * Last-resort report for a failure that escaped {@link main}. Shared with
+ * `bin/sync-worktrees.js`, whose handler is the one that runs in normal use and
+ * used to print the raw value. Inspecting first lets a git error that quotes a
+ * credential-bearing remote URL (message, stack, `task.commands`) be scrubbed.
+ */
+export function reportUnhandledError(error: unknown): void {
+  console.error("❌ Unhandled error:", redactSecretsInText(typeof error === "string" ? error : inspect(error)));
+}
+
 if (isMainEntrypoint()) {
   main().catch((error: unknown) => {
-    // Inspect before printing so a git error that quotes a credential-bearing
-    // remote URL can be scrubbed; console.error(msg, error) would print it raw.
-    console.error("❌ Unhandled error:", redactSecretsInText(typeof error === "string" ? error : inspect(error)));
+    reportUnhandledError(error);
     process.exit(1);
   });
 }

@@ -129,12 +129,15 @@ export interface InteractiveUIRuntime {
   stdout: NodeJS.WriteStream;
   stdin: NodeJS.ReadStream;
   exit: (code: number) => void;
+  /** `--debug`: forced onto every repository, including those a reload loads. */
+  debug: boolean;
 }
 
 export class InteractiveUIService {
   private app: Instance | null = null;
   private syncServices: WorktreeSyncService[];
   private configPath?: string;
+  private readonly debugOverride: boolean;
   private repositoryFilter?: string;
   private cronSchedule?: string;
   private cronJobs: cron.ScheduledTask[] = [];
@@ -183,6 +186,7 @@ export class InteractiveUIService {
 
     this.syncServices = syncServices;
     this.configPath = configPath;
+    this.debugOverride = runtime.debug ?? false;
     this.cronSchedule = cronSchedule;
     this.repositoryCount = syncServices.length;
     // One number, and it is the parallelism setting, not a display one. The
@@ -503,10 +507,10 @@ export class InteractiveUIService {
       // Validate and load new config BEFORE canceling old cron jobs
       // to prevent a window with no cron running on validation failure
       const configLoader = new ConfigLoaderService();
-      const { repositories } = await configLoader.buildRepositories(
-        this.configPath,
-        this.repositoryFilter ? { filter: this.repositoryFilter } : undefined,
-      );
+      const { repositories } = await configLoader.buildRepositories(this.configPath, {
+        debug: this.debugOverride,
+        filter: this.repositoryFilter,
+      });
       // An edit that leaves the --filter matching nothing would otherwise
       // surface below as "No repositories could be initialized", which blames
       // the repositories rather than the filter. Either way the old services

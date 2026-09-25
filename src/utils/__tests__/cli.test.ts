@@ -128,6 +128,25 @@ describe("parseArguments", () => {
     expect(output.trim()).toBe(packageJson.version);
   });
 
+  // The version comes from the build-time define, not from yargs' package.json
+  // lookup, which starts at yargs' own install directory: from a pnpm global
+  // install that finds pnpm's manifest and prints "unknown".
+  it("prints the build-time version for -V", () => {
+    expect(() => parseArguments(["-V"])).toThrow(/process\.exit/);
+
+    const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+
+    expect(output.trim()).toBe(__SYNC_WORKTREES_VERSION__);
+  });
+
+  it("parses --debug, off by default", () => {
+    const defaults = parseArguments([]);
+    const debug = parseArguments(["--runOnce", "--debug"]);
+    if (defaults.command !== "run" || debug.command !== "run") throw new Error("expected run command");
+    expect(defaults.debug).toBe(false);
+    expect(debug.debug).toBe(true);
+  });
+
   it("rejects removed flag --repoUrl under strict()", () => {
     expect(() => parseArguments(["--repoUrl", "https://example.com/repo.git"])).toThrow(/process\.exit/);
   });

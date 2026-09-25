@@ -3848,4 +3848,37 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       );
     });
   });
+
+  describe("buildRepositories debug override", () => {
+    async function writeDebugConfig(): Promise<string> {
+      const configPath = path.join(tempDir, "debug.config.js");
+      await fs.writeFile(
+        configPath,
+        `export default {
+          defaults: { debug: false },
+          repositories: [
+            { name: "quiet", repoUrl: "${TEST_URLS.github}", worktreeDir: "./quiet", bareRepoDir: "./.bare/quiet" },
+            { name: "loud", repoUrl: "${TEST_URLS.gitlab}", worktreeDir: "./loud", bareRepoDir: "./.bare/loud", debug: true }
+          ]
+        };`,
+      );
+      return configPath;
+    }
+
+    it("forces debug on every repository, over the config, when asked", async () => {
+      const { repositories } = await configLoader.buildRepositories(await writeDebugConfig(), { debug: true });
+      expect(repositories.map((repo) => [repo.name, repo.debug])).toEqual([
+        ["quiet", true],
+        ["loud", true],
+      ]);
+    });
+
+    it("leaves the config's debug settings alone otherwise", async () => {
+      const { repositories } = await configLoader.buildRepositories(await writeDebugConfig(), { debug: false });
+      expect(repositories.map((repo) => [repo.name, repo.debug])).toEqual([
+        ["quiet", false],
+        ["loud", true],
+      ]);
+    });
+  });
 });

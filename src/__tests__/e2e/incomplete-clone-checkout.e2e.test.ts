@@ -146,7 +146,7 @@ describe("CLI refuses to adopt a clone whose checkout never finished", () => {
     expect(second.stderr).toContain("smudge filter lfs failed");
     expect(second.stdout).toContain("1 failed");
     // The bug this replaces: an info-level skip and exit 0, every run, forever.
-    expect(second.stdout).toContain("0 with clone-mode skips");
+    expect(second.stdout).not.toContain("with clone-mode skips");
     expect(secondOutput).not.toContain("Clone-mode skips (");
     expect(secondOutput).not.toContain("working tree has local changes");
   }, 60_000);
@@ -217,6 +217,6 @@ describe("CLI refuses to adopt a clone whose checkout never finished", () => {
     const second = runCli();
     expect(second.status, second.stdout + second.stderr).toBe(0);
     expect(second.stdout).toContain("already up to date with origin/main");
-    expect(second.stdout).toContain("0 with clone-mode skips");
+    expect(second.stdout).toMatch(/: 1 synced, 0 failed/);
   }, 60_000);
 });

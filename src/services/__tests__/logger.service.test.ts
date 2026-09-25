@@ -1,5 +1,7 @@
+import { GitError } from "simple-git";
 import { describe, expect, it, vi } from "vitest";
 
+import { ConfigValidationError } from "../../errors";
 import { Logger } from "../logger.service";
 
 const TOKEN_URL = "https://ci-bot:s3cr3t-token@git.example.com/org/repo.git";
@@ -103,6 +105,72 @@ describe("Logger credential redaction", () => {
     expect(String(vi.mocked(console.error).mock.calls[0][0])).toContain(
       "[repo] Sync failed: Error: network unreachable",
     );
+  });
+});
+
+describe("Logger error detail", () => {
+  const cloneFailure = (): GitError =>
+    new GitError(
+      { commands: ["clone", "--bare", TOKEN_URL, "/tmp/bare"], format: "utf-8", parser: (text: string) => text },
+      `Cloning into bare repository '/tmp/bare'...\nfatal: unable to access '${TOKEN_URL}/': Could not resolve host\n`,
+    );
+
+  // An unreachable remote used to print ~30 lines: git's stderr, a stack of
+  // simple-git internals and the inspected `task.commands` array.
+  it("prints a git failure as its one `fatal:` line when debug is off", () => {
+    new Logger({ repoName: "repo" }).error("❌ Failed to initialize repository 'repo':", cloneFailure());
+
+    expect(console.error).toHaveBeenCalledTimes(1);
+    expect(console.error).toHaveBeenCalledWith(
+      `[repo] ❌ Failed to initialize repository 'repo': fatal: unable to access '${REDACTED_URL}/': Could not resolve host`,
+    );
+  });
+
+  it("keeps the full inspected error, scrubbed, when debug is on", () => {
+    new Logger({ repoName: "repo", debug: true }).error("❌ Failed:", cloneFailure());
+
+    const line = printedLines().join("\n");
+    expect(line).toContain("Cloning into bare repository");
+    expect(line).toContain("    at ");
+    expect(line).toContain("commands");
+    expect(line).not.toContain("s3cr3t-token");
+  });
+
+  it("prints this tool's typed errors as their message, without a stack", () => {
+    new Logger().error("❌ Sync failed:", new ConfigValidationError("worktreeDir", "must be absolute"));
+
+    const line = printedLines().join("\n");
+    expect(line).toContain("❌ Sync failed:");
+    expect(line).toContain("must be absolute");
+    expect(line).not.toContain("    at ");
+  });
+});
+
+describe("Logger colours", () => {
+  const COLOURED = "\u001b[31mred\u001b[39m hook output";
+
+  it("strips ANSI sequences when colours are disabled", () => {
+    new Logger({ disableColors: true }).info(COLOURED);
+
+    expect(console.log).toHaveBeenCalledWith("red hook output");
+  });
+
+  it("keeps them when colours are enabled", () => {
+    new Logger({ disableColors: false }).info(COLOURED);
+
+    expect(console.log).toHaveBeenCalledWith(COLOURED);
+  });
+
+  it("defaults to stripping under NO_COLOR", () => {
+    vi.stubEnv("FORCE_COLOR", undefined);
+    vi.stubEnv("NO_COLOR", "1");
+    try {
+      new Logger().info(COLOURED);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(console.log).toHaveBeenCalledWith("red hook output");
   });
 });
 

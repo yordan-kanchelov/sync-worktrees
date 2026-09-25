@@ -10,8 +10,9 @@ cron schedule; `s` triggers the same cycle by hand. Cycles do not pile up on one
 repository already syncing skips that repository and says so in the log. While the status line reads `Syncing...`, `s`,
 `r` and `x` do not act; the key legend briefly reads "A sync is in progress" instead. A tick the machine slept through
 is not replayed — the next tick, or an `s`, runs the cycle. There is no headless mode: without `--run-once` this
-UI is what runs, so leave it open in a `tmux` or `screen` window if you want it to keep going after you close the
-terminal (see [Running it unattended](../README.md#running-it-unattended)).
+UI is what runs (when stdin or stdout is not a terminal it exits 1 and says to use `--run-once`), so leave it open in a
+`tmux` or `screen` window if you want it to keep going after you close the terminal (see
+[Running it unattended](../README.md#running-it-unattended)).
 
 The status bar shows:
 

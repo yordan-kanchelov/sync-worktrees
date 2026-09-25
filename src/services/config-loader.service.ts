@@ -1666,7 +1666,7 @@ export class ConfigLoaderService {
 
   async buildRepositories(
     configPath: string,
-    overrides?: { filter?: string },
+    overrides?: { filter?: string; debug?: boolean },
   ): Promise<{ repositories: RepositoryConfig[]; configFile: ConfigFile; configDir: string }> {
     const configFile = await this.loadConfigFile(configPath);
     const configDir = path.dirname(path.resolve(configPath));
@@ -1686,6 +1686,11 @@ export class ConfigLoaderService {
 
     if (overrides?.filter) {
       repositories = this.filterRepositories(repositories, overrides.filter);
+    }
+
+    // `--debug` wins over whatever the config says, for every repository.
+    if (overrides?.debug) {
+      repositories = repositories.map((repo) => ({ ...repo, debug: true }));
     }
 
     return { repositories, configFile, configDir };

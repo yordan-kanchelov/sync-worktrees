@@ -946,6 +946,45 @@ describe("InteractiveUIService", () => {
       void service.destroy();
     });
 
+    // --debug is applied when the config is loaded. The reload loads it again,
+    // so without being told the dashboard dropped debug output after an `r`.
+    it.each([
+      { debug: true, expectDebugLine: true },
+      { debug: false, expectDebugLine: false },
+    ])("applies the --debug override ($debug) to the repositories a reload loads", async (c) => {
+      mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+        repositories: [
+          {
+            name: "alpha",
+            repoUrl: "https://github.com/test/repo.git",
+            worktreeDir: "/test/worktrees",
+            cronSchedule: "0 * * * *",
+            runOnce: false,
+            debug: false,
+          },
+        ],
+      });
+
+      const service = new InteractiveUIService([mockSyncService], "/test/config.js", undefined, undefined, undefined, {
+        debug: c.debug,
+      });
+      const logs: string[] = [];
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry.message));
+      service.getEvents().emit("uiReady");
+
+      const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+      await onReload();
+
+      expect(mockConfigLoaderInstance.buildRepositories).toHaveBeenCalledWith("/test/config.js", { debug: c.debug });
+      const reloaded = vi.mocked(WorktreeSyncService).mock.calls.at(-1)![0] as any;
+      expect(reloaded.debug).toBe(c.debug);
+      // And the logger the dashboard built for it follows suit.
+      reloaded.logger.debug("debug probe line");
+      expect(logs.some((message) => message.includes("debug probe line"))).toBe(c.expectDebugLine);
+
+      void service.destroy();
+    });
+
     // `sync-worktrees --filter backend-*` starts the UI on a subset; a reload
     // re-reads the whole file and must not widen that back to every repository.
     it("keeps the --filter the CLI started with across a reload", async () => {
@@ -968,6 +1007,7 @@ describe("InteractiveUIService", () => {
       await onReload();
 
       expect(mockConfigLoaderInstance.buildRepositories).toHaveBeenCalledWith("/test/config.js", {
+        debug: false,
         filter: "backend-*",
       });
       const rebuilt = vi.mocked(WorktreeSyncService).mock.calls.map(([config]) => (config as { name?: string }).name);
