@@ -124,7 +124,7 @@ describe("editor launching against real processes", () => {
     process.env.EDITOR = fake;
     delete process.env.VISUAL;
 
-    const result = service.openEditorInWorktree(tmpDir);
+    const result = service.launcher.openEditorInWorktree(tmpDir);
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("terminal editor");
@@ -146,7 +146,7 @@ describe("editor launching against real processes", () => {
     process.env.EDITOR = `${JSON.stringify(fake)} -nw -g`;
     delete process.env.VISUAL;
 
-    const result = service.openEditorInWorktree(tmpDir);
+    const result = service.launcher.openEditorInWorktree(tmpDir);
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("terminal editor");
@@ -163,7 +163,7 @@ describe("editor launching against real processes", () => {
     process.env.EDITOR = editor;
     delete process.env.VISUAL;
 
-    const result = service.openEditorInWorktree(tmpDir);
+    const result = service.launcher.openEditorInWorktree(tmpDir);
     expect(result.success).toBe(true);
 
     const entry = await waitForLog(/exited immediately with code 3/);
@@ -186,7 +186,7 @@ describe("editor launching against real processes", () => {
     process.env.EDITOR = editor;
     delete process.env.VISUAL;
 
-    const result = service.openEditorInWorktree(tmpDir);
+    const result = service.launcher.openEditorInWorktree(tmpDir);
     expect(result.success).toBe(true);
 
     const entry = await waitForLog(new RegExp(`was killed by ${expected}`));
@@ -204,7 +204,7 @@ describe("editor launching against real processes", () => {
     process.env.EDITOR = editor;
     delete process.env.VISUAL;
 
-    expect(service.openEditorInWorktree(tmpDir).success).toBe(true);
+    expect(service.launcher.openEditorInWorktree(tmpDir).success).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, 7000));
     expect(logs.filter((entry) => entry.level === "error")).toEqual([]);
@@ -217,7 +217,7 @@ describe("editor launching against real processes", () => {
     process.env.EDITOR = editor;
     delete process.env.VISUAL;
 
-    const result = service.openEditorInWorktree(tmpDir);
+    const result = service.launcher.openEditorInWorktree(tmpDir);
     expect(result.success).toBe(true);
 
     await vi.waitFor(() => {
@@ -241,7 +241,7 @@ describe("editor launching against real processes", () => {
     process.env.EDITOR = editor;
     delete process.env.VISUAL;
 
-    expect(service.openEditorInWorktree(tmpDir).success).toBe(true);
+    expect(service.launcher.openEditorInWorktree(tmpDir).success).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(logs.filter((entry) => entry.level === "error")).toEqual([]);
@@ -255,7 +255,7 @@ describe("editor launching against real processes", () => {
     process.env.EDITOR = editor;
     delete process.env.VISUAL;
 
-    expect(service.openEditorInWorktree(tmpDir).success).toBe(true);
+    expect(service.launcher.openEditorInWorktree(tmpDir).success).toBe(true);
 
     await new Promise((resolve) => setTimeout(resolve, 7000));
     expect(logs.filter((entry) => entry.level === "error")).toEqual([]);
@@ -271,7 +271,7 @@ describe("editor launching against real processes", () => {
     process.env.EDITOR = `"${editor}"`;
     delete process.env.VISUAL;
 
-    expect(service.openEditorInWorktree("/some/worktree").success).toBe(true);
+    expect(service.launcher.openEditorInWorktree("/some/worktree").success).toBe(true);
 
     await vi.waitFor(() => {
       expect(fs.existsSync(marker)).toBe(true);
@@ -287,7 +287,7 @@ describe("editor launching against real processes", () => {
     const originalPlatform = process.platform;
     Object.defineProperty(process, "platform", { value: "linux" });
     try {
-      const result = service.openTerminalInWorktree(0, "/worktrees/x", "feat/x");
+      const result = service.launcher.openTerminalInWorktree(0, "/worktrees/x", "feat/x");
       expect(result.success).toBe(true);
 
       const entry = await waitForLog(/exited immediately with code 7/);
