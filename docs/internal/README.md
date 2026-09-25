@@ -11,3 +11,4 @@ For how to use sync-worktrees, start at the [README](../../README.md) and the [d
 | [6.0.0-plan.md](./6.0.0-plan.md)           | How the 6.0.0 review was implemented, item by item                                 |
 | [FOLLOW-UPS.md](./FOLLOW-UPS.md)           | Out-of-scope items found while implementing the 6.0.0 review; untriaged            |
 | [plan.md](./plan.md)                       | README rewrite plan and iteration log                                              |
+| [clone-mode-notes.md](./clone-mode-notes.md) | Clone-mode module map, and the measurements and history behind its code |
