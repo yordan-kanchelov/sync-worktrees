@@ -18,7 +18,7 @@ import {
   redactSecretsInText,
 } from "../utils/git-url";
 import { isPathEqualOrInside, isPathStrictlyInside, normalizePathForCompare, pathsEqual } from "../utils/path-compare";
-import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../utils/git-client";
+import { MAX_TIMER_DELAY_MS, MIN_GIT_TIMEOUT_MS, SIMPLE_GIT_CLIENT_CONCURRENCY } from "../utils/git-client";
 import { REPOSITORY_MODES, isRepositoryMode } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 import { collectUnknownConfigKeys, formatUnknownConfigKey } from "../utils/unknown-config-keys";
@@ -807,12 +807,22 @@ export class ConfigLoaderService {
    * simple-git option on `blockMs > 0`, so a zero never reaches git as a
    * timeout (simple-git's own plugin gates on the same thing). Negatives,
    * fractions, NaN, Infinity and non-numbers are rejected rather than passed to
-   * `setTimeout`, where they would silently become an immediate kill.
+   * `setTimeout`, where they would silently become an immediate kill — and so
+   * is anything above setTimeout's 2^31-1 ceiling, which Node replaces with
+   * 1 ms. The floor of one second catches a window given in seconds
+   * (`fetchTimeoutMs: 300`), which would kill nearly every fetch.
    */
   private validateTimeoutMs(value: unknown, field: string): void {
     if (value === undefined) return;
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-      throw new ConfigValidationError(field, "must be a non-negative safe integer (0 disables the timeout)");
+    if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      (value !== 0 && (value < MIN_GIT_TIMEOUT_MS || value > MAX_TIMER_DELAY_MS))
+    ) {
+      throw new ConfigValidationError(
+        field,
+        `must be 0 (disables the timeout) or a whole number of milliseconds from ${MIN_GIT_TIMEOUT_MS} to ${MAX_TIMER_DELAY_MS}`,
+      );
     }
   }
 

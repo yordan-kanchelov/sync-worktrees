@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { SyncWorktreesConfig, SyncWorktreesRepository } from "../../index";
+import type { SyncWorktreesConfig, SyncWorktreesRepository } from "../../public-types";
 import type { Config, SyncWorktreesWorktreeRepository } from "../index";
 
 type Expect<T extends true> = T;

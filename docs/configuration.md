@@ -141,8 +141,10 @@ Two inactivity timeouts guard the git commands that talk to the remote: `fetchTi
 bytes a clone would). Each kills its command when no output arrives inside the window, so a stalled connection ends the
 attempt instead of hanging the sync forever; `0` disables one. Local commands never carry them: `git worktree add`
 prints nothing while it checks out a large repository, and killing it there would fail a creation that only needed more
-time. Set either on a repository entry or under `defaults` (the entry wins, as everywhere else); both must be
-non-negative whole numbers of milliseconds, and anything else is a config validation error. Both knobs are shown in
+time. Set either on a repository entry or under `defaults` (the entry wins, as everywhere else); each must be `0` or a
+whole number of milliseconds from `1000` to `2147483647` (Node's timer ceiling — a larger value would fire after 1 ms
+and kill every command it guards, and anything under a second is almost always a value given in seconds). Anything else
+is a config validation error. Both knobs are shown in
 [`sync-worktrees.config.example.js`](../sync-worktrees.config.example.js).
 
 For repositories with Git LFS issues or large files you don't need, set `skipLfs: true` in `defaults` or per repository.

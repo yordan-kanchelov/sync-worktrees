@@ -128,7 +128,8 @@ Every removal path, its gate, where it goes and how to undo it, including the ex
 
 Requirements:
 
-- Node.js 24 or newer
+- Node.js 24 or newer. npm only warns when installing on an older Node; both commands then print a warning at start-up
+  and carry on, untested. On Node 22, `sync-worktrees@5` is the supported line
 - Git; `git-lfs` on any machine syncing a repository that uses LFS (or set `skipLfs: true`)
 - macOS or Linux. Windows is not supported: `package.json` declares `os: ["darwin", "linux"]`, so npm refuses the
   install there
@@ -245,7 +246,7 @@ common operations, and a status view across every repository.
 | `x`       | [Force clean](./docs/trash-and-recovery.md#force-clean-from-the-tui-x): purge trash and recovery refs, `git gc` |
 | `r`       | Reload the config and re-sync                                                                                   |
 | `?` / `h` | Help                                                                                                            |
-| `q`       | Quit (`Esc` only backs out of what is open)                                                                     |
+| `q`       | Quit; asks first while a sync or hook is running (`Esc` only backs out of what is open)                         |
 
 Every key, the wizards, the status flags, and the terminal/editor launch variables: [Interactive TUI](./docs/tui.md).
 
