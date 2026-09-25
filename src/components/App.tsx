@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, useInput, useWindowSize } from "ink";
 import StatusBar from "./StatusBar";
 import HelpModal from "./HelpModal";
@@ -69,6 +69,12 @@ export interface LogEntry {
 
 const MAX_LOG_ENTRIES = 5000;
 const NOTICE_MS = 2500;
+
+// Log lines arrive in bursts -- a sync of many repositories logs dozens a
+// second, each from its own tick -- and every append used to copy the whole
+// buffer (up to MAX_LOG_ENTRIES) and re-render the tree. Lines are collected
+// here and land in one state update per interval instead.
+export const LOG_FLUSH_INTERVAL_MS = 50;
 
 // One entry has to be one row, because that is what the log panel budgets for
 // it. Sync messages carry newlines (`Synchronization finished.\n`, and with
@@ -148,27 +154,44 @@ const App: React.FC<AppProps> = ({
 
   const { rows } = useWindowSize();
 
-  const addLog = useCallback((message: string, level: LogEntry["level"] = "info") => {
+  const pendingLogsRef = useRef<LogEntry[]>([]);
+  const logFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const logIdRef = useRef(0);
+
+  const flushLogs = useCallback(() => {
+    logFlushTimerRef.current = null;
+    const pending = pendingLogsRef.current;
+    if (pending.length === 0) return;
+    pendingLogsRef.current = [];
     setLogs((prev) => {
+      const next = prev.concat(pending);
+      return next.length > MAX_LOG_ENTRIES ? next.slice(-MAX_LOG_ENTRIES) : next;
+    });
+  }, []);
+
+  const addLog = useCallback(
+    (message: string, level: LogEntry["level"] = "info") => {
       // Every log line (service loggers, reload/sync failures, wizard errors)
       // lands here, so a git error that quotes a credential-bearing remote URL
       // is scrubbed before it reaches the log buffer.
       const timestamp = new Date();
-      const newLogs = [
-        ...prev,
-        ...splitLogLines(redactSecretsInText(message)).map((line) => ({
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          message: line,
-          level,
-          timestamp,
-        })),
-      ];
-      if (newLogs.length > MAX_LOG_ENTRIES) {
-        return newLogs.slice(-MAX_LOG_ENTRIES);
+      for (const line of splitLogLines(redactSecretsInText(message))) {
+        pendingLogsRef.current.push({ id: `log-${++logIdRef.current}`, message: line, level, timestamp });
       }
-      return newLogs;
-    });
-  }, []);
+      logFlushTimerRef.current ??= setTimeout(flushLogs, LOG_FLUSH_INTERVAL_MS);
+    },
+    [flushLogs],
+  );
+
+  useEffect(
+    () => () => {
+      if (logFlushTimerRef.current) {
+        clearTimeout(logFlushTimerRef.current);
+        logFlushTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const addLogRef = useRef(addLog);
   addLogRef.current = addLog;
@@ -340,16 +363,33 @@ const App: React.FC<AppProps> = ({
   const terminalRows = rows ?? 24;
   const logPanelHeight = Math.max(5, terminalRows - statusBarHeight);
   const showModal = showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean;
+  // What a modal may take without pushing the status bar off the screen.
+  const modalRows = Math.max(0, terminalRows - statusBarHeight);
+
+  // One list per opened modal. Re-reading it on every render handed the modal
+  // a fresh array for every log line and progress event, which re-ran every
+  // effect keyed on it. A reload that changes the repository count while a
+  // modal is open still refreshes it.
+  const showRepositoryPicker = showBranchWizard || showOpenEditorWizard || showWorktreeStatus;
+  const repositories = useMemo(
+    () => (showRepositoryPicker ? getRepositoryList() : []),
+    // `repoCount` is not read, only a signal that a reload changed the list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [showRepositoryPicker, getRepositoryList, repoCount],
+  );
+  // StatusBar is memoised; a fresh array here would defeat that on every log flush.
+  const activeOpLabels = useMemo(() => activeOps.map((op) => op.label), [activeOps]);
 
   return (
     <Box flexDirection="column" minHeight={terminalRows}>
       {!showModal && <LogPanel logs={logs} height={logPanelHeight} isActive={!showModal} />}
 
-      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} availableRows={modalRows} />}
 
       {showBranchWizard && (
         <BranchCreationWizard
-          repositories={getRepositoryList()}
+          repositories={repositories}
+          availableRows={modalRows}
           getBranchesForRepo={getBranchesForRepo}
           getDefaultBranchForRepo={getDefaultBranchForRepo}
           fetchForRepo={fetchForRepo}
@@ -399,7 +439,8 @@ const App: React.FC<AppProps> = ({
 
       {showOpenEditorWizard && (
         <OpenEditorWizard
-          repositories={getRepositoryList()}
+          repositories={repositories}
+          availableRows={modalRows}
           getWorktreesForRepo={getWorktreesForRepo}
           openEditorInWorktree={openEditorInWorktree}
           openTerminalInWorktree={openTerminalInWorktree}
@@ -409,7 +450,8 @@ const App: React.FC<AppProps> = ({
 
       {showWorktreeStatus && getWorktreeStatusForRepo && (
         <WorktreeStatusView
-          repositories={getRepositoryList()}
+          repositories={repositories}
+          availableRows={modalRows}
           getWorktreeStatusForRepo={getWorktreeStatusForRepo}
           getRepositoryDiskUsage={getRepositoryDiskUsage}
           getDivergedDirectoriesForRepo={getDivergedDirectoriesForRepo}
@@ -429,7 +471,7 @@ const App: React.FC<AppProps> = ({
       <StatusBar
         status={status}
         syncProgressEntries={syncProgressEntries}
-        activeOps={activeOps.map((op) => op.label)}
+        activeOps={activeOpLabels}
         maxProgressLines={maxProgressLines}
         repositoryCount={repoCount}
         lastSyncTime={lastSyncTime}

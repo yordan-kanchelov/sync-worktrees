@@ -174,4 +174,5 @@ const StatusBar: React.FC<StatusBarProps> = ({
   );
 };
 
-export default StatusBar;
+// Memoised: the App re-renders on every log flush, and none of that touches the bar.
+export default React.memo(StatusBar);

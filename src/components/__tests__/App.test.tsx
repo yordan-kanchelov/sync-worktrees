@@ -3,7 +3,7 @@ import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import type { AppProps } from "../App";
-import App from "../App";
+import App, { LOG_FLUSH_INTERVAL_MS } from "../App";
 import { AppEventEmitter } from "../../utils/app-events";
 
 // Helper to wait for React state updates
@@ -977,6 +977,79 @@ describe("App", () => {
 
       expect(defaultProps.onQuit).not.toHaveBeenCalled();
       expect(defaultProps.onManualSync).not.toHaveBeenCalled();
+    });
+  });
+
+  // Every log line used to copy the whole buffer and re-render the tree on its
+  // own, and a sync delivers its lines one tick apart, so React could not batch
+  // them either.
+  describe("log batching", () => {
+    const nextTick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+    it("renders a burst of log lines in one update instead of one per line", async () => {
+      const { lastFrame, frames } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      const framesBefore = frames.length;
+
+      for (let i = 0; i < 20; i++) {
+        appEvents.emit("addLog", { message: `Burst line ${i}`, level: "info" });
+        await nextTick();
+      }
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Burst line 19");
+      expect(lastFrame()).toContain("(20 entries)");
+      // One flush, with slack for a slow machine splitting the burst in two.
+      expect(frames.length - framesBefore).toBeLessThanOrEqual(3);
+    });
+
+    it("holds a line back until the flush, then shows it", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Deferred line", level: "info" });
+      await nextTick();
+      expect(lastFrame()).not.toContain("Deferred line");
+
+      await new Promise((resolve) => setTimeout(resolve, LOG_FLUSH_INTERVAL_MS + 50));
+      expect(lastFrame()).toContain("Deferred line");
+    });
+
+    it("keeps the buffer order and the redaction across batches", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "first batch", level: "info" });
+      await waitForStateUpdate();
+      appEvents.emit("addLog", {
+        message: "fetch https://user:hunter2@example.com/repo.git failed",
+        level: "error",
+      });
+      appEvents.emit("addLog", { message: "second batch", level: "info" });
+      await waitForStateUpdate();
+
+      const frame = lastFrame()!;
+      expect(frame.indexOf("first batch")).toBeLessThan(frame.indexOf("second batch"));
+      expect(frame).not.toContain("hunter2");
+      expect(frame).toContain("(3 entries)");
+    });
+
+    it("reads the repository list once per opened modal, not on every log line", async () => {
+      const { stdin } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      stdin.write("o");
+      await waitForStateUpdate();
+      const callsWhileOpen = vi.mocked(defaultProps.getRepositoryList).mock.calls.length;
+      expect(callsWhileOpen).toBeGreaterThan(0);
+
+      for (let i = 0; i < 5; i++) {
+        appEvents.emit("addLog", { message: `line ${i}`, level: "info" });
+        appEvents.emit("setDiskSpace", `${i} MB`);
+        await waitForStateUpdate();
+      }
+
+      expect(vi.mocked(defaultProps.getRepositoryList).mock.calls.length).toBe(callsWhileOpen);
     });
   });
 });
