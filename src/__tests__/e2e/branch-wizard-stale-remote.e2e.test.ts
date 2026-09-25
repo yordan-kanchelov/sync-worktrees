@@ -144,10 +144,10 @@ describe("Branch wizard against a branch only the remote still has (E2E)", () =>
       // it (so it displays "will create: hotfix-1"), and the age filter left no
       // local head for `git branch` to collide with.
       expect(remoteBranches()).toContain("hotfix");
-      expect(await ui.getBranchesForRepo(0)).toContain("hotfix");
+      expect(await ui.operations.getBranchesForRepo(0)).toContain("hotfix");
       expect(localHeadExists("hotfix")).toBe(false);
 
-      const created = await ui.createAndPushBranch(0, "main", "hotfix");
+      const created = await ui.operations.createAndPushBranch(0, "main", "hotfix");
 
       // The branch that was already on origin is untouched — this is the whole
       // claim, and the reason the remote here is real.
@@ -176,7 +176,7 @@ describe("Branch wizard against a branch only the remote still has (E2E)", () =>
 
     const ui = await buildUI();
     try {
-      const created = await ui.createAndPushBranch(0, "main", "feature/x");
+      const created = await ui.operations.createAndPushBranch(0, "main", "feature/x");
 
       expect(created.success).toBe(false);
       expect(created.error).toMatch(/push/i);
