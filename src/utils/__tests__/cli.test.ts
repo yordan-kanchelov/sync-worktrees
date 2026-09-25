@@ -118,6 +118,28 @@ describe("parseArguments", () => {
     expect(output).toContain("sync-worktrees init");
     expect(output).toContain("sync-worktrees list");
     expect(output).toContain("sync-worktrees trash");
+    expect(output).toContain("sync-worktrees doctor");
+  });
+
+  it("parses doctor with its defaults and every option", () => {
+    expect(parseArguments(["doctor"])).toEqual({
+      command: "doctor",
+      config: undefined,
+      filter: undefined,
+      json: false,
+      quiet: false,
+    });
+    expect(parseArguments(["doctor", "-c", "cfg.js", "-f", "api-*", "--json", "-q"])).toEqual({
+      command: "doctor",
+      config: "cfg.js",
+      filter: "api-*",
+      json: true,
+      quiet: true,
+    });
+  });
+
+  it("rejects sync-only flags on doctor", () => {
+    expect(() => parseArguments(["doctor", "--run-once"])).toThrow(/process\.exit/);
   });
 
   it("prints the package version for --version", () => {
@@ -297,6 +319,7 @@ describe("parseArguments", () => {
       ["lst", "sync-worktrees list"],
       ["tarsh", "sync-worktrees trash"],
       ["int", "sync-worktrees init"],
+      ["docter", "sync-worktrees doctor"],
     ])("suggests a command for %s", (typo, suggestion) => {
       expect(() => parseArguments([typo])).toThrow(/process\.exit\(1\)/);
       expect(stderrOf()).toContain(`Did you mean '${suggestion}'?`);

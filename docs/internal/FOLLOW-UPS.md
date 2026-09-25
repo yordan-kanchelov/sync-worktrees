@@ -1065,6 +1065,8 @@ The T33 worker's reported 1,432,411 bytes therefore includes 574 B that CI does 
 - **FU-T33-7. `src/services/__tests__/git.service.test.ts` contains 21 literal NUL bytes**
   (intentional `for-each-ref -z` fixtures). Harmless, but `grep` treats the file as binary and
   silently skips it, so a plain `grep -rn <symbol> src` under-reports. Use `grep -a`.
+  (D2 moved those fixtures, with the ref-inventory tests, to
+  `src/services/__tests__/branch-ref.service.test.ts`.)
 - **Still open from T31, unchanged by T33: the shipped example is not type-checked by CI.** Its
   `// @ts-check` + `@satisfies {SyncWorktreesConfig}` is decorative — `tsconfig.json` includes only
   `src/**/*`, eslint runs it without type information, and there is no self-link at

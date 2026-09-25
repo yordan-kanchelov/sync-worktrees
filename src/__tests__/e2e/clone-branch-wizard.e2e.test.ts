@@ -95,7 +95,7 @@ describe("Clone-mode branch wizard (E2E)", () => {
   it("creates the branch in the clone, pushes it, and switches the checkout in place", async () => {
     const { ui } = await buildUI();
     try {
-      const created = await ui.createAndPushBranch(0, "main", "feature/wizard");
+      const created = await ui.operations.createAndPushBranch(0, "main", "feature/wizard");
       expect(created).toEqual({ success: true, finalName: "feature/wizard" });
 
       // The branch exists on the remote at the tip of the base branch...
@@ -104,7 +104,7 @@ describe("Clone-mode branch wizard (E2E)", () => {
 
       // ...and the wizard's follow-up switches the clone to it in place, which
       // is the clone-mode branch switching CHANGELOG 5.0.0 describes.
-      await ui.createWorktreeForBranch(0, "feature/wizard");
+      await ui.operations.createWorktreeForBranch(0, "feature/wizard");
       expect(git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/wizard");
       expect(await fs.readdir(path.join(tempDir))).not.toContain("feature-wizard");
     } finally {
@@ -128,7 +128,7 @@ describe("Clone-mode branch wizard (E2E)", () => {
     try {
       const { ui } = await buildUI();
       try {
-        const created = await ui.createAndPushBranch(0, "main", "feature/wizard");
+        const created = await ui.operations.createAndPushBranch(0, "main", "feature/wizard");
         expect(created.success).toBe(true);
 
         expect(remoteBranches(remote)).toContain("feature/wizard");
@@ -145,11 +145,11 @@ describe("Clone-mode branch wizard (E2E)", () => {
   it("creates from a base branch the narrowed refspec never fetches", async () => {
     const { ui } = await buildUI();
     try {
-      const created = await ui.createAndPushBranch(0, "release", "feature/from-release");
+      const created = await ui.operations.createAndPushBranch(0, "release", "feature/from-release");
       expect(created.success).toBe(true);
       expect(git(remote, "rev-parse", "feature/from-release")).toBe(git(remote, "rev-parse", "release"));
 
-      await ui.createWorktreeForBranch(0, "feature/from-release");
+      await ui.operations.createWorktreeForBranch(0, "feature/from-release");
       expect(git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/from-release");
       expect(await fs.readdir(cloneDir)).toContain("release.txt");
     } finally {
@@ -162,11 +162,11 @@ describe("Clone-mode branch wizard (E2E)", () => {
     try {
       expect(git(cloneDir, "rev-parse", "--is-shallow-repository")).toBe("true");
 
-      const created = await ui.createAndPushBranch(0, "main", "feature/shallow");
+      const created = await ui.operations.createAndPushBranch(0, "main", "feature/shallow");
       expect(created.success).toBe(true);
       expect(git(remote, "rev-parse", "feature/shallow")).toBe(git(remote, "rev-parse", "main"));
 
-      await ui.createWorktreeForBranch(0, "feature/shallow");
+      await ui.operations.createWorktreeForBranch(0, "feature/shallow");
       expect(git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/shallow");
     } finally {
       await ui.destroy(true);
@@ -181,7 +181,7 @@ describe("Clone-mode branch wizard (E2E)", () => {
       const olderCommit = git(remote, "rev-parse", "main~1");
       git(remote, "update-ref", "refs/heads/feature/taken", olderCommit);
 
-      const created = await ui.createAndPushBranch(0, "main", "feature/taken");
+      const created = await ui.operations.createAndPushBranch(0, "main", "feature/taken");
 
       expect(created).toEqual({ success: true, finalName: "feature/taken-1" });
       expect(git(remote, "rev-parse", "feature/taken")).toBe(olderCommit);
@@ -198,7 +198,7 @@ describe("Clone-mode branch wizard (E2E)", () => {
 
     const { ui } = await buildUI();
     try {
-      const created = await ui.createAndPushBranch(0, "main", "feature/protected");
+      const created = await ui.operations.createAndPushBranch(0, "main", "feature/protected");
 
       expect(created.success).toBe(false);
       expect(created.error).toContain("feature/protected");
@@ -218,7 +218,7 @@ describe("Clone-mode branch wizard (E2E)", () => {
     try {
       await fs.writeFile(path.join(cloneDir, "one.txt"), "local edit\n");
 
-      const created = await ui.createAndPushBranch(0, "main", "feature/dirty");
+      const created = await ui.operations.createAndPushBranch(0, "main", "feature/dirty");
 
       expect(created.success).toBe(false);
       expect(created.error).toMatch(/local changes/);

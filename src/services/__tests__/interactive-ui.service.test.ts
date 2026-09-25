@@ -530,7 +530,7 @@ describe("InteractiveUIService", () => {
     it("should stop registered cron jobs on destroy", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const destroySpy = vi.fn();
-      service.registerCronJob({ stop: vi.fn(), destroy: destroySpy } as unknown as cron.ScheduledTask);
+      service.scheduler.registerCronJob({ stop: vi.fn(), destroy: destroySpy } as unknown as cron.ScheduledTask);
 
       await service.destroy();
 
@@ -1151,7 +1151,7 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockSyncService, mockSyncService], "/test/config.js", "0 * * * *");
         const cronJobsSpy = vi.fn();
-        (service as any).cronJobs = [
+        (service as any).scheduler.cronJobs = [
           { stop: vi.fn(), destroy: cronJobsSpy },
           { stop: vi.fn(), destroy: cronJobsSpy },
         ];
@@ -1172,12 +1172,12 @@ describe("InteractiveUIService", () => {
         // calls it, and a double without it only reaches cancelCronJobs' catch,
         // which would turn a missing method into a warning nobody reads.
         const preExistingJob = { stop: vi.fn(), destroy: vi.fn() };
-        (service as any).cronJobs = [preExistingJob];
+        (service as any).scheduler.cronJobs = [preExistingJob];
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        const cronJobs = (service as any).cronJobs;
+        const cronJobs = (service as any).scheduler.cronJobs;
         expect(cronJobs).toHaveLength(1);
         expect(preExistingJob.stop).not.toHaveBeenCalled();
 
@@ -1209,7 +1209,7 @@ describe("InteractiveUIService", () => {
 
         await onReload();
 
-        const cronJobs = (service as any).cronJobs;
+        const cronJobs = (service as any).scheduler.cronJobs;
         expect(cronJobs).toBeDefined();
         expect(cronJobs.length).toBe(1);
 
@@ -1236,14 +1236,14 @@ describe("InteractiveUIService", () => {
         );
 
         // Constructor no longer creates cron jobs (index.ts handles cron setup)
-        let cronJobs = (service as any).cronJobs;
+        let cronJobs = (service as any).scheduler.cronJobs;
         expect(cronJobs.length).toBe(0);
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
         // After reload, cron jobs are created via setupCronJobs
-        cronJobs = (service as any).cronJobs;
+        cronJobs = (service as any).scheduler.cronJobs;
         expect(cronJobs.length).toBe(1);
 
         void service.destroy();
@@ -1267,7 +1267,7 @@ describe("InteractiveUIService", () => {
 
         await onReload();
 
-        const cronJobs = (service as any).cronJobs;
+        const cronJobs = (service as any).scheduler.cronJobs;
         expect(cronJobs).toEqual([]);
 
         void service.destroy();
@@ -1305,7 +1305,7 @@ describe("InteractiveUIService", () => {
 
         await onReload();
 
-        const cronJobs = (service as any).cronJobs;
+        const cronJobs = (service as any).scheduler.cronJobs;
         // 2 non-runOnce repos with same schedule = 1 grouped cron job
         expect(cronJobs.length).toBe(1);
 
@@ -1589,16 +1589,16 @@ describe("InteractiveUIService", () => {
 
         await onReload();
         expect((service as any).repositoryCount).toBe(1);
-        expect((service as any).cronJobs.length).toBe(1);
+        expect((service as any).scheduler.cronJobs.length).toBe(1);
 
         await onReload();
         expect((service as any).repositoryCount).toBe(2);
         // 2 repos with different schedules = 2 cron jobs
-        expect((service as any).cronJobs.length).toBe(2);
+        expect((service as any).scheduler.cronJobs.length).toBe(2);
 
         await onReload();
         expect((service as any).repositoryCount).toBe(1);
-        expect((service as any).cronJobs.length).toBe(1);
+        expect((service as any).scheduler.cronJobs.length).toBe(1);
 
         void service.destroy();
       });
@@ -1838,7 +1838,7 @@ describe("InteractiveUIService", () => {
       await onReload();
 
       expect(mockConfigLoaderInstance.loadConfigFile).not.toHaveBeenCalled();
-      expect((service as any).cronJobs).toHaveLength(0);
+      expect((service as any).scheduler.cronJobs).toHaveLength(0);
 
       syncInProgress = false;
       await shutdown;
@@ -1873,7 +1873,7 @@ describe("InteractiveUIService", () => {
       releaseConfig();
       await reload;
 
-      expect((service as any).cronJobs).toHaveLength(0);
+      expect((service as any).scheduler.cronJobs).toHaveLength(0);
       expect((service as any).syncServices).toEqual([mockSyncService]);
       expect(mockSyncService.sync).not.toHaveBeenCalled();
     });
@@ -1949,7 +1949,7 @@ describe("InteractiveUIService", () => {
         };
 
         const service = new InteractiveUIService([mockService1 as any, mockService2 as any]);
-        const repos = service.getRepositoryList();
+        const repos = service.operations.getRepositoryList();
 
         expect(repos).toHaveLength(2);
         expect(repos[0]).toEqual({ index: 0, name: "repo-1", repoUrl: "https://github.com/test/repo1.git" });
@@ -1965,7 +1965,7 @@ describe("InteractiveUIService", () => {
         };
 
         const service = new InteractiveUIService([mockServiceNoName as any]);
-        const repos = service.getRepositoryList();
+        const repos = service.operations.getRepositoryList();
 
         expect(repos[0].name).toBe("repo-0");
 
@@ -1977,7 +1977,7 @@ describe("InteractiveUIService", () => {
       it("should calculate disk usage for a worktree-mode repository", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
-        const usage = await service.getRepositoryDiskUsage(0);
+        const usage = await service.operations.getRepositoryDiskUsage(0);
 
         expect(calculateDirectorySize).toHaveBeenCalledWith(".bare/repo");
         expect(calculateDirectorySize).toHaveBeenCalledWith("/test/worktrees");
@@ -2002,7 +2002,7 @@ describe("InteractiveUIService", () => {
         };
         const service = new InteractiveUIService([cloneService as any]);
 
-        const usage = await service.getRepositoryDiskUsage(0);
+        const usage = await service.operations.getRepositoryDiskUsage(0);
 
         expect(calculateDirectorySize).toHaveBeenCalledTimes(1);
         expect(calculateDirectorySize).toHaveBeenCalledWith("/test/clone");
@@ -2018,7 +2018,7 @@ describe("InteractiveUIService", () => {
           .mockRejectedValueOnce(new Error("ENOENT"));
         const service = new InteractiveUIService([mockSyncService]);
 
-        const usage = await service.getRepositoryDiskUsage(0);
+        const usage = await service.operations.getRepositoryDiskUsage(0);
 
         expect(usage.sizeBytes).toBeNull();
         expect(usage.sizeFormatted).toBe("N/A");
@@ -2033,7 +2033,7 @@ describe("InteractiveUIService", () => {
         vi.mocked(calculateDirectorySize).mockResolvedValueOnce(1024).mockRejectedValueOnce(new Error("ENOENT"));
         const service = new InteractiveUIService([mockSyncService]);
 
-        const usage = await service.getRepositoryDiskUsage(0);
+        const usage = await service.operations.getRepositoryDiskUsage(0);
 
         expect(usage.sizeFormatted).toMatch(/^≥/);
         expect(usage.sizeBytes).toBe(1024);
@@ -2045,7 +2045,7 @@ describe("InteractiveUIService", () => {
       it("should throw for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
-        await expect(service.getRepositoryDiskUsage(-1)).rejects.toThrow("Invalid repository index: -1");
+        await expect(service.operations.getRepositoryDiskUsage(-1)).rejects.toThrow("Invalid repository index: -1");
 
         void service.destroy();
       });
@@ -2055,7 +2055,7 @@ describe("InteractiveUIService", () => {
       it("should return branches for valid repo index", async () => {
         mockSyncService.isInitialized.mockReturnValue(true);
         const service = new InteractiveUIService([mockSyncService]);
-        const branches = await service.getBranchesForRepo(0);
+        const branches = await service.operations.getBranchesForRepo(0);
 
         expect(branches).toEqual(["main", "develop", "feature/test"]);
         expect(mockSyncService.getRemoteBranches).toHaveBeenCalled();
@@ -2066,7 +2066,7 @@ describe("InteractiveUIService", () => {
       it("should return empty array if service not initialized", async () => {
         mockSyncService.isInitialized.mockReturnValue(false);
         const service = new InteractiveUIService([mockSyncService]);
-        const branches = await service.getBranchesForRepo(0);
+        const branches = await service.operations.getBranchesForRepo(0);
 
         expect(branches).toEqual([]);
         expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
@@ -2080,7 +2080,7 @@ describe("InteractiveUIService", () => {
         mockSyncService.getRemoteBranches.mockResolvedValue(["main", "feature/fresh-clone"]);
         const service = new InteractiveUIService([mockSyncService]);
 
-        const branches = await service.getBranchesForRepo(0);
+        const branches = await service.operations.getBranchesForRepo(0);
 
         expect(branches).toEqual(["main", "feature/fresh-clone"]);
         expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
@@ -2094,7 +2094,7 @@ describe("InteractiveUIService", () => {
         mockSyncService.getRemoteBranches.mockRejectedValue(new Error("ls-remote failed"));
         const service = new InteractiveUIService([mockSyncService]);
 
-        const branches = await service.getBranchesForRepo(0);
+        const branches = await service.operations.getBranchesForRepo(0);
 
         expect(branches).toEqual([]);
         expect(mockSyncService.getRemoteBranches).toHaveBeenCalledTimes(1);
@@ -2105,8 +2105,8 @@ describe("InteractiveUIService", () => {
       it("should throw error for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
-        await expect(service.getBranchesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
-        await expect(service.getBranchesForRepo(5)).rejects.toThrow("Invalid repository index: 5");
+        await expect(service.operations.getBranchesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
+        await expect(service.operations.getBranchesForRepo(5)).rejects.toThrow("Invalid repository index: 5");
 
         void service.destroy();
       });
@@ -2115,7 +2115,7 @@ describe("InteractiveUIService", () => {
     describe("getDefaultBranchForRepo", () => {
       it("should return default branch for valid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        const branch = await service.getDefaultBranchForRepo(0);
+        const branch = await service.operations.getDefaultBranchForRepo(0);
 
         expect(branch).toBe("main");
         expect(mockSyncService.getDefaultBranch).toHaveBeenCalled();
@@ -2131,7 +2131,7 @@ describe("InteractiveUIService", () => {
         mockSyncService.getDefaultBranch.mockResolvedValue("develop");
         const service = new InteractiveUIService([mockSyncService]);
 
-        const branch = await service.getDefaultBranchForRepo(0);
+        const branch = await service.operations.getDefaultBranchForRepo(0);
 
         expect(branch).toBe("develop");
         expect(mockGitService.getDefaultBranch).not.toHaveBeenCalled();
@@ -2142,8 +2142,8 @@ describe("InteractiveUIService", () => {
       it("should throw error for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
-        await expect(service.getDefaultBranchForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
-        await expect(service.getDefaultBranchForRepo(5)).rejects.toThrow("Invalid repository index: 5");
+        await expect(service.operations.getDefaultBranchForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
+        await expect(service.operations.getDefaultBranchForRepo(5)).rejects.toThrow("Invalid repository index: 5");
 
         void service.destroy();
       });
@@ -2152,7 +2152,7 @@ describe("InteractiveUIService", () => {
     describe("createAndPushBranch", () => {
       it("should create and push a new branch", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/new");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/new");
 
         expect(result.success).toBe(true);
         expect(result.finalName).toBe("feature/new");
@@ -2169,7 +2169,7 @@ describe("InteractiveUIService", () => {
           .mockResolvedValueOnce(undefined);
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/test");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/test");
 
         expect(result.success).toBe(true);
         expect(result.finalName).toBe("feature/test-2");
@@ -2189,7 +2189,7 @@ describe("InteractiveUIService", () => {
           .mockResolvedValueOnce(undefined);
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "x-1");
+        const result = await service.operations.createAndPushBranch(0, "main", "x-1");
 
         expect(result).toEqual({ success: true, finalName: "x-3" });
         expect(mockGitService.createBranch).toHaveBeenNthCalledWith(1, "x-1", "main");
@@ -2206,7 +2206,7 @@ describe("InteractiveUIService", () => {
         mockGitService.pushBranch.mockRejectedValueOnce(new Error("stale info: refs/heads/x-1"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "x-1");
+        const result = await service.operations.createAndPushBranch(0, "main", "x-1");
 
         expect(result).toEqual({ success: true, finalName: "x-2" });
         expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(1, "x-1");
@@ -2222,7 +2222,7 @@ describe("InteractiveUIService", () => {
         mockGitService.createBranch.mockRejectedValueOnce(new Error("already exists")).mockResolvedValueOnce(undefined);
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "release-rc");
+        const result = await service.operations.createAndPushBranch(0, "main", "release-rc");
 
         expect(result).toEqual({ success: true, finalName: "release-rc-1" });
 
@@ -2237,7 +2237,7 @@ describe("InteractiveUIService", () => {
         mockGitService.pushBranch.mockRejectedValueOnce(new Error("connection reset"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "x");
+        const result = await service.operations.createAndPushBranch(0, "main", "x");
 
         expect(result.success).toBe(false);
         expect(result.finalName).toBe("x-1");
@@ -2250,7 +2250,7 @@ describe("InteractiveUIService", () => {
         mockGitService.createBranch.mockRejectedValue(new Error("already exists"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "x");
+        const result = await service.operations.createAndPushBranch(0, "main", "x");
 
         expect(result.success).toBe(false);
         expect(result.finalName).toBe("x-9");
@@ -2268,7 +2268,7 @@ describe("InteractiveUIService", () => {
         mockGitService.pushBranch.mockRejectedValueOnce(new Error("remote rejected: pre-receive hook declined"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/new");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/new");
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("could not push 'feature/new'");
@@ -2288,7 +2288,7 @@ describe("InteractiveUIService", () => {
           .mockRejectedValueOnce(new Error("stale info: refs/heads/feature/x-1"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/x");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/x");
 
         expect(result).toEqual({ success: true, finalName: "feature/x-2" });
         expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(1, "feature/x");
@@ -2311,7 +2311,7 @@ describe("InteractiveUIService", () => {
         mockGitService.deleteLocalBranchIfAt.mockRejectedValueOnce(new Error("ref moved"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/new");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/new");
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("is still in the bare repository");
@@ -2333,7 +2333,7 @@ describe("InteractiveUIService", () => {
         );
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/new");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/new");
 
         expect(result.success).toBe(false);
         expect(result.error).not.toContain("ghp_sUp3rSecret");
@@ -2354,7 +2354,7 @@ describe("InteractiveUIService", () => {
         mockGitService.deleteLocalBranchIfAt.mockRejectedValueOnce(new Error("ref moved"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/x");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/x");
 
         expect(result.success).toBe(false);
         expect(result.finalName).toBe("feature/x");
@@ -2371,7 +2371,7 @@ describe("InteractiveUIService", () => {
 
       it("should return error for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(-1, "main", "feature/new");
+        const result = await service.operations.createAndPushBranch(-1, "main", "feature/new");
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("Invalid repository index");
@@ -2383,7 +2383,7 @@ describe("InteractiveUIService", () => {
         mockGitService.createBranch.mockRejectedValue(new Error("Git error"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/new");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/new");
 
         expect(result.success).toBe(false);
         expect(result.error).toBe("Git error");
@@ -2393,7 +2393,7 @@ describe("InteractiveUIService", () => {
 
       it("should serialize branch creation through the queued repo lock", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        await service.createAndPushBranch(0, "main", "feature/new");
+        await service.operations.createAndPushBranch(0, "main", "feature/new");
 
         // Branch+push must run behind any in-flight sync to avoid racing git's refs.
         expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
@@ -2405,7 +2405,7 @@ describe("InteractiveUIService", () => {
         (mockSyncService.runQueuedRepoOperation as any).mockResolvedValueOnce({ started: false, reason: "locked" });
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/new");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/new");
 
         expect(result.success).toBe(false);
         expect(result.error).toMatch(/repository lock/i);
@@ -2429,7 +2429,7 @@ describe("InteractiveUIService", () => {
         };
         const service = new InteractiveUIService([cloneService as any]);
 
-        const result = await service.createAndPushBranch(0, "main", "feature/x");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/x");
 
         expect(result).toEqual({ success: true, finalName: "feature/x" });
         expect(cloneService.createAndPushBranch).toHaveBeenCalledWith("main", "feature/x");
@@ -2438,7 +2438,7 @@ describe("InteractiveUIService", () => {
 
         // ...and the wizard's follow-up switches the clone in place rather
         // than adding a worktree — the branch it just pushed is now real.
-        await service.createWorktreeForBranch(0, "feature/x");
+        await service.operations.createWorktreeForBranch(0, "feature/x");
         expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/x", { allowConfigDrift: true });
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
@@ -2456,7 +2456,7 @@ describe("InteractiveUIService", () => {
         };
         const service = new InteractiveUIService([cloneService as any]);
 
-        const result = await service.createAndPushBranch(0, "main", "feature/x");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/x");
 
         expect(result).toEqual({ success: true, finalName: "feature/x-1" });
         expect(cloneService.createAndPushBranch).toHaveBeenNthCalledWith(2, "main", "feature/x-1");
@@ -2474,7 +2474,7 @@ describe("InteractiveUIService", () => {
         };
         const service = new InteractiveUIService([cloneService as any]);
 
-        const result = await service.createAndPushBranch(0, "main", "feature/x");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/x");
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("'app'");
@@ -2493,7 +2493,7 @@ describe("InteractiveUIService", () => {
         });
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.createAndPushBranch(0, "main", "feature/new");
+        const result = await service.operations.createAndPushBranch(0, "main", "feature/new");
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("/state/sync-worktrees/locks");
@@ -2508,7 +2508,7 @@ describe("InteractiveUIService", () => {
     describe("getWorktreesForRepo", () => {
       it("should return worktrees for valid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        const worktrees = await service.getWorktreesForRepo(0);
+        const worktrees = await service.operations.getWorktreesForRepo(0);
 
         expect(worktrees).toHaveLength(2);
         expect(worktrees[0]).toEqual({ path: "/test/worktrees/main", branch: "main" });
@@ -2519,7 +2519,7 @@ describe("InteractiveUIService", () => {
       it("should throw error for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
-        await expect(service.getWorktreesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
+        await expect(service.operations.getWorktreesForRepo(-1)).rejects.toThrow("Invalid repository index: -1");
 
         void service.destroy();
       });
@@ -2533,7 +2533,7 @@ describe("InteractiveUIService", () => {
         };
         const service = new InteractiveUIService([cloneService as any]);
 
-        const worktrees = await service.getWorktreesForRepo(0);
+        const worktrees = await service.operations.getWorktreesForRepo(0);
 
         expect(worktrees).toEqual([{ path: "/test/clone", branch: "main" }]);
         expect(cloneService.getWorktrees).toHaveBeenCalled();
@@ -2553,7 +2553,7 @@ describe("InteractiveUIService", () => {
         };
         const service = new InteractiveUIService([cloneService as any]);
 
-        const statuses = await service.getWorktreeStatusForRepo(0);
+        const statuses = await service.operations.getWorktreeStatusForRepo(0);
 
         expect(statuses).toHaveLength(1);
         expect(statuses[0].path).toBe("/test/clone");
@@ -2568,7 +2568,7 @@ describe("InteractiveUIService", () => {
     describe("createWorktreeForBranch", () => {
       it("should create worktree for branch", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        await service.createWorktreeForBranch(0, "feature/new");
+        await service.operations.createWorktreeForBranch(0, "feature/new");
 
         expect(mockGitService.addWorktree).toHaveBeenCalledWith(
           "feature/new",
@@ -2586,7 +2586,7 @@ describe("InteractiveUIService", () => {
         };
         const service = new InteractiveUIService([cloneService as any]);
 
-        await service.createWorktreeForBranch(0, "feature/new");
+        await service.operations.createWorktreeForBranch(0, "feature/new");
 
         // allowConfigDrift: the wizard just created+pushed this branch, so the
         // switch is intentional drift from config.branch (warned downstream).
@@ -2599,7 +2599,7 @@ describe("InteractiveUIService", () => {
       it("should throw error for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
-        await expect(service.createWorktreeForBranch(-1, "feature/new")).rejects.toThrow(
+        await expect(service.operations.createWorktreeForBranch(-1, "feature/new")).rejects.toThrow(
           "Invalid repository index: -1",
         );
 
@@ -2608,7 +2608,7 @@ describe("InteractiveUIService", () => {
 
       it("should serialize worktree creation through the queued repo lock", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        await service.createWorktreeForBranch(0, "feature/new");
+        await service.operations.createWorktreeForBranch(0, "feature/new");
 
         expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
 
@@ -2619,7 +2619,7 @@ describe("InteractiveUIService", () => {
         (mockSyncService.runQueuedRepoOperation as any).mockResolvedValueOnce({ started: false, reason: "locked" });
 
         const service = new InteractiveUIService([mockSyncService]);
-        await expect(service.createWorktreeForBranch(0, "feature/new")).rejects.toThrow(/repository lock/i);
+        await expect(service.operations.createWorktreeForBranch(0, "feature/new")).rejects.toThrow(/repository lock/i);
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
         void service.destroy();
@@ -2631,7 +2631,7 @@ describe("InteractiveUIService", () => {
         mockSyncService.isInitialized = vi.fn().mockReturnValue(false);
         const service = new InteractiveUIService([mockSyncService]);
 
-        await service.fetchForRepo(0);
+        await service.operations.fetchForRepo(0);
 
         expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
         expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
@@ -2647,7 +2647,7 @@ describe("InteractiveUIService", () => {
         mockSyncService.isInitialized = vi.fn().mockReturnValue(true);
         const service = new InteractiveUIService([mockSyncService]);
 
-        await service.fetchForRepo(0);
+        await service.operations.fetchForRepo(0);
 
         expect(mockSyncService.initializeUnlocked).not.toHaveBeenCalled();
         expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
@@ -2659,7 +2659,7 @@ describe("InteractiveUIService", () => {
         (mockSyncService.runQueuedRepoOperation as any).mockResolvedValueOnce({ started: false, reason: "locked" });
 
         const service = new InteractiveUIService([mockSyncService]);
-        await expect(service.fetchForRepo(0)).rejects.toThrow(/repository lock/i);
+        await expect(service.operations.fetchForRepo(0)).rejects.toThrow(/repository lock/i);
 
         void service.destroy();
       });
@@ -2669,7 +2669,7 @@ describe("InteractiveUIService", () => {
         mockSyncService.isCloneMode = vi.fn().mockReturnValue(true);
         const service = new InteractiveUIService([mockSyncService]);
 
-        await service.fetchForRepo(0);
+        await service.operations.fetchForRepo(0);
 
         expect(mockGitService.fetchAll).not.toHaveBeenCalled();
         expect(mockSyncService.getRemoteBranches).not.toHaveBeenCalled();
@@ -2697,7 +2697,7 @@ describe("InteractiveUIService", () => {
 
       it("should return success when opening editor", () => {
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/test/worktrees/main");
+        const result = service.launcher.openEditorInWorktree("/test/worktrees/main");
 
         expect(result.success).toBe(true);
 
@@ -2709,7 +2709,7 @@ describe("InteractiveUIService", () => {
         mockSpawn.mockClear();
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/test/worktrees/main");
+        const result = service.launcher.openEditorInWorktree("/test/worktrees/main");
 
         expect(result.success).toBe(true);
         expect(mockSpawn).toHaveBeenCalledWith(
@@ -2729,7 +2729,7 @@ describe("InteractiveUIService", () => {
           mockSpawn.mockClear();
 
           const service = new InteractiveUIService([mockSyncService]);
-          const result = service.openEditorInWorktree("/test/worktrees/main");
+          const result = service.launcher.openEditorInWorktree("/test/worktrees/main");
 
           expect(result.success).toBe(false);
           expect(result.error).toContain(`'${editor}' is a terminal editor`);
@@ -2746,7 +2746,7 @@ describe("InteractiveUIService", () => {
         mockSpawn.mockClear();
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/test/worktrees/main");
+        const result = service.launcher.openEditorInWorktree("/test/worktrees/main");
 
         expect(result.success).toBe(false);
         expect(mockSpawn).not.toHaveBeenCalled();
@@ -2760,7 +2760,7 @@ describe("InteractiveUIService", () => {
         mockSpawn.mockClear();
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/test/worktrees/main");
+        const result = service.launcher.openEditorInWorktree("/test/worktrees/main");
 
         expect(result.success).toBe(false);
         expect(mockSpawn).not.toHaveBeenCalled();
@@ -2774,13 +2774,13 @@ describe("InteractiveUIService", () => {
 
         process.env.EDITOR = "emacs";
         mockSpawn.mockClear();
-        expect(service.openEditorInWorktree("/wt").success).toBe(true);
+        expect(service.launcher.openEditorInWorktree("/wt").success).toBe(true);
         expect(mockSpawn).toHaveBeenCalledWith("emacs", ["/wt"], expect.objectContaining({ detached: true }));
 
         for (const flag of ["-nw", "--no-window-system", "-t", "--tty"]) {
           process.env.EDITOR = `emacs ${flag}`;
           mockSpawn.mockClear();
-          const result = service.openEditorInWorktree("/wt");
+          const result = service.launcher.openEditorInWorktree("/wt");
           expect(result.success, `emacs ${flag} should be refused`).toBe(false);
           expect(mockSpawn).not.toHaveBeenCalled();
         }
@@ -2794,7 +2794,7 @@ describe("InteractiveUIService", () => {
         mockSpawn.mockClear();
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/wt");
+        const result = service.launcher.openEditorInWorktree("/wt");
 
         expect(result.success).toBe(true);
         expect(mockSpawn).toHaveBeenCalledWith(editor, ["-g", "/wt"], expect.objectContaining({ detached: true }));
@@ -2820,7 +2820,7 @@ describe("InteractiveUIService", () => {
         mockSpawn.mockClear();
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/wt");
+        const result = service.launcher.openEditorInWorktree("/wt");
 
         expect(result.success, `${editor} ${flag} should still be refused`).toBe(false);
         expect(mockSpawn).not.toHaveBeenCalled();
@@ -2838,7 +2838,7 @@ describe("InteractiveUIService", () => {
           mockSpawn.mockClear();
 
           const service = new InteractiveUIService([mockSyncService]);
-          const result = service.openEditorInWorktree("/wt");
+          const result = service.launcher.openEditorInWorktree("/wt");
 
           expect(result.success, `${value} should be refused`).toBe(false);
           expect(mockSpawn).not.toHaveBeenCalled();
@@ -2853,7 +2853,7 @@ describe("InteractiveUIService", () => {
         mockSpawn.mockClear();
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/wt");
+        const result = service.launcher.openEditorInWorktree("/wt");
 
         expect(result.success).toBe(true);
         expect(mockSpawn).toHaveBeenCalledWith(
@@ -2871,7 +2871,7 @@ describe("InteractiveUIService", () => {
         mockSpawn.mockClear();
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/wt");
+        const result = service.launcher.openEditorInWorktree("/wt");
 
         expect(result.success).toBe(true);
         expect(mockSpawn).toHaveBeenCalledWith(
@@ -2889,7 +2889,7 @@ describe("InteractiveUIService", () => {
         mockSpawn.mockClear();
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/wt");
+        const result = service.launcher.openEditorInWorktree("/wt");
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("whitespace only");
@@ -2908,7 +2908,7 @@ describe("InteractiveUIService", () => {
         mockSpawn.mockClear();
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openEditorInWorktree("/wt");
+        const result = service.launcher.openEditorInWorktree("/wt");
 
         expect(result.success).toBe(true);
         expect(mockSpawn).toHaveBeenCalledWith("code", ["/wt"], expect.objectContaining({ detached: true }));
@@ -2938,7 +2938,7 @@ describe("InteractiveUIService", () => {
 
         const service = new InteractiveUIService([mockSyncService]);
         try {
-          const result = service.openEditorInWorktree("/wt");
+          const result = service.launcher.openEditorInWorktree("/wt");
 
           expect(result.success).toBe(false);
           expect(result.error).toContain(present);
@@ -2993,7 +2993,7 @@ describe("InteractiveUIService", () => {
           config: { ...mockSyncService.config, name: "my-repo" },
         } as any;
         const service = new InteractiveUIService([namedSyncService]);
-        const result = service.openTerminalInWorktree(0, "/worktrees/feat-x", "feat/x");
+        const result = service.launcher.openTerminalInWorktree(0, "/worktrees/feat-x", "feat/x");
 
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "open");
@@ -3022,7 +3022,7 @@ describe("InteractiveUIService", () => {
           config: { ...mockSyncService.config, name: "my-repo" },
         } as any;
         const service = new InteractiveUIService([namedSyncService]);
-        const result = service.openTerminalInWorktree(0, "/test/worktrees/feat-x", "feat/x");
+        const result = service.launcher.openTerminalInWorktree(0, "/test/worktrees/feat-x", "feat/x");
 
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "osascript");
@@ -3044,7 +3044,7 @@ describe("InteractiveUIService", () => {
           config: { ...mockSyncService.config, name: "repo" },
         } as any;
         const service = new InteractiveUIService([namedSyncService]);
-        const result = service.openTerminalInWorktree(0, "/path", "branch");
+        const result = service.launcher.openTerminalInWorktree(0, "/path", "branch");
 
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "alacritty");
@@ -3073,7 +3073,7 @@ describe("InteractiveUIService", () => {
         process.env.TERMINAL = terminal;
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openTerminalInWorktree(0, "/path", "branch");
+        const result = service.launcher.openTerminalInWorktree(0, "/path", "branch");
 
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === terminal);
@@ -3101,7 +3101,7 @@ describe("InteractiveUIService", () => {
         }));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openTerminalInWorktree(0, "/path", "branch");
+        const result = service.launcher.openTerminalInWorktree(0, "/path", "branch");
 
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
@@ -3122,7 +3122,7 @@ describe("InteractiveUIService", () => {
         process.env.TERMINAL = "gnome-terminal --hide-menubar";
 
         const service = new InteractiveUIService([mockSyncService]);
-        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+        expect(service.launcher.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
 
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
         expect(call).toBeDefined();
@@ -3142,7 +3142,7 @@ describe("InteractiveUIService", () => {
         process.env.SYNC_WORKTREES_TERMINAL = '"/Applications/My Term.app/Contents/MacOS/term" -e';
 
         const service = new InteractiveUIService([mockSyncService]);
-        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+        expect(service.launcher.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
 
         const call = (mockSpawn.mock.calls as any[]).find(
           ([cmd]) => cmd === "/Applications/My Term.app/Contents/MacOS/term",
@@ -3163,7 +3163,7 @@ describe("InteractiveUIService", () => {
         process.env.SYNC_WORKTREES_TERMINAL = "gnome-terminal";
 
         const service = new InteractiveUIService([mockSyncService]);
-        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+        expect(service.launcher.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
 
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
         expect(call).toBeDefined();
@@ -3185,7 +3185,7 @@ describe("InteractiveUIService", () => {
         process.env.SYNC_WORKTREES_TERMINAL = "gnome-terminal --tab";
 
         const service = new InteractiveUIService([mockSyncService]);
-        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+        expect(service.launcher.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
 
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "gnome-terminal");
         expect(call, "gnome-terminal was never spawned").toBeDefined();
@@ -3213,7 +3213,7 @@ describe("InteractiveUIService", () => {
         const [command, flag] = value.split(" ");
 
         const service = new InteractiveUIService([mockSyncService]);
-        expect(service.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
+        expect(service.launcher.openTerminalInWorktree(0, "/path", "branch").success).toBe(true);
 
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === command);
         expect(call, `${command} was never spawned`).toBeDefined();
@@ -3230,7 +3230,7 @@ describe("InteractiveUIService", () => {
 
       it("should return error for invalid repository index", () => {
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openTerminalInWorktree(5, "/path", "branch");
+        const result = service.launcher.openTerminalInWorktree(5, "/path", "branch");
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("Invalid repository index");
@@ -3247,7 +3247,7 @@ describe("InteractiveUIService", () => {
         });
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = service.openTerminalInWorktree(0, "/path", "branch");
+        const result = service.launcher.openTerminalInWorktree(0, "/path", "branch");
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("ENOENT");
@@ -3259,7 +3259,7 @@ describe("InteractiveUIService", () => {
     describe("copyBranchFiles", () => {
       it("should skip if no files configured", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        await service.copyBranchFiles(0, "main", "feature/new");
+        await service.operations.copyBranchFiles(0, "main", "feature/new");
 
         expect(mockGitService.getWorktrees).not.toHaveBeenCalled();
 
@@ -3268,7 +3268,7 @@ describe("InteractiveUIService", () => {
 
       it("should skip for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
-        await expect(service.copyBranchFiles(-1, "main", "feature/new")).resolves.not.toThrow();
+        await expect(service.operations.copyBranchFiles(-1, "main", "feature/new")).resolves.not.toThrow();
 
         void service.destroy();
       });
@@ -3284,7 +3284,7 @@ describe("InteractiveUIService", () => {
         };
 
         const service = new InteractiveUIService([mockServiceWithFiles as any]);
-        await expect(service.copyBranchFiles(0, "main", "feature/new")).resolves.not.toThrow();
+        await expect(service.operations.copyBranchFiles(0, "main", "feature/new")).resolves.not.toThrow();
 
         void service.destroy();
       });
@@ -3295,7 +3295,7 @@ describe("InteractiveUIService", () => {
         (fs.rm as Mock<any>).mockResolvedValue(undefined);
         const service = new InteractiveUIService([mockSyncService]);
 
-        await service.deleteDivergedDirectory(0, "2024-01-15-feature-x-abc123");
+        await service.operations.deleteDivergedDirectory(0, "2024-01-15-feature-x-abc123");
 
         expect(mockSyncService.discardDivergedDirectory).toHaveBeenCalledWith(
           path.join("/test/worktrees", ".diverged", "2024-01-15-feature-x-abc123"),
@@ -3311,7 +3311,7 @@ describe("InteractiveUIService", () => {
         );
         const service = new InteractiveUIService([mockSyncService]);
 
-        await service.deleteDivergedDirectory(0, "2024-01-15-feature-x-abc123");
+        await service.operations.deleteDivergedDirectory(0, "2024-01-15-feature-x-abc123");
 
         expect(mockSyncService.discardDivergedDirectory).toHaveBeenCalledWith(
           path.join("/test/worktrees", ".diverged", "2024-01-15-feature-x-abc123"),
@@ -3323,8 +3323,12 @@ describe("InteractiveUIService", () => {
       it("should throw for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
-        await expect(service.deleteDivergedDirectory(-1, "test")).rejects.toThrow("Invalid repository index: -1");
-        await expect(service.deleteDivergedDirectory(5, "test")).rejects.toThrow("Invalid repository index: 5");
+        await expect(service.operations.deleteDivergedDirectory(-1, "test")).rejects.toThrow(
+          "Invalid repository index: -1",
+        );
+        await expect(service.operations.deleteDivergedDirectory(5, "test")).rejects.toThrow(
+          "Invalid repository index: 5",
+        );
 
         void service.destroy();
       });
@@ -3333,7 +3337,7 @@ describe("InteractiveUIService", () => {
         (fs.rm as Mock<any>).mockResolvedValue(undefined);
         const service = new InteractiveUIService([mockSyncService]);
 
-        await expect(service.deleteDivergedDirectory(0, "../../evil-target")).rejects.toThrow(
+        await expect(service.operations.deleteDivergedDirectory(0, "../../evil-target")).rejects.toThrow(
           /Invalid diverged directory name|Path traversal rejected/,
         );
         expect(fs.rm).not.toHaveBeenCalled();
@@ -3345,7 +3349,7 @@ describe("InteractiveUIService", () => {
         (fs.rm as Mock<any>).mockResolvedValue(undefined);
         const service = new InteractiveUIService([mockSyncService]);
 
-        await expect(service.deleteDivergedDirectory(0, "../../../etc/passwd")).rejects.toThrow(
+        await expect(service.operations.deleteDivergedDirectory(0, "../../../etc/passwd")).rejects.toThrow(
           /Invalid diverged directory name|Path traversal rejected/,
         );
         expect(fs.rm).not.toHaveBeenCalled();
@@ -3363,7 +3367,7 @@ describe("InteractiveUIService", () => {
         (fs.rm as Mock<any>).mockResolvedValue(undefined);
         const service = new InteractiveUIService([mockSyncService]);
 
-        await expect(service.deleteDivergedDirectory(0, badName)).rejects.toThrow();
+        await expect(service.operations.deleteDivergedDirectory(0, badName)).rejects.toThrow();
         expect(fs.rm).not.toHaveBeenCalled();
 
         void service.destroy();
@@ -3374,10 +3378,10 @@ describe("InteractiveUIService", () => {
       it("should return empty array for invalid repo index", async () => {
         const service = new InteractiveUIService([mockSyncService]);
 
-        const result = await service.getDivergedDirectoriesForRepo(-1);
+        const result = await service.operations.getDivergedDirectoriesForRepo(-1);
         expect(result).toEqual([]);
 
-        const result2 = await service.getDivergedDirectoriesForRepo(5);
+        const result2 = await service.operations.getDivergedDirectoriesForRepo(5);
         expect(result2).toEqual([]);
 
         void service.destroy();
@@ -3387,7 +3391,7 @@ describe("InteractiveUIService", () => {
         (fs.readdir as Mock<any>).mockRejectedValue(new Error("ENOENT"));
         const service = new InteractiveUIService([mockSyncService]);
 
-        const result = await service.getDivergedDirectoriesForRepo(0);
+        const result = await service.operations.getDivergedDirectoriesForRepo(0);
         expect(result).toEqual([]);
 
         void service.destroy();
@@ -3401,7 +3405,7 @@ describe("InteractiveUIService", () => {
         );
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.getDivergedDirectoriesForRepo(0);
+        const result = await service.operations.getDivergedDirectoriesForRepo(0);
 
         expect(result).toHaveLength(1);
         expect(result[0].originalBranch).toBe("feature/x");
@@ -3417,7 +3421,7 @@ describe("InteractiveUIService", () => {
         (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.getDivergedDirectoriesForRepo(0);
+        const result = await service.operations.getDivergedDirectoriesForRepo(0);
 
         expect(result).toHaveLength(1);
         expect(result[0].originalBranch).toBe("my-branch");
@@ -3435,7 +3439,7 @@ describe("InteractiveUIService", () => {
         (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.getDivergedDirectoriesForRepo(0);
+        const result = await service.operations.getDivergedDirectoriesForRepo(0);
 
         expect(result).toHaveLength(1);
         expect(result[0].name).toBe("a-dir");
@@ -3452,7 +3456,7 @@ describe("InteractiveUIService", () => {
         (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
 
         const service = new InteractiveUIService([mockSyncService]);
-        const result = await service.getDivergedDirectoriesForRepo(0);
+        const result = await service.operations.getDivergedDirectoriesForRepo(0);
 
         expect(result).toHaveLength(2);
         expect(result[0].divergedAt).toBe("2024-06-15");
@@ -3487,7 +3491,7 @@ describe("InteractiveUIService", () => {
         }));
         const ui = new InteractiveUIService(services as any, undefined, undefined, 1);
 
-        await ui.getForceCleanPreview();
+        await ui.operations.getForceCleanPreview();
 
         expect(maxConcurrent).toBe(1);
         void ui.destroy();
@@ -3501,7 +3505,7 @@ describe("InteractiveUIService", () => {
         } as any;
         const ui = new InteractiveUIService([mockSyncService, second]);
 
-        const results = await ui.forceClean([
+        const results = await ui.operations.forceClean([
           { repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: ["refs/sync-worktrees/keep/ref-a"] },
         ]);
 
@@ -3537,7 +3541,7 @@ describe("InteractiveUIService", () => {
         ui.getEvents().on("addLog", (entry: { message: string; level: string }) => logs.push(entry));
         ui.getEvents().emit("uiReady");
 
-        await ui.forceClean([{ repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] }]);
+        await ui.operations.forceClean([{ repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] }]);
 
         expect(logs).toContainEqual(
           expect.objectContaining({
@@ -3572,7 +3576,7 @@ describe("InteractiveUIService", () => {
         ui.getEvents().on("addLog", (entry: { message: string; level: string }) => logs.push(entry));
         ui.getEvents().emit("uiReady");
 
-        await ui.forceClean([{ repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] }]);
+        await ui.operations.forceClean([{ repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] }]);
 
         const message = logs.map((entry) => entry.message).join("\n");
         expect(message).toContain("GC skipped");
@@ -3590,10 +3594,10 @@ describe("InteractiveUIService", () => {
         } as any;
         const ui = new InteractiveUIService([mockSyncService, failingService]);
 
-        const preview = await ui.getForceCleanPreview();
+        const preview = await ui.operations.getForceCleanPreview();
         // Both repos are named in the confirmation here, so repo-2's own
         // failure — not a missing selection — is what has to survive.
-        const result = await ui.forceClean([
+        const result = await ui.operations.forceClean([
           { repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] },
           { repoIndex: 1, trashEntryIds: [], keepRefNames: [] },
         ]);
