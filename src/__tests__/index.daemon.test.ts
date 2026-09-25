@@ -27,6 +27,7 @@ interface FakeUiService {
   calculateAndUpdateDiskSpace: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
   setupCronJobs: ReturnType<typeof vi.fn>;
+  setRepositoryFilter: ReturnType<typeof vi.fn>;
   triggerInitialSync: ReturnType<typeof vi.fn>;
 }
 
@@ -66,6 +67,7 @@ vi.mock("../services/InteractiveUIService", () => ({
       calculateAndUpdateDiskSpace: vi.fn(),
       destroy: vi.fn(),
       setupCronJobs: vi.fn(),
+      setRepositoryFilter: vi.fn(),
       // Returns a promise, because index.ts leaves it unawaited and `void` on
       // a non-promise would be a different statement than the one under test.
       // `initialSyncGate` lets a test hold that promise open.
@@ -347,5 +349,23 @@ describe("runMultipleRepositories in daemon mode", () => {
     expect(vi.mocked(setupSignalHandlers)).toHaveBeenCalledWith();
     // And a daemon never disposes them while it is still running.
     expect(mocks.disposeSignalHandler).not.toHaveBeenCalled();
+  });
+  // A reload re-reads the config file, so the UI has to be told what the run
+  // was narrowed to or `r` would quietly widen it back to every repository.
+  it("hands the --filter to the UI so a config reload keeps it", async () => {
+    const repos = [repository("backend-api", "0 * * * *")];
+
+    await runMultipleRepositories(daemonConfig(repos), repos, "/etc/s.js", { filter: "backend-*" });
+
+    expect(mocks.uiConstructions).toHaveLength(1);
+    expect(mocks.uiConstructions[0].instance.setRepositoryFilter).toHaveBeenCalledWith("backend-*");
+  });
+
+  it("leaves the UI unfiltered without --filter", async () => {
+    const repos = [repository("repo-a", "0 * * * *")];
+
+    await runMultipleRepositories(daemonConfig(repos), repos);
+
+    expect(mocks.uiConstructions[0].instance.setRepositoryFilter).not.toHaveBeenCalled();
   });
 });

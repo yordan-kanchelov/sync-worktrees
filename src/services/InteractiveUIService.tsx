@@ -135,6 +135,7 @@ export class InteractiveUIService {
   private app: Instance | null = null;
   private syncServices: WorktreeSyncService[];
   private configPath?: string;
+  private repositoryFilter?: string;
   private cronSchedule?: string;
   private cronJobs: cron.ScheduledTask[] = [];
   private repositoryCount: number;
@@ -205,6 +206,15 @@ export class InteractiveUIService {
     setTimeout(() => {
       this.addLog("🚀 sync-worktrees UI initialized", "info");
     }, 100);
+  }
+
+  /**
+   * The `--filter` the CLI started with. A config reload rebuilds the
+   * repository list from the file, and without this it would quietly widen a
+   * filtered session back to every repository.
+   */
+  public setRepositoryFilter(filter: string | undefined): void {
+    this.repositoryFilter = filter;
   }
 
   public getEvents(): AppEventEmitter {
@@ -493,7 +503,17 @@ export class InteractiveUIService {
       // Validate and load new config BEFORE canceling old cron jobs
       // to prevent a window with no cron running on validation failure
       const configLoader = new ConfigLoaderService();
-      const { repositories } = await configLoader.buildRepositories(this.configPath);
+      const { repositories } = await configLoader.buildRepositories(
+        this.configPath,
+        this.repositoryFilter ? { filter: this.repositoryFilter } : undefined,
+      );
+      // An edit that leaves the --filter matching nothing would otherwise
+      // surface below as "No repositories could be initialized", which blames
+      // the repositories rather than the filter. Either way the old services
+      // and their cron jobs stay in place.
+      if (repositories.length === 0 && this.repositoryFilter) {
+        throw new Error(`No repositories match filter: ${this.repositoryFilter}`);
+      }
 
       const initResults = await Promise.allSettled(
         repositories.map((repoConfig) =>

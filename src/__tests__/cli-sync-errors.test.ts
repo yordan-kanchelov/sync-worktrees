@@ -26,7 +26,9 @@ vi.mock("../services/InteractiveUIService", () => ({
       addLog: vi.fn(),
       calculateAndUpdateDiskSpace: vi.fn(),
       destroy: vi.fn(),
+      setRepositoryFilter: vi.fn(),
       setupCronJobs: vi.fn(),
+      triggerInitialSync: vi.fn(async () => {}),
     };
   }),
 }));
@@ -56,6 +58,7 @@ describe("sync-worktrees run error reporting", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.constructService.mockReset();
     process.argv = ["node", "sync-worktrees", "--config", "/test/sync-worktrees.config.js"];
     errors = [];
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -184,5 +187,42 @@ describe("sync-worktrees run error reporting", () => {
     expect(stderr).toContain("Error loading config file");
     expect(stderr).not.toContain("s3cr3t-token");
     expect(stderr).toContain("https://***@example.com/org/repo.git");
+  });
+  // `--filter` narrows a sync the way it narrows `list`, and a filter that
+  // selects nothing is answered the same way: a typo, not a clean no-op run.
+  it("passes --filter to the loader and fails when it matches nothing", async () => {
+    process.argv.push("--filter", "nope");
+    mocks.buildRepositories.mockResolvedValue({ configFile: { repositories: [] }, repositories: [] });
+
+    expect(await runAndCaptureExit()).toBe(1);
+
+    expect(mocks.buildRepositories).toHaveBeenCalledWith("/test/sync-worktrees.config.js", { filter: "nope" });
+    expect(errors.join("\n")).toContain("No repositories match filter: nope");
+    expect(mocks.constructService).not.toHaveBeenCalled();
+  });
+
+  it("syncs only what --filter matched", async () => {
+    process.argv.push("-f", "app");
+
+    expect(await runAndCaptureExit()).toBeUndefined();
+
+    expect(mocks.buildRepositories).toHaveBeenCalledWith("/test/sync-worktrees.config.js", { filter: "app" });
+    expect(mocks.constructService).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the 'Using config' line under --quiet", async () => {
+    process.argv.push("--quiet");
+
+    expect(await runAndCaptureExit()).toBeUndefined();
+
+    const stdout = vi.mocked(console.log).mock.calls.flat().map(String).join("\n");
+    expect(stdout).not.toContain("Using config");
+  });
+
+  it("prints the 'Using config' line without --quiet", async () => {
+    expect(await runAndCaptureExit()).toBeUndefined();
+
+    const stdout = vi.mocked(console.log).mock.calls.flat().map(String).join("\n");
+    expect(stdout).toContain("Using config");
   });
 });
