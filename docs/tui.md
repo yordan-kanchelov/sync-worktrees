@@ -7,14 +7,23 @@ eight keys you will use most.
 The UI has live log streaming, manual sync triggers, and wizards for the common operations. It syncs once on startup
 (see `defaults.syncOnStart` in the [configuration reference](./configuration.md#whole-file-settings)) and then on the
 cron schedule; `s` triggers the same cycle by hand. Cycles do not pile up on one repository: a tick that finds a
-repository already syncing skips that repository and says so in the log, and `s` is ignored while the status line reads
-`syncing`. A tick the machine slept
-through is not replayed — the next tick, or an `s`, runs the cycle. There is no headless mode: without `--runOnce` this
+repository already syncing skips that repository and says so in the log. While the status line reads `Syncing...`, `s`,
+`r` and `x` do not act; the key legend briefly reads "A sync is in progress" instead. A tick the machine slept through
+is not replayed — the next tick, or an `s`, runs the cycle. There is no headless mode: without `--runOnce` this
 UI is what runs, so leave it open in a `tmux` or `screen` window if you want it to keep going after you close the
 terminal (see [Running it unattended](../README.md#running-it-unattended)).
 
-The status bar shows the disk space the configured bare repositories and worktree directories occupy, refreshed after a
-sync cycle and on reload.
+The status bar shows:
+
+- **Status** — `Idle` or `Syncing...`.
+- **Last Sync** — when the last cycle finished, followed by how it went: `✓ OK`, `✗ 2 failed` (repositories whose sync
+  failed; the log has the reasons) or `⚠ 1 skipped` (repositories not synced this time, for example because another
+  cycle was already syncing them). A cycle in which every repository was skipped leaves the time where it was but still
+  updates the result.
+- **Next Sync** — the earliest next run across every schedule, so repositories on different `cronSchedule`s still get
+  one. Repositories with `runOnce` have no schedule and do not count.
+- **Disk Space** — what the configured bare repositories and worktree directories occupy, refreshed after a sync cycle
+  and on reload.
 
 ## Keybindings
 
@@ -24,20 +33,23 @@ sync cycle and on reload.
 | `c`         | Create a new branch (wizard)                   |
 | `o`         | Open a worktree in terminal or editor (wizard) |
 | `w`         | View worktree status across repos              |
-| `x`         | [Force clean](./trash-and-recovery.md#force-clean-from-the-tui-x): trash, recovery refs, and objects |
+| `x`         | [Force clean](./trash-and-recovery.md#force-clean-from-the-tui-x): trash, recovery refs, and objects; type `clean` and `Enter` to confirm |
 | `r`         | Reload configuration and re-sync               |
 | `?` / `h`   | Toggle help screen                             |
-| `q`         | Gracefully quit                                |
+| `q`         | Gracefully quit (asks first while work is running) |
 | `j` / `↓`   | Scroll log down one line                       |
 | `k` / `↑`   | Scroll log up one line                         |
+| `PgUp` / `PgDn` | Scroll log one page up / down              |
 | wheel       | Scroll the log (hold `Shift` to select text)   |
 | `gg`        | Jump to top of log                             |
 | `G`         | Jump to bottom (re-enables auto-scroll)        |
 
 `Esc` backs out rather than quits: it closes the help screen, cancels a wizard or steps one back to the previous
-question, and does nothing on the main screen. `q` is the only key that quits, and it quits straight away — there is no
-confirmation, and the interface terminates any hooks it still has running (see [Hooks and file
-copying](./hooks-and-file-copying.md)).
+question, and does nothing on the main screen. `q` is the only key that quits. With nothing running it quits straight
+away. While a sync, an `onBranchCreated` hook or a worktree creation is still running, the first `q` names what is
+running and a second `q` confirms; any other key cancels. Quitting waits for a running sync (press `q` again to stop
+waiting) and terminates any hooks still running (see [Hooks and file copying](./hooks-and-file-copying.md)). `r` and `s`
+pressed after that do nothing.
 
 ## Wizards
 
@@ -52,8 +64,9 @@ copying](./hooks-and-file-copying.md)).
   name. Names are validated against Git's rules; if the desired name already exists, a numeric suffix (`-1`, `-2`, …) is
   used automatically — the name shown is the name created. A branch the filters hide has no local worktree but is still
   on the remote, so origin is asked directly and counts as a collision too.
-- **Worktree status view (`w`)** — flat list of every worktree across every configured repo, each tagged with status
-  flags:
+- **Worktree status view (`w`)** — pick a repository (skipped when only one is configured; type to filter), then see
+  its worktrees, each tagged with status flags. Type to filter the list by branch; `Esc` goes back to the repository
+  choice:
 
   | Flag | Meaning                                                                                                       |
   | ---- | ------------------------------------------------------------------------------------------------------------- |
@@ -70,7 +83,7 @@ copying](./hooks-and-file-copying.md)).
   Press `Enter` on an entry to expand file/commit/stash counts. The view also surfaces `.diverged/` directories
   preserved from past force-pushes while trash was disabled (see [Trash and
   recovery](./trash-and-recovery.md#diverged-branches-force-pushes)); press `d` (with `y`/`n` confirmation) to delete
-  one after reviewing.
+  one after reviewing. If the delete fails, the reason is shown under the list and the entry stays.
 
 ## Terminal mode environment variables
 

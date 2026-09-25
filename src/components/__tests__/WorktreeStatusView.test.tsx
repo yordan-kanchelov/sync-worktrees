@@ -1100,4 +1100,94 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).toContain("d to delete");
     });
   });
+
+  describe("selection edge cases", () => {
+    it("loads the one repository by its own index, not by position", async () => {
+      const getWorktreeStatusForRepo = vi.fn().mockResolvedValue(defaultEntries);
+      render(
+        <WorktreeStatusView
+          {...defaultProps}
+          repositories={[{ index: 4, name: "only", repoUrl: "https://example.com/only.git" }]}
+          getWorktreeStatusForRepo={getWorktreeStatusForRepo}
+        />,
+      );
+
+      await waitForStateUpdate();
+      expect(getWorktreeStatusForRepo).toHaveBeenCalledWith(4);
+    });
+
+    it("keeps a valid selection when down is pressed on an empty filtered list", async () => {
+      const { stdin, rerender, lastFrame } = render(<WorktreeStatusView {...defaultProps} />);
+
+      stdin.write("new");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("No matches");
+
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+
+      rerender(
+        <WorktreeStatusView
+          {...defaultProps}
+          repositories={[...defaultProps.repositories, { index: 2, name: "new-repo", repoUrl: "u" }]}
+        />,
+      );
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("> new-repo");
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      expect(defaultProps.getWorktreeStatusForRepo).toHaveBeenCalledWith(2);
+    });
+  });
+
+  describe("a diverged directory that cannot be deleted", () => {
+    // The failure used to be stored for the ERROR step while the view stayed on
+    // the list, so the confirmation just vanished and nothing said why.
+    it("says so on the list it was deleted from", async () => {
+      const deleteMock = vi.fn().mockRejectedValue(new Error("permission denied"));
+      const { stdin, lastFrame } = render(
+        <WorktreeStatusView
+          {...defaultProps}
+          repositories={[{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }]}
+          getWorktreeStatusForRepo={vi.fn().mockResolvedValue([makeEntry("main")])}
+          getDivergedDirectoriesForRepo={vi.fn().mockResolvedValue([
+            {
+              name: "2024-01-15-feature-x-abc123",
+              path: "/worktrees/.diverged/2024-01-15-feature-x-abc123",
+              originalBranch: "feature/x",
+              divergedAt: "2024-01-15T10:00:00Z",
+              sizeBytes: 1024,
+              sizeFormatted: "1.0 KB",
+            },
+          ])}
+          deleteDivergedDirectory={deleteMock}
+        />,
+      );
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("d");
+      await waitForStateUpdate();
+      stdin.write("y");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(deleteMock).toHaveBeenCalled();
+      const frame = lastFrame() ?? "";
+      expect(frame).toContain("Failed to delete 2024-01-15-feature-x-abc123: permission denied");
+      // Still the list, with the entry that was not deleted.
+      expect(frame).toContain("Diverged Directories");
+      expect(frame).toContain("feature/x");
+
+      // Asking again clears the old failure.
+      stdin.write("d");
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("Failed to delete");
+    });
+  });
 });
