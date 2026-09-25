@@ -1,0 +1,45 @@
+name: Nightly
+
+# The end-to-end suites with the network cases on (RUN_NETWORK_E2E=true): clones from
+# github.com that pr.yml leaves out, so a PR never fails on someone else's outage.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  network-e2e:
+    name: Network E2E (Node ${{ matrix.node-version }}, ${{ matrix.os }})
+    # Scheduled runs only in this repository, not in forks.
+    if: github.event_name != 'schedule' || github.repository == 'yordan-kanchelov/sync-worktrees'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Environment
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # Builds first: the e2e suites run the bundled CLI in dist/.
+      - name: Run E2E Tests (with network)
+        run: pnpm test:e2e:network
+        # Non-blocking on macOS for the same known darwin failures as pr.yml's test step
+        # (docs/internal/FOLLOW-UPS.md, FU-CI-1); the failing step still shows on the run.
+        continue-on-error: ${{ matrix.os == 'macos-latest' }}

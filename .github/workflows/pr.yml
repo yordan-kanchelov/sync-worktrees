@@ -104,11 +104,18 @@ jobs:
         run: pnpm smoke
 
       - name: Run Tests with Coverage
+        id: tests
         run: pnpm test:coverage
         # Non-blocking on macOS until the known darwin failures are fixed (tmpdir under the
         # /var -> /private/var symlink breaks worktree-path comparisons). Lint, type check,
         # build and smoke still gate this leg. Tracked in docs/internal/FOLLOW-UPS.md (FU-CI-1).
         continue-on-error: ${{ matrix.os == 'macos-latest' }}
+
+      # Coverage totals on the run page, from coverage/coverage-summary.json (no upload service).
+      # Ubuntu only, so the summary holds one table; it also runs when a threshold fails the step.
+      - name: Coverage Summary
+        if: ${{ !cancelled() && matrix.os == 'ubuntu-latest' && steps.tests.outcome != 'skipped' }}
+        run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Coverage Reports
         if: success()
