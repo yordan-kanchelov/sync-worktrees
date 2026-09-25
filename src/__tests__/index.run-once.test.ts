@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runMultipleRepositories } from "../index";
 import { InteractiveUIService } from "../services/InteractiveUIService";
+import { WorktreeSyncService } from "../services/worktree-sync.service";
 
 import type { ConfigFile, RepositoryConfig, SyncOutcomeCounts } from "../types";
 
@@ -136,7 +137,8 @@ describe("runMultipleRepositories", () => {
     expect(summary).toBeDefined();
     expect(summary).toContain("1 synced");
     expect(summary).toContain("1 with partial skips");
-    expect(summary).toMatch(/0 (skipped|with clone-mode skips|with skips)/);
+    // Zero skips are not reported at all.
+    expect(summary).not.toMatch(/skipped|clone-mode/);
     expect(summary).toContain("0 failed");
     expect(process.exitCode).toBeUndefined();
   });
@@ -161,7 +163,7 @@ describe("runMultipleRepositories", () => {
     expect(summary).toBeDefined();
     // 1 repo total — only counted as failed, never inflating skipped or partial-skip totals.
     expect(summary).toContain("0 synced");
-    expect(summary).toMatch(/0 (skipped|with clone-mode skips|with skips)/);
+    expect(summary).not.toMatch(/skipped|clone-mode/);
     expect(summary).toContain("1 failed");
     expect(summary).not.toContain("with partial skips");
     expect(process.exitCode).toBe(1);
@@ -187,7 +189,7 @@ describe("runMultipleRepositories", () => {
     const summary = summaryCall?.[0] as string | undefined;
     expect(summary).toBeDefined();
     expect(summary).toContain("0 synced");
-    expect(summary).toMatch(/0 (skipped|with clone-mode skips)/);
+    expect(summary).not.toMatch(/skipped|clone-mode/);
     expect(summary).toContain("1 failed (1 lock unavailable)");
     expect(process.exitCode).toBe(1);
 
@@ -224,8 +226,11 @@ describe("runMultipleRepositories", () => {
 
     await runMultipleRepositories(configFile, [repo]);
 
-    expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("1 failed"));
-    expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("0 skipped"));
+    const summary = mocks.logger.info.mock.calls
+      .map((args) => String(args[0]))
+      .find((line) => line.includes("Processed"));
+    expect(summary).toContain("1 failed");
+    expect(summary).not.toMatch(/skipped|clone-mode/);
     expect(process.exitCode).toBe(1);
   });
 
@@ -276,6 +281,49 @@ describe("runMultipleRepositories", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it("pluralises the banner and summary, and adds the elapsed time to the summary", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+
+    await runMultipleRepositories(configFile, [repo]);
+
+    const lines = mocks.logger.info.mock.calls.map((args) => String(args[0]));
+    expect(lines).toContain("\n🔄 Syncing 1 repository...");
+    // A worktree-only run has no skips of any kind to report.
+    expect(lines.find((line) => line.includes("Processed"))).toMatch(
+      /^\n📊 Processed 1 repo in \d+(ms|\.\ds): 1 synced, 0 failed$/,
+    );
+    // The header's blank line is not routed through the repository's prefix,
+    // which printed a line holding nothing but "[repo-a] ".
+    expect(lines).toContain("📦 Repository: repo-a");
+    expect(lines.filter((line) => line.startsWith("\n📦"))).toEqual([]);
+    // Nothing failed, so there is nothing to hint about.
+    expect(lines.join("\n")).not.toContain("--debug");
+  });
+
+  it("points at --debug after a failure, and at repoUrl/credentials when a repository did not initialize", async () => {
+    mocks.initialize.mockRejectedValue(new Error("clone failed"));
+
+    await runMultipleRepositories(configFile, [repo]);
+
+    const hint = mocks.logger.info.mock.calls.map((args) => String(args[0])).find((line) => line.startsWith("💡"));
+    expect(hint).toContain("--debug");
+    expect(hint).toContain("repoUrl");
+  });
+
+  it("does not print the --debug hint when debug is already on", async () => {
+    mocks.initialize.mockRejectedValue(new Error("clone failed"));
+
+    await runMultipleRepositories(configFile, [{ ...repo, debug: true }]);
+
+    expect(mocks.logger.info.mock.calls.map((args) => String(args[0])).join("\n")).not.toContain("💡");
+    // The run-level logger follows the repositories' debug setting, so it keeps
+    // the full error detail as well.
+    expect(mocks.createLogger).toHaveBeenCalledWith(undefined, true);
+  });
+
   it("never builds the UI, so `syncOnStart` cannot sync a one-shot run twice", async () => {
     mocks.sync.mockResolvedValue({
       started: true,
@@ -290,5 +338,64 @@ describe("runMultipleRepositories", () => {
     expect(vi.mocked(InteractiveUIService)).not.toHaveBeenCalled();
     expect(mocks.triggerInitialSync).not.toHaveBeenCalled();
     expect(mocks.sync).toHaveBeenCalledTimes(1);
+  });
+
+  // --quiet is for cron, which mails whatever reaches stdout: the per-repo
+  // loggers go quiet, the banner goes, and the one summary line stays.
+  it("under --quiet, builds quiet repository loggers and keeps only the summary line", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+
+    await runMultipleRepositories(configFile, [repo], undefined, { quiet: true });
+
+    expect(mocks.createLogger).toHaveBeenCalledWith(repo.name, repo.debug, { quiet: true });
+    const infoLines = mocks.logger.info.mock.calls.map((args) => String(args[0]));
+    expect(infoLines.some((line) => line.includes("Syncing"))).toBe(false);
+    expect(infoLines.filter((line) => line.includes("Processed"))).toHaveLength(1);
+    // No leading blank line: it separated the summary from output that --quiet dropped.
+    expect(infoLines.find((line) => line.includes("Processed"))).toMatch(/^📊 Processed 1 repo in /);
+  });
+
+  it("prints the banner and builds loud repository loggers without --quiet", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+
+    await runMultipleRepositories(configFile, [repo]);
+
+    expect(mocks.createLogger).toHaveBeenCalledWith(repo.name, repo.debug, { quiet: undefined });
+    expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("Syncing 1 repository..."));
+  });
+
+  it("hands each service its logger without writing it into the loaded configuration", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+    const loaded: RepositoryConfig = { ...repo };
+
+    await runMultipleRepositories(configFile, [loaded]);
+
+    expect(loaded.logger).toBeUndefined();
+    expect(vi.mocked(WorktreeSyncService)).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "repo-a", logger: mocks.logger }),
+    );
+  });
+
+  it("keeps a logger the configuration already carries", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+    const ownLogger = { ...mocks.logger };
+    const loaded = { ...repo, logger: ownLogger } as unknown as RepositoryConfig;
+
+    await runMultipleRepositories(configFile, [loaded]);
+
+    expect(loaded.logger).toBe(ownLogger);
+    expect(vi.mocked(WorktreeSyncService)).toHaveBeenCalledWith(expect.objectContaining({ logger: ownLogger }));
   });
 });

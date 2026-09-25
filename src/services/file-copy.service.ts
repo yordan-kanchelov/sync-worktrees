@@ -5,7 +5,7 @@ import { glob, hasMagic } from "glob";
 
 import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { fileExists } from "../utils/file-exists";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 import { isPathEqualOrInside, isPathStrictlyInside } from "../utils/path-compare";
 
 import { PathResolutionService } from "./path-resolution.service";

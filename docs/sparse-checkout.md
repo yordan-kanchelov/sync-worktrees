@@ -68,6 +68,6 @@ skipped with a warning and reattempted on the next sync. Clone mode applies the 
 check that gates its fast-forward; unpushed commits are reported there as a skip of their own. The check compares the
 new patterns against the ones already in force, so it does not apply to a checkout that is not sparse yet — giving an
 existing full checkout a `sparseCheckout` block narrows it on the next sync whether or not the tree is clean, in both
-modes. If Git rejects the pattern list outright, the sparse step is recorded as a failed action, so a `--runOnce` run
+modes. If Git rejects the pattern list outright, the sparse step is recorded as a failed action, so a `--run-once` run
 exits non-zero rather than warning and moving on — unless the tree was dirty and the change narrows, in which case the
 skip above comes first and the rejection is not discovered until a run finds the tree clean.

@@ -9,6 +9,7 @@ import type { InitConfigInput } from "../types";
 const mocks = vi.hoisted(() => ({
   promptForInitConfig: vi.fn(),
   maybeRegisterMcpClients: vi.fn(),
+  hasInteractiveTerminal: vi.fn(() => true),
 }));
 
 // Only the interactive surface is mocked: the generator and the config loader
@@ -16,6 +17,11 @@ const mocks = vi.hoisted(() => ({
 // the file it just wrote actually loads.
 vi.mock("../utils/interactive", () => ({ promptForInitConfig: mocks.promptForInitConfig }));
 vi.mock("../utils/mcp-registration", () => ({ maybeRegisterMcpClients: mocks.maybeRegisterMcpClients }));
+// The wizard refuses to start without a terminal, and vitest's stdin is not one.
+vi.mock("../utils/terminal", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  hasInteractiveTerminal: mocks.hasInteractiveTerminal,
+}));
 
 import { main } from "../index";
 
@@ -34,6 +40,7 @@ describe("sync-worktrees init round-trips the generated config", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mocks.hasInteractiveTerminal.mockReturnValue(true);
     tempDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-init-")));
     logs = [];
     errors = [];
@@ -69,6 +76,19 @@ describe("sync-worktrees init round-trips the generated config", () => {
       ],
     };
   }
+
+  // Without a terminal the prompts could never be answered: the process sat
+  // there and then died with Node's "unsettled top-level await" warning.
+  it("refuses to start the wizard without a terminal", async () => {
+    mocks.hasInteractiveTerminal.mockReturnValue(false);
+    const configPath = path.join(tempDir, "sync-worktrees.config.js");
+
+    await expect(runInit(configPath)).rejects.toMatchObject({ code: 1 });
+
+    expect(errors.join("\n")).toContain("needs a terminal");
+    expect(mocks.promptForInitConfig).not.toHaveBeenCalled();
+    await expect(fs.access(configPath)).rejects.toThrow();
+  });
 
   it("reports success only after the generated file loads", async () => {
     mocks.promptForInitConfig.mockResolvedValue(answers());

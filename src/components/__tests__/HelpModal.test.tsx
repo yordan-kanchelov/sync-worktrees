@@ -38,6 +38,15 @@ describe("HelpModal", () => {
       expect(quitRow).not.toMatch(/esc/i);
     });
 
+    it("lists the page keys the log panel answers to", () => {
+      const { lastFrame } = render(<HelpModal {...defaultProps} />);
+
+      const pageRow = (lastFrame() ?? "").split("\n").find((line) => line.includes("PgUp"));
+
+      expect(pageRow).toContain("PgDn");
+      expect(pageRow).toContain("one page");
+    });
+
     it("should render close instruction", () => {
       const { lastFrame } = render(<HelpModal {...defaultProps} />);
 

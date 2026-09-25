@@ -4,16 +4,23 @@
   "type": "module",
   "description": "Automatically synchronize Git worktrees with remote branches - perfect for multi-branch development workflows",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "types": "dist/public-types.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/public-types.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "sync-worktrees": "bin/sync-worktrees.js",
-    "sync-worktrees-mcp": "dist/mcp-server.js"
+    "sync-worktrees-mcp": "bin/sync-worktrees-mcp.js"
   },
   "scripts": {
-    "build": "node esbuild.config.js && tsc --emitDeclarationOnly",
+    "build": "node esbuild.config.js && tsc -p tsconfig.types.json && node scripts/finalize-declarations.mjs",
     "smoke": "node scripts/smoke-test.mjs",
     "start": "node bin/sync-worktrees.js",
-    "watch": "tsc --watch",
+    "watch": "node esbuild.config.js --watch",
     "lint": "eslint '**/*.{js,cjs,mjs,ts,tsx}' --max-warnings 0",
     "lint:fix": "eslint '**/*.{js,cjs,mjs,ts,tsx}' --fix",
     "format": "prettier --write .",
@@ -44,6 +51,7 @@
   "engines": {
     "node": ">=24.0.0"
   },
+  "packageManager": "pnpm@10.33.0",
   "os": [
     "darwin",
     "linux"
@@ -72,7 +80,6 @@
     "@modelcontextprotocol/server": "^2.0.0",
     "cli-table3": "^0.6.5",
     "cron-parser": "^5.6.2",
-    "fast-folder-size": "^2.4.0",
     "glob": "^13.0.6",
     "ink": "^7.1.1",
     "node-cron": "^4.6.0",
@@ -86,7 +93,6 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
-      "fast-folder-size",
       "unrs-resolver"
     ]
   },
@@ -94,7 +100,6 @@
     "@changesets/cli": "^2.31.1",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.1.2",
-    "@types/node-cron": "^3.0.11",
     "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^19.2.17",
     "@types/yargs": "^17.0.35",
@@ -104,11 +109,8 @@
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.8.0",
-    "happy-dom": "^20.11.1",
     "ink-testing-library": "^4.0.0",
     "prettier": "^3.9.6",
-    "react-devtools-core": "^7.0.1",
-    "ts-node": "^10.9.2",
     "typescript": "^7.0.2",
     "typescript-eslint": "^8.69.0",
     "vitest": "^4.1.10"

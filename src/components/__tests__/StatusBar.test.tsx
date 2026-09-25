@@ -3,7 +3,7 @@ import { render, cleanup } from "ink-testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StatusBarProps } from "../StatusBar";
-import StatusBar from "../StatusBar";
+import StatusBar, { computeNextSyncTime } from "../StatusBar";
 
 // Helper to wait for React state updates and effects
 const waitForEffects = () => new Promise((resolve) => setTimeout(resolve, 100));
@@ -46,7 +46,7 @@ describe("StatusBar", () => {
         <StatusBar {...defaultProps} status="idle" activeOps={["Creating worktree feature/x"]} />,
       );
 
-      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Idle");
       expect(lastFrame()).toContain("Creating worktree feature/x");
     });
 
@@ -61,10 +61,10 @@ describe("StatusBar", () => {
   });
 
   describe("status display", () => {
-    it("should show Running status when idle", () => {
+    it("should show Idle status when idle", () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} status="idle" />);
 
-      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Idle");
     });
 
     it("should show Syncing status when syncing", () => {
@@ -76,7 +76,7 @@ describe("StatusBar", () => {
     it("should change status from idle to syncing", () => {
       const { lastFrame, rerender } = render(<StatusBar {...defaultProps} status="idle" />);
 
-      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Idle");
 
       rerender(<StatusBar {...defaultProps} status="syncing" />);
 
@@ -189,6 +189,69 @@ describe("StatusBar", () => {
       rerender(<StatusBar {...defaultProps} lastSyncTime={syncTime} />);
 
       expect(lastFrame()).not.toContain("N/A");
+    });
+  });
+
+  describe("last sync outcome", () => {
+    it("does not call an idle bar Running", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} status="idle" />);
+
+      expect(lastFrame()).toContain("Idle");
+      expect(lastFrame()).not.toContain("Running");
+    });
+
+    it("says in words how many repositories failed", () => {
+      const { lastFrame } = render(
+        <StatusBar {...defaultProps} lastSyncTime={new Date()} lastSyncOutcome={{ kind: "failed", count: 2 }} />,
+      );
+
+      expect(lastFrame()).toContain("✗ 2 failed");
+    });
+
+    it("says when the last cycle skipped repositories", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} lastSyncOutcome={{ kind: "skipped", count: 1 }} />);
+
+      expect(lastFrame()).toContain("⚠ 1 skipped");
+    });
+
+    it("says OK after a clean cycle, and nothing before the first one", () => {
+      const { lastFrame, rerender } = render(<StatusBar {...defaultProps} />);
+      expect(lastFrame()).not.toContain("OK");
+
+      rerender(<StatusBar {...defaultProps} lastSyncTime={new Date()} lastSyncOutcome={{ kind: "ok" }} />);
+      expect(lastFrame()).toContain("✓ OK");
+    });
+  });
+
+  describe("notice", () => {
+    it("shows a notice in place of the key legend", () => {
+      const { lastFrame, rerender } = render(<StatusBar {...defaultProps} />);
+      expect(lastFrame()).toContain("help");
+
+      rerender(<StatusBar {...defaultProps} notice="A sync is in progress" />);
+      expect(lastFrame()).toContain("A sync is in progress");
+      expect(lastFrame()).not.toContain("help");
+    });
+  });
+
+  describe("next sync across schedules", () => {
+    const now = new Date(2026, 0, 1, 10, 2, 0);
+
+    it("picks the earliest next run across every schedule", () => {
+      expect(computeNextSyncTime(["0 * * * *", "*/5 * * * *"], now)).toEqual(new Date(2026, 0, 1, 10, 5, 0));
+      expect(computeNextSyncTime(["*/5 * * * *", "0 * * * *"], now)).toEqual(new Date(2026, 0, 1, 10, 5, 0));
+    });
+
+    it("leaves out a schedule that does not parse", () => {
+      expect(computeNextSyncTime(["invalid", "0 * * * *"], now)).toEqual(new Date(2026, 0, 1, 11, 0, 0));
+      expect(computeNextSyncTime(["invalid"], now)).toBeNull();
+      expect(computeNextSyncTime([], now)).toBeNull();
+    });
+
+    it("shows Next Sync when repositories use different schedules", () => {
+      const { lastFrame } = render(<StatusBar {...defaultProps} cronSchedule={["0 * * * *", "*/5 * * * *"]} />);
+
+      expect(lastFrame()).toMatch(/Next Sync:.*\d{1,2}:\d{2}:\d{2}/);
     });
   });
 

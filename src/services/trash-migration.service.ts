@@ -4,7 +4,7 @@ import * as path from "path";
 import { DEFAULT_CONFIG, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 import { atomicWriteFile } from "../utils/atomic-write";
 import { isGitCreatableBranchName, isGitObjectId } from "../utils/git-validation";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 
 import type { Logger } from "./logger.service";
 import type { TrashEntry, TrashService } from "./trash.service";
@@ -174,7 +174,7 @@ export class TrashMigrationService {
       // untidy rather than unsafe — and reporting it as a failed adoption
       // would be a lie. Name the ref so it can be dropped by hand.
       this.logger.warn(
-        `⚠️ Adopted '${entry.manifest.legacyOriginalName}' but could not delete its legacy keep ref '${String(candidate)}'; drop it with 'sync-worktrees trash --dropKeepRef ${entry.manifest.legacyOriginalName}': ${getErrorMessage(error)}`,
+        `⚠️ Adopted '${entry.manifest.legacyOriginalName}' but could not delete its legacy keep ref '${String(candidate)}'; drop it with 'sync-worktrees trash --drop-keep-ref ${entry.manifest.legacyOriginalName}': ${getErrorMessage(error)}`,
       );
     }
     await this.rewriteAdoptedDivergedInfo(entry, released).catch((error: unknown) =>
@@ -213,7 +213,7 @@ export class TrashMigrationService {
 To preserve your changes:
   1. Review: git diff origin/${branch}
   2. Keep changes: git push --force-with-lease origin ${branch}
-  3. Discard changes: the files age out with the trash retention window, but the commit does not — it is held by this entry until then and by a permanent 'keep/${entry.manifest.id}' ref afterwards. Drop that with 'sync-worktrees trash --dropKeepRef ${entry.manifest.id}' once you are sure. To get the files back before they expire: 'sync-worktrees trash --restore ${entry.manifest.id}'
+  3. Discard changes: the files age out with the trash retention window, but the commit does not — it is held by this entry until then and by a permanent 'keep/${entry.manifest.id}' ref afterwards. Drop that with 'sync-worktrees trash --drop-keep-ref ${entry.manifest.id}' once you are sure. To get the files back before they expire: 'sync-worktrees trash --restore ${entry.manifest.id}'
 
   Original worktree location: ${entry.manifest.originalPath}`;
 
