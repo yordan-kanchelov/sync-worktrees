@@ -236,6 +236,24 @@ describe("parseArguments", () => {
 
   it("rejects sync-only flags on doctor", () => {
     expect(() => parseArguments(["doctor", "--run-once"])).toThrow(/process\.exit/);
+    expect(() => parseArguments(["doctor", "--dry-run"])).toThrow(/process\.exit/);
+  });
+
+  it("parses --dry-run and --json on the sync command, in either spelling", () => {
+    expect(parseArguments([])).toMatchObject({ command: "run", dryRun: false, json: false });
+    expect(parseArguments(["--dry-run", "-f", "api"])).toMatchObject({
+      command: "run",
+      dryRun: true,
+      json: false,
+      filter: "api",
+    });
+    expect(parseArguments(["sync", "--dryRun", "--json"])).toMatchObject({ command: "run", dryRun: true, json: true });
+  });
+
+  it("refuses --json without --dry-run on the sync command", () => {
+    expect(() => parseArguments(["--run-once", "--json"])).toThrow(/process\.exit\(1\)/);
+    const output = (console.error as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+    expect(output).toContain("--json is only available with --dry-run");
   });
 
   it("prints the package version for --version", () => {

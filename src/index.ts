@@ -8,6 +8,7 @@ import { inspect } from "util";
 import pLimit from "p-limit";
 
 import { runDoctor } from "./cli/doctor";
+import { runDryRun } from "./cli/dry-run";
 import { runTrash } from "./cli/trash-command";
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "./constants";
 import { ConfigFileExistsError, ConfigFileNotFoundError, SyncWorktreesError } from "./errors";
@@ -391,7 +392,11 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
   const resolved = await resolveConfigOrExit(options.config);
   const configPath = resolved.path;
   const displayPath = path.relative(process.cwd(), configPath) || configPath;
-  if (!options.quiet) {
+  if (options.json) {
+    // stdout is the JSON document, so the one line that names the config
+    // goes where a script will not parse it.
+    console.error(`📄 Using config: ${describeConfigPath(resolved)}`);
+  } else if (!options.quiet) {
     console.log(`📄 Using config: ${describeConfigPath(resolved)}`);
   }
 
@@ -408,6 +413,24 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
     process.exit(1);
   }
 
+  // Same matching and the same answer as `list --filter`: a filter that selects
+  // nothing is a typo, and syncing zero repositories would exit 0 on it.
+  if (options.filter && loaded.repositories.length === 0) {
+    console.error(`❌ No repositories match filter: ${options.filter}`);
+    process.exit(1);
+  }
+
+  // A dry run is one-shot by nature and needs no terminal: it plans every
+  // selected repository, prints the plans and exits.
+  if (options.dryRun) {
+    process.exitCode = await runDryRun(loaded.configFile, loaded.repositories, {
+      json: options.json,
+      quiet: options.quiet,
+      debug: options.debug,
+    });
+    return;
+  }
+
   // The dashboard reads keys in raw mode and draws on stdout. Without a
   // terminal (systemd, docker, CI, `< /dev/null`) Ink printed "Raw mode is not
   // supported" with a stack and the process exited 0 having synced nothing.
@@ -416,13 +439,6 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
     console.error(
       "💡 For unattended runs use 'sync-worktrees --run-once' (or runOnce: true in the config) from cron, a systemd timer or CI.",
     );
-    process.exit(1);
-  }
-
-  // Same matching and the same answer as `list --filter`: a filter that selects
-  // nothing is a typo, and syncing zero repositories would exit 0 on it.
-  if (options.filter && loaded.repositories.length === 0) {
-    console.error(`❌ No repositories match filter: ${options.filter}`);
     process.exit(1);
   }
 

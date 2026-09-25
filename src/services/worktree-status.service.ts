@@ -247,6 +247,8 @@ export interface WorktreeStatusServiceConfig {
    * worktree it is asked about. Defaults to `maxStatusChecks`.
    */
   maxConcurrentGitProcesses?: number;
+  /** Extra environment for every git command this service runs (GitService's read-only mode). */
+  extraEnv?: Readonly<Record<string, string | undefined>>;
 }
 
 export class WorktreeStatusService {
@@ -865,7 +867,10 @@ export class WorktreeStatusService {
       // XDG_CONFIG_HOME git ignores the global excludes file and every
       // globally-ignored file reads as an untracked change, and without PATH
       // the spawn itself can fail.
-      createGitClient(worktreePath, this.config.skipLfs ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {}),
+      createGitClient(worktreePath, {
+        ...this.config.extraEnv,
+        ...(this.config.skipLfs ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {}),
+      }),
     );
   }
 

@@ -20,10 +20,11 @@ import { TrashService } from "./trash.service";
 import { RefScanScope } from "./worktree-status.service";
 import { createWorktreeSyncPlan } from "./worktree-sync-planner";
 
-import type { AddWorktreeResult, AheadBehindCounts, GitService } from "./git.service";
+import type { AddWorktreeResult, AheadBehindCounts, GitService, RegisteredWorktree } from "./git.service";
 import type { Logger } from "./logger.service";
 import type { ProgressEmitter } from "./progress-emitter";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
+import type { SyncDryRunPlanBuilder, SyncDryRunStep } from "./sync-plan";
 import type { SyncRetryContext } from "./sync-retry-policy";
 import type { TrashEntry } from "./trash.service";
 import type { WorktreeStatusDetails, WorktreeStatusResult } from "./worktree-status.service";
@@ -34,6 +35,44 @@ import type { PhaseTimer } from "../utils/timing";
 // How many worktreeDir containment probes may be in flight at once. Pure stat
 // work, so this is about event-loop latency rather than about a process budget.
 export const PATH_CONTAINMENT_CONCURRENCY = 8;
+
+// Each phase is split into a read-only assessment and the mutations it asks
+// for. A sync runs both; `sync --dry-run` (planSyncAttempt) runs only the
+// assessments and reports them. These are the assessments' verdicts.
+
+type PruneAssessment =
+  | { kind: "locked"; branch: string; path: string; lockReason?: string }
+  | { kind: "check-failed"; branch: string; path: string; error: unknown }
+  | {
+      // remove: safe to remove. keep-trash-disabled: safe only because it was
+      // fully pushed, which needs trash to stay reversible. keep-unsafe: local
+      // work the status check found (status.reasons).
+      kind: "remove" | "keep-trash-disabled" | "keep-unsafe";
+      branch: string;
+      path: string;
+      status: WorktreeStatusResult;
+    };
+
+type UpdateWorktreeRef = { path: string; branch: string };
+
+type UpdateAssessment =
+  | { action: "update"; worktree: UpdateWorktreeRef; behind: number }
+  | { action: "diverged"; worktree: UpdateWorktreeRef }
+  | { action: "skip" | "noop"; worktree: UpdateWorktreeRef; reason: string; message?: string }
+  | { action: "check-failed"; worktree: UpdateWorktreeRef; error: unknown };
+
+type DivergedAssessment =
+  | { kind: "stash_present" }
+  | { kind: "not_diverged"; counts: AheadBehindCounts }
+  | { kind: "reset"; observedHead: string; treesIdentical: boolean }
+  | { kind: "replace"; observedHead: string };
+
+type SparseAssessment =
+  | { kind: "absent" }
+  | { kind: "in-sync" }
+  | { kind: "apply"; narrowing: boolean }
+  | { kind: "unsafe-narrowing"; reasons: string[] }
+  | { kind: "failed"; error: unknown };
 
 export class WorktreeModeSyncRunner {
   private pathResolution = new PathResolutionService();
@@ -72,36 +111,9 @@ export class WorktreeModeSyncRunner {
     await this.ensureFetchAnchor(outcome);
     await this.fetchLatestRemoteData(phaseTimer, syncContext);
 
-    const { remoteBranches, defaultBranch } = await this.resolveSyncBranches(outcome);
-    const pendingDivergedBranches = await this.getPendingDivergedBranches();
-
     await fs.mkdir(this.config.worktreeDir, { recursive: true });
 
-    const registeredWorktrees = await this.gitService.getWorktrees();
-    const { worktrees, externalWorktrees } = await this.partitionByWorktreeDir(registeredWorktrees);
-    const externalBranches = new Set(externalWorktrees.map((worktree) => worktree.branch));
-    const plannedBranches = remoteBranches.filter(
-      (branch) => !externalBranches.has(branch) && !pendingDivergedBranches.has(branch),
-    );
-    await this.dropStaleRegistrations(worktrees, new Set(plannedBranches));
-    this.logger.info(`Found ${worktrees.length} managed Git worktrees.`);
-    for (const worktree of externalWorktrees) {
-      this.logger.warn(`  - Skipping external worktree outside worktreeDir: ${worktree.path}`);
-    }
-
-    const syncPlan = createWorktreeSyncPlan(
-      {
-        remoteBranches: plannedBranches,
-        defaultBranch,
-        existingWorktrees: worktrees,
-        worktreeDir: this.config.worktreeDir,
-      },
-      {
-        pathResolution: this.pathResolution,
-        updateExistingWorktrees: this.config.updateExistingWorktrees !== false,
-        sparseCheckout: this.config.sparseCheckout,
-      },
-    );
+    const { worktrees, syncPlan } = await this.collectInventory((all) => this.resolveDefaultBranch(all, outcome));
 
     await this.createNewWorktreesWithTiming(syncPlan, phaseTimer, syncContext, outcome);
     // One listing of origin's tips for the whole attempt: the tip recording
@@ -125,6 +137,164 @@ export class WorktreeModeSyncRunner {
     await this.finalizeSyncAttempt(phaseTimer);
   }
 
+  // `sync --dry-run`: every decision runSyncAttempt makes, taken by the same
+  // assessments and recorded as plan steps instead of executed. Expects a
+  // GitService opened with openForPlanning (which has already fetched) and
+  // never calls anything that writes: no anchor heal, no default-branch
+  // switch, no worktree add/remove, no remote-tip recording, no trash.
+  //
+  // Where a sync's later phase depends on an earlier one's result, the plan
+  // shows the earlier phase's intent: a fast-forward that git refuses turns
+  // into diverged handling during a sync, and a planned removal is re-checked
+  // right before it happens, so either can still end differently.
+  async planSyncAttempt(plan: SyncDryRunPlanBuilder): Promise<void> {
+    const anchorPath = this.gitService.getMainWorktreePath();
+    if ((await probePathExists(anchorPath)) === "missing") {
+      plan.add({
+        kind: "create",
+        branch: this.gitService.getDefaultBranch(),
+        path: anchorPath,
+        reason: "default_branch",
+      });
+    }
+
+    const inventory = await this.collectInventory(async (all) => {
+      const current = this.gitService.getDefaultBranch();
+      if (!all.includes(current)) {
+        plan.note(
+          `Default branch '${current}' does not exist on origin; a sync re-resolves the default branch before planning, so its plan can differ from this one.`,
+        );
+      }
+      return current;
+    });
+    const { syncPlan, allRemoteBranches, pendingDivergedBranches, rebuiltBranches } = inventory;
+
+    for (const worktree of inventory.externalWorktrees) {
+      plan.add({
+        kind: "skip",
+        scope: "worktree",
+        reason: "external_worktree",
+        branch: worktree.branch,
+        path: worktree.path,
+        message: "registered outside worktreeDir; sync leaves it alone",
+      });
+    }
+    for (const branch of pendingDivergedBranches) {
+      plan.add({
+        kind: "skip",
+        scope: "branch",
+        reason: "reserved_by_trash",
+        branch,
+        message: "a diverged-replace trash entry is waiting to be restored to this branch's path",
+      });
+    }
+
+    for (const action of syncPlan.create) {
+      if (action.kind === "skip-create") {
+        plan.add({
+          kind: "skip",
+          scope: "branch",
+          reason: "path_collision",
+          branch: action.branch,
+          path: action.path,
+          message: `Path collides with existing branch '${action.conflictingBranch}'`,
+        });
+      } else {
+        plan.add({
+          kind: "create",
+          branch: action.branch,
+          path: action.path,
+          reason: rebuiltBranches.has(action.branch) ? "missing_directory" : "new_branch",
+        });
+      }
+    }
+
+    const prunes = await this.assessPrune(syncPlan.prune);
+    for (const assessment of prunes) {
+      plan.add(
+        await this.describePruneAssessment(assessment, (branch) =>
+          pendingDivergedBranches.has(branch)
+            ? "reserved_by_trash"
+            : allRemoteBranches.has(branch)
+              ? "excluded_by_filters"
+              : "deleted_on_remote",
+        ),
+      );
+    }
+
+    if (this.config.updateExistingWorktrees !== false) {
+      const remoteTips = await this.readRemoteBranchTips();
+      const updates = await this.assessUpdates(syncPlan.update, remoteTips);
+      for (const [index, assessment] of updates.entries()) {
+        plan.add(await this.describeUpdateAssessment(assessment, syncPlan.update[index]));
+      }
+    }
+
+    const sparseConfig = this.config.sparseCheckout;
+    if (sparseConfig) {
+      const sparseService = this.gitService.getSparseCheckoutService();
+      const desired = sparseService.buildPatterns(sparseConfig);
+      for (const action of syncPlan.sparse) {
+        if (action.kind !== "check-sparse") continue;
+        const assessment = await this.assessSparseAction(action, desired);
+        const step = this.describeSparseAssessment(action, assessment);
+        if (step) plan.add(step);
+      }
+    }
+  }
+
+  // Everything both a sync and a dry run plan from: origin's branches after
+  // the configured filters, the managed worktrees (external ones and stale
+  // registrations sorted out), and the pure plan built from the two.
+  // `resolveDefault` is the one decision that differs: a sync may switch to a
+  // renamed default branch here, a dry run only notes it.
+  private async collectInventory(resolveDefault: (allRemoteBranches: string[]) => Promise<string>): Promise<{
+    syncPlan: SyncPlan;
+    worktrees: RegisteredWorktree[];
+    externalWorktrees: RegisteredWorktree[];
+    allRemoteBranches: Set<string>;
+    pendingDivergedBranches: Set<string>;
+    rebuiltBranches: Set<string>;
+  }> {
+    const { all, remoteBranches, defaultBranch } = await this.resolveSyncBranches(resolveDefault);
+    const pendingDivergedBranches = await this.getPendingDivergedBranches();
+
+    const registeredWorktrees = await this.gitService.getWorktrees();
+    const { worktrees, externalWorktrees } = await this.partitionByWorktreeDir(registeredWorktrees);
+    const externalBranches = new Set(externalWorktrees.map((worktree) => worktree.branch));
+    const plannedBranches = remoteBranches.filter(
+      (branch) => !externalBranches.has(branch) && !pendingDivergedBranches.has(branch),
+    );
+    const rebuiltBranches = await this.dropStaleRegistrations(worktrees, new Set(plannedBranches));
+    this.logger.info(`Found ${worktrees.length} managed Git worktrees.`);
+    for (const worktree of externalWorktrees) {
+      this.logger.warn(`  - Skipping external worktree outside worktreeDir: ${worktree.path}`);
+    }
+
+    const syncPlan = createWorktreeSyncPlan(
+      {
+        remoteBranches: plannedBranches,
+        defaultBranch,
+        existingWorktrees: worktrees,
+        worktreeDir: this.config.worktreeDir,
+      },
+      {
+        pathResolution: this.pathResolution,
+        updateExistingWorktrees: this.config.updateExistingWorktrees !== false,
+        sparseCheckout: this.config.sparseCheckout,
+      },
+    );
+
+    return {
+      syncPlan,
+      worktrees,
+      externalWorktrees,
+      allRemoteBranches: new Set(all),
+      pendingDivergedBranches,
+      rebuiltBranches,
+    };
+  }
+
   private async reapplySparseCheckout(actions: SparseAction[], outcome: SyncOutcomeAccumulator): Promise<void> {
     const sparseConfig = this.config.sparseCheckout;
     if (!sparseConfig) return;
@@ -143,35 +313,31 @@ export class WorktreeModeSyncRunner {
     await Promise.all(
       checks.map((action) =>
         limit(async () => {
+          const assessment = await this.assessSparseAction(action, desired);
           try {
-            try {
-              await fs.access(action.path);
-            } catch {
-              return;
-            }
-
-            const current = await sparseService.readCurrent(action.path);
-            if (current !== null && sparseService.patternsEqual(current, desired)) return;
-
-            if (sparseService.isNarrowing(current, desired)) {
-              const status = await this.gitService.getFullWorktreeStatus(action.path, false);
-              if (!status.canRemove) {
+            switch (assessment.kind) {
+              case "absent":
+              case "in-sync":
+                return;
+              case "failed":
+                throw assessment.error;
+              case "unsafe-narrowing":
                 this.logger.warn(
-                  `  - Skipping sparse-checkout narrowing for '${action.branch}': ${status.reasons.join(", ")}.`,
+                  `  - Skipping sparse-checkout narrowing for '${action.branch}': ${assessment.reasons.join(", ")}.`,
                 );
                 outcome.recordSkipped("sparse-checkout", "sparse_narrowing_unsafe", {
                   branch: action.branch,
                   path: action.path,
-                  message: status.reasons.join(", "),
+                  message: assessment.reasons.join(", "),
                 });
                 return;
-              }
+              case "apply":
+                await sparseService.applyToWorktree(action.path, sparseConfig);
+                await this.gitService.checkoutHead(action.path);
+                this.logger.info(`  - ✅ Sparse-checkout updated for '${action.branch}'`);
+                outcome.recordUpdated(action.branch, action.path, "sparse_checkout");
+                return;
             }
-
-            await sparseService.applyToWorktree(action.path, sparseConfig);
-            await this.gitService.checkoutHead(action.path);
-            this.logger.info(`  - ✅ Sparse-checkout updated for '${action.branch}'`);
-            outcome.recordUpdated(action.branch, action.path, "sparse_checkout");
           } catch (error) {
             this.logger.warn(
               `  - ⚠️ Failed to update sparse-checkout for '${action.branch}': ${getErrorMessage(error)}`,
@@ -185,6 +351,72 @@ export class WorktreeModeSyncRunner {
         }).finally(() => itemDone(action.branch)),
       ),
     );
+  }
+
+  // Read-only half of the sparse reconcile: does this worktree's pattern set
+  // need rewriting, and is it safe to? A narrowing hides files, so it is only
+  // safe on a worktree that could be removed outright.
+  private async assessSparseAction(
+    action: { branch: string; path: string },
+    desired: string[],
+  ): Promise<SparseAssessment> {
+    const sparseService = this.gitService.getSparseCheckoutService();
+    try {
+      try {
+        await fs.access(action.path);
+      } catch {
+        return { kind: "absent" };
+      }
+
+      const current = await sparseService.readCurrent(action.path);
+      if (current !== null && sparseService.patternsEqual(current, desired)) return { kind: "in-sync" };
+
+      const narrowing = sparseService.isNarrowing(current, desired);
+      if (narrowing) {
+        const status = await this.gitService.getFullWorktreeStatus(action.path, false);
+        if (!status.canRemove) return { kind: "unsafe-narrowing", reasons: status.reasons };
+      }
+      return { kind: "apply", narrowing };
+    } catch (error) {
+      return { kind: "failed", error };
+    }
+  }
+
+  private describeSparseAssessment(
+    action: { branch: string; path: string },
+    assessment: SparseAssessment,
+  ): SyncDryRunStep | null {
+    const details = { branch: action.branch, path: action.path };
+    switch (assessment.kind) {
+      case "absent":
+      case "in-sync":
+        return null;
+      case "unsafe-narrowing":
+        return {
+          kind: "skip",
+          scope: "sparse-checkout",
+          reason: "sparse_narrowing_unsafe",
+          ...details,
+          message: assessment.reasons.join(", "),
+        };
+      case "failed":
+        return {
+          kind: "skip",
+          scope: "sparse-checkout",
+          reason: "sparse_check_failed",
+          ...details,
+          message: getErrorMessage(assessment.error),
+        };
+      case "apply":
+        return {
+          kind: "update",
+          ...details,
+          reason: "sparse_checkout",
+          message: assessment.narrowing
+            ? "narrows the sparse-checkout patterns"
+            : "rewrites the sparse-checkout patterns",
+        };
+    }
   }
 
   // Splits the registered worktrees into the ones inside worktreeDir and the
@@ -250,7 +482,7 @@ export class WorktreeModeSyncRunner {
   private async dropStaleRegistrations(
     worktrees: { path: string; branch: string }[],
     plannedBranches: Set<string>,
-  ): Promise<void> {
+  ): Promise<Set<string>> {
     const stale: { path: string; branch: string }[] = [];
     for (const worktree of worktrees) {
       if (plannedBranches.has(worktree.branch) && (await probePathExists(worktree.path)) === "missing") {
@@ -264,6 +496,7 @@ export class WorktreeModeSyncRunner {
       );
       worktrees.splice(worktrees.indexOf(worktree), 1);
     }
+    return new Set(stale.map((worktree) => worktree.branch));
   }
 
   // A diverged replace whose replacement worktree was never created leaves the
@@ -364,12 +597,12 @@ export class WorktreeModeSyncRunner {
   }
 
   private async resolveSyncBranches(
-    outcome: SyncOutcomeAccumulator,
-  ): Promise<{ remoteBranches: string[]; defaultBranch: string }> {
+    resolveDefault: (allRemoteBranches: string[]) => Promise<string>,
+  ): Promise<{ all: string[]; remoteBranches: string[]; defaultBranch: string }> {
     const { all, filtered: remoteBranches } = this.config.branchMaxAge
       ? await this.getRemoteBranchesFilteredByActivity()
       : await this.getRemoteBranchesFilteredByName();
-    const defaultBranch = await this.resolveDefaultBranch(all, outcome);
+    const defaultBranch = await resolveDefault(all);
 
     // The default branch stays in the inventory even when the name or age
     // filters drop it: its worktree is where every fetch runs. Only while
@@ -384,7 +617,7 @@ export class WorktreeModeSyncRunner {
       this.logger.info(`Ensuring default branch '${defaultBranch}' is retained.`);
     }
 
-    return { remoteBranches, defaultBranch };
+    return { all, remoteBranches, defaultBranch };
   }
 
   // A default branch absent from the freshly fetched refs means the remote
@@ -716,95 +949,57 @@ export class WorktreeModeSyncRunner {
   }
 
   private async pruneOldWorktrees(actions: PruneAction[], outcome: SyncOutcomeAccumulator): Promise<void> {
-    // A locked worktree never reaches the status probe, the `du` scan or a
-    // rename: git refuses to remove it while the lock stands, so touching it
-    // would only burn work on every tick and end in that refusal.
-    const checks: Array<{ branch: string; path: string }> = [];
-    for (const action of actions) {
-      if (action.kind === "skip-prune") {
-        const because = action.lockReason !== undefined ? `: ${action.lockReason}` : "";
-        this.logger.info(
-          `  - 🔒 Skipping removal of '${action.branch}' - the worktree is locked${because}. To let sync remove it: git worktree unlock ${action.path}`,
-        );
-        outcome.recordSkipped("worktree", "worktree_locked", {
-          branch: action.branch,
-          path: action.path,
-          message: `worktree is locked${because}`,
-        });
-        continue;
-      }
-      checks.push({ branch: action.branch, path: action.path });
-    }
+    const assessments = await this.assessPrune(actions);
 
-    if (checks.length > 0) {
-      this.logger.info(`Step 3: Checking ${checks.length} stale worktrees to prune...`);
-
-      // Two-phase approach: First check status in parallel (read-only, safe),
-      // then remove worktrees in parallel (mutation, needs lower concurrency).
-      // This limit bounds the checks in flight; the git processes they fan out
-      // to are bounded by the status service's own budget of the same size, so
-      // a tick that turns up hundreds of prune candidates still peaks at
-      // maxStatusChecks git processes.
-      const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
-      const limit = pLimit(maxConcurrent);
-      // Both stages of the phase report their own count: the checks are what a
-      // prune of hundreds of worktrees spends its time in, and only the ones
-      // that pass them reach the removals below.
-      const checkDone = trackPhaseItems(this.progressEmitter, "prune", "Checking worktrees to prune", checks.length);
-
-      // One branch/remote-ref scan for every check in this pass rather than
-      // one per worktree. The re-check before each removal below takes its own.
-      const refScans = new RefScanScope();
-      const statusResults = await Promise.allSettled(
-        checks.map(({ branch, path: worktreePath }) =>
-          limit(async () => this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug, refScans)).finally(
-            () => checkDone(branch),
-          ),
-        ),
-      );
-
-      const toRemove: Array<{ branchName: string; worktreePath: string }> = [];
-      const toSkip: Array<{
-        branchName: string;
-        worktreePath: string;
-        status: Awaited<ReturnType<GitService["getFullWorktreeStatus"]>>;
-      }> = [];
-
-      // allSettled keeps the input order, so checks[index] is this worktree.
-      // A rejection carries the git command and its stderr but no cwd, so the
-      // branch and path have to come from here or the log line and the skip
-      // name none of the worktrees the daemon was checking.
-      statusResults.forEach((result, index) => {
-        const { branch: branchName, path: worktreePath } = checks[index];
-        if (result.status === "fulfilled") {
-          const status = result.value;
-          if (status.canRemove) {
-            if (this.blockedByDisabledTrash(status)) {
-              this.logger.warn(
-                `  - ⚠️ '${branchName}' was fully pushed before its remote branch was deleted, but trash is disabled — keeping worktree. Enable trash for reversible auto-removal, or remove manually.`,
-              );
-              outcome.recordSkipped("worktree", "fully_pushed_trash_disabled", {
-                branch: branchName,
-                path: worktreePath,
-                message: "fully pushed before upstream deletion; trash disabled",
-              });
-            } else {
-              toRemove.push({ branchName, worktreePath });
-            }
-          } else {
-            toSkip.push({ branchName, worktreePath, status });
-          }
-        } else {
-          this.logger.error(`  - Error checking worktree '${branchName}' (${worktreePath}):`, result.reason);
+    const toRemove: Array<{ branchName: string; worktreePath: string }> = [];
+    const toSkip: Array<{ branchName: string; worktreePath: string; status: WorktreeStatusResult }> = [];
+    let checked = 0;
+    for (const assessment of assessments) {
+      const branchName = assessment.branch;
+      const worktreePath = assessment.path;
+      switch (assessment.kind) {
+        case "locked": {
+          const because = assessment.lockReason !== undefined ? `: ${assessment.lockReason}` : "";
+          this.logger.info(
+            `  - 🔒 Skipping removal of '${branchName}' - the worktree is locked${because}. To let sync remove it: git worktree unlock ${worktreePath}`,
+          );
+          outcome.recordSkipped("worktree", "worktree_locked", {
+            branch: branchName,
+            path: worktreePath,
+            message: `worktree is locked${because}`,
+          });
+          continue;
+        }
+        case "remove":
+          toRemove.push({ branchName, worktreePath });
+          break;
+        case "keep-trash-disabled":
+          this.logger.warn(
+            `  - ⚠️ '${branchName}' was fully pushed before its remote branch was deleted, but trash is disabled — keeping worktree. Enable trash for reversible auto-removal, or remove manually.`,
+          );
+          outcome.recordSkipped("worktree", "fully_pushed_trash_disabled", {
+            branch: branchName,
+            path: worktreePath,
+            message: "fully pushed before upstream deletion; trash disabled",
+          });
+          break;
+        case "keep-unsafe":
+          toSkip.push({ branchName, worktreePath, status: assessment.status });
+          break;
+        case "check-failed":
+          this.logger.error(`  - Error checking worktree '${branchName}' (${worktreePath}):`, assessment.error);
           this.logger.warn(`  - ⚠️ Skipping removal of '${branchName}' due to status check failure (conservative)`);
           outcome.recordSkipped("worktree", "prune_status_check_failed", {
             branch: branchName,
             path: worktreePath,
-            message: getErrorMessage(result.reason),
+            message: getErrorMessage(assessment.error),
           });
-        }
-      });
+          break;
+      }
+      checked++;
+    }
 
+    if (checked > 0) {
       if (toRemove.length > 0) {
         const removeLimit = pLimit(
           this.config.parallelism?.maxWorktreeRemoval ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_REMOVAL,
@@ -962,6 +1157,148 @@ export class WorktreeModeSyncRunner {
     }
   }
 
+  // Read-only half of the prune phase: one status check per candidate, and
+  // the verdict the removal pass acts on. Locked worktrees come first, in plan
+  // order, then every checked candidate in plan order.
+  private async assessPrune(actions: PruneAction[]): Promise<PruneAssessment[]> {
+    // A locked worktree never reaches the status probe, the `du` scan or a
+    // rename: git refuses to remove it while the lock stands, so touching it
+    // would only burn work on every tick and end in that refusal.
+    const assessments: PruneAssessment[] = [];
+    const checks: Array<{ branch: string; path: string }> = [];
+    for (const action of actions) {
+      if (action.kind === "skip-prune") {
+        assessments.push({
+          kind: "locked",
+          branch: action.branch,
+          path: action.path,
+          ...(action.lockReason !== undefined && { lockReason: action.lockReason }),
+        });
+        continue;
+      }
+      checks.push({ branch: action.branch, path: action.path });
+    }
+    if (checks.length === 0) return assessments;
+
+    this.logger.info(`Step 3: Checking ${checks.length} stale worktrees to prune...`);
+
+    // Two-phase approach: First check status in parallel (read-only, safe),
+    // then remove worktrees in parallel (mutation, needs lower concurrency).
+    // This limit bounds the checks in flight; the git processes they fan out
+    // to are bounded by the status service's own budget of the same size, so
+    // a tick that turns up hundreds of prune candidates still peaks at
+    // maxStatusChecks git processes.
+    const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
+    const limit = pLimit(maxConcurrent);
+    // Both stages of the phase report their own count: the checks are what a
+    // prune of hundreds of worktrees spends its time in, and only the ones
+    // that pass them reach the removals.
+    const checkDone = trackPhaseItems(this.progressEmitter, "prune", "Checking worktrees to prune", checks.length);
+
+    // One branch/remote-ref scan for every check in this pass rather than
+    // one per worktree. The re-check before each removal takes its own.
+    const refScans = new RefScanScope();
+    const statusResults = await Promise.allSettled(
+      checks.map(({ branch, path: worktreePath }) =>
+        limit(async () => this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug, refScans)).finally(
+          () => checkDone(branch),
+        ),
+      ),
+    );
+
+    // allSettled keeps the input order, so checks[index] is this worktree.
+    // A rejection carries the git command and its stderr but no cwd, so the
+    // branch and path have to come from here or the log line and the skip
+    // name none of the worktrees the daemon was checking.
+    statusResults.forEach((result, index) => {
+      const { branch, path: worktreePath } = checks[index];
+      if (result.status === "rejected") {
+        assessments.push({ kind: "check-failed", branch, path: worktreePath, error: result.reason });
+        return;
+      }
+      const status = result.value;
+      const kind = !status.canRemove
+        ? "keep-unsafe"
+        : this.blockedByDisabledTrash(status)
+          ? "keep-trash-disabled"
+          : "remove";
+      assessments.push({ kind, branch, path: worktreePath, status });
+    });
+    return assessments;
+  }
+
+  private async describePruneAssessment(
+    assessment: PruneAssessment,
+    whyUnwanted: (branch: string) => Extract<SyncDryRunStep, { kind: "remove" }>["reason"],
+  ): Promise<SyncDryRunStep> {
+    const details = { branch: assessment.branch, path: assessment.path };
+    switch (assessment.kind) {
+      case "locked": {
+        const because = assessment.lockReason !== undefined ? `: ${assessment.lockReason}` : "";
+        return {
+          kind: "skip",
+          scope: "worktree",
+          reason: "worktree_locked",
+          ...details,
+          message: `worktree is locked${because}`,
+        };
+      }
+      case "check-failed":
+        return {
+          kind: "skip",
+          scope: "worktree",
+          reason: "prune_status_check_failed",
+          ...details,
+          message: getErrorMessage(assessment.error),
+        };
+      case "keep-trash-disabled":
+        return {
+          kind: "skip",
+          scope: "worktree",
+          reason: "fully_pushed_trash_disabled",
+          ...details,
+          message: "fully pushed before upstream deletion; trash disabled",
+        };
+      case "keep-unsafe":
+        return {
+          kind: "skip",
+          scope: "worktree",
+          reason: "unsafe_to_remove",
+          ...details,
+          message: assessment.status.reasons.join(", "),
+        };
+      case "remove": {
+        const reason = whyUnwanted(assessment.branch);
+        const basis =
+          (await probePathExists(assessment.path)) === "missing"
+            ? "directory_missing"
+            : assessment.status.fullyPushedUpstreamDeleted
+              ? "fully_pushed_remote_deleted"
+              : "clean_and_pushed";
+        const disposal = this.trashService.isEnabled() && basis !== "directory_missing" ? "trash" : "delete";
+        const why =
+          reason === "deleted_on_remote"
+            ? "remote branch deleted"
+            : reason === "excluded_by_filters"
+              ? "excluded by branchInclude/branchExclude/branchMaxAge"
+              : "reserved by a trash entry";
+        const because =
+          basis === "fully_pushed_remote_deleted"
+            ? "fully pushed, remote branch deleted"
+            : basis === "directory_missing"
+              ? `${why}; directory already gone`
+              : `${why}; clean, every commit is on a remote`;
+        const where =
+          disposal === "trash"
+            ? "moved to trash"
+            : basis === "directory_missing"
+              ? "registration cleared"
+              : "deleted (trash disabled)";
+        return { kind: "remove", ...details, reason, basis, disposal, message: `${because}; ${where}` };
+      }
+    }
+  }
+
   private logDebugDetails(branchName: string, details: WorktreeStatusDetails): void {
     this.logger.info(`\n     🔍 Debug details for '${branchName}':`);
 
@@ -1082,15 +1419,57 @@ export class WorktreeModeSyncRunner {
       // No diverged directory, that's fine.
     }
 
-    type UpdateCheckResult =
-      | { action: "update" | "diverged"; worktree: { path: string; branch: string } }
-      | {
-          action: "skip" | "noop";
-          worktree: { path: string; branch: string };
-          reason: string;
-          message?: string;
-        };
+    const checkResults = await this.assessUpdates(actions, remoteTips);
 
+    const worktreesToUpdate: { path: string; branch: string }[] = [];
+    const divergedWorktrees: { path: string; branch: string }[] = [];
+
+    checkResults.forEach((result) => {
+      switch (result.action) {
+        case "update":
+          worktreesToUpdate.push(result.worktree);
+          break;
+        case "diverged":
+          divergedWorktrees.push(result.worktree);
+          break;
+        case "noop":
+          outcome.recordNoop("worktree", result.reason, result.worktree);
+          break;
+        case "skip":
+          outcome.recordSkipped("worktree", result.reason, result.worktree);
+          break;
+        case "check-failed": {
+          // Probe-only failure (the status check or the ahead/behind count
+          // threw). Every probe throws when it cannot answer instead of
+          // reporting "no" — a rev-list that failed to spawn must never read
+          // as "diverged" — and the update is gated on success here, so a probe
+          // error means we never touched the worktree: a skip, not a hard failure.
+          // The git error names the command and its stderr but not the directory
+          // it ran in, so the branch and path have to be logged and recorded from
+          // here — otherwise a daemon watching hundreds of worktrees reports a
+          // failed probe with nothing that says which one.
+          const { branch, path: worktreePath } = result.worktree;
+          this.logger.error(`  - Error checking worktree '${branch}' (${worktreePath}):`, result.error);
+          outcome.recordSkipped("worktree", "update_check_failed", {
+            branch,
+            path: worktreePath,
+            message: getErrorMessage(result.error),
+          });
+          break;
+        }
+      }
+    });
+
+    await this.applyUpdates(worktreesToUpdate, divergedWorktrees, syncContext, outcome);
+  }
+
+  // Read-only half of the update phase (Phase 4a): which worktrees are behind,
+  // diverged, up to date, or to be left alone and why. One result per action,
+  // in action order.
+  private async assessUpdates(
+    actions: UpdateAction[],
+    remoteTips: Map<string, string> | null,
+  ): Promise<UpdateAssessment[]> {
     // Phase 4a: Check which worktrees need updates (parallel, read-only, high concurrency)
     const maxConcurrent = this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS;
     const limit = pLimit(maxConcurrent);
@@ -1102,7 +1481,7 @@ export class WorktreeModeSyncRunner {
 
     const checkResults = await Promise.allSettled(
       actions.map((action) =>
-        limit(async (): Promise<UpdateCheckResult> => {
+        limit(async (): Promise<UpdateAssessment> => {
           const worktree = { path: action.path, branch: action.branch };
 
           try {
@@ -1174,51 +1553,120 @@ export class WorktreeModeSyncRunner {
             }
           }
 
-          return { action: "update", worktree };
+          return { action: "update", worktree, behind };
         }).finally(() => checkDone(action.branch)),
       ),
     );
 
-    const worktreesToUpdate: { path: string; branch: string }[] = [];
-    const divergedWorktrees: { path: string; branch: string }[] = [];
+    // allSettled keeps the input order, so actions[index] is this worktree.
+    return checkResults.map((result, index) =>
+      result.status === "fulfilled"
+        ? result.value
+        : {
+            action: "check-failed",
+            worktree: { path: actions[index].path, branch: actions[index].branch },
+            error: result.reason as unknown,
+          },
+    );
+  }
 
-    checkResults.forEach((result, index) => {
-      if (result.status === "fulfilled" && result.value) {
-        switch (result.value.action) {
-          case "update":
-            worktreesToUpdate.push(result.value.worktree);
-            break;
-          case "diverged":
-            divergedWorktrees.push(result.value.worktree);
-            break;
-          case "noop":
-            outcome.recordNoop("worktree", result.value.reason, result.value.worktree);
-            break;
-          case "skip":
-            outcome.recordSkipped("worktree", result.value.reason, result.value.worktree);
-            break;
+  private async describeUpdateAssessment(assessment: UpdateAssessment, action: UpdateAction): Promise<SyncDryRunStep> {
+    const details = { branch: action.branch, path: action.path };
+    switch (assessment.action) {
+      case "update":
+        return {
+          kind: "update",
+          ...details,
+          reason: "fast_forward",
+          message: `${assessment.behind} commit${assessment.behind === 1 ? "" : "s"} behind origin/${action.branch}`,
+        };
+      case "noop":
+        return { kind: "noop", scope: "worktree", reason: assessment.reason, ...details };
+      case "skip":
+        return { kind: "skip", scope: "worktree", reason: assessment.reason, ...details };
+      case "check-failed":
+        return {
+          kind: "skip",
+          scope: "worktree",
+          reason: "update_check_failed",
+          ...details,
+          message: getErrorMessage(assessment.error),
+        };
+      case "diverged": {
+        let diverged: DivergedAssessment;
+        try {
+          diverged = await this.assessDiverged(assessment.worktree);
+        } catch (error) {
+          return {
+            kind: "skip",
+            scope: "worktree",
+            reason: "diverged_check_failed",
+            ...details,
+            message: getErrorMessage(error),
+          };
         }
-      } else if (result.status === "rejected") {
-        // Probe-only failure (the status check or the ahead/behind count
-        // threw). Every probe throws when it cannot answer instead of
-        // reporting "no" — a rev-list that failed to spawn must never read
-        // as "diverged" — and the update is gated on success here, so a probe
-        // error means we never touched the worktree: a skip, not a hard failure.
-        // allSettled keeps the input order, so actions[index] is this worktree.
-        // The git error names the command and its stderr but not the directory
-        // it ran in, so the branch and path have to be logged and recorded from
-        // here — otherwise a daemon watching hundreds of worktrees reports a
-        // failed probe with nothing that says which one.
-        const { branch, path: worktreePath } = actions[index];
-        this.logger.error(`  - Error checking worktree '${branch}' (${worktreePath}):`, result.reason);
-        outcome.recordSkipped("worktree", "update_check_failed", {
-          branch,
-          path: worktreePath,
-          message: getErrorMessage(result.reason),
-        });
+        return this.describeDivergedAssessment(details, diverged);
       }
-    });
+    }
+  }
 
+  private describeDivergedAssessment(
+    details: { branch: string; path: string },
+    assessment: DivergedAssessment,
+  ): SyncDryRunStep {
+    switch (assessment.kind) {
+      case "stash_present":
+        return {
+          kind: "skip",
+          scope: "worktree",
+          reason: "stash_present",
+          ...details,
+          message: "diverged, but has stashed changes",
+        };
+      case "not_diverged": {
+        const { ahead, behind } = assessment.counts;
+        if (ahead === 0 && behind === 0)
+          return { kind: "noop", scope: "worktree", reason: "already_up_to_date", ...details };
+        // The same verdicts recordNotDiverged gives a sync that finds this.
+        if (behind === 0) return { kind: "skip", scope: "worktree", reason: "local_ahead", ...details };
+        return {
+          kind: "skip",
+          scope: "worktree",
+          reason: "not_diverged",
+          ...details,
+          message: `${ahead} ahead / ${behind} behind origin/${details.branch}; fast-forwarded on the next sync`,
+        };
+      }
+      case "reset":
+        return {
+          kind: "update",
+          ...details,
+          reason: assessment.treesIdentical ? "reset_identical_tree" : "reset_no_local_changes",
+          message: assessment.treesIdentical
+            ? `diverged, but the files match origin/${details.branch}; reset to it`
+            : `diverged with no local changes since the last sync; reset to origin/${details.branch}`,
+        };
+      case "replace": {
+        const preservedIn = this.trashService.isEnabled() ? "trash" : "diverged_dir";
+        return {
+          kind: "replace",
+          ...details,
+          reason: "diverged_local_changes",
+          preservedIn,
+          message: `diverged with local changes; moved to ${preservedIn === "trash" ? "trash" : GIT_CONSTANTS.DIVERGED_DIR_NAME + "/"} and recreated from origin/${details.branch}`,
+        };
+      }
+    }
+  }
+
+  // Phase 4b: the mutations the assessment asked for, fast-forwards and
+  // diverged handling, at the lower update concurrency.
+  private async applyUpdates(
+    worktreesToUpdate: { path: string; branch: string }[],
+    divergedWorktrees: { path: string; branch: string }[],
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<void> {
     // Phase 4b: Perform mutations (updates + diverged handling) with lower concurrency
     const updateLimit = pLimit(
       this.config.parallelism?.maxWorktreeUpdates ?? DEFAULT_CONFIG.PARALLELISM.MAX_WORKTREE_UPDATES,
@@ -1328,9 +1776,9 @@ export class WorktreeModeSyncRunner {
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<boolean> {
-    this.logger.info(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
+    const assessment = await this.assessDiverged(worktree);
 
-    if (await this.gitService.hasStashedChanges(worktree.path)) {
+    if (assessment.kind === "stash_present") {
       this.logger.warn(
         `⚠️  Skipping diverged replace for '${worktree.branch}' because it has stashed changes. Pop/apply or drop the stash first.`,
       );
@@ -1342,33 +1790,22 @@ export class WorktreeModeSyncRunner {
       return false;
     }
 
-    // The classification that got us here came from an ahead/behind count (or
-    // a refused fast-forward) that ran a while ago, under high concurrency.
-    // Before the reset or the move, confirm with a probe that throws when it
-    // cannot answer that HEAD and origin/<branch> really have commits on both
-    // sides. Anything else is re-classified and left for the next sync; a
-    // probe that throws surfaces as diverged_recovery_failed at the call site.
-    const counts = await this.gitService.getAheadBehindCounts(worktree.path, worktree.branch);
-    if (counts.ahead === 0 || counts.behind === 0) {
-      this.recordNotDiverged(worktree, outcome, counts);
+    if (assessment.kind === "not_diverged") {
+      this.recordNotDiverged(worktree, outcome, assessment.counts);
       return false;
     }
 
-    const observedHead = (await this.gitService.getCurrentCommit(worktree.path)).trim();
-    const treesIdentical = await this.gitService.compareTreeContent(worktree.path, worktree.branch);
-
-    const hasLocalChanges = treesIdentical
-      ? false
-      : await this.hasLocalChangesSinceLastSync(worktree.path, observedHead);
+    const { observedHead } = assessment;
+    const hasLocalChanges = assessment.kind === "replace";
     if (
-      (treesIdentical || !hasLocalChanges) &&
+      assessment.kind === "reset" &&
       (await this.gitService.resetToUpstream(worktree.path, worktree.branch, observedHead))
     ) {
       this.logger.info(`   Successfully updated '${worktree.branch}' to match upstream.`);
       outcome.recordUpdated(
         worktree.branch,
         worktree.path,
-        treesIdentical ? "reset_identical_tree" : "reset_no_local_changes",
+        assessment.treesIdentical ? "reset_identical_tree" : "reset_no_local_changes",
       );
       return true;
     }
@@ -1428,6 +1865,32 @@ export class WorktreeModeSyncRunner {
         );
     }
     return true;
+  }
+
+  // Read-only half of diverged handling: what handleDivergedBranch will do
+  // with this worktree — leave it (stash, or not diverged after all), reset it
+  // to origin/<branch> (nothing local would be lost), or preserve it and
+  // recreate it (local changes since the last sync).
+  private async assessDiverged(worktree: { path: string; branch: string }): Promise<DivergedAssessment> {
+    this.logger.info(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
+
+    if (await this.gitService.hasStashedChanges(worktree.path)) return { kind: "stash_present" };
+
+    // The classification that got us here came from an ahead/behind count (or
+    // a refused fast-forward) that ran a while ago, under high concurrency.
+    // Before the reset or the move, confirm with a probe that throws when it
+    // cannot answer that HEAD and origin/<branch> really have commits on both
+    // sides. Anything else is re-classified and left for the next sync; a
+    // probe that throws surfaces as diverged_recovery_failed at the call site.
+    const counts = await this.gitService.getAheadBehindCounts(worktree.path, worktree.branch);
+    if (counts.ahead === 0 || counts.behind === 0) return { kind: "not_diverged", counts };
+
+    const observedHead = (await this.gitService.getCurrentCommit(worktree.path)).trim();
+    const treesIdentical = await this.gitService.compareTreeContent(worktree.path, worktree.branch);
+    const hasLocalChanges = treesIdentical
+      ? false
+      : await this.hasLocalChangesSinceLastSync(worktree.path, observedHead);
+    return hasLocalChanges ? { kind: "replace", observedHead } : { kind: "reset", observedHead, treesIdentical };
   }
 
   // The re-verification in handleDivergedBranch found the worktree not

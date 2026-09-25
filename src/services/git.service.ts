@@ -75,12 +75,22 @@ export class GitService {
   private readonly lfs: LfsVerificationService;
   private readonly bareRepo: BareRepoService;
   private readonly creation: WorktreeCreationService;
+  // Environment every client this service builds carries on top of the
+  // per-call LFS setting: empty for a syncing service, optional locks off for
+  // a read-only one.
+  private readonly baseEnv: NodeJS.ProcessEnv;
 
   constructor(
     private config: GitServiceOptions,
     logger?: Logger,
     private progressEmitter?: GitProgressEmitter,
+    options: { readOnly?: boolean } = {},
   ) {
+    // A read-only service (the dry run's) must leave the repository exactly as
+    // it found it, and `git status` / `git diff` refresh a worktree's index as
+    // a side effect unless optional locks are off. Nothing a read-only service
+    // runs needs that refresh.
+    this.baseEnv = options.readOnly ? { [ENV_CONSTANTS.GIT_OPTIONAL_LOCKS]: "0" } : {};
     this.logger = logger ?? Logger.createDefault(undefined, config.debug);
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, GIT_CONSTANTS.DEFAULT_BRANCH); // Temporary, will be updated
@@ -93,6 +103,7 @@ export class GitService {
       {
         skipLfs: this.config.skipLfs,
         maxConcurrentGitProcesses: this.config.parallelism?.maxStatusChecks,
+        ...(options.readOnly && { extraEnv: this.baseEnv }),
       },
       this.logger,
     );
@@ -151,6 +162,12 @@ export class GitService {
     );
   }
 
+  // The environment additions every client of this service carries, for the
+  // clients built outside it (clone mode's) that must behave the same way.
+  getBaseGitEnv(): NodeJS.ProcessEnv {
+    return { ...this.baseEnv };
+  }
+
   getSparseCheckoutService(): SparseCheckoutService {
     return this.sparseCheckoutService;
   }
@@ -183,7 +200,7 @@ export class GitService {
   // createGitClient, which also forces the C locale every stderr match here
   // ("stale info", missing-ref, LFS) depends on.
   private buildGitEnv(useLfsSkip: boolean, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...extra };
+    const env: NodeJS.ProcessEnv = { ...this.baseEnv, ...extra };
     if (useLfsSkip) env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     return env;
   }
@@ -357,6 +374,43 @@ export class GitService {
       );
     }
     return created;
+  }
+
+  // The dry run's stand-in for initialize(): the same bare-repository checks,
+  // the same fetch and the same default-branch resolution, with every write
+  // initialize() would make left out — no clone, no refspec config, no
+  // `remote set-head`, no default-branch worktree created or healed. The one
+  // write is the fetch itself, which updates remote-tracking refs (and brings
+  // in objects) exactly as the sync's own fetch would.
+  //
+  // Resolves to `missing` when there is no bare repository yet, decided
+  // before anything touches the disk. Otherwise the service is left able to
+  // answer the sync runner's reads; `anchorMissing` says the default branch
+  // has no worktree, in which case those reads run in the bare repository and
+  // a sync would create that worktree first.
+  //
+  // Only for a service constructed read-only and never used to sync: it marks
+  // the service initialized without the repairs initialize() makes.
+  async openForPlanning(): Promise<{ state: "missing" } | { state: "ready"; anchorMissing: boolean }> {
+    if ((await probePathExists(path.join(this.bareRepoPath, "HEAD"))) !== "exists") return { state: "missing" };
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await this.bareRepo.assertBareRepoOriginMatches(bareGit);
+
+    // The sync's own fetch (`fetchAll`), run in the bare repository because
+    // the anchor may be missing; both name the same repository. No auto gc:
+    // repacking is not something a dry run should set off.
+    await this.getCachedNetworkGit(this.bareRepoPath).fetch(["--all", "--prune", "--no-auto-gc", "--progress"]);
+
+    this.defaultBranch = await this.bareRepo.detectDefaultBranch(bareGit, { readOnly: true });
+    this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
+    const worktrees = await this.registry.getWorktreesFromBare(bareGit, true);
+    const target = path.resolve(this.mainWorktreePath);
+    const registered =
+      worktrees.find((w) => path.resolve(w.path) === target) ?? worktrees.find((w) => w.branch === this.defaultBranch);
+    const anchorMissing = !registered || (await probePathExists(registered.path)) !== "exists";
+    if (registered && !anchorMissing) this.mainWorktreePath = registered.path;
+    this.git = this.getCachedGit(anchorMissing ? this.bareRepoPath : this.mainWorktreePath);
+    return { state: "ready", anchorMissing };
   }
 
   getGit(): SimpleGit {

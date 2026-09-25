@@ -161,8 +161,14 @@ If the config lives elsewhere, pass it explicitly:
 sync-worktrees --config /path/to/sync-worktrees.config.js
 sync-worktrees --config /path/to/sync-worktrees.config.js --run-once
 sync-worktrees --run-once --filter backend     # just the repositories the filter matches
+sync-worktrees --dry-run --filter backend      # what that sync would do, without doing it
 sync-worktrees list --config ./config.js --filter "frontend-*"
 ```
+
+`--dry-run` prints, per repository, the worktrees a sync would create, fast-forward, prune (and why it is safe to),
+replace after a divergence, and skip (and why), then exits without changing anything. It does fetch, so the plan
+matches origin now: remote-tracking refs move as they would with `git fetch`. `--json` prints the plans as JSON. See
+[Previewing a sync](./docs/dry-run.md).
 
 ### Running it unattended
 
@@ -305,6 +311,8 @@ recipe for parallel agents on parallel branches: [MCP server](./docs/mcp.md).
 | `--debug`    | -     | Log debug output and full error details (stack, git's whole output), overriding the config's `debug`                           | `false` |
 | `--filter`   | `-f`  | Only sync repositories whose name matches (wildcards, comma-separated; same matching as `list`). Exits 1 if nothing matches    | -       |
 | `--quiet`    | `-q`  | One-shot runs: print only warnings, errors and the final summary line (the TUI ignores it)                                     | `false` |
+| `--dry-run`  | -     | Print what a sync would do and exit without changing anything except remote-tracking refs; see [Previewing a sync](./docs/dry-run.md) | `false` |
+| `--json`     | -     | With `--dry-run`: print the plans as a JSON array                                                                              | `false` |
 | `--help`     | `-h`  | Show help                                                                                                                      | -       |
 | `--version`  | `-V`  | Print version                                                                                                                  | -       |
 
@@ -386,6 +394,7 @@ Subcommands:
   load; `sync-worktrees trash` exits 1 on an expected failure (unknown id, occupied destination, a lock another process
   holds, a declined confirmation) with one `❌` line.
 - `sync-worktrees doctor` exits 1 when any check failed; warnings alone exit 0.
+- `sync-worktrees --dry-run` exits 1 when any repository could not be planned; what the plan contains never changes it.
 
 ## Documentation
 

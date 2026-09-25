@@ -223,7 +223,7 @@ export async function unshallowIfDepthRemoved(ctx: CloneSyncContext, clients: Mu
   await clients.unshallowGit.fetch(["--unshallow", "--no-tags", "--progress"]);
 }
 
-function getDeepenTargets(ctx: CloneSyncContext): readonly number[] {
+export function getDeepenTargets(ctx: CloneSyncContext): readonly number[] {
   const configuredDepth = ctx.config.depth;
   if (configuredDepth === undefined) return [];
   // `git fetch --depth N` can shorten a shallow repo if N is below current depth.
