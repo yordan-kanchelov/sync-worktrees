@@ -21,7 +21,7 @@ runs:
     # No `version`: pnpm/action-setup reads the `packageManager` field in
     # package.json, so CI runs the pnpm the lockfile was written with.
     - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+      uses: pnpm/action-setup@v6
 
     - name: Get pnpm store directory
       id: pnpm-cache
