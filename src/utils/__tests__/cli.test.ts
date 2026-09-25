@@ -57,32 +57,110 @@ describe("parseArguments", () => {
     expect(opts.filter).toBe("backend-*");
   });
 
-  it("parses trash listing and restore options", () => {
-    const list = parseArguments(["trash", "--filter", "backend"]);
-    if (list.command !== "trash") throw new Error("expected trash command");
-    expect(list).toMatchObject({ filter: "backend", restore: undefined });
+  describe("trash", () => {
+    const trash = (argv: string[]) => {
+      const opts = parseArguments(argv);
+      if (opts.command !== "trash") throw new Error("expected trash command");
+      return opts;
+    };
 
-    const restore = parseArguments(["trash", "--filter", "backend", "--restore", "entry-id"]);
-    if (restore.command !== "trash") throw new Error("expected trash command");
-    expect(restore.restore).toBe("entry-id");
+    it.each([
+      ["no subcommand", ["trash", "--filter", "backend"], { kind: "list", json: false }],
+      ["list", ["trash", "list", "--filter", "backend"], { kind: "list", json: false }],
+      ["list --json", ["trash", "list", "--json", "-f", "backend"], { kind: "list", json: true }],
+      ["bare --json", ["trash", "-f", "backend", "--json"], { kind: "list", json: true }],
+      ["restore", ["trash", "restore", "entry-id", "-f", "backend"], { kind: "restore", id: "entry-id" }],
+      ["purge", ["trash", "purge", "entry-id", "--filter", "backend"], { kind: "purge", id: "entry-id" }],
+      ["purge --all", ["trash", "purge", "--all", "--filter", "backend"], { kind: "purge-all" }],
+      [
+        "drop-keep-ref",
+        ["trash", "drop-keep-ref", "keep-id", "-f", "backend"],
+        { kind: "drop-keep-ref", name: "keep-id" },
+      ],
+      ["drop-all-keep-refs", ["trash", "drop-all-keep-refs", "-f", "backend"], { kind: "drop-all-keep-refs" }],
+    ])("parses %s", (_label, argv, action) => {
+      const opts = trash(argv);
+      expect(opts).toMatchObject({ filter: "backend", action, wait: false });
+      expect(opts.deprecatedFlag).toBeUndefined();
+    });
 
-    const drop = parseArguments(["trash", "--filter", "backend", "--dropKeepRef", "keep-id"]);
-    if (drop.command !== "trash") throw new Error("expected trash command");
-    expect(drop.dropKeepRef).toBe("keep-id");
+    it("takes --config and --filter before the subcommand as well as after it", () => {
+      expect(trash(["trash", "--config", "/c.js", "-f", "backend", "restore", "entry-id", "--wait"])).toMatchObject({
+        config: "/c.js",
+        filter: "backend",
+        action: { kind: "restore", id: "entry-id" },
+        wait: true,
+      });
+    });
 
-    const dropAll = parseArguments(["trash", "--filter", "backend", "--dropAllKeepRefs"]);
-    if (dropAll.command !== "trash") throw new Error("expected trash command");
-    expect(dropAll).toMatchObject({ dropAllKeepRefs: true, dropKeepRef: undefined });
-  });
+    it("keeps an id that looks like a number a string", () => {
+      expect(trash(["trash", "restore", "0012"]).action).toEqual({ kind: "restore", id: "0012" });
+    });
 
-  it("parses trash --purge, --json and --wait", () => {
-    const purge = parseArguments(["trash", "--filter", "backend", "--purge", "entry-id", "--wait"]);
-    if (purge.command !== "trash") throw new Error("expected trash command");
-    expect(purge).toMatchObject({ purge: "entry-id", wait: true, restore: undefined });
+    it.each([
+      ["--restore", ["trash", "--restore", "entry-id"], { kind: "restore", id: "entry-id" }],
+      ["--purge", ["trash", "--purge", "entry-id"], { kind: "purge", id: "entry-id" }],
+      ["--drop-keep-ref", ["trash", "--drop-keep-ref", "keep-id"], { kind: "drop-keep-ref", name: "keep-id" }],
+      ["--drop-keep-ref", ["trash", "--dropKeepRef", "keep-id"], { kind: "drop-keep-ref", name: "keep-id" }],
+      ["--drop-all-keep-refs", ["trash", "--drop-all-keep-refs"], { kind: "drop-all-keep-refs" }],
+      ["--drop-all-keep-refs", ["trash", "--dropAllKeepRefs"], { kind: "drop-all-keep-refs" }],
+    ])("still parses the deprecated %s flag form: %j", (flag, argv, action) => {
+      const opts = trash([...argv, "--filter", "backend"]);
+      expect(opts).toMatchObject({ filter: "backend", action, deprecatedFlag: flag });
+    });
 
-    const json = parseArguments(["trash", "--filter", "backend", "--json"]);
-    if (json.command !== "trash") throw new Error("expected trash command");
-    expect(json).toMatchObject({ json: true, purge: undefined, wait: undefined });
+    it("carries --wait on the deprecated --purge form", () => {
+      expect(trash(["trash", "--purge", "entry-id", "--wait"])).toMatchObject({
+        action: { kind: "purge", id: "entry-id" },
+        wait: true,
+      });
+    });
+
+    it.each([
+      ["restore without an id", ["trash", "restore"]],
+      ["restore with an empty id", ["trash", "restore", ""]],
+      ["purge with neither an id nor --all", ["trash", "purge"]],
+      ["purge with an id and --all", ["trash", "purge", "entry-id", "--all"]],
+      ["purge with an empty id", ["trash", "purge", ""]],
+      ["drop-keep-ref without a name", ["trash", "drop-keep-ref"]],
+      ["deprecated --restore with an empty id", ["trash", "--restore", ""]],
+      ["deprecated --purge with an empty id", ["trash", "--purge", " "]],
+      ["deprecated --drop-keep-ref with an empty name", ["trash", "--drop-keep-ref", ""]],
+      ["--json on restore", ["trash", "restore", "entry-id", "--json"]],
+      ["--wait on list", ["trash", "list", "--wait"]],
+      ["--wait on drop-keep-ref", ["trash", "drop-keep-ref", "keep", "--wait"]],
+      ["--all on restore", ["trash", "restore", "entry-id", "--all"]],
+      ["a second id", ["trash", "restore", "a", "b"]],
+      ["a subcommand plus a deprecated flag", ["trash", "restore", "a", "--purge", "b"]],
+      ["a subcommand plus a deprecated boolean flag", ["trash", "list", "--drop-all-keep-refs"]],
+    ])("rejects %s", (_label, argv) => {
+      expect(() => parseArguments(argv)).toThrow(/process\.exit\(1\)/);
+    });
+
+    it("names the conflict when a subcommand is combined with a deprecated flag", () => {
+      expect(() => parseArguments(["trash", "restore", "a", "--purge", "b"])).toThrow(/process\.exit\(1\)/);
+      const output = (console.error as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+      expect(output).toContain("--purge is the old spelling of 'trash purge <id>'");
+      expect(output).toContain("Unknown argument: purge");
+    });
+
+    it("lists the subcommands and examples in trash --help, not the deprecated flags", () => {
+      expect(() => parseArguments(["trash", "--help"])).toThrow(/process\.exit/);
+      const help = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+      for (const subcommand of ["list", "restore <id>", "purge [id]", "drop-keep-ref", "drop-all-keep-refs"]) {
+        expect(help).toContain(`sync-worktrees trash ${subcommand}`);
+      }
+      expect(help).toContain("trash purge --all");
+      expect(help).not.toContain("--restore");
+      expect(help).not.toContain("--drop-keep-ref");
+    });
+
+    it("documents --all and --wait on trash purge --help", () => {
+      expect(() => parseArguments(["trash", "purge", "--help"])).toThrow(/process\.exit/);
+      const help = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+      expect(help).toContain("--all");
+      expect(help).toContain("--wait");
+    });
   });
 
   it.each([
@@ -182,19 +260,6 @@ describe("parseArguments", () => {
     });
 
     it.each([
-      ["--drop-keep-ref", "--drop-all-keep-refs"],
-      ["--dropKeepRef", "--dropAllKeepRefs"],
-    ])("parses trash %s and %s", (dropOne, dropAll) => {
-      const one = parseArguments(["trash", dropOne, "keep-id"]);
-      if (one.command !== "trash") throw new Error("expected trash command");
-      expect(one.dropKeepRef).toBe("keep-id");
-
-      const all = parseArguments(["trash", dropAll]);
-      if (all.command !== "trash") throw new Error("expected trash command");
-      expect(all.dropAllKeepRefs).toBe(true);
-    });
-
-    it.each([
       ["kebab", ["trash", "--restore", "entry", "--drop-keep-ref", "keep"]],
       ["mixed", ["trash", "--drop-keep-ref", "keep", "--dropAllKeepRefs"]],
       ["kebab against json", ["trash", "--json", "--drop-all-keep-refs"]],
@@ -205,8 +270,8 @@ describe("parseArguments", () => {
     it("shows only the kebab-case spelling in --help", () => {
       expect(() => parseArguments(["trash", "--help"])).toThrow(/process\.exit/);
       const trashHelp = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
-      expect(trashHelp).toContain("--drop-keep-ref");
-      expect(trashHelp).toContain("--drop-all-keep-refs");
+      expect(trashHelp).toContain("drop-keep-ref");
+      expect(trashHelp).toContain("drop-all-keep-refs");
       expect(trashHelp).not.toContain("dropKeepRef");
 
       vi.mocked(console.log).mockClear();
@@ -257,7 +322,7 @@ describe("parseArguments", () => {
 
       expect(output).toContain("Examples:");
       expect(output).toContain("sync-worktrees --run-once");
-      expect(output).toContain("--restore <id>");
+      expect(output).toContain("trash restore <id>");
       expect(output).toContain("frontend-*");
       expect(output).toContain("https://github.com/yordan-kanchelov/sync-worktrees/tree/main/docs");
       expect(output).toContain("sync-worktrees completion");
@@ -284,9 +349,27 @@ describe("parseArguments", () => {
         /process\.exit/,
       );
       const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n").split("\n");
-      expect(output).toEqual(expect.arrayContaining(["--restore", "--drop-keep-ref", "--drop-all-keep-refs"]));
+      expect(output).toEqual(expect.arrayContaining(["--filter", "--json"]));
       expect(output).not.toContain("--run-once");
       expect(output).not.toContain("--f");
+    });
+
+    it("completes the trash subcommands, and not the deprecated flags", () => {
+      expect(() => parseArguments(["--get-yargs-completions", "sync-worktrees", "trash", ""])).toThrow(/process\.exit/);
+      const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n").split("\n");
+      expect(output).toEqual(
+        expect.arrayContaining(["list", "restore", "purge", "drop-keep-ref", "drop-all-keep-refs"]),
+      );
+      expect(output).not.toContain("--restore");
+    });
+
+    it("completes a trash subcommand's own flags", () => {
+      expect(() => parseArguments(["--get-yargs-completions", "sync-worktrees", "trash", "purge", "--"])).toThrow(
+        /process\.exit/,
+      );
+      const output = (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n").split("\n");
+      expect(output).toEqual(expect.arrayContaining(["--all", "--wait", "--filter"]));
+      expect(output).not.toContain("--json");
     });
   });
 
@@ -325,9 +408,18 @@ describe("parseArguments", () => {
     });
 
     it("does not 'correct' a real command given in the wrong place", () => {
-      expect(() => parseArguments(["trash", "list"])).toThrow(/process\.exit\(1\)/);
-      expect(stderrOf()).toContain("Unknown argument: list");
+      expect(() => parseArguments(["list", "trash"])).toThrow(/process\.exit\(1\)/);
+      expect(stderrOf()).toContain("Unknown argument: trash");
       expect(stderrOf()).not.toContain("Did you mean");
+    });
+
+    it.each([
+      ["restor", "sync-worktrees trash restore"],
+      ["purg", "sync-worktrees trash purge"],
+      ["lst", "sync-worktrees trash list"],
+    ])("suggests a trash subcommand for %s", (typo, suggestion) => {
+      expect(() => parseArguments(["trash", typo, "entry-id"])).toThrow(/process\.exit\(1\)/);
+      expect(stderrOf()).toContain(`Did you mean '${suggestion}'?`);
     });
 
     it("stays silent when nothing is close", () => {

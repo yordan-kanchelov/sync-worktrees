@@ -1590,7 +1590,7 @@ export class WorktreeModeSyncRunner {
   3. Discard changes: ${
     keepRef
       ? "use the TUI worktree status view so the keep ref is released safely"
-      : `restore it first with 'sync-worktrees trash --restore' if you want it back, then delete the entry`
+      : `restore it first with 'sync-worktrees trash restore <id>' if you want it back, then delete the entry`
   }
 
   Original worktree location: ${originalPath}`,
