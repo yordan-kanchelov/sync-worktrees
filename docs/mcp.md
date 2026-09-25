@@ -253,8 +253,8 @@ anything that is not an `Error`; read `message`.
   runs, so the same prune, stale-directory sweep and diverged replace apply, with the gates and destinations in
   [What sync can remove](./trash-and-recovery.md#what-sync-can-remove). With trash enabled (the default) nothing is
   deleted outright — everything lands in `.trash/` for 30 days, restorable with `sync-worktrees trash`; with
-  `trash.enabled: false` the same prune is a permanent `git worktree remove`, and a stale non-git directory at a managed
-  path is deleted outright. `sync` is registered with `destructiveHint: true`, so a client that confirms destructive
+  `trash.enabled: false` the same prune is a permanent `git worktree remove`, and a stale directory at a managed path is
+  quarantined under `.removed/` (only an empty one is removed). `sync` is registered with `destructiveHint: true`, so a client that confirms destructive
   tools prompts before running it.
 - `create_worktree` refuses, before touching disk, when the target path is already registered to a different branch
   (`Sanitized worktree path … collides with existing branch …`), and errors with code `TARGET_EXISTS` when its target

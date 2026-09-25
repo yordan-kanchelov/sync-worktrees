@@ -577,6 +577,104 @@ describe("WorktreeStatusService", () => {
       expect(result).toBe(true);
       consoleSpy.mockRestore();
     });
+
+    // refs/stash is shared by every worktree of the repository, so the list
+    // holds other worktrees' stashes too; only this worktree's count.
+    describe("attribution to the worktree", () => {
+      const listing = (...entries: Array<{ parents?: string; subject: string }>): any => ({
+        total: entries.length,
+        all: entries.map((entry, index) => ({ hash: `${index}`.padStart(40, "a"), parents: "", ...entry })),
+      });
+      const revListCalls = (): string[][] =>
+        (mockGit.raw as Mock).mock.calls
+          .map((call: any[]) => call[0] as string[])
+          .filter((args) => Array.isArray(args) && args[0] === "rev-list");
+
+      it("asks git for each entry's parents and reflog subject", async () => {
+        await service.hasStashedChanges("/test/worktree");
+
+        expect(mockGit.stashList).toHaveBeenCalledWith({
+          format: { hash: "%H", parents: "%P", subject: "%gs" },
+        });
+      });
+
+      it("ignores stashes made on another branch", async () => {
+        mockGit.branch.mockResolvedValue({ current: "feature/a", detached: false } as any);
+        mockGit.stashList.mockResolvedValue(
+          listing({ subject: "WIP on main: abc123 msg" }, { subject: "On other: my: message" }),
+        );
+
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(false);
+        expect(revListCalls()).toEqual([]);
+      });
+
+      it("counts a stash made on the checked-out branch, custom message with colons included", async () => {
+        mockGit.branch.mockResolvedValue({ current: "feature/a", detached: false } as any);
+        mockGit.stashList.mockResolvedValue(
+          listing({ subject: "WIP on main: abc123 msg" }, { subject: "On feature/a: fix: half done" }),
+        );
+
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
+      });
+
+      it("counts every named stash when the checked-out branch cannot be read", async () => {
+        mockGit.branch.mockRejectedValue(new Error("branch failed"));
+        mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on main: abc123 msg" }));
+
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
+      });
+
+      it("attributes a detached-HEAD stash by whether its base commit is in HEAD's history", async () => {
+        const base = "b".repeat(40);
+        mockGit.stashList.mockResolvedValue(
+          listing({ parents: `${base} ${"c".repeat(40)}`, subject: "WIP on (no branch): bbbbbbb msg" }),
+        );
+
+        mockGit.raw.mockResolvedValue("3\n");
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(false);
+        expect(revListCalls()).toEqual([["rev-list", "--count", `HEAD..${base}`]]);
+
+        mockGit.raw.mockResolvedValue("0\n");
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
+      });
+
+      it("counts an unattributable stash when the history probe fails", async () => {
+        mockGit.stashList.mockResolvedValue(listing({ parents: "b".repeat(40), subject: "custom stored message" }));
+        mockGit.raw.mockRejectedValue(new Error("fatal: bad revision"));
+
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
+      });
+
+      it("counts an unattributable stash with no readable parent", async () => {
+        mockGit.stashList.mockResolvedValue(listing({ parents: "", subject: "custom stored message" }));
+
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
+        expect(revListCalls()).toEqual([]);
+      });
+
+      it("reports only this worktree's stashes in the status details", async () => {
+        mockGit.branch.mockImplementation((async (args?: string[]) => {
+          if (Array.isArray(args) && args[0] === "-r") return { all: ["origin/feature/a"] } as any;
+          return { current: "feature/a", detached: false } as any;
+        }) as any);
+        mockGit.stashList.mockResolvedValue(
+          listing(
+            { subject: "WIP on main: abc123 msg" },
+            { subject: "On feature/a: mine" },
+            { subject: "WIP on other: abc123 msg" },
+          ),
+        );
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (target === "/test/worktree") return undefined;
+          throw Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" });
+        });
+
+        const result = await service.getFullWorktreeStatus("/test/worktree", true);
+
+        expect(result.hasStashedChanges).toBe(true);
+        expect(result.details?.stashCount).toBe(1);
+      });
+    });
   });
 
   describe("hasModifiedSubmodules", () => {

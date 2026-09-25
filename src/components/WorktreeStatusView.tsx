@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import { isMouseSequence } from "../utils/mouse";
+import { isListDown, isListUp, listRowsFor, listWindow, useModalLayout, wrappedRows } from "./layout";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
 import type { WorktreeStatusEntry, DivergedDirectoryInfo, RepositoryListEntry, RepositoryDiskUsage } from "../types";
@@ -17,6 +18,8 @@ export interface WorktreeStatusViewProps {
   getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
   deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
   onClose: () => void;
+  /** Rows the view may use; defaults to the terminal height. */
+  availableRows?: number;
 }
 
 type RepositoryDiskUsageState =
@@ -26,6 +29,55 @@ type ListItem =
   | { type: "worktree"; entry: WorktreeStatusEntry }
   | { type: "separator" }
   | { type: "diverged"; entry: DivergedDirectoryInfo };
+
+// An expanded entry's detail lines, kept as data so the list can budget the
+// rows they take before it decides how many entries fit.
+type DetailLine = { text: string; color?: React.ComponentProps<typeof Text>["color"]; dim?: boolean };
+
+// Indent of the detail panel under its row.
+const DETAIL_INDENT = 4;
+
+const worktreeDetailLines = (entry: WorktreeStatusEntry): DetailLine[] => {
+  const { status } = entry;
+  const details = status.details;
+  const lines: DetailLine[] = [{ text: `Path: ${entry.path}`, dim: true }];
+
+  if (entry.error !== undefined) lines.push({ text: ` Status probe failed: ${entry.error}`, color: "red" });
+  if (details) {
+    if (details.modifiedFiles > 0) lines.push({ text: ` Modified: ${details.modifiedFiles}`, color: "yellow" });
+    if (details.deletedFiles > 0) lines.push({ text: ` Deleted: ${details.deletedFiles}`, color: "red" });
+    if (details.createdFiles > 0) lines.push({ text: ` Created: ${details.createdFiles}`, color: "green" });
+    if (details.renamedFiles > 0) lines.push({ text: ` Renamed: ${details.renamedFiles}`, color: "blue" });
+    if (details.untrackedFiles > 0) lines.push({ text: ` Untracked: ${details.untrackedFiles}`, color: "gray" });
+    if (details.conflictedFiles > 0) lines.push({ text: ` Conflicted: ${details.conflictedFiles}`, color: "red" });
+    const unpushed = details.unpushedCommitCount ?? 0;
+    if (unpushed > 0) {
+      lines.push(
+        status.fullyPushedUpstreamDeleted
+          ? {
+              text: ` Fully pushed before remote branch deletion (${unpushed} commit${unpushed === 1 ? "" : "s"} not on any remote — likely squash-merged)`,
+              color: "green",
+            }
+          : { text: ` Unpushed commits: ${unpushed}`, color: "cyan" },
+      );
+    }
+    if ((details.stashCount ?? 0) > 0) lines.push({ text: ` Stashes: ${details.stashCount}`, color: "magenta" });
+    if (details.operationType) lines.push({ text: ` Operation: ${details.operationType}`, color: "red" });
+    if (details.modifiedSubmodules && details.modifiedSubmodules.length > 0) {
+      lines.push({ text: ` Modified submodules: ${details.modifiedSubmodules.join(", ")}`, color: "yellow" });
+    }
+  }
+  if (status.upstreamGone) lines.push({ text: " Remote branch has been deleted", color: "red" });
+  if (status.reasons.length > 0) lines.push({ text: ` Reasons: ${status.reasons.join(", ")}`, dim: true });
+  return lines;
+};
+
+const divergedDetailLines = (entry: DivergedDirectoryInfo): DetailLine[] => [
+  { text: `Path: ${entry.path}`, dim: true },
+  { text: ` Original branch: ${entry.originalBranch}`, dim: true },
+  ...(entry.divergedAt ? [{ text: ` Diverged: ${entry.divergedAt}`, dim: true }] : []),
+  { text: ` Size: ${entry.sizeFormatted}`, dim: true },
+];
 
 const getStatusFlags = (status: WorktreeStatusResult): React.ReactNode => {
   const flags: React.ReactNode[] = [];
@@ -142,11 +194,13 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   getDivergedDirectoriesForRepo,
   deleteDivergedDirectory,
   onClose,
+  availableRows,
 }) => {
+  const layout = useModalLayout(70, availableRows);
   const [step, setStep] = useState<ViewStep>(repositories.length > 1 ? "SELECT_PROJECT" : "VIEW_STATUS");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
-  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? 0 : -1);
+  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? repositories[0].index : -1);
 
   const [entries, setEntries] = useState<WorktreeStatusEntry[]>([]);
   const [divergedEntries, setDivergedEntries] = useState<DivergedDirectoryInfo[]>([]);
@@ -169,6 +223,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // A failed delete stays on the list it was pressed in; the ERROR step would
+  // throw the whole view away for one directory that could not be removed.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -236,12 +293,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     [getWorktreeStatusForRepo, getDivergedDirectoriesForRepo],
   );
 
-  // Unmount, not "this effect run". `repositories` is a fresh array on every
-  // App render (getRepositoryList() maps syncServices), so the effect re-runs
-  // on every addLog/setSyncProgress/setDiskSpace event. A per-run cancelled
-  // flag therefore discarded the in-flight du result, while the re-run skipped
-  // the index it had already recorded in requestedDiskUsageRef -- so nothing
-  // ever replaced `calculating...` until the modal was closed and reopened.
+  // Unmount, not "this effect run". The effect below re-runs whenever the
+  // caller hands in a new `repositories` array (the App keeps one per open
+  // modal, but nothing here should depend on that). A per-run cancelled flag
+  // would discard the in-flight du result, while the re-run skipped the index
+  // it had already recorded in requestedDiskUsageRef -- so nothing would ever
+  // replace `calculating...` until the modal was closed and reopened.
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -275,10 +332,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     }
   }, [repositories, getRepositoryDiskUsage]);
 
-  // One loader call per selected repository, from one place. `loadStatus` is a
-  // fresh function on every App render (getWorktreeStatusForRepo is an arrow in
-  // App's JSX), so this effect runs constantly; the ref is what makes that
-  // free.
+  // One loader call per selected repository, from one place. The ref, not the
+  // identity of `loadStatus`, is what keeps it to one: a caller that hands in a
+  // fresh `getWorktreeStatusForRepo` on every render must not re-run the load.
   useEffect(() => {
     const repoIndex = selectedRepoIndexRef.current;
     if (step !== "VIEW_STATUS" || repoIndex < 0) return;
@@ -332,7 +388,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
               setExpandedEntry(null);
             })
             .catch((err: unknown) => {
-              setError(`Failed to delete: ${getErrorMessage(err)}`);
+              setDeleteError(`Failed to delete ${item.entry.name}: ${getErrorMessage(err)}`);
               setConfirmDelete(null);
               setDeleting(false);
             });
@@ -356,6 +412,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
           setEntryFilter("");
           setExpandedEntry(null);
           setConfirmDelete(null);
+          setDeleteError(null);
           selectedRepoIndexRef.current = -1;
           loadedForRepoRef.current = null;
           setStep("SELECT_PROJECT");
@@ -369,10 +426,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     }
 
     if (step === "SELECT_PROJECT") {
-      if (key.upArrow) {
+      if (isListUp(input, key)) {
         setSelectedProjectIndex((prev) => Math.max(0, prev - 1));
-      } else if (key.downArrow) {
-        setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+      } else if (isListDown(input, key)) {
+        if (filteredProjects.length > 0) {
+          setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        }
       } else if (key.return && filteredProjects.length > 0) {
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
@@ -390,14 +449,20 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         setSelectedProjectIndex(0);
       }
     } else if (step === "VIEW_STATUS" && !loading) {
-      if (key.upArrow) {
+      if (isListUp(input, key)) {
         navigateUp();
-      } else if (key.downArrow) {
+      } else if (isListDown(input, key)) {
         navigateDown();
       } else if (key.return && combinedList.length > 0) {
         setExpandedEntry((prev) => (prev === selectedEntryIndex ? null : selectedEntryIndex));
-      } else if (input === "d" && isDivergedSelected && deleteDivergedDirectory) {
-        setConfirmDelete(selectedEntryIndex);
+      } else if (key.ctrl && input === "d") {
+        // Ctrl-D, not a bare `d`: the list is also a type-to-filter box, and a
+        // printable key that deletes whenever a diverged row happens to be
+        // selected made `d` impossible to type into the filter.
+        if (isDivergedSelected && deleteDivergedDirectory) {
+          setDeleteError(null);
+          setConfirmDelete(selectedEntryIndex);
+        }
       } else if (key.backspace || key.delete) {
         setEntryFilter((prev) => prev.slice(0, -1));
         setSelectedEntryIndex(0);
@@ -431,14 +496,31 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   const getTotalSteps = () => (repositories.length === 1 ? 1 : 2);
 
+  // Rows the step's list may take: what the modal has, less its chrome, the
+  // step's own lines above the list and a footer that wraps on a narrow box.
+  const listRoom = (linesAboveList: number): number => {
+    const footer = footerText();
+    const footerExtra = footer ? wrappedRows(footer, layout.innerWidth) - 1 : 0;
+    return layout.rows - layout.chromeRows - linesAboveList - footerExtra;
+  };
+
+  const detailRows = (lines: DetailLine[]): number =>
+    lines.reduce((sum, line) => sum + wrappedRows(line.text, layout.innerWidth - DETAIL_INDENT), 0) + 1;
+
+  const renderDetailLines = (lines: DetailLine[]) => (
+    <Box flexDirection="column" marginLeft={DETAIL_INDENT} marginTop={0} marginBottom={1}>
+      {lines.map((line, index) => (
+        <Text key={index} color={line.color} dimColor={line.dim}>
+          {line.text}
+        </Text>
+      ))}
+    </Box>
+  );
+
   const renderProjectSelection = () => {
-    const visibleCount = 8;
-    const halfVisible = Math.floor(visibleCount / 2);
-    let startIdx = Math.max(0, selectedProjectIndex - halfVisible);
-    const endIdx = Math.min(filteredProjects.length, startIdx + visibleCount);
-    if (endIdx - startIdx < visibleCount) {
-      startIdx = Math.max(0, endIdx - visibleCount);
-    }
+    // "Select repository:", the filter, and the gaps after each.
+    const visibleCount = listRowsFor(listRoom(4), filteredProjects.length);
+    const { start: startIdx, end: endIdx } = listWindow(selectedProjectIndex, filteredProjects.length, visibleCount);
 
     const visibleProjects = filteredProjects.slice(startIdx, endIdx);
 
@@ -466,7 +548,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                   <Box key={repo.index}>
                     <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "> " : "  "}</Text>
                     <Box width={38}>
-                      <Text color={isSelected ? "cyan" : undefined}>{repo.name}</Text>
+                      <Text color={isSelected ? "cyan" : undefined} wrap="truncate-end">
+                        {repo.name}
+                      </Text>
                     </Box>
                     {getRepositoryDiskUsage && <Text dimColor> </Text>}
                     {renderRepositoryDiskUsage(repo.index)}
@@ -477,56 +561,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
             </>
           )}
         </Box>
-      </Box>
-    );
-  };
-
-  const renderDetailPanel = (entry: WorktreeStatusEntry) => {
-    const { status } = entry;
-    const details = status.details;
-
-    return (
-      <Box flexDirection="column" marginLeft={4} marginTop={0} marginBottom={1}>
-        <Text dimColor>Path: {entry.path}</Text>
-        {entry.error !== undefined && <Text color="red"> Status probe failed: {entry.error}</Text>}
-        {details && (
-          <>
-            {details.modifiedFiles > 0 && <Text color="yellow"> Modified: {details.modifiedFiles}</Text>}
-            {details.deletedFiles > 0 && <Text color="red"> Deleted: {details.deletedFiles}</Text>}
-            {details.createdFiles > 0 && <Text color="green"> Created: {details.createdFiles}</Text>}
-            {details.renamedFiles > 0 && <Text color="blue"> Renamed: {details.renamedFiles}</Text>}
-            {details.untrackedFiles > 0 && <Text color="gray"> Untracked: {details.untrackedFiles}</Text>}
-            {details.conflictedFiles > 0 && <Text color="red"> Conflicted: {details.conflictedFiles}</Text>}
-            {(details.unpushedCommitCount ?? 0) > 0 &&
-              (status.fullyPushedUpstreamDeleted ? (
-                <Text color="green">
-                  {" "}
-                  Fully pushed before remote branch deletion ({details.unpushedCommitCount} commit
-                  {details.unpushedCommitCount === 1 ? "" : "s"} not on any remote — likely squash-merged)
-                </Text>
-              ) : (
-                <Text color="cyan"> Unpushed commits: {details.unpushedCommitCount}</Text>
-              ))}
-            {(details.stashCount ?? 0) > 0 && <Text color="magenta"> Stashes: {details.stashCount}</Text>}
-            {details.operationType && <Text color="red"> Operation: {details.operationType}</Text>}
-            {details.modifiedSubmodules && details.modifiedSubmodules.length > 0 && (
-              <Text color="yellow"> Modified submodules: {details.modifiedSubmodules.join(", ")}</Text>
-            )}
-          </>
-        )}
-        {status.upstreamGone && <Text color="red"> Remote branch has been deleted</Text>}
-        {status.reasons.length > 0 && <Text dimColor> Reasons: {status.reasons.join(", ")}</Text>}
-      </Box>
-    );
-  };
-
-  const renderDivergedDetailPanel = (entry: DivergedDirectoryInfo) => {
-    return (
-      <Box flexDirection="column" marginLeft={4} marginTop={0} marginBottom={1}>
-        <Text dimColor>Path: {entry.path}</Text>
-        <Text dimColor> Original branch: {entry.originalBranch}</Text>
-        {entry.divergedAt && <Text dimColor> Diverged: {entry.divergedAt}</Text>}
-        <Text dimColor> Size: {entry.sizeFormatted}</Text>
       </Box>
     );
   };
@@ -548,6 +582,11 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     );
   };
 
+  const selectedRepo =
+    selectedRepoIndexRef.current >= 0
+      ? repositories.find((repo) => repo.index === selectedRepoIndexRef.current)
+      : undefined;
+
   const renderStatusList = () => {
     if (loading) {
       return <Text color="yellow">Loading worktree status...</Text>;
@@ -557,13 +596,23 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
       return <Text color="red">No worktrees found</Text>;
     }
 
-    const visibleCount = 8;
-    const halfVisible = Math.floor(visibleCount / 2);
-    let startIdx = Math.max(0, selectedEntryIndex - halfVisible);
-    const endIdx = Math.min(combinedList.length, startIdx + visibleCount);
-    if (endIdx - startIdx < visibleCount) {
-      startIdx = Math.max(0, endIdx - visibleCount);
-    }
+    // The repository line and its margin, the filter, the probe warning, and
+    // the gap before the list. Inside the list, the diverged separator's
+    // margin and an expanded entry's detail panel take rows no entry is
+    // counted for.
+    const linesAbove = (selectedRepo ? 2 : 0) + 1 + (unprobedCount > 0 ? 1 : 0) + 1;
+    const expandedItem = expandedEntry !== null ? combinedList[expandedEntry] : undefined;
+    const expandedRows =
+      expandedItem?.type === "worktree"
+        ? detailRows(worktreeDetailLines(expandedItem.entry))
+        : expandedItem?.type === "diverged"
+          ? detailRows(divergedDetailLines(expandedItem.entry))
+          : 0;
+    // A failed delete's message sits under the list, with its margin.
+    const deleteErrorRows = deleteError ? 1 + wrappedRows(deleteError, layout.innerWidth) : 0;
+    const extraRows = (filteredDiverged.length > 0 ? 1 : 0) + expandedRows + deleteErrorRows;
+    const visibleCount = listRowsFor(listRoom(linesAbove) - extraRows, combinedList.length);
+    const { start: startIdx, end: endIdx } = listWindow(selectedEntryIndex, combinedList.length, visibleCount);
 
     const visibleItems = combinedList.slice(startIdx, endIdx);
     const filteredCount = filteredEntries.length + filteredDiverged.length;
@@ -612,19 +661,27 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                       <Box>
                         <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "> " : "  "}</Text>
                         <Box width={24}>
-                          <Text color={isSelected ? "cyan" : undefined}>{item.entry.branch}</Text>
+                          <Text color={isSelected ? "cyan" : undefined} wrap="truncate-end">
+                            {item.entry.branch}
+                          </Text>
                         </Box>
                         <Text> </Text>
                         {item.entry.error !== undefined ? (
                           <Text color="red">! status unknown</Text>
                         ) : (
                           <>
-                            {getStatusFlags(item.entry.status)}
-                            {summary && <Text dimColor> {summary}</Text>}
+                            {/* A narrow box squeezes the branch and summary, never a flag. */}
+                            <Box flexShrink={0}>{getStatusFlags(item.entry.status)}</Box>
+                            {summary && (
+                              <Text dimColor wrap="truncate-end">
+                                {" "}
+                                {summary}
+                              </Text>
+                            )}
                           </>
                         )}
                       </Box>
-                      {isExpanded && renderDetailPanel(item.entry)}
+                      {isExpanded && renderDetailLines(worktreeDetailLines(item.entry))}
                     </Box>
                   );
                 }
@@ -648,14 +705,19 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                         <>
                           <Text color={isSelected ? "cyan" : "yellow"}>📦 </Text>
                           <Box width={24}>
-                            <Text color={isSelected ? "cyan" : undefined}>{item.entry.originalBranch}</Text>
+                            <Text color={isSelected ? "cyan" : undefined} wrap="truncate-end">
+                              {item.entry.originalBranch}
+                            </Text>
                           </Box>
                           <Text dimColor> {item.entry.sizeFormatted.padStart(10)}</Text>
-                          <Text dimColor> (diverged {dateStr})</Text>
+                          <Text dimColor wrap="truncate-end">
+                            {" "}
+                            (diverged {dateStr})
+                          </Text>
                         </>
                       )}
                     </Box>
-                    {isExpanded && !isConfirming && renderDivergedDetailPanel(item.entry)}
+                    {isExpanded && !isConfirming && renderDetailLines(divergedDetailLines(item.entry))}
                   </Box>
                 );
               })}
@@ -685,31 +747,35 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     }
   };
 
-  const renderFooter = () => {
+  function footerText(): string | null {
     if (step === "ERROR") return null;
     if (step === "VIEW_STATUS" && loading) return null;
     if (confirmDelete !== null) {
-      return <Text dimColor>y to confirm • n or ESC to cancel</Text>;
+      return "y to confirm • n or ESC to cancel";
     }
-    return (
-      <Text dimColor>
-        {step === "VIEW_STATUS"
-          ? isDivergedSelected
-            ? "↑/↓ navigate • Type to filter • Enter to expand • d to delete • ESC to close"
-            : "↑/↓ navigate • Type to filter • Enter to expand • ESC to close"
-          : "↑/↓ navigate • Type to filter • Enter to select • ESC to cancel"}
-      </Text>
-    );
+    if (step === "VIEW_STATUS") {
+      return isDivergedSelected
+        ? "Ctrl-D to delete • ↑/↓ navigate • Type to filter • Enter to expand • ESC to close"
+        : "↑/↓ navigate • Type to filter • Enter to expand • ESC to close";
+    }
+    return "↑/↓ navigate • Type to filter • Enter to select • ESC to cancel";
+  }
+
+  const renderFooter = () => {
+    const footer = footerText();
+    return footer ? <Text dimColor>{footer}</Text> : null;
   };
 
-  const selectedRepo =
-    selectedRepoIndexRef.current >= 0
-      ? repositories.find((repo) => repo.index === selectedRepoIndexRef.current)
-      : undefined;
-
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
-      <Box borderStyle="round" borderColor="green" paddingX={2} paddingY={1} flexDirection="column" width={70}>
+    <Box flexDirection="column" marginTop={layout.marginY} marginBottom={layout.marginY}>
+      <Box
+        borderStyle="round"
+        borderColor="green"
+        paddingX={2}
+        paddingY={layout.paddingY}
+        flexDirection="column"
+        width={layout.width}
+      >
         <Box marginBottom={1}>
           <Text bold color="green">
             📊 Worktree Status{" "}
@@ -732,6 +798,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         )}
 
         {renderContent()}
+
+        {step === "VIEW_STATUS" && deleteError && (
+          <Box marginTop={1}>
+            <Text color="red">{deleteError}</Text>
+          </Box>
+        )}
 
         <Box marginTop={1}>{renderFooter()}</Box>
       </Box>

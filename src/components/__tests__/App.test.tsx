@@ -3,7 +3,7 @@ import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import type { AppProps } from "../App";
-import App from "../App";
+import App, { LOG_FLUSH_INTERVAL_MS } from "../App";
 import { AppEventEmitter } from "../../utils/app-events";
 
 // Helper to wait for React state updates
@@ -85,10 +85,10 @@ describe("App", () => {
       expect(lastFrame()).toContain("3");
     });
 
-    it("should render initial status as Running", () => {
+    it("should render initial status as Idle", () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
-      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Idle");
     });
   });
 
@@ -221,7 +221,7 @@ describe("App", () => {
       const { unmount, lastFrame } = render(<App {...defaultProps} />);
 
       await waitForStateUpdate();
-      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Idle");
 
       unmount();
 
@@ -257,7 +257,7 @@ describe("App", () => {
       // `setStatus` is the one gate, and it still ends it.
       appEvents.emit("setStatus", "idle");
       await waitForStateUpdate();
-      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Idle");
       expect(lastFrame()).not.toContain("[repo-a] fetch receiving: 40%");
     });
 
@@ -283,13 +283,13 @@ describe("App", () => {
 
       await waitForStateUpdate();
 
-      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Idle");
 
       appEvents.emit("setStatus", "syncing");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Syncing...");
-      expect(lastFrame()).not.toContain("Running");
+      expect(lastFrame()).not.toContain("Idle");
     });
 
     it("should change status from syncing to idle", async () => {
@@ -303,7 +303,7 @@ describe("App", () => {
 
       appEvents.emit("setStatus", "idle");
       await waitForStateUpdate();
-      expect(lastFrame()).toContain("Running");
+      expect(lastFrame()).toContain("Idle");
     });
   });
 
@@ -430,7 +430,7 @@ describe("App", () => {
       expect(lastFrame()).toContain("Worktree Status");
     });
 
-    it("previews and confirms force clean with x then y", async () => {
+    it("previews and confirms force clean with x then the typed word", async () => {
       const { stdin, lastFrame } = render(<App {...defaultProps} />);
 
       stdin.write("x");
@@ -440,7 +440,9 @@ describe("App", () => {
       expect(lastFrame()).toContain("2 trash");
       expect(lastFrame()).toContain("1 skipped invalid");
 
-      stdin.write("y");
+      stdin.write("clean");
+      await waitForStateUpdate();
+      stdin.write("\r");
       await waitForStateUpdate();
 
       expect(defaultProps.forceClean).toHaveBeenCalledTimes(1);
@@ -456,12 +458,12 @@ describe("App", () => {
       expect(lastFrame()).toContain("deleted 2 trash and 1 refs");
     });
 
-    it("cancels force clean with n", async () => {
+    it("cancels force clean with Esc", async () => {
       const { stdin, lastFrame } = render(<App {...defaultProps} />);
 
       stdin.write("x");
       await waitForStateUpdate();
-      stdin.write("n");
+      stdin.write("\u001B");
       await waitForStateUpdate();
 
       expect(defaultProps.forceClean).not.toHaveBeenCalled();
@@ -480,6 +482,132 @@ describe("App", () => {
       stdin.write("r");
 
       expect(onReload).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("keys that cannot act during a sync", () => {
+    it.each(["s", "r", "x"])("says a sync is in progress when %s is pressed during one", async (key) => {
+      const onManualSync = vi.fn();
+      const onReload = vi.fn();
+      const { stdin, lastFrame } = render(<App {...defaultProps} onManualSync={onManualSync} onReload={onReload} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write(key);
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("A sync is in progress");
+      expect(lastFrame()).not.toContain("Force Clean");
+      expect(onManualSync).not.toHaveBeenCalled();
+      expect(onReload).not.toHaveBeenCalled();
+    });
+
+    it("clears the notice after a moment", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write("s");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("A sync is in progress");
+
+      await new Promise((resolve) => setTimeout(resolve, 2600));
+      expect(lastFrame()).not.toContain("A sync is in progress");
+      expect(lastFrame()).toContain("help");
+    });
+  });
+
+  describe("quitting while work is running", () => {
+    it("asks before quitting during a sync, and quits on a second q", async () => {
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} />);
+      await waitForStateUpdate();
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write("q");
+      await waitForStateUpdate();
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(lastFrame()).toContain("a sync still running — press q again to quit");
+
+      stdin.write("q");
+      await waitForStateUpdate();
+      expect(onQuit).toHaveBeenCalledTimes(1);
+    });
+
+    it("stays when any other key follows the question", async () => {
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const onManualSync = vi.fn();
+      const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} onManualSync={onManualSync} />);
+      await waitForStateUpdate();
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write("q");
+      await waitForStateUpdate();
+      stdin.write("n");
+      await waitForStateUpdate();
+
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("press q again");
+
+      stdin.write("q");
+      await waitForStateUpdate();
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(lastFrame()).toContain("press q again");
+    });
+
+    it("asks while a hook is still running", async () => {
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} getRunningHookCount={() => 2} />);
+      await waitForStateUpdate();
+
+      stdin.write("q");
+      await waitForStateUpdate();
+
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(lastFrame()).toContain("2 hooks still running");
+    });
+
+    // After the confirmed quit the service is waiting on the sync, and its own
+    // notice says a second q forces the exit. Asking again would swallow it.
+    it("passes every q after a confirmed quit straight through", async () => {
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const { stdin } = render(<App {...defaultProps} onQuit={onQuit} />);
+      await waitForStateUpdate();
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write("q");
+      await waitForStateUpdate();
+      stdin.write("q");
+      await waitForStateUpdate();
+      stdin.write("q");
+      await waitForStateUpdate();
+
+      expect(onQuit).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("last sync outcome", () => {
+    it("shows failures in words next to the last sync time", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("updateLastSyncTime");
+      appEvents.emit("setLastSyncOutcome", { kind: "failed", count: 2 });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("✗ 2 failed");
+      expect(lastFrame()).toContain("Idle");
+
+      appEvents.emit("setLastSyncOutcome", { kind: "ok" });
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("failed");
+      expect(lastFrame()).toContain("✓ OK");
     });
   });
 
@@ -570,6 +698,13 @@ describe("App", () => {
   });
 
   describe("cron schedule", () => {
+    it("shows the next sync when repositories use different schedules", () => {
+      const { lastFrame } = render(<App {...defaultProps} cronSchedule={["0 * * * *", "*/5 * * * *"]} />);
+
+      expect(lastFrame()).toContain("Next Sync:");
+      expect(lastFrame()).not.toMatch(/Next Sync: N\/A/);
+    });
+
     it("should display next sync time when cron schedule is provided", () => {
       const { lastFrame } = render(<App {...defaultProps} cronSchedule="0 * * * *" />);
 
@@ -842,6 +977,79 @@ describe("App", () => {
 
       expect(defaultProps.onQuit).not.toHaveBeenCalled();
       expect(defaultProps.onManualSync).not.toHaveBeenCalled();
+    });
+  });
+
+  // Every log line used to copy the whole buffer and re-render the tree on its
+  // own, and a sync delivers its lines one tick apart, so React could not batch
+  // them either.
+  describe("log batching", () => {
+    const nextTick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+    it("renders a burst of log lines in one update instead of one per line", async () => {
+      const { lastFrame, frames } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      const framesBefore = frames.length;
+
+      for (let i = 0; i < 20; i++) {
+        appEvents.emit("addLog", { message: `Burst line ${i}`, level: "info" });
+        await nextTick();
+      }
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Burst line 19");
+      expect(lastFrame()).toContain("(20 entries)");
+      // One flush, with slack for a slow machine splitting the burst in two.
+      expect(frames.length - framesBefore).toBeLessThanOrEqual(3);
+    });
+
+    it("holds a line back until the flush, then shows it", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "Deferred line", level: "info" });
+      await nextTick();
+      expect(lastFrame()).not.toContain("Deferred line");
+
+      await new Promise((resolve) => setTimeout(resolve, LOG_FLUSH_INTERVAL_MS + 50));
+      expect(lastFrame()).toContain("Deferred line");
+    });
+
+    it("keeps the buffer order and the redaction across batches", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("addLog", { message: "first batch", level: "info" });
+      await waitForStateUpdate();
+      appEvents.emit("addLog", {
+        message: "fetch https://user:hunter2@example.com/repo.git failed",
+        level: "error",
+      });
+      appEvents.emit("addLog", { message: "second batch", level: "info" });
+      await waitForStateUpdate();
+
+      const frame = lastFrame()!;
+      expect(frame.indexOf("first batch")).toBeLessThan(frame.indexOf("second batch"));
+      expect(frame).not.toContain("hunter2");
+      expect(frame).toContain("(3 entries)");
+    });
+
+    it("reads the repository list once per opened modal, not on every log line", async () => {
+      const { stdin } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      stdin.write("o");
+      await waitForStateUpdate();
+      const callsWhileOpen = vi.mocked(defaultProps.getRepositoryList).mock.calls.length;
+      expect(callsWhileOpen).toBeGreaterThan(0);
+
+      for (let i = 0; i < 5; i++) {
+        appEvents.emit("addLog", { message: `line ${i}`, level: "info" });
+        appEvents.emit("setDiskSpace", `${i} MB`);
+        await waitForStateUpdate();
+      }
+
+      expect(vi.mocked(defaultProps.getRepositoryList).mock.calls.length).toBe(callsWhileOpen);
     });
   });
 });
