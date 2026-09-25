@@ -11,6 +11,7 @@ import pLimit from "p-limit";
 
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG, GIT_CONSTANTS } from "./constants";
 import { ConfigFileExistsError, ConfigFileNotFoundError, SyncWorktreesError } from "./errors";
+import { runList } from "./cli/list";
 import { ConfigLoaderService } from "./services/config-loader.service";
 import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
@@ -18,11 +19,12 @@ import { isWorktreeRestorable } from "./services/trash.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { CLI_COMMANDS, parseArguments } from "./utils/cli";
 import { formatCloneSkipReason } from "./utils/clone-skip-format";
-import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
+import { CONFIG_PATH_ENV_VAR, describeConfigPath, resolveConfigPath } from "./utils/config-discovery";
+import { generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
 import { formatBytes } from "./utils/disk-space";
 import { fileExists } from "./utils/file-exists";
 import { redactRepoUrl, redactSecretsInText } from "./utils/git-url";
-import { getErrorMessage } from "./utils/errors";
+import { configLoadErrorMessage, getErrorMessage } from "./utils/errors";
 import { promptForInitConfig } from "./utils/interactive";
 import { maybeRegisterMcpClients } from "./utils/mcp-registration";
 import { setupSignalHandlers } from "./utils/signal-handlers";
@@ -34,6 +36,7 @@ import type { CloneSkipReason } from "./services/clone-sync.service";
 import type { TrashEntry, TrashManifest } from "./services/trash.service";
 import type { ConfigFile, RepositoryConfig } from "./types";
 import type { CliOptions, TrashCliOptions } from "./utils/cli";
+import type { ResolvedConfigPath } from "./utils/config-discovery";
 
 export interface RunOptions {
   /** One-shot runs: only warnings, errors and the final summary line. */
@@ -281,45 +284,6 @@ export async function runMultipleRepositories(
 
 function countOf(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`;
-}
-
-// The loader already says "Failed to load config file: ..." for a file it
-// could not evaluate; the label in front of it must not say so a second time.
-function configLoadErrorMessage(error: unknown): string {
-  return redactSecretsInText(getErrorMessage(error).replace(/^Failed to load config file: /, ""));
-}
-
-async function runList(configPath: string, filter?: string): Promise<void> {
-  const configLoader = new ConfigLoaderService();
-
-  try {
-    const { repositories } = await configLoader.buildRepositories(configPath, { filter });
-
-    if (filter && repositories.length === 0) {
-      console.error(`❌ No repositories match filter: ${filter}`);
-      process.exit(1);
-    }
-
-    console.log("\n📋 Configured repositories:\n");
-
-    repositories.forEach((repo, index) => {
-      console.log(`${index + 1}. ${repo.name}`);
-      console.log(`   URL: ${redactRepoUrl(repo.repoUrl)}`);
-      console.log(`   Worktrees: ${repo.worktreeDir}`);
-      console.log(`   Schedule: ${repo.cronSchedule}`);
-      console.log(`   Run Once: ${repo.runOnce}`);
-      if (repo.bareRepoDir) {
-        console.log(`   Bare repo: ${repo.bareRepoDir}`);
-      }
-      if (repo.skipLfs) {
-        console.log(`   Skip LFS: ${repo.skipLfs}`);
-      }
-      console.log("");
-    });
-  } catch (error) {
-    console.error("❌ Error loading config file:", configLoadErrorMessage(error));
-    process.exit(1);
-  }
 }
 
 // A failure the person running `sync-worktrees trash` is expected to hit and
@@ -614,18 +578,25 @@ async function loadRunConfig(
   };
 }
 
-async function resolveConfigOrExit(cliPath: string | undefined): Promise<string> {
-  const resolved = cliPath ? path.resolve(cliPath) : await findConfigInCwd();
+async function resolveConfigOrExit(cliPath: string | undefined): Promise<ResolvedConfigPath> {
+  const resolved = await resolveConfigPath(cliPath);
   if (!resolved) {
     // Derived from CONFIG_FILE_NAMES, not restated: this message named
-    // `{js,mjs,cjs}` while `findConfigInCwd` — which shares that constant —
-    // already searched for `.ts` as well, so the one place a user is told what
-    // to create disagreed with what the CLI would find. Building it from the
-    // list is the same fix as pinning the list: the claim cannot drift again.
+    // `{js,mjs,cjs}` while discovery — which shares that constant — already
+    // searched for `.ts` as well, so the one place a user is told what to
+    // create disagreed with what the CLI would find. Building it from the list
+    // is the same fix as pinning the list: the claim cannot drift again.
     const extensions = CONFIG_FILE_NAMES.map((name) => path.extname(name).slice(1)).join(",");
     console.error(
-      `❌ No config file found. Pass --config <path>, run \`sync-worktrees init\` to create one, or place a sync-worktrees.config.{${extensions}} in this directory.`,
+      `❌ No config file found. Pass --config <path>, set ${CONFIG_PATH_ENV_VAR}, run \`sync-worktrees init\` to create one, or place a sync-worktrees.config.{${extensions}} in this directory or a parent.`,
     );
+    process.exit(1);
+  }
+  // A variable set in a shell profile and forgotten is invisible at the prompt,
+  // so a stale one is named here rather than surfacing as a bare "not found".
+  if (resolved.source === "env" && !(await fileExists(resolved.path))) {
+    console.error(`❌ ${CONFIG_PATH_ENV_VAR} points to a file that does not exist: ${resolved.path}`);
+    console.error(`💡 Fix or unset ${CONFIG_PATH_ENV_VAR}, or pass --config <path>.`);
     process.exit(1);
   }
   return resolved;
@@ -695,10 +666,11 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
 }
 
 async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMANDS.RUN }>): Promise<void> {
-  const configPath = await resolveConfigOrExit(options.config);
+  const resolved = await resolveConfigOrExit(options.config);
+  const configPath = resolved.path;
   const displayPath = path.relative(process.cwd(), configPath) || configPath;
   if (!options.quiet) {
-    console.log(`📄 Using config: ${displayPath}`);
+    console.log(`📄 Using config: ${describeConfigPath(resolved)}`);
   }
 
   let loaded: { configFile: ConfigFile; repositories: RepositoryConfig[] };
@@ -762,12 +734,18 @@ export async function main(): Promise<void> {
     case CLI_COMMANDS.INIT:
       return runInit(options.config, options.force);
     case CLI_COMMANDS.LIST: {
-      const configPath = await resolveConfigOrExit(options.config);
-      return runList(configPath, options.filter);
+      const resolved = await resolveConfigOrExit(options.config);
+      const code = await runList(resolved, { filter: options.filter, json: options.json });
+      if (code !== 0) process.exit(code);
+      return;
     }
     case CLI_COMMANDS.TRASH: {
-      const configPath = await resolveConfigOrExit(options.config);
-      return runTrash(configPath, options);
+      const resolved = await resolveConfigOrExit(options.config);
+      // Trash operations restore and delete, so a config picked up from a
+      // parent directory or the environment is named before anything happens.
+      // On stderr: stdout is the tab-separated or JSON listing scripts read.
+      if (resolved.source !== "flag") console.error(`📄 Using config: ${describeConfigPath(resolved)}`);
+      return runTrash(resolved.path, options);
     }
     case CLI_COMMANDS.RUN:
       return runSync(options);

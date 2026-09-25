@@ -20,7 +20,7 @@ export type CliOptions =
       quiet: boolean;
     }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
-  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string }
+  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string; json: boolean }
   | ({ command: typeof CLI_COMMANDS.TRASH; config?: string } & TrashCliOptions);
 
 /** Everything `sync-worktrees trash` accepts beyond `--config`. */
@@ -33,6 +33,9 @@ export interface TrashCliOptions {
   json?: boolean;
   wait?: boolean;
 }
+
+const CONFIG_OPTION_DESCRIPTION =
+  "Path to the config file. Default: $SYNC_WORKTREES_CONFIG, else the nearest sync-worktrees.config.* in this directory or a parent (up to your home directory).";
 
 const DOCS_URL = "https://github.com/yordan-kanchelov/sync-worktrees/tree/main/docs";
 
@@ -153,7 +156,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           .option("config", {
             alias: "c",
             type: "string",
-            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+            description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("run-once", {
             type: "boolean",
@@ -218,18 +221,24 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           .option("config", {
             alias: "c",
             type: "string",
-            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+            description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("filter", {
             alias: "f",
             type: "string",
             description: "Filter repositories by name (wildcards, comma-separated).",
+          })
+          .option("json", {
+            type: "boolean",
+            description: "Print the repositories as a JSON array instead of a report.",
+            default: false,
           }),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.LIST,
           config: args.config,
           filter: args.filter,
+          json: args.json,
         };
       },
     )
@@ -241,7 +250,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           .option("config", {
             alias: "c",
             type: "string",
-            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+            description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("filter", {
             alias: "f",
