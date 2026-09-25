@@ -924,6 +924,36 @@ describe("InteractiveUIService", () => {
       void service.destroy();
     });
 
+    // `sync-worktrees --filter backend-*` starts the UI on a subset; a reload
+    // re-reads the whole file and must not widen that back to every repository.
+    it("keeps the --filter the CLI started with across a reload", async () => {
+      const repo = (name: string): Record<string, unknown> => ({
+        name,
+        repoUrl: `https://github.com/test/${name}.git`,
+        worktreeDir: `/test/${name}`,
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+      });
+      mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+        repositories: [repo("backend-api"), repo("frontend-web")],
+      });
+
+      const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+      service.setRepositoryFilter("backend-*");
+      vi.mocked(WorktreeSyncService).mockClear();
+      const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+
+      await onReload();
+
+      expect(mockConfigLoaderInstance.buildRepositories).toHaveBeenCalledWith("/test/config.js", {
+        filter: "backend-*",
+      });
+      const rebuilt = vi.mocked(WorktreeSyncService).mock.calls.map(([config]) => (config as { name?: string }).name);
+      expect(rebuilt).toEqual(["backend-api"]);
+
+      void service.destroy();
+    });
+
     it("preserves clone-mode skips recorded during reload initialization", async () => {
       mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
         repositories: [

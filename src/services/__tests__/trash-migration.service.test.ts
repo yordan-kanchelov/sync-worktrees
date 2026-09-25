@@ -384,7 +384,7 @@ describe("TrashMigrationService", () => {
       // discarding needs nothing done would be the same defect as the TUI one
       // above — a payload describing a flow that does not apply to it.
       expect(info.instruction).not.toContain("nothing to do");
-      expect(info.instruction).toContain(`sync-worktrees trash --dropKeepRef ${id}`);
+      expect(info.instruction).toContain(`sync-worktrees trash --drop-keep-ref ${id}`);
       expect(info.trashId).toBe(id);
       // Everything else the diverge flow recorded is preserved verbatim.
       expect(info.originalBranch).toBe("feat");

@@ -10,6 +10,11 @@ export interface LoggerOptions {
   debug?: boolean;
   disableColors?: boolean;
   outputFn?: LogOutputFn;
+  /**
+   * `--quiet`: drop info, debug and table output so only warnings and errors
+   * get through. For one-shot runs under cron, where every stdout line is mail.
+   */
+  quiet?: boolean;
 }
 
 /**
@@ -22,11 +27,13 @@ export class Logger {
   private repoName?: string;
   private debugEnabled: boolean;
   private outputFn?: LogOutputFn;
+  private quiet: boolean;
 
   constructor(options: LoggerOptions = {}) {
     this.repoName = options.repoName;
     this.debugEnabled = options.debug ?? false;
     this.outputFn = options.outputFn;
+    this.quiet = options.quiet ?? false;
   }
 
   private prefix(): string {
@@ -34,7 +41,7 @@ export class Logger {
   }
 
   debug(message: string, ...args: unknown[]): void {
-    if (!this.debugEnabled) return;
+    if (!this.debugEnabled || this.quiet) return;
     const formattedMessage = redactSecretsInText(this.prefix() + this.formatMessage(message, args));
     if (this.outputFn) {
       this.outputFn(formattedMessage, "debug");
@@ -44,6 +51,7 @@ export class Logger {
   }
 
   info(message: string, ...args: unknown[]): void {
+    if (this.quiet) return;
     const formattedMessage = redactSecretsInText(this.prefix() + this.formatMessage(message, args));
     if (this.outputFn) {
       this.outputFn(formattedMessage, "info");
@@ -84,6 +92,7 @@ export class Logger {
   }
 
   table(content: string): void {
+    if (this.quiet) return;
     const formattedMessage = redactSecretsInText("\n" + content + "\n");
     if (this.outputFn) {
       this.outputFn(formattedMessage, "info");
@@ -100,8 +109,8 @@ export class Logger {
     return args.reduce((msg, arg) => (msg as string).replace("%s", String(arg)), message) as string;
   }
 
-  static createDefault(repoName?: string, debug?: boolean): Logger {
-    return new Logger({ repoName, debug });
+  static createDefault(repoName?: string, debug?: boolean, options: { quiet?: boolean } = {}): Logger {
+    return new Logger({ repoName, debug, quiet: options.quiet });
   }
 
   withPassthrough(passthrough: LogOutputFn): Logger {
@@ -109,6 +118,7 @@ export class Logger {
     return new Logger({
       repoName: this.repoName,
       debug: this.debugEnabled,
+      quiet: this.quiet,
       outputFn: (msg: string, level: LogLevel): void => {
         if (upstream) {
           upstream(msg, level);

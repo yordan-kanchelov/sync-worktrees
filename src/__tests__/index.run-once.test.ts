@@ -291,4 +291,33 @@ describe("runMultipleRepositories", () => {
     expect(mocks.triggerInitialSync).not.toHaveBeenCalled();
     expect(mocks.sync).toHaveBeenCalledTimes(1);
   });
+  // --quiet is for cron, which mails whatever reaches stdout: the per-repo
+  // loggers go quiet, the banner goes, and the one summary line stays.
+  it("under --quiet, builds quiet repository loggers and keeps only the summary line", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+
+    await runMultipleRepositories(configFile, [repo], undefined, { quiet: true });
+
+    expect(mocks.createLogger).toHaveBeenCalledWith(repo.name, repo.debug, { quiet: true });
+    const infoLines = mocks.logger.info.mock.calls.map((args) => String(args[0]));
+    expect(infoLines.some((line) => line.includes("Syncing"))).toBe(false);
+    expect(infoLines.filter((line) => line.includes("Processed"))).toHaveLength(1);
+    // No leading blank line: it separated the summary from output that --quiet dropped.
+    expect(infoLines.find((line) => line.includes("Processed"))).toMatch(/^📊 Processed 1 repo:/);
+  });
+
+  it("prints the banner and builds loud repository loggers without --quiet", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+
+    await runMultipleRepositories(configFile, [repo]);
+
+    expect(mocks.createLogger).toHaveBeenCalledWith(repo.name, repo.debug, { quiet: undefined });
+    expect(mocks.logger.info).toHaveBeenCalledWith(expect.stringContaining("Syncing 1 repositories"));
+  });
 });

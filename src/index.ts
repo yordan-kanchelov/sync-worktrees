@@ -46,10 +46,18 @@ export type {
   SyncWorktreesTrashConfig,
 } from "./types";
 
+export interface RunOptions {
+  /** One-shot runs: only warnings, errors and the final summary line. */
+  quiet?: boolean;
+  /** The `--filter` the repositories were narrowed by, kept for config reloads. */
+  filter?: string;
+}
+
 export async function runMultipleRepositories(
   configFile: ConfigFile,
   repositories: RepositoryConfig[],
   configPath?: string,
+  options: RunOptions = {},
 ): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
   const globalLogger = Logger.createDefault();
@@ -70,12 +78,17 @@ export async function runMultipleRepositories(
 
   if (runOnce) {
     const runOnceSignalHandle = setupSignalHandlers({ exitAfterCleanupCode: 130 });
-    globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
+    // The global logger stays loud: it prints the final summary line, which
+    // --quiet keeps. Everything else it says under --quiet is a warning or an
+    // error, so only this banner needs holding back by hand.
+    if (!options.quiet) {
+      globalLogger.info(`\n🔄 Syncing ${repositories.length} repositories...`);
+    }
 
     const initResults = await Promise.allSettled(
       repositories.map((repoConfig) =>
         limit(async () => {
-          const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug);
+          const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug, { quiet: options.quiet });
 
           repoLogger.info(`\n📦 Repository: ${repoConfig.name}`);
           repoLogger.info(`   URL: ${redactRepoUrl(repoConfig.repoUrl)}`);
@@ -196,8 +209,11 @@ export async function runMultipleRepositories(
     const skipSummaryLabel = skippedNames.size === skipsByRepo.length ? "with clone-mode skips" : "skipped";
     const partialSuffix = partialSkipNames.size > 0 ? ` (${partialSkipNames.size} with partial skips)` : "";
     const failedSuffix = lockUnavailableNames.size > 0 ? ` (${lockUnavailableNames.size} lock unavailable)` : "";
+    // Under --quiet this is the one line a clean run prints, so it gets no
+    // blank line to separate it from output that was never printed.
+    const summarySpacer = options.quiet ? "" : "\n";
     globalLogger.info(
-      `\n📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced${partialSuffix}, ${skippedCount} ${skipSummaryLabel}, ${failedCount} failed${failedSuffix}`,
+      `${summarySpacer}📊 Processed ${repositories.length} ${processedRepoWord}: ${successCount} synced${partialSuffix}, ${skippedCount} ${skipSummaryLabel}, ${failedCount} failed${failedSuffix}`,
     );
 
     if (failedCount > 0) {
@@ -215,6 +231,9 @@ export async function runMultipleRepositories(
     const displaySchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
     const allServices = Array.from(services.values());
     const uiService = new InteractiveUIService(allServices, configPath, displaySchedule, maxParallel);
+    if (options.filter) {
+      uiService.setRepositoryFilter(options.filter);
+    }
     signalHandle.register((fast) => uiService.destroy(fast));
 
     void uiService.calculateAndUpdateDiskSpace();
@@ -459,7 +478,7 @@ async function executeTrash(configPath: string, options: TrashCliOptions): Promi
     return;
   }
   if (options.dropKeepRef) {
-    requireTrashTTY("--dropKeepRef");
+    requireTrashTTY("--drop-keep-ref");
     const confirmation = await input({ message: `Type '${options.dropKeepRef}' to confirm deleting this keep ref:` });
     if (confirmation !== options.dropKeepRef) {
       throw new TrashCliError("Keep ref deletion was not confirmed");
@@ -469,7 +488,7 @@ async function executeTrash(configPath: string, options: TrashCliOptions): Promi
     return;
   }
   if (options.dropAllKeepRefs) {
-    requireTrashTTY("--dropAllKeepRefs");
+    requireTrashTTY("--drop-all-keep-refs");
     // The names are read here, before the confirmation, and handed to the
     // service as the set to act on: a sync running alongside this command can
     // mint keep refs for entries it has just reaped, and those were never on
@@ -511,8 +530,8 @@ async function executeTrash(configPath: string, options: TrashCliOptions): Promi
   for (const invalidPath of invalid) console.warn(`⚠️ Invalid trash entry left untouched: ${invalidPath}`);
 }
 
-// Permanent deletion of one entry, gated exactly like --dropKeepRef and
-// --dropAllKeepRefs: an interactive TTY, a typed confirmation naming what is
+// Permanent deletion of one entry, gated exactly like --drop-keep-ref and
+// --drop-all-keep-refs: an interactive TTY, a typed confirmation naming what is
 // being destroyed, and an audit record — the last written by the reap path
 // inside the lock, so it records the attempt and not merely the intent.
 //
@@ -560,9 +579,13 @@ async function purgeTrashEntry(
 async function loadRunConfig(
   configPath: string,
   runOnceOverride: boolean,
+  filter?: string,
 ): Promise<{ configFile: ConfigFile; repositories: RepositoryConfig[] }> {
   const configLoader = new ConfigLoaderService();
-  const { repositories, configFile } = await configLoader.buildRepositories(configPath);
+  const { repositories, configFile } = await configLoader.buildRepositories(
+    configPath,
+    filter ? { filter } : undefined,
+  );
   return {
     repositories,
     configFile: runOnceOverride
@@ -644,11 +667,13 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
 async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMANDS.RUN }>): Promise<void> {
   const configPath = await resolveConfigOrExit(options.config);
   const displayPath = path.relative(process.cwd(), configPath) || configPath;
-  console.log(`📄 Using config: ${displayPath}`);
+  if (!options.quiet) {
+    console.log(`📄 Using config: ${displayPath}`);
+  }
 
   let loaded: { configFile: ConfigFile; repositories: RepositoryConfig[] };
   try {
-    loaded = await loadRunConfig(configPath, options.runOnce);
+    loaded = await loadRunConfig(configPath, options.runOnce, options.filter);
   } catch (error) {
     if (error instanceof ConfigFileNotFoundError) {
       console.error(`\n❌ Config file not found: ${error.configPath}`);
@@ -659,8 +684,18 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
     process.exit(1);
   }
 
+  // Same matching and the same answer as `list --filter`: a filter that selects
+  // nothing is a typo, and syncing zero repositories would exit 0 on it.
+  if (options.filter && loaded.repositories.length === 0) {
+    console.error(`❌ No repositories match filter: ${options.filter}`);
+    process.exit(1);
+  }
+
   try {
-    await runMultipleRepositories(loaded.configFile, loaded.repositories, configPath);
+    await runMultipleRepositories(loaded.configFile, loaded.repositories, configPath, {
+      quiet: options.quiet,
+      filter: options.filter,
+    });
   } catch (error) {
     // The config loaded; this is the run failing. Everything that escapes here
     // — a service constructor rejecting a repository name, a render that will
