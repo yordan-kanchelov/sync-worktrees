@@ -447,7 +447,10 @@ export default {
 
   const result = await run(process.execPath, [TSC, "-p", project, "--pretty", "false"], { ...sandbox, cwd: project });
   const errors = result.stdout.split("\n").filter((line) => line.includes("error TS"));
-  const unexpected = errors.filter((line) => !line.startsWith("bad.config.js"));
+  // tsc prints paths relative to the real cwd; when the temp dir sits behind a
+  // symlink (macOS /var/folders -> /private/var/folders) that path climbs out
+  // and back in, so match the file name rather than a bare prefix.
+  const unexpected = errors.filter((line) => !/(^|[\\/])bad\.config\.js\(/.test(line));
   if (unexpected.length > 0 || result.timedOut) {
     fail(`the published types do not type-check a documented config (${describeExit(result)})`, {
       stdout: result.stdout,
