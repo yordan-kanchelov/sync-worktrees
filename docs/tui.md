@@ -50,8 +50,8 @@ types into its filter. Keys that act on the selection are ones a filter cannot t
 delete a `.diverged/` entry.
 
 The modals size themselves to the terminal: they are never wider than the window, their lists show as many rows as the
-height leaves room for, and the help screen drops its spacing and then scrolls (`↑`/`↓`, `j`/`k`) when the window is too
-short for all of it.
+height leaves room for, and the help screen drops its spacing and then scrolls (`↑`/`↓`, `j`/`k`, `Ctrl-P`/`Ctrl-N`) when
+the window is too short for all of it.
 
 `Esc` backs out rather than quits: it closes the help screen, cancels a wizard or steps one back to the previous
 question, and does nothing on the main screen. `q` is the only key that quits. With nothing running it quits straight
