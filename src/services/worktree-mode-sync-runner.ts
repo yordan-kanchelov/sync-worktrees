@@ -1553,7 +1553,11 @@ export class WorktreeModeSyncRunner {
           error instanceof Error ? error : undefined,
         );
       } else {
-        await this.gitService.deleteRef(keepRef).catch(() => undefined);
+        await this.gitService
+          .deleteRef(keepRef)
+          .catch((refError: unknown) =>
+            this.logger.warn(`⚠️ Failed to remove rollback keep ref '${keepRef}': ${getErrorMessage(refError)}`),
+          );
       }
       throw error;
     }

@@ -484,7 +484,7 @@ describe("GitService", () => {
         await gitService.initialize();
 
         expect(mockGit.raw).toHaveBeenCalledWith(["for-each-ref", "--format=%(refname)", "refs/heads/"]);
-        expect(branchDeleteCalls()).toEqual([["branch", "-D", "feature-1", "release/2.0"]]);
+        expect(branchDeleteCalls()).toEqual([["branch", "-D", "--", "feature-1", "release/2.0"]]);
         expect(mockLogger.info).toHaveBeenCalledWith(
           "Removed 2 clone-time local branch copies; worktrees are created from origin/* instead.",
         );
@@ -503,8 +503,8 @@ describe("GitService", () => {
         await gitService.initialize();
 
         const calls = branchDeleteCalls();
-        expect(calls.map((args) => args.length - 2)).toEqual([200, 200, 50]);
-        expect(calls.flatMap((args) => args.slice(2))).toEqual(branches);
+        expect(calls.map((args) => args.length - 3)).toEqual([200, 200, 50]);
+        expect(calls.flatMap((args) => args.slice(3))).toEqual(branches);
       });
 
       it("leaves the copies alone and continues when HEAD cannot be read", async () => {
@@ -1851,7 +1851,7 @@ describe("GitService", () => {
       expect(fs.access).toHaveBeenCalledWith("/test/worktrees/feature-1");
       expect(fs.rm).not.toHaveBeenCalled();
       // Should have called worktree list but not worktree add
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
       expect(mockGit.raw).toHaveBeenCalledTimes(1); // Only the list call, no add call
     });
 
@@ -1958,7 +1958,7 @@ describe("GitService", () => {
 
       await gitService.addWorktree("feature-1", worktreePath);
 
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
       expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "prune"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", worktreePath]);
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("registration locked"));
@@ -1990,7 +1990,7 @@ describe("GitService", () => {
 
       await gitService.addWorktree("feature-1", worktreePath);
 
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
       expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "prune"]);
       expect(fs.rm).not.toHaveBeenCalled();
     });
@@ -2855,7 +2855,7 @@ describe("GitService", () => {
 
       const worktrees = await gitService.getWorktrees();
 
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
       // The HEAD oid git prints for each worktree is carried through: the
       // update phase compares it against origin's tip to decide, without a
       // per-worktree probe, that nothing changed.
@@ -3932,7 +3932,7 @@ locked
       );
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feat-new"]);
-      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "feat-new"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "--", "feat-new"]);
     });
   });
 
