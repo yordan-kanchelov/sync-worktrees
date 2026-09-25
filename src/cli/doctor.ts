@@ -7,6 +7,7 @@ import pLimit from "p-limit";
 
 import { ConfigFileNotFoundError } from "../errors";
 import { ConfigLoaderService } from "../services/config-loader.service";
+import { CONFIG_PATH_ENV_VAR } from "../utils/config-discovery";
 import { findConfigInCwd } from "../utils/config-generator";
 import { formatBytes } from "../utils/disk-space";
 import { getErrorMessage } from "../utils/errors";
@@ -443,8 +444,8 @@ export async function runDoctorChecks(options: DoctorOptions, deps: DoctorDeps):
       "config",
       null,
       "fail",
-      "No config file found in the current directory",
-      "Pass --config <path>, or run 'sync-worktrees init' to create one.",
+      "No config file found in the current directory or its parents",
+      `Pass --config <path>, set ${CONFIG_PATH_ENV_VAR}, or run 'sync-worktrees init' to create one.`,
     );
   } else {
     try {

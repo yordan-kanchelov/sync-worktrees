@@ -14,8 +14,21 @@ recovery](./trash-and-recovery.md) and [Hooks and file copying](./hooks-and-file
 
 ## File formats and discovery
 
-Discovery tries `sync-worktrees.config.js`, `.mjs`, `.cjs` and `.ts`, in that order — the CLI in the current directory,
-the MCP server walking up from it. A `.ts` config is run by Node directly, with no build step, so it must use erasable
+Discovery tries `sync-worktrees.config.js`, `.mjs`, `.cjs` and `.ts`, in that order, in each directory from the
+current one upwards; the first directory with a match wins. The CLI stops at your home directory when it starts inside
+it (like a git ceiling directory: a config in `~` is found, one in `/home` or `/` is not); the MCP server walks to the
+filesystem root. The CLI resolves its config in this order:
+
+1. `--config <path>`.
+2. The `SYNC_WORKTREES_CONFIG` environment variable, relative to the current directory. An empty value counts as unset;
+   a path that does not exist is an error naming the variable, not a fall-through to discovery.
+3. Discovery, as above.
+
+`sync-worktrees` (unless `--quiet`) and `sync-worktrees list` print the file they used, and say when it came from a
+parent directory or the variable. `trash` says so on stderr whenever the path did not come from `--config`. The MCP
+server does not read `SYNC_WORKTREES_CONFIG` (see [MCP server](./mcp.md)).
+
+A `.ts` config is run by Node directly, with no build step, so it must use erasable
 syntax only (no `enum`, `namespace`, parameter properties or decorators). `init` writes `.js`, which is already
 type-checked through its `@satisfies` JSDoc.
 

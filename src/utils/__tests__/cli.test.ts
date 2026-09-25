@@ -55,6 +55,13 @@ describe("parseArguments", () => {
     if (opts.command !== "list") throw new Error("expected list command");
     expect(opts.config).toBe("/etc/sync.config.js");
     expect(opts.filter).toBe("backend-*");
+    expect(opts.json).toBe(false);
+  });
+
+  it("parses list --json", () => {
+    const opts = parseArguments(["list", "--json"]);
+    if (opts.command !== "list") throw new Error("expected list command");
+    expect(opts.json).toBe(true);
   });
 
   it("parses trash listing and restore options", () => {

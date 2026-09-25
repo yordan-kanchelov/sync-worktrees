@@ -152,6 +152,9 @@ any repository failed (see [Exit codes](#exit-codes)). sync-worktrees sets `GIT_
 it yourself), so credentials must come from a credential helper or `ssh-agent`. See
 [Authentication](./docs/configuration.md#authentication).
 
+Without `--config`, `sync-worktrees`, `list` and `trash` use `$SYNC_WORKTREES_CONFIG` when it is set, and otherwise
+the nearest `sync-worktrees.config.{js,mjs,cjs,ts}` in the current directory or a parent, the way git finds `.git`.
+The walk stops at your home directory when it starts inside it. `sync-worktrees` and `list` print the file they used.
 If the config lives elsewhere, pass it explicitly:
 
 ```bash
@@ -297,7 +300,7 @@ recipe for parallel agents on parallel branches: [MCP server](./docs/mcp.md).
 
 | Option       | Alias | Description                                                                                                                    | Default |
 | ------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------ | ------- |
-| `--config`   | `-c`  | Path to JavaScript config file (auto-detected in CWD when omitted)                                                             | -       |
+| `--config`   | `-c`  | Config file path. When omitted: `$SYNC_WORKTREES_CONFIG`, else the nearest config in this directory or a parent (up to `~`)    | -       |
 | `--run-once` | -     | Run a sync once and exit, overriding the config's [`runOnce`](./docs/configuration.md#whole-file-settings) for this invocation | `false` |
 | `--debug`    | -     | Log debug output and full error details (stack, git's whole output), overriding the config's `debug`                           | `false` |
 | `--filter`   | `-f`  | Only sync repositories whose name matches (wildcards, comma-separated; same matching as `list`). Exits 1 if nothing matches    | -       |
@@ -319,7 +322,33 @@ Subcommands:
   (`./sync-worktrees.config.js` by default). It refuses to overwrite an existing target unless you pass `--force`, and
   it loads the generated file back before reporting success, so a config that would not load fails the command instead
   of surfacing on the next run.
-- `sync-worktrees list [--config <path>] [--filter|-f <pattern>]` prints the resolved repositories and exits.
+- `sync-worktrees list [--config <path>] [--filter|-f <pattern>] [--json]` prints the resolved repositories, with what
+  is on disk for each (registered worktrees and trash entries; for a clone, whether it exists yet), and exits. It only
+  reads (`git worktree list` and the `.trash` directory) and takes no lock, so it is safe next to a running sync.
+  `--json` prints an array instead, one object per repository:
+
+  ```json
+  {
+    "name": "app",
+    "mode": "worktree",
+    "repoUrl": "https://***@github.com/org/app.git",
+    "worktreeDir": "/home/me/code/app",
+    "bareRepoDir": "/home/me/code/.bare/app",
+    "branch": null,
+    "schedule": "0 * * * *",
+    "runOnce": false,
+    "skipLfs": false,
+    "filters": { "branchInclude": null, "branchExclude": ["dependabot/*"], "branchMaxAge": "14d" },
+    "sparseCheckout": null,
+    "counts": { "worktrees": 4, "trashEntries": 1, "error": null }
+  }
+  ```
+
+  Every key is always present. `repoUrl` has credentials removed. `bareRepoDir` is `null` in clone mode and `branch`
+  outside it. `sparseCheckout` is `{ include, exclude, mode, skipUpdateWhenOutsideSparse }` with defaults filled in.
+  `counts.worktrees` counts registered worktrees whose directory exists (in clone mode, 1 once the clone exists).
+  `counts.trashEntries` is `null` in clone mode, which has no trash. Both are `null` when they could not be read, and
+  `counts.error` then says why.
 - `sync-worktrees doctor [--config <path>] [--filter|-f <pattern>] [--json] [--quiet]` checks the setup without
   changing anything: Node and git versions, git-lfs, the config file, and for each repository whether `repoUrl` answers
   a non-interactive `git ls-remote`, whether its directories and lock/state directories are writable, and free disk

@@ -5,7 +5,7 @@
 no lock, so it is safe to run next to a running TUI or a cron job.
 
 ```bash
-sync-worktrees doctor                          # the config in the current directory
+sync-worktrees doctor                          # the config found as for every command
 sync-worktrees doctor --config ./sync.config.js --filter "backend-*"
 sync-worktrees doctor --quiet                  # only warnings, failures and the summary line
 sync-worktrees doctor --json | jq '.[] | select(.status != "pass")'
@@ -13,7 +13,7 @@ sync-worktrees doctor --json | jq '.[] | select(.status != "pass")'
 
 | Option       | Alias | Description                                                                      |
 | ------------ | ----- | -------------------------------------------------------------------------------- |
-| `--config`   | `-c`  | Config file to check (auto-detected in the current directory when omitted)      |
+| `--config`   | `-c`  | Config file to check (default lookup: [Configuration](./configuration.md))       |
 | `--filter`   | `-f`  | Only check repositories whose name matches (wildcards, comma-separated)         |
 | `--json`     | -     | Print the checks as one JSON array instead of the report (`--quiet` is ignored) |
 | `--quiet`    | `-q`  | Print only warnings, failures and the summary line                              |
