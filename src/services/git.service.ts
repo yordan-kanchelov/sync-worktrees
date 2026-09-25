@@ -2,14 +2,21 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import { ConfigError, GitOperationError, WorktreeError, WorktreeNotCleanError } from "../errors";
+import {
+  ConfigError,
+  GitOperationError,
+  UpstreamSetupError,
+  WorktreeError,
+  WorktreeMetadataError,
+  WorktreeNotCleanError,
+} from "../errors";
 import { fileExists, probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
 import { isGitLfsInstalled, isLfsSmudgeSkippedByEnv, warnGitLfsMissingOnce } from "../utils/git-lfs-probe";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir, normalizeRepoUrlForComparison, redactRepoUrl } from "../utils/git-url";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 import { quarantineDirectory } from "../utils/quarantine";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 import { parseWorktreeListPorcelain, readWorktreeListPorcelain } from "../utils/worktree-list-parser";
@@ -1212,6 +1219,26 @@ export class GitService {
     }
   }
 
+  // Records metadata for a worktree addWorktree just created. A worktree sync
+  // has no metadata for cannot be auto-managed, so on failure it is removed
+  // again (with the branch, when this add created it) before the typed error
+  // propagates.
+  private async createMetadataOrRollback(
+    bareGit: SimpleGit,
+    absoluteWorktreePath: string,
+    branchName: string,
+    createdNewBranch: boolean,
+  ): Promise<AddWorktreeResult> {
+    try {
+      const head = await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+      return { status: "created", head };
+    } catch (metadataError) {
+      this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
+      await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
+      throw new WorktreeMetadataError(branchName, metadataError);
+    }
+  }
+
   // Resolves to what the call did: the HEAD commit of the worktree it created,
   // or `already_registered` when the path already was a registered worktree
   // (one a concurrent operation registered first, or a detached-HEAD checkout
@@ -1266,25 +1293,14 @@ export class GitService {
 
       await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
 
-      try {
-        const head = await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
-        return { status: "created", head };
-      } catch (metadataError) {
-        this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
-        await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
-        throw new Error(`Metadata creation failed for '${branchName}': ${getErrorMessage(metadataError)}`);
-      }
+      return await this.createMetadataOrRollback(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
     } catch (error) {
       const errorMessage = getErrorMessage(error);
 
-      // Upstream setup failures are already rolled back inside runWorktreeAddByMatrix.
-      // Don't enter the tracking-error fallback (which would silently accept a partial worktree).
-      if ((error as { isUpstreamSetupFailure?: boolean })?.isUpstreamSetupFailure) {
-        throw error;
-      }
-
-      // Re-throw metadata creation errors - these are fatal and should not fall back
-      if (errorMessage.includes("Metadata creation failed")) {
+      // Upstream setup failures are already rolled back inside runWorktreeAddByMatrix,
+      // and metadata failures by createMetadataOrRollback. Both are fatal: the
+      // tracking-error fallback below would silently accept a partial worktree.
+      if (error instanceof UpstreamSetupError || error instanceof WorktreeMetadataError) {
         throw error;
       }
 
@@ -1323,14 +1339,7 @@ export class GitService {
 
           await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
 
-          try {
-            const head = await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
-            return { status: "created", head };
-          } catch (metadataError) {
-            this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
-            await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, retryCreatedNewBranch);
-            throw new Error(`Metadata creation failed for '${branchName}': ${getErrorMessage(metadataError)}`);
-          }
+          return await this.createMetadataOrRollback(bareGit, absoluteWorktreePath, branchName, retryCreatedNewBranch);
         } catch (retryError) {
           this.logger.error(`  - Failed to create worktree on retry: ${String(retryError)}`);
           throw retryError;
@@ -1388,14 +1397,7 @@ export class GitService {
 
         await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
 
-        try {
-          const head = await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
-          return { status: "created", head };
-        } catch (metadataError) {
-          this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
-          await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, false);
-          throw new Error(`Metadata creation failed for '${branchName}': ${getErrorMessage(metadataError)}`);
-        }
+        return await this.createMetadataOrRollback(bareGit, absoluteWorktreePath, branchName, false);
       } catch (fallbackError) {
         const fallbackErrorMessage = getErrorMessage(fallbackError);
 
@@ -1600,7 +1602,7 @@ export class GitService {
     branchName: string,
     createdNewBranch: boolean,
     error: unknown,
-  ): Promise<Error> {
+  ): Promise<UpstreamSetupError> {
     const { worktreeRemoved } = await this.rollbackPartialWorktree(
       bareGit,
       absoluteWorktreePath,
@@ -1608,10 +1610,7 @@ export class GitService {
       createdNewBranch,
       "upstream setup error",
     );
-    const suffix = worktreeRemoved ? "" : " (rollback failed; partial worktree may remain)";
-    const wrapped = new Error(`Failed to set upstream for '${branchName}': ${getErrorMessage(error)}${suffix}`);
-    (wrapped as Error & { isUpstreamSetupFailure?: boolean }).isUpstreamSetupFailure = true;
-    return wrapped;
+    return new UpstreamSetupError(branchName, error, worktreeRemoved);
   }
 
   // `git worktree remove` refuses three ways, and none of them means the

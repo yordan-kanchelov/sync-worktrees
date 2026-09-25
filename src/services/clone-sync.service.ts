@@ -8,7 +8,8 @@ import { appendGitAuthHint } from "../utils/git-auth-error";
 import { createGitClient } from "../utils/git-client";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { normalizeRepoUrlForComparison, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
-import { getErrorMessage, isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
+import { isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BranchCreatedActionsService } from "./branch-created-actions.service";

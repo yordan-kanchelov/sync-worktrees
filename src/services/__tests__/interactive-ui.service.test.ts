@@ -5,7 +5,7 @@ import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppEventEmitter } from "../../utils/app-events";
-import { calculateDirectorySize, formatBytes } from "../../utils/disk-space";
+import { calculateDirectorySize, calculateSyncDiskSpace, formatBytes } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
 
 import type { Config } from "../../types";
@@ -298,6 +298,28 @@ describe("InteractiveUIService", () => {
       const service = new InteractiveUIService([mockSyncService]);
 
       expect(() => service.updateLastSyncTime()).not.toThrow();
+
+      void service.destroy();
+    });
+  });
+
+  describe("calculateAndUpdateDiskSpace", () => {
+    it("reports a failed calculation in the log pane and shows N/A", async () => {
+      vi.mocked(calculateSyncDiskSpace).mockRejectedValueOnce(new Error("measure blew up"));
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const service = new InteractiveUIService([mockSyncService]);
+      const logs: Array<{ message: string; level: string }> = [];
+      const diskSpace: string[] = [];
+      service.getEvents().on("addLog", (entry) => void logs.push(entry));
+      service.getEvents().on("setDiskSpace", (value) => void diskSpace.push(value));
+      service.getEvents().emit("uiReady");
+
+      await service.calculateAndUpdateDiskSpace();
+
+      expect(logs).toContainEqual({ message: "Failed to calculate disk space: measure blew up", level: "error" });
+      expect(diskSpace).toEqual(["N/A"]);
+      expect(consoleSpy).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
 
       void service.destroy();
     });

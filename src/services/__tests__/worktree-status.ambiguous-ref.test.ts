@@ -89,8 +89,6 @@ describe("WorktreeStatusService with a tag shadowing the branch name", () => {
     expect(byBareName).toBe("0");
     expect(byBranchRef).toBe("1");
 
-    expect(await service.hasUnpushedCommits(worktreePath)).toBe(true);
-
     const status = await service.getFullWorktreeStatus(worktreePath);
     expect(status.hasUnpushedCommits).toBe(true);
     expect(status.canRemove).toBe(false);
@@ -101,8 +99,6 @@ describe("WorktreeStatusService with a tag shadowing the branch name", () => {
     await commitLocally();
     // Explicit refspec: `git push origin release-1` is itself ambiguous here.
     await worktreeGit.push(["origin", `refs/heads/${BRANCH}:refs/heads/${BRANCH}`]);
-
-    expect(await service.hasUnpushedCommits(worktreePath)).toBe(false);
 
     const status = await service.getFullWorktreeStatus(worktreePath);
     expect(status.hasUnpushedCommits).toBe(false);

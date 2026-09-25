@@ -240,5 +240,20 @@ describe("disk-space", () => {
       expect(result).toBe("1.00 KB");
       expect(vi.mocked(execFile)).not.toHaveBeenCalled();
     });
+
+    // The caller owns reporting: writing to the console here would land on
+    // top of the TUI's Ink frame.
+    it("rejects, without writing to the console, when measure throws synchronously", async () => {
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await expect(
+        calculateSyncDiskSpace(["/bare-a"], [], () => {
+          throw new Error("measure blew up");
+        }),
+      ).rejects.toThrow("measure blew up");
+
+      expect(consoleSpy).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
   });
 });

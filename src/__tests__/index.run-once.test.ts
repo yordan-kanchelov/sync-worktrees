@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runMultipleRepositories } from "../index";
 import { InteractiveUIService } from "../services/InteractiveUIService";
+import { WorktreeSyncService } from "../services/worktree-sync.service";
 
 import type { ConfigFile, RepositoryConfig, SyncOutcomeCounts } from "../types";
 
@@ -290,5 +291,34 @@ describe("runMultipleRepositories", () => {
     expect(vi.mocked(InteractiveUIService)).not.toHaveBeenCalled();
     expect(mocks.triggerInitialSync).not.toHaveBeenCalled();
     expect(mocks.sync).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands each service its logger without writing it into the loaded configuration", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+    const loaded: RepositoryConfig = { ...repo };
+
+    await runMultipleRepositories(configFile, [loaded]);
+
+    expect(loaded.logger).toBeUndefined();
+    expect(vi.mocked(WorktreeSyncService)).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "repo-a", logger: mocks.logger }),
+    );
+  });
+
+  it("keeps a logger the configuration already carries", async () => {
+    mocks.sync.mockResolvedValue({
+      started: true,
+      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+    });
+    const ownLogger = { ...mocks.logger };
+    const loaded = { ...repo, logger: ownLogger } as unknown as RepositoryConfig;
+
+    await runMultipleRepositories(configFile, [loaded]);
+
+    expect(loaded.logger).toBe(ownLogger);
+    expect(vi.mocked(WorktreeSyncService)).toHaveBeenCalledWith(expect.objectContaining({ logger: ownLogger }));
   });
 });

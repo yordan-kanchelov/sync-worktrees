@@ -11,7 +11,7 @@ import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { filenameTimestamp } from "../utils/filename-timestamp";
 import { isGitCreatableBranchName, isGitObjectId } from "../utils/git-validation";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 import { copyTreePreservingSymlinks } from "../utils/preserving-copy";
 import { hasPayloadPendingDeletion, removeTrashContainer, trashDeleteHint } from "../utils/trash-container";
 import { computeTrashRootHash } from "../utils/trash-root-hash";

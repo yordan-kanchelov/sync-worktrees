@@ -16,7 +16,7 @@ import {
   setEnvVar,
 } from "../../__tests__/test-utils";
 import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../../constants";
-import { ConfigError, WorktreeNotCleanError } from "../../errors";
+import { ConfigError, UpstreamSetupError, WorktreeMetadataError, WorktreeNotCleanError } from "../../errors";
 import { GIT_UNSAFE_ALLOWANCES } from "../../utils/git-env";
 import { GIT_LFS_MISSING_WARNING, resetGitLfsProbeForTests } from "../../utils/git-lfs-probe";
 import { GitService } from "../git.service";
@@ -2143,7 +2143,10 @@ describe("GitService", () => {
         mockShowRef({ local: true, remote: true });
         mockGit.raw.mockClear();
 
-        await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
+        const error = await gitService.addWorktree("feature-1", "/test/worktrees/feature-1").catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(UpstreamSetupError);
+        expect((error as UpstreamSetupError).rollbackSucceeded).toBe(true);
+        expect((error as UpstreamSetupError).message).toMatch(
           /Failed to set upstream for 'feature-1'.*does not point to a commit/,
         );
 
@@ -2604,6 +2607,82 @@ describe("GitService", () => {
       );
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feature-1"]);
+    });
+
+    // Every raw call addWorktree spawned that was a `worktree <sub>` command.
+    const worktreeCommands = (sub: string): string[][] =>
+      (mockGit.raw as Mock).mock.calls
+        .map((call: unknown[]) => call[0])
+        .filter((args): args is string[] => Array.isArray(args) && args[0] === "worktree" && args[1] === sub);
+
+    it("rejects with a typed WorktreeMetadataError and never falls back to a plain add", async () => {
+      mockShowRef({ local: false, remote: true });
+      const cause = new Error("Failed to write metadata file");
+      mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(cause);
+
+      const error = await gitService.addWorktree("feature-1", "/test/worktrees/feature-1").catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(WorktreeMetadataError);
+      expect((error as WorktreeMetadataError).branchName).toBe("feature-1");
+      expect((error as WorktreeMetadataError).message).toBe(
+        "Metadata creation failed for 'feature-1': Metadata creation failed for feature-1. This worktree cannot be auto-managed.",
+      );
+      expect(worktreeCommands("add")).toHaveLength(1);
+      // The add created refs/heads/feature-1 (--track -b), so rollback deletes it too.
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "--", "feature-1"]);
+    });
+
+    it("rolls back and rethrows a metadata failure on the stale-registration retry path", async () => {
+      const worktreePath = "/test/worktrees/feature-1";
+      (fs.access as Mock<any>).mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
+      let trackingAdds = 0;
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        const command = args as string[];
+        if (command[0] === "show-ref" && command[command.length - 1].startsWith("refs/heads/")) {
+          throw new Error("show-ref: not found");
+        }
+        if (command[0] === "worktree" && command[1] === "add" && command.includes("--track")) {
+          trackingAdds += 1;
+          if (trackingAdds === 1) throw new Error("fatal: 'feature-1' is already registered worktree");
+        }
+        if (command[0] === "worktree" && command[1] === "list") {
+          return `worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\nprunable\n\n`;
+        }
+        return "";
+      });
+      mockGit.raw.mockClear();
+      mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(new Error("Failed to write metadata"));
+
+      await expect(gitService.addWorktree("feature-1", worktreePath)).rejects.toBeInstanceOf(WorktreeMetadataError);
+
+      expect(trackingAdds).toBe(2);
+      // One removal clears the stale registration, the second rolls back the retry.
+      expect(worktreeCommands("remove")).toHaveLength(2);
+      expect(worktreeCommands("add").filter((args) => !args.includes("--track"))).toHaveLength(0);
+    });
+
+    it("rolls back and rethrows a metadata failure on the plain-add fallback path", async () => {
+      const worktreePath = "/test/worktrees/feature-1";
+      (fs.access as Mock<any>).mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
+      (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
+        const command = args as string[];
+        if (command[0] === "show-ref" && command[command.length - 1].startsWith("refs/heads/")) {
+          throw new Error("show-ref: not found");
+        }
+        if (command[0] === "worktree" && command[1] === "add" && command.includes("--track")) {
+          throw new Error("fatal: no such remote ref refs/remotes/origin/feature-1");
+        }
+        return "";
+      });
+      mockGit.raw.mockClear();
+      mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(new Error("Failed to write metadata"));
+
+      await expect(gitService.addWorktree("feature-1", worktreePath)).rejects.toBeInstanceOf(WorktreeMetadataError);
+
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", worktreePath, "feature-1"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", worktreePath]);
+      // The plain add reused an existing branch, so rollback must leave it alone.
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["branch", "-D", "--", "feature-1"]);
     });
   });
 

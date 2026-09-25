@@ -21,7 +21,7 @@ import type { LogOutputFn, LogLevel } from "./logger.service";
 import type { WorktreeStatusResult } from "./worktree-status.service";
 import { Logger } from "./logger.service";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 import { appendGitAuthHint } from "../utils/git-auth-error";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
