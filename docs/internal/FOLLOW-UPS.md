@@ -2135,4 +2135,4 @@ behaviour it is defending is correct.**
   - Files failing on that error: `bare-origin-mismatch`, `concurrent-runs`, `diverged-branch-reservation`, `double-run` (3 tests), `head-branch-filter` (2), `node-env-independence.e2e` (2), `skip-lfs-global-ignore.e2e`, `stale-registration`, `worktree-dir-collision.e2e` (all under `src/__tests__/e2e/`).
   - `src/mcp/__tests__/context.broken-config.test.ts` ("carries the note on an unmanaged worktree context…", `expected 'unmanaged' to be 'managed'`) is very likely the same mismatch, in `detectFromPath`'s path matching.
   - `src/__tests__/e2e/unshallow-inactivity-timeout.e2e.test.ts:151` ("still kills an unshallow that goes quiet…", the clone is no longer shallow after the kill) is a separate failure and has not been diagnosed. The test's `sleep` shim and how the process is killed may behave differently on darwin.
-  - When all of these pass on macOS, remove `continue-on-error` from the "Run Tests with Coverage" step in `pr.yml`.
+  - When all of these pass on macOS, remove `continue-on-error` from the "Run Tests with Coverage" step in `pr.yml` and from the "Run E2E Tests (with network)" step in `nightly.yml`.
