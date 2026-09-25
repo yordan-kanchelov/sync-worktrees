@@ -15,5 +15,5 @@ full.
 
 The annotated [example config](../sync-worktrees.config.example.js) shows every knob in place.
 
-Engineering records (not user documentation): [6.0.0-plan.md](./6.0.0-plan.md), [6.0.0-review.md](./6.0.0-review.md),
-[FOLLOW-UPS.md](./FOLLOW-UPS.md).
+Maintainers' engineering records (review findings, implementation plans, follow-ups) live in
+[`internal/`](./internal/README.md). They are not user documentation.

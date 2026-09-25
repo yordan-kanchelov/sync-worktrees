@@ -388,7 +388,7 @@ describe("overlapping sync cycles", () => {
     await delay(100);
 
     // Only with the last cycle out does the bar go back and the row go away.
-    expect(lastFrame()).toContain("Running");
+    expect(lastFrame()).toContain("Idle");
     expect(lastFrame()).not.toContain("[repo-a] fetch receiving: 40%");
   });
 

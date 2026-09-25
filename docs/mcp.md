@@ -209,8 +209,8 @@ No config path is needed: the server runs in **auto-detect mode**.
 
 | Tool                     | Purpose                                                                                                                                                                                                                           |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `detect_context`         | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report config-driven sibling repositories and capabilities. Pass `includeAllWorktrees: true` to include every configured repo's worktrees keyed by repo name. |
-| `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`/`unknown` — the last when the status probe failed), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
+| `detect_context`         | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report config-driven sibling repositories and capabilities. With `includeStatus: true` each worktree carries `label`/`divergence`/`staleHint`, plus `statusError` when its status probe failed. Pass `includeAllWorktrees: true` to include every configured repo's worktrees keyed by repo name. |
+| `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`/`unknown` — the last when the status probe failed, with the reason in `safeToRemove.reason`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
 | `get_worktree_status`    | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress).                                                                                                                                 |
 | `create_worktree`        | Worktree mode only (a clone-mode repository answers `CAPABILITY_UNAVAILABLE` — use `sync`). Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`. `worktreeExisted` is true when the worktree was already there (a no-op retry). |
 | `update_worktree`        | Worktree mode only (a clone-mode repository answers `CAPABILITY_UNAVAILABLE` — use `sync`). Fast-forward one worktree to match upstream. `updated` is false when there was nothing to merge.                                     |
@@ -253,8 +253,8 @@ anything that is not an `Error`; read `message`.
   runs, so the same prune, stale-directory sweep and diverged replace apply, with the gates and destinations in
   [What sync can remove](./trash-and-recovery.md#what-sync-can-remove). With trash enabled (the default) nothing is
   deleted outright — everything lands in `.trash/` for 30 days, restorable with `sync-worktrees trash`; with
-  `trash.enabled: false` the same prune is a permanent `git worktree remove`, and a stale non-git directory at a managed
-  path is deleted outright. `sync` is registered with `destructiveHint: true`, so a client that confirms destructive
+  `trash.enabled: false` the same prune is a permanent `git worktree remove`, and a stale directory at a managed path is
+  quarantined under `.removed/` (only an empty one is removed). `sync` is registered with `destructiveHint: true`, so a client that confirms destructive
   tools prompts before running it.
 - `create_worktree` refuses, before touching disk, when the target path is already registered to a different branch
   (`Sanitized worktree path … collides with existing branch …`), and errors with code `TARGET_EXISTS` when its target

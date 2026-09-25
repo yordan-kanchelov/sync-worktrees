@@ -1,0 +1,33 @@
+version: 2
+
+# Weekly, with minor and patch bumps grouped into one PR per ecosystem and directory so the
+# queue stays reviewable. Major bumps still arrive one PR each, since they are the ones that break.
+# A root npm bump changes the shipped package, so it needs a changeset like any other PR.
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  # The Astro site has its own package.json and npm lockfile.
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+    groups:
+      site-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Workflows, plus the composite setup action they share.
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/setup-node-pnpm
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]

@@ -142,6 +142,33 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
    * file actually produces.
    */
   describe("configured through a config file", () => {
+    // The loader only accepts a non-zero window of at least one second, so
+    // these run with a 1 s window behind a wrapper that is silent for 1.5 s —
+    // but only in front of `fetch` and `clone`, the commands under test, so a
+    // run that has to get all the way through initialize() does not pay the
+    // silence on every local command.
+    const CONFIG_TIMEOUT_MS = 1_000;
+    const NETWORK_SILENCE_MS = 1_500;
+
+    const useSlowNetworkGit = async (): Promise<void> => {
+      const networkShimDir = path.join(tempDir, "network-shim");
+      await fs.mkdir(networkShimDir, { recursive: true });
+      const realGit = execFileSync("sh", ["-c", "command -v git"]).toString().trim();
+      await fs.writeFile(
+        path.join(networkShimDir, "git"),
+        [
+          "#!/bin/sh",
+          'for arg in "$@"; do',
+          `  case "$arg" in fetch|clone) sleep ${NETWORK_SILENCE_MS / 1000}; break ;; esac`,
+          "done",
+          `exec "${realGit}" "$@"`,
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      process.env.PATH = `${networkShimDir}${path.delimiter}${originalPath ?? ""}`;
+    };
+
     // Builds the service the CLI would build: a config file on disk, resolved
     // by ConfigLoaderService, and the resolved repository handed straight to
     // GitService the way WorktreeSyncService does.
@@ -173,17 +200,17 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
     };
 
     it("kills a silent fetch at the fetchTimeoutMs written on the repository entry", async () => {
-      const service = await serviceFromConfigFile({ repo: `fetchTimeoutMs: ${FETCH_TIMEOUT_MS},` });
-      useSlowGit();
+      const service = await serviceFromConfigFile({ repo: `fetchTimeoutMs: ${CONFIG_TIMEOUT_MS},` });
+      await useSlowNetworkGit();
 
       await expect(service.initialize()).rejects.toThrow(/block timeout reached/i);
     });
 
     it("kills a silent fetch at a fetchTimeoutMs inherited from defaults", async () => {
       const service = await serviceFromConfigFile({
-        defaults: `defaults: { fetchTimeoutMs: ${FETCH_TIMEOUT_MS} },\n  `,
+        defaults: `defaults: { fetchTimeoutMs: ${CONFIG_TIMEOUT_MS} },\n  `,
       });
-      useSlowGit();
+      await useSlowNetworkGit();
 
       await expect(service.initialize()).rejects.toThrow(/block timeout reached/i);
     });
@@ -191,13 +218,13 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
     it("disables the kill entirely at fetchTimeoutMs 0, which beats a defaults value", async () => {
       // 0 has to mean "no inactivity kill", not "kill immediately": simple-git
       // only installs its timeout plugin for a positive block, and so do both
-      // services. With the same 400 ms of silence that fails the two tests
-      // above, this one has to get all the way through initialize().
+      // services. With the same silence that fails the two tests above, this
+      // one has to get all the way through initialize().
       const service = await serviceFromConfigFile({
-        defaults: `defaults: { fetchTimeoutMs: ${FETCH_TIMEOUT_MS} },\n  `,
+        defaults: `defaults: { fetchTimeoutMs: ${CONFIG_TIMEOUT_MS} },\n  `,
         repo: "fetchTimeoutMs: 0,",
       });
-      useSlowGit();
+      await useSlowNetworkGit();
 
       await expect(service.initialize()).resolves.toBeDefined();
     });
@@ -207,10 +234,10 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
       // the one command on the clone budget. fetchTimeoutMs is disabled here so
       // that nothing else in the run can produce a block timeout.
       const service = await serviceFromConfigFile({
-        defaults: `defaults: { fetchTimeoutMs: 0, cloneTimeoutMs: ${FETCH_TIMEOUT_MS} },\n  `,
+        defaults: `defaults: { fetchTimeoutMs: 0, cloneTimeoutMs: ${CONFIG_TIMEOUT_MS} },\n  `,
         bareRepoDirOverride: path.join(tempDir, ".bare", "fresh-clone"),
       });
-      useSlowGit();
+      await useSlowNetworkGit();
 
       await expect(service.initialize()).rejects.toThrow(/block timeout reached/i);
     });

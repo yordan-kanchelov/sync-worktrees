@@ -4,36 +4,44 @@ on:
   pull_request:
     paths:
       - "site/**"
-      - "assets/sync-worktrees-demo-optimized.gif"
+      - "assets/demo.mp4"
+      - "assets/demo-poster.webp"
       - "README.md"
       - ".github/workflows/deploy-site.yml"
   push:
     branches: [main]
     paths:
       - "site/**"
-      - "assets/sync-worktrees-demo-optimized.gif"
+      - "assets/demo.mp4"
+      - "assets/demo-poster.webp"
       - "README.md"
       - ".github/workflows/deploy-site.yml"
   workflow_dispatch:
+  # release.yml calls this after publishing, so the site build and deploy steps exist only here.
+  workflow_call:
 
 permissions:
   contents: read
 
+# PR builds are superseded by the next push; runs on main (including the call from release.yml,
+# which shares this group) queue instead, so neither cancels the other's deployment.
 concurrency:
   group: site-ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: site/package-lock.json
 
@@ -59,6 +67,10 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    # One Pages deployment at a time, whichever workflow or ref started it.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       contents: read
       pages: write

@@ -296,7 +296,7 @@ describe("Two concurrent CLI processes contend for the repo lock (E2E)", () => {
     const winner = results.find((result) => result !== skipped);
     expect(winner, joined).toBeDefined();
     expect(winner?.stdout, joined).toContain("Synchronization finished");
-    expect(winner?.stdout, joined).toMatch(/1 synced, 0 (skipped|with clone-mode skips), 0 failed/);
+    expect(winner?.stdout, joined).toMatch(/: 1 synced, 0 failed/);
     expect(winner?.stderr, joined).not.toContain("Another process holds the sync lock");
 
     // Where the worktreeDir-keyed lock file lands. It is NOT the file the two

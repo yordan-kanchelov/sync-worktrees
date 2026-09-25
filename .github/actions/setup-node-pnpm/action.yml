@@ -5,10 +5,6 @@ inputs:
     description: "Node.js version to use"
     required: false
     default: "24"
-  pnpm-version:
-    description: "pnpm version to use"
-    required: false
-    default: "10"
   registry-url:
     description: "npm registry URL to configure in .npmrc for auth (e.g. https://registry.npmjs.org)"
     required: false
@@ -17,15 +13,15 @@ runs:
   using: "composite"
   steps:
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node-version }}
         registry-url: ${{ inputs.registry-url }}
 
+    # No `version`: pnpm/action-setup reads the `packageManager` field in
+    # package.json, so CI runs the pnpm the lockfile was written with.
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
-      with:
-        version: ${{ inputs.pnpm-version }}
 
     - name: Get pnpm store directory
       id: pnpm-cache
@@ -34,7 +30,7 @@ runs:
         echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
 
     - name: Setup pnpm cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
         key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}

@@ -1,3 +1,5 @@
+import { Logger } from "../services/logger.service";
+
 export function parseDuration(durationStr: string): number | null {
   const match = durationStr.match(/^(\d+)([hdwmy])$/);
   if (!match) {
@@ -18,13 +20,16 @@ export function parseDuration(durationStr: string): number | null {
   return value * multipliers[unit];
 }
 
+// The warning goes through the caller's logger: under the TUI a bare
+// console.warn would be written straight over the Ink frame.
 export function filterBranchesByAge(
   branches: { branch: string; lastActivity: Date }[],
   maxAge: string,
+  logger: Pick<Logger, "warn"> = Logger.createDefault(),
 ): { branch: string; lastActivity: Date }[] {
   const maxAgeMs = parseDuration(maxAge);
   if (maxAgeMs === null) {
-    console.warn(`Invalid duration format: ${maxAge}. Using all branches.`);
+    logger.warn(`Invalid duration format: ${maxAge}. Using all branches.`);
     return branches;
   }
 

@@ -1,17 +1,8 @@
-/**
- * Extracts error message from unknown error type
- * @param error The error to extract message from
- * @returns The error message string
- */
-export function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (error && typeof error === "object" && "message" in error) {
-    return String(error.message);
-  }
-  return String(error);
-}
+import { getErrorMessage } from "./errors";
+
+// Re-exported so imports that predate the move to ./errors keep compiling;
+// new code should import getErrorMessage from "./errors".
+export { getErrorMessage };
 
 /**
  * Common LFS error patterns that indicate Git LFS-related failures

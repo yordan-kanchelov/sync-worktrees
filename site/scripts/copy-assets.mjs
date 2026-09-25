@@ -6,10 +6,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const siteRoot = resolve(__dirname, "..");
 const repoRoot = resolve(siteRoot, "..");
 
+// The hero video and its poster frame, rendered by demo/render.sh into the repo's assets/.
 const tasks = [
   {
-    src: resolve(repoRoot, "assets/sync-worktrees-demo-optimized.gif"),
-    dest: resolve(siteRoot, "public/demo.gif"),
+    src: resolve(repoRoot, "assets/demo.mp4"),
+    dest: resolve(siteRoot, "public/demo.mp4"),
+  },
+  {
+    src: resolve(repoRoot, "assets/demo-poster.webp"),
+    dest: resolve(siteRoot, "public/demo-poster.webp"),
   },
 ];
 

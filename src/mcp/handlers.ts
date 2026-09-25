@@ -11,7 +11,9 @@ import { filterBranchesByName } from "../utils/branch-filter";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { filterBranchesByAge } from "../utils/date-filter";
 import { calculateDirectorySize } from "../utils/disk-space";
+import { getErrorMessage } from "../utils/errors";
 import { probePathExists } from "../utils/file-exists";
+import { redactSecretsInText } from "../utils/git-url";
 import { isValidGitBranchName } from "../utils/git-validation";
 import { pathsEqual } from "../utils/path-compare";
 
@@ -292,7 +294,21 @@ export async function handleDetectContext(
   return formatToolResponse({ ...response, allWorktrees: enriched, allWorktreesByRepo });
 }
 
-type WorktreeEnrichment = Pick<DiscoveredWorktree, "label" | "divergence" | "staleHint">;
+type WorktreeEnrichment = Pick<DiscoveredWorktree, "label" | "divergence" | "staleHint" | "statusError">;
+type WorktreeStatus = Awaited<ReturnType<WorktreeStatusService["getFullWorktreeStatus"]>>;
+
+// A failed status probe still leaves the worktree listed (label "unknown",
+// not safe to remove); this keeps the reason, so the caller is not left with
+// a bare "status unavailable". Scrubbed here as well as in formatToolResponse:
+// git quotes the remote URL in its errors.
+function probeWorktreeStatus(
+  probe: Promise<WorktreeStatus>,
+): Promise<{ status: WorktreeStatus; statusError?: undefined } | { status: null; statusError: string }> {
+  return probe.then(
+    (status) => ({ status }),
+    (error: unknown) => ({ status: null, statusError: redactSecretsInText(getErrorMessage(error)) }),
+  );
+}
 type WorktreeEnricher = (worktree: DiscoveredWorktree) => Promise<WorktreeEnrichment>;
 
 // Memoizes on the two inputs the enrichment actually reads -- the worktree's
@@ -309,11 +325,12 @@ function createWorktreeEnricher(statusService: WorktreeStatusService, limit: Lim
     if (existing !== undefined) return existing;
 
     const pending = limit(async (): Promise<WorktreeEnrichment> => {
-      const status = await statusService.getFullWorktreeStatus(wt.path, false).catch(() => null);
+      const { status, statusError } = await probeWorktreeStatus(statusService.getFullWorktreeStatus(wt.path, false));
       return {
         label: status ? deriveLabel(status, wt.isCurrent) : wt.isCurrent ? "current" : "unknown",
         divergence: status?.divergence ?? null,
         staleHint: status?.upstreamGone ?? false,
+        ...(statusError !== undefined && { statusError }),
       };
     });
     started.set(key, pending);
@@ -407,8 +424,8 @@ async function listWorktreesForRepo(
         const resolvedPath = path.resolve(wt.path);
         const isCurrent = currentPath !== null && pathsEqual(wt.path, currentPath);
 
-        const [status, metadata, sizeBytes] = await Promise.all([
-          git.getFullWorktreeStatus(wt.path, false).catch(() => null),
+        const [{ status, statusError }, metadata, sizeBytes] = await Promise.all([
+          probeWorktreeStatus(git.getFullWorktreeStatus(wt.path, false)),
           git.getWorktreeMetadata(wt.path).catch(() => null),
           includeSize ? calculateDirectorySize(wt.path).catch(() => null) : Promise.resolve(null),
         ]);
@@ -420,7 +437,9 @@ async function listWorktreesForRepo(
           label: status ? deriveLabel(status, isCurrent) : isCurrent ? "current" : "unknown",
           status,
           divergence: status?.divergence ?? null,
-          safeToRemove: status ? deriveSafeToRemove(status) : { safe: false, reason: "status unavailable" },
+          safeToRemove: status
+            ? deriveSafeToRemove(status)
+            : { safe: false, reason: `status unavailable: ${statusError}` },
           lastSyncAt: metadata?.lastSyncDate ?? null,
           sizeBytes,
         };

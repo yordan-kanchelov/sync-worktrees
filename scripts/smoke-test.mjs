@@ -2,9 +2,9 @@
 // Post-build smoke test for the published surface of the package.
 //
 // The vitest suite imports the TypeScript sources, so nothing else exercises
-// what `npm install` actually delivers: the bin shim, the esbuild bundles in
-// dist/ (external packages, the version define, the shebang banner) and the
-// tarball contents chosen by package.json `files`. A dependency that esbuild
+// what `npm install` actually delivers: the bin shims, the esbuild bundles in
+// dist/ (external packages, the version define, the shared chunk), the public
+// type declarations and the tarball contents chosen by package.json `files`. A dependency that esbuild
 // bundles "successfully" but that throws at import time would otherwise reach
 // npm with a green CI. Run it after `pnpm build`: `pnpm smoke`.
 //
@@ -12,7 +12,7 @@
 // lookup pointed away from the real environment.
 
 import { spawn } from "node:child_process";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -24,17 +24,32 @@ const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"
 const { version } = packageJson;
 
 const CLI_BIN = path.join(repoRoot, "bin", "sync-worktrees.js");
+const MCP_BIN = path.join(repoRoot, "bin", "sync-worktrees-mcp.js");
 const CLI_BUNDLE = path.join(repoRoot, "dist", "index.js");
 const MCP_BUNDLE = path.join(repoRoot, "dist", "mcp-server.js");
+const TSC = path.join(repoRoot, "node_modules", "typescript", "bin", "tsc");
 const SERVER_NAME = "sync-worktrees";
 const SHEBANG = "#!/usr/bin/env node";
 // Protocol revision the server serves on the legacy `initialize` path. Both
 // `dist/mcp-server.js` (legacy: "serve") and src/mcp/__tests__/server.test.ts
 // pin this one; the 2026-07-28 revision uses `server/discover` instead.
 const MCP_PROTOCOL_VERSION = "2025-11-25";
+// Every file path package.json `exports` maps to, "./x" spelled as `npm pack`
+// lists it ("x").
+function exportTargets(value) {
+  if (typeof value === "string") return [value.replace(/^\.\//, "")];
+  return Object.values(value ?? {}).flatMap(exportTargets);
+}
 // Paths that must be in the tarball (package.json entry points) and path
 // prefixes that must not be (sources and tooling that `files` should exclude).
-const REQUIRED_TARBALL_PATHS = [packageJson.main, packageJson.types, ...Object.values(packageJson.bin)];
+const REQUIRED_TARBALL_PATHS = [
+  ...new Set([
+    packageJson.main,
+    packageJson.types,
+    ...Object.values(packageJson.bin),
+    ...exportTargets(packageJson.exports).filter((file) => file !== "package.json"),
+  ]),
+];
 const FORBIDDEN_TARBALL_PREFIXES = ["src/", "scripts/", ".pnpmfile.cjs"];
 // Source maps are deliberately not published: esbuild.config.js builds with
 // `sourcemap: false` and tsconfig.json has `declarationMap: false`. A map in
@@ -42,55 +57,42 @@ const FORBIDDEN_TARBALL_PREFIXES = ["src/", "scripts/", ".pnpmfile.cjs"];
 // output from an earlier build (tsc does not delete files it no longer emits).
 const FORBIDDEN_TARBALL_SUFFIXES = [".map"];
 // Ceilings so that tarball growth is noticed rather than shipped. `npm pack`
-// reports 86 files and ~1.26 MB unpacked: the two esbuild bundles (~1.07 MB),
-// one .d.ts per source module (~0.14 MB) and the README. Ordinary work on this
-// codebase moves the total by single-digit kB at a time — the byte ceiling is
-// sized to absorb that while still tripping on the step changes it is for: a
-// dependency that stops being `external` in esbuild, or source maps coming
-// back, either of which adds hundreds of kB at once. Raise it when it is
-// ordinary growth that reached it, and say so.
+// reports 14 files and ~0.85 MB unpacked: the esbuild output (~0.79 MB: the
+// shared chunk plus the two entries), the public .d.ts files (~0.03 MB), the
+// three bin/ files, package.json, LICENSE and the README. Ordinary work on this codebase moves the
+// total by single-digit kB at a time — the byte ceiling is sized to absorb
+// that while still tripping on the step changes it is for: a dependency that
+// stops being `external` in esbuild, `splitting` being switched off (the
+// shared src/utils and src/services code billed once per entry again), source
+// maps coming back, or tsc's declarations for every module reappearing, each
+// of which adds 0.1 MB or more at once. Raise it when it is ordinary growth
+// that reached it, and say so.
 //
 // What actually costs bytes: only dist/*.js, the .d.ts files and README.md.
 // Tests, changesets and CHANGELOG.md are outside `files` and cost nothing.
-// src/utils/* and src/services/* are billed twice, once into each bundle;
-// src/mcp/* ships only in mcp-server.js.
+// Code both entries import ships once, in dist/chunk-*.js; src/mcp/* ships
+// only in mcp-server.js and the CLI's own modules only in index.js. Only the
+// declarations reachable from dist/public-types.d.ts ship
+// (scripts/finalize-declarations.mjs deletes the rest).
 //
-// Comments are where this note has been wrong twice, in both directions, so
-// here is the measured answer: `minify` is off, and esbuild keeps a comment
-// that leads a MEMBER of a braced or bracketed member list — an object-literal
-// property, an array element, a class field — while dropping one that leads a
-// STATEMENT, at module scope or inside a function or method body. Both bundles
-// carry well over a thousand `//` lines; a surviving line costs ~75 bytes in
-// each bundle it ships in. A `/** */` block is separate: tsc copies it verbatim
-// into the .d.ts when it leads a declaration the emitter reaches, by export or
-// by being referenced from an exported signature, and never copies `//` or a
-// plain `/* */`. So rationale is free in a function body, at module scope, or
-// in the changeset, and billed beside an object property or on an exported
-// declaration. Both earlier versions of this paragraph generalised from a probe
-// that sampled one syntactic position; a claim quantified over all positions
-// needs a probe that varies the position.
+// Comments: `minify` is off, and esbuild keeps a comment that leads a MEMBER
+// of a braced or bracketed member list — an object-literal property, an array
+// element, a class field — while dropping one that leads a STATEMENT, at
+// module scope or inside a function or method body; a surviving line costs
+// ~75 bytes. A `/** */` block is separate: tsc copies it verbatim into a .d.ts
+// when it leads a declaration the emitter reaches, which now matters only for
+// the modules behind the public types. So rationale is free in a function
+// body, at module scope, or in the changeset.
 //
 // A bundle delta runs about 45 bytes per line of shipped code, so a ~35-line
-// change costs a bit under 2 kB and there is no prose lever that offsets it.
+// change costs a bit under 2 kB.
 //
-// Saying so: raised from 1,400,000 after a run of audit fixes carried the
-// tarball to 1,399,065 bytes across 90 files — 935 bytes short of tripping.
-// That growth is source on the paths those fixes touched, arriving a few kB at
-// a time exactly as described above, not a step change. Restored to roughly
-// the original ~140 kB of headroom rather than nudged past the current figure,
-// so the next ordinary change does not spend its review arguing with this
-// number.
-//
-// Saying so again: raised from 1,540,000 at 1,499,840 bytes across 90 files,
-// with 30 audit items still to implement and a measured ~2.4 kB median per
-// item — enough to reach the old ceiling around item 14 and turn an ordinary
-// task red for a reason that has nothing to do with it. Checked first that
-// this is not the step change the ceiling is for: `packages: "external"` is
-// still set in esbuild.config.js, no dependency has been inlined, and the
-// no-.map assertion above still passes. Same ~140 kB of headroom as the last
-// raise, on the same reasoning.
-const MAX_TARBALL_FILES = 120;
-const MAX_TARBALL_UNPACKED_BYTES = 1_640_000;
+// History: the ceiling was 1,640,000 bytes and 120 files while each entry
+// bundled its own copy of the shared code and every module's .d.ts shipped
+// (1,509,649 bytes across 91 files when the shared chunk landed). Reset over
+// the new 845,789 bytes with roughly the headroom those raises used.
+const MAX_TARBALL_FILES = 40;
+const MAX_TARBALL_UNPACKED_BYTES = 1_000_000;
 const STEP_TIMEOUT_MS = 10_000;
 
 class SmokeFailure extends Error {}
@@ -183,15 +185,21 @@ async function checkCliVersion(sandbox) {
   }
 }
 
-async function checkMcpHandshake(sandbox) {
-  const firstLine = (await readFile(MCP_BUNDLE, "utf8")).split("\n", 1)[0];
-  if (firstLine !== SHEBANG) {
-    fail(`dist/mcp-server.js must start with "${SHEBANG}" (the sync-worktrees-mcp bin runs it directly)`, {
-      "first line": firstLine,
-    });
+async function checkBinShebangs() {
+  for (const bin of Object.values(packageJson.bin)) {
+    const firstLine = (await readFile(path.join(repoRoot, bin), "utf8")).split("\n", 1)[0];
+    if (firstLine !== SHEBANG) {
+      fail(`${bin} must start with "${SHEBANG}" (npm links it as an executable)`, { "first line": firstLine });
+    }
   }
+}
 
-  const child = spawn(process.execPath, [MCP_BUNDLE], { ...sandbox, stdio: ["pipe", "pipe", "pipe"] });
+async function checkMcpHandshake(sandbox) {
+  await checkBinShebangs();
+
+  // Through the bin shim, which is what an MCP client's `sync-worktrees-mcp`
+  // command runs; the shim imports dist/mcp-server.js and its shared chunk.
+  const child = spawn(process.execPath, [MCP_BIN], { ...sandbox, stdio: ["pipe", "pipe", "pipe"] });
   const stderr = collect(child.stderr);
   // A write after the server died raises EPIPE on stdin; the exit itself is
   // what gets reported, so the stream error is not worth a crash.
@@ -217,7 +225,9 @@ async function checkMcpHandshake(sandbox) {
     try {
       message = JSON.parse(line);
     } catch {
-      malformed ??= new SmokeFailure(`dist/mcp-server.js wrote a non-JSON line to stdout: ${JSON.stringify(line)}`);
+      malformed ??= new SmokeFailure(
+        `bin/sync-worktrees-mcp.js wrote a non-JSON line to stdout: ${JSON.stringify(line)}`,
+      );
       for (const waiter of pending.values()) waiter.reject(malformed);
       pending.clear();
       return;
@@ -232,7 +242,7 @@ async function checkMcpHandshake(sandbox) {
   const request = (message) => {
     const response = new Promise((resolve, reject) => pending.set(message.id, { resolve, reject }));
     const exitedEarly = exited.then((exit) => {
-      fail(`dist/mcp-server.js exited (${describeExit(exit)}) before answering ${message.method}`, {
+      fail(`bin/sync-worktrees-mcp.js exited (${describeExit(exit)}) before answering ${message.method}`, {
         stderr: stderr(),
       });
     });
@@ -279,7 +289,7 @@ async function checkMcpHandshake(sandbox) {
     // Tool inputs are strict objects, so an argument key no tool declares is
     // refused by name. The vitest suite asserts this against a bundle it builds
     // from src/ at test time, which leaves the shipped artifact unproven: only
-    // this check runs the tools/call path through dist/mcp-server.js. Were the
+    // this check runs the tools/call path through the shipped bundle. Were the
     // schemas loose again, `repo_name` would be stripped and the call would
     // reach the handler, failing on the empty sandbox instead — an error either
     // way, so the key name in the text is what separates the two.
@@ -299,11 +309,18 @@ async function checkMcpHandshake(sandbox) {
 
     // A stdio server must shut down when the client closes its end.
     child.stdin.end();
-    const exit = await withTimeout(exited, STEP_TIMEOUT_MS, "dist/mcp-server.js exit after stdin closed", () => ({
-      stderr: stderr(),
-    }));
+    const exit = await withTimeout(
+      exited,
+      STEP_TIMEOUT_MS,
+      "bin/sync-worktrees-mcp.js exit after stdin closed",
+      () => ({
+        stderr: stderr(),
+      }),
+    );
     if (exit.code !== 0) {
-      fail(`dist/mcp-server.js did not exit cleanly after stdin closed (${describeExit(exit)})`, { stderr: stderr() });
+      fail(`bin/sync-worktrees-mcp.js did not exit cleanly after stdin closed (${describeExit(exit)})`, {
+        stderr: stderr(),
+      });
     }
     if (malformed) throw malformed;
   } finally {
@@ -347,6 +364,7 @@ async function checkTarballContents() {
   if (missing.length > 0) {
     fail(`npm tarball is missing package entry points: ${missing.join(", ")}`, { "shipped files": shipped.join("\n") });
   }
+  await checkNoStaleChunks(shipped);
   const leaked = shipped.filter((file) => FORBIDDEN_TARBALL_PREFIXES.some((prefix) => file.startsWith(prefix)));
   if (leaked.length > 0) {
     fail(`npm tarball ships files outside bin/ and dist/: ${leaked.join(", ")}`);
@@ -375,6 +393,78 @@ async function checkTarballContents() {
   return `${shipped.length} files, ${unpackedSize} bytes unpacked`;
 }
 
+// Chunk names are content hashes, so a dist/ that was not cleaned before a
+// rebuild keeps the previous build's chunks and `npm pack` ships them. Every
+// dist/*.js must be an entry or a chunk an entry imports.
+async function checkNoStaleChunks(shipped) {
+  const entries = ["dist/index.js", "dist/mcp-server.js"];
+  const imported = new Set(entries);
+  for (const entry of entries) {
+    const source = await readFile(path.join(repoRoot, entry), "utf8");
+    for (const [, chunk] of source.matchAll(/from\s*"\.\/(chunk-[^"]+\.js)"/g)) imported.add(`dist/${chunk}`);
+  }
+  const stale = shipped.filter((file) => /^dist\/[^/]+\.js$/.test(file) && !imported.has(file));
+  if (stale.length > 0) {
+    fail(
+      `npm tarball ships JavaScript no entry imports (stale build output: delete dist/ and rebuild): ${stale.join(", ")}`,
+    );
+  }
+}
+
+// The documented use of the package's types: a config file that says
+// `@satisfies {import("sync-worktrees").SyncWorktreesConfig}`. Checked the
+// way a consumer's TypeScript sees it — through package.json `exports`, under
+// NodeNext resolution, without skipLibCheck — and required to catch a
+// misspelled key, so types that silently degrade to `any` fail too.
+async function checkPublicTypes(sandbox) {
+  const project = path.join(sandbox.cwd, "types-consumer");
+  await mkdir(path.join(project, "node_modules"), { recursive: true });
+  await symlink(repoRoot, path.join(project, "node_modules", SERVER_NAME), "dir");
+  const configFor = (key) => `/** @satisfies {import("sync-worktrees").SyncWorktreesConfig} */
+export default {
+  repositories: [{ name: "app", repoUrl: "https://example.com/app.git", worktreeDir: "./app", ${key}: "0 * * * *" }],
+};
+`;
+  await writeFile(path.join(project, "package.json"), JSON.stringify({ type: "module" }));
+  await writeFile(path.join(project, "good.config.js"), configFor("cronSchedule"));
+  await writeFile(path.join(project, "bad.config.js"), configFor("cronSchedul"));
+  await writeFile(
+    path.join(project, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        module: "nodenext",
+        moduleResolution: "nodenext",
+        strict: true,
+        noEmit: true,
+        allowJs: true,
+        checkJs: true,
+        skipLibCheck: false,
+        types: [],
+      },
+      files: ["good.config.js", "bad.config.js"],
+    }),
+  );
+
+  const result = await run(process.execPath, [TSC, "-p", project, "--pretty", "false"], { ...sandbox, cwd: project });
+  const errors = result.stdout.split("\n").filter((line) => line.includes("error TS"));
+  // tsc prints paths relative to the real cwd; when the temp dir sits behind a
+  // symlink (macOS /var/folders -> /private/var/folders) that path climbs out
+  // and back in, so match the file name rather than a bare prefix.
+  const unexpected = errors.filter((line) => !/(^|[\\/])bad\.config\.js\(/.test(line));
+  if (unexpected.length > 0 || result.timedOut) {
+    fail(`the published types do not type-check a documented config (${describeExit(result)})`, {
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+  }
+  if (!errors.some((line) => line.includes("cronSchedul'"))) {
+    fail("the published types accepted a config with a misspelled key (did they resolve to `any`?)", {
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+  }
+}
+
 async function createSandbox() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "sync-worktrees-smoke-"));
   return {
@@ -400,8 +490,12 @@ async function main() {
 
   const checks = [
     ["bin/sync-worktrees.js --version prints the package version", checkCliVersion],
-    ["dist/mcp-server.js handshakes over stdio and refuses an undeclared tool argument", checkMcpHandshake],
-    ["npm pack ships the entry points, no source maps, and stays under the size ceilings", checkTarballContents],
+    ["bin/sync-worktrees-mcp.js handshakes over stdio and refuses an undeclared tool argument", checkMcpHandshake],
+    ["the exported types check a documented config under NodeNext resolution", checkPublicTypes],
+    [
+      "npm pack ships the entry points, no source maps or stale chunks, and stays under the size ceilings",
+      checkTarballContents,
+    ],
   ];
 
   const sandbox = await createSandbox();

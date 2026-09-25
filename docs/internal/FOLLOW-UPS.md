@@ -1038,7 +1038,7 @@ The T33 worker's reported 1,432,411 bytes therefore includes 574 B that CI does 
 
 ## T33 follow-ups
 
-- **FU-T33-1. No lower bound on the timeouts.** `fetchTimeoutMs: 1` validates and would kill
+- **FU-T33-1. No lower bound on the timeouts.** _Resolved: non-zero timeouts must now be at least 1000 ms._ `fetchTimeoutMs: 1` validated and would kill
   essentially every fetch. Mirrors the pre-existing `validateDepth` (which allows `depth: 1`), so it
   is house-consistent and was left alone. If a floor is wanted, both validators should get one
   together.
@@ -2032,7 +2032,7 @@ behaviour it is defending is correct.**
 - **FU-T102-5 — `isCacheFresh` does not cover what the answer now depends on.** It checks the TTL plus `<adminDir>/HEAD` and `<bare>/worktrees` mtimes. Creating or deleting a nested `.git` between the probed path and the worktree changes the answer and touches neither, so a stale answer can be served for up to `DISCOVERY_CACHE_TTL_MS`.
 - **FU-T102-6 — `findConfiguredCloneEntry` is now O(depth x repos)** instead of O(repos): in-memory `path.resolve` + case-fold per entry per level. Negligible, but a new loop inside a loop.
 - **FU-T102-7 — `readConfiguredCloneWorktree` compares paths with a raw `normalizePathForCompare(a) === normalizePathForCompare(b)`** where the rest of the file uses `pathsEqual`. Same semantics, inconsistent call.
-- **FU-T102-8 — `REVIEW_FINDINGS.md` is tracked at the repo root** and is not in `package.json` `files`, so it does not ship, but it is still in the repository.
+- **FU-T102-8 — `REVIEW_FINDINGS.md` is tracked at the repo root** and is not in `package.json` `files`, so it does not ship, but it is still in the repository. Resolved: moved to `docs/internal/` with the other engineering records.
 - **ENVIRONMENT — simple-git's unsafe-operations plugin blocks `-c protocol.file.allow=…` and any inherited `GIT_EDITOR`**, so a `file://` submodule fixture cannot go through `createGitClient`/`simpleGit`; use `child_process` directly.
 
 ## From T105 (worker + review, 2026-09-16)
@@ -2065,7 +2065,7 @@ behaviour it is defending is correct.**
 
 ## From T110+T114 (worker + 5-lens review + fixer, 2026-09-16)
 
-- **FU-T110-1 — `fetchTimeoutMs`/`cloneTimeoutMs` carry the same 2^31 overflow (pre-existing).** `validateTimeoutMs` (`config-loader.service.ts:812-816`) gates on `Number.isSafeInteger`, and `Number.isSafeInteger(31536000000)` is `true`, so a year-long fetch timeout loads cleanly and reaches simple-git's own `setTimeout`, clamps to 1 ms and kills the fetch immediately. Same one-clause fix as T114's; deliberately not applied.
+- **FU-T110-1 — `fetchTimeoutMs`/`cloneTimeoutMs` carry the same 2^31 overflow (pre-existing).** _Resolved: the loader rejects values above 2147483647 and `buildGitClientOptions` clamps a programmatic one._ `validateTimeoutMs` (`config-loader.service.ts:812-816`) gates on `Number.isSafeInteger`, and `Number.isSafeInteger(31536000000)` is `true`, so a year-long fetch timeout loads cleanly and reaches simple-git's own `setTimeout`, clamps to 1 ms and kills the fetch immediately. Same one-clause fix as T114's; deliberately not applied.
 - **FU-T110-2 — the timeout path's 5 s SIGKILL escalation is reachable but untested.** `executeCommandInBackground` arms it and nothing clears it while the hook runs, but no test waits 5 s to see it fire; the only coverage is that the timer gets cleared. A fake-timer test would pin it cheaply.
 - **FU-T110-3 — the 250 ms termination grace is not interruptible by a force-quit.** `releaseForceQuit` is already null by the time `cleanup()` runs, so a second `q` inside the window does nothing. Bounded, so low priority.
 - **FU-T110-4 — `handleReload` (`r`) never calls `hookExecutionService.cleanup()`.** Hooks from a previous config generation keep running across a reload and keep feeding the new UI's log panel through the old callbacks.
@@ -2121,3 +2121,12 @@ behaviour it is defending is correct.**
 - **FU-T108-3** (tui) — a repository whose `initialize()` fails during a reload can leave a progress row keyed to its name. It is cleared when the reload's cycle closes (`setStatus("idle")` empties the list), so it is bounded to the reload, but nothing pins that clearing path specifically.
 - **FU-T109-1** (testing, tui) — `HelpModal.test.tsx`'s blind spot is only narrowed, not closed. T109 added the one assertion it needed (that the quit row names `q` alone), but the modal still advertises `s c o w x r ? h gg G j k` and the mouse wheel with **no test tying any of them to App's handler** — it asserts the help text renders, never that the listed keys work. That is exactly how `Esc` drifted. A table-driven App-level test over every advertised key would close it for good.
 - **FU-T109-2** (dead code, tui) — `App.tsx`'s `key.escape` inside the `showHelp` branch is redundant: `HelpModal`'s own `useInput` already calls the same `onClose`, and a mutation removing only the App-side path survives the whole suite. The user-visible behaviour is pinned (removing BOTH paths is killed by two named tests), so this is untested-by-necessity code rather than an untested behaviour. Worth deleting for clarity.
+
+## From ci-hygiene (macOS CI leg, 2026-09-25)
+
+- **FU-CI-1** (correctness, darwin) — the macOS leg added to `.github/workflows/pr.yml` fails 15 tests in 11 files, so its test step runs with `continue-on-error` (lint, type check, build and smoke still gate it). First run: PR #133, job 108137002497 — `Test Files 11 failed | 159 passed`, `Tests 15 failed | 3231 passed`.
+  - **Root cause for most of them:** `GitService.isRegisteredWorktree` (`src/services/git.service.ts`) compares `path.resolve(worktreePath)` with `path.resolve(w.path)` from `git worktree list --porcelain`. On macOS `os.tmpdir()` is `/var/folders/...`, a symlink to `/private/var/folders/...`, and git reports the canonical path, so the two never match and `ensureMainWorktree` throws `WORKTREE_NOT_REGISTERED` (`main worktree at '/var/folders/.../worktrees/main' is not registered with the bare repository`). The same would hit any user whose `worktreeDir` goes through a symlink. The fix is to canonicalise both sides with `fs.realpath` (falling back to `path.resolve` for paths that no longer exist) in every worktree-path comparison, not only this one.
+  - Files failing on that error: `bare-origin-mismatch`, `concurrent-runs`, `diverged-branch-reservation`, `double-run` (3 tests), `head-branch-filter` (2), `node-env-independence.e2e` (2), `skip-lfs-global-ignore.e2e`, `stale-registration`, `worktree-dir-collision.e2e` (all under `src/__tests__/e2e/`).
+  - `src/mcp/__tests__/context.broken-config.test.ts` ("carries the note on an unmanaged worktree context…", `expected 'unmanaged' to be 'managed'`) is very likely the same mismatch, in `detectFromPath`'s path matching.
+  - `src/__tests__/e2e/unshallow-inactivity-timeout.e2e.test.ts:151` ("still kills an unshallow that goes quiet…", the clone is no longer shallow after the kill) is a separate failure and has not been diagnosed. The test's `sleep` shim and how the process is killed may behave differently on darwin.
+  - When all of these pass on macOS, remove `continue-on-error` from the "Run Tests with Coverage" step in `pr.yml`.

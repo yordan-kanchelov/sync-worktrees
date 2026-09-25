@@ -73,6 +73,18 @@ describe("date-filter", () => {
       consoleSpy.mockRestore();
     });
 
+    it("reports an invalid duration through the logger it is given", () => {
+      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const logger = { warn: vi.fn() };
+
+      const result = filterBranchesByAge(branches, "invalid", logger);
+
+      expect(result).toHaveLength(4);
+      expect(logger.warn).toHaveBeenCalledWith("Invalid duration format: invalid. Using all branches.");
+      expect(consoleSpy).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
     it("should handle edge case of exact cutoff", () => {
       // Use a fixed date to avoid timing issues
       const fixedNow = new Date("2024-01-15T12:00:00Z");

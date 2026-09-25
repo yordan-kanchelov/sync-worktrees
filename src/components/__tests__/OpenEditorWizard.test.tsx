@@ -461,4 +461,46 @@ describe("OpenEditorWizard", () => {
       expect(lastFrame()).toContain("cancel");
     });
   });
+
+  describe("selection edge cases", () => {
+    it("loads the one repository by its own index, not by position", async () => {
+      const getWorktreesForRepo = vi.fn().mockResolvedValue([{ path: "/worktrees/main", branch: "main" }]);
+      render(
+        <OpenEditorWizard
+          {...defaultProps}
+          repositories={[{ index: 3, name: "only", repoUrl: "https://example.com/only.git" }]}
+          getWorktreesForRepo={getWorktreesForRepo}
+        />,
+      );
+
+      await waitForStateUpdate();
+      expect(getWorktreesForRepo).toHaveBeenCalledWith(3);
+    });
+
+    // Down on an empty filtered list used to set the selection to -1, so the
+    // first match to appear afterwards was not selected and Enter did nothing.
+    it("keeps a valid selection when down is pressed on an empty filtered list", async () => {
+      const { stdin, rerender, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
+
+      stdin.write("new");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("No matches");
+
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+
+      rerender(
+        <OpenEditorWizard
+          {...defaultProps}
+          repositories={[...defaultProps.repositories, { index: 2, name: "new-repo", repoUrl: "u" }]}
+        />,
+      );
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("> new-repo");
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      expect(defaultProps.getWorktreesForRepo).toHaveBeenCalledWith(2);
+    });
+  });
 });
