@@ -11,7 +11,7 @@ vi.mock("fs/promises");
 vi.mock("simple-git");
 
 // The real-git coverage of this counter is in
-// git.service.commits-not-on-remote.test.ts. What cannot be reached from there
+// branch-ref.commits-not-on-remote.test.ts. What cannot be reached from there
 // is output real git never produces: `git rev-list --count` either prints a
 // number or exits non-zero. Two callers read a zero as "there is nothing here
 // worth preserving" — the trash bundle, and the reaper's permanent keep ref —
