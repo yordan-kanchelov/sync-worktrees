@@ -9,6 +9,7 @@ import {
   TRASH_SUBCOMMAND_NAMES,
 } from "../cli/trash-command";
 
+import { CONFIG_OPTION_DESCRIPTION } from "./config-discovery";
 import { suggestConfigKey } from "./unknown-config-keys";
 
 import type { TrashCliOptions } from "../cli/trash-command";
@@ -18,6 +19,7 @@ export const CLI_COMMANDS = {
   INIT: "init",
   LIST: "list",
   TRASH: "trash",
+  DOCTOR: "doctor",
 } as const;
 
 export type CliOptions =
@@ -30,8 +32,9 @@ export type CliOptions =
       quiet: boolean;
     }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
-  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string }
-  | ({ command: typeof CLI_COMMANDS.TRASH; config?: string } & TrashCliOptions);
+  | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string; json: boolean }
+  | ({ command: typeof CLI_COMMANDS.TRASH; config?: string } & TrashCliOptions)
+  | { command: typeof CLI_COMMANDS.DOCTOR; config?: string; filter?: string; json: boolean; quiet: boolean };
 
 export type { TrashCliOptions };
 
@@ -39,7 +42,13 @@ const DOCS_URL = "https://github.com/yordan-kanchelov/sync-worktrees/tree/main/d
 
 /** The words a user can type as the first argument, for "did you mean" hints. */
 /** The commands other than the default one; `sync` is the default command's explicit name. */
-const SUBCOMMAND_NAMES = [CLI_COMMANDS.INIT, CLI_COMMANDS.LIST, CLI_COMMANDS.TRASH, "completion"] as const;
+const SUBCOMMAND_NAMES = [
+  CLI_COMMANDS.INIT,
+  CLI_COMMANDS.LIST,
+  CLI_COMMANDS.TRASH,
+  CLI_COMMANDS.DOCTOR,
+  "completion",
+] as const;
 const COMMAND_NAMES = ["sync", ...SUBCOMMAND_NAMES] as const;
 
 /** Every long flag any command accepts, in its canonical kebab-case spelling. */
@@ -191,7 +200,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           .option("config", {
             alias: "c",
             type: "string",
-            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+            description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("run-once", {
             type: "boolean",
@@ -256,18 +265,24 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           .option("config", {
             alias: "c",
             type: "string",
-            description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+            description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("filter", {
             alias: "f",
             type: "string",
             description: "Filter repositories by name (wildcards, comma-separated).",
+          })
+          .option("json", {
+            type: "boolean",
+            description: "Print the repositories as a JSON array instead of a report.",
+            default: false,
           }),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.LIST,
           config: args.config,
           filter: args.filter,
+          json: args.json,
         };
       },
     )
@@ -282,11 +297,48 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
         parsed = { command: CLI_COMMANDS.TRASH, ...parseBareTrash(args) };
       },
     )
+    .command(
+      CLI_COMMANDS.DOCTOR,
+      "Check Node, git, the config and each repository's remote and directories",
+      (y) =>
+        y
+          .option("config", {
+            alias: "c",
+            type: "string",
+            description: CONFIG_OPTION_DESCRIPTION,
+          })
+          .option("filter", {
+            alias: "f",
+            type: "string",
+            description: "Only check repositories whose name matches (wildcards, comma-separated).",
+          })
+          .option("json", {
+            type: "boolean",
+            description: "Print the checks as a JSON array instead of a report.",
+            default: false,
+          })
+          .option("quiet", {
+            alias: "q",
+            type: "boolean",
+            description: "Print only warnings, failures and the summary line (ignored with --json).",
+            default: false,
+          }),
+      (args) => {
+        parsed = {
+          command: CLI_COMMANDS.DOCTOR,
+          config: args.config,
+          filter: args.filter,
+          json: args.json,
+          quiet: args.quiet,
+        };
+      },
+    )
     .completion("completion", "Print a bash/zsh completion script", completeArguments)
     .example("$0 --run-once", "Sync once and exit (cron, CI)")
     .example("$0 --run-once -q -f backend", "Sync one repo; print only problems and the summary")
     .example('$0 list --filter "frontend-*"', "Show which repositories a filter matches")
     .example("$0 trash restore <id>", "Restore a worktree from the trash")
+    .example("$0 doctor", "Check Node, git, the config, each remote and the directories")
     .example("$0 completion >> ~/.bashrc", "Install shell completion")
     .epilog(`Documentation: ${DOCS_URL}`)
     .demandCommand(0, 0)

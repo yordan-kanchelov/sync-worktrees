@@ -241,8 +241,8 @@ describe("CloneSyncService", () => {
       delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
       const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
 
-      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
-      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+      expect((service as any).clients.getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).clients.getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
     });
 
     it("prefers the configured timeouts when the unit-test shortcut is unset", () => {
@@ -253,24 +253,24 @@ describe("CloneSyncService", () => {
         logger,
       );
 
-      expect((service as any).getFetchTimeoutMs()).toBe(1_000);
-      expect((service as any).getCloneTimeoutMs()).toBe(2_000);
+      expect((service as any).clients.getFetchTimeoutMs()).toBe(1_000);
+      expect((service as any).clients.getCloneTimeoutMs()).toBe(2_000);
     });
 
     it("disables the timeouts only while the unit-test shortcut is active for this process", () => {
       process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
       const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
 
-      expect((service as any).getFetchTimeoutMs()).toBe(0);
-      expect((service as any).getCloneTimeoutMs()).toBe(0);
+      expect((service as any).clients.getFetchTimeoutMs()).toBe(0);
+      expect((service as any).clients.getCloneTimeoutMs()).toBe(0);
     });
 
     it("ignores a shortcut value inherited from another process", () => {
       process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid + 1);
       const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
 
-      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
-      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
+      expect((service as any).clients.getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
+      expect((service as any).clients.getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
     });
   });
 

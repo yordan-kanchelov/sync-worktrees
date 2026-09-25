@@ -1,10 +1,9 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { CONFIG_FILE_NAMES } from "../constants";
 import { ConfigFileExistsError } from "../errors";
 
-import { fileExists } from "./file-exists";
+import { resolveConfigPath } from "./config-discovery";
 import { extractRepoNameFromUrl } from "./git-url";
 
 import type { InitConfigInput, InitRepositoryInput } from "../types";
@@ -235,12 +234,13 @@ export function getDefaultConfigPath(): string {
   return path.join(process.cwd(), "sync-worktrees.config.js");
 }
 
+/**
+ * The config a command without `--config` loads: `SYNC_WORKTREES_CONFIG` when
+ * set, otherwise the first config file in `cwd` or one of its parents.
+ *
+ * @deprecated The name predates the walk-up; use `resolveConfigPath`, which
+ * also says where the path came from.
+ */
 export async function findConfigInCwd(cwd: string = process.cwd()): Promise<string | null> {
-  for (const name of CONFIG_FILE_NAMES) {
-    const full = path.join(cwd, name);
-    if (await fileExists(full)) {
-      return full;
-    }
-  }
-  return null;
+  return (await resolveConfigPath(undefined, { cwd }))?.path ?? null;
 }

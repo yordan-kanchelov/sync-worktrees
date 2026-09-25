@@ -9,6 +9,7 @@ import { ConfigLoaderService } from "../services/config-loader.service";
 import { isWorktreeRestorable } from "../services/trash.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 import { formatBytes } from "../utils/disk-space";
+import { CONFIG_OPTION_DESCRIPTION } from "../utils/config-discovery";
 import { configLoadErrorMessage } from "../utils/errors";
 import { redactSecretsInText } from "../utils/git-url";
 
@@ -135,7 +136,7 @@ export function buildTrashCommand(y: Argv, onParsed: (options: TrashCommandOptio
       .option("config", {
         alias: "c",
         type: "string",
-        description: "Path to JavaScript config file (auto-detected in CWD when omitted).",
+        description: CONFIG_OPTION_DESCRIPTION,
       })
       .option("filter", {
         alias: "f",
