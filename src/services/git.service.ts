@@ -1831,8 +1831,10 @@ export class GitService {
     this.staleDirectoryTrasher = trasher;
   }
 
-  // A stale directory that contains a .git may be a live checkout that git
-  // failed to report; quarantine it instead of deleting.
+  // A stale directory is content sync did not create and cannot inspect: a
+  // .git inside may be a live checkout git failed to report, and anything else
+  // may be files someone left there by hand. Without trash it is quarantined
+  // under .removed/, never deleted — only an empty directory is removed.
   private async clearStaleWorktreeDirectory(absoluteWorktreePath: string): Promise<void> {
     // However this ends — the directory is already gone, or it is about to be
     // trashed, quarantined or deleted — no client cached for the path outlives
@@ -1878,15 +1880,46 @@ export class GitService {
       }
     }
 
-    if (gitProbe === "exists") {
-      const quarantinePath = await quarantineDirectory(absoluteWorktreePath);
-      this.logger.warn(
-        `  - ⚠️ Directory at '${absoluteWorktreePath}' contains a .git; quarantined to '${quarantinePath}' instead of deleting.`,
-      );
-      return;
+    // An empty directory holds nothing to lose. rmdir (never a recursive rm)
+    // refuses if something landed in it since the listing, and any refusal
+    // falls through to the quarantine below.
+    if (gitProbe === "missing" && (await this.isEmptyDirectory(absoluteWorktreePath))) {
+      try {
+        await fs.rmdir(absoluteWorktreePath);
+        this.logger.info(`  - Removed empty stale directory at '${absoluteWorktreePath}'`);
+        return;
+      } catch {
+        // Not empty any more, or not removable: preserve it instead.
+      }
     }
 
-    await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
+    let quarantinePath: string;
+    try {
+      quarantinePath = await quarantineDirectory(absoluteWorktreePath);
+    } catch (error) {
+      // Same contract as the trash path: cannot preserve it -> refuse to clear
+      // it, and the worktree creation fails instead of deleting anything.
+      throw new GitOperationError(
+        "clear-stale-directory",
+        `Cannot quarantine stale directory '${absoluteWorktreePath}': ${getErrorMessage(error)}`,
+        error instanceof Error ? error : undefined,
+      );
+    }
+    const what = gitProbe === "exists" ? "contains a .git" : "is not a registered worktree";
+    this.logger.warn(
+      `  - ⚠️ Directory at '${absoluteWorktreePath}' ${what}; quarantined to '${quarantinePath}' instead of deleting.`,
+    );
+  }
+
+  // True only for a directory positively read as empty; an unreadable one is
+  // treated as holding content.
+  private async isEmptyDirectory(dirPath: string): Promise<boolean> {
+    try {
+      const entries = await fs.readdir(dirPath);
+      return Array.isArray(entries) && entries.length === 0;
+    } catch {
+      return false;
+    }
   }
 
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {
