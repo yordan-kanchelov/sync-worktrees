@@ -70,6 +70,7 @@ describe("GitService logger propagation", () => {
         branch: vi.fn().mockResolvedValue({ current: "feature", detached: false, all: [] }),
         stashList: vi.fn().mockResolvedValue({ total: 0 }),
         raw: vi.fn().mockResolvedValue(""),
+        push: vi.fn().mockResolvedValue(undefined),
         env: vi.fn().mockReturnThis(),
       } as unknown as SimpleGit;
     });
@@ -134,6 +135,28 @@ describe("GitService logger propagation", () => {
     expect(statusError(ui.lines)).toContain(WORKTREE_PATH);
     expect(warn).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
+  });
+
+  // The services GitService delegates to (worktree registry and creation,
+  // branch refs, bare repo, LFS) read the logger through the shared context
+  // on every call rather than holding their own copy, so the swap reaches
+  // them without any re-wiring.
+  it("moves the delegated services' logs onto the logger updateLogger installs", async () => {
+    const first = createCapturingLogger();
+    const second = createCapturingLogger();
+    const gitService = new GitService(config, first.logger);
+
+    gitService.updateLogger(second.logger);
+    await gitService.removeWorktree(WORKTREE_PATH);
+    await gitService.pushBranch("feature");
+
+    expect(second.lines).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(`Safely removed stale worktree at '${WORKTREE_PATH}'`),
+        expect.stringContaining("Pushed branch 'feature' to remote"),
+      ]),
+    );
+    expect(first.lines).toEqual([]);
   });
 
   it("moves the progress logs of an already-cached git client too", async () => {
