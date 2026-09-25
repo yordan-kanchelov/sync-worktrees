@@ -52,6 +52,7 @@ export async function runMultipleRepositories(
   configFile: ConfigFile,
   repositories: RepositoryConfig[],
   configPath?: string,
+  overrides: { debug?: boolean } = {},
 ): Promise<void> {
   const services = new Map<string, WorktreeSyncService>();
   const startedAt = Date.now();
@@ -234,7 +235,11 @@ export async function runMultipleRepositories(
     const uniqueSchedules = [...new Set(repositories.map((r) => r.cronSchedule))];
     const displaySchedule = uniqueSchedules.length === 1 ? uniqueSchedules[0] : undefined;
     const allServices = Array.from(services.values());
-    const uiService = new InteractiveUIService(allServices, configPath, displaySchedule, maxParallel);
+    // --debug was applied to `repositories` on load; the dashboard loads the
+    // config again on `r`, so it has to be told to apply it there as well.
+    const uiService = new InteractiveUIService(allServices, configPath, displaySchedule, maxParallel, undefined, {
+      debug: overrides.debug,
+    });
     signalHandle.register((fast) => uiService.destroy(fast));
 
     void uiService.calculateAndUpdateDiskSpace();
@@ -592,9 +597,9 @@ async function loadRunConfig(
   overrides: { runOnce: boolean; debug: boolean },
 ): Promise<{ configFile: ConfigFile; repositories: RepositoryConfig[] }> {
   const configLoader = new ConfigLoaderService();
-  const { repositories, configFile } = await configLoader.buildRepositories(configPath);
+  const { repositories, configFile } = await configLoader.buildRepositories(configPath, { debug: overrides.debug });
   return {
-    repositories: overrides.debug ? repositories.map((repo) => ({ ...repo, debug: true })) : repositories,
+    repositories,
     configFile: overrides.runOnce
       ? { ...configFile, defaults: { ...(configFile.defaults ?? {}), runOnce: true } }
       : configFile,
@@ -711,7 +716,7 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
   }
 
   try {
-    await runMultipleRepositories(loaded.configFile, loaded.repositories, configPath);
+    await runMultipleRepositories(loaded.configFile, loaded.repositories, configPath, { debug: options.debug });
   } catch (error) {
     // The config loaded; this is the run failing. Everything that escapes here
     // — a service constructor rejecting a repository name, a render that will

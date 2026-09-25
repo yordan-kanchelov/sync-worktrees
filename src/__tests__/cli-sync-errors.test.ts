@@ -33,6 +33,7 @@ vi.mock("../services/InteractiveUIService", () => ({
       calculateAndUpdateDiskSpace: vi.fn(),
       destroy: vi.fn(),
       setupCronJobs: vi.fn(),
+      triggerInitialSync: vi.fn(async () => {}),
     };
   }),
 }));
@@ -42,6 +43,7 @@ vi.mock("../utils/signal-handlers", () => ({
 }));
 
 import { main, reportUnhandledError } from "../index";
+import { InteractiveUIService } from "../services/InteractiveUIService";
 
 const originalArgv = process.argv;
 
@@ -62,6 +64,8 @@ describe("sync-worktrees run error reporting", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Some tests make the constructor throw; clearAllMocks keeps that.
+    mocks.constructService.mockReset();
     mocks.hasInteractiveTerminal.mockReturnValue(true);
     process.argv = ["node", "sync-worktrees", "--config", "/test/sync-worktrees.config.js"];
     errors = [];
@@ -158,7 +162,29 @@ describe("sync-worktrees run error reporting", () => {
 
     expect(await runAndCaptureExit()).toBeUndefined();
 
-    expect(mocks.constructService).toHaveBeenCalledWith(expect.objectContaining({ name: "app", debug: true }));
+    // The loader applies it (config-loader.service.test covers that), so every
+    // load of the config gets it, not only the first.
+    expect(mocks.buildRepositories).toHaveBeenCalledWith("/test/sync-worktrees.config.js", { debug: true });
+  });
+
+  // The dashboard loads the config again when `r` is pressed; a --debug that
+  // only reached the startup load quietly switched itself off on reload.
+  it("--debug is handed to the dashboard so its reload applies it too", async () => {
+    process.argv = ["node", "sync-worktrees", "--config", "/test/sync-worktrees.config.js", "--debug"];
+
+    const code = await runAndCaptureExit();
+    expect(errors).toEqual([]);
+    expect(code).toBeUndefined();
+
+    expect(vi.mocked(InteractiveUIService)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(InteractiveUIService).mock.calls[0][5]).toEqual({ debug: true });
+  });
+
+  it("does not force debug on the dashboard without --debug", async () => {
+    expect(await runAndCaptureExit()).toBeUndefined();
+
+    expect(mocks.buildRepositories).toHaveBeenCalledWith("/test/sync-worktrees.config.js", { debug: false });
+    expect(vi.mocked(InteractiveUIService).mock.calls[0][5]).toEqual({ debug: false });
   });
 
   // A bug in this tool has nothing useful to say in one line, so it keeps its

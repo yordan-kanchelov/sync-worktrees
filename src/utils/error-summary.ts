@@ -15,11 +15,22 @@ import { SyncWorktreesError } from "../errors";
  * that names the cause.
  */
 export function summarizeExpectedError(error: unknown): string | null {
-  if (error instanceof SyncWorktreesError) return error.message;
+  if (error instanceof SyncWorktreesError) {
+    // "Cannot fast-forward branch 'x'" says what failed, not why; git's reason
+    // is on the cause, so it rides along as one line — unless the message
+    // already quotes it.
+    const reason = error.cause ? reasonLine(summarizeExpectedError(error.cause) ?? error.cause.message) : "";
+    return reason && !error.message.includes(reason) ? `${error.message}: ${reason}` : error.message;
+  }
   if (!(error instanceof SimpleGitError)) return null;
-  const lines = error.message
+  return reasonLine(error.message) || error.message;
+}
+
+/** The first `fatal:`/`error:` line of `text`, else its first non-blank line. */
+function reasonLine(text: string): string {
+  const lines = text
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  return lines.find((line) => /^(fatal|error):/i.test(line)) ?? lines[0] ?? error.message;
+  return lines.find((line) => /^(fatal|error):/i.test(line)) ?? lines[0] ?? "";
 }

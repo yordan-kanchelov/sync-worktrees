@@ -11,7 +11,9 @@ CLI fixes and output polish:
   exits 1 with a message instead of hanging.
 - A failed git command in `--runOnce` is reported as its one `fatal:` line, not about 30 lines of stack and
   `task.commands`. After any failure the run prints a hint that points to `--debug`. The new `--debug` flag turns on
-  debug logging and full error details for every repository, overriding the config's `debug`.
+  debug logging and full error details for every repository, overriding the config's `debug`, and keeps doing so after
+  the dashboard reloads the config with `r`. A typed failure such as "Cannot fast-forward branch" also carries git's
+  one-line reason.
 - The bin shim's last-resort error handler now redacts credentials in repository URLs.
 - `--runOnce` output: "1 repository" instead of "1 repositories", no empty `[name]` line before each repository header,
   and "Fetching latest data from remote..." printed once per sync instead of twice. Zero skip counts are left out of

@@ -175,9 +175,9 @@ sync-worktrees list --config ./config.js --filter "frontend-*"
 
 - **Laptop.** Leave the TUI running in a `tmux` or `screen` window. A tick the machine slept through is not replayed;
   the next tick, or `s`, runs the cycle, and `syncOnStart` covers restarts.
-- **Build box, no terminal.** There is no headless daemon: without `--runOnce` the TUI is what runs, and with no
-  terminal attached it refuses to start and exits 1. Put `sync-worktrees --runOnce` on a cron line or a
-  systemd/launchd timer instead. Two runs that overlap on one checkout
+- **Build box, no terminal.** There is no headless daemon: without `--runOnce` the TUI is what runs, and when stdin
+  or stdout is not a terminal (piping through `tee` included) it refuses to start and exits 1. Put
+  `sync-worktrees --runOnce` on a cron line or a systemd/launchd timer instead. Two runs that overlap on one checkout
   do not collide: the second skips that repository and exits 0.
 - **Concurrency.** One cross-process lock per checkout; the TUI's ticks, `--runOnce` and the MCP server all contend for
   it, and the loser skips and says so. See [Locking](./docs/configuration.md#locking).

@@ -1,7 +1,7 @@
 import { GitError } from "simple-git";
 import { describe, expect, it } from "vitest";
 
-import { WorktreeError } from "../../errors";
+import { FastForwardError, WorktreeError } from "../../errors";
 import { summarizeExpectedError } from "../error-summary";
 
 describe("summarizeExpectedError", () => {
@@ -29,6 +29,26 @@ describe("summarizeExpectedError", () => {
   it("keeps this tool's own typed error messages whole", () => {
     expect(summarizeExpectedError(new WorktreeError("worktree is locked\nunlock it first", "LOCKED"))).toBe(
       "worktree is locked\nunlock it first",
+    );
+  });
+
+  it("adds the reason a typed error's cause gives, as one line", () => {
+    const cause = new GitError(
+      undefined,
+      "hint: Diverging branches can't be fast-forwarded\nfatal: Not possible to fast-forward, aborting.\n",
+    );
+    expect(summarizeExpectedError(new FastForwardError("feature", cause))).toBe(
+      "Cannot fast-forward branch 'feature': fatal: Not possible to fast-forward, aborting.",
+    );
+    expect(summarizeExpectedError(new FastForwardError("feature", new Error("\nlock held\nby pid 42")))).toBe(
+      "Cannot fast-forward branch 'feature': lock held",
+    );
+  });
+
+  it("does not repeat a cause the message already quotes", () => {
+    const cause = new Error("index.lock exists");
+    expect(summarizeExpectedError(new WorktreeError("add failed: index.lock exists", "ADD", cause))).toBe(
+      "add failed: index.lock exists",
     );
   });
 
