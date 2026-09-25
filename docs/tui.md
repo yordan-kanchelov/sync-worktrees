@@ -34,6 +34,14 @@ sync cycle and on reload.
 | `gg`        | Jump to top of log                             |
 | `G`         | Jump to bottom (re-enables auto-scroll)        |
 
+Inside the wizards and the status view, `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move through a list and any other printable key
+types into its filter. Keys that act on the selection are ones a filter cannot take: `Enter`, `Tab`, and `Ctrl-D` to
+delete a `.diverged/` entry.
+
+The modals size themselves to the terminal: they are never wider than the window, their lists show as many rows as the
+height leaves room for, and the help screen drops its spacing and then scrolls (`↑`/`↓`, `j`/`k`) when the window is too
+short for all of it.
+
 `Esc` backs out rather than quits: it closes the help screen, cancels a wizard or steps one back to the previous
 question, and does nothing on the main screen. `q` is the only key that quits, and it quits straight away — there is no
 confirmation, and the interface terminates any hooks it still has running (see [Hooks and file
@@ -69,8 +77,8 @@ copying](./hooks-and-file-copying.md)).
 
   Press `Enter` on an entry to expand file/commit/stash counts. The view also surfaces `.diverged/` directories
   preserved from past force-pushes while trash was disabled (see [Trash and
-  recovery](./trash-and-recovery.md#diverged-branches-force-pushes)); press `d` (with `y`/`n` confirmation) to delete
-  one after reviewing.
+  recovery](./trash-and-recovery.md#diverged-branches-force-pushes)); press `Ctrl-D` (with `y`/`n` confirmation) to
+  delete one after reviewing. It is `Ctrl-D` rather than `d` so that `d` can still be typed into the filter.
 
 ## Terminal mode environment variables
 

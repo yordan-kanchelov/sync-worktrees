@@ -938,10 +938,10 @@ describe("WorktreeStatusView", () => {
         await waitForStateUpdate();
       }
 
-      expect(lastFrame()).toContain("d to delete");
+      expect(lastFrame()).toContain("Ctrl-D to delete");
     });
 
-    it("should show delete confirmation on d key", async () => {
+    it("should show delete confirmation on Ctrl-D", async () => {
       const singleRepoProps: WorktreeStatusViewProps = {
         ...defaultProps,
         repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
@@ -960,7 +960,7 @@ describe("WorktreeStatusView", () => {
       stdin.write("\u001B[B");
       await waitForStateUpdate();
 
-      stdin.write("d");
+      stdin.write("\u0004"); // Ctrl-D
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Delete");
@@ -987,7 +987,7 @@ describe("WorktreeStatusView", () => {
       stdin.write("\u001B[B");
       await waitForStateUpdate();
 
-      stdin.write("d");
+      stdin.write("\u0004"); // Ctrl-D
       await waitForStateUpdate();
 
       stdin.write("y");
@@ -1025,7 +1025,7 @@ describe("WorktreeStatusView", () => {
       stdin.write("[B");
       await waitForStateUpdate();
 
-      stdin.write("d");
+      stdin.write("\u0004"); // Ctrl-D
       await waitForStateUpdate();
 
       stdin.write("y");
@@ -1068,7 +1068,7 @@ describe("WorktreeStatusView", () => {
       stdin.write("\u001B[B");
       await waitForStateUpdate();
 
-      stdin.write("d");
+      stdin.write("\u0004"); // Ctrl-D
       await waitForStateUpdate();
 
       stdin.write("n");
@@ -1097,7 +1097,7 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
 
       // Should be on the diverged entry, not stuck on separator
-      expect(lastFrame()).toContain("d to delete");
+      expect(lastFrame()).toContain("Ctrl-D to delete");
     });
   });
 });

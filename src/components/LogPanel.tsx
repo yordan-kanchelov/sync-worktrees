@@ -200,4 +200,14 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
   );
 };
 
-export default LogPanel;
+// Memoised: status and progress events re-render the App without touching the
+// log. The comparator is load-bearing. A bare `React.memo` of a function
+// component becomes a "simple memo" fiber, and React 19.2 only refreshes
+// `useEffectEvent` handlers -- which Ink's `useInput` is built on -- for plain
+// function components, so every key here would run the previous render's
+// handler (`gg` stopped working). With a comparator React keeps this component
+// an ordinary function fiber under the memo boundary.
+const samePanelProps = (prev: LogPanelProps, next: LogPanelProps): boolean =>
+  prev.logs === next.logs && prev.height === next.height && prev.isActive === next.isActive;
+
+export default React.memo(LogPanel, samePanelProps);

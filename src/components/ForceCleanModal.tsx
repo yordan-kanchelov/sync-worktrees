@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { isMouseSequence } from "../utils/mouse";
+import { useModalLayout } from "./layout";
 
 import { formatBytes } from "../utils/disk-space";
 
@@ -18,6 +19,7 @@ export interface ForceCleanModalProps {
 }
 
 const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClean, onClose }) => {
+  const { width } = useModalLayout(78);
   const [previews, setPreviews] = useState<ForceCleanRepositoryPreview[]>([]);
   const [results, setResults] = useState<ForceCleanRepositoryResult[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -93,7 +95,7 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
 
   return (
     <Box justifyContent="center" alignItems="center" flexDirection="column" marginTop={1} marginBottom={1}>
-      <Box borderStyle="double" borderColor="red" paddingX={2} paddingY={1} flexDirection="column" width={78}>
+      <Box borderStyle="double" borderColor="red" paddingX={2} paddingY={1} flexDirection="column" width={width}>
         <Text bold color="red">
           Force Clean
         </Text>
