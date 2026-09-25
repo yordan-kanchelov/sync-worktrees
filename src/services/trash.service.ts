@@ -956,7 +956,11 @@ export class TrashService {
       ),
     );
     if (pinRef) {
-      await this.gitService.deleteRef(pinRef).catch(() => undefined);
+      await this.gitService
+        .deleteRef(pinRef)
+        .catch((error: unknown) =>
+          this.logger.warn(`⚠️ Could not remove the trash pin ref '${pinRef}': ${getErrorMessage(error)}`),
+        );
     }
   }
 

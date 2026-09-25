@@ -13,7 +13,7 @@ import { createGitClient } from "../utils/git-client";
 import { redactRepoUrl } from "../utils/git-url";
 import { normalizePathForCompare, pathsEqual } from "../utils/path-compare";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
-import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
+import { parseWorktreeListPorcelain, readWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import type { Config, RepositoryConfig } from "../types";
 import type { Divergence, WorktreeLabel } from "./worktree-summary";
@@ -618,7 +618,7 @@ export class RepositoryContext {
         notes.push("Could not read remote origin URL");
       }
 
-      const listOutput = await bareGit.raw(["worktree", "list", "--porcelain"]);
+      const listOutput = await readWorktreeListPorcelain(bareGit);
       worktrees = parseWorktreeList(listOutput, worktreeRoot);
       const current = worktrees.find((w) => w.isCurrent);
       if (current) {
@@ -1090,7 +1090,7 @@ export class RepositoryContext {
     if (!(await isDirectory(bareRepoPath))) return { worktrees: [] };
 
     try {
-      const output = await createGitClient(bareRepoPath).raw(["worktree", "list", "--porcelain"]);
+      const output = await readWorktreeListPorcelain(createGitClient(bareRepoPath));
       return { worktrees: parseWorktreeList(output, currentWorktreePath) };
     } catch (err) {
       return { worktrees: [], error: err instanceof Error ? err.message : String(err) };

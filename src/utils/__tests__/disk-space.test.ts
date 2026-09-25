@@ -1,3 +1,4 @@
+import { execFile } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -7,16 +8,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { calculateDirectorySize, calculateSyncDiskSpace, formatBytes } from "../disk-space";
 
-vi.mock("fast-folder-size", () => ({
-  default: vi.fn(),
-}));
+import type * as ChildProcessModule from "child_process";
+
+// The real `execFile` unless a test scripts `du`'s answers with `duAnswers`,
+// so the same file covers both the parsing and a real `du` run.
+vi.mock("child_process", async () => {
+  const actual = await vi.importActual<typeof ChildProcessModule>("child_process");
+  return { ...actual, execFile: vi.fn(actual.execFile) };
+});
+
+type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
+
+// Answers successive `du` calls in order: a string is its stdout, an Error its
+// failure. Calls come in the order `calculateSyncDiskSpace` makes them.
+function duAnswers(...answers: Array<string | Error>): void {
+  vi.mocked(execFile).mockImplementation(((_file: string, _args: readonly string[], callback: ExecFileCallback) => {
+    const answer = answers.shift() ?? new Error("unexpected du call");
+    if (answer instanceof Error) callback(answer, "", "");
+    else callback(null, answer, "");
+    return {} as ChildProcessModule.ChildProcess;
+  }) as unknown as typeof execFile);
+}
 
 describe("disk-space", () => {
   let tempDir: string;
 
   beforeEach(async () => {
     tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "disk-space-test-"));
-    vi.clearAllMocks();
+    vi.mocked(execFile).mockReset();
   });
 
   afterEach(async () => {
@@ -53,57 +72,45 @@ describe("disk-space", () => {
   });
 
   describe("calculateDirectorySize", () => {
+    it("runs `du -sk` on the path, without a shell, and converts KiB to bytes", async () => {
+      duAnswers(`12\t${tempDir}\n`);
+
+      await expect(calculateDirectorySize(tempDir)).resolves.toBe(12 * 1024);
+      expect(vi.mocked(execFile)).toHaveBeenCalledWith("du", ["-sk", "--", tempDir], expect.any(Function));
+    });
+
+    it("measures a real directory with the system du", async () => {
+      // A name a shell would expand: proves the path reaches `du` as one argument.
+      const dir = path.join(tempDir, "with space $(touch pwned)");
+      await fs.promises.mkdir(dir);
+      await fs.promises.writeFile(path.join(dir, "data.bin"), Buffer.alloc(64 * 1024, 1));
+
+      const size = await calculateDirectorySize(dir);
+
+      expect(size).toBeGreaterThanOrEqual(64 * 1024);
+      expect(size % 1024).toBe(0);
+      expect(fs.existsSync(path.join(process.cwd(), "pwned"))).toBe(false);
+      expect(fs.existsSync(path.join(dir, "pwned"))).toBe(false);
+    });
+
     it("should reject for non-existent directory", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
-      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
-        callback(new Error("ENOENT"));
-        return {} as any;
-      });
-
-      await expect(calculateDirectorySize(path.join(tempDir, "nonexistent"))).rejects.toThrow("ENOENT");
+      await expect(calculateDirectorySize(path.join(tempDir, "nonexistent"))).rejects.toThrow();
     });
 
-    it("should return size for a directory", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
-      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
-        callback(null, 1024);
-        return {} as any;
-      });
+    it("should return 0 when du reports 0", async () => {
+      duAnswers(`0\t${tempDir}\n`);
 
-      const size = await calculateDirectorySize(tempDir);
-      expect(size).toBe(1024);
+      await expect(calculateDirectorySize(tempDir)).resolves.toBe(0);
     });
 
-    it("should return 0 for empty directory", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
-      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
-        callback(null, 0);
-        return {} as any;
-      });
+    it("should reject when du prints no size", async () => {
+      duAnswers("");
 
-      const emptyDir = path.join(tempDir, "empty");
-      await fs.promises.mkdir(emptyDir);
-
-      const size = await calculateDirectorySize(emptyDir);
-      expect(size).toBe(0);
-    });
-
-    it("should reject when fastFolderSize returns undefined bytes", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
-      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
-        callback(null, undefined);
-        return {} as any;
-      });
-
-      await expect(calculateDirectorySize(tempDir)).rejects.toThrow("returned no bytes");
+      await expect(calculateDirectorySize(tempDir)).rejects.toThrow("du printed no size");
     });
 
     it("should reject on errors", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
-      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
-        callback(new Error("Permission denied"));
-        return {} as any;
-      });
+      duAnswers(new Error("Permission denied"));
 
       await expect(calculateDirectorySize(tempDir)).rejects.toThrow("Permission denied");
     });
@@ -116,95 +123,51 @@ describe("disk-space", () => {
     });
 
     it("should calculate total size for bare directories", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
       const repoPath = path.join(tempDir, "repo");
-
-      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
-        callback(null, 1024 * 1024);
-        return {} as any;
-      });
+      duAnswers(`1024\t${repoPath}\n`);
 
       const result = await calculateSyncDiskSpace([repoPath], []);
       expect(result).toBe("1.00 MB");
     });
 
     it("should calculate total size for worktree directories", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
       const worktreeDir = path.join(tempDir, "worktrees");
-
-      vi.mocked(fastFolderSize).mockImplementationOnce((_path: string, callback: any) => {
-        callback(null, 512 * 1024);
-        return {} as any;
-      });
+      duAnswers(`512\t${worktreeDir}\n`);
 
       const result = await calculateSyncDiskSpace([], [worktreeDir]);
       expect(result).toBe("512.00 KB");
     });
 
     it("should calculate combined size of bare and worktree directories", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
       const barePath = path.join(tempDir, ".bare");
       const worktreeDir = path.join(tempDir, "worktrees");
-
-      let callCount = 0;
-      vi.mocked(fastFolderSize).mockImplementation((_path: string, callback: any) => {
-        callCount++;
-        if (callCount === 1) {
-          callback(null, 1024);
-        } else {
-          callback(null, 2048);
-        }
-        return {} as any;
-      });
+      duAnswers(`1\t${barePath}\n`, `2\t${worktreeDir}\n`);
 
       const result = await calculateSyncDiskSpace([barePath], [worktreeDir]);
       expect(result).toBe(formatBytes(3072));
     });
 
     it("should handle multiple repositories and worktree directories", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
       const bare1Path = path.join(tempDir, ".bare", "repo1");
       const bare2Path = path.join(tempDir, ".bare", "repo2");
       const worktree1Dir = path.join(tempDir, "worktrees1");
       const worktree2Dir = path.join(tempDir, "worktrees2");
-
-      const sizes = [1, 2, 3, 4];
-      let callIndex = 0;
-      vi.mocked(fastFolderSize).mockImplementation((_path: string, callback: any) => {
-        callback(null, sizes[callIndex++]);
-        return {} as any;
-      });
+      duAnswers("1\ta\n", "2\tb\n", "3\tc\n", "4\td\n");
 
       const result = await calculateSyncDiskSpace([bare1Path, bare2Path], [worktree1Dir, worktree2Dir]);
-      expect(result).toBe(formatBytes(10));
+      expect(result).toBe(formatBytes(10 * 1024));
     });
 
     it("should gracefully handle non-existent directories", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
-      vi.mocked(fastFolderSize).mockImplementation((_path: string, callback: any) => {
-        callback(new Error("ENOENT"));
-        return {} as any;
-      });
-
+      // The real `du`, on a path that is not there.
       const result = await calculateSyncDiskSpace([path.join(tempDir, "nonexistent")], []);
       expect(result).toBe("0 B");
     });
 
     it("should handle mixed success and failure", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
       const path1 = path.join(tempDir, "exists");
       const path2 = path.join(tempDir, "missing");
-
-      let callCount = 0;
-      vi.mocked(fastFolderSize).mockImplementation((_path: string, callback: any) => {
-        callCount++;
-        if (callCount === 1) {
-          callback(null, 1024);
-        } else {
-          callback(new Error("ENOENT"));
-        }
-        return {} as any;
-      });
+      duAnswers(`1\t${path1}\n`, new Error("ENOENT"));
 
       const result = await calculateSyncDiskSpace([path1, path2], []);
       expect(result).toBe("1.00 KB");
@@ -266,7 +229,6 @@ describe("disk-space", () => {
     });
 
     it("uses the measure it is given, so a caller can cache the walks", async () => {
-      const fastFolderSize = (await import("fast-folder-size")).default;
       const walked: string[] = [];
 
       const result = await calculateSyncDiskSpace(["/bare-a"], ["/wt-a"], (dirPath) => {
@@ -276,7 +238,7 @@ describe("disk-space", () => {
 
       expect(walked).toEqual(["/bare-a", "/wt-a"]);
       expect(result).toBe("1.00 KB");
-      expect(vi.mocked(fastFolderSize)).not.toHaveBeenCalled();
+      expect(vi.mocked(execFile)).not.toHaveBeenCalled();
     });
 
     // The caller owns reporting: writing to the console here would land on

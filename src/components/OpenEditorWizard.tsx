@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import { isMouseSequence } from "../utils/mouse";
+import { isListDown, isListUp, listRowsFor, listWindow, useModalLayout, wrappedRows } from "./layout";
 
 type WizardStep = "SELECT_PROJECT" | "SELECT_WORKTREE" | "OPENING" | "ERROR";
 
@@ -16,6 +17,8 @@ export interface OpenEditorWizardProps {
     branchName: string,
   ) => { success: boolean; error?: string };
   onClose: () => void;
+  /** Rows the wizard may use; defaults to the terminal height. */
+  availableRows?: number;
 }
 
 const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
@@ -24,11 +27,13 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   openEditorInWorktree,
   openTerminalInWorktree,
   onClose,
+  availableRows,
 }) => {
+  const layout = useModalLayout(60, availableRows);
   const [step, setStep] = useState<WizardStep>(repositories.length > 1 ? "SELECT_PROJECT" : "SELECT_WORKTREE");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
-  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? 0 : -1);
+  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? repositories[0].index : -1);
 
   const [worktrees, setWorktrees] = useState<Array<{ path: string; branch: string }>>([]);
   const [selectedWorktreeIndex, setSelectedWorktreeIndex] = useState(0);
@@ -74,10 +79,9 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     [getWorktreesForRepo],
   );
 
-  // One loader call per selected repository, from one place. `loadWorktrees` is
-  // a fresh function on every App render (getWorktreesForRepo is an arrow in
-  // App's JSX), so this effect runs constantly; the ref is what makes that
-  // free.
+  // One loader call per selected repository, from one place. The ref, not the
+  // identity of `loadWorktrees`, is what keeps it to one: a caller that hands in
+  // a fresh `getWorktreesForRepo` on every render must not re-run the load.
   useEffect(() => {
     const repoIndex = selectedRepoIndexRef.current;
     if (step !== "SELECT_WORKTREE" || repoIndex < 0) return;
@@ -130,10 +134,12 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     }
 
     if (step === "SELECT_PROJECT") {
-      if (key.upArrow) {
+      if (isListUp(input, key)) {
         setSelectedProjectIndex((prev) => Math.max(0, prev - 1));
-      } else if (key.downArrow) {
-        setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+      } else if (isListDown(input, key)) {
+        if (filteredProjects.length > 0) {
+          setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        }
       } else if (key.return && filteredProjects.length > 0) {
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
@@ -153,10 +159,12 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     } else if (step === "SELECT_WORKTREE") {
       if (key.tab) {
         setOpenAction((prev) => (prev === "terminal" ? "editor" : "terminal"));
-      } else if (key.upArrow) {
+      } else if (isListUp(input, key)) {
         setSelectedWorktreeIndex((prev) => Math.max(0, prev - 1));
-      } else if (key.downArrow) {
-        setSelectedWorktreeIndex((prev) => Math.min(filteredWorktrees.length - 1, prev + 1));
+      } else if (isListDown(input, key)) {
+        if (filteredWorktrees.length > 0) {
+          setSelectedWorktreeIndex((prev) => Math.min(filteredWorktrees.length - 1, prev + 1));
+        }
       } else if (key.return && filteredWorktrees.length > 0) {
         handleOpen();
       } else if (key.backspace || key.delete) {
@@ -190,14 +198,18 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
 
   const getTotalSteps = () => (repositories.length === 1 ? 1 : 2);
 
+  // Rows the step's list may take: what the modal has, less its chrome, the
+  // step's own lines above the list and a footer that wraps on a narrow box.
+  const listRoom = (linesAboveList: number): number => {
+    const footer = footerText();
+    const footerExtra = footer ? wrappedRows(footer, layout.innerWidth) - 1 : 0;
+    return layout.rows - layout.chromeRows - linesAboveList - footerExtra;
+  };
+
   const renderProjectSelection = () => {
-    const visibleCount = 8;
-    const halfVisible = Math.floor(visibleCount / 2);
-    let startIdx = Math.max(0, selectedProjectIndex - halfVisible);
-    const endIdx = Math.min(filteredProjects.length, startIdx + visibleCount);
-    if (endIdx - startIdx < visibleCount) {
-      startIdx = Math.max(0, endIdx - visibleCount);
-    }
+    // "Select repository:", the filter, and the gaps after each.
+    const visibleCount = listRowsFor(listRoom(4), filteredProjects.length);
+    const { start: startIdx, end: endIdx } = listWindow(selectedProjectIndex, filteredProjects.length, visibleCount);
 
     const visibleProjects = filteredProjects.slice(startIdx, endIdx);
 
@@ -223,7 +235,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
                 const isSelected = actualIdx === selectedProjectIndex;
                 return (
                   <Box key={repo.index}>
-                    <Text color={isSelected ? "cyan" : undefined}>
+                    <Text color={isSelected ? "cyan" : undefined} wrap="truncate-end">
                       {isSelected ? "> " : "  "}
                       {repo.name}
                     </Text>
@@ -247,13 +259,12 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
       return <Text color="red">No worktrees found</Text>;
     }
 
-    const visibleCount = 8;
-    const halfVisible = Math.floor(visibleCount / 2);
-    let startIdx = Math.max(0, selectedWorktreeIndex - halfVisible);
-    const endIdx = Math.min(filteredWorktrees.length, startIdx + visibleCount);
-    if (endIdx - startIdx < visibleCount) {
-      startIdx = Math.max(0, endIdx - visibleCount);
-    }
+    // The mode line, "Select worktree:", the filter, the gaps after each, and
+    // the repository line above them once there is more than one to choose.
+    const modeLine = `Mode: ${openAction === "terminal" ? "Terminal (tmux)" : "Editor"} (Tab to switch to ${openAction === "terminal" ? "Editor" : "Terminal"})`;
+    const linesAbove = 5 + wrappedRows(modeLine, layout.innerWidth) + (repositories.length > 1 ? 2 : 0);
+    const visibleCount = listRowsFor(listRoom(linesAbove), filteredWorktrees.length);
+    const { start: startIdx, end: endIdx } = listWindow(selectedWorktreeIndex, filteredWorktrees.length, visibleCount);
 
     const visibleWorktrees = filteredWorktrees.slice(startIdx, endIdx);
 
@@ -286,7 +297,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
                 const isSelected = actualIdx === selectedWorktreeIndex;
                 return (
                   <Box key={wt.path}>
-                    <Text color={isSelected ? "cyan" : undefined}>
+                    <Text color={isSelected ? "cyan" : undefined} wrap="truncate-end">
                       {isSelected ? "> " : "  "}
                       {wt.branch}
                     </Text>
@@ -327,18 +338,30 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     }
   };
 
-  const renderFooter = () => {
+  function footerText(): string | null {
     if (step === "OPENING") return null;
     if (step === "ERROR") return null;
     if (step === "SELECT_WORKTREE") {
-      return <Text dimColor>↑/↓ navigate • Type to filter • Tab switch mode • Enter to select • ESC to cancel</Text>;
+      return "↑/↓ navigate • Type to filter • Tab switch mode • Enter to select • ESC to cancel";
     }
-    return <Text dimColor>↑/↓ navigate • Type to filter • Enter to select • ESC to cancel</Text>;
+    return "↑/↓ navigate • Type to filter • Enter to select • ESC to cancel";
+  }
+
+  const renderFooter = () => {
+    const footer = footerText();
+    return footer ? <Text dimColor>{footer}</Text> : null;
   };
 
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
-      <Box borderStyle="round" borderColor="blue" paddingX={2} paddingY={1} flexDirection="column" width={60}>
+    <Box flexDirection="column" marginTop={layout.marginY} marginBottom={layout.marginY}>
+      <Box
+        borderStyle="round"
+        borderColor="blue"
+        paddingX={2}
+        paddingY={layout.paddingY}
+        flexDirection="column"
+        width={layout.width}
+      >
         <Box marginBottom={1}>
           <Text bold color="blue">
             📂 Open Worktree{" "}

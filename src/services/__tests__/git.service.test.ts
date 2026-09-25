@@ -484,7 +484,7 @@ describe("GitService", () => {
         await gitService.initialize();
 
         expect(mockGit.raw).toHaveBeenCalledWith(["for-each-ref", "--format=%(refname)", "refs/heads/"]);
-        expect(branchDeleteCalls()).toEqual([["branch", "-D", "feature-1", "release/2.0"]]);
+        expect(branchDeleteCalls()).toEqual([["branch", "-D", "--", "feature-1", "release/2.0"]]);
         expect(mockLogger.info).toHaveBeenCalledWith(
           "Removed 2 clone-time local branch copies; worktrees are created from origin/* instead.",
         );
@@ -503,8 +503,8 @@ describe("GitService", () => {
         await gitService.initialize();
 
         const calls = branchDeleteCalls();
-        expect(calls.map((args) => args.length - 2)).toEqual([200, 200, 50]);
-        expect(calls.flatMap((args) => args.slice(2))).toEqual(branches);
+        expect(calls.map((args) => args.length - 3)).toEqual([200, 200, 50]);
+        expect(calls.flatMap((args) => args.slice(3))).toEqual(branches);
       });
 
       it("leaves the copies alone and continues when HEAD cannot be read", async () => {
@@ -632,18 +632,20 @@ describe("GitService", () => {
         expect(gitService.isInitialized()).toBe(true);
       });
 
-      it("deletes an unregistered directory without a .git before creating the worktree", async () => {
+      it("quarantines an unregistered directory without a .git instead of deleting it", async () => {
         const { addCalls } = mockInitializeGit({ local: false, remote: true });
         (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
           if (p === path.join(MAIN_WORKTREE_PATH, ".git")) {
             throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
           }
         });
+        (fs.readdir as Mock<any>).mockResolvedValueOnce(["notes.txt"]);
 
         await gitService.initialize();
 
-        expect(fs.rm).toHaveBeenCalledWith(MAIN_WORKTREE_PATH, { recursive: true, force: true });
-        expect(fs.rename).not.toHaveBeenCalled();
+        expect(fs.rename).toHaveBeenCalledWith(MAIN_WORKTREE_PATH, expect.stringContaining(".removed"));
+        expect(fs.rm).not.toHaveBeenCalled();
+        expect(fs.rmdir).not.toHaveBeenCalled();
         expect(addCalls).toHaveLength(1);
       });
 
@@ -1821,7 +1823,8 @@ describe("GitService", () => {
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
       expect(fs.access).toHaveBeenCalledWith("/test/worktrees/feature-1");
-      expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
+      expect(fs.rm).not.toHaveBeenCalled();
+      expect(fs.rename).toHaveBeenCalledWith("/test/worktrees/feature-1", expect.stringContaining(".removed"));
       expect(mockGit.raw).toHaveBeenCalledWith([
         "worktree",
         "add",
@@ -1848,7 +1851,7 @@ describe("GitService", () => {
       expect(fs.access).toHaveBeenCalledWith("/test/worktrees/feature-1");
       expect(fs.rm).not.toHaveBeenCalled();
       // Should have called worktree list but not worktree add
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
       expect(mockGit.raw).toHaveBeenCalledTimes(1); // Only the list call, no add call
     });
 
@@ -1872,7 +1875,8 @@ describe("GitService", () => {
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
-      expect(fs.rm).toHaveBeenCalledWith("/test/worktrees/feature-1", { recursive: true, force: true });
+      expect(fs.rm).not.toHaveBeenCalled();
+      expect(fs.rename).toHaveBeenCalledWith("/test/worktrees/feature-1", expect.stringContaining(".removed"));
       // Calls: show-ref heads, show-ref remotes, tracking add (fail), rollback show-ref heads,
       // worktree list, fallback add, show-ref remotes, branch --set-upstream-to, then LFS
       // verification's three: the .gitattributes grep, the git-lfs probe, `lfs ls-files`
@@ -1954,11 +1958,12 @@ describe("GitService", () => {
 
       await gitService.addWorktree("feature-1", worktreePath);
 
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
       expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "prune"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", worktreePath]);
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("registration locked"));
-      expect(fs.rm).toHaveBeenCalledWith(worktreePath, { recursive: true, force: true });
+      expect(fs.rm).not.toHaveBeenCalled();
+      expect(fs.rename).toHaveBeenCalledWith(worktreePath, expect.stringContaining(".removed"));
       expect(mockGit.raw).toHaveBeenCalledWith([
         "worktree",
         "add",
@@ -1985,7 +1990,7 @@ describe("GitService", () => {
 
       await gitService.addWorktree("feature-1", worktreePath);
 
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
       expect(mockGit.raw).not.toHaveBeenCalledWith(["worktree", "prune"]);
       expect(fs.rm).not.toHaveBeenCalled();
     });
@@ -2780,25 +2785,83 @@ describe("GitService", () => {
       expect(fs.rename).toHaveBeenCalledWith(target, expect.stringContaining(".removed"));
     });
 
-    it("still deletes a stale directory that does not contain a .git", async () => {
+    describe("without a .git and without trash", () => {
       const target = "/test/worktrees/feature-1";
-      (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
-        if (p === path.join(target, ".git")) {
-          throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
-        }
-        return undefined;
-      });
-      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
-        if (Array.isArray(args) && args[0] === "worktree" && args[1] === "list") {
-          return Promise.resolve(createWorktreeListOutput([{ path: "/test/repo", branch: "main", commit: "abc123" }]));
-        }
-        return Promise.resolve("");
+
+      beforeEach(() => {
+        (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
+          if (p === path.join(target, ".git")) {
+            throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+          }
+          return undefined;
+        });
+        (mockGit.raw as Mock).mockImplementation((args: unknown) => {
+          if (Array.isArray(args) && args[0] === "worktree" && args[1] === "list") {
+            return Promise.resolve(
+              createWorktreeListOutput([{ path: "/test/repo", branch: "main", commit: "abc123" }]),
+            );
+          }
+          return Promise.resolve("");
+        });
+        (fs.rename as Mock<any>).mockResolvedValue(undefined);
       });
 
-      await gitService.addWorktree("feature-1", target);
+      // Unknown content — files someone left at the managed path by hand — is
+      // never deleted permanently.
+      it("quarantines a non-empty directory instead of deleting it", async () => {
+        (fs.readdir as Mock<any>).mockResolvedValueOnce(["notes.txt"]);
 
-      expect(fs.rm).toHaveBeenCalledWith(target, { recursive: true, force: true });
-      expect(fs.rename).not.toHaveBeenCalled();
+        await gitService.addWorktree("feature-1", target);
+
+        expect(fs.rm).not.toHaveBeenCalledWith(target, expect.anything());
+        expect(fs.rmdir).not.toHaveBeenCalled();
+        expect(fs.rename).toHaveBeenCalledWith(
+          target,
+          expect.stringMatching(/[/\\]test[/\\]worktrees[/\\]\.removed[/\\].*-feature-1$/),
+        );
+        expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("quarantined"));
+      });
+
+      it("quarantines a directory whose listing fails instead of deleting it", async () => {
+        (fs.readdir as Mock<any>).mockRejectedValueOnce(Object.assign(new Error("EACCES"), { code: "EACCES" }));
+
+        await gitService.addWorktree("feature-1", target);
+
+        expect(fs.rm).not.toHaveBeenCalledWith(target, expect.anything());
+        expect(fs.rmdir).not.toHaveBeenCalled();
+        expect(fs.rename).toHaveBeenCalledWith(target, expect.stringContaining(".removed"));
+      });
+
+      it("removes an empty directory with a non-recursive rmdir", async () => {
+        (fs.readdir as Mock<any>).mockResolvedValueOnce([]);
+        (fs.rmdir as Mock<any>).mockResolvedValueOnce(undefined);
+
+        await gitService.addWorktree("feature-1", target);
+
+        expect(fs.rmdir).toHaveBeenCalledWith(target);
+        expect(fs.rm).not.toHaveBeenCalledWith(target, expect.anything());
+        expect(fs.rename).not.toHaveBeenCalled();
+      });
+
+      it("quarantines an empty directory that gained content before the rmdir", async () => {
+        (fs.readdir as Mock<any>).mockResolvedValueOnce([]);
+        (fs.rmdir as Mock<any>).mockRejectedValueOnce(Object.assign(new Error("ENOTEMPTY"), { code: "ENOTEMPTY" }));
+
+        await gitService.addWorktree("feature-1", target);
+
+        expect(fs.rm).not.toHaveBeenCalledWith(target, expect.anything());
+        expect(fs.rename).toHaveBeenCalledWith(target, expect.stringContaining(".removed"));
+      });
+
+      it("fails the worktree creation when the quarantine move fails", async () => {
+        (fs.readdir as Mock<any>).mockResolvedValueOnce(["notes.txt"]);
+        (fs.rename as Mock<any>).mockRejectedValueOnce(Object.assign(new Error("EXDEV"), { code: "EXDEV" }));
+
+        await expect(gitService.addWorktree("feature-1", target)).rejects.toThrow();
+
+        expect(fs.rm).not.toHaveBeenCalledWith(target, expect.anything());
+        expect(mockGit.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["worktree", "add"]));
+      });
     });
 
     it("refuses to clear the stale directory when the .git probe fails for unknown reasons", async () => {
@@ -2871,7 +2934,7 @@ describe("GitService", () => {
 
       const worktrees = await gitService.getWorktrees();
 
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
       // The HEAD oid git prints for each worktree is carried through: the
       // update phase compares it against origin's tip to decide, without a
       // per-worktree probe, that nothing changed.
@@ -3948,7 +4011,7 @@ locked
       );
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feat-new"]);
-      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "feat-new"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "--", "feat-new"]);
     });
   });
 

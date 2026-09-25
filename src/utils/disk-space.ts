@@ -1,24 +1,28 @@
-import fastFolderSize from "fast-folder-size";
+import { execFile } from "child_process";
 
 /**
- * Calculates the total size of a directory in bytes using native OS utilities.
- * Uses the `du` command on Unix systems for optimal performance (10-100x faster than pure Node.js).
+ * Calculates the disk space a directory uses, in bytes, with `du -sk`.
+ * `du` is 10-100x faster than walking the tree from Node. `-k` (1024-byte
+ * blocks) is the POSIX spelling that GNU and BSD `du` agree on, so this
+ * reports allocated space, rounded up to whole blocks, on Linux and macOS
+ * alike. Run without a shell: the path is an argument, never parsed.
  * @param dirPath - The path to the directory
  * @returns The total size in bytes
  */
 export async function calculateDirectorySize(dirPath: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    fastFolderSize(dirPath, (err, bytes) => {
+    execFile("du", ["-sk", "--", dirPath], (err, stdout) => {
       if (err) {
-        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- ExecException is an Error at runtime; its Omit<> type hides the Error base
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- ExecFileException is an Error at runtime; its Omit<> type hides the Error base
         reject(err);
         return;
       }
-      if (bytes === undefined) {
-        reject(new Error(`fast-folder-size returned no bytes for ${dirPath}`));
+      const match = /^(\d+)\s/.exec(stdout);
+      if (!match) {
+        reject(new Error(`du printed no size for ${dirPath}: ${JSON.stringify(stdout)}`));
         return;
       }
-      resolve(bytes);
+      resolve(Number(match[1]) * 1024);
     });
   });
 }

@@ -10,15 +10,24 @@ export interface AppSyncProgress {
   completed?: boolean;
 }
 
+// How the most recent cycle ended, so the status bar can say "2 failed"
+// instead of leaving a fresh "Last Sync" time to imply that everything worked.
+export type LastSyncOutcome = { kind: "ok" } | { kind: "failed"; count: number } | { kind: "skipped"; count: number };
+
+// One schedule, or every distinct schedule the repositories run on. The status
+// bar shows the earliest next run across all of them.
+export type CronScheduleDisplay = string | readonly string[] | undefined;
+
 type AppEventMap = {
   updateLastSyncTime: void;
+  setLastSyncOutcome: LastSyncOutcome;
   setStatus: "idle" | "syncing";
   setSyncProgress: AppSyncProgress | null;
   setDiskSpace: string;
   addLog: { message: string; level: "info" | "warn" | "error" };
   uiReady: void;
   updateRepositoryCount: number;
-  updateCronSchedule: string | undefined;
+  updateCronSchedule: CronScheduleDisplay;
 };
 
 type EventCallback<T> = T extends void ? () => void : (payload: T) => void;

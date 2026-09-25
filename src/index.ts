@@ -33,19 +33,6 @@ import type { TrashEntry, TrashManifest } from "./services/trash.service";
 import type { ConfigFile, RepositoryConfig } from "./types";
 import type { CliOptions, TrashCliOptions } from "./utils/cli";
 
-export type {
-  SyncWorktreesConfig,
-  SyncWorktreesDefaults,
-  SyncWorktreesHooksConfig,
-  SyncWorktreesParallelismConfig,
-  SyncWorktreesRepository,
-  SyncWorktreesRepositoryMode,
-  SyncWorktreesRetryConfig,
-  SyncWorktreesSparseCheckoutConfig,
-  SyncWorktreesSparseCheckoutMode,
-  SyncWorktreesTrashConfig,
-} from "./types";
-
 export async function runMultipleRepositories(
   configFile: ConfigFile,
   repositories: RepositoryConfig[],

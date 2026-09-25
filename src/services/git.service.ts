@@ -19,7 +19,7 @@ import { getDefaultBareRepoDir, normalizeRepoUrlForComparison, redactRepoUrl } f
 import { getErrorMessage } from "../utils/errors";
 import { quarantineDirectory } from "../utils/quarantine";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
-import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
+import { parseWorktreeListPorcelain, readWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import { Logger } from "./logger.service";
 import { SparseCheckoutService } from "./sparse-checkout.service";
@@ -238,15 +238,10 @@ export class GitService {
   }
 
   // Per-client additions layered over the sanitized process environment by
-  // createGitClient. Force a stable C locale so git's stderr is deterministic
-  // English, exactly as clone mode does for its own clients: the push-status
-  // reason a refused lease is recognised by ("stale info"), the missing-ref
-  // classification and the LFS one all match on those strings, and under a
-  // non-English LANG/LC_ALL they stop matching without any other symptom — a
-  // lease rejection would be reported as a hard failure instead of the
-  // collision it is.
+  // createGitClient, which also forces the C locale every stderr match here
+  // ("stale info", missing-ref, LFS) depends on.
   private buildGitEnv(useLfsSkip: boolean, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { LC_ALL: "C", LANG: "C", ...extra };
+    const env: NodeJS.ProcessEnv = { ...extra };
     if (useLfsSkip) env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     return env;
   }
@@ -675,7 +670,7 @@ export class GitService {
       if (branches.length === 0) return;
 
       for (let start = 0; start < branches.length; start += BRANCH_DELETE_BATCH_SIZE) {
-        await bareGit.raw(["branch", "-D", ...branches.slice(start, start + BRANCH_DELETE_BATCH_SIZE)]);
+        await bareGit.raw(["branch", "-D", "--", ...branches.slice(start, start + BRANCH_DELETE_BATCH_SIZE)]);
       }
       this.logger.info(
         `Removed ${branches.length} clone-time local branch ${branches.length === 1 ? "copy" : "copies"}; worktrees are created from origin/* instead.`,
@@ -1189,7 +1184,7 @@ export class GitService {
     }
     if (createdNewBranch) {
       try {
-        await bareGit.raw(["branch", "-D", branchName]);
+        await bareGit.raw(["branch", "-D", "--", branchName]);
       } catch (branchRollbackError) {
         this.logger.warn(
           `  - Rollback (branch delete) failed for '${branchName}': ${getErrorMessage(branchRollbackError)}`,
@@ -1578,7 +1573,7 @@ export class GitService {
         );
         return;
       }
-      await bareGit.raw(["branch", "-D", branchName]);
+      await bareGit.raw(["branch", "-D", "--", branchName]);
       this.logger.info(`  - Removed the local branch '${branchName}' left behind by the failed worktree add`);
     } catch (error) {
       this.logger.warn(
@@ -1830,8 +1825,10 @@ export class GitService {
     this.staleDirectoryTrasher = trasher;
   }
 
-  // A stale directory that contains a .git may be a live checkout that git
-  // failed to report; quarantine it instead of deleting.
+  // A stale directory is content sync did not create and cannot inspect: a
+  // .git inside may be a live checkout git failed to report, and anything else
+  // may be files someone left there by hand. Without trash it is quarantined
+  // under .removed/, never deleted — only an empty directory is removed.
   private async clearStaleWorktreeDirectory(absoluteWorktreePath: string): Promise<void> {
     // However this ends — the directory is already gone, or it is about to be
     // trashed, quarantined or deleted — no client cached for the path outlives
@@ -1877,15 +1874,46 @@ export class GitService {
       }
     }
 
-    if (gitProbe === "exists") {
-      const quarantinePath = await quarantineDirectory(absoluteWorktreePath);
-      this.logger.warn(
-        `  - ⚠️ Directory at '${absoluteWorktreePath}' contains a .git; quarantined to '${quarantinePath}' instead of deleting.`,
-      );
-      return;
+    // An empty directory holds nothing to lose. rmdir (never a recursive rm)
+    // refuses if something landed in it since the listing, and any refusal
+    // falls through to the quarantine below.
+    if (gitProbe === "missing" && (await this.isEmptyDirectory(absoluteWorktreePath))) {
+      try {
+        await fs.rmdir(absoluteWorktreePath);
+        this.logger.info(`  - Removed empty stale directory at '${absoluteWorktreePath}'`);
+        return;
+      } catch {
+        // Not empty any more, or not removable: preserve it instead.
+      }
     }
 
-    await fs.rm(absoluteWorktreePath, { recursive: true, force: true });
+    let quarantinePath: string;
+    try {
+      quarantinePath = await quarantineDirectory(absoluteWorktreePath);
+    } catch (error) {
+      // Same contract as the trash path: cannot preserve it -> refuse to clear
+      // it, and the worktree creation fails instead of deleting anything.
+      throw new GitOperationError(
+        "clear-stale-directory",
+        `Cannot quarantine stale directory '${absoluteWorktreePath}': ${getErrorMessage(error)}`,
+        error instanceof Error ? error : undefined,
+      );
+    }
+    const what = gitProbe === "exists" ? "contains a .git" : "is not a registered worktree";
+    this.logger.warn(
+      `  - ⚠️ Directory at '${absoluteWorktreePath}' ${what}; quarantined to '${quarantinePath}' instead of deleting.`,
+    );
+  }
+
+  // True only for a directory positively read as empty; an unreadable one is
+  // treated as holding content.
+  private async isEmptyDirectory(dirPath: string): Promise<boolean> {
+    try {
+      const entries = await fs.readdir(dirPath);
+      return Array.isArray(entries) && entries.length === 0;
+    } catch {
+      return false;
+    }
   }
 
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {
@@ -2450,7 +2478,7 @@ export class GitService {
   }
 
   private async getWorktreesFromBare(bareGit: SimpleGit, includeDetached = false): Promise<RegisteredWorktree[]> {
-    const result = await bareGit.raw(["worktree", "list", "--porcelain"]);
+    const result = await readWorktreeListPorcelain(bareGit);
     return parseWorktreeListPorcelain(result)
       .filter((w) => includeDetached || (!w.detached && w.branch !== null))
       .map((w) => ({
