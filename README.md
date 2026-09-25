@@ -139,7 +139,8 @@ diverged worktree that is reset in place, a stash):
 
 Requirements:
 
-- Node.js 24 or newer
+- Node.js 24 or newer. npm only warns when installing on an older Node; both commands then print a warning at start-up
+  and carry on, untested. On Node 22, `sync-worktrees@5` is the supported line
 - Git; `git-lfs` on any machine syncing a repository that uses LFS (or set `skipLfs: true`)
 - macOS or Linux. Windows is not supported: `package.json` declares `os: ["darwin", "linux"]`, so npm refuses the
   install there

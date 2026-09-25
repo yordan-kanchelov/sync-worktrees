@@ -2,6 +2,10 @@
 
 import process from "node:process";
 
+import { warnOnUnsupportedNode } from "./node-version.js";
+
+warnOnUnsupportedNode("sync-worktrees");
+
 process.env.NODE_ENV ??= "production";
 const { main } = await import("../dist/index.js");
 
