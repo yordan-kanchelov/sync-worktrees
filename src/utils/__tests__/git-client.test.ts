@@ -7,7 +7,7 @@ import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setEnvVar } from "../../__tests__/test-utils";
-import { buildGitClientOptions, createGitClient } from "../git-client";
+import { MAX_TIMER_DELAY_MS, buildGitClientOptions, createGitClient } from "../git-client";
 import { GIT_UNSAFE_ALLOWANCES, sanitizeGitEnv } from "../git-env";
 
 import type { AddressInfo } from "net";
@@ -33,6 +33,15 @@ describe("buildGitClientOptions", () => {
       unsafe: GIT_UNSAFE_ALLOWANCES,
     });
     expect(buildGitClientOptions()).toEqual({ unsafe: GIT_UNSAFE_ALLOWANCES });
+  });
+
+  it("clamps a block timeout above setTimeout's ceiling instead of letting Node turn it into 1 ms", () => {
+    expect(buildGitClientOptions({ timeout: { block: 31_536_000_000 } }).timeout).toEqual({
+      block: MAX_TIMER_DELAY_MS,
+    });
+    expect(buildGitClientOptions({ timeout: { block: MAX_TIMER_DELAY_MS } }).timeout).toEqual({
+      block: MAX_TIMER_DELAY_MS,
+    });
   });
 
   it("merges caller allowances on top of the centralized set", () => {
@@ -82,6 +91,50 @@ describe("createGitClient with a forwarded shell environment", () => {
     );
 
     await expect(narrow.raw(["--version"])).rejects.toThrow(/allowUnsafe/);
+  });
+});
+
+describe("createGitClient locale", () => {
+  // git runs GIT_SSH_COMMAND through the shell with the environment it was
+  // given, so a command that dumps `env` shows exactly what git's children see.
+  let snapshot: Map<string, string | undefined>;
+  let dir: string;
+
+  beforeEach(async () => {
+    snapshot = snapshotEnv(["LC_ALL", "LANG", "LC_MESSAGES"]);
+    setEnvVar("LC_ALL", "de_DE.UTF-8");
+    setEnvVar("LANG", "de_DE.UTF-8");
+    setEnvVar("LC_MESSAGES", "de_DE.UTF-8");
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-locale-"));
+  });
+
+  afterEach(async () => {
+    restoreEnv(snapshot);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  async function childEnv(extraEnv: NodeJS.ProcessEnv = {}): Promise<Record<string, string>> {
+    const dump = path.join(dir, "env.txt");
+    const client = createGitClient(dir, { ...extraEnv, GIT_SSH_COMMAND: `env > '${dump}'; false` });
+    await expect(client.raw(["ls-remote", "ssh://example.invalid/repo.git"])).rejects.toThrow();
+    const lines = (await fs.readFile(dump, "utf8")).split("\n");
+    return Object.fromEntries(
+      lines.filter((l) => l.includes("=")).map((l) => [l.split("=")[0], l.slice(l.indexOf("=") + 1)]),
+    );
+  }
+
+  it("runs git under the C locale whatever locale the parent carries", async () => {
+    const env = await childEnv();
+
+    expect(env.LC_ALL).toBe("C");
+    expect(env.LANG).toBe("C");
+  });
+
+  it("lets a caller's explicit extraEnv override the locale", async () => {
+    const env = await childEnv({ LC_ALL: "C.UTF-8" });
+
+    expect(env.LC_ALL).toBe("C.UTF-8");
+    expect(env.LANG).toBe("C");
   });
 });
 

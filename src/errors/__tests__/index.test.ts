@@ -4,12 +4,11 @@ import { ERROR_MESSAGES } from "../../constants";
 import {
   ConfigValidationError,
   FastForwardError,
-  GitNotInitializedError,
   GitOperationError,
-  LfsError,
-  PathResolutionError,
   SyncWorktreesError,
-  WorktreeAlreadyExistsError,
+  UpstreamSetupError,
+  WorktreeError,
+  WorktreeMetadataError,
   WorktreeNotCleanError,
   isFastForwardError,
   isLfsError,
@@ -24,11 +23,6 @@ describe("Error Classes", () => {
       message: "base failure",
     },
     {
-      create: () => new GitNotInitializedError(),
-      code: "GIT_NOT_INITIALIZED",
-      message: ERROR_MESSAGES.GIT_NOT_INITIALIZED,
-    },
-    {
       create: () => new GitOperationError("fetch", "network timeout"),
       code: "GIT_OPERATION_FAILED",
       message: "Git operation 'fetch' failed: network timeout",
@@ -37,16 +31,6 @@ describe("Error Classes", () => {
       create: () => new FastForwardError("feature/test"),
       code: "GIT_FAST_FORWARD_FAILED",
       message: "Cannot fast-forward branch 'feature/test'",
-    },
-    {
-      create: () => new LfsError("download failed"),
-      code: "GIT_LFS_ERROR",
-      message: "LFS operation failed: download failed",
-    },
-    {
-      create: () => new WorktreeAlreadyExistsError("/repo/worktree", "feature/test"),
-      code: "WORKTREE_ALREADY_EXISTS",
-      message: "Worktree already exists at '/repo/worktree' for branch 'feature/test'",
     },
     {
       create: () => new WorktreeNotCleanError("/repo/worktree", ["uncommitted changes", "stashed changes"]),
@@ -59,9 +43,19 @@ describe("Error Classes", () => {
       message: "Invalid configuration for 'repoUrl': is required",
     },
     {
-      create: () => new PathResolutionError("../repo", "outside root"),
-      code: "PATH_RESOLUTION_FAILED",
-      message: "Path resolution failed for '../repo': outside root",
+      create: () => new WorktreeMetadataError("feature/test", new Error("disk full")),
+      code: "WORKTREE_METADATA_FAILED",
+      message: "Metadata creation failed for 'feature/test': disk full",
+    },
+    {
+      create: () => new UpstreamSetupError("feature/test", new Error("no such ref"), true),
+      code: "WORKTREE_UPSTREAM_SETUP_FAILED",
+      message: "Failed to set upstream for 'feature/test': no such ref",
+    },
+    {
+      create: () => new UpstreamSetupError("feature/test", "no such ref", false),
+      code: "WORKTREE_UPSTREAM_SETUP_FAILED",
+      message: "Failed to set upstream for 'feature/test': no such ref (rollback failed; partial worktree may remain)",
     },
   ])("should preserve the public $code contract", ({ create, code, message }) => {
     const error = create();
@@ -70,6 +64,28 @@ describe("Error Classes", () => {
     expect(error.name).toBe(error.constructor.name);
     expect(error.code).toBe(code);
     expect(error.message).toBe(message);
+  });
+});
+
+describe("addWorktree failure errors", () => {
+  it("are WorktreeErrors that keep the branch name and the underlying cause", () => {
+    const cause = new Error("disk full");
+    const metadata = new WorktreeMetadataError("feature/test", cause);
+    const upstream = new UpstreamSetupError("feature/test", cause, false);
+
+    for (const error of [metadata, upstream]) {
+      expect(error).toBeInstanceOf(WorktreeError);
+      expect(error.branchName).toBe("feature/test");
+      expect(error.cause).toBe(cause);
+    }
+    expect(upstream.rollbackSucceeded).toBe(false);
+  });
+
+  it("drops a non-Error cause from the chain but keeps its text in the message", () => {
+    const error = new WorktreeMetadataError("feature/test", "plain string");
+
+    expect(error.cause).toBeUndefined();
+    expect(error.message).toBe("Metadata creation failed for 'feature/test': plain string");
   });
 });
 

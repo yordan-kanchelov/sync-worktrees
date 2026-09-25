@@ -1,4 +1,4 @@
-import { getErrorMessage } from "./lfs-error";
+import { getErrorMessage } from "./errors";
 
 /**
  * git / ssh stderr fragments that mean the remote refused us or needed input

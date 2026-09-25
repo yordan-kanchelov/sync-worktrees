@@ -1,3 +1,5 @@
+import { Logger } from "../services/logger.service";
+
 export interface AppSyncProgress {
   repo: string;
   phase: string;
@@ -8,15 +10,24 @@ export interface AppSyncProgress {
   completed?: boolean;
 }
 
+// How the most recent cycle ended, so the status bar can say "2 failed"
+// instead of leaving a fresh "Last Sync" time to imply that everything worked.
+export type LastSyncOutcome = { kind: "ok" } | { kind: "failed"; count: number } | { kind: "skipped"; count: number };
+
+// One schedule, or every distinct schedule the repositories run on. The status
+// bar shows the earliest next run across all of them.
+export type CronScheduleDisplay = string | readonly string[] | undefined;
+
 type AppEventMap = {
   updateLastSyncTime: void;
+  setLastSyncOutcome: LastSyncOutcome;
   setStatus: "idle" | "syncing";
   setSyncProgress: AppSyncProgress | null;
   setDiskSpace: string;
   addLog: { message: string; level: "info" | "warn" | "error" };
   uiReady: void;
   updateRepositoryCount: number;
-  updateCronSchedule: string | undefined;
+  updateCronSchedule: CronScheduleDisplay;
 };
 
 type EventCallback<T> = T extends void ? () => void : (payload: T) => void;
@@ -25,6 +36,11 @@ type AnyEventCallback = EventCallback<AppEventMap[keyof AppEventMap]>;
 
 export class AppEventEmitter {
   private listeners: Map<keyof AppEventMap, Set<AnyEventCallback>> = new Map();
+
+  // A throwing listener is reported, never rethrown into the emitter's caller.
+  // It goes through the redacting logger: a listener's error can quote a
+  // repository URL with credentials in it.
+  constructor(private readonly logger: Pick<Logger, "error"> = Logger.createDefault()) {}
 
   on<K extends keyof AppEventMap>(event: K, callback: EventCallback<AppEventMap[K]>): () => void {
     if (!this.listeners.has(event)) {
@@ -50,7 +66,7 @@ export class AppEventEmitter {
         try {
           (callback as (payload?: AppEventMap[K]) => void)(args[0]);
         } catch (error) {
-          console.error(`[app-events] Error in '${String(event)}' listener:`, error);
+          this.logger.error(`[app-events] Error in '${String(event)}' listener:`, error);
         }
       }
     }

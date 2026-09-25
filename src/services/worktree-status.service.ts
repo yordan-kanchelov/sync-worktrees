@@ -8,7 +8,7 @@ import { GitOperationError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 
 import { Logger } from "./logger.service";
 
@@ -101,6 +101,32 @@ function collectModifiedSubmodules(submoduleStatus: string): string[] {
   }
   return modified;
 }
+
+// refs/stash lives in the common git dir, so `git stash list` in any worktree
+// lists the stashes of every worktree of the repository. Each entry is
+// attributed back to the worktree it was made in, or one stash anywhere would
+// block every prune and diverged replace and label every worktree dirty.
+//
+// `git stash` writes the reflog subject "WIP on <branch>: ..." or
+// "On <branch>: <message>", with "(no branch)" for a detached HEAD. A refname
+// can contain neither ':' nor whitespace, so the name up to the first ':' is
+// exact even when the user's own message contains colons.
+const STASH_LIST_FORMAT = { hash: "%H", parents: "%P", subject: "%gs" } as const;
+const STASH_SUBJECT_BRANCH = /^(?:WIP on|On) ([^\s:]+):/;
+
+interface StashEntry {
+  hash: string;
+  parents: string;
+  subject: string;
+}
+
+/** The branch a stash was made on, or null when its subject does not name one. */
+export function stashSubjectBranch(subject: string): string | null {
+  const match = STASH_SUBJECT_BRANCH.exec(subject);
+  return match ? match[1] : null;
+}
+
+type StashListing = Awaited<ReturnType<SimpleGit["stashList"]>>;
 
 interface WorktreeSnapshot {
   exists: boolean;
@@ -351,7 +377,7 @@ export class WorktreeStatusService {
       }),
       this.runGit(() => git.branch()).catch(() => null),
       this.runGit(() => git.branch(["-r", "--no-color"])).catch(() => null),
-      this.runGit(() => git.stashList()).catch((e: unknown) => {
+      this.listStashes(git).catch((e: unknown) => {
         this.logger.error(`Error checking stash`, e);
         return null;
       }),
@@ -438,6 +464,16 @@ export class WorktreeStatusService {
       }
     }
 
+    // A failed `git branch` leaves the checked-out branch unknown (undefined),
+    // which counts every stash that names a branch; detached HEAD is null.
+    const stashTotal = stashResult
+      ? await this.countOwnStashes(
+          git,
+          stashResult,
+          branchResult === null ? undefined : detached ? null : currentBranch,
+        )
+      : null;
+
     const operationProbe = gitDirResult ? await this.detectOperationFile(gitDirResult) : { file: null, unknown: false };
 
     // Untracked-and-not-ignored straight from status — see checkWorktreeStatus.
@@ -454,7 +490,7 @@ export class WorktreeStatusService {
       sinceSyncCount,
       sinceSyncChecked: lastSyncCommit !== undefined,
       headPushedToRecordedTip,
-      stashTotal: stashResult?.total ?? null,
+      stashTotal,
       submoduleStatus: submoduleResult,
       operationFile: operationProbe.file,
       operationProbeUnknown: operationProbe.unknown,
@@ -538,87 +574,93 @@ export class WorktreeStatusService {
     return { file: null, unknown: results.includes("unknown") };
   }
 
-  async hasUnpushedCommits(worktreePath: string, lastSyncCommit?: string): Promise<boolean> {
-    const worktreeGit = this.createGitInstance(worktreePath);
-
-    try {
-      // A detached HEAD may sit on commits unreachable from any ref; this is a
-      // safety predicate, so answer conservatively.
-      if (await this.isDetachedHead(worktreeGit)) {
-        return true;
-      }
-
-      // Same unambiguous revision as collectSnapshot: a tag sharing the
-      // branch's name shadows the branch and hides its unpushed commits.
-      const anyRemoteResult = await this.runGit(() =>
-        worktreeGit.raw(["rev-list", "--count", "HEAD", "--not", "--remotes"]),
-      );
-      const anyRemoteCount = this.parseCount(anyRemoteResult);
-      if (anyRemoteCount === null || anyRemoteCount > 0) {
-        return true;
-      }
-
-      if (lastSyncCommit) {
-        const sinceSyncResult = await this.runGit(() =>
-          worktreeGit.raw(["rev-list", "--count", `${lastSyncCommit}..HEAD`]),
-        );
-        const sinceSyncCount = this.parseCount(sinceSyncResult);
-        if (sinceSyncCount === null || sinceSyncCount > 0) {
-          return true;
-        }
-      }
-
-      return false;
-    } catch (error) {
-      this.logger.error(`Error checking unpushed commits`, error);
-      return true;
-    }
-  }
-
-  async hasUpstreamGone(worktreePath: string): Promise<boolean> {
-    const worktreeGit = this.createGitInstance(worktreePath);
-
-    try {
-      if (await this.isDetachedHead(worktreeGit)) {
-        return false;
-      }
-
-      const branchSummary = await this.runGit(() => worktreeGit.branch());
-      const currentBranch = branchSummary.current;
-
-      const upstream = await this.runGit(() =>
-        worktreeGit.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]),
-      );
-      const remoteBranches = await this.runGit(() => worktreeGit.branch(["-r", "--no-color"]));
-
-      return !remoteBranches.all.includes(upstream.trim());
-    } catch (error) {
-      const errorMessage = getErrorMessage(error);
-
-      if (
-        errorMessage.includes("fatal: no upstream configured") ||
-        errorMessage.includes("no upstream configured for branch") ||
-        errorMessage.includes("fatal: ambiguous argument") ||
-        errorMessage.includes("unknown revision or path")
-      ) {
-        return false;
-      }
-
-      this.logger.error(`Unexpected error checking upstream status for ${worktreePath}: ${errorMessage}`);
-      return true;
-    }
-  }
-
   async hasStashedChanges(worktreePath: string): Promise<boolean> {
     const worktreeGit = this.createGitInstance(worktreePath);
 
     try {
-      const stashList = await this.runGit(() => worktreeGit.stashList());
-      return stashList.total > 0;
+      const [stashList, branchSummary] = await Promise.all([
+        this.listStashes(worktreeGit),
+        this.runGit(() => worktreeGit.branch()).catch(() => null),
+      ]);
+      if (stashList.total === 0) return false;
+      const currentBranch =
+        branchSummary === null
+          ? undefined
+          : !branchSummary.current || branchSummary.detached
+            ? null
+            : branchSummary.current;
+      return (await this.countOwnStashes(worktreeGit, stashList, currentBranch)) > 0;
     } catch (error) {
       this.logger.error(`Error checking stash`, error);
       return true; // Conservative: assume unsafe to delete
     }
+  }
+
+  // simple-git types stashList's options as flat CLI options, but it parses a
+  // `format` map exactly as it does for `git log` (the fields come back on
+  // each entry of `all`).
+  private listStashes(git: SimpleGit): Promise<StashListing> {
+    return this.runGit(() =>
+      git.stashList({ format: STASH_LIST_FORMAT } as unknown as Parameters<SimpleGit["stashList"]>[0]),
+    );
+  }
+
+  /**
+   * How many entries of the repository-wide stash list belong to this
+   * worktree (see STASH_LIST_FORMAT).
+   *
+   * @param currentBranch the checked-out branch; null for a detached HEAD;
+   *   undefined when it could not be read, which counts every named stash.
+   */
+  private async countOwnStashes(
+    git: SimpleGit,
+    listing: StashListing,
+    currentBranch: string | null | undefined,
+  ): Promise<number> {
+    const entries = (listing.all ?? []) as unknown as ReadonlyArray<Partial<StashEntry>>;
+    // Entries that did not parse cannot be attributed: count them all.
+    if (entries.length !== listing.total) return listing.total;
+
+    const baseReachable = new Map<string, Promise<boolean>>();
+    let count = 0;
+    for (const entry of entries) {
+      const branch = stashSubjectBranch(entry.subject ?? "");
+      if (branch !== null) {
+        // The stash names its branch: it belongs to whichever worktree has
+        // that branch checked out, and to no other.
+        if (currentBranch === undefined || branch === currentBranch) count++;
+        continue;
+      }
+      // A detached-HEAD stash or a custom `git stash store -m` subject names
+      // no branch. Its first parent is the commit it was made on; count it
+      // here when that commit is in this worktree's history, and whenever
+      // that cannot be established.
+      const base = (entry.parents ?? "").trim().split(/\s+/)[0];
+      if (!/^[0-9a-f]+$/i.test(base)) {
+        count++;
+        continue;
+      }
+      let reachable = baseReachable.get(base);
+      if (!reachable) {
+        reachable = this.isInHeadHistory(git, base);
+        baseReachable.set(base, reachable);
+      }
+      if (await reachable) count++;
+    }
+    return count;
+  }
+
+  // Zero commits in HEAD..<oid> ⟺ oid is HEAD or one of its ancestors. Not
+  // merge-base --is-ancestor: simple-git resolves its silent exit 1 as success.
+  // Any failure answers true, the conservative side for a safety gate.
+  private isInHeadHistory(git: SimpleGit, oid: string): Promise<boolean> {
+    return this.runGit(() => git.raw(["rev-list", "--count", `HEAD..${oid}`])).then(
+      (raw) => {
+        const count = this.parseCount(raw);
+        return count === null || count === 0;
+      },
+      () => true,
+    );
   }
 
   async hasModifiedSubmodules(worktreePath: string): Promise<boolean> {
@@ -653,15 +695,6 @@ export class WorktreeStatusService {
 
     if (!status.canRemove) {
       throw new WorktreeNotCleanError(worktreePath, status.reasons);
-    }
-  }
-
-  private async isDetachedHead(worktreeGit: SimpleGit): Promise<boolean> {
-    try {
-      const branchSummary = await this.runGit(() => worktreeGit.branch());
-      return !branchSummary.current || branchSummary.detached;
-    } catch {
-      return true;
     }
   }
 

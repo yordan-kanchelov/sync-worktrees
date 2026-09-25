@@ -1,4 +1,5 @@
 import { ERROR_MESSAGES } from "../constants";
+import { getErrorMessage } from "../utils/errors";
 
 export class SyncWorktreesError extends Error {
   constructor(
@@ -18,12 +19,6 @@ export class SyncWorktreesError extends Error {
 export class GitError extends SyncWorktreesError {
   constructor(message: string, code: string, cause?: Error) {
     super(message, `GIT_${code}`, cause);
-  }
-}
-
-export class GitNotInitializedError extends GitError {
-  constructor() {
-    super(ERROR_MESSAGES.GIT_NOT_INITIALIZED, "NOT_INITIALIZED");
   }
 }
 
@@ -48,21 +43,46 @@ export class WorktreeError extends SyncWorktreesError {
   }
 }
 
-export class WorktreeAlreadyExistsError extends WorktreeError {
-  constructor(
-    public readonly path: string,
-    public readonly branchName: string,
-  ) {
-    super(`Worktree already exists at '${path}' for branch '${branchName}'`, "ALREADY_EXISTS");
-  }
-}
-
 export class WorktreeNotCleanError extends WorktreeError {
   constructor(
     public readonly path: string,
     public readonly reasons: string[],
   ) {
     super(`Worktree at '${path}' is not clean: ${reasons.join(", ")}`, "NOT_CLEAN");
+  }
+}
+
+// addWorktree created the worktree but could not record its metadata, so it
+// removed the worktree again rather than leave one sync cannot manage.
+export class WorktreeMetadataError extends WorktreeError {
+  constructor(
+    public readonly branchName: string,
+    cause: unknown,
+  ) {
+    super(
+      `Metadata creation failed for '${branchName}': ${getErrorMessage(cause)}`,
+      "METADATA_FAILED",
+      cause instanceof Error ? cause : undefined,
+    );
+  }
+}
+
+// `branch --set-upstream-to` failed on a worktree addWorktree had just added;
+// the worktree has already been rolled back (or `rollbackSucceeded` says why
+// not), so callers must not retry the add through the tracking fallback.
+export class UpstreamSetupError extends WorktreeError {
+  constructor(
+    public readonly branchName: string,
+    cause: unknown,
+    public readonly rollbackSucceeded: boolean,
+  ) {
+    super(
+      `Failed to set upstream for '${branchName}': ${getErrorMessage(cause)}${
+        rollbackSucceeded ? "" : " (rollback failed; partial worktree may remain)"
+      }`,
+      "UPSTREAM_SETUP_FAILED",
+      cause instanceof Error ? cause : undefined,
+    );
   }
 }
 
@@ -93,15 +113,6 @@ export class ConfigFileExistsError extends ConfigError {
   }
 }
 
-export class PathResolutionError extends SyncWorktreesError {
-  constructor(
-    public readonly path: string,
-    public readonly reason: string,
-  ) {
-    super(`Path resolution failed for '${path}': ${reason}`, "PATH_RESOLUTION_FAILED");
-  }
-}
-
 export class TrashError extends SyncWorktreesError {
   constructor(message: string, code: string, cause?: Error) {
     super(message, `TRASH_${code}`, cause);
@@ -115,12 +126,6 @@ export class TrashOperationError extends TrashError {
     cause?: Error,
   ) {
     super(`Trash operation '${operation}' failed: ${details}`, "OPERATION_FAILED", cause);
-  }
-}
-
-export class LfsError extends GitError {
-  constructor(message: string, cause?: Error) {
-    super(`LFS operation failed: ${message}`, "LFS_ERROR", cause);
   }
 }
 

@@ -5,7 +5,7 @@ import * as ink from "ink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppEventEmitter } from "../../utils/app-events";
-import { calculateDirectorySize, formatBytes } from "../../utils/disk-space";
+import { calculateDirectorySize, calculateSyncDiskSpace, formatBytes } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
 
 import type { Config } from "../../types";
@@ -298,6 +298,28 @@ describe("InteractiveUIService", () => {
       const service = new InteractiveUIService([mockSyncService]);
 
       expect(() => service.updateLastSyncTime()).not.toThrow();
+
+      void service.destroy();
+    });
+  });
+
+  describe("calculateAndUpdateDiskSpace", () => {
+    it("reports a failed calculation in the log pane and shows N/A", async () => {
+      vi.mocked(calculateSyncDiskSpace).mockRejectedValueOnce(new Error("measure blew up"));
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const service = new InteractiveUIService([mockSyncService]);
+      const logs: Array<{ message: string; level: string }> = [];
+      const diskSpace: string[] = [];
+      service.getEvents().on("addLog", (entry) => void logs.push(entry));
+      service.getEvents().on("setDiskSpace", (value) => void diskSpace.push(value));
+      service.getEvents().emit("uiReady");
+
+      await service.calculateAndUpdateDiskSpace();
+
+      expect(logs).toContainEqual({ message: "Failed to calculate disk space: measure blew up", level: "error" });
+      expect(diskSpace).toEqual(["N/A"]);
+      expect(consoleSpy).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
 
       void service.destroy();
     });
@@ -1626,7 +1648,7 @@ describe("InteractiveUIService", () => {
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        expect(cronScheduleSpy).toHaveBeenCalledWith("*/30 * * * *");
+        expect(cronScheduleSpy).toHaveBeenCalledWith(["*/30 * * * *"]);
 
         void service.destroy();
       });
@@ -1689,6 +1711,150 @@ describe("InteractiveUIService", () => {
       expect(mockExit).toHaveBeenCalledWith(0);
 
       mockExit.mockRestore();
+    });
+  });
+
+  describe("last sync outcome", () => {
+    const serviceNamed = (name: string, sync: () => Promise<unknown>) => ({
+      ...mockSyncService,
+      sync: vi.fn<any>().mockImplementation(sync),
+      isInitialized: vi.fn<any>().mockReturnValue(true),
+      getRecordedSkips: vi.fn<any>().mockReturnValue([]),
+      clearRecordedSkips: vi.fn<any>(),
+      config: { ...mockSyncService.config, name },
+    });
+
+    it("reports how many repositories failed, not just that a sync ran", async () => {
+      const service = new InteractiveUIService([
+        serviceNamed("ok", async () => ({ started: true })),
+        serviceNamed("bad-1", async () => Promise.reject(new Error("fetch failed"))),
+        serviceNamed("bad-2", async () => Promise.reject(new Error("fetch failed"))),
+      ] as any);
+      const outcomes: unknown[] = [];
+      service.getEvents().on("setLastSyncOutcome", (outcome: unknown) => outcomes.push(outcome));
+
+      await service.triggerInitialSync();
+
+      expect(outcomes).toEqual([{ kind: "failed", count: 2 }]);
+      void service.destroy();
+    });
+
+    it("reports OK when every repository synced", async () => {
+      const service = new InteractiveUIService([serviceNamed("ok", async () => ({ started: true }))] as any);
+      const outcomes: unknown[] = [];
+      service.getEvents().on("setLastSyncOutcome", (outcome: unknown) => outcomes.push(outcome));
+
+      await service.triggerInitialSync();
+
+      expect(outcomes).toEqual([{ kind: "ok" }]);
+      void service.destroy();
+    });
+
+    it("reports a cycle in which everything was skipped without moving the last sync time", async () => {
+      const service = new InteractiveUIService([
+        serviceNamed("busy", async () => ({ started: false, reason: "in_progress" })),
+      ] as any);
+      const outcomes: unknown[] = [];
+      const stamped = vi.fn();
+      service.getEvents().on("setLastSyncOutcome", (outcome: unknown) => outcomes.push(outcome));
+      service.getEvents().on("updateLastSyncTime", stamped);
+
+      await service.triggerInitialSync();
+
+      expect(outcomes).toEqual([{ kind: "skipped", count: 1 }]);
+      expect(stamped).not.toHaveBeenCalled();
+      void service.destroy();
+    });
+  });
+
+  describe("next sync across schedules", () => {
+    it("hands the status bar every schedule when repositories use different ones", () => {
+      const hourly = { ...mockSyncService, config: { ...mockSyncService.config, cronSchedule: "0 * * * *" } };
+      const often = { ...mockSyncService, config: { ...mockSyncService.config, cronSchedule: "*/5 * * * *" } };
+      const once = {
+        ...mockSyncService,
+        config: { ...mockSyncService.config, cronSchedule: "0 0 * * *", runOnce: true },
+      };
+
+      const service = new InteractiveUIService([hourly, often, once] as any, undefined, undefined);
+
+      // runOnce repositories have no cron job, so they have no next run either.
+      expect((mockRender.mock.calls[0][0].props as any).cronSchedule).toEqual(["0 * * * *", "*/5 * * * *"]);
+      void service.destroy();
+    });
+  });
+
+  // FU-T42-3: the interface stays live for the whole shutdown wait, and a
+  // reload ends by arming cron jobs, so `r` pressed after `q` used to bring
+  // back the jobs the shutdown had just released.
+  describe("reload and sync during shutdown", () => {
+    it("ignores a reload requested after quitting has started", async () => {
+      let syncInProgress = true;
+      mockSyncService.isSyncInProgress.mockImplementation(() => syncInProgress);
+      const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
+
+      const shutdown = service.destroy();
+      const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+      await onReload();
+
+      expect(mockConfigLoaderInstance.loadConfigFile).not.toHaveBeenCalled();
+      expect((service as any).cronJobs).toHaveLength(0);
+
+      syncInProgress = false;
+      await shutdown;
+    });
+
+    it("abandons a reload that was loading the config when quitting started", async () => {
+      let releaseConfig!: () => void;
+      mockConfigLoaderInstance.loadConfigFile.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseConfig = () =>
+              resolve({
+                repositories: [
+                  {
+                    name: "test-repo",
+                    repoUrl: "https://github.com/test/repo.git",
+                    worktreeDir: "/test/worktrees",
+                    cronSchedule: "0 * * * *",
+                    runOnce: false,
+                  },
+                ],
+              });
+          }),
+      );
+      const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
+      service.setupCronJobs();
+      const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+      const reload = onReload();
+      await vi.waitFor(() => expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalled());
+
+      await service.destroy();
+      releaseConfig();
+      await reload;
+
+      expect((service as any).cronJobs).toHaveLength(0);
+      expect((service as any).syncServices).toEqual([mockSyncService]);
+      expect(mockSyncService.sync).not.toHaveBeenCalled();
+    });
+
+    it("does not start a manual sync once quitting has started", async () => {
+      let syncInProgress = true;
+      mockSyncService.isSyncInProgress.mockImplementation(() => syncInProgress);
+      const service = new InteractiveUIService([mockSyncService]);
+      const statuses: string[] = [];
+      service.getEvents().on("setStatus", (status: string) => statuses.push(status));
+
+      const shutdown = service.destroy();
+      const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
+      await onManualSync();
+
+      expect(mockSyncService.sync).not.toHaveBeenCalled();
+      // The key handler put the bar on "syncing"; it has to come back.
+      expect(statuses).toEqual(["idle"]);
+
+      syncInProgress = false;
+      await shutdown;
     });
   });
 

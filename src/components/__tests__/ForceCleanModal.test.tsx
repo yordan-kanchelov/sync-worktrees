@@ -8,6 +8,13 @@ import type { ForceCleanPreview, ForceCleanRepositoryPreview, ForceCleanReposito
 
 const settle = (): Promise<unknown> => new Promise((resolve) => setTimeout(resolve, 100));
 
+// The purge needs the word typed and Enter, not a single key.
+async function confirm(stdin: { write: (data: string) => void }): Promise<void> {
+  stdin.write("clean");
+  await settle();
+  stdin.write("\r");
+}
+
 function preview(overrides: Partial<ForceCleanPreview> = {}): ForceCleanPreview {
   return {
     trashEntries: 2,
@@ -69,7 +76,7 @@ describe("ForceCleanModal", () => {
       },
     ]);
 
-    stdin.write("y");
+    await confirm(stdin);
     await settle();
 
     expect(forceClean).toHaveBeenCalledWith([
@@ -97,7 +104,7 @@ describe("ForceCleanModal", () => {
     );
 
     await settle();
-    stdin.write("y");
+    await confirm(stdin);
     await settle();
 
     expect(forceClean).toHaveBeenCalledWith([expect.objectContaining({ repoIndex: 0 })]);
@@ -113,7 +120,7 @@ describe("ForceCleanModal", () => {
     );
 
     await settle();
-    stdin.write("y");
+    await confirm(stdin);
     await settle();
 
     // The box wraps at 78 columns, so match the phrase either side of the seam.
@@ -143,6 +150,74 @@ describe("ForceCleanModal", () => {
     expect(frame).not.toMatch(/worktrees are not synced, changed, or removed/);
   });
 
+  // A single `y` sat right next to `n`, and a held key repeats: neither is a
+  // decision to delete something irreversibly.
+  it("does not purge on y, or on Enter before the word is typed", async () => {
+    const forceClean = vi.fn().mockResolvedValue([result()]);
+    const { stdin, lastFrame } = render(
+      <ForceCleanModal
+        getPreview={vi.fn().mockResolvedValue([{ repoIndex: 0, repoName: "app", preview: preview() }])}
+        forceClean={forceClean}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await settle();
+    expect(lastFrame()).toContain("Type clean and press Enter");
+
+    stdin.write("y");
+    await settle();
+    stdin.write("\r");
+    await settle();
+    expect(forceClean).not.toHaveBeenCalled();
+
+    stdin.write("\u007F");
+    await settle();
+    stdin.write("clea");
+    await settle();
+    stdin.write("\r");
+    await settle();
+    expect(forceClean).not.toHaveBeenCalled();
+
+    stdin.write("n");
+    await settle();
+    stdin.write("\r");
+    await settle();
+    expect(forceClean).toHaveBeenCalledTimes(1);
+  });
+
+  it("says there is nothing to clean instead of asking to delete nothing", async () => {
+    const forceClean = vi.fn();
+    const onClose = vi.fn();
+    const { stdin, lastFrame } = render(
+      <ForceCleanModal
+        getPreview={vi.fn().mockResolvedValue([
+          {
+            repoIndex: 0,
+            repoName: "app",
+            preview: preview({ trashEntries: 0, trashBytes: 0, keepRefs: 0, trashEntryIds: [], keepRefNames: [] }),
+          },
+        ])}
+        forceClean={forceClean}
+        onClose={onClose}
+      />,
+    );
+
+    await settle();
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Nothing to clean");
+    expect(frame).not.toContain("delete permanently");
+
+    stdin.write("clean");
+    await settle();
+    expect(forceClean).not.toHaveBeenCalled();
+
+    stdin.write("\r");
+    await settle();
+    expect(forceClean).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("reads a gc that was skipped as skipped, not as failed", async () => {
     const { stdin, lastFrame } = render(
       <ForceCleanModal
@@ -159,7 +234,7 @@ describe("ForceCleanModal", () => {
     );
 
     await settle();
-    stdin.write("y");
+    await confirm(stdin);
     await settle();
 
     const frame = lastFrame() ?? "";
@@ -180,7 +255,7 @@ describe("ForceCleanModal", () => {
     );
 
     await settle();
-    stdin.write("y");
+    await confirm(stdin);
     await settle();
 
     expect(lastFrame()).toContain("GC failed");

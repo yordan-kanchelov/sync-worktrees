@@ -8,7 +8,8 @@ import { appendGitAuthHint } from "../utils/git-auth-error";
 import { createGitClient } from "../utils/git-client";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { normalizeRepoUrlForComparison, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
-import { getErrorMessage, isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
+import { isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
@@ -497,11 +498,10 @@ export class CloneSyncService {
   }
 
   // Per-client additions layered over the sanitized process environment by
-  // createGitClient. Force a stable C locale so git's stderr is deterministic
-  // English: the missing-remote-ref and LFS error classification matches on
-  // those strings and would otherwise misfire under a non-English LANG/LC_ALL.
+  // createGitClient, which also forces the C locale the missing-remote-ref and
+  // LFS error classification depends on.
   private buildGitEnv(opts: { forceLfsSkip?: boolean } = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { LC_ALL: "C", LANG: "C" };
+    const env: NodeJS.ProcessEnv = {};
     if (opts.forceLfsSkip || this.isLfsSkipEnabled()) {
       env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     }

@@ -71,6 +71,8 @@ vi.mock("../../utils/disk-space", () => ({
 // call order. One entry per git probe, so a path listed twice in the response
 // shows up twice here unless the handler deduplicated it.
 const statusProbes = vi.hoisted(() => [] as string[]);
+// Paths whose status probe rejects, with the error it rejects with.
+const statusFailures = vi.hoisted(() => new Map<string, Error>());
 
 vi.mock("../../services/worktree-status.service", () => {
   class FakeStatusService {
@@ -86,6 +88,8 @@ vi.mock("../../services/worktree-status.service", () => {
       divergence: { ahead: number; behind: number } | null;
     }> {
       statusProbes.push(worktreePath);
+      const failure = statusFailures.get(worktreePath);
+      if (failure) throw failure;
       return {
         isClean: true,
         hasUnpushedCommits: false,
@@ -2443,6 +2447,26 @@ describe("handleListWorktrees structured safeToRemove", () => {
     expect(body.worktrees[0].safeToRemove.safe).toBe(false);
     expect(body.worktrees[0].safeToRemove.reason).toContain("deleted upstream");
   });
+
+  it("names why the status probe failed instead of a bare 'status unavailable', without credentials", async () => {
+    const { ctx } = makeCtx({
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/feat", branch: "feat" }]),
+        getFullWorktreeStatus: vi
+          .fn<any>()
+          .mockRejectedValue(new Error("fatal: unable to access 'https://user:s3cret-token@github.com/org/repo.git/'")),
+      },
+    });
+
+    const result = await invoke(handleListWorktrees, ctx, {});
+    const body = parseResponse(result);
+
+    expect(body.worktrees[0].status).toBeNull();
+    expect(body.worktrees[0].label).toBe("unknown");
+    expect(body.worktrees[0].safeToRemove.safe).toBe(false);
+    expect(body.worktrees[0].safeToRemove.reason).toMatch(/^status unavailable: fatal: unable to access/);
+    expect(JSON.stringify(result)).not.toContain("s3cret-token");
+  });
 });
 
 describe("handleDetectContext includeStatus", () => {
@@ -2486,6 +2510,36 @@ describe("handleDetectContext includeStatus", () => {
     expect(body.allWorktrees[0].staleHint).toBe(false);
     // Straight off the status result, not a second rev-list of its own.
     expect(body.allWorktrees[1].divergence).toEqual({ ahead: 3, behind: 4 });
+  });
+
+  it("reports why a worktree's status probe failed next to its 'unknown' label", async () => {
+    statusFailures.set(
+      "/repo/broken",
+      new Error("fatal: unable to access 'https://user:s3cret-token@github.com/org/repo.git/'"),
+    );
+    try {
+      const ctx = {
+        detectFromPath: vi.fn<any>().mockResolvedValue(
+          makeDiscovered({
+            allWorktrees: [
+              { path: "/repo/main", branch: "main", isCurrent: true },
+              { path: "/repo/broken", branch: "broken", isCurrent: false },
+            ],
+          }),
+        ),
+        getConfiguredRepositorySummaries: vi.fn<any>().mockResolvedValue([]),
+      } as unknown as RepositoryContext;
+
+      const result = await invoke(handleDetectContext, ctx, { includeStatus: true });
+      const body = parseResponse(result);
+
+      expect(body.allWorktrees[0].statusError).toBeUndefined();
+      expect(body.allWorktrees[1].label).toBe("unknown");
+      expect(body.allWorktrees[1].statusError).toMatch(/^fatal: unable to access/);
+      expect(JSON.stringify(result)).not.toContain("s3cret-token");
+    } finally {
+      statusFailures.clear();
+    }
   });
 
   // allWorktrees and allWorktreesByRepo[<current repo>] are two separate

@@ -3,7 +3,7 @@ import * as path from "path";
 
 import { GIT_CONSTANTS } from "../constants";
 import { formatBytes } from "../utils/disk-space";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 import { removeEmptiedTrashContainer, removeTrashPayload, trashDeleteHint } from "../utils/trash-container";
 import { computeTrashRootHash } from "../utils/trash-root-hash";
 

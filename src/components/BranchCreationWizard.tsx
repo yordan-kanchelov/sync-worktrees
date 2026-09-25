@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import { isMouseSequence } from "../utils/mouse";
+import { isListDown, isListUp, listRowsFor, listWindow, useModalLayout, wrappedRows } from "./layout";
 
 import { isValidGitBranchName } from "../utils/git-validation";
 
@@ -34,6 +35,8 @@ export interface BranchCreationWizardProps {
   onClose: () => void;
   onComplete: (success: boolean) => void;
   onBranchCreated?: (context: { repoIndex: number; baseBranch: string; newBranch: string }) => void;
+  /** Rows the wizard may use; defaults to the terminal height. */
+  availableRows?: number;
 }
 
 const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
@@ -45,7 +48,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   onClose,
   onComplete,
   onBranchCreated,
+  availableRows,
 }) => {
+  const layout = useModalLayout(60, availableRows);
   const [step, setStep] = useState<WizardStep>(repositories.length > 1 ? "SELECT_PROJECT" : "SELECT_BRANCH");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [selectedRepoIndex, setSelectedRepoIndex] = useState(repositories.length === 1 ? repositories[0].index : -1);
@@ -217,9 +222,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
     }
 
     if (step === "SELECT_PROJECT") {
-      if (key.upArrow) {
+      if (isListUp(input, key)) {
         setSelectedProjectIndex((prev) => Math.max(0, prev - 1));
-      } else if (key.downArrow) {
+      } else if (isListDown(input, key)) {
         if (filteredProjects.length > 0) {
           setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
         }
@@ -240,9 +245,9 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         setSelectedProjectIndex(0);
       }
     } else if (step === "SELECT_BRANCH") {
-      if (key.upArrow) {
+      if (isListUp(input, key)) {
         setSelectedBranchIndex((prev) => Math.max(0, prev - 1));
-      } else if (key.downArrow) {
+      } else if (isListDown(input, key)) {
         if (filteredBranches.length > 0) {
           setSelectedBranchIndex((prev) => Math.min(filteredBranches.length - 1, prev + 1));
         }
@@ -297,14 +302,18 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
   const getTotalSteps = () => (repositories.length === 1 ? 2 : 3);
 
+  // Rows the step's list may take: what the modal has, less its chrome, the
+  // step's own lines above the list and a footer that wraps on a narrow box.
+  const listRoom = (linesAboveList: number): number => {
+    const footer = footerText();
+    const footerExtra = footer ? wrappedRows(footer, layout.innerWidth) - 1 : 0;
+    return layout.rows - layout.chromeRows - linesAboveList - footerExtra;
+  };
+
   const renderProjectSelection = () => {
-    const visibleCount = 8;
-    const halfVisible = Math.floor(visibleCount / 2);
-    let startIdx = Math.max(0, selectedProjectIndex - halfVisible);
-    const endIdx = Math.min(filteredProjects.length, startIdx + visibleCount);
-    if (endIdx - startIdx < visibleCount) {
-      startIdx = Math.max(0, endIdx - visibleCount);
-    }
+    // "Select repository:", the filter, and the gaps after each.
+    const visibleCount = listRowsFor(listRoom(4), filteredProjects.length);
+    const { start: startIdx, end: endIdx } = listWindow(selectedProjectIndex, filteredProjects.length, visibleCount);
 
     const visibleProjects = filteredProjects.slice(startIdx, endIdx);
 
@@ -330,7 +339,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
                 const isSelected = actualIdx === selectedProjectIndex;
                 return (
                   <Box key={repo.index}>
-                    <Text color={isSelected ? "cyan" : undefined}>
+                    <Text color={isSelected ? "cyan" : undefined} wrap="truncate-end">
                       {isSelected ? "> " : "  "}
                       {repo.name}
                     </Text>
@@ -354,13 +363,11 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
       return <Text color="red">No branches found</Text>;
     }
 
-    const visibleCount = 8;
-    const halfVisible = Math.floor(visibleCount / 2);
-    let startIdx = Math.max(0, selectedBranchIndex - halfVisible);
-    const endIdx = Math.min(filteredBranches.length, startIdx + visibleCount);
-    if (endIdx - startIdx < visibleCount) {
-      startIdx = Math.max(0, endIdx - visibleCount);
-    }
+    // "Select base branch:", the filter, the gaps after each, and the
+    // repository line above them once there is more than one to choose.
+    const linesAbove = 4 + (repositories.length > 1 ? 2 : 0);
+    const visibleCount = listRowsFor(listRoom(linesAbove), filteredBranches.length);
+    const { start: startIdx, end: endIdx } = listWindow(selectedBranchIndex, filteredBranches.length, visibleCount);
 
     const visibleBranches = filteredBranches.slice(startIdx, endIdx);
 
@@ -387,7 +394,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
                 const isDefault = branch === defaultBranch;
                 return (
                   <Box key={branch}>
-                    <Text color={isSelected ? "cyan" : undefined}>
+                    <Text color={isSelected ? "cyan" : undefined} wrap="truncate-end">
                       {isSelected ? "> " : "  "}
                       {branch}
                       {isDefault && <Text color="green"> (default)</Text>}
@@ -482,20 +489,32 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
     }
   };
 
-  const renderFooter = () => {
+  function footerText(): string | null {
     if (step === "CREATING") return null;
     if (step === "RESULT") {
-      return <Text dimColor>Press any key to close</Text>;
+      return "Press any key to close";
     }
     if (step === "ENTER_NAME") {
-      return <Text dimColor>Enter to create • ESC to go back</Text>;
+      return "Enter to create • ESC to go back";
     }
-    return <Text dimColor>↑/↓ navigate • Type to filter • Enter to select • ESC to cancel</Text>;
+    return "↑/↓ navigate • Type to filter • Enter to select • ESC to cancel";
+  }
+
+  const renderFooter = () => {
+    const footer = footerText();
+    return footer ? <Text dimColor>{footer}</Text> : null;
   };
 
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
-      <Box borderStyle="round" borderColor="green" paddingX={2} paddingY={1} flexDirection="column" width={60}>
+    <Box flexDirection="column" marginTop={layout.marginY} marginBottom={layout.marginY}>
+      <Box
+        borderStyle="round"
+        borderColor="green"
+        paddingX={2}
+        paddingY={layout.paddingY}
+        flexDirection="column"
+        width={layout.width}
+      >
         <Box marginBottom={1}>
           <Text bold color="green">
             🌿 Create New Branch{" "}

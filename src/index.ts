@@ -22,7 +22,7 @@ import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./uti
 import { formatBytes } from "./utils/disk-space";
 import { fileExists } from "./utils/file-exists";
 import { redactRepoUrl, redactSecretsInText } from "./utils/git-url";
-import { getErrorMessage } from "./utils/lfs-error";
+import { getErrorMessage } from "./utils/errors";
 import { promptForInitConfig } from "./utils/interactive";
 import { maybeRegisterMcpClients } from "./utils/mcp-registration";
 import { setupSignalHandlers } from "./utils/signal-handlers";
@@ -32,19 +32,6 @@ import type { CloneSkipReason } from "./services/clone-sync.service";
 import type { TrashEntry, TrashManifest } from "./services/trash.service";
 import type { ConfigFile, RepositoryConfig } from "./types";
 import type { CliOptions, TrashCliOptions } from "./utils/cli";
-
-export type {
-  SyncWorktreesConfig,
-  SyncWorktreesDefaults,
-  SyncWorktreesHooksConfig,
-  SyncWorktreesParallelismConfig,
-  SyncWorktreesRepository,
-  SyncWorktreesRepositoryMode,
-  SyncWorktreesRetryConfig,
-  SyncWorktreesSparseCheckoutConfig,
-  SyncWorktreesSparseCheckoutMode,
-  SyncWorktreesTrashConfig,
-} from "./types";
 
 export interface RunOptions {
   /** One-shot runs: only warnings, errors and the final summary line. */
@@ -97,11 +84,9 @@ export async function runMultipleRepositories(
             repoLogger.info(`   Bare repo: ${repoConfig.bareRepoDir}`);
           }
 
-          if (!repoConfig.logger) {
-            repoConfig.logger = repoLogger;
-          }
-
-          const syncService = new WorktreeSyncService(repoConfig);
+          // A copy, not an assignment: the loaded configuration stays as it
+          // was read, whoever else holds it.
+          const syncService = new WorktreeSyncService({ ...repoConfig, logger: repoConfig.logger ?? repoLogger });
           await syncService.initialize();
           return { name: repoConfig.name, service: syncService };
         }),

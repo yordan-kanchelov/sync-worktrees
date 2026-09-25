@@ -48,6 +48,10 @@ const discoveredWorktreeSchema = z.looseObject({
   label: worktreeLabelSchema.optional().describe("Only present when includeStatus=true."),
   divergence: divergenceSchema.optional(),
   staleHint: z.boolean().optional().describe("Upstream ref is gone. Only present when includeStatus=true."),
+  statusError: z
+    .string()
+    .optional()
+    .describe("Why the status probe failed (label is then 'unknown'). Only present when it failed."),
 });
 
 const siblingRepositorySchema = z.looseObject({

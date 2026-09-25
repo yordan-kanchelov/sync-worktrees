@@ -4,7 +4,7 @@ import * as path from "path";
 import { DEFAULT_CONFIG, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
 import { atomicWriteFile } from "../utils/atomic-write";
 import { isGitCreatableBranchName, isGitObjectId } from "../utils/git-validation";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 
 import type { Logger } from "./logger.service";
 import type { TrashEntry, TrashService } from "./trash.service";
