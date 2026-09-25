@@ -24,7 +24,7 @@ discarded. A new machine is one config file.
 ```bash
 npm install -g sync-worktrees   # Node 24+, macOS or Linux
 sync-worktrees init             # wizard → writes sync-worktrees.config.js
-sync-worktrees                  # TUI: syncs now, then hourly; add --runOnce for a one-shot
+sync-worktrees                  # TUI: syncs now, then hourly; add --run-once for a one-shot
 ```
 
 With one repository declared and `init`'s default `worktreeDir` (`./<repo>`), the directory holding the config becomes:
@@ -158,7 +158,7 @@ syncing on the schedule from your config, hourly by default (`defaults.cronSched
 branch, press `c` in the TUI; it creates the folder and pushes. Don't `git checkout -b` inside a managed folder. See
 [Team workspace](#team-workspace), step 4.
 
-For a one-shot run (CI, scripts, ad-hoc), add `--runOnce`: it syncs every repository once and exits 0 on success, 1 if
+For a one-shot run (CI, scripts, ad-hoc), add `--run-once`: it syncs every repository once and exits 0 on success, 1 if
 any repository failed (see [Exit codes](#exit-codes)). sync-worktrees sets `GIT_TERMINAL_PROMPT=0` (unless you exported
 it yourself), so credentials must come from a credential helper or `ssh-agent`. See
 [Authentication](./docs/configuration.md#authentication).
@@ -167,7 +167,8 @@ If the config lives elsewhere, pass it explicitly:
 
 ```bash
 sync-worktrees --config /path/to/sync-worktrees.config.js
-sync-worktrees --config /path/to/sync-worktrees.config.js --runOnce
+sync-worktrees --config /path/to/sync-worktrees.config.js --run-once
+sync-worktrees --run-once --filter backend     # just the repositories the filter matches
 sync-worktrees list --config ./config.js --filter "frontend-*"
 ```
 
@@ -175,10 +176,11 @@ sync-worktrees list --config ./config.js --filter "frontend-*"
 
 - **Laptop.** Leave the TUI running in a `tmux` or `screen` window. A tick the machine slept through is not replayed;
   the next tick, or `s`, runs the cycle, and `syncOnStart` covers restarts.
-- **Build box, no terminal.** There is no headless daemon: without `--runOnce` the TUI is what runs. Put
-  `sync-worktrees --runOnce` on a cron line or a systemd/launchd timer instead. Two runs that overlap on one checkout
-  do not collide: the second skips that repository and exits 0.
-- **Concurrency.** One cross-process lock per checkout; the TUI's ticks, `--runOnce` and the MCP server all contend for
+- **Build box, no terminal.** There is no headless daemon: without `--run-once` the TUI is what runs. Put
+  `sync-worktrees --run-once --quiet` on a cron line or a systemd/launchd timer instead; `--quiet` keeps a clean run to
+  its one summary line, so cron only mails you warnings and errors. Two runs that overlap on one checkout do not
+  collide: the second skips that repository and exits 0.
+- **Concurrency.** One cross-process lock per checkout; the TUI's ticks, `--run-once` and the MCP server all contend for
   it, and the loser skips and says so. See [Locking](./docs/configuration.md#locking).
 
 ## Configuration
@@ -247,7 +249,7 @@ Onboarding, step by step:
 2. Keep credentials out of it: HTTPS through a credential helper, SSH through `ssh-agent`
    ([Authentication](./docs/configuration.md#authentication)); a private URL can come from `process.env`. URLs that do
    carry a token are redacted in logs and in `sync-worktrees list` output.
-3. A new hire runs `git clone <workspace> && cd <workspace> && sync-worktrees --runOnce` (or `sync-worktrees` for the
+3. A new hire runs `git clone <workspace> && cd <workspace> && sync-worktrees --run-once` (or `sync-worktrees` for the
    TUI), and `sync-worktrees list` to confirm what the config resolved to.
 4. Start a branch with `c` in the TUI (it creates the folder and pushes), or with `git worktree add` plus a push
    before the next sync. A freshly cut branch that exists only locally has nothing unpushed, so the next tick prunes it
@@ -314,12 +316,18 @@ recipe for parallel agents on parallel branches: [MCP server](./docs/mcp.md).
 
 ## CLI reference
 
-| Option      | Alias | Description                                                                                                                       | Default |
-| ----------- | ----- | --------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `--config`  | `-c`  | Path to JavaScript config file (auto-detected in CWD when omitted)                                                                | -       |
-| `--runOnce` | -     | Run a sync once and exit, overriding the config's [`runOnce`](./docs/configuration.md#whole-file-settings) for this invocation    | `false` |
-| `--help`    | `-h`  | Show help                                                                                                                         | -       |
-| `--version` | -     | Print version                                                                                                                     | -       |
+| Option       | Alias | Description                                                                                                                    | Default |
+| ------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| `--config`   | `-c`  | Path to JavaScript config file (auto-detected in CWD when omitted)                                                             | -       |
+| `--run-once` | -     | Run a sync once and exit, overriding the config's [`runOnce`](./docs/configuration.md#whole-file-settings) for this invocation | `false` |
+| `--filter`   | `-f`  | Only sync repositories whose name matches (wildcards, comma-separated; same matching as `list`). Exits 1 if nothing matches    | -       |
+| `--quiet`    | `-q`  | One-shot runs: print only warnings, errors and the final summary line (the TUI ignores it)                                     | `false` |
+| `--help`     | `-h`  | Show help                                                                                                                      | -       |
+| `--version`  | -     | Print version                                                                                                                  | -       |
+
+Flags are kebab-case; the camelCase spellings from earlier releases (`--runOnce`, `--dropKeepRef`, `--dropAllKeepRefs`)
+keep working. `sync-worktrees sync` is an explicit name for the default command, and a mistyped command or flag gets a
+"did you mean" hint.
 
 Subcommands:
 
@@ -332,21 +340,27 @@ Subcommands:
 
   ```bash
   sync-worktrees trash [--config <path>] [--filter|-f <pattern>] [--json] \
-    [--restore <id> | --purge <id> | --dropKeepRef <name> | --dropAllKeepRefs] [--wait]
+    [--restore <id> | --purge <id> | --drop-keep-ref <name> | --drop-all-keep-refs] [--wait]
   ```
 
   Flags, listing columns and the `--json` shape:
   [The `trash` subcommand](./docs/trash-and-recovery.md#the-trash-subcommand).
 
+- `sync-worktrees completion` prints a bash/zsh completion script for commands and flags:
+
+  ```bash
+  sync-worktrees completion >> ~/.bashrc   # or ~/.zshrc
+  ```
+
 ### Exit codes
 
-- `sync-worktrees --runOnce` exits **0** when every repository synced, or was skipped because another process held its
+- `sync-worktrees --run-once` exits **0** when every repository synced, or was skipped because another process held its
   lock (whoever holds it is syncing it) or a clone-mode skip applied. It exits **1** when any repository failed to
   initialize, failed its sync after the retries, recorded a failed action (a rejected sparse pattern, for instance), or
   could not create its lock file at all. Ctrl-C exits **130** after cleanup.
-- `sync-worktrees list` exits 1 when `--filter` matches nothing or the config does not load; `sync-worktrees trash`
-  exits 1 on an expected failure (unknown id, occupied destination, a lock another process holds, a declined
-  confirmation) with one `❌` line.
+- `sync-worktrees list` and `sync-worktrees --filter` exit 1 when `--filter` matches nothing or the config does not
+  load; `sync-worktrees trash` exits 1 on an expected failure (unknown id, occupied destination, a lock another process
+  holds, a declined confirmation) with one `❌` line.
 
 ## Documentation
 
