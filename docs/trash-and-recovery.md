@@ -17,9 +17,9 @@ which anything leaves your disk:
 
 | Removal path | Trigger | Gate | Trash on (the default) | With `trash.enabled: false` | Undo |
 | --- | --- | --- | --- | --- | --- |
-| Prune | The remote branch is gone, or `branchInclude`/`branchExclude`/`branchMaxAge` no longer match it | Clean only: no uncommitted changes, no unpushed commits, no stash, no in-progress operation, no modified submodules, not detached. Re-checked immediately before removal; an audit record is written first, and an unwritable audit log blocks the removal | `.trash/<id>/` as `prune`, 30 days, a pin ref keeps the commits | `git worktree remove` — permanent | `sync-worktrees trash --restore <id>` |
+| Prune | The remote branch is gone, or `branchInclude`/`branchExclude`/`branchMaxAge` no longer match it | Clean only: no uncommitted changes, no unpushed commits, no stash of its own (made on its branch), no in-progress operation, no modified submodules, not detached. Re-checked immediately before removal; an audit record is written first, and an unwritable audit log blocks the removal | `.trash/<id>/` as `prune`, 30 days, a pin ref keeps the commits | `git worktree remove` — permanent | `sync-worktrees trash --restore <id>` |
 | Fully pushed, then deleted upstream | As above, but the worktree holds commits on no remote *now* that were fully pushed before the remote branch was deleted (a squash merge) | Same gate; this is the one case with unpushed commits that is removable | `.trash/` with the pin promoted to a permanent keep ref on expiry | Kept with a warning, never removed | `--restore`, or the keep ref |
-| Stale directory at a managed path | A directory sits at `<worktreeDir>/<sanitized-branch>` for a branch sync is about to create, and git does not list it as a worktree | None is possible — it is not a checkout git can inspect | `.trash/<id>/` as `orphan` | Quarantined in place if it contains `.git`; **deleted outright** otherwise | `--restore` (trash on only) |
+| Stale directory at a managed path | A directory sits at `<worktreeDir>/<sanitized-branch>` for a branch sync is about to create, and git does not list it as a worktree | None is possible — it is not a checkout git can inspect | `.trash/<id>/` as `orphan` | Quarantined to a sibling `.removed/` folder; an empty directory is removed | `--restore` (trash on only) |
 | Diverged branch (a force-push, or someone else pushed the branch) | The worktree has commits of its own *and* upstream has commits it lacks | Skipped while a stash is present (dirty worktrees never reach this point); reset in place instead of moved when its content already matches upstream or its HEAD is still the commit the last sync left it at (a reset that would touch ignored files, or a tree that is not clean, falls back to the move) | `.trash/<id>/` as `diverged-replace`, commits pinned, `Keep on reap`; a fresh checkout of upstream takes its place | `.diverged/<date>-<branch>-<id>/`, commit held by a keep ref | Recover the commits from the entry — see [Diverged branches](#diverged-branches-force-pushes) for the two cases (a teammate's push vs a force-push you mean to undo); `--restore` is refused while the fresh checkout occupies the path |
 | `d` on a `.diverged/` entry in the TUI status view | You press `d` and confirm `y` | — | n/a (`.diverged/` is only written while trash is disabled) | Deleted | None |
 | Trash expiry | An entry passes `retentionDays` | The reaper runs at the tail of every sync attempt, failed ones included; commits on no remote are kept | Entry deleted; never-pushed commits promoted to `refs/sync-worktrees/keep/<id>` | n/a | The keep ref |
@@ -30,9 +30,9 @@ Sync never infers ownership from a directory's name. The only directories it tou
 bare repository, the exact path where a managed branch's worktree belongs, and its own `.trash/`, `.removed/` and
 `.diverged/` folders; a directory whose name matches no managed branch is never looked at. What it cannot do is tell a
 directory someone left at `<worktreeDir>/feature-x` apart from a stale leftover of its own, which is why that path is
-swept when the `feature-x` worktree is created — to trash by default; when trash is disabled it is quarantined in place
-if it contains a `.git` and deleted otherwise. If the move to trash fails, the worktree creation fails instead of
-deleting anything. Keep trash enabled on any `worktreeDir` you also use by hand.
+swept when the `feature-x` worktree is created — to trash by default; when trash is disabled it is quarantined to a
+sibling `.removed/<timestamp>-feature-x` folder, and only an empty directory is removed. If the move to trash or quarantine
+fails, the worktree creation fails instead of deleting anything. Keep trash enabled on any `worktreeDir` you also use by hand.
 
 ## Diverged branches (force-pushes)
 
