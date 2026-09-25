@@ -348,11 +348,11 @@ describe("InteractiveUIService reload logging", () => {
     // being pinned is the invalidation, not a change of key.
     const measured = vi.mocked(calculateDirectorySize);
 
-    await uiService.getRepositoryDiskUsage(0);
+    await uiService.operations.getRepositoryDiskUsage(0);
     const walkedBeforeReload = measured.mock.calls.map((call) => call[0]);
 
     await reload();
-    await uiService.getRepositoryDiskUsage(0);
+    await uiService.operations.getRepositoryDiskUsage(0);
 
     expect(walkedBeforeReload).toHaveLength(2);
     expect(measured.mock.calls.map((call) => call[0])).toEqual([...walkedBeforeReload, ...walkedBeforeReload]);

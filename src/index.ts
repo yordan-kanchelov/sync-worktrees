@@ -9,6 +9,7 @@ import { input } from "@inquirer/prompts";
 import Table from "cli-table3";
 import pLimit from "p-limit";
 
+import { runDoctor } from "./cli/doctor";
 import { CONFIG_FILE_NAMES, DEFAULT_CONFIG, GIT_CONSTANTS } from "./constants";
 import { ConfigFileExistsError, ConfigFileNotFoundError, SyncWorktreesError } from "./errors";
 import { runList } from "./cli/list";
@@ -747,6 +748,9 @@ export async function main(): Promise<void> {
       if (resolved.source !== "flag") console.error(`📄 Using config: ${describeConfigPath(resolved)}`);
       return runTrash(resolved.path, options);
     }
+    case CLI_COMMANDS.DOCTOR:
+      process.exitCode = await runDoctor(options);
+      return;
     case CLI_COMMANDS.RUN:
       return runSync(options);
     default: {
