@@ -103,7 +103,9 @@ vi.mock("../../services/worktree-status.service", () => {
       };
     }
   }
-  return { WorktreeStatusService: FakeStatusService };
+  // Handed through to the status probes untouched; nothing here scans refs.
+  class FakeRefScanScope {}
+  return { WorktreeStatusService: FakeStatusService, RefScanScope: FakeRefScanScope };
 });
 
 function makeCapabilities(overrides: Partial<Capabilities> = {}): Capabilities {

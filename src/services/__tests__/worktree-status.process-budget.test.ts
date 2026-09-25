@@ -14,7 +14,7 @@ import type { Mock } from "vitest";
 vi.mock("fs/promises");
 vi.mock("simple-git");
 
-// One snapshot fans out to five git commands at once and then to four more, and
+// One snapshot fans out to four git commands at once and then to more, and
 // the prune phase asks for `maxStatusChecks` snapshots in parallel — so the
 // setting only bounds git processes if every command shares one budget. These
 // tests count commands in flight rather than worktrees.
@@ -36,6 +36,7 @@ describe("WorktreeStatusService git process budget", () => {
     inFlight = 0;
     peakInFlight = 0;
 
+    // Plus the `## main...origin/main` header simple-git parses off `status -b`.
     const cleanStatus = {
       modified: [],
       deleted: [],
@@ -43,6 +44,11 @@ describe("WorktreeStatusService git process budget", () => {
       created: [],
       conflicted: [],
       not_added: [],
+      current: "main",
+      detached: false,
+      tracking: "origin/main",
+      ahead: 0,
+      behind: 0,
     };
 
     // A fresh client per worktree, as createGitClient hands back.
@@ -50,10 +56,13 @@ describe("WorktreeStatusService git process budget", () => {
       () =>
         ({
           status: vi.fn(() => tracked(cleanStatus)),
-          branch: vi.fn((args?: string[]) =>
-            tracked(args?.[0] === "-r" ? { all: ["origin/main"] } : { current: "main", detached: false }),
+          raw: vi.fn((args: string[]) =>
+            tracked(
+              args[0] === "for-each-ref"
+                ? "refs/heads/main\0refs/remotes/origin/main\0\nrefs/remotes/origin/main\0\0\n"
+                : "0\n",
+            ),
           ),
-          raw: vi.fn((args: string[]) => tracked(args[0] === "rev-parse" ? "origin/main\n" : "0\n")),
           stashList: vi.fn(() => tracked({ total: 0 })),
           env: vi.fn().mockReturnThis(),
         }) as unknown as SimpleGit,
@@ -105,8 +114,8 @@ describe("WorktreeStatusService git process budget", () => {
 
     await checkAll(service, 1);
 
-    // status, branch, branch -r, stash list and submodule status all at once.
-    expect(peakInFlight).toBe(5);
+    // status, the ref scan, stash list and submodule status all at once.
+    expect(peakInFlight).toBe(4);
   });
 
   it("keeps the same verdict as an unbudgeted check", async () => {

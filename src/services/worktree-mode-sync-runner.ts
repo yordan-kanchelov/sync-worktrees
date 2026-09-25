@@ -17,6 +17,7 @@ import { PathResolutionService } from "./path-resolution.service";
 import { trackPhaseItems } from "./progress-emitter";
 import { RemovalAuditService } from "./removal-audit.service";
 import { TrashService } from "./trash.service";
+import { RefScanScope } from "./worktree-status.service";
 import { createWorktreeSyncPlan } from "./worktree-sync-planner";
 
 import type { AddWorktreeResult, AheadBehindCounts, GitService } from "./git.service";
@@ -751,10 +752,13 @@ export class WorktreeModeSyncRunner {
       // that pass them reach the removals below.
       const checkDone = trackPhaseItems(this.progressEmitter, "prune", "Checking worktrees to prune", checks.length);
 
+      // One branch/remote-ref scan for every check in this pass rather than
+      // one per worktree. The re-check before each removal below takes its own.
+      const refScans = new RefScanScope();
       const statusResults = await Promise.allSettled(
         checks.map(({ branch, path: worktreePath }) =>
-          limit(async () => this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug)).finally(() =>
-            checkDone(branch),
+          limit(async () => this.gitService.getFullWorktreeStatus(worktreePath, this.config.debug, refScans)).finally(
+            () => checkDone(branch),
           ),
         ),
       );

@@ -31,7 +31,7 @@ import type {
   UncachedGitClientOptions,
   WorktreeUpdateResult,
 } from "./git-service.types";
-import type { WorktreeStatusResult } from "./worktree-status.service";
+import type { RefScanScope, WorktreeStatusResult } from "./worktree-status.service";
 import type { SyncMetadata } from "../types/sync-metadata";
 import type { GitProgressEmitter } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
@@ -635,14 +635,22 @@ export class GitService {
     return this.statusService.hasStashedChanges(worktreePath);
   }
 
-  async getFullWorktreeStatus(worktreePath: string, includeDetails = false): Promise<WorktreeStatusResult> {
+  /**
+   * @param refScans shares one branch/remote-ref scan between every worktree
+   *   probed with it; pass one scope per pass over the worktrees, and none for
+   *   a check that must see the refs as they are now.
+   */
+  async getFullWorktreeStatus(
+    worktreePath: string,
+    includeDetails = false,
+    refScans?: RefScanScope,
+  ): Promise<WorktreeStatusResult> {
     const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
-    return this.statusService.getFullWorktreeStatus(
-      worktreePath,
-      includeDetails,
-      metadata?.lastSyncCommit,
-      metadata?.lastKnownRemoteTip,
-    );
+    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails, {
+      lastSyncCommit: metadata?.lastSyncCommit,
+      lastKnownRemoteTip: metadata?.lastKnownRemoteTip,
+      refScans,
+    });
   }
 
   /** Map of remote branch name (without "origin/") → tip oid, from the bare repo. */
