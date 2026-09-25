@@ -146,7 +146,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [step, setStep] = useState<ViewStep>(repositories.length > 1 ? "SELECT_PROJECT" : "VIEW_STATUS");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
-  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? 0 : -1);
+  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? repositories[0].index : -1);
 
   const [entries, setEntries] = useState<WorktreeStatusEntry[]>([]);
   const [divergedEntries, setDivergedEntries] = useState<DivergedDirectoryInfo[]>([]);
@@ -169,6 +169,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // A failed `d` stays on the list it was pressed in; the ERROR step would
+  // throw the whole view away for one directory that could not be removed.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -332,7 +335,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
               setExpandedEntry(null);
             })
             .catch((err: unknown) => {
-              setError(`Failed to delete: ${getErrorMessage(err)}`);
+              setDeleteError(`Failed to delete ${item.entry.name}: ${getErrorMessage(err)}`);
               setConfirmDelete(null);
               setDeleting(false);
             });
@@ -356,6 +359,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
           setEntryFilter("");
           setExpandedEntry(null);
           setConfirmDelete(null);
+          setDeleteError(null);
           selectedRepoIndexRef.current = -1;
           loadedForRepoRef.current = null;
           setStep("SELECT_PROJECT");
@@ -372,7 +376,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
       if (key.upArrow) {
         setSelectedProjectIndex((prev) => Math.max(0, prev - 1));
       } else if (key.downArrow) {
-        setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        if (filteredProjects.length > 0) {
+          setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        }
       } else if (key.return && filteredProjects.length > 0) {
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
@@ -397,6 +403,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
       } else if (key.return && combinedList.length > 0) {
         setExpandedEntry((prev) => (prev === selectedEntryIndex ? null : selectedEntryIndex));
       } else if (input === "d" && isDivergedSelected && deleteDivergedDirectory) {
+        setDeleteError(null);
         setConfirmDelete(selectedEntryIndex);
       } else if (key.backspace || key.delete) {
         setEntryFilter((prev) => prev.slice(0, -1));
@@ -732,6 +739,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         )}
 
         {renderContent()}
+
+        {step === "VIEW_STATUS" && deleteError && (
+          <Box marginTop={1}>
+            <Text color="red">{deleteError}</Text>
+          </Box>
+        )}
 
         <Box marginTop={1}>{renderFooter()}</Box>
       </Box>

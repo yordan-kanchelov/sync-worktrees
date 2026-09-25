@@ -271,7 +271,7 @@ common operations, and a status view across every repository.
 | `x`       | [Force clean](./docs/trash-and-recovery.md#force-clean-from-the-tui-x): purge trash and recovery refs, `git gc` |
 | `r`       | Reload the config and re-sync                                                                                   |
 | `?` / `h` | Help                                                                                                            |
-| `q`       | Quit (`Esc` only backs out of what is open)                                                                     |
+| `q`       | Quit; asks first while a sync or hook is running (`Esc` only backs out of what is open)                         |
 
 Every key, the wizards, the status flags, and the terminal/editor launch variables: [Interactive TUI](./docs/tui.md).
 

@@ -23,7 +23,7 @@ which anything leaves your disk:
 | Diverged branch (a force-push, or someone else pushed the branch) | The worktree has commits of its own *and* upstream has commits it lacks | Skipped while a stash is present (dirty worktrees never reach this point); reset in place instead of moved when its content already matches upstream or its HEAD is still the commit the last sync left it at (a reset that would touch ignored files, or a tree that is not clean, falls back to the move) | `.trash/<id>/` as `diverged-replace`, commits pinned, `Keep on reap`; a fresh checkout of upstream takes its place | `.diverged/<date>-<branch>-<id>/`, commit held by a keep ref | Recover the commits from the entry — see [Diverged branches](#diverged-branches-force-pushes) for the two cases (a teammate's push vs a force-push you mean to undo); `--restore` is refused while the fresh checkout occupies the path |
 | `d` on a `.diverged/` entry in the TUI status view | You press `d` and confirm `y` | — | n/a (`.diverged/` is only written while trash is disabled) | Deleted | None |
 | Trash expiry | An entry passes `retentionDays` | The reaper runs at the tail of every sync attempt, failed ones included; commits on no remote are kept | Entry deleted; never-pushed commits promoted to `refs/sync-worktrees/keep/<id>` | n/a | The keep ref |
-| `x` in the TUI (force clean) | You press `x` and confirm `y` | Deletes only what the preview counted; the `gc` is skipped when a lock or an unfinished operation is found | Entries and keep refs deleted, then `git gc` | n/a | None — irreversible |
+| `x` in the TUI (force clean) | You press `x`, type `clean` and press `Enter` | Deletes only what the preview counted; the `gc` is skipped when a lock or an unfinished operation is found | Entries and keep refs deleted, then `git gc` | n/a | None — irreversible |
 | `trash --purge <id>` | You type the id back | Interactive TTY; for a `Keep on reap` entry the keep ref is minted first | Entry deleted | n/a | The keep ref |
 
 Sync never infers ownership from a directory's name. The only directories it touches are the worktrees git lists for the
@@ -133,8 +133,9 @@ operations.
 
 ## Force clean from the TUI (`x`)
 
-In the TUI, press `x` to preview a force clean across every configured repository. Confirming with `y` deletes exactly
-the trash entries and permanent `refs/sync-worktrees/keep/*` recovery refs that preview counted, then runs `git gc`.
+In the TUI, press `x` to preview a force clean across every configured repository. Typing `clean` and pressing `Enter`
+deletes exactly the trash entries and permanent `refs/sync-worktrees/keep/*` recovery refs that preview counted, then
+runs `git gc`; `Esc` cancels. When the preview counts nothing, the modal says "Nothing to clean" and does not ask.
 This is irreversible; active worktree files, unrecognized trash content, and anything a sync trashed while the preview
 was on screen are left untouched — the last of these is reported in the result line.
 

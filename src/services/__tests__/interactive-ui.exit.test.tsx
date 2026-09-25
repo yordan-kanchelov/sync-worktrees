@@ -547,6 +547,15 @@ describe("InteractiveUIService exit path", () => {
       const { command, pid } = await startRealHook(harness.service);
       expect(isAlive(pid)).toBe(true);
 
+      // A running hook is work a quit would end, so the first `q` only asks.
+      harness.stdin.write("q");
+      await waitFor(
+        () => harness.stdout.text.includes("1 hook still running — press q again to quit"),
+        "the quit confirmation",
+      );
+      expect(harness.exit).not.toHaveBeenCalled();
+      expect(isAlive(pid)).toBe(true);
+
       harness.stdin.write("q");
       await waitFor(() => harness.exit.mock.calls.length > 0, "the process to be asked to exit");
 
@@ -580,6 +589,8 @@ describe("InteractiveUIService exit path", () => {
       await sleep(60);
       const { pid } = await startRealHook(harness.service);
 
+      harness.stdin.write("q");
+      await waitFor(() => harness.stdout.text.includes("press q again to quit"), "the quit confirmation");
       harness.stdin.write("q");
       await waitFor(() => harness.exit.mock.calls.length > 0, "the process to be asked to exit");
 

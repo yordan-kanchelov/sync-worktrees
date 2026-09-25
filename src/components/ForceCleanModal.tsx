@@ -17,12 +17,17 @@ export interface ForceCleanModalProps {
   onClose: () => void;
 }
 
+// What has to be typed before the purge runs. A single `y` sat right next to
+// `n` and fired on a key repeat; a word is a decision.
+export const FORCE_CLEAN_CONFIRM_WORD = "clean";
+
 const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClean, onClose }) => {
   const [previews, setPreviews] = useState<ForceCleanRepositoryPreview[]>([]);
   const [results, setResults] = useState<ForceCleanRepositoryResult[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [cleaning, setCleaning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [typed, setTyped] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -55,19 +60,28 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
     [previews],
   );
 
+  const nothingToClean = totals.trashEntries === 0 && totals.keepRefs === 0;
+  const awaitingConfirmation = results === null && !cleaning && !loading && !error && !nothingToClean;
+
   useInput((input, key) => {
     // Mouse reports arrive as a single `input` string; ignore them here so a
     // scroll never registers as a keystroke.
     if (isMouseSequence(input)) return;
 
     if (cleaning) return;
-    if (results !== null) {
+    if (results !== null || (!loading && !awaitingConfirmation)) {
       if (key.escape || key.return || input === "q") onClose();
       return;
     }
-    if (input === "n" || input === "N" || key.escape) {
+    if (key.escape) {
       onClose();
-    } else if ((input === "y" || input === "Y") && !loading && !error) {
+      return;
+    }
+    if (!awaitingConfirmation) return;
+    if (key.backspace || key.delete) {
+      setTyped((prev) => prev.slice(0, -1));
+    } else if (key.return) {
+      if (typed.trim().toLowerCase() !== FORCE_CLEAN_CONFIRM_WORD) return;
       setCleaning(true);
       // Only the repos whose counts are on screen — a repo whose preview failed
       // was never shown a number, so it must not be purged on this
@@ -88,6 +102,8 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
         .then(setResults)
         .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
         .finally(() => setCleaning(false));
+    } else if (input && !key.ctrl && !key.meta) {
+      setTyped((prev) => (prev + input).slice(0, 32));
     }
   });
 
@@ -125,7 +141,8 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
                 </Text>
               ),
             )}
-          {!loading && results === null && (
+          {!loading && results === null && !error && nothingToClean && <Text color="green">Nothing to clean.</Text>}
+          {!loading && results === null && !nothingToClean && (
             <Text bold>
               Total: {totals.trashEntries} trash ({formatBytes(totals.trashBytes)}), {totals.keepRefs} recovery refs
             </Text>
@@ -164,15 +181,16 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
         </Box>
 
         <Box justifyContent="center" marginTop={1}>
-          <Text dimColor>
-            {results !== null
-              ? "Press Enter / Esc / q to close"
-              : cleaning
-                ? "Cleanup is running"
-                : loading
-                  ? "Press Esc to cancel"
-                  : "Delete permanently? y / n"}
-          </Text>
+          {awaitingConfirmation ? (
+            <Text>
+              Type <Text bold>{FORCE_CLEAN_CONFIRM_WORD}</Text> and press Enter to delete permanently:{" "}
+              <Text color="red">{typed || "_"}</Text> <Text dimColor>(Esc to cancel)</Text>
+            </Text>
+          ) : (
+            <Text dimColor>
+              {cleaning ? "Cleanup is running" : loading ? "Press Esc to cancel" : "Press Enter / Esc / q to close"}
+            </Text>
+          )}
         </Box>
       </Box>
     </Box>

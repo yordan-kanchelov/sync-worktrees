@@ -58,6 +58,19 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
           <Box>
             <Box width={15}>
               <Text bold color="yellow">
+                PgUp
+              </Text>
+              <Text> / </Text>
+              <Text bold color="yellow">
+                PgDn
+              </Text>
+            </Box>
+            <Text>Scroll the log one page</Text>
+          </Box>
+
+          <Box>
+            <Box width={15}>
+              <Text bold color="yellow">
                 wheel
               </Text>
             </Box>
@@ -166,7 +179,7 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose }) => {
                 q
               </Text>
             </Box>
-            <Text>Gracefully quit</Text>
+            <Text>Gracefully quit; asks if busy</Text>
           </Box>
         </Box>
 

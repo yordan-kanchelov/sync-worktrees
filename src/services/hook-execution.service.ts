@@ -51,6 +51,11 @@ export class HookExecutionService {
     }
   }
 
+  /** How many hook commands are still running. */
+  public getActiveCount(): number {
+    return this.activeProcesses.size;
+  }
+
   /**
    * Terminates every hook still running and returns the commands it actually
    * signalled, so a quit can name what it ended. Hooks deliberately do not
