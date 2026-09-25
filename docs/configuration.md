@@ -63,6 +63,14 @@ tick.
   loads with a warning.
 - Repository-specific settings override `defaults`.
 
+### Worktree folder names
+
+In worktree mode every branch gets a folder directly under `worktreeDir`, named from the branch name: `/` becomes `-`,
+any other character outside letters, digits, `_` and `-` becomes `_`, and that stem is capped at 80 characters. The name
+then ends in `-` plus the first eight hex characters of the branch name's SHA-256, so it is stable across machines and
+unique per branch even when two names sanitize to the same stem: `feature/login` is always
+`feature-login-df7c7aeb`. Only the default branch keeps its plain name (`main/`).
+
 ## Branch filtering
 
 Two filters can be combined:

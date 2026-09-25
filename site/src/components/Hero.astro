@@ -91,33 +91,24 @@ const starLabel =
         </div>
       </div>
 
-      <div class="min-w-0 overflow-hidden rounded-xl border border-ink-800 bg-ink-900 text-left shadow-sm">
-        <div class="flex items-center gap-1.5 border-b border-ink-800 px-4 py-2.5">
-          <span class="size-2.5 rounded-full bg-[#ff5f57]"></span>
-          <span class="size-2.5 rounded-full bg-[#febc2e]"></span>
-          <span class="size-2.5 rounded-full bg-[#28c840]"></span>
-          <span class="ml-2 font-mono text-xs text-ink-400">sync-worktrees</span>
-        </div>
-        <div class="space-y-1 p-4 font-mono text-xs leading-5 text-ink-200">
-          <!-- Abridged real log lines from a one-shot run, in an order it can print: every repository is initialised
-               (clone, default-branch worktree) before any sync starts (src/index.ts runMultipleRepositories), then the
-               two syncs interleave (git.service.ts, worktree-mode-sync-runner.ts). -->
-          <div class="sw-line" style="animation-delay:0s"><span class="text-ink-500">$</span> sync-worktrees --runOnce</div>
-          <div class="sw-line text-ink-300" style="animation-delay:0.35s">🔄 Syncing 2 repositories...</div>
-          <div class="sw-line" style="animation-delay:0.7s"><span class="text-ink-500">[frontend]</span> <span class="text-emerald-400">✅</span> Clone successful.</div>
-          <div class="sw-line" style="animation-delay:1.05s"><span class="text-ink-500">[backend]</span> <span class="text-emerald-400">✅</span> Clone successful.</div>
-          <div class="sw-line" style="animation-delay:1.4s"><span class="text-ink-500">[frontend]</span> Step 2: Creating 1 new worktrees...</div>
-          <div class="sw-line" style="animation-delay:1.75s"><span class="text-ink-500">[frontend]</span> &nbsp;&nbsp;<span class="text-emerald-400">✅</span> Created worktree for 'feature/login'</div>
-          <div class="sw-line" style="animation-delay:2.1s"><span class="text-ink-500">[backend]</span> &nbsp;&nbsp;<span class="text-emerald-400">✅</span> Created worktree for 'release/next'</div>
-          <div class="sw-line mt-2 border-t border-ink-800 pt-2 text-ink-400" style="animation-delay:2.6s">worktrees/</div>
-          <div class="sw-line text-ink-200" style="animation-delay:2.85s">├─&nbsp;frontend/</div>
-          <div class="sw-line text-ink-400" style="animation-delay:3s">│&nbsp;&nbsp;├─&nbsp;main/</div>
-          <div class="sw-line text-ink-400" style="animation-delay:3.15s">│&nbsp;&nbsp;└─&nbsp;feature-login-…/</div>
-          <div class="sw-line text-ink-200" style="animation-delay:3.35s">└─&nbsp;backend/</div>
-          <div class="sw-line text-ink-400" style="animation-delay:3.5s">&nbsp;&nbsp;&nbsp;├─&nbsp;main/</div>
-          <div class="sw-line text-ink-400" style="animation-delay:3.65s">&nbsp;&nbsp;&nbsp;└─&nbsp;release-next-…/</div>
-          <div class="sw-line pt-2 text-ink-500" style="animation-delay:4.1s"># one folder per branch, at the same path on every machine</div>
-        </div>
+      <!-- Rendered by demo/render.sh (VHS) from demo/story.tape against an offline fixture; copied into public/ by
+           scripts/copy-assets.mjs. The recording carries its own window bar, so no chrome here. -->
+      <div class="min-w-0 overflow-hidden rounded-xl border border-ink-800 bg-[#1e1e2e] shadow-sm">
+        <video
+          id="hero-demo"
+          class="block h-auto w-full"
+          autoplay
+          muted
+          loop
+          playsinline
+          preload="metadata"
+          poster="/demo-poster.webp"
+          width="1000"
+          height="700"
+          aria-label="Terminal recording: the config, the TUI syncing two repositories into one folder per branch, the worktree status view, then a one-shot sync that adds a new upstream branch and moves a deleted one to .trash/"
+        >
+          <source src="/demo.mp4" type="video/mp4" />
+        </video>
       </div>
     </div>
 
@@ -136,6 +127,14 @@ const starLabel =
     ?.addEventListener("click", function () {
       window.posthog?.capture("github_link_clicked", { location: "hero" });
     });
+
+  // Respect reduced motion: show the poster frame and let the viewer press play.
+  var demo = document.getElementById("hero-demo");
+  if (demo && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    demo.removeAttribute("autoplay");
+    demo.setAttribute("controls", "");
+    demo.pause();
+  }
 
   // Refresh the build-time star count with a live value on page load, so the
   // badge stays current between static rebuilds.
@@ -156,36 +155,3 @@ const starLabel =
     })
     .catch(function () {});
 </script>
-
-<style>
-  .sw-line {
-    opacity: 0;
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    .sw-line {
-      animation: sw-cascade 7s ease-in-out infinite;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .sw-line {
-      opacity: 1;
-    }
-  }
-  @keyframes sw-cascade {
-    0%,
-    4% {
-      opacity: 0;
-      transform: translateY(3px);
-    }
-    10%,
-    86% {
-      opacity: 1;
-      transform: translateY(0);
-    }
-    94%,
-    100% {
-      opacity: 0;
-      transform: translateY(0);
-    }
-  }
-</style>
