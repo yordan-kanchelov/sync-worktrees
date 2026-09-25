@@ -39,6 +39,7 @@ export interface DiscoveredWorktree {
   label?: WorktreeLabel;
   divergence?: Divergence | null;
   staleHint?: boolean;
+  statusError?: string;
 }
 
 export interface SiblingRepository {

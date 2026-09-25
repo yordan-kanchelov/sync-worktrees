@@ -95,7 +95,6 @@ export const DEFAULT_CONFIG = {
 } as const;
 
 export const ERROR_MESSAGES = {
-  GIT_NOT_INITIALIZED: "Git service not initialized. Call initialize() first.",
   ALREADY_EXISTS: "already exists",
   ALREADY_REGISTERED: "already registered worktree",
   FAST_FORWARD_FAILED: [

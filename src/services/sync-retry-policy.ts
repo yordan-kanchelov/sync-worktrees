@@ -1,5 +1,5 @@
 import { DEFAULT_CONFIG } from "../constants";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 
 import type { GitService } from "./git.service";
 import type { Logger } from "./logger.service";

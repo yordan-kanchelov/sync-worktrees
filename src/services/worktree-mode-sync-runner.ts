@@ -8,7 +8,8 @@ import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { probePathExists } from "../utils/file-exists";
-import { getErrorMessage, isLfsError } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
+import { isLfsError } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { copyTreePreservingSymlinks } from "../utils/preserving-copy";
 
@@ -427,7 +428,7 @@ export class WorktreeModeSyncRunner {
 
     const branchNameSet = new Set(branchNames);
     const filteredByName = branchesWithActivity.filter((b) => branchNameSet.has(b.branch));
-    const filteredBranches = filterBranchesByAge(filteredByName, this.config.branchMaxAge!);
+    const filteredBranches = filterBranchesByAge(filteredByName, this.config.branchMaxAge!, this.logger);
     const remoteBranches = filteredBranches.map((b) => b.branch);
 
     this.logger.info(

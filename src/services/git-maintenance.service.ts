@@ -5,7 +5,7 @@ import { DEFAULT_CONFIG, MAINTENANCE_CONSTANTS, PATH_CONSTANTS } from "../consta
 import { atomicWriteFile } from "../utils/atomic-write";
 import { parseDuration } from "../utils/date-filter";
 import { createGitClient } from "../utils/git-client";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 
 import { Logger } from "./logger.service";

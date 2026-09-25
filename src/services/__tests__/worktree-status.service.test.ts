@@ -450,104 +450,87 @@ describe("WorktreeStatusService", () => {
     });
   });
 
-  describe("hasUnpushedCommits", () => {
-    it("should return true for detached HEAD (may sit on unreachable commits)", async () => {
-      mockGit.branch.mockResolvedValue({ current: "", detached: true } as any);
-
-      const result = await service.hasUnpushedCommits("/test/worktree");
-
-      expect(result).toBe(true);
-    });
-
-    it("should return true when there are unpushed commits", async () => {
-      mockGit.raw.mockResolvedValue("3\n");
-
-      const result = await service.hasUnpushedCommits("/test/worktree");
-
-      expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
-    });
-
-    it("should also check lastSyncCommit in addition to the any-remote check", async () => {
+  // upstreamGone and the any-remote unpushed probe come from the same snapshot
+  // getFullWorktreeStatus reads for every other field.
+  describe("getFullWorktreeStatus upstream and unpushed probes", () => {
+    const setupWorktree = (opts: { upstream: string | Error; remoteBranches: string[]; detached?: boolean }): void => {
+      mockGit.branch.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg && firstArg[0] === "-r") return { all: opts.remoteBranches } as any;
+        return opts.detached
+          ? ({ current: "", detached: true } as any)
+          : ({ current: "feature", detached: false } as any);
+      }) as any);
       mockGit.raw.mockImplementation((async (...args: any[]) => {
         const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg.includes("--remotes")) return "0\n";
-        return "2\n";
+        if (firstArg[0] === "rev-parse" && firstArg[1] === "--abbrev-ref") {
+          if (opts.upstream instanceof Error) throw opts.upstream;
+          return `${opts.upstream}\n`;
+        }
+        if (firstArg[0] === "submodule") return "";
+        return "0\n";
       }) as any);
+      (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
+    };
 
-      const result = await service.hasUnpushedCommits("/test/worktree", "abc123");
+    it("reports the upstream as gone when it is missing from the remote branches", async () => {
+      setupWorktree({ upstream: "origin/feature", remoteBranches: ["origin/main"] });
 
-      expect(result).toBe(true);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "abc123..HEAD"]);
+      const status = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(status.upstreamGone).toBe(true);
+      expect(status.reasons).toContain("upstream gone");
+      expect(mockGit.raw).toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", "feature@{upstream}"]);
     });
 
-    // A branch cut from a same-named tag (`git checkout -b 1.4.2 1.4.2`) is a
-    // normal hotfix workflow. Passing the bare name lets the tag answer for the
-    // branch — git only warns on stderr and exits 0 — so unpushed work reads as
-    // zero and the prune pipeline removes the worktree.
-    it("must probe the worktree's HEAD, never the bare branch name", async () => {
-      mockGit.branch.mockResolvedValue({ current: "release-1", detached: false } as any);
+    it("does not report the upstream as gone while it still exists on the remote", async () => {
+      setupWorktree({ upstream: "origin/feature", remoteBranches: ["origin/main", "origin/feature"] });
 
-      await service.hasUnpushedCommits("/test/worktree");
+      const status = await service.getFullWorktreeStatus("/test/worktree");
 
-      expect(unpushedProbeRevisions()).toEqual(["HEAD"]);
-      expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", "HEAD", "--not", "--remotes"]);
+      expect(status.upstreamGone).toBe(false);
     });
 
-    it("should return true on error (conservative)", async () => {
-      mockGit.raw.mockRejectedValue(new Error("Git error"));
+    it("does not report the upstream as gone when none is configured", async () => {
+      setupWorktree({
+        upstream: new Error("fatal: no upstream configured for branch 'feature'"),
+        remoteBranches: ["origin/main"],
+      });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(status.upstreamGone).toBe(false);
+      expect(status.divergence).toBeNull();
+    });
+
+    it("never reports a detached HEAD's upstream as gone", async () => {
+      setupWorktree({ upstream: "origin/feature", remoteBranches: ["origin/main"], detached: true });
+
+      const status = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(status.upstreamGone).toBe(false);
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["rev-parse", "--abbrev-ref", expect.anything()]);
+    });
+
+    it("treats a failed any-remote unpushed probe as unpushed commits (conservative)", async () => {
+      setupWorktree({ upstream: "origin/feature", remoteBranches: ["origin/feature"] });
+      const baseRaw = mockGit.raw.getMockImplementation() as (...args: any[]) => Promise<string>;
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "rev-list" && firstArg.includes("--remotes")) throw new Error("Git error");
+        return baseRaw(...args);
+      }) as any);
       const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-      const result = await service.hasUnpushedCommits("/test/worktree");
+      const status = await service.getFullWorktreeStatus("/test/worktree");
 
-      expect(result).toBe(true);
-      expect(consoleSpy).toHaveBeenCalled();
+      expect(status.hasUnpushedCommits).toBe(true);
+      expect(status.canRemove).toBe(false);
+      expect(status.reasons).toContain("unpushed commits");
       consoleSpy.mockRestore();
-    });
-
-    it("should return true on unexpected hasUpstreamGone error (conservative)", async () => {
-      mockGit.raw.mockRejectedValue(new Error("Unexpected git failure"));
-      mockGit.branch
-        .mockResolvedValueOnce({ current: "feature", detached: false } as any)
-        .mockResolvedValueOnce({ current: "feature", detached: false } as any);
-
-      const result = await service.hasUpstreamGone("/test/worktree");
-
-      expect(result).toBe(true);
-    });
-  });
-
-  describe("hasUpstreamGone", () => {
-    it("should return false for detached HEAD", async () => {
-      mockGit.branch.mockResolvedValue({ current: "", detached: true } as any);
-
-      const result = await service.hasUpstreamGone("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return true when upstream is deleted", async () => {
-      // First call: isDetachedHead check
-      // Second call: getCurrentBranch
-      // Third call: branch(["-r"]) for remote branches
-      mockGit.branch
-        .mockResolvedValueOnce({ current: "feature", detached: false } as any)
-        .mockResolvedValueOnce({ current: "feature", detached: false } as any)
-        .mockResolvedValueOnce({ all: ["origin/main"], current: "" } as any);
-      mockGit.raw.mockResolvedValue("origin/feature\n");
-
-      const result = await service.hasUpstreamGone("/test/worktree");
-
-      expect(result).toBe(true);
-    });
-
-    it("should return false when no upstream is configured", async () => {
-      mockGit.raw.mockRejectedValue(new Error("fatal: no upstream configured"));
-
-      const result = await service.hasUpstreamGone("/test/worktree");
-
-      expect(result).toBe(false);
     });
   });
 

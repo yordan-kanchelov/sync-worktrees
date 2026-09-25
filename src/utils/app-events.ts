@@ -1,3 +1,5 @@
+import { Logger } from "../services/logger.service";
+
 export interface AppSyncProgress {
   repo: string;
   phase: string;
@@ -26,6 +28,11 @@ type AnyEventCallback = EventCallback<AppEventMap[keyof AppEventMap]>;
 export class AppEventEmitter {
   private listeners: Map<keyof AppEventMap, Set<AnyEventCallback>> = new Map();
 
+  // A throwing listener is reported, never rethrown into the emitter's caller.
+  // It goes through the redacting logger: a listener's error can quote a
+  // repository URL with credentials in it.
+  constructor(private readonly logger: Pick<Logger, "error"> = Logger.createDefault()) {}
+
   on<K extends keyof AppEventMap>(event: K, callback: EventCallback<AppEventMap[K]>): () => void {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());
@@ -50,7 +57,7 @@ export class AppEventEmitter {
         try {
           (callback as (payload?: AppEventMap[K]) => void)(args[0]);
         } catch (error) {
-          console.error(`[app-events] Error in '${String(event)}' listener:`, error);
+          this.logger.error(`[app-events] Error in '${String(event)}' listener:`, error);
         }
       }
     }

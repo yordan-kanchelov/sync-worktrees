@@ -4,7 +4,7 @@ import * as path from "path";
 import { TRASH_CONSTANTS } from "../constants";
 
 import { filenameTimestamp } from "./filename-timestamp";
-import { getErrorMessage } from "./lfs-error";
+import { getErrorMessage } from "./errors";
 
 // Deleting a trash container is a multi-step, non-atomic operation on a user's
 // only remaining copy of their files, so the order is chosen for what each

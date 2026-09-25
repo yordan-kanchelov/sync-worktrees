@@ -8,7 +8,7 @@ import { GitOperationError, WorktreeNotCleanError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 
 import { Logger } from "./logger.service";
 
@@ -538,77 +538,6 @@ export class WorktreeStatusService {
     return { file: null, unknown: results.includes("unknown") };
   }
 
-  async hasUnpushedCommits(worktreePath: string, lastSyncCommit?: string): Promise<boolean> {
-    const worktreeGit = this.createGitInstance(worktreePath);
-
-    try {
-      // A detached HEAD may sit on commits unreachable from any ref; this is a
-      // safety predicate, so answer conservatively.
-      if (await this.isDetachedHead(worktreeGit)) {
-        return true;
-      }
-
-      // Same unambiguous revision as collectSnapshot: a tag sharing the
-      // branch's name shadows the branch and hides its unpushed commits.
-      const anyRemoteResult = await this.runGit(() =>
-        worktreeGit.raw(["rev-list", "--count", "HEAD", "--not", "--remotes"]),
-      );
-      const anyRemoteCount = this.parseCount(anyRemoteResult);
-      if (anyRemoteCount === null || anyRemoteCount > 0) {
-        return true;
-      }
-
-      if (lastSyncCommit) {
-        const sinceSyncResult = await this.runGit(() =>
-          worktreeGit.raw(["rev-list", "--count", `${lastSyncCommit}..HEAD`]),
-        );
-        const sinceSyncCount = this.parseCount(sinceSyncResult);
-        if (sinceSyncCount === null || sinceSyncCount > 0) {
-          return true;
-        }
-      }
-
-      return false;
-    } catch (error) {
-      this.logger.error(`Error checking unpushed commits`, error);
-      return true;
-    }
-  }
-
-  async hasUpstreamGone(worktreePath: string): Promise<boolean> {
-    const worktreeGit = this.createGitInstance(worktreePath);
-
-    try {
-      if (await this.isDetachedHead(worktreeGit)) {
-        return false;
-      }
-
-      const branchSummary = await this.runGit(() => worktreeGit.branch());
-      const currentBranch = branchSummary.current;
-
-      const upstream = await this.runGit(() =>
-        worktreeGit.raw(["rev-parse", "--abbrev-ref", `${currentBranch}@{upstream}`]),
-      );
-      const remoteBranches = await this.runGit(() => worktreeGit.branch(["-r", "--no-color"]));
-
-      return !remoteBranches.all.includes(upstream.trim());
-    } catch (error) {
-      const errorMessage = getErrorMessage(error);
-
-      if (
-        errorMessage.includes("fatal: no upstream configured") ||
-        errorMessage.includes("no upstream configured for branch") ||
-        errorMessage.includes("fatal: ambiguous argument") ||
-        errorMessage.includes("unknown revision or path")
-      ) {
-        return false;
-      }
-
-      this.logger.error(`Unexpected error checking upstream status for ${worktreePath}: ${errorMessage}`);
-      return true;
-    }
-  }
-
   async hasStashedChanges(worktreePath: string): Promise<boolean> {
     const worktreeGit = this.createGitInstance(worktreePath);
 
@@ -653,15 +582,6 @@ export class WorktreeStatusService {
 
     if (!status.canRemove) {
       throw new WorktreeNotCleanError(worktreePath, status.reasons);
-    }
-  }
-
-  private async isDetachedHead(worktreeGit: SimpleGit): Promise<boolean> {
-    try {
-      const branchSummary = await this.runGit(() => worktreeGit.branch());
-      return !branchSummary.current || branchSummary.detached;
-    } catch {
-      return true;
     }
   }
 

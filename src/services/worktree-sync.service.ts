@@ -7,7 +7,7 @@ import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, TrashError, TrashOperationError } from "../errors";
 import { withGitAuthHint } from "../utils/git-auth-error";
 import { formatGitBusySignals, probeInFlightGitOperations } from "../utils/git-busy-probe";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";

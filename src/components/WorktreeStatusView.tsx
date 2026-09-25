@@ -4,7 +4,7 @@ import { isMouseSequence } from "../utils/mouse";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
 import type { WorktreeStatusEntry, DivergedDirectoryInfo, RepositoryListEntry, RepositoryDiskUsage } from "../types";
-import { getErrorMessage } from "../utils/lfs-error";
+import { getErrorMessage } from "../utils/errors";
 
 export type { WorktreeStatusEntry };
 
