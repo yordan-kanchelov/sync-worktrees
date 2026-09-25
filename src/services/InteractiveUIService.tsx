@@ -487,6 +487,13 @@ export class InteractiveUIService {
         this.configPath,
         this.repositoryFilter ? { filter: this.repositoryFilter } : undefined,
       );
+      // An edit that leaves the --filter matching nothing would otherwise
+      // surface below as "No repositories could be initialized", which blames
+      // the repositories rather than the filter. Either way the old services
+      // and their cron jobs stay in place.
+      if (repositories.length === 0 && this.repositoryFilter) {
+        throw new Error(`No repositories match filter: ${this.repositoryFilter}`);
+      }
 
       const initResults = await Promise.allSettled(
         repositories.map((repoConfig) =>

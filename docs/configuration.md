@@ -220,9 +220,9 @@ timer and the MCP server never operate on the same checkout at once. A run that 
 warning; a run that cannot create or take the lock fails and names the path and errno.
 
 The lock file lives next to the checkout, in `<parent of worktreeDir>/.sync-worktrees-locks/<hash>.lock`, with
-`worktreeDir` resolved through symlinks first. Nothing in the environment feeds into that path: a `--run-once` started by
-cron, launchd or a systemd timer with a minimal environment, a shell whose dotfiles export `XDG_STATE_HOME`, and `sudo`
-with or without `-E` all contend for the same file as long as they point at the same `worktreeDir`. Worktree-mode
+`worktreeDir` resolved through symlinks first. Nothing in the environment feeds into that path: a `--run-once` started
+by cron, launchd or a systemd timer with a minimal environment, a shell whose dotfiles export `XDG_STATE_HOME`, and
+`sudo` with or without `-E` all contend for the same file as long as they point at the same `worktreeDir`. Worktree-mode
 repositories additionally lock the bare repository directory. Locks are never placed under `~/.cache` or inside
 `worktreeDir` itself.
 

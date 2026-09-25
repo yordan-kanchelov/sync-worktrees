@@ -954,6 +954,38 @@ describe("InteractiveUIService", () => {
       void service.destroy();
     });
 
+    it("keeps the running services and names the filter when a reload leaves --filter matching nothing", async () => {
+      mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+        repositories: [
+          {
+            name: "frontend-web",
+            repoUrl: "https://github.com/test/frontend-web.git",
+            worktreeDir: "/test/frontend-web",
+            cronSchedule: "0 * * * *",
+            runOnce: false,
+          },
+        ],
+      });
+
+      const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+      service.setRepositoryFilter("backend-*");
+      const logs: Array<{ message: string; level: string }> = [];
+      service.getEvents().on("addLog", (entry: any) => logs.push(entry));
+      service.getEvents().emit("uiReady");
+      vi.mocked(WorktreeSyncService).mockClear();
+      const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+
+      await onReload();
+
+      expect(vi.mocked(WorktreeSyncService)).not.toHaveBeenCalled();
+      expect(logs).toContainEqual(
+        expect.objectContaining({ message: "Reload failed: No repositories match filter: backend-*", level: "error" }),
+      );
+      expect((service as any).syncServices).toEqual([mockSyncService]);
+
+      void service.destroy();
+    });
+
     it("preserves clone-mode skips recorded during reload initialization", async () => {
       mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
         repositories: [

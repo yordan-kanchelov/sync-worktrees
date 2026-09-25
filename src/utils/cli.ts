@@ -30,7 +30,9 @@ export interface TrashCliOptions {
 const DOCS_URL = "https://github.com/yordan-kanchelov/sync-worktrees/tree/main/docs";
 
 /** The words a user can type as the first argument, for "did you mean" hints. */
-const COMMAND_NAMES = ["sync", CLI_COMMANDS.INIT, CLI_COMMANDS.LIST, CLI_COMMANDS.TRASH, "completion"] as const;
+/** The commands other than the default one; `sync` is the default command's explicit name. */
+const SUBCOMMAND_NAMES = [CLI_COMMANDS.INIT, CLI_COMMANDS.LIST, CLI_COMMANDS.TRASH, "completion"] as const;
+const COMMAND_NAMES = ["sync", ...SUBCOMMAND_NAMES] as const;
 
 /** Every long flag any command accepts, in its canonical kebab-case spelling. */
 const FLAG_NAMES = [
@@ -115,8 +117,7 @@ function completeArguments(
   done: (completions: string[]) => void,
 ): void {
   completionFilter((err, completions) => {
-    const subcommands: readonly string[] = [CLI_COMMANDS.INIT, CLI_COMMANDS.LIST, CLI_COMMANDS.TRASH, "completion"];
-    const onRoot = !argv._.some((word) => subcommands.includes(String(word)));
+    const onRoot = !argv._.some((word) => (SUBCOMMAND_NAMES as readonly string[]).includes(String(word)));
     const rootFlags =
       onRoot && current.startsWith("-")
         ? ROOT_FLAG_NAMES.map((flag) => `--${flag}`).filter((flag) => flag.startsWith(current))

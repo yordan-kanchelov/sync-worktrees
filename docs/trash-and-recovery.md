@@ -175,16 +175,16 @@ listing and any permanent keep refs.
 
 - `--restore <id>` puts an entry's payload back at its original path.
 - `--purge <id>` permanently deletes one entry ahead of its expiry.
-- `--drop-keep-ref <name>` deletes one listed permanent keep ref; `--drop-all-keep-refs` deletes every listed one behind a
-  single confirmation.
+- `--drop-keep-ref <name>` deletes one listed permanent keep ref; `--drop-all-keep-refs` deletes every listed one behind
+  a single confirmation.
 - `--json` prints the listing as JSON instead of a table.
 - `--wait` applies to `--restore` and `--purge` — the two operations that take the repository lock — and retries a lock
   another process holds for up to two minutes instead of failing immediately.
 - `--restore`, `--purge`, `--drop-keep-ref` and `--drop-all-keep-refs` are mutually exclusive. `--json` describes the
   listing, so it is rejected alongside any of them, and `--wait` is rejected alongside `--json`, `--drop-keep-ref` or
   `--drop-all-keep-refs`.
-- `--purge`, `--drop-keep-ref` and `--drop-all-keep-refs` each need an interactive TTY and a typed confirmation; `--restore`
-  needs neither.
+- `--purge`, `--drop-keep-ref` and `--drop-all-keep-refs` each need an interactive TTY and a typed confirmation;
+  `--restore` needs neither.
 
 The listing is a table of `Id`, `Branch / path`, `Reason`, `Size`, `Expires`, `Restores as` and `Keep on reap`; an empty
 trash says so rather than printing nothing. `Size` reads `—` for a payload nothing has measured yet — sizes are gathered
@@ -222,8 +222,8 @@ that failed, a count that could not be read.
 
 That re-check is narrow, and is not a cure for keep refs accumulating. A squash or rebase merge puts the branch's
 *content* on the default branch as a new commit, so the original commits stay reachable from no remote ref and still
-earn a permanent ref — one per pruned branch, for as long as the repository lives. `--drop-all-keep-refs` is the way back:
-it lists what is there, takes one typed confirmation for the whole set, and deletes the refs it listed. Refs a
+earn a permanent ref — one per pruned branch, for as long as the repository lives. `--drop-all-keep-refs` is the way
+back: it lists what is there, takes one typed confirmation for the whole set, and deletes the refs it listed. Refs a
 `.diverged/` directory still relies on are retained and named, refs minted while the confirmation was on screen are left
 alone, and a ref another git process has locked is reported without stopping the rest. The commits behind a dropped ref
 become collectable by the next `git gc`.
