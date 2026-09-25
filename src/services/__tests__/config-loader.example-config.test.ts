@@ -8,6 +8,7 @@ import { setEnvVar } from "../../__tests__/test-utils";
 import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { getWorktreeDirLockTarget } from "../../utils/lock-path";
 import { collectUnknownConfigKeys } from "../../utils/unknown-config-keys";
+import { KNOWN_CONFIG_KEYS } from "../config-schema";
 import { CLONE_MODE_CONFLICTING_FIELDS, ConfigLoaderService } from "../config-loader.service";
 
 import type { RepositoryConfig } from "../../types";
@@ -118,7 +119,7 @@ describe("sync-worktrees.config.example.js", () => {
     // cannot reach — is a name the loader does not know.
     const configFile = (await configLoader.loadConfigFile(EXAMPLE_CONFIG_PATH)) as unknown as Record<string, unknown>;
 
-    expect(collectUnknownConfigKeys(configFile)).toEqual([]);
+    expect(collectUnknownConfigKeys(configFile, KNOWN_CONFIG_KEYS)).toEqual([]);
   });
 
   it("resolves the nested knobs the README promises", async () => {

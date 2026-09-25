@@ -218,11 +218,11 @@ export interface Config {
   // Sync once at daemon startup instead of waiting for the first cron tick.
   // Default: true. Whole-file like `runOnce`: the daemon reads it off
   // `defaults`, and it is never resolved onto a repository — it is declared
-  // here only because `ConfigFile.defaults` is `Partial<Config>` and
-  // SHARED_CONFIG_KEYS is pinned to `keyof Config`. A line comment, not JSDoc:
-  // tsc copies a member's JSDoc into the .d.ts and this interface is not the
-  // public input surface — SyncWorktreesDefaultsBase below is, and carries the
-  // tooltip a config author actually sees.
+  // here only because `ConfigFile.defaults` is `Partial<Config>` and the
+  // config schema's `defaults` level is pinned to `keyof Config`. A line
+  // comment, not JSDoc: tsc copies a member's JSDoc into the .d.ts and this
+  // interface is not the public input surface — SyncWorktreesDefaultsBase
+  // below is, and carries the tooltip a config author actually sees.
   syncOnStart?: boolean;
   bareRepoDir?: string;
   retry?: RetryConfig;
