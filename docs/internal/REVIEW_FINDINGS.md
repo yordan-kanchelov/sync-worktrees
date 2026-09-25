@@ -406,7 +406,7 @@ Status legend: `[ ]` open · `[x]` done · `[~]` needs product decision first.
 - **Decision needed**: (a) or (b). Note F19's metadata-uniqueness guard becomes mandatory
   under (b).
 
-### [~] D2. `GitService` decomposition
+### [x] D2. `GitService` decomposition
 
 - **Location**: `src/services/git.service.ts` (1372 lines)
 - **Observation**: mixes clone/init orchestration, the worktree-add matrix with three
@@ -416,6 +416,23 @@ Status legend: `[ ]` open · `[x]` done · `[~]` needs product decision first.
   (add-matrix + rollback + metadata) and `LfsVerificationService`; keep `GitService` as the
   thin git/porcelain wrapper. Pure refactor, no behavior change, high test-churn — needs
   maintainer appetite before anyone starts.
+- **Resolution**: done (approved; `git.service.ts` had grown to ~2500 lines by then). GitService
+  is now a facade (~940 lines) over focused services that share its cached git clients, logger,
+  default branch and LFS setting through a `GitServiceContext` (`git-service.types.ts`, which also
+  holds the shared types GitService re-exports):
+  - `worktree-creation.service.ts` — the worktree-add matrix, the stale-registration retry and
+    no-tracking fallback, the one rollback helper, typed `UpstreamSetupError` /
+    `WorktreeMetadataError` handling, metadata creation, stale-directory trash/quarantine;
+  - `worktree-registry.service.ts` — `git worktree list` / lock lookup / `worktree remove`;
+  - `branch-ref.service.ts` — branch/ref probes, origin branch inventory, create/push, CAS
+    delete with config cleanup, bundles and the not-on-remote commit count;
+  - `bare-repo.service.ts` — bare clone with the pending marker, origin check, clone-time branch
+    copies, default-branch detection;
+  - `lfs-verification.service.ts` — post-checkout LFS pointer sampling.
+  Callers are unchanged (every public GitService method delegates). Tests moved next to the
+  code: `git.service.test.ts` was split into per-service files sharing
+  `__tests__/helpers/git-service-fixture.ts`, and the topic files were renamed after the service
+  they cover.
 
 ---
 
@@ -427,4 +444,4 @@ Status legend: `[ ]` open · `[x]` done · `[~]` needs product decision first.
 - **Batch 4 (config loader)**: F9 — one file, several validations.
 - **Batch 5 (safety subsystems, review carefully)**: F5, F7, F18, F19 — touch the
   removal/trash paths; require the most careful tests.
-- D1/D2 blocked on maintainer decision.
+- D1 blocked on maintainer decision; D2 done.
