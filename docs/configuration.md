@@ -32,6 +32,17 @@ so the value a config file exports has to be plain data — strings, numbers, bo
 `Proxy`; no setting takes any of them (`hooks.onBranchCreated` and the branch filters are arrays of strings), and a
 reload that finds one fails with a message naming the value, leaving the previously loaded config running.
 
+Every load validates the whole file and reports every problem it finds at once, one line each, naming the setting by its
+path in the file and the repository it belongs to:
+
+```text
+Invalid configuration for 'repositories[1].cronSchedule' (repository 'api'): '0 * *' is not a valid cron expression
+Invalid configuration for 'defaults.retry.maxAttempts': must be 'unlimited' or a positive safe integer, got 0
+```
+
+A key the loader does not know is not an error: it is ignored with a warning, and a near miss gets a suggestion
+(`Unknown config key 'updateExistingWorktree' in repository 'web' is ignored (did you mean 'updateExistingWorktrees'?)`).
+
 ## Whole-file settings
 
 Two settings describe the process rather than a repository. One process runs every repository in the file, so they live

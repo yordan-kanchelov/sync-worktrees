@@ -481,8 +481,8 @@ describe("hooks.timeoutMs under real Node", () => {
 
       expect(result.hooks).toBeUndefined();
       expect(result.message).toBe(
-        "Failed to load config file: 'hooks.timeoutMs' in Repository 'r' must be a whole number of milliseconds " +
-          "from 0 to 2147483647 (0 disables the timeout)",
+        "Invalid configuration for 'repositories[0].hooks.timeoutMs' (repository 'r'): must be a whole number of " +
+          `milliseconds from 0 to 2147483647 (0 disables the timeout), got ${value}`,
       );
     }
   }, 60_000);
@@ -500,8 +500,8 @@ describe("hooks.timeoutMs under real Node", () => {
     );
 
     expect(result.message).toBe(
-      "Failed to load config file: 'hooks.timeoutMs' in defaults must be a whole number of milliseconds " +
-        "from 0 to 2147483647 (0 disables the timeout)",
+      "Invalid configuration for 'defaults.hooks.timeoutMs': must be a whole number of milliseconds " +
+        "from 0 to 2147483647 (0 disables the timeout), got -5",
     );
   });
 });

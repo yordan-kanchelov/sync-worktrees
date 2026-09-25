@@ -1042,14 +1042,16 @@ The T33 worker's reported 1,432,411 bytes therefore includes 574 B that CI does 
   essentially every fetch. Mirrors the pre-existing `validateDepth` (which allows `depth: 1`), so it
   is house-consistent and was left alone. If a floor is wanted, both validators should get one
   together.
-- **FU-T33-2. `retry` validation is much looser than `depth`/timeouts.** `initialDelayMs`,
+- **FU-T33-2. `retry` validation is much looser than `depth`/timeouts.** _Resolved: every retry field refuses NaN and
+  Infinity and the two counts must be safe integers, all through the one numeric rule in `config-schema.ts`._ `initialDelayMs`,
   `maxDelayMs`, `jitterMs`, `maxLfsRetries` are checked only for `typeof === "number"` plus a bound,
   so `1.5`, `NaN` and `Infinity` all pass (`NaN < 0` is false). `retry.maxAttempts` likewise accepts
   `2.5`. Same class of hole T33 just closed for the timeouts.
 - **FU-T33-3. `trash.retentionDays` / `warnSizeBytes` use `Number.isFinite`, not
   `Number.isSafeInteger`**, so `retentionDays: 0.5` is accepted. Third inconsistent validator style
   in the same file. FU-T33-2 and -3 together argue for one shared numeric validator.
-- **FU-T33-4. `validateDepth` carries the same redundant `typeof` arm** that `validateTimeoutMs`
+- **FU-T33-4. `validateDepth` carries the same redundant `typeof` arm** _Resolved: both validators are gone; `depth` and
+  the timeouts are zod number rules in `config-schema.ts`._ that `validateTimeoutMs`
   does (unreachable at runtime — `Number.isSafeInteger` never coerces — but load-bearing for type
   narrowing). Noting so nobody "fixes" one without the other.
 - **FU-T33-5. The `defaults` half of T31's drop guard is weaker than the repository half**
@@ -1250,7 +1252,9 @@ tsc copies into the `.d.ts` where no consumer can use it — still the cheapest 
   this path, because `fullyPushedUpstreamDeleted` requires `recordedRefGone` and in the
   matched-nothing scenario the remote branch still exists. Any doc or audit text saying pruning is
   "recoverable within retentionDays" is wrong for `trash.enabled: false`.
-- **FU-T91-3. `maxAttempts` / `maxLfsRetries` now throw two different error classes.** The legacy
+- **FU-T91-3. `maxAttempts` / `maxLfsRetries` now throw two different error classes.** _Resolved: config validation is
+  one zod schema (`config-schema.ts`) and every failure is a `ConfigValidationError` listing all the problems found, with
+  `repositories[1].retry.maxAttempts`-style paths._ The legacy
   bound arm throws a plain `Error`, the new integer arm throws `ConfigValidationError`, so a caller
   catching `ConfigValidationError` to render `field`/`reason` gets it for only half the failures
   (`maxAttempts: 0` vs `maxAttempts: 0.5`). Accepted trade-off here — unifying would change pinned
