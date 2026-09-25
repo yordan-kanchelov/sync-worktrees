@@ -105,6 +105,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       createBundleFromRef: vi.fn<any>().mockResolvedValue(true),
       setStaleDirectoryTrasher: vi.fn(),
       getBareRepoPath: vi.fn(() => "/test/.bare/repo.git"),
+      readWorktreeMetadataOwner: vi.fn<any>().mockResolvedValue(null),
     } as any,
   };
 });
@@ -139,6 +140,14 @@ describe("WorktreeSyncService", () => {
     // trash listing, and an undefined default made that read as a hard failure.
     (fs.readdir as Mock<any>).mockResolvedValue([]);
     (fs.lstat as Mock<any>).mockResolvedValue(buildFsStats("directory"));
+    // Worktree naming probes `<worktreeDir>/<plain name>` before handing a new
+    // branch its plain directory; nothing is there unless a test says so.
+    (fs.lstat as Mock<any>).mockImplementation(async (target: unknown) => {
+      if (path.dirname(String(target)) === "/test/worktrees" && !path.basename(String(target)).startsWith(".")) {
+        throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+      }
+      return buildFsStats("directory");
+    });
 
     handleWrites = [];
     (fs.open as Mock<any>).mockImplementation(async (filePath: unknown) => ({

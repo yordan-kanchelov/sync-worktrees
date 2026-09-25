@@ -61,7 +61,7 @@ Enter
 Sleep 2500ms
 
 # 6. The new branch is already a checkout: switching is just `cd`.
-Type "cd frontend/feature-payments-* && git log --oneline -1"
+Type "cd frontend/feature-payments && git log --oneline -1"
 Sleep 300ms
 Enter
 Sleep 2500ms

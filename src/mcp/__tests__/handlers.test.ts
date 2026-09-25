@@ -152,6 +152,7 @@ type MockGit = {
   getDefaultBranch: ReturnType<typeof vi.fn>;
   getWorktreeMetadata: ReturnType<typeof vi.fn>;
   getRemoteBranchesWithActivity: ReturnType<typeof vi.fn>;
+  resolveNewWorktreePath: ReturnType<typeof vi.fn>;
 };
 
 function makeCtx(opts: {
@@ -182,6 +183,13 @@ function makeCtx(opts: {
     getDefaultBranch: vi.fn<any>().mockReturnValue("main"),
     getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
     getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([]),
+    // The real one also weighs sibling branches and the disk; here every branch
+    // gets its preferred (plain) name under the mock service's worktreeDir.
+    resolveNewWorktreePath: vi
+      .fn<any>()
+      .mockImplementation(async (branch: unknown) =>
+        new PathResolutionService().getBranchWorktreePath("/repo/worktrees", String(branch)),
+      ),
     ...opts.git,
   };
 
@@ -2164,27 +2172,27 @@ describe("handleListWorktrees fallbacks", () => {
   });
 });
 
-describe("handleCreateWorktree collisions", () => {
-  it("produces distinct paths for collision-prone branch names", async () => {
+describe("handleCreateWorktree target naming", () => {
+  // Choosing between the plain and the hashed directory name is GitService's
+  // job (resolveNewWorktreePath); the handler must create exactly there.
+  it("creates the worktree at the path GitService resolves for the branch", async () => {
+    const hashed = new PathResolutionService().sanitizeBranchName("feature/x");
     const { ctx, git } = makeCtx({
       git: {
         branchExists: vi.fn<any>().mockResolvedValue({ local: true, remote: true }),
+        resolveNewWorktreePath: vi.fn<any>().mockResolvedValue(`/repo/worktrees/${hashed}`),
       },
     });
 
     await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
-    const firstPath = (git.addWorktree as any).mock.calls[0][1];
 
-    (git.addWorktree as any).mockClear();
-    await invoke(handleCreateWorktree, ctx, { branchName: "feature-x" });
-    const secondPath = (git.addWorktree as any).mock.calls[0][1];
-
-    expect(firstPath).not.toBe(secondPath);
+    expect(git.resolveNewWorktreePath).toHaveBeenCalledWith("feature/x");
+    expect(git.addWorktree).toHaveBeenCalledWith("feature/x", `/repo/worktrees/${hashed}`);
   });
 });
 
 describe("handleCreateWorktree target path guard", () => {
-  // The same sanitized (hash-suffixed) path the handler derives for the branch.
+  // The path the mocked resolveNewWorktreePath hands the handler for the branch.
   const targetPath = new PathResolutionService().getBranchWorktreePath("/repo/worktrees", "feature/x");
 
   it("refuses when the target path exists on disk but is not a registered worktree", async () => {
