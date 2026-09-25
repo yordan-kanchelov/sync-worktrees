@@ -10,7 +10,7 @@ import LogPanel from "./LogPanel";
 import { redactSecretsInText } from "../utils/git-url";
 import { isMouseSequence } from "../utils/mouse";
 import type { AppEventEmitter } from "../utils/app-events";
-import type { AppSyncProgress } from "../utils/app-events";
+import type { AppSyncProgress, CronScheduleDisplay, LastSyncOutcome } from "../utils/app-events";
 import type {
   HookContext,
   WorktreeStatusEntry,
@@ -27,7 +27,7 @@ export type { HookContext, WorktreeStatusEntry };
 export interface AppProps {
   events: AppEventEmitter;
   repositoryCount: number;
-  cronSchedule?: string;
+  cronSchedule?: CronScheduleDisplay;
   onManualSync: () => void | Promise<void>;
   onReload: () => void | Promise<void>;
   onQuit: () => Promise<void>;
@@ -57,6 +57,7 @@ export interface AppProps {
   deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
   getForceCleanPreview?: () => Promise<ForceCleanRepositoryPreview[]>;
   forceClean?: (selections: ForceCleanRepositorySelection[]) => Promise<ForceCleanRepositoryResult[]>;
+  getRunningHookCount?: () => number;
 }
 
 export interface LogEntry {
@@ -67,6 +68,7 @@ export interface LogEntry {
 }
 
 const MAX_LOG_ENTRIES = 5000;
+const NOTICE_MS = 2500;
 
 // Log lines arrive in bursts -- a sync of many repositories logs dozens a
 // second, each from its own tick -- and every append used to copy the whole
@@ -123,6 +125,7 @@ const App: React.FC<AppProps> = ({
   deleteDivergedDirectory,
   getForceCleanPreview,
   forceClean,
+  getRunningHookCount,
 }) => {
   const [showHelp, setShowHelp] = useState(false);
   const [showBranchWizard, setShowBranchWizard] = useState(false);
@@ -136,10 +139,18 @@ const App: React.FC<AppProps> = ({
   const opIdRef = useRef(0);
   const [syncProgressEntries, setSyncProgressEntries] = useState<AppSyncProgress[]>([]);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  const [lastSyncOutcome, setLastSyncOutcome] = useState<LastSyncOutcome | null>(null);
   const [diskSpaceUsed, setDiskSpaceUsed] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [repoCount, setRepoCount] = useState(repositoryCount);
-  const [schedule, setSchedule] = useState(cronSchedule);
+  const [schedule, setSchedule] = useState<CronScheduleDisplay>(cronSchedule);
+  // A key that cannot act right now says so here, for a moment, in place of
+  // the key legend -- `s` during a sync used to do nothing at all.
+  const [notice, setNotice] = useState<string | null>(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Non-null while `q` waits for a second press because work is still running.
+  const [quitWarning, setQuitWarning] = useState<string | null>(null);
+  const quitRequestedRef = useRef(false);
 
   const { rows } = useWindowSize();
 
@@ -185,6 +196,38 @@ const App: React.FC<AppProps> = ({
   const addLogRef = useRef(addLog);
   addLogRef.current = addLog;
 
+  const showNotice = useCallback((message: string) => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    setNotice(message);
+    noticeTimerRef.current = setTimeout(() => {
+      noticeTimerRef.current = null;
+      setNotice(null);
+    }, NOTICE_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    },
+    [],
+  );
+
+  const quit = (): void => {
+    quitRequestedRef.current = true;
+    onQuit().catch((err) => console.error("Quit failed:", err));
+  };
+
+  // What a quit right now would cut short. Quitting waits for a sync, but it
+  // terminates running hooks and abandons a worktree still being created.
+  const describeRunningWork = (): string | null => {
+    const parts: string[] = [];
+    if (status === "syncing") parts.push("a sync");
+    if (activeOps.length > 0) parts.push(`${activeOps.length} operation${activeOps.length === 1 ? "" : "s"}`);
+    const hooks = getRunningHookCount?.() ?? 0;
+    if (hooks > 0) parts.push(`${hooks} hook${hooks === 1 ? "" : "s"}`);
+    return parts.length > 0 ? parts.join(", ") : null;
+  };
+
   useInput((input, key) => {
     // Mouse reports reach every useInput; only the scrollable panel acts on
     // them, and no shortcut here should fire off a stray click.
@@ -201,8 +244,23 @@ const App: React.FC<AppProps> = ({
       return;
     }
 
+    if (quitWarning !== null) {
+      setQuitWarning(null);
+      if (input === "q") quit();
+      return;
+    }
+
+    const syncBusy = status === "syncing";
+
     if (input === "q") {
-      onQuit().catch((err) => console.error("Quit failed:", err));
+      // Once a quit is under way a second `q` is the service's force-quit
+      // shortcut, so it goes straight through rather than asking again.
+      const running = quitRequestedRef.current ? null : describeRunningWork();
+      if (running) {
+        setQuitWarning(`${running} still running — press q again to quit`);
+      } else {
+        quit();
+      }
     } else if (input === "?" || input === "h") {
       setShowHelp(true);
     } else if (input === "c") {
@@ -211,9 +269,11 @@ const App: React.FC<AppProps> = ({
       setShowOpenEditorWizard(true);
     } else if (input === "w" && getWorktreeStatusForRepo) {
       setShowWorktreeStatus(true);
-    } else if (input === "x" && getForceCleanPreview && forceClean && status !== "syncing") {
+    } else if ((input === "s" || input === "r" || (input === "x" && getForceCleanPreview && forceClean)) && syncBusy) {
+      showNotice("A sync is in progress; try again when it finishes.");
+    } else if (input === "x" && getForceCleanPreview && forceClean) {
       setShowForceClean(true);
-    } else if (input === "s" && status !== "syncing") {
+    } else if (input === "s") {
       setStatus("syncing");
       (async () => {
         try {
@@ -223,7 +283,7 @@ const App: React.FC<AppProps> = ({
           setStatus("idle");
         }
       })().catch((err) => console.error("Manual sync unhandled error:", err));
-    } else if (input === "r" && status !== "syncing") {
+    } else if (input === "r") {
       setStatus("syncing");
       (async () => {
         try {
@@ -242,12 +302,15 @@ const App: React.FC<AppProps> = ({
       // made it a second, ungated owner of the status bar: the service stamps
       // "Last Sync" from inside a cycle (`runSyncCycle` awaits
       // `recordSyncOutcome` before its `finally`), so the first of two
-      // overlapping cycles to reach it put the bar back to `Running`, blanked
+      // overlapping cycles to reach it put the bar back to `Idle`, blanked
       // the other cycle's progress rows and re-armed the `s`/`x`/`r` guards
       // while that cycle was still fetching. `setStatus` -- which the service
       // drives from a count of the cycles in flight -- is the one gate.
       events.on("updateLastSyncTime", () => {
         setLastSyncTime(new Date());
+      }),
+      events.on("setLastSyncOutcome", (outcome: LastSyncOutcome) => {
+        setLastSyncOutcome(outcome);
       }),
       events.on("setStatus", (newStatus: "idle" | "syncing") => {
         setStatus(newStatus);
@@ -282,7 +345,7 @@ const App: React.FC<AppProps> = ({
       events.on("updateRepositoryCount", (count: number) => {
         setRepoCount(count);
       }),
-      events.on("updateCronSchedule", (newSchedule: string | undefined) => {
+      events.on("updateCronSchedule", (newSchedule: CronScheduleDisplay) => {
         setSchedule(newSchedule);
       }),
     ];
@@ -412,8 +475,10 @@ const App: React.FC<AppProps> = ({
         maxProgressLines={maxProgressLines}
         repositoryCount={repoCount}
         lastSyncTime={lastSyncTime}
+        lastSyncOutcome={lastSyncOutcome}
         cronSchedule={schedule}
         diskSpaceUsed={diskSpaceUsed ?? undefined}
+        notice={quitWarning ?? notice}
       />
     </Box>
   );

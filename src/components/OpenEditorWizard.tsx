@@ -33,7 +33,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   const [step, setStep] = useState<WizardStep>(repositories.length > 1 ? "SELECT_PROJECT" : "SELECT_WORKTREE");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
-  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? 0 : -1);
+  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? repositories[0].index : -1);
 
   const [worktrees, setWorktrees] = useState<Array<{ path: string; branch: string }>>([]);
   const [selectedWorktreeIndex, setSelectedWorktreeIndex] = useState(0);
@@ -137,7 +137,9 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
       if (isListUp(input, key)) {
         setSelectedProjectIndex((prev) => Math.max(0, prev - 1));
       } else if (isListDown(input, key)) {
-        setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        if (filteredProjects.length > 0) {
+          setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        }
       } else if (key.return && filteredProjects.length > 0) {
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
@@ -160,7 +162,9 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
       } else if (isListUp(input, key)) {
         setSelectedWorktreeIndex((prev) => Math.max(0, prev - 1));
       } else if (isListDown(input, key)) {
-        setSelectedWorktreeIndex((prev) => Math.min(filteredWorktrees.length - 1, prev + 1));
+        if (filteredWorktrees.length > 0) {
+          setSelectedWorktreeIndex((prev) => Math.min(filteredWorktrees.length - 1, prev + 1));
+        }
       } else if (key.return && filteredWorktrees.length > 0) {
         handleOpen();
       } else if (key.backspace || key.delete) {

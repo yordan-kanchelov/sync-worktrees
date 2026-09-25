@@ -25,6 +25,7 @@ const SECTIONS: HelpSection[] = [
     rows: [
       { keys: ["j", "↓"], description: "Scroll down one line" },
       { keys: ["k", "↑"], description: "Scroll up one line" },
+      { keys: ["PgUp", "PgDn"], description: "Scroll the log one page" },
       { keys: ["wheel"], description: "Scroll the log (hold Shift to select text)" },
       { keys: ["gg"], description: "Jump to top" },
       { keys: ["G"], description: "Jump to bottom (re-enables auto-scroll)" },
@@ -44,7 +45,7 @@ const SECTIONS: HelpSection[] = [
       // it closes this screen, cancels a wizard and steps a wizard back -- so
       // binding it to an exit as well would make one Esc too many, or a key
       // repeat, tear down the daemon and the hooks it still has running.
-      { keys: ["q"], description: "Gracefully quit" },
+      { keys: ["q"], description: "Gracefully quit; asks if busy" },
     ],
   },
   {

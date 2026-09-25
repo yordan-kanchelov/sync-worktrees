@@ -234,6 +234,19 @@ describe("TrashService", () => {
       expect(gitStub.deleteRef).toHaveBeenCalledWith(expect.stringContaining(GIT_CONSTANTS.TRASH_REF_PREFIX));
     });
 
+    it("warns, rather than staying silent, when the rolled-back pin ref cannot be deleted", async () => {
+      gitStub.deleteRef.mockRejectedValueOnce(new Error("ref locked"));
+      const missingSource = path.join(worktreeDir, "does-not-exist");
+
+      await expect(
+        service.trashDirectory({ dirPath: missingSource, branch: "ghost", reason: "prune" }),
+      ).rejects.toBeInstanceOf(TrashOperationError);
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/Could not remove the trash pin ref '.*': ref locked/),
+      );
+    });
+
     // The rollback of a half-made entry is a delete like any other: when it is
     // refused, what stays behind has to be something the pipeline can still
     // see and finish — a payload-less entry that lists and ages out.

@@ -103,7 +103,8 @@ single-branch dev clone. See [Clone mode](./docs/clone-mode.md).
   (worktrees are still created and pruned).
 - **Remove a worktree that is not clean.** A worktree whose branch is gone upstream (or filtered out) is removed only
   when it has no uncommitted changes, unpushed commits, stashes, in-progress operations, modified submodules or detached
-  HEAD. "Removed" means moved to `.trash/`, restorable for 30 days (`trash.enabled: false` deletes it instead).
+  HEAD. Only the worktree's own stashes count: git shares one stash list across all worktrees, so each stash is
+  matched to the branch it was made on. "Removed" means moved to `.trash/`, restorable for 30 days (`trash.enabled: false` deletes it instead).
 - **Silently overwrite diverged commits.** If a branch has commits of its own *and* new upstream commits (a force-push,
   or someone else pushed the same branch), the worktree is moved to `.trash/` with its commits pinned (to `.diverged/`
   when trash is disabled) and a fresh checkout of upstream takes its place. When you made no commits since the last
@@ -112,8 +113,8 @@ single-branch dev clone. See [Clone mode](./docs/clone-mode.md).
   [Diverged branches](./docs/trash-and-recovery.md#diverged-branches-force-pushes).
 - **Touch directories outside the paths it manages.** Sync looks only at the worktrees git lists and at the exact path
   where a managed branch's worktree belongs. A directory already sitting at that path that is not a registered worktree
-  is treated as stale and moved to `.trash/`. With trash disabled, sync quarantines it in place if it holds a `.git`
-  and **deletes it outright** otherwise.
+  is treated as stale and moved to `.trash/`. With trash disabled, sync quarantines it under a sibling `.removed/`
+  folder instead; only an empty directory is removed.
 - **Run your hooks unattended.** `hooks.onBranchCreated` and `filesToCopyOnBranchCreate` run only when you create a
   branch from the TUI's wizard, never on a tick or from an agent. The one exception is clone mode, which copies
   `filesToCopyOnBranchCreate` once into the fresh clone; no hook command runs. See
@@ -271,7 +272,7 @@ common operations, and a status view across every repository.
 | `x`       | [Force clean](./docs/trash-and-recovery.md#force-clean-from-the-tui-x): purge trash and recovery refs, `git gc` |
 | `r`       | Reload the config and re-sync                                                                                   |
 | `?` / `h` | Help                                                                                                            |
-| `q`       | Quit (`Esc` only backs out of what is open)                                                                     |
+| `q`       | Quit; asks first while a sync or hook is running (`Esc` only backs out of what is open)                         |
 
 Every key, the wizards, the status flags, and the terminal/editor launch variables: [Interactive TUI](./docs/tui.md).
 

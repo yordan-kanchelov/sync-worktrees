@@ -200,7 +200,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [step, setStep] = useState<ViewStep>(repositories.length > 1 ? "SELECT_PROJECT" : "VIEW_STATUS");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
-  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? 0 : -1);
+  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? repositories[0].index : -1);
 
   const [entries, setEntries] = useState<WorktreeStatusEntry[]>([]);
   const [divergedEntries, setDivergedEntries] = useState<DivergedDirectoryInfo[]>([]);
@@ -223,6 +223,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // A failed delete stays on the list it was pressed in; the ERROR step would
+  // throw the whole view away for one directory that could not be removed.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -385,7 +388,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
               setExpandedEntry(null);
             })
             .catch((err: unknown) => {
-              setError(`Failed to delete: ${getErrorMessage(err)}`);
+              setDeleteError(`Failed to delete ${item.entry.name}: ${getErrorMessage(err)}`);
               setConfirmDelete(null);
               setDeleting(false);
             });
@@ -409,6 +412,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
           setEntryFilter("");
           setExpandedEntry(null);
           setConfirmDelete(null);
+          setDeleteError(null);
           selectedRepoIndexRef.current = -1;
           loadedForRepoRef.current = null;
           setStep("SELECT_PROJECT");
@@ -425,7 +429,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
       if (isListUp(input, key)) {
         setSelectedProjectIndex((prev) => Math.max(0, prev - 1));
       } else if (isListDown(input, key)) {
-        setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        if (filteredProjects.length > 0) {
+          setSelectedProjectIndex((prev) => Math.min(filteredProjects.length - 1, prev + 1));
+        }
       } else if (key.return && filteredProjects.length > 0) {
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
@@ -454,6 +460,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         // printable key that deletes whenever a diverged row happens to be
         // selected made `d` impossible to type into the filter.
         if (isDivergedSelected && deleteDivergedDirectory) {
+          setDeleteError(null);
           setConfirmDelete(selectedEntryIndex);
         }
       } else if (key.backspace || key.delete) {
@@ -601,7 +608,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         : expandedItem?.type === "diverged"
           ? detailRows(divergedDetailLines(expandedItem.entry))
           : 0;
-    const extraRows = (filteredDiverged.length > 0 ? 1 : 0) + expandedRows;
+    // A failed delete's message sits under the list, with its margin.
+    const deleteErrorRows = deleteError ? 1 + wrappedRows(deleteError, layout.innerWidth) : 0;
+    const extraRows = (filteredDiverged.length > 0 ? 1 : 0) + expandedRows + deleteErrorRows;
     const visibleCount = listRowsFor(listRoom(linesAbove) - extraRows, combinedList.length);
     const { start: startIdx, end: endIdx } = listWindow(selectedEntryIndex, combinedList.length, visibleCount);
 
@@ -789,6 +798,12 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         )}
 
         {renderContent()}
+
+        {step === "VIEW_STATUS" && deleteError && (
+          <Box marginTop={1}>
+            <Text color="red">{deleteError}</Text>
+          </Box>
+        )}
 
         <Box marginTop={1}>{renderFooter()}</Box>
       </Box>
