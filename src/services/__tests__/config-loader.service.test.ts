@@ -961,7 +961,7 @@ describe("ConfigLoaderService", () => {
       ]);
     });
 
-    it("accepts 0 and any non-negative safe integer", async () => {
+    it("accepts 0 and any whole number of milliseconds within the timer range", async () => {
       const config = (await loadWith(", fetchTimeoutMs: 0, cloneTimeoutMs: 1800000")) as {
         repositories: Array<{ fetchTimeoutMs?: unknown; cloneTimeoutMs?: unknown }>;
       };
@@ -970,7 +970,21 @@ describe("ConfigLoaderService", () => {
       expect(config.repositories[0].cloneTimeoutMs).toBe(1_800_000);
     });
 
+    it("accepts both ends of the range: 1000 and setTimeout's ceiling 2147483647", async () => {
+      const config = (await loadWith(", fetchTimeoutMs: 1000, cloneTimeoutMs: 2147483647")) as {
+        repositories: Array<{ fetchTimeoutMs?: unknown; cloneTimeoutMs?: unknown }>;
+      };
+
+      expect(config.repositories[0].fetchTimeoutMs).toBe(1_000);
+      expect(config.repositories[0].cloneTimeoutMs).toBe(2_147_483_647);
+    });
+
     it.each([
+      ["1", "a one-millisecond window"],
+      ["300", "a window given in seconds"],
+      ["999", "just below the one-second floor"],
+      ["2147483648", "just above setTimeout's ceiling, which Node turns into 1 ms"],
+      ["31536000000", "a year, which Node turns into 1 ms"],
       ["-1", "a negative window"],
       ["1.5", "a fraction"],
       ['"abc"', "a string"],
@@ -983,28 +997,28 @@ describe("ConfigLoaderService", () => {
       await expect(loadWith(`, fetchTimeoutMs: ${value}`)).rejects.toThrow(ConfigValidationError);
       await expect(loadWith(`, fetchTimeoutMs: ${value}`)).rejects.toThrow(
         "Invalid configuration for 'Repository 'r' fetchTimeoutMs': " +
-          "must be a non-negative safe integer (0 disables the timeout)",
+          "must be 0 (disables the timeout) or a whole number of milliseconds from 1000 to 2147483647",
       );
     });
 
     it("rejects an invalid repository cloneTimeoutMs under its own field name", async () => {
       await expect(loadWith(", cloneTimeoutMs: -1")).rejects.toThrow(
         "Invalid configuration for 'Repository 'r' cloneTimeoutMs': " +
-          "must be a non-negative safe integer (0 disables the timeout)",
+          "must be 0 (disables the timeout) or a whole number of milliseconds from 1000 to 2147483647",
       );
     });
 
     it("rejects an invalid defaults.fetchTimeoutMs", async () => {
       await expect(loadWith("", "defaults: { fetchTimeoutMs: -1 }, ")).rejects.toThrow(
         "Invalid configuration for 'defaults.fetchTimeoutMs': " +
-          "must be a non-negative safe integer (0 disables the timeout)",
+          "must be 0 (disables the timeout) or a whole number of milliseconds from 1000 to 2147483647",
       );
     });
 
     it("rejects an invalid defaults.cloneTimeoutMs", async () => {
       await expect(loadWith("", 'defaults: { cloneTimeoutMs: "1h" }, ')).rejects.toThrow(
         "Invalid configuration for 'defaults.cloneTimeoutMs': " +
-          "must be a non-negative safe integer (0 disables the timeout)",
+          "must be 0 (disables the timeout) or a whole number of milliseconds from 1000 to 2147483647",
       );
     });
   });

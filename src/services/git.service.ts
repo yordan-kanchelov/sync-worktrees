@@ -12,7 +12,7 @@ import { getDefaultBareRepoDir, normalizeRepoUrlForComparison, redactRepoUrl } f
 import { getErrorMessage } from "../utils/lfs-error";
 import { quarantineDirectory } from "../utils/quarantine";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
-import { parseWorktreeListPorcelain } from "../utils/worktree-list-parser";
+import { parseWorktreeListPorcelain, readWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import { Logger } from "./logger.service";
 import { SparseCheckoutService } from "./sparse-checkout.service";
@@ -231,15 +231,10 @@ export class GitService {
   }
 
   // Per-client additions layered over the sanitized process environment by
-  // createGitClient. Force a stable C locale so git's stderr is deterministic
-  // English, exactly as clone mode does for its own clients: the push-status
-  // reason a refused lease is recognised by ("stale info"), the missing-ref
-  // classification and the LFS one all match on those strings, and under a
-  // non-English LANG/LC_ALL they stop matching without any other symptom — a
-  // lease rejection would be reported as a hard failure instead of the
-  // collision it is.
+  // createGitClient, which also forces the C locale every stderr match here
+  // ("stale info", missing-ref, LFS) depends on.
   private buildGitEnv(useLfsSkip: boolean, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { LC_ALL: "C", LANG: "C", ...extra };
+    const env: NodeJS.ProcessEnv = { ...extra };
     if (useLfsSkip) env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     return env;
   }
@@ -668,7 +663,7 @@ export class GitService {
       if (branches.length === 0) return;
 
       for (let start = 0; start < branches.length; start += BRANCH_DELETE_BATCH_SIZE) {
-        await bareGit.raw(["branch", "-D", ...branches.slice(start, start + BRANCH_DELETE_BATCH_SIZE)]);
+        await bareGit.raw(["branch", "-D", "--", ...branches.slice(start, start + BRANCH_DELETE_BATCH_SIZE)]);
       }
       this.logger.info(
         `Removed ${branches.length} clone-time local branch ${branches.length === 1 ? "copy" : "copies"}; worktrees are created from origin/* instead.`,
@@ -1182,7 +1177,7 @@ export class GitService {
     }
     if (createdNewBranch) {
       try {
-        await bareGit.raw(["branch", "-D", branchName]);
+        await bareGit.raw(["branch", "-D", "--", branchName]);
       } catch (branchRollbackError) {
         this.logger.warn(
           `  - Rollback (branch delete) failed for '${branchName}': ${getErrorMessage(branchRollbackError)}`,
@@ -1576,7 +1571,7 @@ export class GitService {
         );
         return;
       }
-      await bareGit.raw(["branch", "-D", branchName]);
+      await bareGit.raw(["branch", "-D", "--", branchName]);
       this.logger.info(`  - Removed the local branch '${branchName}' left behind by the failed worktree add`);
     } catch (error) {
       this.logger.warn(
@@ -2451,7 +2446,7 @@ export class GitService {
   }
 
   private async getWorktreesFromBare(bareGit: SimpleGit, includeDetached = false): Promise<RegisteredWorktree[]> {
-    const result = await bareGit.raw(["worktree", "list", "--porcelain"]);
+    const result = await readWorktreeListPorcelain(bareGit);
     return parseWorktreeListPorcelain(result)
       .filter((w) => includeDetached || (!w.detached && w.branch !== null))
       .map((w) => ({

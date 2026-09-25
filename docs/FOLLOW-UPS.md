@@ -1038,7 +1038,7 @@ The T33 worker's reported 1,432,411 bytes therefore includes 574 B that CI does 
 
 ## T33 follow-ups
 
-- **FU-T33-1. No lower bound on the timeouts.** `fetchTimeoutMs: 1` validates and would kill
+- **FU-T33-1. No lower bound on the timeouts.** _Resolved: non-zero timeouts must now be at least 1000 ms._ `fetchTimeoutMs: 1` validated and would kill
   essentially every fetch. Mirrors the pre-existing `validateDepth` (which allows `depth: 1`), so it
   is house-consistent and was left alone. If a floor is wanted, both validators should get one
   together.
@@ -2065,7 +2065,7 @@ behaviour it is defending is correct.**
 
 ## From T110+T114 (worker + 5-lens review + fixer, 2026-09-16)
 
-- **FU-T110-1 — `fetchTimeoutMs`/`cloneTimeoutMs` carry the same 2^31 overflow (pre-existing).** `validateTimeoutMs` (`config-loader.service.ts:812-816`) gates on `Number.isSafeInteger`, and `Number.isSafeInteger(31536000000)` is `true`, so a year-long fetch timeout loads cleanly and reaches simple-git's own `setTimeout`, clamps to 1 ms and kills the fetch immediately. Same one-clause fix as T114's; deliberately not applied.
+- **FU-T110-1 — `fetchTimeoutMs`/`cloneTimeoutMs` carry the same 2^31 overflow (pre-existing).** _Resolved: the loader rejects values above 2147483647 and `buildGitClientOptions` clamps a programmatic one._ `validateTimeoutMs` (`config-loader.service.ts:812-816`) gates on `Number.isSafeInteger`, and `Number.isSafeInteger(31536000000)` is `true`, so a year-long fetch timeout loads cleanly and reaches simple-git's own `setTimeout`, clamps to 1 ms and kills the fetch immediately. Same one-clause fix as T114's; deliberately not applied.
 - **FU-T110-2 — the timeout path's 5 s SIGKILL escalation is reachable but untested.** `executeCommandInBackground` arms it and nothing clears it while the hook runs, but no test waits 5 s to see it fire; the only coverage is that the timer gets cleared. A fake-timer test would pin it cheaply.
 - **FU-T110-3 — the 250 ms termination grace is not interruptible by a force-quit.** `releaseForceQuit` is already null by the time `cleanup()` runs, so a second `q` inside the window does nothing. Bounded, so low priority.
 - **FU-T110-4 — `handleReload` (`r`) never calls `hookExecutionService.cleanup()`.** Hooks from a previous config generation keep running across a reload and keep feeding the new UI's log panel through the old callbacks.
