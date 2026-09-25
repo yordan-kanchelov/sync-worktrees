@@ -51,7 +51,7 @@ Enter
 Sleep 1s
 Show
 
-Type `sync-worktrees --runOnce | grep -E "✅ (Created|Moved)"`
+Type `sync-worktrees --run-once | grep -E "✅ (Created|Moved)"`
 Sleep 300ms
 Enter
 Sleep 2500ms

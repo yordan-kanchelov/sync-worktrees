@@ -10,7 +10,7 @@ pnpm build && demo/render.sh
 
 | File                 | What it does                                                                                     |
 | -------------------- | ------------------------------------------------------------------------------------------------ |
-| `story.tape`         | The storyboard: config, TUI sync, status view (`w`), one folder per branch, `--runOnce`, `cd`    |
+| `story.tape`         | The storyboard: config, TUI sync, status view (`w`), one folder per branch, `--run-once`, `cd`   |
 | `demo.tape`          | Dark theme (Catppuccin Mocha); also writes the site video and poster                             |
 | `demo-light.tape`    | The same with a light theme (Catppuccin Latte); keep its settings in step with `demo.tape`       |
 | `setup-fixture.sh`   | Builds `/tmp/demo`: bare `frontend`/`backend` remotes over `file://`, fixed dates, and a config  |
