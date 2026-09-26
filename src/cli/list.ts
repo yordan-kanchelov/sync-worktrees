@@ -141,6 +141,7 @@ export function formatListedRepository(listed: ListedRepository, index: number):
   const lines = [
     `${index + 1}. ${listed.name}`,
     `   Mode: ${listed.mode}`,
+    // eslint-disable-next-line no-restricted-syntax -- ListedRepository.repoUrl is redacted when it is built.
     `   URL: ${listed.repoUrl}`,
     `   Worktrees: ${listed.worktreeDir}`,
     `   Schedule: ${listed.schedule}`,

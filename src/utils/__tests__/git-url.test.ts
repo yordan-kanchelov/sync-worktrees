@@ -8,6 +8,7 @@ import {
   parseGitUrl,
   redactRepoUrl,
   redactSecretsInText,
+  repoDisplayLabel,
 } from "../git-url";
 
 import type { ParsedGitUrl } from "../git-url";
@@ -391,6 +392,21 @@ describe("git-url utilities", () => {
     it("tolerates leading whitespace and is idempotent", () => {
       expect(redactRepoUrl("  https://u:p@example.com/r.git")).toBe("  https://***@example.com/r.git");
       expect(redactRepoUrl(redactRepoUrl("https://u:p@example.com/r.git"))).toBe("https://***@example.com/r.git");
+    });
+  });
+
+  describe("repoDisplayLabel", () => {
+    it("is the configured name when there is one", () => {
+      expect(repoDisplayLabel({ name: "app", repoUrl: "https://u:token@example.com/org/app.git" })).toBe("app");
+    });
+
+    it("falls back to the redacted URL for a repository without a name", () => {
+      expect(repoDisplayLabel({ repoUrl: "https://u:token@example.com/org/app.git" })).toBe(
+        "https://***@example.com/org/app.git",
+      );
+      expect(repoDisplayLabel({ name: "", repoUrl: "https://u:token@example.com/org/app.git" })).toBe(
+        "https://***@example.com/org/app.git",
+      );
     });
   });
 

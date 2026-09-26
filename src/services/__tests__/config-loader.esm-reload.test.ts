@@ -277,6 +277,56 @@ describe("config reload under real Node", () => {
     expect(result.outcome).toBe("rejected");
     expect(result.message).toMatch(/worker exited with code 3/);
   }, 60_000);
+
+  // A reload that never finishes evaluating — a top-level await on a live
+  // handle, or a loop that never ends — would wedge `r` and `load_config`
+  // for good. The reload is bounded instead: it rejects with a message naming
+  // the file, and the stopped worker holds nothing that keeps the process up.
+  it.each([
+    ["awaits a timer that outlives the reload", "await new Promise((resolve) => setTimeout(resolve, 600_000));\n"],
+    ["spins in a loop that never ends", "while (true) {}\n"],
+  ])(
+    "rejects rather than hangs when a reloaded config %s",
+    async (_label, preamble) => {
+      const dir = await makeFixtureDir();
+      const configPath = path.join(dir, "sync-worktrees.config.mjs");
+      await fs.writeFile(configPath, configSource(`"first"`));
+
+      const script = `
+      import { writeFile } from "node:fs/promises";
+      import { ConfigLoaderService } from ${JSON.stringify(bundlePath)};
+      const loader = new ConfigLoaderService({ reloadTimeoutMs: 1_000 });
+      await loader.loadConfigFile(${JSON.stringify(configPath)});
+      await writeFile(${JSON.stringify(configPath)}, ${JSON.stringify(configSource(`"second"`, preamble))});
+      const started = Date.now();
+      try {
+        await loader.loadConfigFile(${JSON.stringify(configPath)});
+        console.log(JSON.stringify({ outcome: "resolved" }));
+      } catch (error) {
+        console.log(JSON.stringify({ outcome: "rejected", message: error.message, elapsedMs: Date.now() - started }));
+      }
+    `;
+      const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", script], {
+        timeout: 20_000,
+        killSignal: "SIGKILL",
+      });
+
+      const result = JSON.parse(stdout.trim().split("\n").at(-1) as string) as {
+        outcome: string;
+        message?: string;
+        elapsedMs?: number;
+      };
+      expect(result.outcome).toBe("rejected");
+      expect(result.message).toContain(
+        "reloading 'sync-worktrees.config.mjs' did not finish within 1s, so it was stopped and the configuration " +
+          "already loaded stays in effect",
+      );
+      // Located at the config, never at the loader's own timer.
+      expect(result.message).toContain(`(${configPath})`);
+      expect(result.elapsedMs).toBeLessThan(10_000);
+    },
+    60_000,
+  );
 });
 
 /**

@@ -18,7 +18,7 @@ import { appendGitAuthHint } from "../utils/git-auth-error";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { formatBytes } from "../utils/disk-space";
 import type { DiskUsageCache } from "../utils/disk-usage-cache";
-import { getDefaultBareRepoDir, redactSecretsInText } from "../utils/git-url";
+import { getDefaultBareRepoDir, redactSecretsInText, repoDisplayLabel } from "../utils/git-url";
 import { resolveMode } from "../utils/repo-mode";
 import type {
   RepositoryConfig,
@@ -624,7 +624,7 @@ export class RepositoryOperations {
     }
 
     const config = this.host.getServices()[repoIndex].config;
-    const repoName = (config as RepositoryConfig).name || config.repoUrl;
+    const repoName = repoDisplayLabel(config);
 
     this.branchCreatedActions.runHooks({
       config,
