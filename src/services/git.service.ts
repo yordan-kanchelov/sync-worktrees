@@ -399,7 +399,12 @@ export class GitService {
     // The sync's own fetch (`fetchAll`), run in the bare repository because
     // the anchor may be missing; both name the same repository. No auto gc:
     // repacking is not something a dry run should set off.
-    await this.getCachedNetworkGit(this.bareRepoPath).fetch(["--all", "--prune", "--no-auto-gc", "--progress"]);
+    await this.getCachedNetworkGit(this.bareRepoPath, this.isLfsSkipEnabled()).fetch([
+      "--all",
+      "--prune",
+      "--no-auto-gc",
+      "--progress",
+    ]);
 
     this.defaultBranch = await this.bareRepo.detectDefaultBranch(bareGit, { readOnly: true });
     this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);

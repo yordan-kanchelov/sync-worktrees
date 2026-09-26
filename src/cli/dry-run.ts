@@ -12,7 +12,6 @@ import type { ConfigFile, RepositoryConfig } from "../types";
 
 export interface DryRunOptions {
   json: boolean;
-  quiet: boolean;
   debug: boolean;
 }
 
@@ -114,6 +113,7 @@ const REASON_LABELS: Readonly<Record<string, string>> = {
   path_collision: "path collision",
   external_worktree: "external worktree",
   reserved_by_trash: "reserved by trash",
+  fully_pushed_trash_disabled: "kept",
 };
 
 function describeReason(reason: string): string {

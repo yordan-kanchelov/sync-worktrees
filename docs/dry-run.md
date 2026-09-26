@@ -42,7 +42,10 @@ One block per repository, one line per step, then a summary:
 | `noop`    | Up to date; the text report shows only their count.                                                                                                                                                                                                      | Up to date.                                                         |
 
 Notes (`ℹ`) flag the places where the sync does something first that the plan did not simulate, such as unshallowing a
-clone or deepening a shallow one to classify it.
+clone or narrowing a clone's wide `remote.origin.fetch` refspec to the tracked branch. A `depth`-configured clone whose
+history is too short to relate to `origin/<branch>` is shown as a `clone_indeterminate_shallow` skip; when `depth` still
+leaves deepening room, its message says the sync deepens first (which the dry run does not simulate) and may then
+fast-forward.
 
 The plan comes from the sync's own checks, run the same way, so the sync that follows does what it says as long as
 nothing changes in between. Two decisions are re-checked by the sync at the moment it acts: a removal is re-checked just

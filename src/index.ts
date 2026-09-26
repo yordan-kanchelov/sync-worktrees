@@ -425,7 +425,6 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
   if (options.dryRun) {
     process.exitCode = await runDryRun(loaded.configFile, loaded.repositories, {
       json: options.json,
-      quiet: options.quiet,
       debug: options.debug,
     });
     return;

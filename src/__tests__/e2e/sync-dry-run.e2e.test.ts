@@ -320,6 +320,49 @@ describe("sync --dry-run (E2E)", () => {
     expect(dirty.steps).toEqual([expect.objectContaining({ kind: "skip", reason: "clone_dirty_tree" })]);
   }, 60000);
 
+  it("plans a depth-configured clone that is too shallow to classify, and says the sync deepens first", async () => {
+    const project = path.join(tempDir, "project");
+    const cloneDir = path.join(project, "clone");
+    const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+    await writeConfig(configPath, [
+      { name: "clone", mode: "clone", repoUrl: `file://${remote}`, worktreeDir: cloneDir, depth: 1 },
+    ]);
+    expect(run(["--config", configPath, "--run-once"]).status).toBe(0);
+
+    await commitOnRemote("main", "main-2.txt", { from: "origin/main" });
+    await commitOnRemote("main", "main-3.txt");
+    // Under `depth` the fetch may move the shallow boundary, as documented.
+    const shallowFetchOwned = (rel: string): boolean => fetchOwned(rel) || rel === path.join(".git", "shallow");
+    const before = await snapshot(cloneDir, shallowFetchOwned);
+
+    const plan = planOf(dryRunJson(configPath)[0]);
+    expect(plan.steps).toEqual([
+      expect.objectContaining({ kind: "skip", reason: "clone_indeterminate_shallow", branch: "main" }),
+    ]);
+    const message = (plan.steps[0] as { message?: string }).message ?? "";
+    expect(message).toContain("deepening up to 1000 commits is not simulated");
+    expect(message).toContain("may then fast-forward");
+    expect(message).not.toContain("no deepening attempted");
+    expect(await snapshot(cloneDir, shallowFetchOwned)).toEqual(before);
+
+    // The sync the plan warned about: it deepens and fast-forwards.
+    expect(run(["--config", configPath, "--run-once"]).status).toBe(0);
+    await expect(fs.access(path.join(cloneDir, "main-3.txt"))).resolves.toBeUndefined();
+
+    // A wide refspec is narrowed by the sync first; the plan says so and
+    // leaves the config alone.
+    await simpleGit(cloneDir).raw([
+      "config",
+      "--replace-all",
+      "remote.origin.fetch",
+      "+refs/heads/*:refs/remotes/origin/*",
+    ]);
+    const configBefore = await fs.readFile(path.join(cloneDir, ".git", "config"), "utf-8");
+    const wide = planOf(dryRunJson(configPath)[0]);
+    expect(wide.notes).toEqual([expect.stringContaining("narrows it to 'main'")]);
+    expect(await fs.readFile(path.join(cloneDir, ".git", "config"), "utf-8")).toBe(configBefore);
+  }, 90000);
+
   it("refuses --json without --dry-run", () => {
     const result = run(["--run-once", "--json"]);
     expect(result.status).toBe(1);

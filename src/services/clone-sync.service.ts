@@ -26,7 +26,7 @@ import {
 import { CloneGitClients } from "./clone-sync/git-clients";
 import { hasRemoteBranch, isShallowRepository, parseLsRemoteHeads, readHeadCommit } from "./clone-sync/git-helpers";
 import { CLONE_SYNC_PHASES, timePhase } from "./clone-sync/phases";
-import { configureSingleBranchRemote, evaluateOriginMatch } from "./clone-sync/remote-config";
+import { assessSingleBranchRemote, configureSingleBranchRemote, evaluateOriginMatch } from "./clone-sync/remote-config";
 import { assessSparseCheckout, reapplySparseCheckout } from "./clone-sync/sparse";
 import { cloneSkipToOutcomeAction } from "./sync-outcome";
 
@@ -385,6 +385,11 @@ export class CloneSyncService {
     if (this.config.depth === undefined && (await isShallowRepository(clients.git))) {
       plan.note("The clone is shallow and no depth is configured: a sync first fetches its full history.");
     }
+    if (!(await assessSingleBranchRemote(clients.git, branch)).refspecConverged) {
+      plan.note(
+        `origin's fetch refspec is not the single-branch one: a sync first narrows it to '${branch}' and deletes the other origin/* remote-tracking refs.`,
+      );
+    }
 
     const fetchArgs = await buildSyncFetchArgs(this.ctx, clients.git, branch);
     const fetched = await fetchWithRecovery(this.ctx, clients, fetchArgs, worktreeDir, branch, false);
@@ -440,14 +445,27 @@ export class CloneSyncService {
       });
       return;
     }
+    // Too shallow to classify with a deepen budget left: the tick would spend
+    // it (more fetches, each moving the shallow boundary) before deciding, and
+    // the dry run does not. The outcome's wording for this skip assumes the
+    // budget is spent or empty, so the step says what was not simulated.
+    const deepenBudget = getDeepenTargets(this.ctx);
+    if (relationship === "indeterminate_shallow" && deepenBudget.length > 0) {
+      const deepest = deepenBudget[deepenBudget.length - 1];
+      plan.add({
+        kind: "skip",
+        scope: "repo",
+        reason: "clone_indeterminate_shallow",
+        branch,
+        path: worktreeDir,
+        message:
+          `history too short to relate HEAD to origin/${branch}; deepening up to ${deepest} commits ` +
+          `is not simulated by a dry run — a sync deepens first and may then fast-forward`,
+      });
+      return;
+    }
     const relationshipSkip = this.relationshipSkip(relationship, branch, null);
     if (relationshipSkip) {
-      const budget = getDeepenTargets(this.ctx);
-      if (relationship === "indeterminate_shallow" && budget.length > 0) {
-        plan.note(
-          `The clone's history is too short to relate HEAD to origin/${branch}; a sync first deepens it (up to ${budget[budget.length - 1]} commits) and may then fast-forward.`,
-        );
-      }
       plan.add(this.skipStep(relationshipSkip.skip));
       return;
     }

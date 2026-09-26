@@ -59,6 +59,32 @@ describe("sync --dry-run report", () => {
     expect(text).toContain("Nothing was changed; origin was fetched");
   });
 
+  it("labels a kept fully-pushed worktree without repeating its reason code", () => {
+    const text = formatDryRunReports([
+      {
+        name: "app",
+        status: "planned",
+        plan: {
+          ...plan,
+          notes: [],
+          steps: [
+            {
+              kind: "skip",
+              scope: "worktree",
+              branch: "stale",
+              reason: "fully_pushed_trash_disabled",
+              message: "fully pushed before upstream deletion; trash disabled",
+            },
+          ],
+          counts: { clone: 0, create: 0, update: 0, replace: 0, remove: 0, skip: 1, noop: 0 },
+        },
+      },
+    ]).join("\n");
+
+    expect(text).toMatch(/⏭ skip\s+stale\s+kept: fully pushed before upstream deletion; trash disabled/);
+    expect(text).not.toContain("fully pushed trash disabled");
+  });
+
   it("reports repositories it could not plan, and ones another process holds", () => {
     const text = formatDryRunReports([
       { name: "broken", status: "failed", error: "boom" },
@@ -94,7 +120,6 @@ describe("runDryRun", () => {
 
     const code = await runDryRun({ repositories: [] }, [repo("app"), repo("busy")], {
       json: true,
-      quiet: false,
       debug: false,
     });
 
@@ -109,7 +134,7 @@ describe("runDryRun", () => {
   it("exits 1 when a repository could not be planned, with its credentials scrubbed", async () => {
     planSync.mockRejectedValueOnce(new Error("fetch failed for https://user:s3cret@example.com/org/app.git"));
 
-    const code = await runDryRun({ repositories: [] }, [repo("app")], { json: true, quiet: false, debug: false });
+    const code = await runDryRun({ repositories: [] }, [repo("app")], { json: true, debug: false });
 
     expect(code).toBe(1);
     const [report] = JSON.parse(stdout.join("\n")) as DryRunReport[];
@@ -126,7 +151,7 @@ describe("runDryRun", () => {
       error: "permission denied",
     });
 
-    const code = await runDryRun({ repositories: [] }, [repo("app")], { json: false, quiet: false, debug: false });
+    const code = await runDryRun({ repositories: [] }, [repo("app")], { json: false, debug: false });
 
     expect(code).toBe(1);
     expect(stdout.join("\n")).toContain("app: not planned:");
