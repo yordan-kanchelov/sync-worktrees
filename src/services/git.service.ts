@@ -1,168 +1,67 @@
-import * as fs from "fs/promises";
 import * as path from "path";
 
-import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import {
-  ConfigError,
-  GitOperationError,
-  UpstreamSetupError,
-  WorktreeError,
-  WorktreeMetadataError,
-  WorktreeNotCleanError,
-} from "../errors";
-import { fileExists, probePathExists } from "../utils/file-exists";
+import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS } from "../constants";
+import { GitOperationError, WorktreeError } from "../errors";
+import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
-import { isGitLfsInstalled, isLfsSmudgeSkippedByEnv, warnGitLfsMissingOnce } from "../utils/git-lfs-probe";
+import { sshNoPromptEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
-import { getDefaultBareRepoDir, normalizeRepoUrlForComparison, redactRepoUrl } from "../utils/git-url";
+import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
-import { quarantineDirectory } from "../utils/quarantine";
+import { pathsEqual } from "../utils/path-compare";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
-import { parseWorktreeListPorcelain, readWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
+import { BareRepoService } from "./bare-repo.service";
+import { BranchRefService } from "./branch-ref.service";
+import { LfsVerificationService } from "./lfs-verification.service";
 import { Logger } from "./logger.service";
+import { PathResolutionService } from "./path-resolution.service";
 import { SparseCheckoutService } from "./sparse-checkout.service";
+import { WorktreeCreationService } from "./worktree-creation.service";
 import { WorktreeMetadataService } from "./worktree-metadata.service";
+import { WorktreeRegistryService } from "./worktree-registry.service";
 import { WorktreeStatusService } from "./worktree-status.service";
 
-import type { WorktreeStatusResult } from "./worktree-status.service";
-import type { Config } from "../types";
+import type {
+  AddWorktreeResult,
+  AheadBehindCounts,
+  DefaultBranchRefresh,
+  GitServiceContext,
+  GitServiceOptions,
+  RegisteredWorktree,
+  RemoteRelationship,
+  UncachedGitClientOptions,
+  WorktreeUpdateResult,
+} from "./git-service.types";
+import type { RefScanScope, WorktreeStatusResult } from "./worktree-status.service";
 import type { SyncMetadata } from "../types/sync-metadata";
 import type { GitProgressEmitter } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
-export type RemoteRelationship = "up_to_date" | "fast_forward" | "local_ahead" | "diverged" | "indeterminate_shallow";
+export type {
+  AddWorktreeResult,
+  AheadBehindCounts,
+  DefaultBranchRefresh,
+  GitServiceOptions,
+  RegisteredWorktree,
+  RemoteRelationship,
+  WorktreeUpdateResult,
+} from "./git-service.types";
 
-// What the bare clone's destination was verified to be. The first three are
-// positive verdicts — the path is provably absent, provably an empty
-// directory, or a marked leftover this tool just removed — and only those let
-// the clone claim the destination with a pending marker. "unverifiable" is
-// every outcome the probes could not settle; it is cloned into, but never
-// claimed, so a failed clone leaves nothing that would authorize a deletion.
-type BareCloneDestination = "missing" | "empty" | "recovered" | "unverifiable";
-
-// What updateWorktree did: `updated` is whether the fast-forward moved HEAD;
-// `before` and `after` are HEAD on either side of it (equal for a no-op).
-export interface WorktreeUpdateResult {
-  updated: boolean;
-  before: string;
-  after: string;
-}
-
-// Commits on either side of HEAD...refs/remotes/origin/<branch>: `ahead` are
-// HEAD's own, `behind` are the remote tip's. Both above zero means the two
-// histories have diverged.
-export interface AheadBehindCounts {
-  ahead: number;
-  behind: number;
-}
-
-// One entry of `git worktree list --porcelain`. `locked` carries git's own
-// lock flag: a locked worktree is one the user asked git to protect, and git
-// refuses to remove it (even with a single --force) until it is unlocked, so
-// callers must treat it as off-limits rather than as a removal that failed.
-export interface RegisteredWorktree {
-  path: string;
-  branch: string;
-  isPrunable?: boolean;
-  // Optional like isPrunable: every listing sets it, and callers that build a
-  // worktree by hand (tests, fixtures) should not have to.
-  locked?: boolean;
-  /** Reason given to `git worktree lock --reason`; absent when git records none. */
-  lockReason?: string;
-  /**
-   * Set (to true) only for a worktree git lists as detached — one with no
-   * branch checked out. `getWorktrees()` omits those unless `includeDetached`
-   * asks for them, and `branch` is the empty string on such a row: there is no
-   * ref for a caller to fetch, merge or fast-forward.
-   */
-  detached?: boolean;
-  /**
-   * The oid `git worktree list --porcelain` printed for this worktree's HEAD.
-   * For a worktree on a branch that is refs/heads/<branch> resolved through the
-   * worktree's own HEAD symref, so it is the one thing the bare repo's refs
-   * cannot tell apart from a detached or mid-operation checkout — and it comes
-   * out of the listing every sync already makes, at no extra spawn. Absent when
-   * git printed no HEAD line (a prunable registration, the bare repo itself).
-   */
-  head?: string;
-}
-
-// What one addWorktree call did. `created` carries the new worktree's HEAD —
-// the commit callers compare against origin/<branch>. `already_registered`
-// means the path was a registered worktree before the call and nothing was
-// created: either one a concurrent operation registered first, or a
-// detached-HEAD checkout someone left there, which no sync of ours owns.
-export type AddWorktreeResult =
-  { status: "created"; head: string } | { status: "already_registered"; detached: boolean };
-
-export interface DefaultBranchRefresh {
-  previous: string;
-  defaultBranch: string;
-  // The default branch's worktree — where fetches run from now.
-  mainWorktreePath: string;
-  // Whether this refresh created that worktree (rather than keeping or
-  // adopting an existing one).
-  created: boolean;
-}
-
-// Branch names per `git branch -D` invocation when dropping a fresh bare
-// clone's refs/heads/* copies. One call per batch keeps a repository with
-// thousands of branches to a handful of packed-refs rewrites instead of one
-// per ref, while staying far below any platform's argument-length limit.
-const BRANCH_DELETE_BATCH_SIZE = 200;
-
-// How many of a worktree's LFS files are read back after a checkout. The check
-// answers "did the smudge filter run here at all", which a sample settles just
-// as well as reading every file.
-const LFS_VERIFICATION_SAMPLE_SIZE = 5;
-
-// The `.gitattributes` entry that hands a path to git-lfs. A repository whose
-// HEAD declares none never had LFS content, so nothing about LFS is worth
-// running (or warning about) for it.
-const LFS_FILTER_ATTRIBUTE = "filter=lfs";
-
-// How many tree oids keep their "declares an LFS filter" verdict. The entries
-// are content-addressed and can never go stale, so this only bounds memory in a
-// daemon that runs for weeks.
-const LFS_ATTRIBUTE_CACHE_LIMIT = 256;
-
-// Full-ref prefix of origin's remote-tracking branches. Every inventory
-// listing reads %(refname) and strips this literal prefix, never
-// %(refname:short): git's short form is ambiguity-dependent and silently
-// renames refs. It shortens refs/remotes/origin/feature/HEAD to
-// "origin/feature" (a branch that does not exist) and prints
-// "remotes/origin/x" whenever a local branch literally named "origin/x"
-// exists — either way the real branch leaves the inventory and its worktree
-// then reads as stale and is pruned.
-const REMOTE_REF_PREFIX = `${GIT_CONSTANTS.REFS.REMOTES}/`;
-
-// `--not <this>` excludes everything reachable from origin's remote-tracking
-// refs, and only those. Deliberately not `--remotes`: see
-// countCommitsNotOnAnyRemote for why every remote-tracking ref in the
-// repository is the wrong set to trust.
-const REMOTES_GLOB = `--glob=${REMOTE_REF_PREFIX}`;
-
-// The one ref under that prefix that is not a branch: the symref
-// `git remote set-head` writes. It is excluded by its full name only —
-// "feature/HEAD" is a legal branch name, so an endsWith("/HEAD") test would
-// drop a real branch (and prune its worktree) along with the symref.
-const ORIGIN_HEAD_REF = `${REMOTE_REF_PREFIX}HEAD`;
-
-export type GitServiceOptions = Pick<
-  Config,
-  | "repoUrl"
-  | "worktreeDir"
-  | "bareRepoDir"
-  | "skipLfs"
-  | "debug"
-  | "sparseCheckout"
-  | "fetchTimeoutMs"
-  | "cloneTimeoutMs"
-  | "parallelism"
->;
-
+/**
+ * Everything sync does with git for one repository, behind one object: the
+ * CLI, the TUI, the MCP server and the sync runner all hold a GitService.
+ * It owns the per-path client cache, the default branch and its anchor
+ * worktree, fetches, and the per-worktree update/reset probes; the larger
+ * concerns are delegated to focused services that share its clients and
+ * settings through a GitServiceContext:
+ *  - BareRepoService: cloning/validating the bare repository, default-branch detection;
+ *  - WorktreeCreationService: the worktree-add matrix, rollback, stale-directory quarantine;
+ *  - WorktreeRegistryService: `git worktree list`/`remove`;
+ *  - BranchRefService: branch and ref probes, creation, deletion, push, bundles;
+ *  - LfsVerificationService: checking a checkout materialized its LFS content.
+ */
 export class GitService {
   private git: SimpleGit | null = null;
   private bareRepoPath: string;
@@ -173,15 +72,29 @@ export class GitService {
   private sparseCheckoutService: SparseCheckoutService;
   private logger: Logger;
   private lfsSkipOverride = false;
-  // Tree oid -> whether that tree's .gitattributes declare an LFS filter.
-  private lfsAttributeCache = new Map<string, boolean>();
   private gitInstances = new GitClientCache();
+  private readonly branchRefs: BranchRefService;
+  private readonly registry: WorktreeRegistryService;
+  private readonly lfs: LfsVerificationService;
+  private readonly bareRepo: BareRepoService;
+  private readonly creation: WorktreeCreationService;
+  // Environment every client this service builds carries on top of the
+  // per-call LFS setting: empty for a syncing service, optional locks off for
+  // a read-only one.
+  private readonly baseEnv: NodeJS.ProcessEnv;
+  private readonly pathResolution = new PathResolutionService();
 
   constructor(
     private config: GitServiceOptions,
     logger?: Logger,
     private progressEmitter?: GitProgressEmitter,
+    options: { readOnly?: boolean } = {},
   ) {
+    // A read-only service (the dry run's) must leave the repository exactly as
+    // it found it, and `git status` / `git diff` refresh a worktree's index as
+    // a side effect unless optional locks are off. Nothing a read-only service
+    // runs needs that refresh.
+    this.baseEnv = options.readOnly ? { [ENV_CONSTANTS.GIT_OPTIONAL_LOCKS]: "0" } : {};
     this.logger = logger ?? Logger.createDefault(undefined, config.debug);
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, GIT_CONSTANTS.DEFAULT_BRANCH); // Temporary, will be updated
@@ -194,6 +107,7 @@ export class GitService {
       {
         skipLfs: this.config.skipLfs,
         maxConcurrentGitProcesses: this.config.parallelism?.maxStatusChecks,
+        ...(options.readOnly && { extraEnv: this.baseEnv }),
       },
       this.logger,
     );
@@ -207,6 +121,55 @@ export class GitService {
     this.sparseCheckoutService = new SparseCheckoutService(this.logger, (worktreePath) =>
       this.getCachedGit(worktreePath, this.isLfsSkipEnabled()),
     );
+
+    const ctx = this.createContext();
+    this.branchRefs = new BranchRefService(ctx);
+    this.registry = new WorktreeRegistryService(ctx, this.metadataService);
+    this.lfs = new LfsVerificationService(ctx);
+    this.bareRepo = new BareRepoService(ctx, this.branchRefs);
+    this.creation = new WorktreeCreationService(ctx, {
+      registry: this.registry,
+      branchRefs: this.branchRefs,
+      lfs: this.lfs,
+      sparseCheckout: this.sparseCheckoutService,
+      metadata: this.metadataService,
+    });
+  }
+
+  // The view of this service its sub-services work through. Every accessor
+  // reads the current value, so updateLogger, a default-branch switch and
+  // setLfsSkipEnabled reach them without any re-wiring.
+  private createContext(): GitServiceContext {
+    return {
+      config: this.config,
+      bareRepoPath: this.bareRepoPath,
+      logger: () => this.logger,
+      defaultBranch: () => this.defaultBranch,
+      localGit: (dirPath, useLfsSkip) => this.getCachedGit(dirPath, useLfsSkip),
+      networkGit: (dirPath, useLfsSkip) => this.getCachedNetworkGit(dirPath, useLfsSkip),
+      uncachedGit: (dirPath, options) => this.createUncachedGit(dirPath, options),
+      fetchTimeoutMs: () => this.getFetchTimeoutMs(),
+      cloneTimeoutMs: () => this.getCloneTimeoutMs(),
+      isLfsSkipEnabled: () => this.isLfsSkipEnabled(),
+      forgetCachedClients: (dirPath) => this.forgetCachedClients(dirPath),
+    };
+  }
+
+  // A client nothing caches: the bare clone (no repository to run in yet),
+  // ls-remote against a URL, and one-off environments such as LFS
+  // verification's GIT_ATTR_SOURCE.
+  private createUncachedGit(dirPath: string | undefined, options: UncachedGitClientOptions): SimpleGit {
+    return createGitClient(
+      dirPath,
+      this.buildGitEnv(options.useLfsSkip, options.extraEnv),
+      this.buildSimpleGitOptions(options.blockMs),
+    );
+  }
+
+  // The environment additions every client of this service carries, for the
+  // clients built outside it (clone mode's) that must behave the same way.
+  getBaseGitEnv(): NodeJS.ProcessEnv {
+    return { ...this.baseEnv };
   }
 
   getSparseCheckoutService(): SparseCheckoutService {
@@ -239,9 +202,10 @@ export class GitService {
 
   // Per-client additions layered over the sanitized process environment by
   // createGitClient, which also forces the C locale every stderr match here
-  // ("stale info", missing-ref, LFS) depends on.
+  // ("stale info", missing-ref, LFS) depends on. An ssh remote also gets the
+  // askpass settings that keep ssh from waiting on a prompt (sshNoPromptEnv).
   private buildGitEnv(useLfsSkip: boolean, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...extra };
+    const env: NodeJS.ProcessEnv = { ...sshNoPromptEnv(this.config.repoUrl), ...this.baseEnv, ...extra };
     if (useLfsSkip) env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     return env;
   }
@@ -307,71 +271,8 @@ export class GitService {
   }
 
   async initialize(): Promise<SimpleGit> {
-    const { repoUrl } = this.config;
-
-    // Check if bare repo already exists
-    let bareRepoExists: boolean;
-    try {
-      await fs.access(path.join(this.bareRepoPath, "HEAD"));
-      bareRepoExists = true;
-    } catch {
-      bareRepoExists = false;
-    }
-
-    if (bareRepoExists) {
-      // A marker next to a repository that has a HEAD is stale (a clone that
-      // landed but whose marker removal did not): the repository is complete,
-      // so only the marker goes — nothing here may delete a directory.
-      await this.clearBareClonePendingMarker();
-      await this.assertBareRepoOriginMatches(this.getCachedGit(this.bareRepoPath));
-    } else {
-      const destination = await this.prepareBareCloneDestination();
-      // Clone as bare repository
-      this.logger.info(`Cloning from "${redactRepoUrl(repoUrl)}" as bare repository into "${this.bareRepoPath}"...`);
-      await fs.mkdir(path.dirname(this.bareRepoPath), { recursive: true });
-      // The marker authorizes a later init to DELETE this directory, so only a
-      // destination positively verified as ours may carry one. A destination
-      // that could not be verified is cloned into without a marker: the clone
-      // reports whatever is wrong with it, and nothing is left behind that
-      // would license deleting someone else's data on the next run.
-      if (destination !== "unverifiable") await this.writeBareClonePendingMarker();
-      const cloneGit = createGitClient(
-        undefined,
-        this.buildGitEnv(this.isLfsSkipEnabled()),
-        this.buildSimpleGitOptions(this.getCloneTimeoutMs()),
-      );
-      try {
-        await cloneGit.clone(repoUrl, this.bareRepoPath, ["--bare", "--progress"]);
-      } catch (error) {
-        // git removes the destination it created when a clone fails, so the
-        // authorization must end with the clone that earned it: it survives
-        // only while a partial directory actually remains.
-        await this.releaseBareClonePendingMarkerAfterFailure();
-        throw error;
-      }
-      // A clone git reported as successful always wrote HEAD, so ownership
-      // ends here, before the post-clone steps. Those are deliberately not
-      // covered by it: dropClonedBranchCopies is best-effort and must never
-      // run against an adopted repository, whose refs/heads can hold real
-      // local-only commits.
-      await this.clearBareClonePendingMarker();
-      this.logger.info("✅ Clone successful.");
-      await this.dropClonedBranchCopies(this.getCachedGit(this.bareRepoPath));
-    }
-
-    // Configure bare repository for worktrees
+    await this.bareRepo.ensureBareRepository();
     const bareGit = this.getCachedGit(this.bareRepoPath);
-
-    // Check if fetch config already exists
-    try {
-      const existingConfig = await bareGit.raw(["config", "--get-all", "remote.origin.fetch"]);
-      if (!existingConfig.includes(GIT_CONSTANTS.FETCH_CONFIG)) {
-        await bareGit.addConfig("remote.origin.fetch", GIT_CONSTANTS.FETCH_CONFIG);
-      }
-    } catch {
-      // Config doesn't exist, add it
-      await bareGit.addConfig("remote.origin.fetch", GIT_CONSTANTS.FETCH_CONFIG);
-    }
 
     // Always fetch to ensure remote refs are up-to-date
     // This is needed for branch creation UI even when repo already exists
@@ -379,7 +280,7 @@ export class GitService {
     await this.getCachedNetworkGit(this.bareRepoPath).fetch(["--all", "--progress"]);
 
     // Detect the default branch (works from local refs even without fetch)
-    this.defaultBranch = await this.detectDefaultBranch(bareGit);
+    this.defaultBranch = await this.bareRepo.detectDefaultBranch(bareGit);
     this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
     await this.ensureMainWorktree(bareGit);
 
@@ -393,15 +294,16 @@ export class GitService {
   // Resolves to true when this call created the worktree.
   //
   // A registered worktree on the default branch at another path is adopted
-  // rather than duplicated: it is the hashed directory the sync created while
-  // the branch was an ordinary remote branch, before the remote made it the
-  // default, and git refuses a second worktree on a branch that is already
+  // rather than duplicated: it is the directory the sync created while the
+  // branch was an ordinary remote branch (a hashed or multi-segment name; a
+  // single-segment plain name already is this path), before the remote made it
+  // the default, and git refuses a second worktree on a branch that is already
   // checked out.
   private async ensureMainWorktree(bareGit: SimpleGit): Promise<boolean> {
     // Check if main worktree exists
     let needsMainWorktree = true;
     try {
-      const worktrees = await this.getWorktreesFromBare(bareGit, true);
+      const worktrees = await this.registry.getWorktreesFromBare(bareGit, true);
       const target = path.resolve(this.mainWorktreePath);
       const registered =
         worktrees.find((w) => path.resolve(w.path) === target) ??
@@ -462,7 +364,7 @@ export class GitService {
       // now; an unregistered directory stays an error.
       if (
         !getErrorMessage(error).includes(ERROR_MESSAGES.ALREADY_EXISTS) ||
-        !(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))
+        !(await this.registry.isRegisteredWorktree(bareGit, this.mainWorktreePath))
       ) {
         throw error;
       }
@@ -471,7 +373,7 @@ export class GitService {
       );
     }
 
-    if (!(await this.isRegisteredWorktree(bareGit, this.mainWorktreePath))) {
+    if (!(await this.registry.isRegisteredWorktree(bareGit, this.mainWorktreePath))) {
       throw new WorktreeError(
         `${this.defaultBranch} worktree at '${path.resolve(this.mainWorktreePath)}' is not registered with the bare repository at '${path.resolve(this.bareRepoPath)}' after creation`,
         "NOT_REGISTERED",
@@ -480,204 +382,46 @@ export class GitService {
     return created;
   }
 
-  // Where the "a bare clone into this directory is in flight" marker lives.
-  // Next to the bare repository, never inside it: `git clone` refuses any
-  // destination directory that is not empty — dotfiles count — so a marker
-  // written inside would break the very clone it guards. It is named after the
-  // directory it belongs to, so repositories sharing a `.bare/` parent each get
-  // their own.
-  private getBareClonePendingMarkerPath(): string {
-    const resolved = path.resolve(this.bareRepoPath);
-    return path.join(
-      path.dirname(resolved),
-      `${path.basename(resolved)}${PATH_CONSTANTS.BARE_CLONE_PENDING_MARKER_SUFFIX}`,
-    );
-  }
-
-  private async writeBareClonePendingMarker(): Promise<void> {
-    try {
-      await fs.writeFile(this.getBareClonePendingMarkerPath(), new Date().toISOString());
-    } catch (error) {
-      // Best effort, like clone mode's init marker: without it an interrupted
-      // clone only falls back to the old manual-cleanup behaviour.
-      this.logger.warn(`Could not write the bare-clone pending marker: ${getErrorMessage(error)}`);
-    }
-  }
-
-  private async clearBareClonePendingMarker(): Promise<void> {
-    const markerPath = this.getBareClonePendingMarkerPath();
-    if (!(await fileExists(markerPath))) return;
-    try {
-      await fs.unlink(markerPath);
-    } catch (error) {
-      // A marker left behind is harmless while HEAD exists: every later init
-      // clears it again and never deletes a repository that has a HEAD.
-      this.logger.debug(`Could not remove the bare-clone pending marker at '${markerPath}': ${getErrorMessage(error)}`);
-    }
-  }
-
-  // The marker's authorization is scoped to the clone that wrote it. git
-  // removes the destination directory it created when a clone fails, so once
-  // the failure is in hand the marker is dropped again unless a partial
-  // directory really is left on disk — an unverifiable destination keeps it,
-  // since "cannot tell" must not silently disown a directory we did create.
-  private async releaseBareClonePendingMarkerAfterFailure(): Promise<void> {
-    const probe = await probePathExists(this.bareRepoPath);
-    if (probe === "unknown") return;
-    if (probe === "exists" && (await this.listBareRepoDir()).entries?.length !== 0) return;
-    await this.clearBareClonePendingMarker();
-  }
-
-  // Decides what `git clone --bare` may be pointed at, and whether the clone
-  // may claim the destination as its own (see the caller: only a verified
-  // verdict gets a marker).
+  // The dry run's stand-in for initialize(): the same bare-repository checks,
+  // the same fetch and the same default-branch resolution, with every write
+  // initialize() would make left out — no clone, no refspec config, no
+  // `remote set-head`, no default-branch worktree created or healed. The one
+  // write is the fetch itself, which updates remote-tracking refs (and brings
+  // in objects) exactly as the sync's own fetch would.
   //
-  // A `git clone --bare` writes HEAD almost immediately — it runs `init_db`
-  // before any transfer — so a HEAD-less `bareRepoDir` is not the normal
-  // residue of a killed clone; it is what a half-finished cleanup, a partially
-  // deleted directory or external damage leaves. However it arose, "bare repo
-  // exists" is decided by `<bare>/HEAD`, so initialize() kept re-issuing the
-  // clone into that directory and git kept refusing it ("destination path
-  // already exists and is not an empty directory"), with nothing in the log
-  // naming the fix.
+  // Resolves to `missing` when there is no bare repository yet, decided
+  // before anything touches the disk. Otherwise the service is left able to
+  // answer the sync runner's reads; `anchorMissing` says the default branch
+  // has no worktree, in which case those reads run in the bare repository and
+  // a sync would create that worktree first.
   //
-  // The marker is what tells such a leftover apart: it is written only for a
-  // destination this tool verified and claimed, so a marked one is ours to
-  // delete and clone again. Everything else — a non-empty directory, a path
-  // that is not a directory, a directory whose contents cannot be listed — is
-  // never deleted and gets a named, actionable error instead. Only ever
-  // reached when `<bare>/HEAD` is missing, so a working repository is out of
-  // scope by construction.
-  private async prepareBareCloneDestination(): Promise<BareCloneDestination> {
-    const probe = await probePathExists(this.bareRepoPath);
-    if (probe === "missing") return "missing";
-    // "unknown" means the path itself could not be probed (EACCES on a parent,
-    // EIO): it may or may not exist, so nothing may be deleted, nothing may be
-    // claimed, and the clone below reports the real problem.
-    if (probe === "unknown") return "unverifiable";
+  // Only for a service constructed read-only and never used to sync: it marks
+  // the service initialized without the repairs initialize() makes.
+  async openForPlanning(): Promise<{ state: "missing" } | { state: "ready"; anchorMissing: boolean }> {
+    if ((await probePathExists(path.join(this.bareRepoPath, "HEAD"))) !== "exists") return { state: "missing" };
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await this.bareRepo.assertBareRepoOriginMatches(bareGit);
 
-    const bareRepoPath = path.resolve(this.bareRepoPath);
-    if (await fileExists(this.getBareClonePendingMarkerPath())) {
-      this.logger.warn(
-        `Bare repository at '${bareRepoPath}' has no HEAD and still carries this tool's clone-in-progress marker ` +
-          `(a leftover of an interrupted initialization). Removing it and cloning again.`,
-      );
-      try {
-        await fs.rm(this.bareRepoPath, { recursive: true, force: true });
-      } catch (error) {
-        throw new GitOperationError(
-          "clone",
-          `could not remove the interrupted bare clone at '${bareRepoPath}': ${getErrorMessage(error)}. ` +
-            `Remove the directory manually and run again.`,
-          error instanceof Error ? error : undefined,
-        );
-      }
-      return "recovered";
-    }
+    // The sync's own fetch (`fetchAll`), run in the bare repository because
+    // the anchor may be missing; both name the same repository. No auto gc:
+    // repacking is not something a dry run should set off.
+    await this.getCachedNetworkGit(this.bareRepoPath, this.isLfsSkipEnabled()).fetch([
+      "--all",
+      "--prune",
+      "--no-auto-gc",
+      "--progress",
+    ]);
 
-    const { entries, error } = await this.listBareRepoDir();
-    if (!entries) {
-      // The directory vanished between the two probes: a fresh clone again.
-      if (error?.code === "ENOENT") return "missing";
-      // Anything else (ENOTDIR — the path is a file — EACCES, EMFILE) is a
-      // destination we cannot judge. Never clone into it hoping for the best:
-      // that is how a failed clone would leave a marker on a path holding
-      // someone's data, licensing its deletion on the next run.
-      throw new ConfigError(
-        `Cannot clone into '${bareRepoPath}': it already exists and could not be inspected ` +
-          `(${getErrorMessage(error)}). Remove it, or point bareRepoDir at a fresh path.`,
-        "BARE_DESTINATION_UNREADABLE",
-      );
-    }
-
-    if (entries.length > 0) {
-      throw new ConfigError(
-        `Cannot clone into '${bareRepoPath}': the directory exists, has no HEAD (it is not a git repository) ` +
-          `and was not created by sync-worktrees. Inspect it and remove it, or point bareRepoDir at a fresh path.`,
-        "BARE_DESTINATION_NOT_EMPTY",
-      );
-    }
-    return "empty";
-  }
-
-  // `entries` is null exactly when the listing failed; `error` says why.
-  private async listBareRepoDir(): Promise<{ entries: string[] | null; error?: NodeJS.ErrnoException }> {
-    try {
-      return { entries: await fs.readdir(this.bareRepoPath) };
-    } catch (error) {
-      return { entries: null, error: error as NodeJS.ErrnoException };
-    }
-  }
-
-  // An existing bare repo is found by path alone, and the default bareRepoDir
-  // is `.bare/<repo-name>` — the same directory for old-org/app and
-  // new-org/app. So before anything is fetched from it, its origin must be
-  // the configured repoUrl; otherwise a changed repoUrl would keep syncing
-  // the remote the bare repo was cloned from, and nothing in the log would
-  // say so. Mirrors clone mode's origin check: URLs compare normalized
-  // (scheme/host case, trailing slash, forge `.git`) so equivalent spellings
-  // don't false-positive, and are shown redacted. A bare repo whose origin
-  // cannot be read is not a mismatch — the fetch that follows reports it.
-  private async assertBareRepoOriginMatches(bareGit: SimpleGit): Promise<void> {
-    const bareRepoPath = path.resolve(this.bareRepoPath);
-
-    let originUrl: string;
-    try {
-      originUrl = (await bareGit.raw(["remote", "get-url", "origin"])).trim();
-    } catch {
-      this.logger.warn(`Could not read 'origin' remote URL from existing bare repository at '${bareRepoPath}'.`);
-      return;
-    }
-
-    if (!originUrl || normalizeRepoUrlForComparison(originUrl) === normalizeRepoUrlForComparison(this.config.repoUrl)) {
-      return;
-    }
-
-    const actual = redactRepoUrl(originUrl);
-    const expected = redactRepoUrl(this.config.repoUrl);
-    throw new ConfigError(
-      `Existing bare repository at '${bareRepoPath}' has origin '${actual}', expected '${expected}'. ` +
-        `Update the remote (git -C "${bareRepoPath}" remote set-url origin <the repoUrl configured for this ` +
-        `repository>) or point bareRepoDir at a fresh directory.`,
-      "ORIGIN_MISMATCH",
-    );
-  }
-
-  // `git clone --bare` copies every remote branch into refs/heads/*, and the
-  // fetch refspec only ever updates refs/remotes/origin/*, so those copies
-  // stay frozen at clone time. A worktree added months later for such a
-  // branch would check out that frozen tip: addWorktree fast-forwards a copy
-  // that is merely behind to origin's tip, but a copy whose commits were
-  // rebased away on the remote is indistinguishable from never-pushed work
-  // and is kept.
-  // Drop the copies while they are provably copies — right after the clone,
-  // before any worktree exists. The branch HEAD points at stays (the
-  // default-branch worktree is created from it). An existing bare repository
-  // is never touched here: its refs/heads/* may carry real local-only commits
-  // from a worktree that was removed. Best-effort — a leftover copy is a
-  // stale-checkout risk that addWorktree mitigates, not a broken repository.
-  private async dropClonedBranchCopies(bareGit: SimpleGit): Promise<void> {
-    try {
-      // `-q` is safe here even though simple-git resolves its silent exit 1:
-      // the empty string it yields for a HEAD that is not a symref means "no
-      // branch to protect", which is what a detached HEAD actually is.
-      const headRef = (await bareGit.raw(["symbolic-ref", "-q", "HEAD"])).trim();
-      const branches = (await bareGit.raw(["for-each-ref", "--format=%(refname)", GIT_CONSTANTS.REFS.HEADS]))
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((ref) => ref.startsWith(GIT_CONSTANTS.REFS.HEADS) && ref !== headRef)
-        .map((ref) => ref.slice(GIT_CONSTANTS.REFS.HEADS.length));
-      if (branches.length === 0) return;
-
-      for (let start = 0; start < branches.length; start += BRANCH_DELETE_BATCH_SIZE) {
-        await bareGit.raw(["branch", "-D", "--", ...branches.slice(start, start + BRANCH_DELETE_BATCH_SIZE)]);
-      }
-      this.logger.info(
-        `Removed ${branches.length} clone-time local branch ${branches.length === 1 ? "copy" : "copies"}; worktrees are created from origin/* instead.`,
-      );
-    } catch (error) {
-      this.logger.warn(`Could not remove clone-time local branch copies: ${getErrorMessage(error)}`);
-    }
+    this.defaultBranch = await this.bareRepo.detectDefaultBranch(bareGit, { readOnly: true });
+    this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
+    const worktrees = await this.registry.getWorktreesFromBare(bareGit, true);
+    const target = path.resolve(this.mainWorktreePath);
+    const registered =
+      worktrees.find((w) => path.resolve(w.path) === target) ?? worktrees.find((w) => w.branch === this.defaultBranch);
+    const anchorMissing = !registered || (await probePathExists(registered.path)) !== "exists";
+    if (registered && !anchorMissing) this.mainWorktreePath = registered.path;
+    this.git = this.getCachedGit(anchorMissing ? this.bareRepoPath : this.mainWorktreePath);
+    return { state: "ready", anchorMissing };
   }
 
   getGit(): SimpleGit {
@@ -746,7 +490,7 @@ export class GitService {
     const bareGit = this.getCachedGit(this.bareRepoPath);
     const previous = this.defaultBranch;
 
-    const detected = await this.detectDefaultBranch(bareGit);
+    const detected = await this.bareRepo.detectDefaultBranch(bareGit);
     if (!(await this.branchExists(detected)).remote) {
       throw new GitOperationError(
         "detect-default-branch",
@@ -781,60 +525,11 @@ export class GitService {
   }
 
   async getRemoteDefaultBranch(repoUrl: string): Promise<string> {
-    const git = createGitClient(
-      undefined,
-      this.buildGitEnv(false),
-      this.buildSimpleGitOptions(this.getFetchTimeoutMs()),
-    );
-
-    try {
-      const out = await git.raw(["ls-remote", "--symref", repoUrl, "HEAD"]);
-      const match = out.match(/^ref: refs\/heads\/(\S+)\s+HEAD/m);
-      if (match && match[1]) {
-        return match[1];
-      }
-    } catch {
-      /* fall through to probe candidates */
-    }
-
-    // symref HEAD was unavailable/unparsed: probe common branch names, but only
-    // auto-pick when the choice is unambiguous. Guessing by fixed priority when
-    // several exist can silently track the wrong branch (e.g. 'main' when the
-    // remote's real default is 'master').
-    const existing: string[] = [];
-    for (const candidate of GIT_CONSTANTS.COMMON_DEFAULT_BRANCHES) {
-      try {
-        const out = await git.raw(["ls-remote", "--exit-code", repoUrl, `refs/heads/${candidate}`]);
-        if (out.trim().length > 0) {
-          existing.push(candidate);
-        }
-      } catch {
-        /* candidate missing — try next */
-      }
-    }
-
-    if (existing.length === 1) {
-      this.logger.warn(
-        `Could not read symref HEAD for '${redactRepoUrl(repoUrl)}'; using the only common branch found ('${existing[0]}') as the default.`,
-      );
-      return existing[0];
-    }
-
-    if (existing.length > 1) {
-      throw new Error(
-        `Unable to detect default branch for '${redactRepoUrl(repoUrl)}': symref HEAD is unavailable and multiple common branches exist (${existing.join(", ")}). ` +
-          `Set 'branch' explicitly in the repository config.`,
-      );
-    }
-
-    throw new Error(
-      `Unable to detect default branch for '${redactRepoUrl(repoUrl)}'. ` +
-        `Set 'branch' explicitly in the repository config or ensure the remote is reachable.`,
-    );
+    return this.bareRepo.getRemoteDefaultBranch(repoUrl);
   }
 
   async verifyLfs(worktreePath: string, label: string): Promise<void> {
-    await this.verifyLfsFilesDownloaded(worktreePath, label);
+    await this.lfs.verifyLfsFilesDownloaded(worktreePath, label);
   }
 
   async fetchAll(): Promise<void> {
@@ -889,926 +584,16 @@ export class GitService {
   }
 
   async getRemoteBranches(): Promise<string[]> {
-    return [...(await this.readRemoteBranchTips(this.getGit())).keys()];
-  }
-
-  // Every origin branch and its tip oid, from one `for-each-ref` over
-  // refs/remotes/origin. This replaced `branch -v -r`, which asked git to
-  // resolve and print a commit subject for every branch only for the names to
-  // be thrown away: on a repository with hundreds of branches that is the
-  // difference between reading the ref store and walking the object database,
-  // and it ran on every tick.
-  //
-  // Output shape is fixed by --format, not by the reader's terminal or config:
-  // a full %(refname), never %(refname:short) (ambiguity-dependent — git prints
-  // "remotes/origin/x" once a local branch literally named "origin/x" exists,
-  // and shortens refs/remotes/origin/feature/HEAD to "origin/feature", a branch
-  // that does not exist), and no color escapes to strip under color.ui=always.
-  // A NUL separates the two fields because a refname can hold neither NUL nor
-  // newline, so no branch name can corrupt a line.
-  private async readRemoteBranchTips(git: SimpleGit): Promise<Map<string, string>> {
-    const raw = await git.raw(["for-each-ref", "--format=%(refname)%00%(objectname)", GIT_CONSTANTS.REFS.REMOTES]);
-    const tips = new Map<string, string>();
-    for (const line of raw.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const [ref, oid] = trimmed.split("\0", 2);
-      if (!ref || !oid) continue;
-      const branch = GitService.remoteBranchFromRef(ref);
-      if (branch === null) continue;
-      tips.set(branch, oid);
-    }
-    return tips;
-  }
-
-  // Branch name for one full remote-tracking ref, or null when the ref is not
-  // one of origin's branches (a foreign prefix, the origin/HEAD symref, or the
-  // prefix with nothing after it).
-  private static remoteBranchFromRef(ref: string): string | null {
-    if (!ref.startsWith(REMOTE_REF_PREFIX) || ref === ORIGIN_HEAD_REF) return null;
-    const branch = ref.slice(REMOTE_REF_PREFIX.length);
-    return branch.length > 0 ? branch : null;
+    return [...(await this.branchRefs.readRemoteBranchTips(this.getGit())).keys()];
   }
 
   async getRemoteBranchesWithActivity(): Promise<{ branch: string; lastActivity: Date }[]> {
-    const git = this.getGit();
-    // NUL delimiter: "|" is a legal branch-name character, so a branch like
-    // "feature|wip" would corrupt a "|"-delimited line and be silently dropped
-    // from the inventory (and its worktree then pruned as stale). A refname can
-    // never contain NUL or newline.
-    const result = await git.raw([
-      "for-each-ref",
-      "--format=%(refname)%00%(committerdate:iso8601)",
-      GIT_CONSTANTS.REFS.REMOTES,
-    ]);
-
-    const branches: { branch: string; lastActivity: Date }[] = [];
-    const lines = result
-      .trim()
-      .split("\n")
-      .filter((line) => line);
-
-    for (const line of lines) {
-      const [ref, dateStr] = line.split("\0", 2);
-      if (!ref || !dateStr) continue;
-      // Same rule as getRemoteBranches: strip the literal prefix off the full
-      // refname, never filter the stripped name (a branch literally named
-      // "origin" is real, and so is one named "feature/HEAD").
-      const branch = GitService.remoteBranchFromRef(ref);
-      if (branch === null) continue;
-      const lastActivity = new Date(dateStr);
-      // Skip if the date is invalid
-      if (!isNaN(lastActivity.getTime())) {
-        branches.push({ branch, lastActivity });
-      }
-    }
-
-    return branches;
-  }
-
-  // Verification only means something when the checkout was meant to
-  // materialize LFS content. `skipLfs` (configured, or the per-sync override
-  // after an LFS checkout failure) and a GIT_LFS_SKIP_SMUDGE inherited from the
-  // shell or the CI job both make pointer files on disk the expected outcome —
-  // not a fault to sample for, and not something to warn about.
-  private isLfsVerificationDisabled(): boolean {
-    return this.isLfsSkipEnabled() || isLfsSmudgeSkippedByEnv();
-  }
-
-  // One look at what `git worktree add` (or, in clone mode, `git clone`) just
-  // checked out: `git checkout` — git-lfs delayed checkout and the
-  // post-checkout hook included — completes before the command returns, so
-  // nothing rewrites those files afterwards and the first read is already the
-  // final answer. Earlier releases re-read the samples once a second for up to
-  // 30 s per created worktree, serialized across branches, which turned a first
-  // sync of 100 branches whose LFS content stayed pointers (an exported
-  // GIT_LFS_SKIP_SMUDGE, an `lfs.fetchexclude` pattern, an LFS server outage)
-  // into ~50 minutes of sleeping and 100 warnings.
-  private async verifyLfsFilesDownloaded(worktreePath: string, branchName: string): Promise<void> {
-    if (this.isLfsVerificationDisabled()) return;
-
-    const worktreeGit = this.config.sparseCheckout
-      ? // `lfs ls-files` reads the index and .gitattributes — a local command,
-        // so no inactivity kill, same as the cached client used otherwise.
-        createGitClient(
-          worktreePath,
-          this.buildGitEnv(false, { [ENV_CONSTANTS.GIT_ATTR_SOURCE]: "HEAD" }),
-          this.buildSimpleGitOptions(0),
-        )
-      : this.getCachedGit(worktreePath);
-
-    try {
-      if (!(await this.headDeclaresLfsFilter(worktreeGit))) return;
-
-      // Only repositories that actually use LFS get here, so a machine without
-      // git-lfs is worth one warning per process — never one per worktree, and
-      // never at all for the repositories that have no LFS content.
-      if (!(await isGitLfsInstalled(() => worktreeGit.raw(["lfs", "version"])))) {
-        warnGitLfsMissingOnce((message) => this.logger.warn(message));
-        return;
-      }
-
-      const lfsFiles = await this.listCheckedOutLfsFiles(worktreeGit, worktreePath);
-      if (lfsFiles.length === 0) return;
-
-      if (this.config.debug) {
-        this.logger.info(`  - Verifying ${lfsFiles.length} LFS files are downloaded...`);
-      }
-
-      const samples = GitService.sampleFiles(lfsFiles, LFS_VERIFICATION_SAMPLE_SIZE);
-      const pointers = await GitService.findPointerFiles(worktreePath, samples);
-
-      if (pointers.length === 0) {
-        if (this.config.debug) {
-          this.logger.info(`  - ✅ LFS files verified (${samples.length} samples checked)`);
-        }
-        return;
-      }
-
-      this.logger.warn(
-        `  - ⚠️ LFS content was not downloaded into '${worktreePath}': ${pointers.join(", ")} still hold git-lfs ` +
-          `pointer files. Check that git-lfs can fetch this repository's objects (credentials, \`lfs.fetchexclude\`, ` +
-          `a GIT_LFS_SKIP_SMUDGE exported in this environment), or set 'skipLfs: true' for it to keep pointers on purpose.`,
-      );
-    } catch (error) {
-      this.logger.warn(`  - ⚠️ Warning: Could not verify LFS files for '${branchName}': ${String(error)}`);
-    }
-  }
-
-  // Whether HEAD declares an LFS filter in any .gitattributes. A repository
-  // that never used LFS answers no, and then no `git lfs ls-files` walks its
-  // whole index for every worktree created.
-  //
-  // Cached by the tree oid HEAD points at: a tree's content is its name, so an
-  // entry is right forever — no per-sync invalidation to get wrong in a daemon
-  // that runs for weeks — and branches sharing a tree share the answer.
-  private async headDeclaresLfsFilter(git: SimpleGit): Promise<boolean> {
-    let treeOid: string;
-    try {
-      treeOid = (await git.revparse(["HEAD^{tree}"])).trim();
-    } catch {
-      // No resolvable HEAD (an unborn branch, a checkout that never landed)
-      // means there are no checked-out files to verify.
-      return false;
-    }
-
-    const cached = this.lfsAttributeCache.get(treeOid);
-    if (cached !== undefined) return cached;
-
-    const declaresFilter = await GitService.treeDeclaresLfsFilter(git, treeOid);
-    if (this.lfsAttributeCache.size >= LFS_ATTRIBUTE_CACHE_LIMIT) {
-      const oldest = this.lfsAttributeCache.keys().next();
-      if (!oldest.done) this.lfsAttributeCache.delete(oldest.value);
-    }
-    this.lfsAttributeCache.set(treeOid, declaresFilter);
-    return declaresFilter;
-  }
-
-  // Greps the tree rather than the working copy: with sparse checkout most
-  // .gitattributes files are not on disk, and the pathspec keeps the search to
-  // those files wherever in the tree they sit.
-  private static async treeDeclaresLfsFilter(git: SimpleGit, treeOid: string): Promise<boolean> {
-    try {
-      const matches = await git.raw([
-        "grep",
-        "--name-only",
-        "-I",
-        "--fixed-strings",
-        "-e",
-        LFS_FILTER_ATTRIBUTE,
-        treeOid,
-        "--",
-        "*.gitattributes",
-      ]);
-      return matches.trim().length > 0;
-    } catch (error) {
-      // Exit 1 is `git grep`'s "nothing matched" — a definite no. Any other
-      // failure leaves the question open, and verifying is the safe answer.
-      return !getErrorMessage(error).includes(GIT_CONSTANTS.GIT_NO_MATCH_EXIT);
-    }
-  }
-
-  // The LFS files that are actually on disk. With sparse checkout,
-  // GIT_ATTR_SOURCE=HEAD lists every LFS file HEAD's .gitattributes declare,
-  // including ones outside the cone that were never written — sampling those
-  // would report a checkout failure that never happened.
-  private async listCheckedOutLfsFiles(git: SimpleGit, worktreePath: string): Promise<string[]> {
-    const listed = (await git.raw(["lfs", "ls-files", "--name-only"]))
-      .trim()
-      .split("\n")
-      .filter((f) => f.length > 0);
-
-    if (!this.config.sparseCheckout || listed.length === 0) return listed;
-
-    const existence = await Promise.all(
-      listed.map(async (f) => {
-        try {
-          await fs.access(path.join(worktreePath, f));
-          return f;
-        } catch {
-          return null;
-        }
-      }),
-    );
-    return existence.filter((f): f is string => f !== null);
-  }
-
-  // Up to `count` distinct files, picked with a partial Fisher-Yates shuffle so
-  // a repeated sync does not keep checking the same ones.
-  private static sampleFiles(files: string[], count: number): string[] {
-    const sampleSize = Math.min(count, files.length);
-    const shuffled = [...files];
-    for (let i = 0; i < sampleSize; i++) {
-      const randomIndex = i + Math.floor(Math.random() * (shuffled.length - i));
-      [shuffled[i], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[i]];
-    }
-    return shuffled.slice(0, sampleSize);
-  }
-
-  // The sampled files that still hold a pointer, plus any that cannot be read
-  // at all: both mean the checkout did not materialize the content.
-  private static async findPointerFiles(worktreePath: string, files: string[]): Promise<string[]> {
-    const pointers: string[] = [];
-    for (const file of files) {
-      if (await GitService.holdsLfsPointer(path.join(worktreePath, file))) {
-        pointers.push(file);
-      }
-    }
-    return pointers;
-  }
-
-  // Reads the first bytes only: a pointer is a small text blob starting with
-  // the git-lfs spec header, while the real content can be gigabytes.
-  private static async holdsLfsPointer(filePath: string): Promise<boolean> {
-    try {
-      const handle = await fs.open(filePath, "r");
-      try {
-        const buffer = Buffer.alloc(200);
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-        return buffer.subarray(0, bytesRead).toString("utf8").startsWith(GIT_CONSTANTS.LFS_HEADER);
-      } finally {
-        await handle.close();
-      }
-    } catch {
-      return true;
-    }
+    return this.branchRefs.getRemoteBranchesWithActivity(this.getGit());
   }
 
   async checkoutHead(worktreePath: string): Promise<void> {
     const git = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
     await git.raw(["checkout", "HEAD"]);
-  }
-
-  private async applySparseAndCheckout(absoluteWorktreePath: string): Promise<void> {
-    if (!this.config.sparseCheckout) return;
-    await this.sparseCheckoutService.applyToWorktree(absoluteWorktreePath, this.config.sparseCheckout);
-    const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
-    await worktreeGit.raw(["checkout", "HEAD"]);
-  }
-
-  private async rollbackPartialWorktree(
-    bareGit: SimpleGit,
-    absoluteWorktreePath: string,
-    branchName: string,
-    createdNewBranch: boolean,
-    failureContext?: string,
-  ): Promise<{ worktreeRemoved: boolean }> {
-    let worktreeRemoved = true;
-    try {
-      await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
-      this.forgetCachedClients(absoluteWorktreePath);
-    } catch (rollbackError) {
-      worktreeRemoved = false;
-      const ctx = failureContext ? ` after ${failureContext}` : "";
-      this.logger.warn(
-        `  - Rollback failed for '${branchName}' at '${absoluteWorktreePath}'${ctx}: ${getErrorMessage(rollbackError)}`,
-      );
-    }
-    if (createdNewBranch) {
-      try {
-        await bareGit.raw(["branch", "-D", "--", branchName]);
-      } catch (branchRollbackError) {
-        this.logger.warn(
-          `  - Rollback (branch delete) failed for '${branchName}': ${getErrorMessage(branchRollbackError)}`,
-        );
-      }
-    }
-    return { worktreeRemoved };
-  }
-
-  // Resolves to the worktree's HEAD, which the metadata records as lastSyncCommit.
-  private async createWorktreeMetadata(bareGit: SimpleGit, worktreePath: string, branchName: string): Promise<string> {
-    try {
-      const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
-      const currentCommit = (await worktreeGit.revparse(["HEAD"])).trim();
-      // refs/heads/<default>, not the bare name: a tag sharing the default
-      // branch's name resolves first and would record the tag's commit as the
-      // worktree's parent.
-      const parentCommit = await bareGit.revparse([`${GIT_CONSTANTS.REFS.HEADS}${this.defaultBranch}`]);
-
-      await this.metadataService.createInitialMetadataFromPath(
-        this.bareRepoPath,
-        worktreePath,
-        currentCommit,
-        `origin/${branchName}`,
-        this.defaultBranch,
-        parentCommit.trim(),
-      );
-      return currentCommit;
-    } catch (metadataError) {
-      this.logger.error(`  - ❌ Failed to create metadata for '${branchName}': ${String(metadataError)}`);
-      throw new Error(`Metadata creation failed for ${branchName}. This worktree cannot be auto-managed.`);
-    }
-  }
-
-  // Records metadata for a worktree addWorktree just created. A worktree sync
-  // has no metadata for cannot be auto-managed, so on failure it is removed
-  // again (with the branch, when this add created it) before the typed error
-  // propagates.
-  private async createMetadataOrRollback(
-    bareGit: SimpleGit,
-    absoluteWorktreePath: string,
-    branchName: string,
-    createdNewBranch: boolean,
-  ): Promise<AddWorktreeResult> {
-    try {
-      const head = await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
-      return { status: "created", head };
-    } catch (metadataError) {
-      this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);
-      await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
-      throw new WorktreeMetadataError(branchName, metadataError);
-    }
-  }
-
-  // Resolves to what the call did: the HEAD commit of the worktree it created,
-  // or `already_registered` when the path already was a registered worktree
-  // (one a concurrent operation registered first, or a detached-HEAD checkout
-  // someone left there) and nothing was created. Callers that count creations
-  // must read `status` rather than assume a create happened.
-  async addWorktree(branchName: string, worktreePath: string): Promise<AddWorktreeResult> {
-    const bareGit = this.getCachedGit(this.bareRepoPath, this.isLfsSkipEnabled());
-    // Use absolute path for worktree add to avoid relative path issues
-    const absoluteWorktreePath = path.resolve(worktreePath);
-    // Ensure parent directory exists for nested branch paths
-    await fs.mkdir(path.dirname(absoluteWorktreePath), { recursive: true });
-
-    // Check if directory already exists (could be from a failed previous attempt)
-    try {
-      await fs.access(absoluteWorktreePath);
-      // Directory exists - check if it's already a valid worktree
-      const worktrees = await this.getWorktreesFromBare(bareGit, true);
-      const registered = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
-
-      if (registered) {
-        this.logger.info(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
-        return { status: "already_registered", detached: registered.detached === true };
-      } else {
-        // Directory exists but is not a valid worktree - clean it up
-        this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}'`);
-        await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
-      }
-    } catch (error) {
-      if (error instanceof GitOperationError || error instanceof WorktreeError) {
-        throw error;
-      }
-      // Directory doesn't exist, which is expected - continue with creation
-    }
-
-    let createdNewBranch: boolean;
-    try {
-      const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
-
-      createdNewBranch = await this.runWorktreeAddByMatrix(
-        bareGit,
-        branchName,
-        absoluteWorktreePath,
-        localBranchExists,
-        remoteBranchExists,
-      );
-
-      if (localBranchExists && !remoteBranchExists) {
-        this.logger.info(`  - Created worktree for '${branchName}' (no remote yet — push to set upstream)`);
-      } else {
-        this.logger.info(`  - Created worktree for '${branchName}' with tracking to origin/${branchName}`);
-      }
-
-      await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
-
-      return await this.createMetadataOrRollback(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
-    } catch (error) {
-      const errorMessage = getErrorMessage(error);
-
-      // Upstream setup failures are already rolled back inside runWorktreeAddByMatrix,
-      // and metadata failures by createMetadataOrRollback. Both are fatal: the
-      // tracking-error fallback below would silently accept a partial worktree.
-      if (error instanceof UpstreamSetupError || error instanceof WorktreeMetadataError) {
-        throw error;
-      }
-
-      // Check if this is an "already registered" error
-      if (errorMessage.includes("already registered worktree")) {
-        // Check if worktree was actually created by a concurrent operation
-        const worktrees = await this.getWorktreesFromBare(bareGit, true);
-        const existingWorktree = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
-
-        if (existingWorktree && !existingWorktree.isPrunable) {
-          this.logger.info(`  - Worktree for '${branchName}' was created by concurrent operation`);
-          return { status: "already_registered", detached: existingWorktree.detached === true };
-        }
-
-        this.logger.warn(`  - Worktree already registered but missing. Removing that registration and retrying...`);
-        try {
-          await bareGit.raw(["worktree", "remove", "--force", absoluteWorktreePath]);
-          this.forgetCachedClients(absoluteWorktreePath);
-        } catch (removalError) {
-          this.logger.warn(
-            `  - Failed to remove stale registration for '${absoluteWorktreePath}': ${getErrorMessage(removalError)}. Continuing with directory cleanup and retry.`,
-          );
-        }
-        await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
-        let retryCreatedNewBranch: boolean;
-        try {
-          const { local: localBranchExists, remote: remoteBranchExists } = await this.branchExists(branchName);
-          retryCreatedNewBranch = await this.runWorktreeAddByMatrix(
-            bareGit,
-            branchName,
-            absoluteWorktreePath,
-            localBranchExists,
-            remoteBranchExists,
-          );
-          this.logger.info(`  - Created worktree for '${branchName}' on retry`);
-
-          await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
-
-          return await this.createMetadataOrRollback(bareGit, absoluteWorktreePath, branchName, retryCreatedNewBranch);
-        } catch (retryError) {
-          this.logger.error(`  - Failed to create worktree on retry: ${String(retryError)}`);
-          throw retryError;
-        }
-      }
-
-      // Only fall back to non-tracking version for tracking-related errors.
-      // Re-throw real errors (disk full, permissions, etc.) immediately.
-      const isTrackingError =
-        errorMessage.includes("not a valid object name") ||
-        errorMessage.includes("not a commit") ||
-        errorMessage.includes("cannot set up tracking") ||
-        errorMessage.includes("does not track") ||
-        errorMessage.includes("remote tracking branch") ||
-        errorMessage.includes("no such remote ref");
-
-      if (!isTrackingError) {
-        throw error;
-      }
-
-      this.logger.warn(`  - Failed to create worktree with tracking, falling back to simple add: ${String(error)}`);
-
-      // Check again if directory exists before fallback attempt
-      try {
-        await fs.access(absoluteWorktreePath);
-        // Directory exists - check if it's already a valid worktree
-        const worktrees = await this.getWorktreesFromBare(bareGit, true);
-        const registered = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
-
-        if (registered) {
-          this.logger.info(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
-          return { status: "already_registered", detached: registered.detached === true };
-        } else {
-          // Directory exists but is not a valid worktree - clean it up
-          this.logger.info(`  - Cleaning up orphaned directory at '${absoluteWorktreePath}' before fallback attempt`);
-          await this.clearStaleWorktreeDirectory(absoluteWorktreePath);
-        }
-      } catch (error) {
-        if (error instanceof GitOperationError || error instanceof WorktreeError) {
-          throw error;
-        }
-        // Directory doesn't exist, which is expected - continue with fallback
-      }
-
-      try {
-        const useNoCheckout = !!this.config.sparseCheckout;
-        const fallbackArgs = useNoCheckout
-          ? ["worktree", "add", "--no-checkout", absoluteWorktreePath, branchName]
-          : ["worktree", "add", absoluteWorktreePath, branchName];
-        await bareGit.raw(fallbackArgs);
-        await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, false);
-        // The plain add set no upstream; give it one when origin/<branch> exists.
-        const tracking = await this.trackRemoteBranchIfExists(branchName, absoluteWorktreePath);
-        this.logger.info(`  - Created worktree for '${branchName}'${tracking ? "" : " (without tracking)"}`);
-
-        await this.verifyLfsFilesDownloaded(absoluteWorktreePath, branchName);
-
-        return await this.createMetadataOrRollback(bareGit, absoluteWorktreePath, branchName, false);
-      } catch (fallbackError) {
-        const fallbackErrorMessage = getErrorMessage(fallbackError);
-
-        // If fallback also fails with "already registered", check if created by concurrent op
-        if (fallbackErrorMessage.includes("already registered worktree")) {
-          const worktrees = await this.getWorktreesFromBare(bareGit, true);
-          const existingWorktree = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
-
-          if (existingWorktree && !existingWorktree.isPrunable) {
-            this.logger.info(`  - Worktree for '${branchName}' was created by concurrent operation during fallback`);
-            return { status: "already_registered", detached: existingWorktree.detached === true };
-          }
-        }
-
-        // If still failing, this is a real error
-        throw fallbackError;
-      }
-    }
-  }
-
-  private async runWorktreeAddByMatrix(
-    bareGit: SimpleGit,
-    branchName: string,
-    absoluteWorktreePath: string,
-    localExists: boolean,
-    remoteExists: boolean,
-  ): Promise<boolean> {
-    const useNoCheckout = !!this.config.sparseCheckout;
-    const noCheckoutFlag = useNoCheckout ? ["--no-checkout"] : [];
-
-    if (localExists && remoteExists) {
-      // With no worktree for it, the local ref is usually a stale snapshot of
-      // the remote — a bare clone's refs/heads/* copy, or the tip a removed
-      // worktree was last synced to — that nothing ever fast-forwards. It is
-      // probed before the add and fast-forwarded right after, inside the new
-      // worktree: `worktree add` keeps its error surface (a missing but still
-      // registered path must reach addWorktree's recovery, which a branch
-      // reset such as `-B` pre-empts with git's branch-in-use error), and the
-      // branch ref only moves once the worktree using it is ours. Commits not
-      // on origin/<branch> are kept: a copy whose history was rebased away
-      // looks exactly like never-pushed work from here, and only the latter
-      // would be lost. The next sync applies its usual update rules then.
-      const localOnlyCommits = await this.countLocalOnlyCommits(bareGit, branchName);
-
-      await bareGit.raw(["worktree", "add", ...noCheckoutFlag, absoluteWorktreePath, branchName]);
-
-      // branch --set-upstream-to is a config-only operation and works on a --no-checkout
-      // worktree, so we run it before sparse setup and materialization.
-      try {
-        const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
-        await worktreeGit.branch(["--set-upstream-to", `origin/${branchName}`, branchName]);
-      } catch (error) {
-        throw await this.wrapUpstreamFailure(bareGit, absoluteWorktreePath, branchName, false, error);
-      }
-
-      if (localOnlyCommits === 0) {
-        await this.fastForwardNewWorktree(absoluteWorktreePath, branchName, useNoCheckout);
-      } else {
-        this.logger.info(
-          localOnlyCommits === null
-            ? `  - Could not tell whether local branch '${branchName}' has commits not on origin/${branchName}; keeping its current tip`
-            : `  - Local branch '${branchName}' has ${localOnlyCommits} commit(s) not on origin/${branchName}; keeping its current tip instead of resetting it`,
-        );
-      }
-
-      await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, false);
-      return false;
-    }
-
-    if (localExists) {
-      await bareGit.raw(["worktree", "add", ...noCheckoutFlag, absoluteWorktreePath, branchName]);
-      await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, false);
-      return false;
-    }
-
-    if (remoteExists) {
-      try {
-        await bareGit.raw([
-          "worktree",
-          "add",
-          ...noCheckoutFlag,
-          "--track",
-          "-b",
-          branchName,
-          absoluteWorktreePath,
-          `origin/${branchName}`,
-        ]);
-      } catch (error) {
-        // git creates refs/heads/<branch> before it checks the files out, and
-        // it does not undo that when the checkout fails (an LFS smudge filter,
-        // a full disk) even though it does clean the worktree up. Left behind,
-        // the branch turns every later attempt into the local+remote case,
-        // where the add runs against a local ref nothing fast-forwards. Only
-        // this call's branch is deleted: `localExists` was false at the probe
-        // above, so refs/heads/<branch> can only be the one git just made.
-        //
-        // Except when the path was already registered: git does create the
-        // branch there, but addWorktree's recovery path clears the stale
-        // registration and adds again, adopting whatever ref is present, so
-        // deleting it here would only fight that retry.
-        if (!getErrorMessage(error).includes("already registered worktree")) {
-          await this.deleteBranchLeftByFailedAdd(bareGit, branchName);
-        }
-        throw error;
-      }
-      await this.runSparseStepWithRollback(bareGit, absoluteWorktreePath, branchName, true);
-      return true;
-    }
-
-    throw new WorktreeError(
-      `Branch '${branchName}' does not exist locally or on origin; create it first`,
-      "BRANCH_NOT_FOUND",
-    );
-  }
-
-  // Commits on the local branch that origin/<branch> does not reach. Zero
-  // means the local tip is an ancestor of (or equal to) the remote tip, so
-  // moving it there is a fast-forward that loses nothing. null when git cannot
-  // answer, which callers treat as "may have local-only commits".
-  private async countLocalOnlyCommits(bareGit: SimpleGit, branchName: string): Promise<number | null> {
-    try {
-      const out = await bareGit.raw([
-        "rev-list",
-        "--count",
-        `${GIT_CONSTANTS.REFS.REMOTES}/${branchName}..${GIT_CONSTANTS.REFS.HEADS}${branchName}`,
-      ]);
-      const count = Number.parseInt(out.trim(), 10);
-      return Number.isNaN(count) ? null : count;
-    } catch {
-      return null;
-    }
-  }
-
-  // Moves a just-created worktree from the local ref's stale tip to
-  // origin/<branch>, which countLocalOnlyCommits has shown to be a
-  // fast-forward. A checked-out worktree merges; a --no-checkout worktree has
-  // no index or files yet, so only the ref moves and the checkout that follows
-  // the sparse setup populates it at the new tip. Best-effort: on failure the
-  // worktree stays at the local tip — the state the next sync's update phase
-  // fast-forwards anyway — and the runner reports the mismatch.
-  private async fastForwardNewWorktree(
-    absoluteWorktreePath: string,
-    branchName: string,
-    noCheckout: boolean,
-  ): Promise<void> {
-    const worktreeGit = this.getCachedGit(absoluteWorktreePath, this.isLfsSkipEnabled());
-    try {
-      if (noCheckout) {
-        await worktreeGit.raw(["reset", "--soft", `origin/${branchName}`]);
-      } else {
-        await worktreeGit.raw(["merge", "--ff-only", `origin/${branchName}`]);
-      }
-    } catch (error) {
-      this.logger.warn(
-        `  - ⚠️ Could not fast-forward the new worktree for '${branchName}' to origin/${branchName}: ${getErrorMessage(error)}`,
-      );
-    }
-  }
-
-  // Best-effort rollback of the branch a failed `worktree add --track -b` left
-  // behind. Never throws: the add's own error is what the caller must see, and
-  // a branch that could not be deleted (a worktree still holds it) is a stale
-  // ref, not a broken repository.
-  private async deleteBranchLeftByFailedAdd(bareGit: SimpleGit, branchName: string): Promise<void> {
-    try {
-      if (!(await this.refExists(bareGit, `${GIT_CONSTANTS.REFS.HEADS}${branchName}`))) return;
-      // The branch git just created sits at origin/<branch>. Anything ahead of
-      // the remote was written by someone else between the probe and the add,
-      // and a bare repo keeps no reflog to recover it from.
-      if ((await this.countLocalOnlyCommits(bareGit, branchName)) !== 0) {
-        this.logger.warn(
-          `  - Left the local branch '${branchName}' in place: it carries commits that are not on origin/${branchName}`,
-        );
-        return;
-      }
-      await bareGit.raw(["branch", "-D", "--", branchName]);
-      this.logger.info(`  - Removed the local branch '${branchName}' left behind by the failed worktree add`);
-    } catch (error) {
-      this.logger.warn(
-        `  - Could not remove the local branch '${branchName}' left behind by the failed worktree add: ${getErrorMessage(error)}`,
-      );
-    }
-  }
-
-  private async runSparseStepWithRollback(
-    bareGit: SimpleGit,
-    absoluteWorktreePath: string,
-    branchName: string,
-    createdNewBranch: boolean,
-  ): Promise<void> {
-    try {
-      await this.applySparseAndCheckout(absoluteWorktreePath);
-    } catch (sparseError) {
-      await this.rollbackPartialWorktree(bareGit, absoluteWorktreePath, branchName, createdNewBranch);
-      throw new Error(`Sparse-checkout setup failed for '${branchName}': ${getErrorMessage(sparseError)}`);
-    }
-  }
-
-  private async wrapUpstreamFailure(
-    bareGit: SimpleGit,
-    absoluteWorktreePath: string,
-    branchName: string,
-    createdNewBranch: boolean,
-    error: unknown,
-  ): Promise<UpstreamSetupError> {
-    const { worktreeRemoved } = await this.rollbackPartialWorktree(
-      bareGit,
-      absoluteWorktreePath,
-      branchName,
-      createdNewBranch,
-      "upstream setup error",
-    );
-    return new UpstreamSetupError(branchName, error, worktreeRemoved);
-  }
-
-  // `git worktree remove` refuses three ways, and none of them means the
-  // repository is broken — they are git protecting user state, so callers see a
-  // skip-shaped WorktreeNotCleanError instead of a hard failure:
-  //  - a dirty tree ("contains modified or untracked files", "use --force");
-  //  - a worktree the user locked, which git refuses even with a single
-  //    --force ("cannot remove a locked working tree ... use 'remove -f -f'").
-  //    We never pass -f -f: force-unlocking a worktree somebody deliberately
-  //    locked is exactly what the lock exists to prevent;
-  //  - without --force, a worktree holding initialized submodules ("working
-  //    trees containing submodules cannot be moved or removed").
-  private static isRemovalRefusal(message: string, forced: boolean): boolean {
-    if (/locked working tree/i.test(message)) return true;
-    return !forced && /contains modified or untracked files|use --force|containing submodules/i.test(message);
-  }
-
-  async removeWorktree(worktreePath: string, options?: { force?: boolean }): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-
-    // Non-forced by default: git's own refusal to delete a dirty worktree is
-    // the last line of defense when our status checks were wrong. --force is
-    // reserved for callers that already preserved the data (diverged flow) or
-    // explicit user override.
-    const args = ["worktree", "remove", worktreePath];
-    if (options?.force) args.push("--force");
-
-    try {
-      await bareGit.raw(args);
-    } catch (error) {
-      const message = getErrorMessage(error);
-      if (GitService.isRemovalRefusal(message, options?.force ?? false)) {
-        throw new WorktreeNotCleanError(worktreePath, [`git refused removal: ${message}`]);
-      }
-      throw error;
-    }
-    this.forgetCachedClients(worktreePath);
-    this.logger.info(`  - ✅ Safely removed stale worktree at '${worktreePath}'.`);
-
-    // Clean up metadata using the worktree path
-    try {
-      await this.metadataService.deleteMetadataFromPath(this.bareRepoPath, worktreePath);
-    } catch (metadataError) {
-      this.logger.warn(`Failed to delete metadata for worktree: ${String(metadataError)}`);
-    }
-  }
-
-  async updateRef(refName: string, sha: string): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    // `--` because the reaper promotes a trash pin to a permanent keep ref
-    // through here with a manifest-sourced oid: `git update-ref <ref> -d`
-    // DELETES the ref it was asked to write (measured, exit 0). With the
-    // separator the same call is `fatal: -d: not a valid SHA1` and the ref
-    // survives.
-    await bareGit.raw(["update-ref", "--", refName, sha]);
-  }
-
-  async deleteRef(refName: string): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["update-ref", "-d", "--", refName]);
-  }
-
-  async listRefs(prefix: string): Promise<string[]> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    const raw = await bareGit.raw(["for-each-ref", "--format=%(refname)", prefix]);
-    return raw
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-  }
-
-  async getLocalBranchCommit(branchName: string): Promise<string | null> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    try {
-      return (await bareGit.raw(["rev-parse", `${GIT_CONSTANTS.REFS.HEADS}${branchName}^{commit}`])).trim();
-    } catch {
-      return null;
-    }
-  }
-
-  // `--` before the two positionals, because both of them come back out of a
-  // trash manifest and git's option parser permutes: without it `git branch
-  // <name> -m` and `git branch -m <sha>` are both `git branch -m`, which in a
-  // bare repo renames the branch HEAD points at. Verified on git 2.43.0 —
-  // after `--`, an option-shaped name is "not a valid branch name" and an
-  // option-shaped start-point is "not a valid object name", and refs/heads/
-  // is untouched either way.
-  async createBranchAt(branchName: string, sha: string): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["branch", "--", branchName, sha]);
-  }
-
-  async deleteLocalBranch(branchName: string): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["branch", "-D", "--", branchName]);
-  }
-
-  // Compare-and-swap delete: removes the branch ref only while it still
-  // points at expectedOid, so a commit racing the removal pipeline keeps its
-  // ref instead of being orphaned by an unconditional `branch -D`.
-  async deleteLocalBranchIfAt(branchName: string, expectedOid: string): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    await bareGit.raw(["update-ref", "-d", "--", `${GIT_CONSTANTS.REFS.HEADS}${branchName}`, expectedOid]);
-    // Only after the delete actually succeeded: a CAS that the ref moved
-    // under rejects above, and the still-live branch keeps its upstream.
-    await this.removeBranchConfigSection(bareGit, branchName);
-  }
-
-  // `branch -D` drops the branch's `[branch "<name>"]` config section along
-  // with the ref; `update-ref -d` removes the ref only. Without this the CAS
-  // delete above would strand `branch.<name>.remote`/`.merge` in the bare
-  // repo's config on every pruned worktree, so the file grows without bound
-  // and a later restore of the same name silently inherits a stale upstream.
-  // Best-effort by design, and every failure mode here is one to swallow: git
-  // reports an absent section as a hard failure (exit 128 with stderr, which
-  // simple-git rejects), and a concurrent `git` holding `config.lock` fails it
-  // outright with no retry. A section left behind is untidiness — never a
-  // reason to report a branch deletion that did succeed as failed — so the
-  // catch is deliberately every error, not just the git ones.
-  //
-  // `--remove-section` splits its argument at the first dot and treats the
-  // whole remainder as one literal subsection, so a branch named `v1.2`
-  // addresses `[branch "v1.2"]` and leaves a sibling `[branch "v1"]` alone.
-  // The subsection is matched case-sensitively, so the name must be passed
-  // through exactly as git recorded it.
-  private async removeBranchConfigSection(bareGit: SimpleGit, branchName: string): Promise<void> {
-    try {
-      await bareGit.raw(["config", "--remove-section", `branch.${branchName}`]);
-    } catch (error) {
-      this.logger.debug(
-        `  - Left the config section of the deleted branch '${branchName}' in place: ${getErrorMessage(error)}`,
-      );
-    }
-  }
-
-  // Bundles only commits not reachable from any remote — for fully-pushed
-  // refs that set is empty and `bundle create` would fail. Emptiness is
-  // pre-checked with rev-list (locale-independent) instead of parsing git's
-  // localized "empty bundle" stderr; after the pre-check, any bundle-create
-  // error is a real failure the caller must treat as fail-closed.
-  async createBundleFromRef(bundlePath: string, refName: string): Promise<boolean> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    if ((await this.countCommitsNotOnAnyRemote(refName)) === 0) {
-      return false;
-    }
-    await bareGit.raw(["bundle", "create", bundlePath, refName, "--not", REMOTES_GLOB]);
-    return true;
-  }
-
-  // How many commits reachable from `rev` are on no `refs/remotes/origin/*`
-  // ref — "is there anything here the remote does not already have?". The
-  // bundle decision above and the reaper's keep-ref re-check are the same
-  // question asked of the same ref set, so they ask it the same way.
-  //
-  // Scoped to `origin` rather than `--remotes`, which is every remote-tracking
-  // ref the repository happens to hold. `git fetch --all --prune` only prunes
-  // remotes still in config, so a `refs/remotes/<removed-remote>/*` left behind
-  // by a remote the user has since deleted survives every fetch and still
-  // anchors its commits under `--remotes` — measured: the count reads 0 with
-  // such a ref present and 2 once it is gone. Reading that zero would release
-  // the only anchor for commits no remote actually has. `origin` is the one
-  // remote this tool manages and the one it fetches, so it is the only ref set
-  // whose freshness anything here can vouch for. Narrowing can only over-count,
-  // which means bundling or pinning more than strictly necessary.
-  //
-  // Even so this proves reachability from those refs as they stand right now,
-  // nothing more: a ref `fetch --prune` has not yet dropped still anchors its
-  // commits. Callers that act on a zero must say why their ref set is current.
-  //
-  // Unparseable output throws rather than reading as zero: every caller treats
-  // zero as "nothing to preserve", so a number that could not be read must not
-  // become one.
-  async countCommitsNotOnAnyRemote(rev: string): Promise<number> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    const raw = (await bareGit.raw(["rev-list", "--count", rev, "--not", REMOTES_GLOB])).trim();
-    // `/^\d+$/` is the real gate; `Number.isInteger` catches only the digit
-    // string too long to survive parseInt (400 digits reads back as Infinity),
-    // which would otherwise be returned as a non-zero and mint the ref anyway.
-    const count = Number.parseInt(raw, 10);
-    if (!/^\d+$/.test(raw) || !Number.isInteger(count)) {
-      throw new Error(
-        `Could not read a commit count from 'git rev-list --count ${rev} --not ${REMOTES_GLOB}': '${raw}'`,
-      );
-    }
-    return count;
-  }
-
-  // Registers the worktree and writes its .git link without populating files —
-  // restore moves the preserved payload in instead of checking anything out,
-  // keeping that link. The directory it leaves holds exactly one entry, the
-  // `.git` file, which is what makes replacing the directory wholesale safe.
-  async addWorktreeNoCheckout(branchName: string, worktreePath: string): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    const absoluteWorktreePath = path.resolve(worktreePath);
-    await fs.mkdir(path.dirname(absoluteWorktreePath), { recursive: true });
-    await bareGit.raw(["worktree", "add", "--no-checkout", "--", absoluteWorktreePath, branchName]);
   }
 
   // Mixed reset: points the index at HEAD without touching working files, so
@@ -1818,104 +603,142 @@ export class GitService {
     await worktreeGit.raw(["reset"]);
   }
 
-  // Injected by WorktreeSyncService when trash is enabled, so stale-directory
-  // cleanup follows the same reversible-removal pipeline as everything else.
-  // GitService cannot own a TrashService directly (TrashService depends on it).
-  private staleDirectoryTrasher: ((dirPath: string) => Promise<string>) | null = null;
+  // Worktree creation, listing and removal — see WorktreeCreationService and
+  // WorktreeRegistryService.
+
+  async addWorktree(branchName: string, worktreePath: string): Promise<AddWorktreeResult> {
+    return this.creation.addWorktree(branchName, worktreePath);
+  }
+
+  async addWorktreeNoCheckout(branchName: string, worktreePath: string): Promise<void> {
+    return this.creation.addWorktreeNoCheckout(branchName, worktreePath);
+  }
 
   setStaleDirectoryTrasher(trasher: (dirPath: string) => Promise<string>): void {
-    this.staleDirectoryTrasher = trasher;
+    this.creation.setStaleDirectoryTrasher(trasher);
   }
 
-  // A stale directory is content sync did not create and cannot inspect: a
-  // .git inside may be a live checkout git failed to report, and anything else
-  // may be files someone left there by hand. Without trash it is quarantined
-  // under .removed/, never deleted — only an empty directory is removed.
-  private async clearStaleWorktreeDirectory(absoluteWorktreePath: string): Promise<void> {
-    // However this ends — the directory is already gone, or it is about to be
-    // trashed, quarantined or deleted — no client cached for the path outlives
-    // it. Dropping them up front covers every exit below; the refusal paths
-    // leave the directory in place and cost nothing but a rebuilt client.
-    this.forgetCachedClients(absoluteWorktreePath);
-    // Nothing at the path means nothing to clear. Falling through would hand a
-    // missing directory to the trasher, which fails with ENOENT and turns a
-    // recoverable stale registration into a permanent creation failure.
-    const dirProbe = await probePathExists(absoluteWorktreePath);
-    if (dirProbe === "missing") {
-      return;
-    }
-    if (dirProbe === "unknown") {
-      throw new GitOperationError(
-        "clear-stale-directory",
-        `Cannot verify whether '${absoluteWorktreePath}' still exists; refusing to clear it`,
-      );
-    }
+  async removeWorktree(worktreePath: string, options?: { force?: boolean }): Promise<void> {
+    return this.registry.removeWorktree(worktreePath, options);
+  }
 
-    const gitProbe = await probePathExists(path.join(absoluteWorktreePath, PATH_CONSTANTS.GIT_DIR));
+  async getWorktrees(options: { includeDetached?: boolean } = {}): Promise<RegisteredWorktree[]> {
+    return this.registry.getWorktrees(options);
+  }
 
-    if (gitProbe === "unknown") {
-      throw new GitOperationError(
-        "clear-stale-directory",
-        `Cannot verify whether '${absoluteWorktreePath}' is a live checkout; refusing to clear it`,
-      );
-    }
+  async getWorktreeLock(worktreePath: string): Promise<{ locked: boolean; reason?: string }> {
+    return this.registry.getWorktreeLock(worktreePath);
+  }
 
-    if (this.staleDirectoryTrasher) {
-      try {
-        const trashPath = await this.staleDirectoryTrasher(absoluteWorktreePath);
-        this.logger.info(`  - Moved stale directory at '${absoluteWorktreePath}' to trash ('${trashPath}')`);
-        return;
-      } catch (error) {
-        // Cannot preserve it -> refuse to clear it (the caller's worktree
-        // creation fails rather than silently deleting unknown content).
-        throw new GitOperationError(
-          "clear-stale-directory",
-          `Cannot move stale directory '${absoluteWorktreePath}' to trash: ${getErrorMessage(error)}`,
-          error instanceof Error ? error : undefined,
-        );
-      }
-    }
+  /**
+   * The branch the metadata record under directory name `worktreeName` was
+   * written for, or null when there is none. Worktree naming reads it so a
+   * leftover record is never handed to another branch.
+   */
+  async readWorktreeMetadataOwner(worktreeName: string): Promise<string | null> {
+    return this.metadataService.readMetadataOwner(this.bareRepoPath, worktreeName);
+  }
 
-    // An empty directory holds nothing to lose. rmdir (never a recursive rm)
-    // refuses if something landed in it since the listing, and any refusal
-    // falls through to the quarantine below.
-    if (gitProbe === "missing" && (await this.isEmptyDirectory(absoluteWorktreePath))) {
-      try {
-        await fs.rmdir(absoluteWorktreePath);
-        this.logger.info(`  - Removed empty stale directory at '${absoluteWorktreePath}'`);
-        return;
-      } catch {
-        // Not empty any more, or not removable: preserve it instead.
-      }
-    }
-
-    let quarantinePath: string;
-    try {
-      quarantinePath = await quarantineDirectory(absoluteWorktreePath);
-    } catch (error) {
-      // Same contract as the trash path: cannot preserve it -> refuse to clear
-      // it, and the worktree creation fails instead of deleting anything.
-      throw new GitOperationError(
-        "clear-stale-directory",
-        `Cannot quarantine stale directory '${absoluteWorktreePath}': ${getErrorMessage(error)}`,
-        error instanceof Error ? error : undefined,
-      );
-    }
-    const what = gitProbe === "exists" ? "contains a .git" : "is not a registered worktree";
-    this.logger.warn(
-      `  - ⚠️ Directory at '${absoluteWorktreePath}' ${what}; quarantined to '${quarantinePath}' instead of deleting.`,
+  /**
+   * Where a new worktree for `branchName` goes: the path of its existing
+   * registration inside worktreeDir when it has one (a worktree keeps the
+   * directory it was created with, hashed or not), otherwise
+   * `<worktreeDir>/<name>` with the name chosen by
+   * PathResolutionService.branchDirectoryName against origin's branches, the
+   * registered worktrees and what is on disk.
+   */
+  async resolveNewWorktreePath(branchName: string): Promise<string> {
+    const worktreeDir = path.resolve(this.config.worktreeDir);
+    // Detached checkouts are left to the disk probe, as in the sync: one of
+    // this repository's at the plain name keeps that name, so the caller meets
+    // it there (and refuses or adopts it) instead of creating a second
+    // worktree next to it.
+    const worktrees = await this.getWorktrees();
+    const own = worktrees.find(
+      (worktree) =>
+        worktree.branch === branchName && pathsEqual(path.dirname(path.resolve(worktree.path)), worktreeDir),
     );
+    if (own) return own.path;
+
+    let branches: string[] = [];
+    try {
+      branches = await this.getRemoteBranches();
+    } catch (error) {
+      // Without origin's branches the name is still checked against the disk
+      // and the registrations; only a sibling with no worktree yet goes unseen.
+      this.logger.debug(`Could not list remote branches for worktree naming: ${getErrorMessage(error)}`);
+    }
+    const naming = await this.pathResolution.createProbedNamingContext(
+      { branches, branchesToName: [branchName], defaultBranch: this.defaultBranch, worktrees },
+      {
+        worktreeDir,
+        bareRepoPath: this.bareRepoPath,
+        readMetadataOwner: (name) => this.readWorktreeMetadataOwner(name),
+      },
+    );
+    return this.pathResolution.getBranchWorktreePath(this.config.worktreeDir, branchName, naming);
   }
 
-  // True only for a directory positively read as empty; an unreadable one is
-  // treated as holding content.
-  private async isEmptyDirectory(dirPath: string): Promise<boolean> {
-    try {
-      const entries = await fs.readdir(dirPath);
-      return Array.isArray(entries) && entries.length === 0;
-    } catch {
-      return false;
-    }
+  // Branch and ref operations on the bare repository — see BranchRefService.
+
+  async updateRef(refName: string, sha: string): Promise<void> {
+    return this.branchRefs.updateRef(refName, sha);
+  }
+
+  async deleteRef(refName: string): Promise<void> {
+    return this.branchRefs.deleteRef(refName);
+  }
+
+  async listRefs(prefix: string): Promise<string[]> {
+    return this.branchRefs.listRefs(prefix);
+  }
+
+  async getLocalBranchCommit(branchName: string): Promise<string | null> {
+    return this.branchRefs.getLocalBranchCommit(branchName);
+  }
+
+  async createBranchAt(branchName: string, sha: string): Promise<void> {
+    return this.branchRefs.createBranchAt(branchName, sha);
+  }
+
+  async deleteLocalBranch(branchName: string): Promise<void> {
+    return this.branchRefs.deleteLocalBranch(branchName);
+  }
+
+  async deleteLocalBranchIfAt(branchName: string, expectedOid: string): Promise<void> {
+    return this.branchRefs.deleteLocalBranchIfAt(branchName, expectedOid);
+  }
+
+  async createBundleFromRef(bundlePath: string, refName: string): Promise<boolean> {
+    return this.branchRefs.createBundleFromRef(bundlePath, refName);
+  }
+
+  async countCommitsNotOnAnyRemote(rev: string): Promise<number> {
+    return this.branchRefs.countCommitsNotOnAnyRemote(rev);
+  }
+
+  async getRemoteCommit(ref: string): Promise<string> {
+    return this.branchRefs.getRemoteCommit(ref);
+  }
+
+  async branchExists(branchName: string): Promise<{ local: boolean; remote: boolean }> {
+    return this.branchRefs.branchExists(branchName);
+  }
+
+  async trackRemoteBranchIfExists(branchName: string, worktreePath: string): Promise<boolean> {
+    return this.branchRefs.trackRemoteBranchIfExists(branchName, worktreePath);
+  }
+
+  async remoteBranchExists(branchName: string): Promise<boolean> {
+    return this.branchRefs.remoteBranchExists(branchName);
+  }
+
+  async createBranch(branchName: string, baseBranch: string): Promise<void> {
+    return this.branchRefs.createBranch(branchName, baseBranch);
+  }
+
+  async pushBranch(branchName: string): Promise<void> {
+    return this.branchRefs.pushBranch(branchName);
   }
 
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {
@@ -1926,19 +749,27 @@ export class GitService {
     return this.statusService.hasStashedChanges(worktreePath);
   }
 
-  async getFullWorktreeStatus(worktreePath: string, includeDetails = false): Promise<WorktreeStatusResult> {
+  /**
+   * @param refScans shares one branch/remote-ref scan between every worktree
+   *   probed with it; pass one scope per pass over the worktrees, and none for
+   *   a check that must see the refs as they are now.
+   */
+  async getFullWorktreeStatus(
+    worktreePath: string,
+    includeDetails = false,
+    refScans?: RefScanScope,
+  ): Promise<WorktreeStatusResult> {
     const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
-    return this.statusService.getFullWorktreeStatus(
-      worktreePath,
-      includeDetails,
-      metadata?.lastSyncCommit,
-      metadata?.lastKnownRemoteTip,
-    );
+    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails, {
+      lastSyncCommit: metadata?.lastSyncCommit,
+      lastKnownRemoteTip: metadata?.lastKnownRemoteTip,
+      refScans,
+    });
   }
 
   /** Map of remote branch name (without "origin/") → tip oid, from the bare repo. */
   async getRemoteBranchTips(): Promise<Map<string, string>> {
-    return this.readRemoteBranchTips(this.getGit());
+    return this.branchRefs.readRemoteBranchTips(this.getGit());
   }
 
   async recordRemoteTip(worktreePath: string, branchName: string, oid: string): Promise<void> {
@@ -1952,70 +783,6 @@ export class GitService {
 
   async hasOperationInProgress(worktreePath: string): Promise<boolean> {
     return this.statusService.hasOperationInProgress(worktreePath);
-  }
-
-  // refs/remotes/origin/HEAD is a symref that only `remote set-head` writes.
-  // `fetch --prune` drops refs/remotes/origin/<old> once the remote renamed or
-  // deleted its default branch but leaves the symref pointing at the old
-  // name, so it is trusted only while its target is still a remote branch.
-  // Otherwise the remote is asked again, and failing that a common default
-  // name that does exist is used.
-  private async detectDefaultBranch(bareGit: SimpleGit): Promise<string> {
-    const remoteBranches = await this.listRemoteBranchNames(bareGit);
-    const fromSymref = await this.readOriginHead(bareGit);
-    if (fromSymref !== null && (remoteBranches === null || remoteBranches.has(fromSymref))) {
-      return fromSymref;
-    }
-
-    if (fromSymref !== null) {
-      this.logger.info(
-        `origin/HEAD points at '${fromSymref}', which no longer exists on origin; asking origin for its default branch...`,
-      );
-    }
-    try {
-      // The only command here that talks to the remote, so it runs on the
-      // network client (the caller's bareGit is the local one).
-      await this.getCachedNetworkGit(this.bareRepoPath).raw(["remote", "set-head", "origin", "-a"]);
-      const refreshed = await this.readOriginHead(bareGit);
-      if (refreshed !== null) {
-        return refreshed;
-      }
-    } catch (error) {
-      this.logger.warn(`Could not read the default branch from origin: ${getErrorMessage(error)}`);
-    }
-
-    if (remoteBranches !== null) {
-      for (const defaultName of GIT_CONSTANTS.COMMON_DEFAULT_BRANCHES) {
-        if (remoteBranches.has(defaultName)) {
-          return defaultName;
-        }
-      }
-    }
-    // Final fallback
-    return GIT_CONSTANTS.DEFAULT_BRANCH;
-  }
-
-  // Branch name origin/HEAD points at, or null when the symref is missing or
-  // does not name a remote branch.
-  private async readOriginHead(bareGit: SimpleGit): Promise<string | null> {
-    const originHeadPrefix = `${GIT_CONSTANTS.REFS.REMOTES}/`;
-    try {
-      const ref = (await bareGit.raw(["symbolic-ref", `${GIT_CONSTANTS.REFS.REMOTES}/HEAD`])).trim();
-      const branch = ref.startsWith(originHeadPrefix) ? ref.slice(originHeadPrefix.length) : "";
-      return branch.length > 0 ? branch : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // null when the listing itself failed, which callers treat as "unknown"
-  // rather than "no branches".
-  private async listRemoteBranchNames(bareGit: SimpleGit): Promise<Set<string> | null> {
-    try {
-      return new Set((await this.readRemoteBranchTips(bareGit)).keys());
-    } catch {
-      return null;
-    }
   }
 
   setLfsSkipEnabled(value: boolean): void {
@@ -2032,53 +799,6 @@ export class GitService {
    */
   isLfsSkipEnabled(): boolean {
     return this.config.skipLfs || this.lfsSkipOverride;
-  }
-
-  async getWorktrees(options: { includeDetached?: boolean } = {}): Promise<RegisteredWorktree[]> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    if (options.includeDetached !== true) return this.getWorktreesFromBare(bareGit);
-    // `includeDetached` is for callers that must *find* a detached worktree
-    // (membership, path resolution) rather than act on its branch. Git's
-    // listing also opens with the bare repository's own row, which has neither
-    // a branch nor a detached HEAD; the default listing drops it along with
-    // the detached entries, so drop it here too. Otherwise asking for detached
-    // worktrees would quietly hand back a row whose `branch` is the empty
-    // string — something a caller could fetch or merge.
-    //
-    // A prunable detached row is dropped for the same reason the rest of this
-    // service treats a prunable registration as absent (isRegisteredWorktree):
-    // the checkout is gone, so `detached` there describes an admin file rather
-    // than a working tree, and a caller told "detached HEAD, check out a
-    // branch" would be sent to a directory that does not exist. Branch-bearing
-    // prunable rows are left exactly as they were: the default listing has
-    // always returned them, and nothing here changes that.
-    const worktrees = await this.getWorktreesFromBare(bareGit, true);
-    return worktrees.filter(
-      (worktree) => worktree.branch !== "" || (worktree.detached === true && worktree.isPrunable !== true),
-    );
-  }
-
-  // Whether git holds a lock on the registration covering `worktreePath` — a
-  // worktree the user asked git to protect, which `worktree remove` refuses
-  // while the lock stands. Callers use it to leave such a worktree alone
-  // before they move anything. An unregistered path, a detached-HEAD sibling
-  // and an unreadable listing all answer "not locked": the caller's own
-  // removal reports the real problem, and blocking on a failed listing would
-  // stop removals git would happily perform.
-  async getWorktreeLock(worktreePath: string): Promise<{ locked: boolean; reason?: string }> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    let worktrees: RegisteredWorktree[];
-    try {
-      worktrees = await this.getWorktreesFromBare(bareGit, true);
-    } catch (error) {
-      this.logger.warn(`Could not read worktree lock state for '${worktreePath}': ${getErrorMessage(error)}`);
-      return { locked: false };
-    }
-
-    const target = path.resolve(worktreePath);
-    const registered = worktrees.find((worktree) => path.resolve(worktree.path) === target);
-    if (!registered?.locked) return { locked: false };
-    return { locked: true, ...(registered.lockReason !== undefined && { reason: registered.lockReason }) };
   }
 
   // How many commits HEAD has that origin/<branch> lacks (ahead) and the
@@ -2336,163 +1056,7 @@ export class GitService {
     return commit.trim();
   }
 
-  async getRemoteCommit(ref: string): Promise<string> {
-    // Use the bare repository to read remote commit to avoid dependency on main worktree path
-    const git = this.getCachedGit(this.bareRepoPath);
-    const commit = await git.revparse([ref]);
-    return commit.trim();
-  }
-
-  async branchExists(branchName: string): Promise<{ local: boolean; remote: boolean }> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    const [local, remote] = await Promise.all([
-      this.refExists(bareGit, `${GIT_CONSTANTS.REFS.HEADS}${branchName}`),
-      this.refExists(bareGit, `${GIT_CONSTANTS.REFS.REMOTES}/${branchName}`),
-    ]);
-
-    return { local, remote };
-  }
-
-  private async refExists(git: SimpleGit, ref: string): Promise<boolean> {
-    try {
-      // simple-git resolves `show-ref --quiet` when Git exits 1, so keep stdout enabled.
-      await git.raw(["show-ref", "--verify", ref]);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // Points branch.<name>.remote/merge at origin/<name> when that remote branch
-  // is known locally. Sync itself never relies on the upstream — its probes
-  // name origin/<name> explicitly — but `git pull`, `git status` and the
-  // ahead/behind views in the worktree do, so a branch registered without
-  // tracking (a trash restore, `branch --no-track`, the no-tracking add
-  // fallback) gets one whenever it can. Resolves to whether it was set and
-  // never throws: no remote branch is the normal state of an unpushed branch,
-  // and a failure to set it leaves a working worktree, so it is only logged.
-  async trackRemoteBranchIfExists(branchName: string, worktreePath: string): Promise<boolean> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    if (!(await this.refExists(bareGit, `${GIT_CONSTANTS.REFS.REMOTES}/${branchName}`))) {
-      return false;
-    }
-    const upstream = `${GIT_CONSTANTS.REMOTE_PREFIX}${branchName}`;
-    try {
-      // Config-only: works on a --no-checkout worktree too.
-      await this.getCachedGit(worktreePath).raw(["branch", `--set-upstream-to=${upstream}`, "--", branchName]);
-      this.logger.info(`  - Set upstream of '${branchName}' to ${upstream}`);
-      return true;
-    } catch (error) {
-      this.logger.warn(`  - ⚠️ Could not set upstream of '${branchName}' to ${upstream}: ${getErrorMessage(error)}`);
-      return false;
-    }
-  }
-
-  private async resolveCreateBranchBaseRef(bareGit: SimpleGit, baseBranch: string): Promise<string> {
-    const candidates =
-      baseBranch.startsWith(GIT_CONSTANTS.REMOTE_PREFIX) || baseBranch.startsWith("refs/")
-        ? [baseBranch]
-        : [`${GIT_CONSTANTS.REMOTE_PREFIX}${baseBranch}`, baseBranch];
-
-    for (const candidate of candidates) {
-      try {
-        await bareGit.revparse(["--verify", candidate]);
-        return candidate;
-      } catch {
-        // Try the next candidate before letting git branch report the original failure.
-      }
-    }
-
-    return candidates[0];
-  }
-
-  // A live look at origin, not at refs/remotes: the remote-tracking refs are
-  // only as fresh as the last fetch, and `branchMaxAge`/`branchInclude`/
-  // `branchExclude` mean a branch that is on origin very often has no local
-  // head here at all — so the collision check `git branch` performs sees
-  // nothing and the name is taken anyway. A fully-qualified `ls-remote`
-  // pattern matches that one ref and nothing that merely starts with it.
-  async remoteBranchExists(branchName: string): Promise<boolean> {
-    const ref = `${GIT_CONSTANTS.REFS.HEADS}${branchName}`;
-    const output = await this.getCachedNetworkGit(this.bareRepoPath).raw(["ls-remote", "--heads", "origin", ref]);
-    return output
-      .split("\n")
-      .map((line) => line.split(/\s+/)[1] ?? "")
-      .includes(ref);
-  }
-
-  async createBranch(branchName: string, baseBranch: string): Promise<void> {
-    const bareGit = this.getCachedGit(this.bareRepoPath);
-    const baseRef = await this.resolveCreateBranchBaseRef(bareGit, baseBranch);
-
-    // The wording matters: the TUI retries the whole call with a '-1', '-2', …
-    // suffix on exactly "already exists", which is how a local collision has
-    // always behaved, so a remote-only one takes the same route.
-    //
-    // A probe that cannot reach the remote must not stop a branch from being
-    // created — `create_worktree` without a push works offline — so failure
-    // here is not fatal. The create-only lease in pushBranch is what actually
-    // guarantees an existing remote branch is never advanced; this probe only
-    // buys the better message, and the suffix, before anything is written.
-    let onOrigin = false;
-    try {
-      onOrigin = await this.remoteBranchExists(branchName);
-    } catch (error) {
-      this.logger.debug(`Could not ask origin whether '${branchName}' exists: ${getErrorMessage(error)}`);
-    }
-    if (onOrigin) {
-      throw new GitOperationError("branch", `branch '${branchName}' already exists on origin; choose another name`);
-    }
-
-    await bareGit.raw(["branch", "--no-track", branchName, baseRef]);
-    this.logger.info(`Created branch '${branchName}' from '${baseRef}'`);
-  }
-
-  async pushBranch(branchName: string): Promise<void> {
-    const bareGit = this.getCachedNetworkGit(this.bareRepoPath);
-    const ref = `${GIT_CONSTANTS.REFS.HEADS}${branchName}`;
-
-    // `--force-with-lease` with an EMPTY expected value leases the ref against
-    // "does not exist", so an existing remote ref is never advanced or
-    // force-updated: git rejects the push with "stale info" instead. Without
-    // it, `origin <name>:<name>` FAST-FORWARDS a branch that is already on
-    // origin whenever its tip is an ancestor of the base — silently moving
-    // somebody else's branch, and with it any open PR or CI run pinned to that
-    // ref, while the wizard reports a successful creation.
-    //
-    // It does not require the ref to be absent, because git enforces a lease
-    // only on a ref the push would CHANGE: a remote ref already at exactly
-    // this commit is `[up to date]`, exit 0, and `-u` still sets the upstream.
-    // Nothing moves in that case either, which is the whole guarantee. (Both
-    // directions — ancestor and diverged — verified on git 2.43.)
-    await bareGit.push(["origin", `${ref}:${ref}`, "-u", `--force-with-lease=${ref}:`]);
-    this.logger.info(`Pushed branch '${branchName}' to remote`);
-  }
-
   async getWorktreeMetadata(worktreePath: string): Promise<SyncMetadata | null> {
     return this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
-  }
-
-  private async isRegisteredWorktree(bareGit: SimpleGit, worktreePath: string): Promise<boolean> {
-    const absoluteWorktreePath = path.resolve(worktreePath);
-    const worktrees = await this.getWorktreesFromBare(bareGit, true);
-    return worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath && !w.isPrunable);
-  }
-
-  private async getWorktreesFromBare(bareGit: SimpleGit, includeDetached = false): Promise<RegisteredWorktree[]> {
-    const result = await readWorktreeListPorcelain(bareGit);
-    return parseWorktreeListPorcelain(result)
-      .filter((w) => includeDetached || (!w.detached && w.branch !== null))
-      .map((w) => ({
-        path: w.path,
-        branch: w.branch ?? "",
-        isPrunable: w.prunable,
-        locked: w.locked,
-        ...(w.lockReason !== null && { lockReason: w.lockReason }),
-        // Only set when true: a listing that excludes detached entries would
-        // otherwise carry a `detached: false` on every worktree it returns.
-        ...(w.detached && { detached: true }),
-        ...(w.head !== null && { head: w.head }),
-      }));
   }
 }

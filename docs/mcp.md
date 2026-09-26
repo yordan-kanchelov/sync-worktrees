@@ -37,7 +37,8 @@ shell, and prefer the global install with `sync-worktrees-mcp` as `command` and 
 not your shell's.
 
 **Upgrading from 6.x:** remove any `SYNC_WORKTREES_CONFIG` entry from the client's `env` (or the `-e` flag on
-`claude mcp add`); 7.0.0 ignores it without a warning. A config outside the walk-up path is loaded with
+`claude mcp add`); the server has ignored it without a warning since 7.0.0. (The `sync-worktrees` CLI does read the
+variable; the MCP server does not.) A config outside the walk-up path is loaded with
 `load_config {configPath}` instead.
 
 <!-- Keep these blocks in step with site/src/content/data/clients.yaml, in the same order. -->
@@ -53,7 +54,7 @@ claude mcp add --scope user sync-worktrees -- npx -y -p sync-worktrees sync-work
 
 `--scope user` makes the server available in every project on your machine. Claude Code's default scope is `local`,
 which loads a server only in the project (directory) you added it from — and every worktree is a different directory, so
-a locally scoped server added in `feature-a-0a5491ed/` is absent when you launch Claude Code in `feature-b-0a88c085/`.
+a locally scoped server added in `feature-a/` is absent when you launch Claude Code in `feature-b/`.
 
 </details>
 
@@ -210,7 +211,7 @@ No config path is needed: the server runs in **auto-detect mode**.
 | Tool                     | Purpose                                                                                                                                                                                                                           |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `detect_context`         | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report config-driven sibling repositories and capabilities. With `includeStatus: true` each worktree carries `label`/`divergence`/`staleHint`, plus `statusError` when its status probe failed. Pass `includeAllWorktrees: true` to include every configured repo's worktrees keyed by repo name. |
-| `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`/`unknown` — the last when the status probe failed, with the reason in `safeToRemove.reason`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
+| `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`/`unknown` — `stale` when the upstream the branch tracks, remote or local, no longer exists; `unknown` when the status probe failed, with the reason in `safeToRemove.reason`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
 | `get_worktree_status`    | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress).                                                                                                                                 |
 | `create_worktree`        | Worktree mode only (a clone-mode repository answers `CAPABILITY_UNAVAILABLE` — use `sync`). Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`. `worktreeExisted` is true when the worktree was already there (a no-op retry). |
 | `update_worktree`        | Worktree mode only (a clone-mode repository answers `CAPABILITY_UNAVAILABLE` — use `sync`). Fast-forward one worktree to match upstream. `updated` is false when there was nothing to merge.                                     |
@@ -281,8 +282,9 @@ anything that is not an `Error`; read `message`.
 The workflow the server is built for: one branch per agent, each in its own directory, several sessions at once.
 
 1. **One branch per agent.** `create_worktree {branchName: "feat/a", baseBranch: "main"}` creates the branch, checks it
-   out at `<worktreeDir>/feat-a-d54ad782/` (the branch name flattened plus eight hex characters of its SHA-256 — take
-   `worktreePath` from the response rather than building it) and pushes it straight away (unless `push: false`), so the
+   out at `<worktreeDir>/feat-a/` (the branch name with `/` flattened to `-`, plus a short hash only when that name
+   would be ambiguous — see [worktree folder names](./configuration.md#worktree-folder-names); take `worktreePath` from
+   the response rather than building it) and pushes it straight away (unless `push: false`), so the
    next sync keeps it rather than pruning a local-only branch.
 2. **Start the agent there.** `cd` to the `worktreePath` in the response, or use the TUI's `o` → Terminal, which opens a
    `tmux` session in the worktree. Register the server at user scope (Claude Code: `--scope user`, see above) so it

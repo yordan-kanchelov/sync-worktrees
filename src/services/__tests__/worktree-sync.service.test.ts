@@ -27,6 +27,7 @@ import { TrashMigrationService } from "../trash-migration.service";
 import { TrashReaperService } from "../trash-reaper.service";
 import { TrashService } from "../trash.service";
 import { WorktreeSyncService } from "../worktree-sync.service";
+import { RefScanScope } from "../worktree-status.service";
 
 const pathResolution = new PathResolutionService();
 const wtPath = (dir: string, branch: string): string => pathResolution.getBranchWorktreePath(dir, branch);
@@ -104,6 +105,7 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       createBundleFromRef: vi.fn<any>().mockResolvedValue(true),
       setStaleDirectoryTrasher: vi.fn(),
       getBareRepoPath: vi.fn(() => "/test/.bare/repo.git"),
+      readWorktreeMetadataOwner: vi.fn<any>().mockResolvedValue(null),
     } as any,
   };
 });
@@ -138,6 +140,14 @@ describe("WorktreeSyncService", () => {
     // trash listing, and an undefined default made that read as a hard failure.
     (fs.readdir as Mock<any>).mockResolvedValue([]);
     (fs.lstat as Mock<any>).mockResolvedValue(buildFsStats("directory"));
+    // Worktree naming probes `<worktreeDir>/<plain name>` before handing a new
+    // branch its plain directory; nothing is there unless a test says so.
+    (fs.lstat as Mock<any>).mockImplementation(async (target: unknown) => {
+      if (path.dirname(String(target)) === "/test/worktrees" && !path.basename(String(target)).startsWith(".")) {
+        throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+      }
+      return buildFsStats("directory");
+    });
 
     handleWrites = [];
     (fs.open as Mock<any>).mockImplementation(async (filePath: unknown) => ({
@@ -814,6 +824,7 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
         path.join("/test/worktrees", "old-branch"),
         undefined,
+        expect.any(RefScanScope),
       );
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "old-branch"));
       expect(result).toMatchObject({
@@ -1213,6 +1224,7 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
         path.join("/test/worktrees", branch),
         undefined,
+        expect.any(RefScanScope),
       );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
     });
@@ -1247,6 +1259,7 @@ describe("WorktreeSyncService", () => {
       expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
         path.join("/test/worktrees", "deleted-upstream-branch"),
         undefined,
+        expect.any(RefScanScope),
       );
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
 
@@ -1285,7 +1298,11 @@ describe("WorktreeSyncService", () => {
 
       const result = await service.sync();
 
-      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/worktrees/broken-branch", undefined);
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
+        "/test/worktrees/broken-branch",
+        undefined,
+        expect.any(RefScanScope),
+      );
       expect(mockLogger.error).toHaveBeenCalledWith(
         expect.stringContaining("Error checking worktree"),
         expect.any(Error),
@@ -2813,7 +2830,7 @@ describe("WorktreeSyncService", () => {
       const written = findDivergedInfoWrite();
       expect(written).toBeDefined();
       expect(written!.info.keepRef).toBeNull();
-      expect(written!.info.instruction).toContain("trash --restore");
+      expect(written!.info.instruction).toContain("trash restore");
       expect(written!.info.instruction).not.toContain("keep ref");
     });
 

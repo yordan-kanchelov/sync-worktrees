@@ -114,6 +114,24 @@ describe("WorktreeMetadataService", () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Refusing to overwrite metadata"));
     });
 
+    it("reads the branch a record was written for, without the origin/ prefix", async () => {
+      const existing: SyncMetadata = {
+        lastSyncCommit: "abc123",
+        lastSyncDate: "2024-01-15T10:00:00Z",
+        upstreamBranch: "origin/feature/a",
+        createdFrom: { branch: "main", commit: "def456" },
+        syncHistory: [],
+      };
+      (fs.readFile as Mock<any>).mockResolvedValueOnce(JSON.stringify(existing));
+      expect(await service.readMetadataOwner(mockBareRepoPath, mockWorktreeName)).toBe("feature/a");
+
+      (fs.readFile as Mock<any>).mockResolvedValueOnce(JSON.stringify({ ...existing, lastSyncCommit: "not a sha" }));
+      expect(await service.readMetadataOwner(mockBareRepoPath, mockWorktreeName)).toBeNull();
+
+      (fs.readFile as Mock<any>).mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+      expect(await service.readMetadataOwner(mockBareRepoPath, mockWorktreeName)).toBeNull();
+    });
+
     it("allows invalid existing metadata to be recreated with a different upstream branch", async () => {
       const existing = {
         lastSyncCommit: "not a sha",

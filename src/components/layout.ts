@@ -123,3 +123,154 @@ export function isListUp(input: string, key: Key): boolean {
 export function isListDown(input: string, key: Key): boolean {
   return key.downArrow || (key.ctrl && input === "n");
 }
+
+// The home screen: the repository table on top, the log under it, the status
+// bar at the bottom. The table and the log split whatever the status bar leaves.
+
+/** Rows the repository table spends outside its rows: the border (2) and the column headings (1). */
+export const DASHBOARD_CHROME_ROWS = 3;
+/** The smallest log panel still worth drawing: the border (2), its heading (1) and one line. */
+export const LOG_MIN_ROWS = 4;
+/** A collapsed log is one line: its heading and the latest entry. */
+export const LOG_COLLAPSED_ROWS = 1;
+/** How much `+` / `-` grow or shrink the log panel by. */
+export const LOG_RESIZE_STEP = 3;
+/** Left to itself, the table never squeezes the log below this. */
+const LOG_COMFORT_ROWS = 8;
+
+export interface LogSizePreference {
+  /** `l` folded the log to one line. */
+  collapsed: boolean;
+  /** Rows `+` / `-` asked for, or null to let the table have what it needs first. */
+  rows: number | null;
+}
+
+export interface HomeLayout {
+  /** Rows of the repository table, chrome included; 0 hides it. */
+  dashboardRows: number;
+  /** Rows of the log: a panel, or a single line when collapsed. */
+  logRows: number;
+  logCollapsed: boolean;
+}
+
+/**
+ * Split `available` rows between the repository table and the log. The table
+ * comes first -- it is the home screen -- but by default it leaves the log a
+ * readable panel. When there is not room for a table row and a log panel both,
+ * the log folds to one line, and below that the table goes.
+ */
+export function homeLayout(available: number, repositoryCount: number, preference: LogSizePreference): HomeLayout {
+  const rows = Math.max(1, available);
+  const wanted = repositoryCount > 0 ? DASHBOARD_CHROME_ROWS + repositoryCount : 0;
+  // A table without a single repository row is not worth its border.
+  const shown = (dashboardRows: number): number => (dashboardRows > DASHBOARD_CHROME_ROWS ? dashboardRows : 0);
+  const collapsed = (): HomeLayout => ({
+    dashboardRows: shown(Math.min(wanted, rows - LOG_COLLAPSED_ROWS)),
+    logRows: LOG_COLLAPSED_ROWS,
+    logCollapsed: true,
+  });
+
+  if (preference.collapsed) return collapsed();
+
+  const dashboardRows = shown(
+    preference.rows === null
+      ? Math.min(wanted, Math.max(Math.ceil(rows / 2), rows - LOG_COMFORT_ROWS))
+      : Math.min(wanted, rows - preference.rows),
+  );
+  if (dashboardRows > 0 && rows - dashboardRows < LOG_MIN_ROWS) return collapsed();
+  // Left to itself, a table squeezed below one row by the even split still
+  // fits beside a folded log: fold the log rather than lose the table. (A size
+  // `+` / `-` asked for is kept: it is how the log takes the whole screen.)
+  if (
+    dashboardRows === 0 &&
+    preference.rows === null &&
+    wanted > 0 &&
+    rows >= DASHBOARD_CHROME_ROWS + 1 + LOG_COLLAPSED_ROWS
+  ) {
+    return collapsed();
+  }
+  return { dashboardRows, logRows: rows - dashboardRows, logCollapsed: false };
+}
+
+export type DashboardColumn = "state" | "name" | "result" | "age" | "worktrees" | "changes" | "next";
+
+type FixedColumn = "state" | "age" | "worktrees" | "changes" | "next";
+
+/** Widths of the fixed columns, headings included. */
+export const DASHBOARD_FIXED_WIDTHS: Readonly<Record<FixedColumn, number>> = {
+  state: 10,
+  age: 8,
+  worktrees: 3,
+  changes: 7,
+  next: 6,
+};
+const MIN_NAME_WIDTH = 8;
+const MAX_NAME_WIDTH = 28;
+const MIN_RESULT_WIDTH = 12;
+/** What goes first as the terminal narrows; the state and the name always stay. */
+const DROP_ORDER: readonly DashboardColumn[] = ["next", "worktrees", "changes", "age", "result"];
+const COLUMN_ORDER: readonly DashboardColumn[] = ["state", "name", "result", "age", "worktrees", "changes", "next"];
+
+export interface DashboardColumns {
+  columns: DashboardColumn[];
+  widths: Record<DashboardColumn, number>;
+}
+
+const fixedWidth = (column: DashboardColumn): number =>
+  column === "name" || column === "result" ? 0 : DASHBOARD_FIXED_WIDTHS[column];
+
+/**
+ * Which of the table's columns fit `innerWidth`, and how wide each is. The
+ * result column shrinks first, then whole columns go in DROP_ORDER. Every cell
+ * truncates, so a row stays one line whatever the terminal.
+ */
+export function dashboardColumns(innerWidth: number, longestName: number): DashboardColumns {
+  const width = Math.max(1, innerWidth);
+  // One space between neighbouring columns.
+  const spent = (list: DashboardColumn[]): number =>
+    list.reduce((sum, column) => sum + fixedWidth(column), 0) + (list.length - 1);
+  const needed = (list: DashboardColumn[]): number =>
+    spent(list) + MIN_NAME_WIDTH + (list.includes("result") ? MIN_RESULT_WIDTH : 0);
+
+  let columns = [...COLUMN_ORDER];
+  for (const drop of DROP_ORDER) {
+    if (needed(columns) <= width) break;
+    columns = columns.filter((column) => column !== drop);
+  }
+
+  const flexible = Math.max(1, width - spent(columns));
+  const hasResult = columns.includes("result");
+  const name = hasResult
+    ? Math.max(MIN_NAME_WIDTH, Math.min(Math.max(1, longestName), MAX_NAME_WIDTH, flexible - MIN_RESULT_WIDTH))
+    : flexible;
+  return {
+    columns,
+    widths: {
+      ...DASHBOARD_FIXED_WIDTHS,
+      name: Math.min(name, flexible),
+      result: hasResult ? Math.max(1, flexible - name) : 0,
+    },
+  };
+}
+
+/** How long ago `then` was, the way the table's age column says it. */
+export function formatAge(then: number, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - then) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** How long until `then`, for the table's next-run column. */
+export function formatUntil(then: number, now: number): string {
+  const seconds = Math.max(0, Math.ceil((then - now) / 1000));
+  if (seconds < 60) return "<1m";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createMockLogger } from "../../__tests__/test-utils";
 import { WorktreeSyncService } from "../worktree-sync.service";
+import { RefScanScope } from "../worktree-status.service";
 
 import type { Config, SyncResult } from "../../types";
 import type { GitService } from "../git.service";
@@ -56,6 +57,8 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         { branch: "feature", lastActivity: new Date() },
         { branch: "develop", lastActivity: new Date() },
       ]),
+      getBareRepoPath: vi.fn().mockReturnValue("/test/.bare/repo.git"),
+      readWorktreeMetadataOwner: vi.fn().mockResolvedValue(null),
       getWorktrees: vi.fn().mockResolvedValue([
         { path: "/test/worktrees/main", branch: "main", head: "main-head" },
         { path: "/test/worktrees/feature", branch: "feature", head: "feature-head" },
@@ -761,7 +764,11 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       expect(mockGitService.refreshDefaultBranch).toHaveBeenCalledTimes(1);
       expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("Ensuring default branch 'main'"));
       // main went through the prune pipeline, never the update phase.
-      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/worktrees/main", undefined);
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
+        "/test/worktrees/main",
+        undefined,
+        expect.any(RefScanScope),
+      );
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/main");
       expect(mockGitService.getAheadBehindCounts).not.toHaveBeenCalledWith("/test/worktrees/main", "main");
       // trunk's worktree was created by the switch, not planned again.
@@ -788,7 +795,11 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining("Default branch 'main' does not exist on origin; not retaining its worktree"),
       );
-      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith("/test/worktrees/main", undefined);
+      expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
+        "/test/worktrees/main",
+        undefined,
+        expect.any(RefScanScope),
+      );
       expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("main", expect.any(String));
     });
 

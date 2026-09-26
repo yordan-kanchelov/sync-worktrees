@@ -1,171 +1,54 @@
-import * as fs from "fs/promises";
 import * as path from "path";
 
-import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../errors";
+import { PATH_CONSTANTS } from "../constants";
 import { fileExists, probePathExists } from "../utils/file-exists";
-import { appendGitAuthHint } from "../utils/git-auth-error";
-import { createGitClient } from "../utils/git-client";
-import { makeGitProgressHandler } from "../utils/git-progress";
-import { normalizeRepoUrlForComparison, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
+import { redactRepoUrl, repoDisplayLabel } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
-import { isLfsError, isMissingRemoteRefError } from "../utils/lfs-error";
-import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
+import { isMissingRemoteRefError } from "../utils/lfs-error";
 
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
+import {
+  createAndPushCloneBranch,
+  switchCloneBranch,
+  warnConfigDriftAfterCheckout,
+} from "./clone-sync/branch-operations";
+import { initializeClone } from "./clone-sync/clone-bootstrap";
+import { undoRejectedFastForward } from "./clone-sync/fast-forward-undo";
+import {
+  buildSyncFetchArgs,
+  classifyWithDeepening,
+  describeDeepenAttempt,
+  fetchWithRecovery,
+  getDeepenTargets,
+  recordMissingRemoteRefSkip,
+  unshallowIfDepthRemoved,
+} from "./clone-sync/fetch";
+import { CloneGitClients } from "./clone-sync/git-clients";
+import { hasRemoteBranch, isShallowRepository, parseLsRemoteHeads, readHeadCommit } from "./clone-sync/git-helpers";
+import { CLONE_SYNC_PHASES, timePhase } from "./clone-sync/phases";
+import { assessSingleBranchRemote, configureSingleBranchRemote, evaluateOriginMatch } from "./clone-sync/remote-config";
+import { assessSparseCheckout, reapplySparseCheckout } from "./clone-sync/sparse";
 import { cloneSkipToOutcomeAction } from "./sync-outcome";
 
 import type { GitService, RemoteRelationship } from "./git.service";
 import type { Logger } from "./logger.service";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
-import type { Config, RepositoryConfig, SparseCheckoutConfig } from "../types";
+import type { SyncDryRunPlanBuilder, SyncDryRunStep } from "./sync-plan";
+import type { MutatingGitClients } from "./clone-sync/git-clients";
+import type { CloneSkipListener, CloneSkipReason, CloneSyncContext, PendingCloneSkip } from "./clone-sync/types";
+import type { Config } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { PhaseTimer } from "../utils/timing";
-import type { Stats } from "fs";
-import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
-const SHALLOW_RELATION_DEEPEN_TARGETS = [50, 200, 1000] as const;
+export { CLONE_SYNC_PHASES } from "./clone-sync/phases";
+export type { CloneSkipListener, CloneSkipReason } from "./clone-sync/types";
 
-// The phases a sync tick is broken into for `--debug`'s timing table, in the
-// order they run. The names follow worktree mode's ('Phase N: X', in
-// WorktreeModeSyncRunner) so that output is one format to learn rather than
-// two, and the numbers are fixed labels rather than positions in the printed
-// table: a phase this tick never reached leaves a visible gap instead of
-// renumbering the rows under it.
-//
-// A phase has a row if and only if it ran. Since a tick classifies before it
-// reads the working tree, most ticks end at Classify and print no Status row at
-// all, and Sparse only appears where `sparseCheckout` is configured — the same
-// way worktree mode prints no 'Phase 4: Update' row when updates are off. The
-// alternative, a zero-duration row for work that never happened, would read as
-// a scan that cost nothing rather than a scan that was skipped.
-export const CLONE_SYNC_PHASES = {
-  VALIDATE: "Phase 1: Validate",
-  UNSHALLOW: "Phase 2: Unshallow",
-  REMOTE_CONFIG: "Phase 3: Remote config",
-  FETCH: "Phase 4: Fetch",
-  VERIFY_REF: "Phase 5: Verify ref",
-  SPARSE: "Phase 6: Sparse",
-  CLASSIFY: "Phase 7: Classify",
-  STATUS: "Phase 8: Status",
-  MERGE: "Phase 9: Merge",
-} as const;
-
-// The two keys configureSingleBranchRemote converges, as one `git config
-// --get-regexp` pattern so reading them costs a single git process. Anchored
-// so it matches those two keys and nothing that merely contains them.
-const REMOTE_ORIGIN_CONFIG_KEY_PATTERN = "^remote\\.origin\\.(fetch|tagOpt)$";
-
-// Longest failure summary kept on the incomplete-clone marker's first content
-// line; the untruncated message follows it in the same file.
-const CLONE_FAILURE_SUMMARY_LIMIT = 200;
-
-// Paths handed to one `ls-tree` / `hash-object` / `restore` while a rejected
-// fast-forward is being undone. The set is usually a handful of files — the
-// ones that sort before the path git could not write — but an upstream commit
-// whose failing path sorts last leaves every changed file behind, and one
-// command line still has to fit the platform's argument limit.
-const MERGE_CLEANUP_PATH_BATCH = 200;
-
-// How many of those paths the summary line names before it starts counting.
-const MERGE_CLEANUP_LOG_PATH_LIMIT = 5;
-
-// The namespace every remote-tracking ref of this clone lives in, and the
-// prefix `git branch -r` strips from a ref to name it (`refs/remotes/origin/x`
-// is `origin/x` there).
-const REMOTE_TRACKING_REF_PREFIX = "refs/remotes/";
-const ORIGIN_REF_PREFIX = `${REMOTE_TRACKING_REF_PREFIX}origin/`;
-
-// How many remote-tracking refs one `git branch -r -D` names while the stale
-// ones a wider refspec left behind are swept. A legacy all-branches clone of a
-// busy repository holds thousands of them, and the only reason not to name
-// them all in one command line is that it has to fit the platform's argument
-// limit; the bound costs one git process per 200 refs, against the one per ref
-// this replaces.
-const STALE_REF_DELETE_BATCH = 200;
-
-// `ls-tree`'s mode for a symlink, whose blob holds the target path rather than
-// any file's contents.
-const SYMLINK_TREE_MODE = "120000";
-
-// Candidate paths come off `git diff --name-only`, so they are filenames, not
-// patterns. Git would read a leading ':' as pathspec magic -- ':userfile.txt'
-// matches nothing and `ls-tree` still exits 0, which would turn the deletion
-// half's "origin no longer holds it" proof into no proof at all. `:(literal)`
-// makes git match the name exactly.
-const asLiteralPathspec = (candidate: string): string => `:(literal)${candidate}`;
-
-// How far the deepening got, for the two messages that have to say why the
-// relationship is still unknown. `null` is "none was attempted at all", which
-// happens when the configured depth already sits at or above every target.
-function describeDeepenAttempt(deepenedTo: number | null): string {
-  return deepenedTo === null
-    ? "no deepening attempted (configured depth already at or above all deepen targets)"
-    : `deepening to ${deepenedTo} commits`;
-}
-
-interface RemoteTreeEntry {
-  readonly mode: string;
-  readonly type: string;
-  readonly id: string;
-}
-
-function inBatches(items: readonly string[], limit: number): string[][] {
-  // Floored at 1: the callers all pass a positive constant, but a zero or
-  // negative one would spin here forever rather than fail, and the narrower
-  // helper this replaced could not be called wrongly at all.
-  const size = Math.max(1, Math.floor(limit));
-  const batches: string[][] = [];
-  for (let start = 0; start < items.length; start += size) {
-    batches.push(items.slice(start, start + size));
-  }
-  return batches;
-}
-
-// git's stderr condensed to the one line that says why. A clone failure
-// carries the whole transfer log — progress lines, separated by carriage
-// returns, included — and the verdict is its last 'fatal:'/'error:' line.
-function summarizeGitFailure(message: string): string {
-  const lines = message
-    .split(/[\r\n]+/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const verdict = [...lines].reverse().find((line) => line.startsWith("fatal:") || line.startsWith("error:"));
-  const summary = verdict ?? lines[lines.length - 1] ?? "";
-  return summary.length > CLONE_FAILURE_SUMMARY_LIMIT
-    ? `${summary.slice(0, CLONE_FAILURE_SUMMARY_LIMIT - 3)}...`
-    : summary;
-}
-
-// Brand carried by a clients pair whose directory has been verified as a
-// primary, non-linked checkout. Only mutatingClientsFor() can produce one, and
-// every helper below that writes to the repository takes this type instead of a
-// bare SimpleGit — so a mutation added later cannot reach an adopted directory
-// without passing the guard first.
-const PRIMARY_CHECKOUT_VERIFIED: unique symbol = Symbol("primaryCheckoutVerified");
-
-interface MutatingGitClients {
-  readonly [PRIMARY_CHECKOUT_VERIFIED]: true;
-  /** Local commands (config, update-ref, switch, merge). */
-  readonly git: SimpleGit;
-  /** Network commands (fetch) other than the unshallow, killed after fetchTimeoutMs of silence. */
-  readonly networkGit: SimpleGit;
-  /** The unshallow fetch alone, killed after cloneTimeoutMs of silence — see unshallowClientFor. */
-  readonly unshallowGit: SimpleGit;
-}
-
-export type CloneSkipReason =
-  | { kind: "branch_mismatch"; phase: "init" | "sync"; currentBranch: string; expectedBranch: string }
-  | { kind: "head_unreadable"; phase: "init" | "sync"; error: string }
-  | { kind: "dirty_tree" }
-  | { kind: "diverged"; branch: string }
-  | { kind: "ahead_unpushed"; branch: string }
-  | { kind: "missing_remote_ref"; branch: string; source: "fetch_error" | "post_fetch_verify" }
-  | { kind: "indeterminate_shallow"; branch: string; deepenedTo: number | null }
-  | { kind: "origin_mismatch"; actual: string; expected: string };
-
-export type CloneSkipListener = (reason: CloneSkipReason) => void;
-
+// Clone mode: one standalone clone per repository, held on one branch and
+// fast-forwarded to origin on every sync. This class owns the per-repository
+// state (initialized, the resolved branch, the one-shot init skip) and the
+// order a sync tick runs in; the git work itself lives in ./clone-sync/.
+// docs/internal/clone-mode-notes.md carries the measurements and history
+// behind the choices made there.
 export class CloneSyncService {
   private initialized = false;
   private resolvedBranch: string | null = null;
@@ -177,6 +60,8 @@ export class CloneSyncService {
   // skip for an existing clone, it sets this so the immediately following
   // runSyncAttempt (same sync operation) does not record the identical skip again.
   private pendingInitSkip: CloneSkipReason | null = null;
+  private readonly clients: CloneGitClients;
+  private readonly ctx: CloneSyncContext;
 
   constructor(
     private config: Config,
@@ -186,11 +71,16 @@ export class CloneSyncService {
       branchCreatedActions?: BranchCreatedActionsService;
       progressEmitter?: GitProgressEmitter;
       onSkip?: CloneSkipListener;
+      // A dry run's service: its clients carry the read-only GitService's
+      // environment. Only planSyncAttempt may be called on it.
+      readOnly?: boolean;
     } = {},
   ) {
     this.branchCreatedActions = options.branchCreatedActions ?? new BranchCreatedActionsService();
     this.progressEmitter = options.progressEmitter;
     this.onSkip = options.onSkip;
+    this.ctx = CloneSyncService.createContext(this);
+    this.clients = new CloneGitClients(this.ctx, options.readOnly ? gitService.getBaseGitEnv() : {});
   }
 
   updateLogger(logger: Logger): void {
@@ -211,7 +101,7 @@ export class CloneSyncService {
       return [];
     }
 
-    const git = this.localClientFor(worktreeDir);
+    const git = this.clients.localClientFor(worktreeDir);
     let branch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
 
     if (!branch || branch === "HEAD") {
@@ -222,43 +112,525 @@ export class CloneSyncService {
     return [{ path: worktreeDir, branch }];
   }
 
+  async resolveBranch(): Promise<string> {
+    if (this.resolvedBranch) return this.resolvedBranch;
+    if (this.config.branch) {
+      this.resolvedBranch = this.config.branch;
+      this.emitProgress({ phase: "branch", message: `Using configured branch '${this.resolvedBranch}'` });
+      return this.resolvedBranch;
+    }
+    this.logger.info(`No branch configured for '${this.repoName}', detecting remote default branch...`);
+    this.emitProgress({ phase: "branch", message: `Resolving remote default branch for '${this.repoName}'` });
+    this.resolvedBranch = await this.gitService.getRemoteDefaultBranch(this.config.repoUrl);
+    this.logger.info(`  ↳ resolved default branch: ${this.resolvedBranch}`);
+    this.emitProgress({ phase: "branch", message: `Resolved default branch '${this.resolvedBranch}'` });
+    return this.resolvedBranch;
+  }
+
+  async getRemoteBranches(): Promise<string[]> {
+    const worktreeDir = path.resolve(this.config.worktreeDir);
+    const repoArg = (await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR))) ? "origin" : this.config.repoUrl;
+    const git = repoArg === "origin" ? this.clients.networkClientFor(worktreeDir) : this.clients.networkClientFor();
+    const output = await git.raw(["ls-remote", "--heads", repoArg]);
+    return parseLsRemoteHeads(output);
+  }
+
+  async checkoutBranch(branch: string, options: { allowConfigDrift?: boolean } = {}): Promise<void> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const targetBranch = await this.resolveBranch();
+    await switchCloneBranch(this.ctx, branch, targetBranch, options);
+    this.resolvedBranch = branch;
+    this.pendingInitSkip = null;
+    warnConfigDriftAfterCheckout(this.ctx, branch, targetBranch);
+  }
+
+  // The clone-mode half of the TUI's branch wizard; see createAndPushCloneBranch.
+  async createAndPushBranch(baseBranch: string, branchName: string): Promise<void> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    await createAndPushCloneBranch(this.ctx, baseBranch, branchName);
+  }
+
+  async initialize(outcome?: SyncOutcomeAccumulator): Promise<void> {
+    return this.withOutcome(outcome, async () => {
+      this.pendingInitSkip = null;
+      const branch = await this.resolveBranch();
+      this.pendingInitSkip = await initializeClone(this.ctx, branch);
+      this.initialized = true;
+    });
+  }
+
+  // `phaseTimer` is instrumentation and nothing else: what the tick does is
+  // identical either way. It is not conditional on `--debug`.
+  // WorktreeSyncService.sync() builds one PhaseTimer — the same one the
+  // worktree-mode runner is given, so both modes print one table in one
+  // format — and hands it to every tick it runs, whichever caller asked for the
+  // sync: the CLI, the MCP server and the TUI all reach a tick through sync().
+  // `debug` gates the table alone — whether it is built and printed once the
+  // sync is over — so the phase bookkeeping happens on an ordinary run too. The
+  // parameter stays optional for the callers that reach this method directly
+  // rather than through sync() (a test, an embedder); with no timer every
+  // bracket below is a plain call.
+  async runSyncAttempt(outcome?: SyncOutcomeAccumulator, phaseTimer?: PhaseTimer): Promise<void> {
+    return this.withOutcome(outcome, () => this.runSyncAttemptInternal(phaseTimer));
+  }
+
+  private async runSyncAttemptInternal(phaseTimer?: PhaseTimer): Promise<void> {
+    if (!this.initialized) {
+      await this.initialize();
+      // init ran here and recorded any skip itself; no duplicate to suppress.
+      this.pendingInitSkip = null;
+      return;
+    }
+
+    // If init already recorded a wrong-branch / unreadable-HEAD skip for the
+    // current clone state during this same sync operation, don't record it a
+    // second time. Consume the one-shot token; later ticks re-evaluate fresh.
+    if (this.pendingInitSkip) {
+      this.pendingInitSkip = null;
+      return;
+    }
+
+    const worktreeDir = this.config.worktreeDir;
+
+    // Everything up to the first write: which branch this clone is meant to
+    // track, which one it is on, which remote it points at, and the
+    // primary-checkout guard. All three of its skips leave the tick, so the
+    // phase is closed by timePhase's `finally` rather than by each return path;
+    // `null` is that exit, with the skip already recorded.
+    const validated = await timePhase(
+      phaseTimer,
+      CLONE_SYNC_PHASES.VALIDATE,
+      async (): Promise<{ branch: string; clients: MutatingGitClients } | null> => {
+        const branch = await this.resolveBranch();
+        const blocked = await this.checkTickPreconditions(worktreeDir, branch);
+        if (blocked) {
+          this.recordSkip(blocked.skip, blocked.logMessage, blocked.progressMessage, blocked.logLevel);
+          return null;
+        }
+
+        // Every step from here on writes to the repository, and this runs again on
+        // every tick — so the primary-checkout guard has to be inside the tick, not
+        // only in initialize().
+        return { branch, clients: await this.clients.mutatingClientsFor(worktreeDir) };
+      },
+    );
+    if (!validated) return;
+    const { branch, clients } = validated;
+
+    // The unshallow fetch uses the already-narrowed refspec, so a deleted
+    // tracked branch fails it exactly like the branch fetch below — classify
+    // it into the same soft skip instead of letting it escape as a hard
+    // failure that only shallow clones would hit.
+    try {
+      await timePhase(phaseTimer, CLONE_SYNC_PHASES.UNSHALLOW, () => unshallowIfDepthRemoved(this.ctx, clients));
+    } catch (error) {
+      if (isMissingRemoteRefError(getErrorMessage(error))) {
+        recordMissingRemoteRefSkip(this.ctx, branch);
+        return;
+      }
+      throw error;
+    }
+
+    // Its own phase rather than part of the fetch: on the call that narrows the
+    // refspec this is also where the stale remote-tracking refs are swept, and
+    // a legacy all-branches clone has thousands of them.
+    await timePhase(phaseTimer, CLONE_SYNC_PHASES.REMOTE_CONFIG, () =>
+      configureSingleBranchRemote(this.ctx, clients, branch),
+    );
+
+    const fetched = await timePhase(phaseTimer, CLONE_SYNC_PHASES.FETCH, async () => {
+      const fetchArgs = await buildSyncFetchArgs(this.ctx, clients.git, branch);
+      this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
+      return fetchWithRecovery(this.ctx, clients, fetchArgs, worktreeDir, branch);
+    });
+    if (fetched.skipped) {
+      return;
+    }
+    this.emitProgress({ phase: "fetch", message: `Fetched origin/${branch} for '${this.repoName}'` });
+
+    const remoteBranchPresent = await timePhase(phaseTimer, CLONE_SYNC_PHASES.VERIFY_REF, () =>
+      hasRemoteBranch(clients.git, branch),
+    );
+    if (!remoteBranchPresent) {
+      this.recordSkip(
+        { kind: "missing_remote_ref", branch, source: "post_fetch_verify" },
+        `Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`,
+        `Skipping '${this.repoName}': origin/${branch} is missing`,
+      );
+      return;
+    }
+
+    const sparseConfig = this.config.sparseCheckout;
+    if (sparseConfig) {
+      await timePhase(phaseTimer, CLONE_SYNC_PHASES.SPARSE, () =>
+        reapplySparseCheckout(this.ctx, worktreeDir, branch, sparseConfig),
+      );
+    }
+
+    // The relationship first, the working tree only if it turns out to matter.
+    // Classification is a few ref reads; `git status` walks the whole working
+    // tree and is the one command in a tick that scales with the checkout's
+    // size, and the common daemon tick ends `up_to_date`, where nothing is
+    // written and a scan buys nothing. It is also the right answer: a dirty
+    // clone already at origin/<branch> is up to date, not skipped. The only
+    // path that writes is the fast-forward below, and it still reads the tree
+    // immediately before merging. The cost — a too-shallow clone spends its
+    // deepen budget even when the tree turns out dirty — is weighed in
+    // docs/internal/clone-mode-notes.md. It is also why the Status phase is
+    // usually absent from the timing table.
+    const {
+      relationship,
+      deepenedTo: lastDeepenedTo,
+      deepenFetches,
+    } = await timePhase(phaseTimer, CLONE_SYNC_PHASES.CLASSIFY, () =>
+      classifyWithDeepening(this.ctx, clients, worktreeDir, branch),
+    );
+    // The deepen fetches interleave with the classification reads they exist to
+    // feed — fetch, ask again, fetch — so they are this phase's count rather
+    // than a phase of their own, which is also the only shape PhaseTimer can
+    // hold: it tracks one open phase, so a nested one would close this one and
+    // lose the reads around it.
+    if (deepenFetches > 0) {
+      phaseTimer?.setPhaseCount(CLONE_SYNC_PHASES.CLASSIFY, deepenFetches);
+    }
+
+    if (relationship === "up_to_date") {
+      this.logger.info(`'${this.repoName}' already up to date with origin/${branch}.`);
+      this.emitProgress({
+        phase: "skip",
+        message: `'${this.repoName}' already up to date with origin/${branch}`,
+      });
+      this.outcomeAccumulator?.recordNoop("repo", "already_up_to_date", {
+        branch,
+        path: worktreeDir,
+        message: `Already up to date with origin/${branch}`,
+      });
+      return;
+    }
+
+    const relationshipSkip = this.relationshipSkip(relationship, branch, lastDeepenedTo);
+    if (relationshipSkip) {
+      this.recordSkip(
+        relationshipSkip.skip,
+        relationshipSkip.logMessage,
+        relationshipSkip.progressMessage,
+        relationshipSkip.logLevel,
+      );
+      return;
+    }
+
+    const isClean = await timePhase(phaseTimer, CLONE_SYNC_PHASES.STATUS, () =>
+      this.gitService.checkWorktreeStatus(worktreeDir),
+    );
+    if (!isClean) {
+      const dirty = this.dirtyTreeSkip();
+      this.recordSkip(dirty.skip, dirty.logMessage, dirty.progressMessage, dirty.logLevel);
+      return;
+    }
+
+    this.logger.info(`Fast-forwarding '${this.repoName}' to origin/${branch}...`);
+    this.emitProgress({ phase: "merge", message: `Fast-forwarding '${this.repoName}' to origin/${branch}` });
+    await timePhase(phaseTimer, CLONE_SYNC_PHASES.MERGE, async () => {
+      // Read before the merge rather than derived from it afterwards: the
+      // cleanup below only runs on a commit that provably did not move, and
+      // "could not read HEAD" must not pass for that proof.
+      const headBeforeMerge = await readHeadCommit(clients.git);
+      try {
+        await clients.git.merge([`origin/${branch}`, "--ff-only"]);
+      } catch (mergeError) {
+        await undoRejectedFastForward(this.ctx, clients, worktreeDir, branch, headBeforeMerge);
+        throw mergeError;
+      }
+    });
+    this.logger.info(`✅ Updated '${this.repoName}' to origin/${branch}.`);
+    this.emitProgress({ phase: "merge", message: `Updated '${this.repoName}' to origin/${branch}` });
+    this.outcomeAccumulator?.recordUpdated(branch, worktreeDir, "fast_forward");
+  }
+
+  // `sync --dry-run` for a clone: the tick's decisions — the same
+  // preconditions, fetch, classification and working-tree check — reported as
+  // plan steps instead of acted on. It fetches the tracked branch exactly as
+  // the tick does (remote-tracking ref and objects; the shallow boundary moves
+  // the way the tick's own fetch would move it) and writes nothing else: no
+  // clone, no unshallow, no refspec narrowing, no deepening, no sparse
+  // reapply, no merge. Where the tick would do one of those first, the plan
+  // says so in a note.
+  async planSyncAttempt(plan: SyncDryRunPlanBuilder): Promise<void> {
+    const worktreeDir = this.config.worktreeDir;
+    const branch = await this.resolveBranch();
+
+    if ((await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR))) !== "exists") {
+      const depth = this.config.depth !== undefined ? ` at depth ${this.config.depth}` : "";
+      plan.add({
+        kind: "clone",
+        path: path.resolve(worktreeDir),
+        branch,
+        message: `clone ${redactRepoUrl(this.config.repoUrl)} (branch '${branch}')${depth}`,
+      });
+      return;
+    }
+
+    const blocked = await this.checkTickPreconditions(worktreeDir, branch);
+    if (blocked) {
+      plan.add(this.skipStep(blocked.skip));
+      return;
+    }
+
+    const clients = await this.clients.mutatingClientsFor(worktreeDir);
+    if (this.config.depth === undefined && (await isShallowRepository(clients.git))) {
+      plan.note("The clone is shallow and no depth is configured: a sync first fetches its full history.");
+    }
+    if (!(await assessSingleBranchRemote(clients.git, branch)).refspecConverged) {
+      plan.note(
+        `origin's fetch refspec is not the single-branch one: a sync first narrows it to '${branch}' and deletes the other origin/* remote-tracking refs.`,
+      );
+    }
+
+    const fetchArgs = await buildSyncFetchArgs(this.ctx, clients.git, branch);
+    const fetched = await fetchWithRecovery(this.ctx, clients, fetchArgs, worktreeDir, branch, false);
+    if (fetched.skipped) {
+      plan.add(this.skipStep({ kind: "missing_remote_ref", branch, source: "fetch_error" }));
+      return;
+    }
+    plan.markFetched();
+    if (!(await hasRemoteBranch(clients.git, branch))) {
+      plan.add(this.skipStep({ kind: "missing_remote_ref", branch, source: "post_fetch_verify" }));
+      return;
+    }
+
+    const sparseConfig = this.config.sparseCheckout;
+    if (sparseConfig) {
+      const sparse = await assessSparseCheckout(this.ctx, worktreeDir, sparseConfig);
+      const details = { branch, path: worktreeDir };
+      if (sparse.kind === "apply") {
+        plan.add({
+          kind: "update",
+          ...details,
+          reason: "sparse_checkout",
+          message: sparse.narrowing ? "narrows the sparse-checkout patterns" : "rewrites the sparse-checkout patterns",
+        });
+      } else if (sparse.kind === "unsafe-narrowing") {
+        plan.add({
+          kind: "skip",
+          scope: "sparse-checkout",
+          reason: "sparse_narrowing_unsafe",
+          ...details,
+          message: "working tree has local changes",
+        });
+      } else if (sparse.kind === "failed") {
+        plan.add({
+          kind: "skip",
+          scope: "sparse-checkout",
+          reason: "sparse_check_failed",
+          ...details,
+          message: getErrorMessage(sparse.error),
+        });
+      }
+    }
+
+    const relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch);
+    if (relationship === "up_to_date") {
+      plan.add({
+        kind: "noop",
+        scope: "repo",
+        reason: "already_up_to_date",
+        branch,
+        path: worktreeDir,
+        message: `Already up to date with origin/${branch}`,
+      });
+      return;
+    }
+    // Too shallow to classify with a deepen budget left: the tick would spend
+    // it (more fetches, each moving the shallow boundary) before deciding, and
+    // the dry run does not. The outcome's wording for this skip assumes the
+    // budget is spent or empty, so the step says what was not simulated.
+    const deepenBudget = getDeepenTargets(this.ctx);
+    if (relationship === "indeterminate_shallow" && deepenBudget.length > 0) {
+      const deepest = deepenBudget[deepenBudget.length - 1];
+      plan.add({
+        kind: "skip",
+        scope: "repo",
+        reason: "clone_indeterminate_shallow",
+        branch,
+        path: worktreeDir,
+        message:
+          `history too short to relate HEAD to origin/${branch}; deepening up to ${deepest} commits ` +
+          `is not simulated by a dry run — a sync deepens first and may then fast-forward`,
+      });
+      return;
+    }
+    const relationshipSkip = this.relationshipSkip(relationship, branch, null);
+    if (relationshipSkip) {
+      plan.add(this.skipStep(relationshipSkip.skip));
+      return;
+    }
+
+    if (!(await this.gitService.checkWorktreeStatus(worktreeDir))) {
+      plan.add(this.skipStep(this.dirtyTreeSkip().skip));
+      return;
+    }
+    plan.add({ kind: "update", branch, path: worktreeDir, reason: "fast_forward", message: `to origin/${branch}` });
+  }
+
+  // The tick's checks before it writes anything: HEAD readable, on the
+  // tracked branch, and origin still the configured repoUrl. A failed check
+  // is a skip, returned rather than recorded so a dry run can report it.
+  private async checkTickPreconditions(worktreeDir: string, branch: string): Promise<PendingCloneSkip | null> {
+    const readGit = this.clients.localClientFor(worktreeDir);
+
+    let currentBranch: string;
+    try {
+      currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+      return {
+        skip: { kind: "head_unreadable", phase: "sync", error: errorMessage },
+        logMessage: `Could not read current branch from '${worktreeDir}': ${errorMessage}`,
+        progressMessage: `Skipping '${this.repoName}': could not read current branch`,
+        logLevel: "warn",
+      };
+    }
+
+    if (currentBranch !== branch) {
+      return {
+        skip: { kind: "branch_mismatch", phase: "sync", currentBranch, expectedBranch: branch },
+        logMessage:
+          `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge. ` +
+          `Update 'branch' in the config or switch the clone back.`,
+        progressMessage: `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
+        logLevel: "warn",
+      };
+    }
+
+    // Re-check every tick (not just at init): the daemon reuses this service, so
+    // a clone whose origin no longer matches repoUrl must keep being skipped
+    // rather than fetching from the wrong remote.
+    const originMismatch = await evaluateOriginMatch(this.ctx, readGit, worktreeDir);
+    if (originMismatch) {
+      return {
+        skip: originMismatch.skip,
+        logMessage: originMismatch.warnMessage,
+        progressMessage: `Skipping '${this.repoName}': ${originMismatch.progressDetail}`,
+        logLevel: "warn",
+      };
+    }
+    return null;
+  }
+
+  // The merge the classification rules out, if it rules one out. Null for
+  // `up_to_date` and `fast_forward`, which the caller handles itself.
+  private relationshipSkip(
+    relationship: RemoteRelationship,
+    branch: string,
+    lastDeepenedTo: number | null,
+  ): PendingCloneSkip | null {
+    switch (relationship) {
+      case "up_to_date":
+      case "fast_forward":
+        return null;
+      case "local_ahead":
+        return {
+          skip: { kind: "ahead_unpushed", branch },
+          logMessage: `⏭️  '${this.repoName}' has unpushed commits ahead of origin/${branch}. Skipping merge.`,
+          progressMessage: `Skipping merge for '${this.repoName}': unpushed commits ahead of origin/${branch}`,
+          logLevel: "info",
+        };
+      case "indeterminate_shallow": {
+        const detail = describeDeepenAttempt(lastDeepenedTo);
+        const progressDetail =
+          lastDeepenedTo === null
+            ? `no deepening attempted (configured depth at/above limits)`
+            : `shallow depth budget exhausted at ${lastDeepenedTo}`;
+        return {
+          skip: { kind: "indeterminate_shallow", branch, deepenedTo: lastDeepenedTo },
+          logMessage:
+            `⏭️  '${this.repoName}' could not classify origin/${branch} after ${detail}. ` +
+            `Skipping merge — remove 'depth' from the config to unshallow the clone.`,
+          progressMessage: `Skipping merge for '${this.repoName}': ${progressDetail}`,
+          logLevel: "info",
+        };
+      }
+      default:
+        return {
+          skip: { kind: "diverged", branch },
+          logMessage: `⏭️  '${this.repoName}' has diverged from origin/${branch}. Skipping merge (no auto-reset).`,
+          progressMessage: `Skipping merge for '${this.repoName}': diverged from origin/${branch}`,
+          logLevel: "info",
+        };
+    }
+  }
+
+  private dirtyTreeSkip(): PendingCloneSkip {
+    return {
+      skip: { kind: "dirty_tree" },
+      logMessage: `⏭️  Skipping ff-merge for '${this.repoName}' — working tree has local changes.`,
+      progressMessage: `Skipping merge for '${this.repoName}': working tree has local changes`,
+      logLevel: "info",
+    };
+  }
+
+  // A clone skip as a plan step, worded and coded the way the tick's outcome
+  // records it.
+  private skipStep(reason: CloneSkipReason): SyncDryRunStep {
+    const action = cloneSkipToOutcomeAction(reason, {
+      branch: this.resolvedBranch ?? this.config.branch,
+      path: this.config.worktreeDir,
+    });
+    return action.kind === "skipped"
+      ? {
+          kind: "skip",
+          scope: action.scope,
+          reason: action.reason,
+          ...(action.branch !== undefined && { branch: action.branch }),
+          ...(action.path !== undefined && { path: action.path }),
+          ...(action.message !== undefined && { message: action.message }),
+        }
+      : { kind: "skip", scope: "repo", reason: `clone_${reason.kind}` };
+  }
+
   // Display name only (log lines and progress messages), so the URL fallback
   // is shown with any embedded credentials stripped.
   private get repoName(): string {
-    return (this.config as RepositoryConfig).name ?? redactRepoUrl(this.config.repoUrl);
+    return repoDisplayLabel(this.config);
   }
 
-  private getCloneTimeoutMs(): number {
-    if (isUnitTestShortcutEnabled()) return 0;
-    return this.config.cloneTimeoutMs ?? DEFAULT_CONFIG.CLONE_TIMEOUT_MS;
-  }
-
-  private getFetchTimeoutMs(): number {
-    if (isUnitTestShortcutEnabled()) return 0;
-    return this.config.fetchTimeoutMs ?? DEFAULT_CONFIG.FETCH_TIMEOUT_MS;
-  }
-
-  // The configured setting plus the per-sync override the retry policy installs
-  // on GitService once an attempt has died on an LFS error. Only the first half
-  // was read here, so every client this service builds — the retry attempt's
-  // fetch, its `merge --ff-only` — ran with the identical environment after
-  // "Temporarily disabling LFS downloads" had already been logged, and the
-  // retry failed on exactly the object the attempt before it had.
-  private isLfsSkipEnabled(): boolean {
-    return this.config.skipLfs === true || this.gitService.isLfsSkipEnabled();
-  }
-
-  // Progress and inactivity timeout only; createGitClient adds the env and the
-  // unsafe-env allowances every client needs.
-  private buildGitOptions(blockMs: number): Partial<SimpleGitOptions> {
-    const options: Partial<SimpleGitOptions> = {
-      progress: makeGitProgressHandler(
-        () => this.logger,
-        (event) => this.emitProgress(event),
-      ),
+  // The view of this service the ./clone-sync modules work through. Every
+  // member is a getter so they always see the current logger and outcome.
+  private static createContext(service: CloneSyncService): CloneSyncContext {
+    return {
+      get config() {
+        return service.config;
+      },
+      get gitService() {
+        return service.gitService;
+      },
+      get logger() {
+        return service.logger;
+      },
+      get branchCreatedActions() {
+        return service.branchCreatedActions;
+      },
+      get clients() {
+        return service.clients;
+      },
+      get repoName() {
+        return service.repoName;
+      },
+      get trackedBranch() {
+        return service.resolvedBranch ?? service.config.branch;
+      },
+      get outcome() {
+        return service.outcomeAccumulator;
+      },
+      emitProgress: (event) => service.emitProgress(event),
+      recordSkip: (reason, logMessage, progressMessage, logLevel) =>
+        service.recordSkip(reason, logMessage, progressMessage, logLevel),
     };
-    if (blockMs > 0) options.timeout = { block: blockMs };
-    return options;
   }
 
   private emitProgress(event: GitProgressEvent): void {
@@ -307,2396 +679,5 @@ export class CloneSyncService {
         path: this.config.worktreeDir,
       }),
     );
-  }
-
-  // Client for local commands (rev-parse, config, show-ref, for-each-ref,
-  // update-ref, merge, switch, checkout, remote get-url). No inactivity kill:
-  // simple-git's block timeout only resets on stdout/stderr data, and git is
-  // legitimately silent for minutes while a merge or checkout materializes a
-  // large tree — killing it there fails a sync that would have succeeded.
-  private localClientFor(dir: string): SimpleGit {
-    return createGitClient(dir, this.buildGitEnv(), this.buildGitOptions(0));
-  }
-
-  // Client for network commands (fetch, ls-remote). Silence there means a
-  // stalled connection or a prompt nobody can answer, so fetchTimeoutMs stays
-  // the guard that ends the attempt. `dir` undefined runs without a working
-  // directory (ls-remote against a URL).
-  private networkClientFor(dir?: string): SimpleGit {
-    return createGitClient(dir, this.buildGitEnv(), this.buildGitOptions(this.getFetchTimeoutMs()));
-  }
-
-  // Client for the unshallow fetch. Same kind of network command as
-  // networkClientFor, on the clone budget instead of the fetch one: it
-  // transfers every commit the shallow clone skipped, which is the work the
-  // initial clone would have done, not the work of an incremental fetch. The
-  // budget is an inactivity window, and `--progress` keeps it fed for the whole
-  // streaming phase; what it has to cover are the phases git runs silently at
-  // either end — the server computing the shallow boundary and enumerating
-  // objects before the first progress byte, and the connectivity check after
-  // the last one — and both scale with total history, not with what changed.
-  // That last part is reasoning about what those phases do, not a measurement:
-  // an unshallow big enough to spend minutes in them is not something a local
-  // `file://` remote can stage (one over 1200 commits was done in 176 ms).
-  private unshallowClientFor(dir: string): SimpleGit {
-    return createGitClient(dir, this.buildGitEnv(), this.buildGitOptions(this.getCloneTimeoutMs()));
-  }
-
-  // The single choke point for every write path. `worktreeDir` may be a
-  // directory a user pointed us at rather than one we cloned, and a checkout
-  // whose `.git` is a gitdir pointer — a linked worktree from `git worktree
-  // add`, or a submodule — shares the config and refs of the repository that
-  // owns it. Narrowing `remote.origin.fetch`, deleting `refs/remotes/origin/*`
-  // and fetching with `--prune` there rewrite THAT repository, not this one.
-  // The `--prune` fetch repeats on every tick; the narrowing and the ref
-  // delete land whenever that repository's config reads unconverged, which for
-  // a worktree-mode parent is every run, since its own init re-adds the wide
-  // `+refs/heads/*` refspec. Read paths (getWorktrees, the origin/HEAD
-  // probes) keep using localClientFor and still work on such a directory; only
-  // writes go through here, and the branded return type is the only thing the
-  // write helpers accept, so a mutation added later cannot skip the check.
-  private async mutatingClientsFor(worktreeDir: string): Promise<MutatingGitClients> {
-    await this.assertPrimaryCheckout(worktreeDir);
-    return {
-      [PRIMARY_CHECKOUT_VERIFIED]: true,
-      git: this.localClientFor(worktreeDir),
-      networkGit: this.networkClientFor(worktreeDir),
-      unshallowGit: this.unshallowClientFor(worktreeDir),
-    };
-  }
-
-  private async assertPrimaryCheckout(worktreeDir: string): Promise<void> {
-    const resolvedDir = path.resolve(worktreeDir);
-    const ownGitDir = path.join(resolvedDir, PATH_CONSTANTS.GIT_DIR);
-
-    let output: string;
-    try {
-      output = await this.localClientFor(resolvedDir).raw(["rev-parse", "--git-dir", "--git-common-dir"]);
-    } catch (error) {
-      // Fail closed: this guard exists to protect a repository we may not own,
-      // so "cannot tell" must never be treated as "safe to mutate". Every call
-      // site has already run a read probe here, so a failure now means the
-      // checkout changed or broke under us.
-      throw this.notPrimaryCheckoutError(
-        resolvedDir,
-        `its git directory could not be read (${getErrorMessage(error)})`,
-        null,
-      );
-    }
-
-    // git prints both paths relative to the directory it ran in when they sit
-    // inside it (a plain clone prints ".git" twice) and absolute otherwise, so
-    // resolve against the checkout rather than the process cwd.
-    const [gitDirOutput, commonDirOutput] = output.split(/\r?\n/).map((line) => line.trim());
-    if (!gitDirOutput || !commonDirOutput) {
-      throw this.notPrimaryCheckoutError(resolvedDir, "'git rev-parse' did not report its git directory", null);
-    }
-    const gitDir = path.resolve(resolvedDir, gitDirOutput);
-    const commonDir = path.resolve(resolvedDir, commonDirOutput);
-
-    // `.git` must be a real directory belonging to this checkout. `git
-    // worktree add` and `git submodule add` leave a FILE ('gitdir: ...') there,
-    // which is the shape that makes the mutations below land in another
-    // repository. A symlink is refused too: git reports a symlinked `.git`
-    // exactly like a primary one, so a link that relocates this repo's own git
-    // directory cannot be told apart from one aimed at a checkout that is
-    // still using it — and only the second is safe to be wrong about.
-    const gitEntry = await this.lstatOrNull(ownGitDir);
-    if (gitEntry === null || !gitEntry.isDirectory()) {
-      throw this.notPrimaryCheckoutError(
-        resolvedDir,
-        await this.describeGitEntry(ownGitDir, gitEntry),
-        // git printed the symlink's own path for a symlinked `.git`; the
-        // target is the directory the user has to reason about.
-        (await this.realPathOrNull(commonDir)) ?? commonDir,
-      );
-    }
-
-    if (gitDir === ownGitDir && commonDir === ownGitDir) return;
-
-    // Same directory reached by a different path spelling (a symlinked parent
-    // such as macOS '/tmp' -> '/private/tmp') — compare resolved paths before
-    // refusing. The lstat above already established `.git` is this checkout's
-    // own directory, so this only forgives path normalization.
-    const [realOwnGitDir, realGitDir, realCommonDir] = await Promise.all([
-      this.realPathOrNull(ownGitDir),
-      this.realPathOrNull(gitDir),
-      this.realPathOrNull(commonDir),
-    ]);
-    if (realOwnGitDir !== null && realGitDir === realOwnGitDir && realCommonDir === realOwnGitDir) return;
-
-    // Say which half failed. A relocated linked worktree has a real `.git`
-    // directory of its own and is caught only by the common dir, so naming
-    // this checkout's own git directory there would read as a non sequitur.
-    const detail =
-      gitDir === ownGitDir
-        ? `its git directory is shared with another repository`
-        : `git reports its git directory as '${gitDir}'`;
-    throw this.notPrimaryCheckoutError(resolvedDir, detail, commonDir);
-  }
-
-  // Both probes normalize an unusable answer to null rather than passing it
-  // on: "could not resolve" must never compare equal to another "could not
-  // resolve" and read as proof that two paths are the same directory.
-  private async lstatOrNull(target: string): Promise<Stats | null> {
-    try {
-      const stats: Stats | undefined = await fs.lstat(target);
-      return stats ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  private async realPathOrNull(target: string): Promise<string | null> {
-    try {
-      const resolved: string | undefined = await fs.realpath(target);
-      return typeof resolved === "string" ? resolved : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // `.git` as a file is how `git worktree add` and `git submodule` mark a
-  // checkout owned by another repository; quoting the pointer makes the error
-  // recognizable without the user having to go look.
-  private async describeGitEntry(ownGitDir: string, entry: Stats | null): Promise<string> {
-    if (entry === null) return `'${ownGitDir}' could not be read`;
-    if (entry.isSymbolicLink()) {
-      const target = (await this.realPathOrNull(ownGitDir)) ?? "another location";
-      return `'${ownGitDir}' is a symlink to '${target}', so another checkout could be using that git directory too`;
-    }
-    if (!entry.isFile()) return `'${ownGitDir}' is not a directory`;
-    const pointer = await this.readGitDirPointer(ownGitDir);
-    return pointer
-      ? `'${ownGitDir}' is a gitdir pointer to '${pointer}'`
-      : `'${ownGitDir}' is a file, not this checkout's own git directory`;
-  }
-
-  private async readGitDirPointer(ownGitDir: string): Promise<string | null> {
-    try {
-      const contents = await fs.readFile(ownGitDir, "utf-8");
-      return /^gitdir:\s*(.+)$/m.exec(contents)?.[1]?.trim() ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  private notPrimaryCheckoutError(worktreeDir: string, detail: string, commonDir: string | null): ConfigError {
-    const owner = commonDir === null ? "" : ` Its shared git directory is '${commonDir}'.`;
-    return new ConfigError(
-      `Cannot manage '${worktreeDir}' as a clone-mode repository for '${this.repoName}': it is not a primary ` +
-        `checkout — ${detail}.${owner} Clone mode would narrow 'remote.origin.fetch', delete ` +
-        `'refs/remotes/origin/*' and fetch with --prune there — in the repository that owns that git directory, ` +
-        `not in this one — the fetch on every sync, the rest whenever that repository's remote config does not ` +
-        `already read as clone mode leaves it. Point 'worktreeDir' at a path this tool owns: an empty directory it ` +
-        `can clone into, or a standalone clone of '${redactRepoUrl(this.config.repoUrl)}' whose '.git' is a ` +
-        `directory in the checkout itself. A checkout whose git directory lives elsewhere — cloned with ` +
-        `--separate-git-dir, or with '.git' symlinked away — is refused as well, because nothing distinguishes ` +
-        `it from a checkout sharing a git directory that is still in use.`,
-      "CLONE_DESTINATION_NOT_PRIMARY_CHECKOUT",
-    );
-  }
-
-  // Per-client additions layered over the sanitized process environment by
-  // createGitClient, which also forces the C locale the missing-remote-ref and
-  // LFS error classification depends on.
-  private buildGitEnv(opts: { forceLfsSkip?: boolean } = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = {};
-    if (opts.forceLfsSkip || this.isLfsSkipEnabled()) {
-      env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
-    }
-    return env;
-  }
-
-  private buildCloneArgs(branch: string): string[] {
-    const args = ["--branch", branch, "--single-branch", "--no-tags", "--progress"];
-    if (this.config.depth !== undefined) {
-      args.push("--depth", String(this.config.depth));
-    }
-    return args;
-  }
-
-  private getBranchRefspec(branch: string): string {
-    return `+refs/heads/${branch}:refs/remotes/origin/${branch}`;
-  }
-
-  // The routine sync fetch keeps a `--depth` cap, ratcheted so it can only ever
-  // grow: `max(configured depth, the window the clone holds under the ref the
-  // fetch re-applies it to)`. README.md carries the measurements in full.
-  //
-  // The cap has to stay. `--depth` is what bounds the transfer when the remote
-  // tip is *not* a descendant of the clone's tip — a force-push or a rebase on
-  // the feature branches clone mode tracks. A shallow clone advertises its
-  // grafted tip and has no ancestors to offer as `have`s, so the server has to
-  // pack the new tip's whole ancestry: measured on git 2.43, a 199-commit
-  // remote of empty commits force-pushed with `reset --hard HEAD~3` plus one
-  // commit (a 197-commit tip), `depth: 1` clone, the capped fetch took 1 commit
-  // in a 3-object pack against all 197 in a 201-object pack uncapped — and both
-  // classified `indeterminate_shallow`, so the uncapped download bought nothing
-  // and the deepen budget ran anyway.
-  //
-  // Passing the *configured* depth is what was wrong. `git fetch --depth N`
-  // re-applies N to the ref it fetches rather than capping it, so after a
-  // deepen-to-50 and a fast-forward the next tick's `--depth 1` cut the clone
-  // back to one commit; `merge-base HEAD origin/<branch>` then had nothing to
-  // walk even for a one-commit advance, the tick reported
-  // `indeterminate_shallow`, and the budget bought the same 50 commits again —
-  // every tick, discarded every time.
-  //
-  // Two things about the ratchet are easy to get wrong, and both were.
-  //
-  // The unit. `--depth N` counts N ancestry *levels* from the fetched tip, not
-  // N commits, so on a merge-built history one level holds several commits (on
-  // git 2.43, a `--depth 50` fetch of a remote of merged two-commit pull
-  // requests produced a 147-commit clone). Ratcheting on `rev-list --count
-  // HEAD` feeds git a number in the wrong unit, always larger than the depth it
-  // came from, so the boundary goes deeper every tick: 1 -> 147 -> 438 -> 610
-  // commits in three ticks of a 601-commit remote, after which the clone held
-  // everything, was no longer shallow, and `--depth` was never sent again.
-  // `--count --first-parent HEAD` is closer and still not the unit — a history
-  // whose branches fork below the tip shortcuts the walk, and the same run grew
-  // a 495-commit clone to the whole 1201-commit remote in one tick.
-  //
-  // The ref. `--depth` is re-applied from the *fetched tip*, and HEAD is that
-  // commit only on a tick that ends in a fast-forward. Every tick that fetches
-  // and does not merge — dirty tree, unpushed commits, a divergence, a tip too
-  // shallow to classify — leaves HEAD behind it, and a walk from there reports
-  // less than the clone holds, so the cap re-truncates; each truncation makes
-  // the next measurement smaller still, so it runs away downwards. Measured on
-  // git 2.43, 120-commit remote advancing three commits a tick, `depth: 1`,
-  // worktree left dirty after the first deepen: measuring HEAD sent 50, 47, 41,
-  // 32, 20, 5 and the window the deepen paid for was gone in five ticks, with
-  // the first clean tick paying for a second deepen; measuring origin/main sent
-  // 50 every tick, held the window at 50, and fast-forwarded with no deepen at
-  // all. The *union* of the two (`rev-list HEAD origin/<branch>`) is not enough
-  // either: a union walk gives each commit its shortest distance from *either*
-  // tip, which under-reports once HEAD sits off to the side of the fetched tip.
-  // Over a 400-commit remote force-pushed at the second tick, the union sent
-  // 50, 50, 49, 45, 38 and let the window shrink to 28 in five ticks, where the
-  // fetched ref alone sent 50 every time and held it.
-  //
-  // So the ratchet measures the remote-tracking tip, with HEAD as the fallback
-  // for a first sync that has no such ref yet. Every commit the clone holds
-  // under that ref is within the number the walk returns, so re-asking for it
-  // truncates nothing there, and it is a fixed point: a window `--depth D`
-  // produced measures back as exactly D. History widens only when something
-  // deliberately widens it — the deepen budget, or a raised `depth`.
-  //
-  // What it does not claim is that nothing ever falls off the bottom. A remote
-  // that advanced by k levels pushes the oldest k levels past the boundary (the
-  // window keeps its size and slides), and a local tip a force-push moved off
-  // the fetched ref's ancestry cannot be held inside it by any depth.
-  //
-  // Two edges, both resolved toward keeping a cap:
-  //   - A non-shallow clone gets no `--depth` at all: the flag would *make* the
-  //     repository shallow (on git 2.43, `--depth 5` on a full 199-commit clone
-  //     left 5 commits and `--is-shallow-repository` true).
-  //   - If neither walk yields a depth — the remote-tracking ref missing on a
-  //     first sync (`rev-list` rejects an unknown ref, which is why the HEAD
-  //     walk backs it up), an unborn HEAD, or the empty string simple-git
-  //     resolves with when git exits non-zero without writing to stderr — the
-  //     cap falls back to the configured depth rather than to no cap: a
-  //     re-truncation is something the deepen budget can undo, an uncapped
-  //     transfer is not.
-  private async buildSyncFetchArgs(git: SimpleGit, branch: string): Promise<string[]> {
-    const args = ["origin", "--prune", "--no-tags", "--progress"];
-    const depth = await this.resolveSyncFetchDepth(git, branch);
-    if (depth !== null) {
-      args.push("--depth", String(depth));
-    }
-    args.push(this.getBranchRefspec(branch));
-    return args;
-  }
-
-  private async resolveSyncFetchDepth(git: SimpleGit, branch: string): Promise<number | null> {
-    const configuredDepth = this.config.depth;
-    if (configuredDepth === undefined) return null;
-    if (!(await this.isShallowRepository(git))) return null;
-    const localDepth =
-      (await this.measureLocalHistoryDepth(git, `refs/remotes/origin/${branch}`)) ??
-      (await this.measureLocalHistoryDepth(git, "HEAD"));
-    if (localDepth === null) return configuredDepth;
-    return Math.max(configuredDepth, localDepth);
-  }
-
-  // The depth the clone holds under `startRef`, in the unit `git fetch --depth`
-  // uses: one plus the longest shortest-path from that ref to a local commit.
-  // git assigns a commit the *smallest* number of parent edges that reaches it
-  // from the tip and cuts the history where that number reaches `--depth`, so
-  // this is the same measurement read back off the clone.
-  //
-  // `rev-list --topo-order` never prints a parent before all of its children,
-  // so one forward pass over `--parents` output settles every distance: by the
-  // time a commit is read, every child that could shorten its path has already
-  // relaxed it. The walk is local and bounded by what the clone holds, and
-  // grafted boundary commits are printed without parents, so it stops there.
-  //
-  // Returns null for anything that is not a usable answer: a rejection (which
-  // is what an unknown ref gives), and the empty string simple-git resolves
-  // with when git exits non-zero without writing to stderr.
-  private async measureLocalHistoryDepth(git: SimpleGit, startRef: string): Promise<number | null> {
-    let output: string;
-    try {
-      output = await git.raw(["rev-list", "--topo-order", "--parents", startRef]);
-    } catch {
-      return null;
-    }
-
-    const depthByCommit = new Map<string, number>();
-    let deepest = -1;
-    for (const line of output.split("\n")) {
-      const ids = line.trim().split(" ");
-      const commit = ids[0];
-      if (!commit) continue;
-      // The first line is the start ref itself, which nothing has relaxed:
-      // depth 0.
-      const depth = depthByCommit.get(commit) ?? 0;
-      if (depth > deepest) deepest = depth;
-      for (let i = 1; i < ids.length; i++) {
-        const parent = ids[i];
-        const known = depthByCommit.get(parent);
-        if (known === undefined || known > depth + 1) depthByCommit.set(parent, depth + 1);
-      }
-    }
-    return deepest < 0 ? null : deepest + 1;
-  }
-
-  // The TUI branch switch and the branch wizard's base-branch fetch. Both keep
-  // `--depth`, and what the flag does here is broader than "bound a branch this
-  // clone has never seen": it re-applies the configured depth to whatever ref
-  // it names, and the shallow boundary is repository-wide, so this fetch can
-  // shorten *or* deepen the clone — including when `depth` was never edited.
-  // Its commonest case is in fact a ref the clone does hold, since the wizard
-  // offers the tracked branch among the bases: measured on git 2.43 on a
-  // `depth: 1` clone the deepen budget had grown to 50 commits, a `--depth 1`
-  // fetch of the tracked branch put it back to 1, and with `depth` raised to 10
-  // the same fetch took a one-commit clone to 10. The sync fetch above does not
-  // do that because it ratchets its cap up to the window the fetched ref
-  // already holds; this one does not ratchet, because the ref it names is
-  // usually not the one the clone's window was measured over.
-  //
-  // The flag stays because dropping it is ruinous for the case it exists for, a
-  // ref with a tip of its own that the clone has never seen — it costs the
-  // branch's whole ancestry instead of one commit. README's `depth` section
-  // carries that measurement with the harness shape it was taken over; object
-  // counts are shape-dependent, so it is stated in one place rather than
-  // restated here, where a later re-measurement would not reach it.
-  // Whether it also shortens the tracked branch depends on what the ref shares
-  // with it — a side branch with a tip of its own left a 20-commit clone at 20,
-  // a `release` ref pointing at `main~5` took it to 6 — and both callers are
-  // about to leave the old branch behind anyway: checkoutBranch ends by
-  // re-narrowing the remote to the new branch and deleting the old origin/* ref.
-  private async buildUntrackedBranchFetchArgs(git: SimpleGit, branch: string): Promise<string[]> {
-    const args = ["origin", "--prune", "--no-tags", "--progress"];
-    if (this.config.depth !== undefined && (await this.isShallowRepository(git))) {
-      args.push("--depth", String(this.config.depth));
-    }
-    args.push(this.getBranchRefspec(branch));
-    return args;
-  }
-
-  // The single-branch shape every clone-mode remote is held to: one fetch
-  // refspec naming the tracked branch, tags off, and no remote-tracking ref
-  // besides that branch's. Init, the branch switch and every sync tick call
-  // it, and it writes only what is not already that shape.
-  //
-  // It has to read first because `git config --replace-all` is not a no-op on
-  // an unchanged value: it renames a fresh config.lock over .git/config, so
-  // the file lands on a new inode and mtime every time (git 2.43). On a tick
-  // that is churn for nothing — the sync fetch carries its refspec on the
-  // command line (buildSyncFetchArgs), and the one fetch that reads the stored
-  // one, the `--unshallow`, runs before this call.
-  //
-  // It stays in the tick rather than moving to init for the reason the origin
-  // URL is re-checked there: a daemon holds one clone for weeks, and `git
-  // remote set-branches --all` or an editor is enough to widen a refspec that
-  // was converged at adoption.
-  private async configureSingleBranchRemote(
-    clients: MutatingGitClients,
-    branch: string,
-    options: { sweepStaleRefs?: "always" } = {},
-  ): Promise<void> {
-    const refspec = this.getBranchRefspec(branch);
-    const current = await this.readRemoteConfigValues(clients.git);
-    const holds = (key: string, value: string): boolean => {
-      const values = current?.get(key);
-      return values !== undefined && values.length === 1 && values[0] === value;
-    };
-    const refspecConverged = holds("remote.origin.fetch", refspec);
-    const tagOptConverged = holds("remote.origin.tagopt", "--no-tags");
-
-    // Stale refs are what a wide refspec fetched, so they are swept on the
-    // call that narrows it — and before that write, not after: the two are not
-    // one operation, and this order leaves a kill in between with the wide
-    // refspec that makes the next call redo both. The other order leaves a
-    // narrow refspec with stale refs behind it, which reads as converged and
-    // would never be swept.
-    if (!refspecConverged || options.sweepStaleRefs === "always") {
-      await this.deleteStaleRemoteTrackingRefs(clients, branch);
-    }
-    if (!refspecConverged) {
-      await clients.git.raw(["config", "--replace-all", "remote.origin.fetch", refspec]);
-    }
-    if (!tagOptConverged) {
-      await clients.git.raw(["config", "--replace-all", "remote.origin.tagOpt", "--no-tags"]);
-    }
-  }
-
-  // Both keys in one spawn, as `key\nvalue` records separated by NUL. The
-  // caller treats anything this cannot positively prove as drift, and that is
-  // the whole design: `git config` reports a key it does not hold with exit
-  // code 1 and an empty stderr, and simple-git fails a task only when the exit
-  // code is non-zero AND stderr is non-empty, so "unset" arrives as the empty
-  // string — exactly like a read that failed silently. Believing such an
-  // answer would skip the write forever and leave the clone un-narrowed, which
-  // is worse than the churn this replaces; reading wrong costs one redundant
-  // write.
-  //
-  // `--local` is the scope `--replace-all` writes to, so the read answers
-  // about the file the write would change; a value inherited from ~/.gitconfig
-  // is left to git to merge, as before. `-z` keeps a value containing a
-  // newline from forging a second entry.
-  private async readRemoteConfigValues(git: SimpleGit): Promise<Map<string, string[]> | null> {
-    // The parse is inside the guard with the spawn: this function's contract is
-    // that it fails to null and the caller then writes, so a surprise from the
-    // parse (a raw that is not a string, from a double or a future simple-git)
-    // must not escape and fail the whole tick from the one place built to fail
-    // safe.
-    try {
-      const raw = await git.raw(["config", "--local", "-z", "--get-regexp", REMOTE_ORIGIN_CONFIG_KEY_PATTERN]);
-      const values = new Map<string, string[]>();
-      for (const record of raw.split("\0")) {
-        if (record.length === 0) continue;
-        const separator = record.indexOf("\n");
-        // git lower-cases the key it prints, and a key set without a value is
-        // printed on its own with no newline after it.
-        const key = (separator === -1 ? record : record.slice(0, separator)).toLowerCase();
-        const value = separator === -1 ? "" : record.slice(separator + 1);
-        const existing = values.get(key);
-        if (existing) existing.push(value);
-        else values.set(key, [value]);
-      }
-      return values;
-    } catch {
-      return null;
-    }
-  }
-
-  private recordMissingRemoteRefSkip(branch: string): void {
-    this.recordSkip(
-      { kind: "missing_remote_ref", branch, source: "fetch_error" },
-      `Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`,
-      `Skipping '${this.repoName}': origin/${branch} is missing`,
-    );
-  }
-
-  private async fetchWithRecovery(
-    clients: MutatingGitClients,
-    fetchArgs: string[],
-    worktreeDir: string,
-    branch: string,
-    // checkoutBranch reports its own hard error — recording a "Skipping sync"
-    // skip there would double-report a user-initiated action as a sync skip.
-    recordSkip = true,
-  ): Promise<{ skipped: boolean }> {
-    const recordMissing = (): void => {
-      if (recordSkip) this.recordMissingRemoteRefSkip(branch);
-    };
-    try {
-      await clients.networkGit.fetch(fetchArgs);
-      return { skipped: false };
-    } catch (fetchError) {
-      const message = getErrorMessage(fetchError);
-      if (isLfsError(message)) {
-        this.logger.info(`⚠️  LFS error during fetch for '${this.repoName}'; retrying with LFS disabled.`);
-        this.emitProgress({ phase: "fetch", message: `Retrying fetch for '${this.repoName}' with LFS disabled` });
-        // Same kind of client as the one that just failed (a network fetch),
-        // only with LFS smudging disabled. It is built here rather than taken
-        // from `clients`, but it runs in the same directory that pair already
-        // proved is a primary checkout.
-        const lfsSkipGit = createGitClient(
-          worktreeDir,
-          this.buildGitEnv({ forceLfsSkip: true }),
-          this.buildGitOptions(this.getFetchTimeoutMs()),
-        );
-        try {
-          await lfsSkipGit.fetch(fetchArgs);
-          return { skipped: false };
-        } catch (retryError) {
-          // The LFS-disabled retry can itself hit a deleted remote branch —
-          // classify it as a soft skip too, instead of letting it escape as a
-          // hard failure.
-          if (isMissingRemoteRefError(getErrorMessage(retryError))) {
-            recordMissing();
-            return { skipped: true };
-          }
-          // Otherwise propagate the retry error unchanged so the outer retry
-          // policy's LFS handling still sees an accurate error.
-          throw retryError;
-        }
-      }
-      if (isMissingRemoteRefError(message)) {
-        recordMissing();
-        return { skipped: true };
-      }
-      throw fetchError;
-    }
-  }
-
-  private async hasRemoteBranch(git: SimpleGit, branch: string): Promise<boolean> {
-    try {
-      // simple-git resolves `show-ref --quiet` even when git exits 1, so keep
-      // stdout enabled (no --quiet) to get a real reject on a missing ref —
-      // otherwise the post-fetch missing_remote_ref skip would never fire.
-      await git.raw(["show-ref", "--verify", `refs/remotes/origin/${branch}`]);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async isShallowRepository(git: SimpleGit): Promise<boolean> {
-    try {
-      const output = await git.raw(["rev-parse", "--is-shallow-repository"]);
-      return output.trim() === "true";
-    } catch {
-      return false;
-    }
-  }
-
-  private async unshallowIfDepthRemoved(clients: MutatingGitClients): Promise<void> {
-    if (this.config.depth !== undefined) return;
-
-    if (!(await this.isShallowRepository(clients.git))) return;
-
-    this.logger.info(
-      `[deepen] Existing shallow clone for '${this.repoName}' has no configured depth; fetching full history...`,
-    );
-    this.emitProgress({ phase: "fetch", message: `Fetching full history for '${this.repoName}'` });
-    // `--progress` is what keeps simple-git's inactivity timer alive across the
-    // transfer: it only resets on stdout/stderr data, and with stderr piped git
-    // suppresses every transfer and delta line and asks the server for
-    // `no-progress` — verified on git 2.43, where the same unshallow wrote 131
-    // stderr chunks with the flag and zero bytes without it. simple-git's own
-    // progress plugin appends the flag to any command whose first token is
-    // `fetch`, so it was already reaching git; spelling it out keeps the argv
-    // ours rather than the plugin's, and matches every other fetch here.
-    await clients.unshallowGit.fetch(["--unshallow", "--no-tags", "--progress"]);
-  }
-
-  private getDeepenTargets(): readonly number[] {
-    const configuredDepth = this.config.depth;
-    if (configuredDepth === undefined) return [];
-    // `git fetch --depth N` can shorten a shallow repo if N is below current depth.
-    // Skip targets at or below the configured depth — they would never widen history.
-    // Note the direction this gives `depth`: raising it can only *remove*
-    // targets, and a depth at or above the largest one leaves no budget at all.
-    // The sync fetch's ratcheted cap does widen a shorter clone toward a raised
-    // `depth` (it takes the larger of the two), but it cannot go past it, so
-    // once a clone is at `depth` and still unclassifiable the only remedy left
-    // is removing `depth`, which unshallows via unshallowIfDepthRemoved.
-    return SHALLOW_RELATION_DEEPEN_TARGETS.filter((target) => target > configuredDepth);
-  }
-
-  private async deepenShallowHistoryToDepth(
-    clients: MutatingGitClients,
-    branch: string,
-    targetDepth: number,
-  ): Promise<void> {
-    this.logger.info(
-      `[deepen] Shallow clone for '${this.repoName}' lacks enough history to classify origin/${branch}; ` +
-        `refetching to depth ${targetDepth} before deciding.`,
-    );
-    this.emitProgress({
-      phase: "fetch",
-      message: `Deepening '${this.repoName}' to depth ${targetDepth} before classifying origin/${branch}`,
-    });
-    await clients.networkGit.fetch([
-      "origin",
-      "--depth",
-      String(targetDepth),
-      "--prune",
-      "--no-tags",
-      "--progress",
-      this.getBranchRefspec(branch),
-    ]);
-  }
-
-  // The relationship classification both the sync tick and the branch switch
-  // decide on, with the deepening budget both are allowed to spend on it. A
-  // shallow clone can be too short to answer at all: the `--depth N` clone cut
-  // history under a tip the remote has since moved more than N commits past, so
-  // merge-base has nothing to walk and the classifier says
-  // `indeterminate_shallow` rather than guessing. Each target is fetched in
-  // turn and the first decisive answer wins, so the common case costs one extra
-  // fetch and only a genuinely unrelated history spends the whole budget.
-  //
-  // `localRef` names the local side: the tick asks about HEAD (its default),
-  // the branch switch about a branch it has not switched to yet.
-  private async classifyWithDeepening(
-    clients: MutatingGitClients,
-    worktreeDir: string,
-    branch: string,
-    localRef?: string,
-  ): Promise<{ relationship: RemoteRelationship; deepenedTo: number | null; deepenFetches: number }> {
-    let relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch, localRef);
-    if (relationship !== "indeterminate_shallow") return { relationship, deepenedTo: null, deepenFetches: 0 };
-
-    let deepenedTo: number | null = null;
-    // `deepenedTo` says how deep the budget got, which is what the skip
-    // messages need; `deepenFetches` says how many fetches that took, which is
-    // what the tick's timing table counts.
-    let deepenFetches = 0;
-    for (const target of this.getDeepenTargets()) {
-      await this.deepenShallowHistoryToDepth(clients, branch, target);
-      deepenedTo = target;
-      deepenFetches++;
-      relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch, localRef);
-      if (relationship !== "indeterminate_shallow") break;
-    }
-    return { relationship, deepenedTo, deepenFetches };
-  }
-
-  async resolveBranch(): Promise<string> {
-    if (this.resolvedBranch) return this.resolvedBranch;
-    if (this.config.branch) {
-      this.resolvedBranch = this.config.branch;
-      this.emitProgress({ phase: "branch", message: `Using configured branch '${this.resolvedBranch}'` });
-      return this.resolvedBranch;
-    }
-    this.logger.info(`No branch configured for '${this.repoName}', detecting remote default branch...`);
-    this.emitProgress({ phase: "branch", message: `Resolving remote default branch for '${this.repoName}'` });
-    this.resolvedBranch = await this.gitService.getRemoteDefaultBranch(this.config.repoUrl);
-    this.logger.info(`  ↳ resolved default branch: ${this.resolvedBranch}`);
-    this.emitProgress({ phase: "branch", message: `Resolved default branch '${this.resolvedBranch}'` });
-    return this.resolvedBranch;
-  }
-
-  private parseLsRemoteHeads(output: string): string[] {
-    return output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => line.split(/\s+/)[1] ?? "")
-      .filter((ref) => ref.startsWith("refs/heads/"))
-      .map((ref) => ref.slice("refs/heads/".length))
-      .filter((branch) => branch.length > 0);
-  }
-
-  async getRemoteBranches(): Promise<string[]> {
-    const worktreeDir = path.resolve(this.config.worktreeDir);
-    const repoArg = (await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR))) ? "origin" : this.config.repoUrl;
-    const git = repoArg === "origin" ? this.networkClientFor(worktreeDir) : this.networkClientFor();
-    const output = await git.raw(["ls-remote", "--heads", repoArg]);
-    return this.parseLsRemoteHeads(output);
-  }
-
-  private async localBranchExists(git: SimpleGit, branch: string): Promise<boolean> {
-    try {
-      await git.raw(["show-ref", "--verify", `refs/heads/${branch}`]);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async deleteRemoteTrackingRef(clients: MutatingGitClients, refName: string): Promise<void> {
-    try {
-      await clients.git.raw(["update-ref", "-d", refName]);
-    } catch {
-      // Stale remote refs are best-effort cleanup; sync correctness comes from the narrowed refspec.
-    }
-  }
-
-  // The refs a wider refspec left behind, swept where the `for-each-ref` can
-  // find something: on the call that narrows the refspec, and on adoption,
-  // where the clone came from outside and nothing is known about its refs. A
-  // tick over an already-narrowed clone does not sweep — its fetch is
-  // `--prune` with an explicit single-branch refspec, which can neither create
-  // nor prune any other origin/* ref, so the only refs a sweep could find
-  // there arrived out of band.
-  //
-  // The deletion is batched, and `git branch -r -D` is what batches it rather
-  // than the `update-ref --stdin` that reads like the obvious answer. Two
-  // reasons, in this order:
-  //
-  //  - Semantics. `update-ref --stdin` is ONE transaction: on git 2.43 a
-  //    single ref whose lock is held (a concurrent git in the same clone) ends
-  //    it with exit 128 and nothing deleted at all, which would turn one
-  //    unremovable ref into a sweep that silently did nothing. `git branch -D`
-  //    is per-ref best-effort like the loop this replaces — the refs it can
-  //    remove are removed, the ones it cannot are named on stderr, and it
-  //    exits non-zero — so the batch is never worse than deleting one at a
-  //    time, and over packed refs it is better: the packed-refs entry goes
-  //    even for the ref whose loose lock is held.
-  //  - Reach. simple-git 3.36 offers no way to write a child process's stdin:
-  //    there is no `stdin` option, `outputHandler` hands over stdout and
-  //    stderr only, its plugin list is built internally from known config
-  //    keys so none of ours can be registered, and `spawnOptions` is typed
-  //    down to `uid`/`gid`, so `stdio` cannot be set either. Feeding `--stdin`
-  //    anything would mean spawning git outside the client factory, past the
-  //    sanitized environment and past the primary-checkout guard every write
-  //    here goes through.
-  //
-  // `git branch -r` addresses a ref by the part after 'refs/remotes/', so the
-  // refs are filtered on that exact prefix and only ever shortened, never
-  // rebuilt: nothing outside `refs/remotes/origin/` can be named, and a name
-  // shortened this way always starts with 'origin/' and so can never be read
-  // as an option.
-  private async deleteStaleRemoteTrackingRefs(clients: MutatingGitClients, branch: string): Promise<void> {
-    let refsOutput: string;
-    try {
-      refsOutput = await clients.git.raw(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]);
-    } catch {
-      return;
-    }
-
-    const keepRef = `${ORIGIN_REF_PREFIX}${branch}`;
-    const namesToDelete = refsOutput
-      .split(/\r?\n/)
-      .map((ref) => ref.trim())
-      .filter((ref) => ref.startsWith(ORIGIN_REF_PREFIX) && ref !== keepRef && ref !== `${ORIGIN_REF_PREFIX}HEAD`)
-      .map((ref) => ref.slice(REMOTE_TRACKING_REF_PREFIX.length));
-
-    for (const batch of inBatches(namesToDelete, STALE_REF_DELETE_BATCH)) {
-      try {
-        await clients.git.raw(["branch", "-r", "-D", ...batch]);
-      } catch (error) {
-        // How much of a refused batch git deleted is version-dependent, so
-        // neither answer can be relied on: on git 2.43 a batch holding one
-        // locked ref removed all the others, and on 2.55 it removed none of
-        // them. Stale refs are best-effort cleanup — sync correctness comes
-        // from the narrowed refspec — but "best effort" has to mean the same
-        // thing on every git, so a refused batch is retried one ref at a
-        // time. That is the old per-ref cost, paid only on the batch that
-        // failed, and it leaves exactly the refs git genuinely refuses.
-        this.logger.debug(
-          `A batch of ${batch.length} stale remote-tracking ref(s) in '${this.repoName}' was refused; ` +
-            `retrying them one at a time: ${summarizeGitFailure(getErrorMessage(error))}`,
-        );
-        for (const name of batch) {
-          try {
-            await clients.git.raw(["branch", "-r", "-D", name]);
-          } catch {
-            // The ref git actually refuses. Left in place: it is stale
-            // cleanup, and the narrowed refspec already keeps it out of every
-            // fetch.
-          }
-        }
-      }
-    }
-  }
-
-  private async restoreBranchAfterCheckoutFailure(
-    clients: MutatingGitClients,
-    previousBranch: string,
-    attemptedBranch: string,
-  ): Promise<void> {
-    if (!previousBranch || previousBranch === "HEAD" || previousBranch === attemptedBranch) return;
-
-    try {
-      await clients.git.raw(["switch", previousBranch]);
-    } catch (error) {
-      this.logger.warn(
-        `Failed to restore '${this.repoName}' to '${previousBranch}' after checkout failure: ${getErrorMessage(error)}`,
-      );
-    }
-  }
-
-  async checkoutBranch(branch: string, options: { allowConfigDrift?: boolean } = {}): Promise<void> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    // Checkout is a convergence action by default: it brings an existing clone
-    // in line with the configured branch. Arbitrary targets would leave
-    // config.branch stale, so every later sync (and every restart) soft-skips
-    // with branch_mismatch after the refspec was already narrowed.
-    // allowConfigDrift is the TUI's explicit opt-out for branches it just
-    // created and pushed — the drift is then intentional and warned about.
-    const targetBranch = await this.resolveBranch();
-    if (branch !== targetBranch && !options.allowConfigDrift) {
-      throw new ConfigError(
-        this.config.branch
-          ? `Cannot switch '${this.repoName}' to '${branch}': clone mode tracks the configured branch '${targetBranch}'. Update 'branch' in the config file first, then run checkout to converge.`
-          : `Cannot switch '${this.repoName}' to '${branch}': no 'branch' is configured, so this clone tracks the remote default branch '${targetBranch}'. Set branch: "${branch}" in the config file first.`,
-        "CLONE_BRANCH_MISMATCH",
-      );
-    }
-
-    const worktreeDir = this.config.worktreeDir;
-    const readGit = this.localClientFor(worktreeDir);
-    const originMismatch = await this.evaluateOriginMatch(readGit, worktreeDir);
-    if (originMismatch) {
-      throw new ConfigError(
-        `Cannot switch '${this.repoName}' to '${branch}': ${originMismatch.progressDetail}.`,
-        "ORIGIN_MISMATCH",
-      );
-    }
-
-    const currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-    // On a detached HEAD `git switch` only warns about leaving commits behind,
-    // and the restore path below cannot return to "HEAD" — refuse instead of
-    // stranding commits in the reflog.
-    if (currentBranch === "HEAD") {
-      throw new GitOperationError(
-        "checkout",
-        `'${this.repoName}' is on a detached HEAD; check out a branch manually (preserving any local commits) before switching the tracked branch`,
-      );
-    }
-    // Nothing above this line writes; everything below does. Refuse a linked
-    // worktree or submodule here, before the first mutation reaches the
-    // repository that actually owns this directory's git dir.
-    const clients = await this.mutatingClientsFor(worktreeDir);
-
-    if (currentBranch === branch) {
-      await this.configureSingleBranchRemote(clients, branch);
-      this.resolvedBranch = branch;
-      this.pendingInitSkip = null;
-      this.warnConfigDriftAfterCheckout(branch, targetBranch);
-      return;
-    }
-
-    const isClean = await this.gitService.checkWorktreeStatus(worktreeDir);
-    if (!isClean) {
-      throw new WorktreeNotCleanError(worktreeDir, ["working tree has local changes"]);
-    }
-
-    // Converge shallow state like runSyncAttempt does: with no configured depth an
-    // existing shallow clone is unshallowed before the branch fetch, so switching
-    // branches doesn't leave the new branch shallow while the rest is full.
-    try {
-      await this.unshallowIfDepthRemoved(clients);
-    } catch (error) {
-      // Same classification as the branch fetch below: a deleted tracked
-      // branch fails the narrowed-refspec unshallow with the same error.
-      if (isMissingRemoteRefError(getErrorMessage(error))) {
-        throw new GitOperationError("checkout", `origin/${branch} is missing for '${this.repoName}'`);
-      }
-      throw error;
-    }
-
-    // `branch` is not always one the clone has never seen — localBranchExists
-    // below has a path for a branch it already holds — so this fetch's `--depth`
-    // can re-cut or deepen the clone rather than merely bound a new ref. See
-    // buildUntrackedBranchFetchArgs.
-    const fetchArgs = await this.buildUntrackedBranchFetchArgs(clients.git, branch);
-    if ((await this.fetchWithRecovery(clients, fetchArgs, worktreeDir, branch, false)).skipped) {
-      throw new GitOperationError("checkout", `origin/${branch} is missing for '${this.repoName}'`);
-    }
-    // Same post-fetch verify as runSyncAttempt: a fetch can succeed without
-    // materializing the ref, which would otherwise surface downstream as a
-    // misleading FastForwardError.
-    if (!(await this.hasRemoteBranch(clients.git, branch))) {
-      throw new GitOperationError(
-        "checkout",
-        `origin/${branch} did not materialize after fetch for '${this.repoName}'`,
-      );
-    }
-
-    if (await this.localBranchExists(clients.git, branch)) {
-      // The same classification, and the same deepening budget, a sync tick
-      // spends on this branch — asked about `refs/heads/<branch>` because the
-      // switch has not happened yet. This used to be a second, shorter
-      // implementation that read merge-base's silence on a shallow clone as
-      // 'cannot fast-forward': a `depth: N` clone whose remote moved more than
-      // N commits ahead refused a switch that was a plain fast-forward, and
-      // said so in terms that named the branch rather than the depth that
-      // actually caused it.
-      const { relationship, deepenedTo } = await this.classifyWithDeepening(
-        clients,
-        worktreeDir,
-        branch,
-        `refs/heads/${branch}`,
-      );
-      if (relationship === "indeterminate_shallow") {
-        // Not a FastForwardError: nothing was established about the two
-        // histories, and 'cannot fast-forward' is exactly the wrong thing to
-        // tell a user whose branch may well be fast-forwardable.
-        throw new GitOperationError(
-          "checkout",
-          `cannot tell whether '${branch}' fast-forwards to origin/${branch} in '${this.repoName}': the clone is ` +
-            `shallow and the histories do not meet after ${describeDeepenAttempt(deepenedTo)}. ` +
-            `Remove 'depth' from the config to unshallow the clone, then switch again`,
-        );
-      }
-      if (relationship !== "up_to_date" && relationship !== "fast_forward") {
-        throw new FastForwardError(branch);
-      }
-
-      let switched = false;
-      let headBeforeMerge: string | null = null;
-      try {
-        await clients.git.raw(["switch", branch]);
-        switched = true;
-        headBeforeMerge = await this.readHeadCommit(clients.git);
-        await clients.git.merge([`origin/${branch}`, "--ff-only"]);
-      } catch (error) {
-        if (switched) {
-          // This merge rejects the same way a sync's does, and leaves the same
-          // half-applied checkout behind. It is reported loudly rather than
-          // skipped, but the stray files would still wedge every later tick
-          // with dirty_tree — and `git switch` back would have to carry them
-          // across — so they are undone first.
-          await this.undoRejectedFastForward(clients, worktreeDir, branch, headBeforeMerge);
-          await this.restoreBranchAfterCheckoutFailure(clients, currentBranch, branch);
-        }
-        throw error;
-      }
-    } else {
-      await clients.git.raw(["switch", "-c", branch, "--track", `origin/${branch}`]);
-    }
-
-    await this.configureSingleBranchRemote(clients, branch);
-    this.resolvedBranch = branch;
-    this.pendingInitSkip = null;
-    this.warnConfigDriftAfterCheckout(branch, targetBranch);
-  }
-
-  // The clone-mode half of the TUI's branch wizard. Worktree mode creates the
-  // branch in the bare repository; a clone-mode repo has none, and GitService's
-  // `bareRepoPath` falls back to the RELATIVE '.bare/<repo name>' there — a
-  // directory that does not exist (simple-git's constructor then reports only
-  // "Cannot use simple-git on a directory that does not exist") or, when the
-  // daemon runs from a directory that happens to hold a bare store of the same
-  // repository NAME, another repository's refs, which the branch is then
-  // created in and pushed to while the wizard reports success. So the branch is
-  // created and published from the clone itself, which is also the only place
-  // that can afterwards check it out.
-  //
-  // Publishing transfers no objects: the new branch points at the tip of
-  // origin/<baseBranch>, which the remote already has, so a shallow clone can
-  // create and push it exactly like a full one (verified on git 2.43 against a
-  // depth-1 clone) and a sparse one is untouched — neither command reads the
-  // working tree. The caller follows with checkoutBranch(branchName, {
-  // allowConfigDrift: true }), which is where the tree actually switches and
-  // where shallow state converges.
-  async createAndPushBranch(baseBranch: string, branchName: string): Promise<void> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    const worktreeDir = this.config.worktreeDir;
-    await this.assertCloneDirectoryPresent(worktreeDir, branchName);
-
-    const readGit = this.localClientFor(worktreeDir);
-    const originMismatch = await this.evaluateOriginMatch(readGit, worktreeDir);
-    if (originMismatch) {
-      throw new ConfigError(
-        `Cannot create '${branchName}' in '${this.repoName}': ${originMismatch.progressDetail}.`,
-        "ORIGIN_MISMATCH",
-      );
-    }
-
-    // checkoutBranch refuses a dirty tree, so a branch created now could never
-    // be switched to. Refuse here instead, before anything reaches the remote:
-    // the alternative leaves a published branch the user cannot move to.
-    if (!(await this.gitService.checkWorktreeStatus(worktreeDir))) {
-      throw new WorktreeNotCleanError(worktreeDir, [
-        `'${this.repoName}' has local changes; commit or stash them before creating '${branchName}'`,
-      ]);
-    }
-
-    // Same reason: checkoutBranch refuses a detached HEAD, so publishing first
-    // would leave a branch on the remote that the switch afterwards cannot
-    // move to.
-    const currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-    if (currentBranch === "HEAD") {
-      throw new GitOperationError(
-        "branch",
-        `Cannot create '${branchName}' in '${this.repoName}': it is on a detached HEAD; check out a branch manually (preserving any local commits) first`,
-      );
-    }
-
-    // Both collision checks say "already exists": the TUI retries the whole
-    // call with a '-1', '-2', ... suffix on exactly that wording, which is how
-    // worktree mode has always behaved. The remote is asked as well as the
-    // clone — a clone tracks one branch, so its refs cannot answer for a name
-    // somebody else already pushed, and a plain push would quietly
-    // fast-forward such a branch whenever it is an ancestor of the base.
-    if (await this.localBranchExists(readGit, branchName)) {
-      throw new GitOperationError(
-        "branch",
-        `branch '${branchName}' already exists in the clone at '${path.resolve(worktreeDir)}' for ` +
-          `'${this.repoName}'; choose another name, or delete it with ` +
-          `\`git -C "${path.resolve(worktreeDir)}" branch -D ${branchName}\``,
-      );
-    }
-    if (await this.remoteBranchExists(worktreeDir, branchName)) {
-      throw new GitOperationError(
-        "branch",
-        `branch '${branchName}' already exists on the remote of '${this.repoName}'; choose another name`,
-      );
-    }
-
-    // Nothing above this line writes; everything below does. Refuse a linked
-    // worktree or submodule here, before the fetch's refs land in the
-    // repository that actually owns this directory's git dir.
-    const clients = await this.mutatingClientsFor(worktreeDir);
-
-    // The clone tracks a single branch, so origin/<baseBranch> is often not
-    // present at all, and when it is it is only as fresh as the last sync.
-    // Fetch it with the same narrowed refspec — and the same shallow depth — a
-    // sync's initial clone would use, so the branch starts at the tip the user
-    // picked without dragging that branch's whole history in. The wizard lists
-    // the tracked branch among the bases, and that is the pick where `--depth`
-    // lands on history the clone holds: it re-cuts the clone to the configured
-    // depth, or deepens it to a raised one — see buildUntrackedBranchFetchArgs
-    // for the measurements. The stray origin/<baseBranch> this leaves behind is
-    // dropped below, as soon as the new branch holds its tip.
-    const fetchArgs = await this.buildUntrackedBranchFetchArgs(clients.git, baseBranch);
-    if ((await this.fetchWithRecovery(clients, fetchArgs, worktreeDir, baseBranch, false)).skipped) {
-      throw new GitOperationError(
-        "branch",
-        `cannot create '${branchName}' in '${this.repoName}': origin/${baseBranch} is missing on the remote`,
-      );
-    }
-    if (!(await this.hasRemoteBranch(clients.git, baseBranch))) {
-      throw new GitOperationError(
-        "branch",
-        `cannot create '${branchName}' in '${this.repoName}': origin/${baseBranch} did not materialize after fetch`,
-      );
-    }
-
-    try {
-      await clients.git.raw(["branch", "--no-track", branchName, `origin/${baseBranch}`]);
-    } catch (error) {
-      // The commonest failure here is a directory/file ref conflict -- 'feat'
-      // already exists, so 'feat/sub' cannot be created. Say "already exists"
-      // so the wizard suffixes and retries, which does resolve it, rather than
-      // handing the user a bare git message with no repository in it.
-      throw new GitOperationError(
-        "branch",
-        `cannot create '${branchName}' in '${this.repoName}': the name conflicts with a branch that ` +
-          `already exists there (${summarizeGitFailure(getErrorMessage(error))}); choose another name`,
-      );
-    }
-    const createdAt = await this.readBranchCommit(clients.git, branchName);
-    this.logger.info(`Created branch '${branchName}' from 'origin/${baseBranch}' in '${this.repoName}'`);
-
-    // The one ref this call added to a single-branch clone, dropped here
-    // rather than by a sweep on some later tick: the local branch now holds
-    // that tip, so nothing becomes unreachable, and every way out from here (a
-    // failed push and its rollback included) leaves the clone with the one
-    // remote-tracking ref it should have. The ref to keep is the TRACKED
-    // branch's, which is what the refspec maintains — not the checked-out
-    // one. They differ on a clone someone switched by hand, and guarding on
-    // the checkout there would delete origin/<tracked>, the single ref the
-    // refspec keeps.
-    const trackedBranch = this.resolvedBranch ?? this.config.branch;
-    if (baseBranch !== trackedBranch && baseBranch !== currentBranch) {
-      await this.deleteRemoteTrackingRef(clients, `refs/remotes/origin/${baseBranch}`);
-    }
-
-    try {
-      // `--force-with-lease` with an empty expected value is git's create-only
-      // push: it requires the remote ref not to exist, closing the window
-      // between the ls-remote above and this push. It can never force-update
-      // anything — an existing ref is rejected with "stale info" instead
-      // (both directions verified on git 2.43).
-      await clients.networkGit.push([
-        "origin",
-        `refs/heads/${branchName}:refs/heads/${branchName}`,
-        "-u",
-        `--force-with-lease=refs/heads/${branchName}:`,
-      ]);
-    } catch (error) {
-      await this.rollbackCreatedBranch(clients, worktreeDir, branchName, createdAt, error);
-    }
-    this.logger.info(`Pushed branch '${branchName}' to the remote of '${this.repoName}'`);
-  }
-
-  // Every client below is built on this directory, and simple-git's
-  // constructor rejects a missing one with "Cannot use simple-git on a
-  // directory that does not exist" — a message that names neither the
-  // repository nor a remedy. The absence is reported here instead.
-  private async assertCloneDirectoryPresent(worktreeDir: string, branchName: string): Promise<void> {
-    const probe = await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR));
-    if (probe === "exists") return;
-    throw new ConfigError(
-      `Cannot create '${branchName}' in '${this.repoName}': '${path.resolve(worktreeDir)}' ` +
-        `${probe === "missing" ? "is not a git clone" : "could not be inspected"}. Sync this repository once so ` +
-        `the clone exists, then create the branch again.`,
-      "CLONE_DESTINATION_MISSING",
-    );
-  }
-
-  // A fully-qualified `ls-remote` pattern matches that one ref and nothing that
-  // merely starts with it, so this answers for exactly <branch>.
-  private async remoteBranchExists(worktreeDir: string, branch: string): Promise<boolean> {
-    const output = await this.networkClientFor(path.resolve(worktreeDir)).raw([
-      "ls-remote",
-      "--heads",
-      "origin",
-      `refs/heads/${branch}`,
-    ]);
-    return this.parseLsRemoteHeads(output).includes(branch);
-  }
-
-  private async readBranchCommit(git: SimpleGit, branch: string): Promise<string | null> {
-    try {
-      const sha = (await git.raw(["rev-parse", "--verify", `refs/heads/${branch}`])).trim();
-      return sha.length > 0 ? sha : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // A push that never landed must not leave the local branch behind: the
-  // wizard reports the failure and offers the same name again, and the next
-  // attempt would then collide with this repository's own leftover. The delete
-  // is a compare-and-swap on the commit the branch was created at, so a ref
-  // something else moved in the meantime is left alone — and a leftover that
-  // could not be removed is named in the error rather than passed over.
-  private async rollbackCreatedBranch(
-    clients: MutatingGitClients,
-    worktreeDir: string,
-    branchName: string,
-    createdAt: string | null,
-    pushError: unknown,
-  ): Promise<never> {
-    const message = redactSecretsInText(getErrorMessage(pushError));
-    // "stale info" is how the create-only lease reports a ref that appeared
-    // between the ls-remote and the push; it reads as a collision, not as a
-    // stale remote-tracking ref, so it is phrased as one — and the "already
-    // exists" wording sends the TUI round again with a suffixed name.
-    const detail = message.includes("stale info")
-      ? `branch '${branchName}' already exists on the remote of '${this.repoName}' — it was pushed while this one ` +
-        `was being prepared; choose another name`
-      : `could not push '${branchName}' to the remote of '${this.repoName}': ${appendGitAuthHint(message)}`;
-
-    let leftover = "";
-    try {
-      if (createdAt === null) {
-        throw new Error("the commit it was created at could not be read");
-      }
-      await clients.git.raw(["update-ref", "-d", `refs/heads/${branchName}`, createdAt]);
-    } catch (deleteError) {
-      leftover =
-        ` The local branch '${branchName}' is still in the clone — removing it failed ` +
-        `(${getErrorMessage(deleteError)}); delete it with ` +
-        `\`git -C "${path.resolve(worktreeDir)}" branch -D ${branchName}\`.`;
-    }
-
-    throw new GitOperationError("push", `${detail}.${leftover}`, pushError instanceof Error ? pushError : undefined);
-  }
-
-  // resolvedBranch keeps in-session syncs on the new branch, but the config
-  // file still names the old one: the next process start will soft-skip with
-  // branch_mismatch on every tick until the config is updated.
-  private warnConfigDriftAfterCheckout(branch: string, targetBranch: string): void {
-    if (branch === targetBranch) return;
-    this.logger.warn(
-      `⚠️ '${this.repoName}' now tracks '${branch}', but the config ${
-        this.config.branch ? `still says branch '${targetBranch}'` : `resolves the remote default '${targetBranch}'`
-      }. Set branch: "${branch}" in the config file — after a restart every sync will soft-skip with branch_mismatch until it matches.`,
-    );
-  }
-
-  async initialize(outcome?: SyncOutcomeAccumulator): Promise<void> {
-    return this.withOutcome(outcome, () => this.initializeInternal());
-  }
-
-  private async initializeInternal(): Promise<void> {
-    this.pendingInitSkip = null;
-    const branch = await this.resolveBranch();
-    const worktreeDir = this.config.worktreeDir;
-
-    let entries: string[] | null;
-    try {
-      entries = await fs.readdir(worktreeDir);
-    } catch (error) {
-      // Only a definitively missing directory may proceed as a fresh clone:
-      // cloneCreatedDir below authorizes maybeCleanupPartialClone to rm -rf
-      // the directory after a failed clone, so a transient probe failure
-      // (EMFILE, EACCES) must never read as "the directory did not exist" —
-      // that would delete a pre-existing directory the tool never created.
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw new GitOperationError(
-          "clone-init",
-          `Cannot inspect '${worktreeDir}' before cloning: ${getErrorMessage(error)}`,
-          error instanceof Error ? error : undefined,
-        );
-      }
-      entries = null;
-    }
-
-    if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) {
-      // Before anything treats this directory as a clone somebody else made:
-      // one of ours that never finished checking out must never be adopted.
-      // First, and not after validateExistingClone, because that path answers
-      // with soft skips — a wrong branch or a changed origin would return
-      // early and the real problem would never be reported at all.
-      await this.assertPreviousCloneCompleted(worktreeDir);
-      this.emitProgress({ phase: "clone", message: `Validating existing clone for '${this.repoName}'` });
-      const result = await this.validateExistingClone(branch);
-      if (!result.valid) {
-        this.recordSkip(result.skip, result.warnMessage, `Skipping '${this.repoName}': ${result.progressDetail}`);
-        this.pendingInitSkip = result.skip;
-        this.initialized = true;
-        return;
-      }
-      // validateExistingClone only reads. Adopting the directory — narrowing
-      // its refspec, deleting its stale remote-tracking refs — starts here, so
-      // this is where a non-primary checkout has to be refused.
-      const clients = await this.mutatingClientsFor(worktreeDir);
-      // The one call that sweeps stale refs whether or not it had to touch the
-      // refspec: this directory is a clone somebody else made, or one an older
-      // version of this tool left behind, so a refspec that already reads
-      // narrow proves nothing about the refs sitting next to it. It runs once
-      // per process, not once per tick.
-      await this.configureSingleBranchRemote(clients, branch, { sweepStaleRefs: "always" });
-      // A pending marker means this clone was created by an init of ours that
-      // was interrupted after the clone — finish the post-clone steps now.
-      // Sparse setup is re-run too (idempotent), so an init that died inside
-      // it does not leave the clone permanently un-narrowed. The marker is
-      // deliberately written before every one of those steps, the refspec
-      // narrowing above included: written after any of them, a failure there
-      // would leave no marker and the file copy would be silently dropped
-      // forever. Pre-existing user clones never carry the marker and are left
-      // alone.
-      if (await fileExists(this.getInitPendingMarkerPath(worktreeDir))) {
-        this.logger.info(`Completing interrupted initialization for '${this.repoName}'...`);
-        if (this.config.sparseCheckout) {
-          await this.gitService.getSparseCheckoutService().applyToWorktree(worktreeDir, this.config.sparseCheckout);
-          await clients.git.raw(["checkout", "HEAD"]);
-        }
-        await this.runInitialFileCopy(worktreeDir, branch);
-      }
-      this.initialized = true;
-      this.emitProgress({ phase: "clone", message: `Existing clone validated for '${this.repoName}'` });
-      return;
-    }
-
-    if (entries && entries.length > 0) {
-      throw new ConfigError(
-        `Cannot clone into '${worktreeDir}': directory exists and is not empty. ` +
-          `Remove existing contents or point worktreeDir at an empty path.`,
-        "CLONE_DESTINATION_NOT_EMPTY",
-      );
-    }
-
-    const cloneCreatedDir = entries === null;
-    await fs.mkdir(worktreeDir, { recursive: true });
-
-    this.logger.info(`Cloning '${redactRepoUrl(this.config.repoUrl)}' (${branch}) into '${worktreeDir}'...`);
-    this.emitProgress({ phase: "clone", message: `Cloning '${this.repoName}' (${branch})` });
-
-    const cloneClient = createGitClient(undefined, this.buildGitEnv(), this.buildGitOptions(this.getCloneTimeoutMs()));
-
-    let checkoutRecovered = false;
-    try {
-      await cloneClient.clone(this.config.repoUrl, worktreeDir, this.buildCloneArgs(branch));
-    } catch (error) {
-      checkoutRecovered = await this.settleFailedClone(worktreeDir, cloneCreatedDir, error);
-      if (!checkoutRecovered) {
-        // The outcome is what the MCP `sync` result and the run summary show, so
-        // carry the credential hint there too (the thrown error gets it at the
-        // WorktreeSyncService funnel).
-        this.outcomeAccumulator?.recordFailed("repo", appendGitAuthHint(getErrorMessage(error)), {
-          reason: "clone_failed",
-          branch,
-          path: worktreeDir,
-        });
-        throw error;
-      }
-    }
-
-    // The clone is on disk from here on, and every step that follows can fail
-    // or be killed — leaving a valid-looking clone that the next init adopts
-    // via the existing-clone path, which runs the file copy only for a clone
-    // carrying this marker. So the marker goes down first, before the refspec
-    // narrowing (which the adoption path re-runs anyway) and before anything
-    // else touches the clone: written later, each step in between is a window
-    // where a kill drops the copy silently and for good, because nothing else
-    // ever notices a clone that never got one.
-    //
-    // It does not close that window, it shortens it — `clone` returning and
-    // this write are two operations and no ordering here makes them one — but
-    // what is left is a single file write rather than the four-plus git
-    // subprocesses the narrowing spawns.
-    try {
-      await fs.writeFile(this.getInitPendingMarkerPath(worktreeDir), new Date().toISOString());
-    } catch (error) {
-      this.logger.warn(`Could not write clone-init pending marker: ${getErrorMessage(error)}`);
-    }
-
-    const freshClients = await this.mutatingClientsFor(worktreeDir);
-    await this.configureSingleBranchRemote(freshClients, branch);
-
-    // The progress stream carries the same nuance as the log: a TUI showing
-    // "Clone successful" for a tree that holds pointer files is not the truth.
-    this.logger.info(checkoutRecovered ? `✅ Clone completed (LFS content skipped).` : `✅ Clone successful.`);
-    this.emitProgress({
-      phase: "clone",
-      message: checkoutRecovered
-        ? `Clone completed for '${this.repoName}' with LFS content skipped`
-        : `Clone successful for '${this.repoName}'`,
-    });
-
-    if (this.config.sparseCheckout) {
-      this.logger.info(`Applying sparse-checkout patterns to '${worktreeDir}'...`);
-      this.emitProgress({ phase: "sparse_checkout", message: `Applying sparse-checkout for '${this.repoName}'` });
-      const sparseService = this.gitService.getSparseCheckoutService();
-      // Both halves of the narrowing run with the environment the clone's own
-      // checkout finally needed. `sparse-checkout set` materializes everything
-      // the cone brings in, so after an LFS-skipped recovery it smudges the
-      // objects the retry skipped and dies exactly as the clone did — leaving
-      // a half-narrowed tree that `git status` calls clean and the next run
-      // adopts. The trailing checkout follows for the same reason.
-      // Only a recovered clone needs a client of its own; otherwise the sparse
-      // service keeps its own factory, whose clients already carry the
-      // configured LFS setting.
-      const recoveredGit = checkoutRecovered ? this.lfsSkipCheckoutClient(freshClients, worktreeDir) : undefined;
-      await sparseService.applyToWorktree(worktreeDir, this.config.sparseCheckout, recoveredGit);
-      await (recoveredGit ?? freshClients.git).raw(["checkout", "HEAD"]);
-      this.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout applied for '${this.repoName}'` });
-    }
-
-    this.emitProgress({ phase: "lfs", message: `Verifying LFS for '${this.repoName}'` });
-    await this.gitService.verifyLfs(worktreeDir, branch);
-    this.emitProgress({ phase: "lfs", message: `LFS verified for '${this.repoName}'` });
-
-    await this.runInitialFileCopy(worktreeDir, branch);
-
-    // Only record `created` once init is fully complete; otherwise an aborted
-    // post-clone step would leave the outcome reporting both created and failed.
-    this.outcomeAccumulator?.recordCreated(branch, worktreeDir);
-    this.initialized = true;
-  }
-
-  // Detects an on-disk clone whose `origin` no longer matches the configured
-  // repoUrl (e.g. repoUrl was repointed in config). Returns a skip descriptor so
-  // we never fetch/ff-merge from the wrong remote; null when origin matches or
-  // can't be read. Comparison is normalized so https/.git/trailing-slash
-  // variants don't false-positive; the URLs are kept in the message and skip
-  // descriptor with any embedded credentials stripped (both can carry one).
-  private async evaluateOriginMatch(
-    git: SimpleGit,
-    worktreeDir: string,
-  ): Promise<{ skip: CloneSkipReason; warnMessage: string; progressDetail: string } | null> {
-    let originUrl: string;
-    try {
-      originUrl = (await git.raw(["remote", "get-url", "origin"])).trim();
-    } catch {
-      this.logger.warn(`Could not read 'origin' remote URL from existing clone at '${worktreeDir}'.`);
-      return null;
-    }
-
-    if (!originUrl || normalizeRepoUrlForComparison(originUrl) === normalizeRepoUrlForComparison(this.config.repoUrl)) {
-      return null;
-    }
-
-    const actual = redactRepoUrl(originUrl);
-    const expected = redactRepoUrl(this.config.repoUrl);
-    return {
-      skip: { kind: "origin_mismatch", actual, expected },
-      warnMessage:
-        `Existing clone at '${worktreeDir}' has origin '${actual}', expected '${expected}'. ` +
-        `Update the remote ('git remote set-url origin <url>') or point worktreeDir at a fresh path.`,
-      progressDetail: `origin '${actual}' is not '${expected}'`,
-    };
-  }
-
-  private async validateExistingClone(
-    expectedBranch: string,
-  ): Promise<{ valid: true } | { valid: false; skip: CloneSkipReason; warnMessage: string; progressDetail: string }> {
-    const worktreeDir = this.config.worktreeDir;
-    const git = this.localClientFor(worktreeDir);
-
-    const originMismatch = await this.evaluateOriginMatch(git, worktreeDir);
-    if (originMismatch) {
-      return { valid: false, ...originMismatch };
-    }
-
-    let currentBranch: string;
-    try {
-      currentBranch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-    } catch (error) {
-      const errorMessage = getErrorMessage(error);
-      return {
-        valid: false,
-        skip: { kind: "head_unreadable", phase: "init", error: errorMessage },
-        warnMessage: `Existing clone at '${worktreeDir}' has a .git folder but reading HEAD failed: ${errorMessage}`,
-        progressDetail: `could not read HEAD (${errorMessage})`,
-      };
-    }
-
-    if (currentBranch !== expectedBranch) {
-      return {
-        valid: false,
-        skip: {
-          kind: "branch_mismatch",
-          phase: "init",
-          currentBranch,
-          expectedBranch,
-        },
-        warnMessage:
-          `Existing clone at '${worktreeDir}' is on branch '${currentBranch}', expected '${expectedBranch}'. ` +
-          `Switch the working tree to '${expectedBranch}' or update the config.`,
-        progressDetail: `current branch '${currentBranch}' is not '${expectedBranch}'`,
-      };
-    }
-
-    return { valid: true };
-  }
-
-  // A failed clone leaves the destination in one of two shapes, and each has
-  // its own settlement. A clone that never got as far as writing HEAD leaves
-  // rubbish maybeCleanupPartialClone removes when we created the directory. A
-  // clone that fetched every object and then failed to check out ("Clone
-  // succeeded, but checkout failed", exit 128 — a missing LFS object is the
-  // usual cause) leaves a complete `.git` on the tracked branch next to a
-  // half-written tree, and nothing on disk tells that apart from a clone the
-  // user made: validateExistingClone passes it, so the next run adopted it as
-  // a pre-existing clone — no checkout retry, no sparse setup, no LFS verify,
-  // no file copy — and every sync after that recorded `dirty_tree` at info
-  // level while the run exited 0.
-  //
-  // Everything under that path is this clone's own work: the destination was
-  // verified absent or empty before it started (a directory that is neither
-  // never reaches the clone). So the checkout may be retried in place, and
-  // when it cannot be, the directory is marked as ours-and-unfinished so the
-  // next init refuses to adopt it. Returns true when the working tree was
-  // repaired and the caller may continue with the post-clone steps.
-  //
-  // Known limit: this runs only once `git clone` has returned, so a process
-  // killed mid-checkout still leaves an unmarked half-written clone that the
-  // next init adopts. Closing that needs the bare-clone shape — a marker
-  // written in the PARENT before the clone starts (`git clone` refuses a
-  // destination holding one) — and then a rule for resolving it afterwards,
-  // where "the clone was interrupted" and "the user edited their tree" look
-  // the same on disk. Not worth trading a rare silent adoption for a possible
-  // false hard refusal until that case is shown to matter.
-  private async settleFailedClone(worktreeDir: string, cloneCreatedDir: boolean, cause: unknown): Promise<boolean> {
-    // Only a definitively absent HEAD may reach maybeCleanupPartialClone: its
-    // rm -rf arm is live for a directory this init created, and a probe that
-    // merely failed (EACCES on the destination, EMFILE under load) must never
-    // read as "nothing was fetched here". An unverifiable one is marked like a
-    // fetched clone instead — marking deletes nothing, and refusing to adopt a
-    // directory that turns out to be fine costs an error the user can clear.
-    const headProbe = await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, "HEAD"));
-    if (headProbe === "missing") {
-      await this.maybeCleanupPartialClone(worktreeDir, cloneCreatedDir);
-      return false;
-    }
-
-    const message = getErrorMessage(cause);
-    // Marked before the retry, never after: a process killed in the middle of
-    // the retry must still leave a directory the next run refuses to adopt.
-    await this.writeIncompleteCloneMarker(worktreeDir, message);
-
-    if (headProbe !== "exists" || !isLfsError(message) || !(await this.retryCheckoutWithLfsSkipped(worktreeDir))) {
-      this.logger.warn(
-        `Clone of '${this.repoName}' fetched its objects but left the working tree unfinished; leaving ` +
-          `'${worktreeDir}' for manual inspection. The next run will refuse to adopt it until it is removed.`,
-      );
-      return false;
-    }
-
-    await this.clearIncompleteCloneMarker(worktreeDir);
-    this.logger.warn(
-      `⚠️  '${this.repoName}' was checked out with LFS smudging disabled: its LFS paths hold pointer files ` +
-        `until 'git lfs pull' succeeds there.`,
-    );
-    return true;
-  }
-
-  // Retries only the checkout half of a clone whose objects already landed,
-  // with LFS smudging forced off — the same recovery fetchWithRecovery applies
-  // to a fetch, and the same one worktree mode applies to a `worktree add`.
-  // Reports success rather than throwing: the caller is already holding the
-  // clone's failure and must report that one, not this one.
-  private async retryCheckoutWithLfsSkipped(worktreeDir: string): Promise<boolean> {
-    this.logger.info(`⚠️  LFS error during clone of '${this.repoName}'; retrying the checkout with LFS disabled.`);
-    this.emitProgress({ phase: "clone", message: `Retrying checkout for '${this.repoName}' with LFS disabled` });
-    try {
-      // `checkout -f HEAD` is a write, so it goes through the primary-checkout
-      // guard like every other one — even here, where the directory is one
-      // this init just cloned into.
-      const clients = await this.mutatingClientsFor(worktreeDir);
-      await this.lfsSkipCheckoutClient(clients, worktreeDir).raw(["checkout", "-f", "HEAD"]);
-      return true;
-    } catch (error) {
-      this.logger.warn(`Checkout retry with LFS disabled failed for '${this.repoName}': ${getErrorMessage(error)}`);
-      return false;
-    }
-  }
-
-  // The client for a checkout this init must run with LFS smudging forced off.
-  // Built here rather than taken from the branded pair, whose clients carry
-  // the configured environment; it runs in the directory that pair has already
-  // proved is a primary checkout, the arrangement fetchWithRecovery's LFS
-  // retry uses. No inactivity timeout, for the reason localClientFor gives:
-  // git is legitimately silent while it materializes a tree.
-  //
-  // `_clients` is unused on purpose and must stay: requiring the brand is what
-  // keeps the writes this client performs behind the primary-checkout guard,
-  // exactly like the helpers that do use their pair. Deleting the parameter
-  // would let a future caller reach a checkout this tool must not touch.
-  private lfsSkipCheckoutClient(_clients: MutatingGitClients, worktreeDir: string): SimpleGit {
-    return createGitClient(worktreeDir, this.buildGitEnv({ forceLfsSkip: true }), this.buildGitOptions(0));
-  }
-
-  private async maybeCleanupPartialClone(worktreeDir: string, cloneCreatedDir: boolean): Promise<void> {
-    if (!cloneCreatedDir) {
-      this.logger.warn(
-        `Clone failed; leaving '${worktreeDir}' for manual inspection (directory existed before clone attempt).`,
-      );
-      return;
-    }
-
-    let entries: string[];
-    try {
-      entries = await fs.readdir(worktreeDir);
-    } catch {
-      return;
-    }
-
-    const looksIncomplete = entries.every((e) => e.startsWith("."));
-    const hasUsableGit =
-      entries.includes(PATH_CONSTANTS.GIT_DIR) &&
-      (await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, "HEAD")));
-
-    if (looksIncomplete && !hasUsableGit) {
-      try {
-        await fs.rm(worktreeDir, { recursive: true, force: true });
-        this.logger.info(`Cleaned up incomplete clone at '${worktreeDir}'.`);
-      } catch (rmError) {
-        this.logger.warn(`Failed to clean up incomplete clone at '${worktreeDir}': ${getErrorMessage(rmError)}`);
-      }
-    } else {
-      this.logger.warn(
-        `Clone failed; leaving '${worktreeDir}' for manual inspection (post-failure contents do not look like an empty incomplete clone).`,
-      );
-    }
-  }
-
-  private getInitMarkerPath(worktreeDir: string): string {
-    return path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, PATH_CONSTANTS.CLONE_INIT_MARKER);
-  }
-
-  private getInitPendingMarkerPath(worktreeDir: string): string {
-    return path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, PATH_CONSTANTS.CLONE_INIT_PENDING_MARKER);
-  }
-
-  // Inside `.git`, like the init markers: a marker in the working tree would
-  // show up as an untracked file in every status this tool takes.
-  private getIncompleteCloneMarkerPath(worktreeDir: string): string {
-    return path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, PATH_CONSTANTS.CLONE_INCOMPLETE_MARKER);
-  }
-
-  private async writeIncompleteCloneMarker(worktreeDir: string, failure: string): Promise<void> {
-    // Line 1 when the clone failed, line 2 what the refusal quotes, then git's
-    // untruncated stderr for whoever opens the file. Redacted on the way in
-    // like every other string this file surfaces: a repoUrl carrying a token
-    // reaches git's own output, and this one is written to disk and read back
-    // into an error message on every later run.
-    const recorded = redactSecretsInText(failure);
-    const contents = `${new Date().toISOString()}\n${summarizeGitFailure(recorded)}\n${recorded}\n`;
-    try {
-      await fs.writeFile(this.getIncompleteCloneMarkerPath(worktreeDir), contents);
-    } catch (error) {
-      // Best effort, like the init pending marker: without it the next run
-      // falls back to the old behaviour of adopting the unfinished clone.
-      this.logger.warn(`Could not write the incomplete-clone marker: ${getErrorMessage(error)}`);
-    }
-  }
-
-  private async clearIncompleteCloneMarker(worktreeDir: string): Promise<void> {
-    try {
-      await fs.rm(this.getIncompleteCloneMarkerPath(worktreeDir), { force: true });
-    } catch (error) {
-      // A marker left behind on a repaired clone costs a hard error on the
-      // next run, which names the file and how to remove it.
-      this.logger.warn(`Could not remove the incomplete-clone marker: ${getErrorMessage(error)}`);
-    }
-  }
-
-  // Read rather than probed for existence: the marker's second line is why the
-  // clone failed, and that is what the refusal quotes.
-  //
-  // Three answers, never two. This marker is the only thing that tells a clone
-  // of ours that never finished from a clone the user made, so "the file could
-  // not be read" must not collapse into "there is no such file" — the same
-  // rule probePathExists states for removal decisions. Only ENOENT (and
-  // ENOTDIR, a `.git` that is not a directory) prove absence; EACCES, EIO or
-  // an EISDIR marker leave the question open, and the caller fails closed.
-  private async readIncompleteCloneMarker(
-    worktreeDir: string,
-  ): Promise<{ status: "absent" } | { status: "present"; cause: string } | { status: "unreadable"; detail: string }> {
-    let contents: string | undefined;
-    try {
-      contents = await fs.readFile(this.getIncompleteCloneMarkerPath(worktreeDir), "utf-8");
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ENOTDIR") return { status: "absent" };
-      return { status: "unreadable", detail: getErrorMessage(error) };
-    }
-    // Same normalization lstatOrNull and realPathOrNull apply: an answer that
-    // is not the shape the API promises is not passed on as a verdict.
-    if (typeof contents !== "string") return { status: "absent" };
-    const cause = contents.split(/\r?\n/)[1]?.trim();
-    return { status: "present", cause: cause && cause.length > 0 ? cause : "reason not recorded" };
-  }
-
-  // A clone this tool started and could not finish is not a clone it may
-  // adopt: its working tree was never fully written, so every sync would find
-  // staged deletions plus untracked files and soft-skip with `dirty_tree` — an
-  // info-level line and exit 0 — for a directory the user never touched.
-  //
-  // A GitOperationError rather than the ConfigError the primary-checkout guard
-  // raises: nothing is wrong with the configuration — worktreeDir is a path
-  // this tool owns and may clone into — what failed is a git operation on it,
-  // and the remedy is on disk. It also matches the GitOperationError this same
-  // init throws when it cannot inspect the destination.
-  private async assertPreviousCloneCompleted(worktreeDir: string): Promise<void> {
-    const marker = await this.readIncompleteCloneMarker(worktreeDir);
-    if (marker.status === "absent") return;
-
-    if (marker.status === "unreadable") {
-      throw new GitOperationError(
-        "clone-init",
-        `cannot tell whether the clone of '${worktreeDir}' completed: its incomplete-clone marker ` +
-          `'${this.getIncompleteCloneMarkerPath(worktreeDir)}' could not be read (${marker.detail}). Adopting the ` +
-          `clone without that answer would sync a working tree that may never have been checked out; make the ` +
-          `file readable, or remove the directory and let the next run clone again.`,
-      );
-    }
-
-    throw new GitOperationError(
-      "clone-init",
-      `previous clone of '${worktreeDir}' did not complete (${marker.cause}); its working tree was never fully checked ` +
-        `out, so syncing it would report local changes on every run. Remove the directory and let the next run ` +
-        `clone again, or fix the cause, run 'git -C ${worktreeDir} checkout -f HEAD' and delete ` +
-        `'${this.getIncompleteCloneMarkerPath(worktreeDir)}'.`,
-    );
-  }
-
-  private async runInitialFileCopy(worktreeDir: string, branch: string): Promise<void> {
-    const marker = this.getInitMarkerPath(worktreeDir);
-    const pendingMarker = this.getInitPendingMarkerPath(worktreeDir);
-    if (await fileExists(marker)) {
-      try {
-        await fs.rm(pendingMarker, { force: true });
-      } catch {
-        // A stale pending marker is harmless; the final marker wins.
-      }
-      return;
-    }
-
-    const sourceDir = this.config.__configFileDir ?? worktreeDir;
-
-    await this.branchCreatedActions.copyFiles({
-      config: this.config,
-      branchName: branch,
-      worktreePath: worktreeDir,
-      sourceDir,
-      logger: this.logger,
-    });
-
-    try {
-      await fs.writeFile(marker, new Date().toISOString());
-      await fs.rm(pendingMarker, { force: true });
-    } catch (error) {
-      this.logger.warn(`Could not write clone-init marker: ${getErrorMessage(error)}`);
-    }
-  }
-
-  // Reconciles the clone's sparse patterns with the config, the same three
-  // steps worktree mode runs over every worktree it manages: is an update
-  // needed, is that update a narrowing one, and is the tree clean enough to
-  // take it.
-  //
-  // `sparse-checkout set` writes core.sparseCheckout to the repository config,
-  // so it is a mutation too — it takes a path, not a client, and stays correct
-  // only because the primary-checkout guard in the caller already ran.
-  private async reapplySparseCheckout(worktreeDir: string, branch: string, cfg: SparseCheckoutConfig): Promise<void> {
-    const sparseService = this.gitService.getSparseCheckoutService();
-
-    try {
-      if (!(await sparseService.needsUpdate(worktreeDir, cfg))) return;
-
-      // Narrowing drops paths out of the cone, and git then has to decide what
-      // to do with whatever the user left in them. It keeps modified, staged
-      // and untracked files: they stay on disk, and git warns about it on its
-      // own stderr, which simple-git captures and this tool never prints — so
-      // the preservation is real but silent. This gate is therefore not what
-      // stands between the user and data loss — README's
-      // narrowing-safety paragraph is the tool's promise to skip rather than
-      // git's promise to preserve, and worktree mode has always kept it. The
-      // deferred narrowing lands on the first tick that finds a clean tree.
-      const current = await sparseService.readCurrent(worktreeDir);
-      if (sparseService.isNarrowing(current, sparseService.buildPatterns(cfg))) {
-        // The same notion of "clean" the ff-merge gate below uses: uncommitted
-        // and untracked changes. Unpushed commits are a clone-mode skip of
-        // their own and their content is safe in the object store either way.
-        if (!(await this.gitService.checkWorktreeStatus(worktreeDir))) {
-          const message = "working tree has local changes";
-          this.logger.warn(`⏭️  Skipping sparse-checkout narrowing for '${this.repoName}' — ${message}.`);
-          this.emitProgress({
-            phase: "sparse_checkout",
-            message: `Skipping sparse-checkout narrowing for '${this.repoName}': ${message}`,
-          });
-          this.outcomeAccumulator?.recordSkipped("sparse-checkout", "sparse_narrowing_unsafe", {
-            branch,
-            path: worktreeDir,
-            message,
-          });
-          return;
-        }
-      }
-
-      this.emitProgress({ phase: "sparse_checkout", message: `Updating sparse-checkout for '${this.repoName}'` });
-      await sparseService.applyToWorktree(worktreeDir, cfg);
-      this.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout updated for '${this.repoName}'` });
-    } catch (error) {
-      // Not fatal — the fetch and merge below are what the sync is for, and a
-      // stale pattern list does not block them. But it is recorded: warning and
-      // exiting 0 on every tick is how a sparse config that git rejects stays
-      // broken for weeks, because nothing watching the run ever learns.
-      this.logger.warn(`Failed to reapply sparse-checkout for '${this.repoName}': ${getErrorMessage(error)}`);
-      this.outcomeAccumulator?.recordFailed("sparse-checkout", getErrorMessage(error), {
-        reason: "sparse_checkout_failed",
-        branch,
-        path: worktreeDir,
-      });
-    }
-  }
-
-  // `phaseTimer` is instrumentation and nothing else: what the tick does is
-  // identical either way. It is not conditional on `--debug`.
-  // WorktreeSyncService.sync() builds one PhaseTimer — the same one the
-  // worktree-mode runner is given, so both modes print one table in one
-  // format — and hands it to every tick it runs, whichever caller asked for the
-  // sync: the CLI, the MCP server and the TUI all reach a tick through sync().
-  // `debug` gates the table alone — whether it is built and printed once the
-  // sync is over — so the phase bookkeeping happens on an ordinary run too. The
-  // parameter stays optional for the callers that reach this method directly
-  // rather than through sync() (a test, an embedder); with no timer every
-  // bracket below is a plain call.
-  async runSyncAttempt(outcome?: SyncOutcomeAccumulator, phaseTimer?: PhaseTimer): Promise<void> {
-    return this.withOutcome(outcome, () => this.runSyncAttemptInternal(phaseTimer));
-  }
-
-  // Brackets one phase of the tick. The phase is closed in a `finally`, so an
-  // early return or a throw inside `run` still closes it — an open phase would
-  // keep running until the table is rendered and silently swallow the rest of
-  // the tick, which is the one way timing here could lie. With no timer this is
-  // a plain call: nothing is allocated and nothing new can throw.
-  private async timePhase<T>(phaseTimer: PhaseTimer | undefined, name: string, run: () => Promise<T>): Promise<T> {
-    if (!phaseTimer) return run();
-    phaseTimer.startPhase(name);
-    try {
-      return await run();
-    } finally {
-      phaseTimer.endPhase();
-    }
-  }
-
-  private async runSyncAttemptInternal(phaseTimer?: PhaseTimer): Promise<void> {
-    if (!this.initialized) {
-      await this.initialize();
-      // init ran here and recorded any skip itself; no duplicate to suppress.
-      this.pendingInitSkip = null;
-      return;
-    }
-
-    // If init already recorded a wrong-branch / unreadable-HEAD skip for the
-    // current clone state during this same sync operation, don't record it a
-    // second time. Consume the one-shot token; later ticks re-evaluate fresh.
-    if (this.pendingInitSkip) {
-      this.pendingInitSkip = null;
-      return;
-    }
-
-    const worktreeDir = this.config.worktreeDir;
-
-    // Everything up to the first write: which branch this clone is meant to
-    // track, which one it is on, which remote it points at, and the
-    // primary-checkout guard. All three of its skips leave the tick, so the
-    // phase is closed by timePhase's `finally` rather than by each return path;
-    // `null` is that exit, with the skip already recorded.
-    const validated = await this.timePhase(
-      phaseTimer,
-      CLONE_SYNC_PHASES.VALIDATE,
-      async (): Promise<{ branch: string; clients: MutatingGitClients } | null> => {
-        const branch = await this.resolveBranch();
-        const readGit = this.localClientFor(worktreeDir);
-
-        let currentBranch: string;
-        try {
-          currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-        } catch (error) {
-          const errorMessage = getErrorMessage(error);
-          this.recordSkip(
-            { kind: "head_unreadable", phase: "sync", error: errorMessage },
-            `Could not read current branch from '${worktreeDir}': ${errorMessage}`,
-            `Skipping '${this.repoName}': could not read current branch`,
-          );
-          return null;
-        }
-
-        if (currentBranch !== branch) {
-          this.recordSkip(
-            { kind: "branch_mismatch", phase: "sync", currentBranch, expectedBranch: branch },
-            `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge. ` +
-              `Update 'branch' in the config or switch the clone back.`,
-            `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
-          );
-          return null;
-        }
-
-        // Re-check every tick (not just at init): the daemon reuses this service, so
-        // a clone whose origin no longer matches repoUrl must keep being skipped
-        // rather than fetching from the wrong remote.
-        const originMismatch = await this.evaluateOriginMatch(readGit, worktreeDir);
-        if (originMismatch) {
-          this.recordSkip(
-            originMismatch.skip,
-            originMismatch.warnMessage,
-            `Skipping '${this.repoName}': ${originMismatch.progressDetail}`,
-          );
-          return null;
-        }
-
-        // Every step from here on writes to the repository, and this runs again on
-        // every tick — so the primary-checkout guard has to be inside the tick, not
-        // only in initialize().
-        return { branch, clients: await this.mutatingClientsFor(worktreeDir) };
-      },
-    );
-    if (!validated) return;
-    const { branch, clients } = validated;
-
-    // The unshallow fetch uses the already-narrowed refspec, so a deleted
-    // tracked branch fails it exactly like the branch fetch below — classify
-    // it into the same soft skip instead of letting it escape as a hard
-    // failure that only shallow clones would hit.
-    try {
-      await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.UNSHALLOW, () => this.unshallowIfDepthRemoved(clients));
-    } catch (error) {
-      if (isMissingRemoteRefError(getErrorMessage(error))) {
-        this.recordMissingRemoteRefSkip(branch);
-        return;
-      }
-      throw error;
-    }
-
-    // Its own phase rather than part of the fetch: on the call that narrows the
-    // refspec this is also where the stale remote-tracking refs are swept, and
-    // a legacy all-branches clone has thousands of them.
-    await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.REMOTE_CONFIG, () =>
-      this.configureSingleBranchRemote(clients, branch),
-    );
-
-    const fetched = await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.FETCH, async () => {
-      const fetchArgs = await this.buildSyncFetchArgs(clients.git, branch);
-      this.emitProgress({ phase: "fetch", message: `Fetching origin/${branch} for '${this.repoName}'` });
-      return this.fetchWithRecovery(clients, fetchArgs, worktreeDir, branch);
-    });
-    if (fetched.skipped) {
-      return;
-    }
-    this.emitProgress({ phase: "fetch", message: `Fetched origin/${branch} for '${this.repoName}'` });
-
-    const remoteBranchPresent = await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.VERIFY_REF, () =>
-      this.hasRemoteBranch(clients.git, branch),
-    );
-    if (!remoteBranchPresent) {
-      this.recordSkip(
-        { kind: "missing_remote_ref", branch, source: "post_fetch_verify" },
-        `Tracked branch '${branch}' is missing on remote for '${this.repoName}'. Skipping sync.`,
-        `Skipping '${this.repoName}': origin/${branch} is missing`,
-      );
-      return;
-    }
-
-    const sparseConfig = this.config.sparseCheckout;
-    if (sparseConfig) {
-      await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.SPARSE, () =>
-        this.reapplySparseCheckout(worktreeDir, branch, sparseConfig),
-      );
-    }
-
-    // The relationship first, the working tree only if it turns out to matter.
-    // Both halves of that order are deliberate.
-    //
-    // Cost: classification is ref reads (`rev-parse` twice, `merge-base`),
-    // bounded by history; `checkWorktreeStatus` runs `git status`, which
-    // refreshes the index and walks the whole working tree for untracked
-    // files, and is therefore the one command in a tick that scales with how
-    // many files the checkout holds — on a monorepo, seconds, and under the
-    // repo lock. The overwhelmingly common daemon tick ends `up_to_date`,
-    // where nothing is going to be written and the scan bought nothing.
-    //
-    // Meaning: a clone with uncommitted edits that is *already at*
-    // origin/<branch> has nothing to merge, so answering "dirty" there
-    // reported a skip — every tick, in the run summary and the TUI — for a
-    // repository that was in fact up to date. The dirty check belongs where a
-    // dirty tree actually changes the decision: the fast-forward path.
-    //
-    // Nothing load-bearing is lost by not scanning on the other paths. The
-    // tick's own `rev-parse --abbrev-ref HEAD` gate above already refuses a
-    // detached HEAD (a rebase or bisect in progress) and a branch switched
-    // underneath us, and none of the paths that now return without a scan
-    // write to the working tree — a conflicted merge left in progress on the
-    // branch (which does not detach HEAD) is now named by its relationship to
-    // origin rather than as `dirty_tree` when the tick could not have merged
-    // anyway, and is still caught by the scan on the one path that would
-    // have. What the scan never diagnosed in the first place is the
-    // half-written checkout of the 'Known limit' above: `git status` reports
-    // the missing files as deletions, which read as an ordinary dirty tree, so
-    // losing the scan here loses no diagnosis that existed. The only path that
-    // writes is the merge below, and it still reads the tree immediately
-    // before doing so —
-    // now with the deepening fetches on the near side of the check rather than
-    // between it and the merge.
-    //
-    // What this order does cost: a shallow clone too short to classify now
-    // spends its deepen budget on a tick whose tree turns out to be dirty,
-    // where the old order returned before asking. That is the same budget a
-    // clean tick in the same state already spent every tick, the history it
-    // buys is ratcheted and kept by the next fetch rather than discarded, and
-    // it is what turns 'working tree has local changes' — which says nothing
-    // about why the clone cannot advance — into the `indeterminate_shallow`
-    // skip that names `depth` as the remedy.
-    //
-    // For the timing table that order is why the status scan is the one phase
-    // that is usually absent: it runs on the fast-forward path alone.
-    const {
-      relationship,
-      deepenedTo: lastDeepenedTo,
-      deepenFetches,
-    } = await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.CLASSIFY, () =>
-      this.classifyWithDeepening(clients, worktreeDir, branch),
-    );
-    // The deepen fetches interleave with the classification reads they exist to
-    // feed — fetch, ask again, fetch — so they are this phase's count rather
-    // than a phase of their own, which is also the only shape PhaseTimer can
-    // hold: it tracks one open phase, so a nested one would close this one and
-    // lose the reads around it.
-    if (deepenFetches > 0) {
-      phaseTimer?.setPhaseCount(CLONE_SYNC_PHASES.CLASSIFY, deepenFetches);
-    }
-
-    if (relationship === "up_to_date") {
-      this.logger.info(`'${this.repoName}' already up to date with origin/${branch}.`);
-      this.emitProgress({
-        phase: "skip",
-        message: `'${this.repoName}' already up to date with origin/${branch}`,
-      });
-      this.outcomeAccumulator?.recordNoop("repo", "already_up_to_date", {
-        branch,
-        path: worktreeDir,
-        message: `Already up to date with origin/${branch}`,
-      });
-      return;
-    }
-
-    if (relationship !== "fast_forward") {
-      if (relationship === "local_ahead") {
-        this.recordSkip(
-          { kind: "ahead_unpushed", branch },
-          `⏭️  '${this.repoName}' has unpushed commits ahead of origin/${branch}. Skipping merge.`,
-          `Skipping merge for '${this.repoName}': unpushed commits ahead of origin/${branch}`,
-          "info",
-        );
-      } else if (relationship === "indeterminate_shallow") {
-        const detail = describeDeepenAttempt(lastDeepenedTo);
-        const progressDetail =
-          lastDeepenedTo === null
-            ? `no deepening attempted (configured depth at/above limits)`
-            : `shallow depth budget exhausted at ${lastDeepenedTo}`;
-        this.recordSkip(
-          { kind: "indeterminate_shallow", branch, deepenedTo: lastDeepenedTo },
-          `⏭️  '${this.repoName}' could not classify origin/${branch} after ${detail}. ` +
-            `Skipping merge — remove 'depth' from the config to unshallow the clone.`,
-          `Skipping merge for '${this.repoName}': ${progressDetail}`,
-          "info",
-        );
-      } else {
-        this.recordSkip(
-          { kind: "diverged", branch },
-          `⏭️  '${this.repoName}' has diverged from origin/${branch}. Skipping merge (no auto-reset).`,
-          `Skipping merge for '${this.repoName}': diverged from origin/${branch}`,
-          "info",
-        );
-      }
-      return;
-    }
-
-    const isClean = await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.STATUS, () =>
-      this.gitService.checkWorktreeStatus(worktreeDir),
-    );
-    if (!isClean) {
-      this.recordSkip(
-        { kind: "dirty_tree" },
-        `⏭️  Skipping ff-merge for '${this.repoName}' — working tree has local changes.`,
-        `Skipping merge for '${this.repoName}': working tree has local changes`,
-        "info",
-      );
-      return;
-    }
-
-    this.logger.info(`Fast-forwarding '${this.repoName}' to origin/${branch}...`);
-    this.emitProgress({ phase: "merge", message: `Fast-forwarding '${this.repoName}' to origin/${branch}` });
-    await this.timePhase(phaseTimer, CLONE_SYNC_PHASES.MERGE, async () => {
-      // Read before the merge rather than derived from it afterwards: the
-      // cleanup below only runs on a commit that provably did not move, and
-      // "could not read HEAD" must not pass for that proof.
-      const headBeforeMerge = await this.readHeadCommit(clients.git);
-      try {
-        await clients.git.merge([`origin/${branch}`, "--ff-only"]);
-      } catch (mergeError) {
-        await this.undoRejectedFastForward(clients, worktreeDir, branch, headBeforeMerge);
-        throw mergeError;
-      }
-    });
-    this.logger.info(`✅ Updated '${this.repoName}' to origin/${branch}.`);
-    this.emitProgress({ phase: "merge", message: `Updated '${this.repoName}' to origin/${branch}` });
-    this.outcomeAccumulator?.recordUpdated(branch, worktreeDir, "fast_forward");
-  }
-
-  private async readHeadCommit(git: SimpleGit): Promise<string | null> {
-    try {
-      const head = (await git.raw(["rev-parse", "HEAD"])).trim();
-      return head.length > 0 ? head : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // A `merge --ff-only` git rejects is not a no-op. Its checkout half walks the
-  // index in path order and stops at the first entry it cannot write — a
-  // missing LFS object is the usual reason — with everything that sorts before
-  // that path already updated on disk and the index and HEAD still describing
-  // the old commit. `git status` then reports those paths, so the next tick
-  // soft-skips with dirty_tree at info level and exits 0, and so does every
-  // tick after it: git refuses to overwrite the untracked files the first
-  // attempt left, which makes even a fixed LFS server unable to end the loop.
-  // Undoing the half-applied checkout is what keeps the next attempt — and the
-  // next tick — able to run at all.
-  //
-  // What makes that safe is not that the tree was clean a moment earlier: the
-  // merge itself sits between that check and this point on a sync tick, and a
-  // branch switch adds the unshallow, the branch fetch, the relationship
-  // classification with up to three deepening fetches and the switch on top —
-  // together they can run for minutes. Each path is proved on its own instead,
-  // against what origin/<branch> holds for it:
-  //
-  //   present on disk — removed or restored only when its contents are what
-  //     that ref holds for that path. Whoever put them there, they are the
-  //     incoming version, and the next successful fast-forward writes that
-  //     same object back — so undoing it loses nothing origin does not hold.
-  //   missing from disk — restored only when that ref does NOT hold the path,
-  //     the one case where the merge is what deleted it. A path origin still
-  //     carries went missing some other way, and stays missing.
-  //   anything else — left exactly as it is, dirty_tree and all.
-  //
-  // Deliberately not gated on the failure being a checkout failure: a merge
-  // can also fail on `index.lock` while somebody's own git command dirties the
-  // tree, and the per-path proof above is what decides there too — their work
-  // does not match the incoming version, so none of it is touched.
-  private async undoRejectedFastForward(
-    clients: MutatingGitClients,
-    worktreeDir: string,
-    branch: string,
-    headBeforeMerge: string | null,
-  ): Promise<void> {
-    // Both halves fail closed. Without a before-and-after commit there is no
-    // proof the merge left HEAD alone, and a merge that did move HEAD wrote
-    // those files on purpose — undoing them would delete the update.
-    if (headBeforeMerge === null) return;
-    const headAfterMerge = await this.readHeadCommit(clients.git);
-    if (headAfterMerge === null || headAfterMerge !== headBeforeMerge) return;
-
-    const deviations = await this.readWorktreeDeviations(clients.git);
-    if (deviations === null) return;
-    const dirtyPaths = new Set([...deviations.untracked, ...deviations.modified, ...deviations.missing]);
-    if (dirtyPaths.size === 0) return;
-
-    // Only paths this merge would have written are candidates; a dirty path
-    // outside that set is somebody's own work and is never touched.
-    let mergePaths: string[];
-    try {
-      const output = await clients.git.raw(["diff", "--name-only", "-z", "HEAD", `refs/remotes/origin/${branch}`]);
-      mergePaths = output.split("\0").filter((mergePath) => mergePath.length > 0);
-    } catch (error) {
-      this.logger.warn(
-        `Could not list what the rejected fast-forward of '${this.repoName}' would have written ` +
-          `(${getErrorMessage(error)}); leaving the working tree as it is.`,
-      );
-      return;
-    }
-
-    const candidates = mergePaths.filter((mergePath) => dirtyPaths.has(mergePath));
-    if (candidates.length === 0) return;
-
-    // Read for every candidate, not just the ones still on disk: a path's
-    // ABSENCE from this map is the proof that lets a missing file be restored,
-    // so a lookup that failed must abort the whole cleanup rather than read as
-    // "origin does not have it".
-    const entries = await this.readRemoteTreeEntries(clients.git, branch, candidates);
-    if (entries === null) return;
-
-    // git writes a regular file or a symlink and nothing else, and the two are
-    // proved differently — `hash-object` follows a symlink and hashes whatever
-    // is at the other end, which never equals the blob git stores for it (the
-    // target path) and would read a file outside the repository besides.
-    const regularFiles: string[] = [];
-    const symlinks: string[] = [];
-    const toRemove: string[] = [];
-    const toRestore: string[] = [];
-    const recordProven = (candidate: string): void => {
-      if (deviations.untracked.has(candidate)) {
-        toRemove.push(candidate);
-      } else {
-        toRestore.push(candidate);
-      }
-    };
-
-    for (const candidate of candidates) {
-      if (deviations.missing.has(candidate)) {
-        if (!entries.has(candidate)) toRestore.push(candidate);
-        continue;
-      }
-      const kind = await this.classifyWorktreeEntry(worktreeDir, candidate);
-      if (kind === "file") regularFiles.push(candidate);
-      else if (kind === "symlink") symlinks.push(candidate);
-    }
-
-    const hashes = await this.hashWorktreeFiles(clients.git, regularFiles);
-    for (const candidate of regularFiles) {
-      const entry = entries.get(candidate);
-      // A symlink is a blob as well, so the mode has to be excluded here: a
-      // regular file whose content happens to be the link target string would
-      // otherwise prove equal to a symlink origin holds at that path.
-      if (entry?.type !== "blob" || entry.mode === SYMLINK_TREE_MODE) continue;
-      if (hashes.get(candidate) !== entry.id) continue;
-      recordProven(candidate);
-    }
-
-    for (const candidate of symlinks) {
-      const entry = entries.get(candidate);
-      if (entry?.mode !== SYMLINK_TREE_MODE) continue;
-      if (!(await this.symlinkTargetMatchesBlob(clients.git, worktreeDir, candidate, entry.id))) continue;
-      recordProven(candidate);
-    }
-
-    const removed = await this.removeWrittenFiles(clients, worktreeDir, toRemove);
-    const restored = await this.restoreFilesFromHead(clients, toRestore);
-    this.reportUndoneFastForward(branch, removed, restored);
-  }
-
-  // What is at `target` right now, without following it: a symlink git wrote
-  // must be recognized as one, and a path that turned into a directory or
-  // vanished under us is left alone.
-  private async classifyWorktreeEntry(worktreeDir: string, target: string): Promise<"file" | "symlink" | "other"> {
-    const stats = await this.lstatOrNull(path.join(worktreeDir, target));
-    if (stats === null) return "other";
-    if (stats.isSymbolicLink()) return "symlink";
-    return stats.isFile() ? "file" : "other";
-  }
-
-  // git stores a symlink as a blob holding the target path, so that string is
-  // what has to match — `cat-file` gives it verbatim, with no trailing newline
-  // for `readlink` to differ by.
-  private async symlinkTargetMatchesBlob(
-    git: SimpleGit,
-    worktreeDir: string,
-    target: string,
-    objectId: string,
-  ): Promise<boolean> {
-    let linkTarget: string | Buffer;
-    try {
-      linkTarget = await fs.readlink(path.join(worktreeDir, target));
-    } catch {
-      return false;
-    }
-    if (typeof linkTarget !== "string") return false;
-    try {
-      return (await git.raw(["cat-file", "blob", objectId])) === linkTarget;
-    } catch {
-      return false;
-    }
-  }
-
-  // Every working-tree deviation git reports, split the way the cleanup has to
-  // treat them. Paths a sparse checkout leaves out never appear here — git
-  // does not report a skip-worktree entry as deleted — so the cleanup cannot
-  // try to materialize a path outside the cone.
-  private async readWorktreeDeviations(
-    git: SimpleGit,
-  ): Promise<{ untracked: Set<string>; modified: Set<string>; missing: Set<string> } | null> {
-    try {
-      const status = await git.status();
-      return {
-        untracked: new Set(status.not_added),
-        modified: new Set(status.modified),
-        missing: new Set(status.deleted),
-      };
-    } catch (error) {
-      this.logger.warn(
-        `Could not read the working tree of '${this.repoName}' after the rejected fast-forward ` +
-          `(${getErrorMessage(error)}); leaving it as it is.`,
-      );
-      return null;
-    }
-  }
-
-  // What origin/<branch> holds for each path — mode, type and object id.
-  // `ls-tree` reports only the paths that exist in that tree and skips the
-  // rest, which is exactly the answer the deletion half needs.
-  private async readRemoteTreeEntries(
-    git: SimpleGit,
-    branch: string,
-    paths: string[],
-  ): Promise<Map<string, RemoteTreeEntry> | null> {
-    const entries = new Map<string, RemoteTreeEntry>();
-    for (const batch of inBatches(paths, MERGE_CLEANUP_PATH_BATCH)) {
-      let output: string;
-      try {
-        output = await git.raw([
-          "ls-tree",
-          "-z",
-          `refs/remotes/origin/${branch}`,
-          "--",
-          ...batch.map(asLiteralPathspec),
-        ]);
-      } catch (error) {
-        this.logger.warn(
-          `Could not read origin/${branch}'s objects for '${this.repoName}' after the rejected fast-forward ` +
-            `(${getErrorMessage(error)}); leaving the working tree as it is.`,
-        );
-        return null;
-      }
-      for (const entry of output.split("\0")) {
-        const separator = entry.indexOf("\t");
-        if (separator < 0) continue;
-        const [mode, type, id] = entry.slice(0, separator).split(" ");
-        if (!mode || !type || !id) continue;
-        entries.set(entry.slice(separator + 1), { mode, type, id });
-      }
-    }
-    return entries;
-  }
-
-  // What each regular file currently holds, hashed by git itself so the
-  // repository's filters (LFS's clean filter, CRLF conversion) are applied the
-  // way they were when the blob was made. A path missing from the result is
-  // one nothing may be concluded about, so it is simply never acted on.
-  private async hashWorktreeFiles(git: SimpleGit, paths: string[]): Promise<Map<string, string>> {
-    const hashes = new Map<string, string>();
-    for (const batch of inBatches(paths, MERGE_CLEANUP_PATH_BATCH)) {
-      const batched = await this.hashFileBatch(git, batch);
-      if (batched !== null) {
-        batch.forEach((batchPath, index) => hashes.set(batchPath, batched[index]));
-        continue;
-      }
-      // One unreadable path fails the whole invocation, and failing the run
-      // over it would leave the wedge this cleanup exists to remove. Ask again
-      // per path so a file that cannot be hashed disqualifies itself and
-      // nothing else.
-      for (const single of batch) {
-        const one = await this.hashFileBatch(git, [single]);
-        if (one !== null) hashes.set(single, one[0]);
-      }
-    }
-    return hashes;
-  }
-
-  // `hash-object` prints one line per input, in order; anything else means the
-  // mapping cannot be trusted and the caller falls back to asking one at a
-  // time. Only the summary line of a failure is logged: simple-git puts the
-  // command's stdout in the error, which here is the hashes it did print.
-  private async hashFileBatch(git: SimpleGit, batch: string[]): Promise<string[] | null> {
-    let output: string;
-    try {
-      output = await git.raw(["hash-object", "--", ...batch]);
-    } catch (error) {
-      this.logger.warn(
-        `Could not hash ${batch.length} file(s) in '${this.repoName}' after the rejected fast-forward: ` +
-          `${summarizeGitFailure(getErrorMessage(error))}`,
-      );
-      return null;
-    }
-    const lines = output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    if (lines.length !== batch.length) {
-      this.logger.warn(
-        `'git hash-object' answered for ${lines.length} of ${batch.length} files in '${this.repoName}'; ` +
-          `leaving those files as they are.`,
-      );
-      return null;
-    }
-    return lines;
-  }
-
-  // `_clients` is unused on purpose and must stay, for the reason
-  // lfsSkipCheckoutClient gives: this deletes files from the working tree, and
-  // requiring the brand is what keeps that behind the primary-checkout guard.
-  private async removeWrittenFiles(
-    _clients: MutatingGitClients,
-    worktreeDir: string,
-    paths: string[],
-  ): Promise<string[]> {
-    const removed: string[] = [];
-    for (const target of paths) {
-      try {
-        await fs.rm(path.join(worktreeDir, target), { force: true });
-        removed.push(target);
-      } catch (error) {
-        this.logger.warn(`Could not remove '${target}' from '${this.repoName}': ${getErrorMessage(error)}`);
-      }
-    }
-    return removed;
-  }
-
-  // `restore --worktree` rather than `checkout HEAD --`: the rejected merge
-  // left the index alone, so putting these files back is a working-tree edit
-  // and nothing else. It also keeps the pathspec clear of simple-git's
-  // progress plugin, which appends `--progress` to every `checkout` — after a
-  // `--` git reads that as one more path to restore.
-  private async restoreFilesFromHead(clients: MutatingGitClients, paths: string[]): Promise<string[]> {
-    const restored: string[] = [];
-    for (const batch of inBatches(paths, MERGE_CLEANUP_PATH_BATCH)) {
-      try {
-        await clients.git.raw(["restore", "--source=HEAD", "--worktree", "--", ...batch.map(asLiteralPathspec)]);
-        restored.push(...batch);
-      } catch (error) {
-        // A restore can fail for the same reason the merge did — HEAD's own
-        // version of the path may need the smudge filter that is down. The
-        // tree is then no worse than it was, and the next tick reports it.
-        this.logger.warn(
-          `Could not restore ${batch.length} file(s) in '${this.repoName}' from HEAD: ${getErrorMessage(error)}`,
-        );
-      }
-    }
-    return restored;
-  }
-
-  private reportUndoneFastForward(branch: string, removed: string[], restored: string[]): void {
-    const parts = [
-      this.describeCleanedPaths("removed", removed),
-      this.describeCleanedPaths("restored", restored),
-    ].filter((part): part is string => part !== null);
-    if (parts.length === 0) return;
-
-    const message =
-      `↩️  Undid the half-applied fast-forward of '${this.repoName}' to origin/${branch}: ${parts.join(", ")}. ` +
-      `Each held what origin/${branch} has for that path, or was a path it no longer has.`;
-    this.logger.info(message);
-    this.emitProgress({ phase: "merge", message });
-  }
-
-  private describeCleanedPaths(label: string, paths: string[]): string | null {
-    if (paths.length === 0) return null;
-    const shown = paths.slice(0, MERGE_CLEANUP_LOG_PATH_LIMIT);
-    const remaining = paths.length - shown.length;
-    const names = remaining > 0 ? `${shown.join(", ")}, +${remaining} more` : shown.join(", ");
-    return `${label} ${paths.length} (${names})`;
   }
 }

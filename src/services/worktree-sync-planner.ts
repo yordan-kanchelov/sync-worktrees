@@ -2,6 +2,7 @@ import * as path from "path";
 
 import { PathResolutionService } from "./path-resolution.service";
 
+import type { WorktreeNamingContext } from "./path-resolution.service";
 import type { SparseCheckoutConfig } from "../types";
 
 export interface WorktreeInventory {
@@ -54,6 +55,12 @@ export interface SyncPlanOptions {
   pathResolution?: PathResolutionService;
   updateExistingWorktrees?: boolean;
   sparseCheckout?: SparseCheckoutConfig;
+  /**
+   * What new worktrees' directory names are checked against. Without one, a
+   * context is built from the inventory alone (its branches and registered
+   * worktrees, without looking at the disk).
+   */
+  naming?: WorktreeNamingContext;
 }
 
 export function createWorktreeSyncPlan(inventory: WorktreeInventory, options: SyncPlanOptions = {}): SyncPlan {
@@ -66,12 +73,24 @@ export function createWorktreeSyncPlan(inventory: WorktreeInventory, options: Sy
   };
 }
 
-export function planCreateActions(inventory: WorktreeInventory, options: SyncPlanOptions = {}): CreateAction[] {
-  const pathResolution = options.pathResolution ?? new PathResolutionService();
+/** The branches a sync creates a worktree for: on origin, without one yet, and not the default branch. */
+export function listBranchesToCreate(inventory: WorktreeInventory): string[] {
   const existingBranches = new Set(inventory.existingWorktrees.map((w) => w.branch));
-  const newBranches = inventory.remoteBranches.filter(
+  return inventory.remoteBranches.filter(
     (branch) => !existingBranches.has(branch) && branch !== inventory.defaultBranch,
   );
+}
+
+export function planCreateActions(inventory: WorktreeInventory, options: SyncPlanOptions = {}): CreateAction[] {
+  const pathResolution = options.pathResolution ?? new PathResolutionService();
+  const newBranches = listBranchesToCreate(inventory);
+  const naming =
+    options.naming ??
+    pathResolution.createNamingContext({
+      branches: inventory.remoteBranches,
+      defaultBranch: inventory.defaultBranch,
+      worktrees: inventory.existingWorktrees,
+    });
 
   const reservedPaths = new Map<string, string>();
   for (const worktree of inventory.existingWorktrees) {
@@ -80,7 +99,7 @@ export function planCreateActions(inventory: WorktreeInventory, options: SyncPla
 
   const actions: CreateAction[] = [];
   for (const branch of newBranches) {
-    const worktreePath = pathResolution.getBranchWorktreePath(inventory.worktreeDir, branch);
+    const worktreePath = pathResolution.getBranchWorktreePath(inventory.worktreeDir, branch, naming);
     const resolved = path.resolve(worktreePath);
     const conflictingBranch = reservedPaths.get(resolved);
 

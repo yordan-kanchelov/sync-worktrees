@@ -4,9 +4,8 @@ import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { SyncWorktreesError } from "../errors";
-import { PathResolutionService } from "../services/path-resolution.service";
 import { createEmptySyncOutcome } from "../services/sync-outcome";
-import { WorktreeStatusService } from "../services/worktree-status.service";
+import { RefScanScope, WorktreeStatusService } from "../services/worktree-status.service";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { filterBranchesByAge } from "../utils/date-filter";
@@ -53,7 +52,6 @@ type ListedWorktree = {
 };
 type RepoWorktreeListing = { worktrees: ListedWorktree[]; error?: string };
 
-const pathResolution = new PathResolutionService();
 const CLONE_MODE_WORKTREE_MUTATION_REASON =
   "clone-mode repositories have a single checkout; use sync for clone-mode updates";
 
@@ -318,6 +316,10 @@ type WorktreeEnricher = (worktree: DiscoveredWorktree) => Promise<WorktreeEnrich
 // the result, so concurrent callers join the probe already in flight.
 function createWorktreeEnricher(statusService: WorktreeStatusService, limit: Limit): WorktreeEnricher {
   const started = new Map<string, Promise<WorktreeEnrichment>>();
+  // One branch/remote-ref scan per repository across the whole response; the
+  // scope keys on each worktree's common git dir, so lists that span several
+  // repositories still scan each only once.
+  const refScans = new RefScanScope();
 
   return (wt) => {
     const key = `${wt.isCurrent ? "1" : "0"}${path.resolve(wt.path)}`;
@@ -325,7 +327,9 @@ function createWorktreeEnricher(statusService: WorktreeStatusService, limit: Lim
     if (existing !== undefined) return existing;
 
     const pending = limit(async (): Promise<WorktreeEnrichment> => {
-      const { status, statusError } = await probeWorktreeStatus(statusService.getFullWorktreeStatus(wt.path, false));
+      const { status, statusError } = await probeWorktreeStatus(
+        statusService.getFullWorktreeStatus(wt.path, false, { refScans }),
+      );
       return {
         label: status ? deriveLabel(status, wt.isCurrent) : wt.isCurrent ? "current" : "unknown",
         divergence: status?.divergence ?? null,
@@ -417,6 +421,8 @@ async function listWorktreesForRepo(
   }
 
   const currentPath = discovered?.currentWorktreePath ?? null;
+  // One branch/remote-ref scan for the whole listing, not one per worktree.
+  const refScans = new RefScanScope();
 
   const results = await Promise.all(
     worktrees.map((wt) =>
@@ -425,7 +431,7 @@ async function listWorktreesForRepo(
         const isCurrent = currentPath !== null && pathsEqual(wt.path, currentPath);
 
         const [{ status, statusError }, metadata, sizeBytes] = await Promise.all([
-          probeWorktreeStatus(git.getFullWorktreeStatus(wt.path, false)),
+          probeWorktreeStatus(git.getFullWorktreeStatus(wt.path, false, refScans)),
           git.getWorktreeMetadata(wt.path).catch(() => null),
           includeSize ? calculateDirectorySize(wt.path).catch(() => null) : Promise.resolve(null),
         ]);
@@ -561,8 +567,7 @@ export async function handleCreateWorktree(
       throw new SyncWorktreesError(`${exclusion} Adjust the config or pass force: true.`, "BRANCH_FILTERED");
     }
 
-    const worktreeDir = service.config.worktreeDir;
-    const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
+    const worktreePath = await git.resolveNewWorktreePath(branchName);
     const existing = await git.getWorktrees();
     const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
     if (collision) {

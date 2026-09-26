@@ -6,7 +6,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const siteRoot = resolve(__dirname, "..");
 const repoRoot = resolve(siteRoot, "..");
 
-// The hero video and its poster frame, rendered by demo/render.sh into the repo's assets/.
+// The hero video and its poster frame, rendered by demo/render.sh into the repo's assets/, and the launch video with
+// its poster, rendered by demo/launch/render.sh.
 const tasks = [
   {
     src: resolve(repoRoot, "assets/demo.mp4"),
@@ -15,6 +16,14 @@ const tasks = [
   {
     src: resolve(repoRoot, "assets/demo-poster.webp"),
     dest: resolve(siteRoot, "public/demo-poster.webp"),
+  },
+  {
+    src: resolve(repoRoot, "assets/launch.mp4"),
+    dest: resolve(siteRoot, "public/launch.mp4"),
+  },
+  {
+    src: resolve(repoRoot, "assets/launch-poster.jpg"),
+    dest: resolve(siteRoot, "public/launch-poster.jpg"),
   },
 ];
 

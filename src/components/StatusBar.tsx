@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useWindowSize } from "ink";
 import { CronExpressionParser } from "cron-parser";
 
 import type { AppSyncProgress, CronScheduleDisplay, LastSyncOutcome } from "../utils/app-events";
@@ -38,6 +38,13 @@ export function computeNextSyncTime(schedules: readonly string[], now: Date = ne
   return earliest;
 }
 
+// The key legend, and the width it needs. Below that it gives way to the keys
+// alone: a legend Ink wrapped onto a second row made the bar a row taller than
+// the App budgets for, and pushed the top of the screen off.
+const LEGEND_WIDTH = "sync create open wtree xclean reload ?help quit".length;
+/** Columns the bar spends outside its content: the border and `paddingX={1}`. */
+const FRAME_COLUMNS = 4;
+
 function describeOutcome(outcome: LastSyncOutcome): { text: string; color: "green" | "red" | "yellow" } {
   switch (outcome.kind) {
     case "failed":
@@ -61,6 +68,7 @@ const StatusBar: React.FC<StatusBarProps> = ({
   diskSpaceUsed,
   notice = null,
 }) => {
+  const { columns } = useWindowSize();
   const schedules = toScheduleList(cronSchedule);
   const [nextSyncTime, setNextSyncTime] = useState<Date | null>(() => computeNextSyncTime(schedules));
   // A fresh array on every render; the key is what the effect compares.
@@ -101,23 +109,27 @@ const StatusBar: React.FC<StatusBarProps> = ({
   const progressLineCount = Math.max(1, maxProgressLines);
   const visibleProgress = syncProgressEntries.slice(-progressLineCount);
 
+  const diskText = `Disk Space: ${diskSpaceUsed || "Calculating..."}`;
+  const compactLegend = columns - FRAME_COLUMNS < diskText.length + 1 + LEGEND_WIDTH;
+
   return (
     <Box borderStyle="single" paddingX={1}>
       <Box flexDirection="column" width="100%">
-        <Box justifyContent="space-between">
-          <Text bold>
+        {/* Every line truncates rather than wraps: the App budgets one row for each. */}
+        <Box justifyContent="space-between" gap={1}>
+          <Text bold wrap="truncate-end">
             {getStatusIcon()} Status:{" "}
             <Text color={getStatusColor()}>{status === "syncing" ? "Syncing..." : "Idle"}</Text>
           </Text>
-          <Text>
+          <Text wrap="truncate-end">
             Repositories:{" "}
             <Text bold color="cyan">
               {repositoryCount}
             </Text>
           </Text>
         </Box>
-        <Box justifyContent="space-between">
-          <Text>
+        <Box justifyContent="space-between" gap={1}>
+          <Text wrap="truncate-end">
             Last Sync: <Text color="gray">{formatTime(lastSyncTime)}</Text>
             {outcome && (
               <>
@@ -127,7 +139,7 @@ const StatusBar: React.FC<StatusBarProps> = ({
             )}
           </Text>
           {schedules.length > 0 && (
-            <Text>
+            <Text wrap="truncate-end">
               Next Sync: <Text color="gray">{formatTime(nextSyncTime)}</Text>
             </Text>
           )}
@@ -153,16 +165,20 @@ const StatusBar: React.FC<StatusBarProps> = ({
             </Text>
           </Box>
         ))}
-        <Box justifyContent="space-between">
-          <Text>
+        <Box justifyContent="space-between" gap={1}>
+          <Text wrap="truncate-end">
             Disk Space: <Text color="magenta">{diskSpaceUsed || "Calculating..."}</Text>
           </Text>
           {notice ? (
             <Text color="yellow" wrap="truncate">
               {notice}
             </Text>
+          ) : compactLegend ? (
+            <Text dimColor wrap="truncate-end">
+              <Text color="yellow">s c o w x r ?</Text>help <Text color="yellow">q</Text>
+            </Text>
           ) : (
-            <Text dimColor>
+            <Text dimColor wrap="truncate-end">
               <Text color="yellow">s</Text>ync <Text color="yellow">c</Text>reate <Text color="yellow">o</Text>pen{" "}
               <Text color="yellow">w</Text>tree <Text color="yellow">x</Text>clean <Text color="yellow">r</Text>eload{" "}
               <Text color="yellow">?</Text>help <Text color="yellow">q</Text>uit

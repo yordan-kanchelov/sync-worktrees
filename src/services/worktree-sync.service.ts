@@ -5,8 +5,10 @@ import pLimit from "p-limit";
 
 import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { ConfigError, TrashError, TrashOperationError } from "../errors";
+import { probePathExists } from "../utils/file-exists";
 import { withGitAuthHint } from "../utils/git-auth-error";
 import { formatGitBusySignals, probeInFlightGitOperations } from "../utils/git-busy-probe";
+import { redactRepoUrl } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
@@ -23,6 +25,7 @@ import { ProgressEmitter } from "./progress-emitter";
 import { RemovalAuditService } from "./removal-audit.service";
 import { RepoOperationLock } from "./repo-operation-lock";
 import { SyncOutcomeAccumulator } from "./sync-outcome";
+import { SyncDryRunPlanBuilder } from "./sync-plan";
 import { SyncRetryPolicy } from "./sync-retry-policy";
 import { TrashMigrationService } from "./trash-migration.service";
 import { TrashReaperService } from "./trash-reaper.service";
@@ -31,6 +34,7 @@ import { WorktreeModeSyncRunner } from "./worktree-mode-sync-runner";
 
 import type { RegisteredWorktree } from "./git.service";
 import type { ProgressEvent, ProgressListener } from "./progress-emitter";
+import type { SyncPlanResult } from "./sync-plan";
 import type { TrashEntry, TrashManifest } from "./trash.service";
 import type {
   Config,
@@ -852,6 +856,67 @@ export class WorktreeSyncService {
       // mask the sync failure it is unwinding through.
       if (operationRan) await this.measureTrashSizesOffLock();
     }
+  }
+
+  // `sync --dry-run`: what sync() would do, computed and not done. Runs on its
+  // own read-only GitService (optional locks off, so even `git status` leaves
+  // every index alone) and its own runner, so nothing here can mark this
+  // service initialized or leave state behind for a later real sync.
+  //
+  // The one write is the fetch, the same one a sync starts with: it updates
+  // remote-tracking refs and brings in objects, so the plan is made against
+  // origin as it is now rather than as the last sync saw it. It is taken
+  // under the repository lock like a sync, so a dry run never interleaves
+  // with a running sync. A repository that is not on disk yet is planned
+  // without the lock and without touching the disk: its plan is the clone.
+  async planSync(): Promise<SyncPlanResult> {
+    const mode = this.cloneSyncService ? "clone" : "worktree";
+    const repoName = (this.config as { name?: string }).name;
+    const plan = new SyncDryRunPlanBuilder({ mode, ...(repoName !== undefined && { repoName }) });
+    const gitService = new GitService(this.config, this.logger, undefined, { readOnly: true });
+
+    // Probed before the lock, in both modes: taking it creates directories (the
+    // lock directory next to worktreeDir, the bare repository's directory),
+    // which a dry run of a repository not cloned yet must not do.
+    if (this.cloneSyncService) {
+      const cloneSync = new CloneSyncService(this.config, gitService, this.logger, { readOnly: true });
+      if ((await probePathExists(path.join(this.config.worktreeDir, PATH_CONSTANTS.GIT_DIR))) === "missing") {
+        await cloneSync.planSyncAttempt(plan);
+        return { started: true, plan: plan.build() };
+      }
+      const result = await this.runExclusiveRepoOperation(() => cloneSync.planSyncAttempt(plan));
+      return result.started ? { started: true, plan: plan.build() } : result;
+    }
+
+    const planOnDisk = async (): Promise<boolean> => {
+      const opened = await gitService.openForPlanning();
+      if (opened.state === "missing") return false;
+      plan.markFetched();
+      const runner = new WorktreeModeSyncRunner(this.config, gitService, this.logger, new ProgressEmitter(), {
+        trashService: new TrashService(this.config, gitService, this.logger, this.removalAudit),
+        removalAudit: this.removalAudit,
+      });
+      await runner.planSyncAttempt(plan);
+      return true;
+    };
+
+    if ((await probePathExists(path.join(gitService.getBareRepoPath(), "HEAD"))) === "missing") {
+      this.planInitialClone(plan, gitService.getBareRepoPath());
+      return { started: true, plan: plan.build() };
+    }
+    const result = await this.runExclusiveRepoOperation(planOnDisk);
+    if (!result.started) return result;
+    if (!result.value) this.planInitialClone(plan, gitService.getBareRepoPath());
+    return { started: true, plan: plan.build() };
+  }
+
+  private planInitialClone(plan: SyncDryRunPlanBuilder, bareRepoPath: string): void {
+    plan.add({
+      kind: "clone",
+      path: path.resolve(bareRepoPath),
+      message: `clone ${redactRepoUrl(this.config.repoUrl)} as a bare repository, then create a worktree for every branch that passes the filters`,
+    });
+    plan.note("The repository has not been cloned yet, so the branches it would get worktrees for are not listed.");
   }
 
   // NOT one of the *Unlocked helpers — those run inside a held lock, this one

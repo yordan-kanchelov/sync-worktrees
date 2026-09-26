@@ -39,8 +39,14 @@ describe("WorktreeModeSyncRunner create phase, detached worktree at the target p
     featurePath = pathResolution.getBranchWorktreePath(worktreeDir, "feature-x");
     await fs.mkdir(mainPath, { recursive: true });
     // The directory is still there — only its registration is detached, which
-    // is what keeps it out of the inventory below.
+    // is what keeps it out of the inventory below. Its `.git` link into the
+    // bare repository is what tells worktree naming it is this repository's
+    // checkout rather than a stranger's directory.
     await fs.mkdir(featurePath, { recursive: true });
+    await fs.writeFile(
+      path.join(featurePath, ".git"),
+      `gitdir: ${path.join(tempDir, "bare", "worktrees", "feature-x")}\n`,
+    );
     logger = createMockLogger();
 
     gitService = {
@@ -55,6 +61,8 @@ describe("WorktreeModeSyncRunner create phase, detached worktree at the target p
       getRemoteCommit: vi.fn().mockResolvedValue("abc1234"),
       getRemoteBranchTips: vi.fn().mockResolvedValue(new Map()),
       setLfsSkipEnabled: vi.fn(),
+      getBareRepoPath: vi.fn().mockReturnValue(path.join(tempDir, "bare")),
+      readWorktreeMetadataOwner: vi.fn().mockResolvedValue(null),
     };
   });
 

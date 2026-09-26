@@ -3,8 +3,9 @@ import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import type { LogPanelProps } from "../LogPanel";
-import LogPanel from "../LogPanel";
+import LogPanel, { CollapsedLogLine } from "../LogPanel";
 import type { LogEntry } from "../App";
+import { frameLines, resizeTerminal } from "./terminal-size";
 
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -28,6 +29,32 @@ describe("LogPanel", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  describe("narrow terminals and the collapsed line", () => {
+    const many = (count: number): LogEntry[] =>
+      Array.from({ length: count }, (_, index) => createLog(`${index}`, `Log line ${index}`));
+
+    it("keeps its heading on one row in a narrow terminal", async () => {
+      const { stdout, lastFrame } = render(<LogPanel logs={many(40)} height={6} isActive />);
+      resizeTerminal(stdout, 40, 24);
+      await waitForStateUpdate();
+
+      const lines = frameLines(lastFrame());
+      expect(lines).toHaveLength(6);
+      expect(lines[1]).toContain("📋 Logs");
+      expect(lastFrame()).toContain("Log line 39");
+    });
+
+    it("folds to the count and the latest entry, coloured by its level", () => {
+      const logs = [...many(3), createLog("err", "Sync failed for 'infra'", "error")];
+      const { lastFrame } = render(<CollapsedLogLine logs={logs} />);
+
+      expect(frameLines(lastFrame())).toHaveLength(1);
+      expect(lastFrame()).toContain("(4 entries, l to expand)");
+      expect(lastFrame()).toContain("Sync failed for 'infra'");
+      expect(lastFrame()).not.toContain("Log line 2");
+    });
   });
 
   describe("rendering", () => {

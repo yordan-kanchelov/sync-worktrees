@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { TrashOperationError } from "../errors";
@@ -712,4 +712,230 @@ it("reports a config that matches more than one repository as a usage error", as
 
   expect(stderr(errorLog)).toContain("exactly one repository");
   expect(process.exitCode).toBe(1);
+});
+
+describe("subcommands", () => {
+  const ID = "2026-06-06T18-30-00-000Z-qqq-a1b2c3";
+  const OTHER = "2026-06-07T09-00-00-000Z-rrr-d4e5f6";
+
+  it("lists with `trash list`, and prints no deprecation hint", async () => {
+    process.argv.push("list", "--json");
+    mocks.listTrashEntries.mockResolvedValue({ entries: [makeEntry()], invalid: [] });
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(JSON.parse(stdout(log)).entries[0].id).toBe(ID);
+    expect(stderr(warnLog)).not.toContain("deprecated");
+    expect(mocks.initialize).not.toHaveBeenCalled();
+  });
+
+  it("restores with `trash restore <id>`", async () => {
+    process.argv.push("restore", "trash-entry");
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(mocks.restoreFromTrash).toHaveBeenCalledWith("trash-entry", { lockWaitMs: undefined });
+    expect(stdout(log)).toContain("Restored trash-entry");
+    expect(stderr(warnLog)).not.toContain("deprecated");
+  });
+
+  it("gives `trash restore <id> --wait` a bounded lock budget and says so", async () => {
+    process.argv.push("restore", "trash-entry", "--wait");
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(mocks.restoreFromTrash).toHaveBeenCalledWith("trash-entry", { lockWaitMs: DEFAULT_CONFIG.LOCK_WAIT_MS });
+    expect(stdout(log)).toContain("Waiting up to");
+  });
+
+  it("purges one entry with `trash purge <id>` behind the typed id", async () => {
+    process.argv.push("purge", ID);
+    setTTY(true);
+    mocks.listTrashEntries.mockResolvedValue({ entries: [makeEntry()], invalid: [] });
+    mocks.input.mockResolvedValue(ID);
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(mocks.purgeTrashEntry).toHaveBeenCalledWith(ID, { lockWaitMs: undefined });
+    expect(stdout(log)).toContain(`Purged ${ID}`);
+    expect(stderr(warnLog)).not.toContain("deprecated");
+  });
+
+  it("names the subcommand, not a flag, when a purge has no TTY", async () => {
+    process.argv.push("purge", ID);
+    mocks.listTrashEntries.mockResolvedValue({ entries: [makeEntry()], invalid: [] });
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(stderr(errorLog)).toContain("'trash purge' requires an interactive TTY");
+    expect(mocks.purgeTrashEntry).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("drops one keep ref with `trash drop-keep-ref <name>`", async () => {
+    process.argv.push("drop-keep-ref", "preserved-entry");
+    setTTY(true);
+    mocks.input.mockResolvedValue("preserved-entry");
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(mocks.deleteKeepRef).toHaveBeenCalledWith("preserved-entry");
+  });
+
+  it("drops every keep ref with `trash drop-all-keep-refs`", async () => {
+    process.argv.push("drop-all-keep-refs");
+    setTTY(true);
+    mocks.listKeepRefs.mockResolvedValue(["refs/sync-worktrees/keep/a"]);
+    mocks.input.mockResolvedValue("drop 1");
+    mocks.deleteKeepRefs.mockResolvedValue({ deleted: 1, retained: [], errors: [] });
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(mocks.deleteKeepRefs).toHaveBeenCalledWith(["a"]);
+  });
+
+  // The old spellings keep working so scripts do not break, and each run says
+  // once, on stderr, what to write instead — stdout stays what a script parses.
+  it.each([
+    [["--restore", "trash-entry"], "sync-worktrees trash restore <id>"],
+    [["--dropKeepRef", "preserved-entry"], "sync-worktrees trash drop-keep-ref <name>"],
+    [["--drop-all-keep-refs"], "sync-worktrees trash drop-all-keep-refs"],
+    [["--purge", ID], "sync-worktrees trash purge <id>"],
+  ])("prints a one-line hint for the deprecated %j form", async (flags, replacement) => {
+    process.argv.push(...flags);
+
+    await expect(main()).resolves.toBeUndefined();
+
+    const hints = (warnLog.mock.calls as unknown[][]).filter((call) => String(call[0]).includes("deprecated"));
+    expect(hints).toHaveLength(1);
+    expect(stderr(warnLog)).toContain(replacement);
+    expect(stdout(log)).not.toContain("deprecated");
+  });
+
+  it("prints no hint for a bare listing, which is still `trash list`", async () => {
+    process.argv.push("--json");
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(stderr(warnLog)).not.toContain("deprecated");
+  });
+
+  describe("purge --all", () => {
+    beforeEach(() => {
+      process.argv.push("purge", "--all");
+      setTTY(true);
+      mocks.listTrashEntries.mockResolvedValue({
+        entries: [makeEntry(), makeEntry({ id: OTHER, keepPinOnReap: true, headOid: "b".repeat(40) })],
+        invalid: [],
+      });
+    });
+
+    it("needs an interactive TTY", async () => {
+      setTTY(false);
+
+      await expect(main()).resolves.toBeUndefined();
+
+      expect(stderr(errorLog)).toContain("'trash purge --all' requires an interactive TTY");
+      expect(mocks.input).not.toHaveBeenCalled();
+      expect(mocks.purgeTrashEntry).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("does not prompt when the trash is empty", async () => {
+      mocks.listTrashEntries.mockResolvedValue({ entries: [], invalid: [] });
+
+      await expect(main()).resolves.toBeUndefined();
+
+      expect(stdout(log)).toContain("No trash entries to purge");
+      expect(mocks.input).not.toHaveBeenCalled();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it("purges nothing when the typed phrase does not match", async () => {
+      mocks.input.mockResolvedValue("purge 1");
+
+      await expect(main()).resolves.toBeUndefined();
+
+      expect(stderr(errorLog)).toContain("not confirmed");
+      expect(mocks.purgeTrashEntry).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("purges exactly the listed entries after one typed count, through the single-entry purge", async () => {
+      mocks.input.mockResolvedValue("purge 2");
+      mocks.purgeTrashEntry.mockImplementation(async (id: string) => ({
+        deleted: true,
+        keepRefsMinted: id === OTHER ? [`refs/sync-worktrees/keep/${OTHER}`] : [],
+        errors: [],
+      }));
+
+      await expect(main()).resolves.toBeUndefined();
+
+      expect(mocks.input).toHaveBeenCalledTimes(1);
+      const prompt = String(mocks.input.mock.calls[0][0].message);
+      expect(prompt).toContain("purge 2");
+      expect(prompt).toContain("cannot be undone");
+      // One of the two is a keep-on-reap entry, and the prompt says what that means.
+      expect(prompt).toContain("1 of them");
+      expect(mocks.purgeTrashEntry.mock.calls).toEqual([
+        [ID, { lockWaitMs: undefined }],
+        [OTHER, { lockWaitMs: undefined }],
+      ]);
+      const out = stdout(log);
+      expect(out).toContain("Purged 2 of 2 trash entries");
+      expect(out).toContain(`refs/sync-worktrees/keep/${OTHER}`);
+      expect(out).toContain("b".repeat(40));
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it("keeps going past an entry that fails, reports it, and exits 1", async () => {
+      mocks.input.mockResolvedValue("purge 2");
+      mocks.purgeTrashEntry.mockImplementation(async (id: string) => {
+        if (id === ID) throw new TrashOperationError("purge", "cannot purge: repository lock is held");
+        return { deleted: true, keepRefsMinted: [], errors: [] };
+      });
+
+      await expect(main()).resolves.toBeUndefined();
+
+      expect(mocks.purgeTrashEntry).toHaveBeenCalledTimes(2);
+      expect(stdout(log)).toContain("Purged 1 of 2 trash entries");
+      expect(stderr(warnLog)).toContain(`Not purged: ${ID}`);
+      expect(stderr(warnLog)).toContain("repository lock is held");
+      expect(stderr(errorLog)).toContain("1 trash entry was not purged");
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("counts an entry the purge left in place as a failure", async () => {
+      mocks.input.mockResolvedValue("purge 2");
+      mocks.purgeTrashEntry.mockImplementation(async (id: string) =>
+        id === OTHER
+          ? { deleted: false, keepRefsMinted: [], errors: ["EACCES"] }
+          : { deleted: true, keepRefsMinted: [], errors: [] },
+      );
+
+      await expect(main()).resolves.toBeUndefined();
+
+      expect(stdout(log)).toContain("Purged 1 of 2 trash entries");
+      expect(stderr(warnLog)).toContain(`Not purged: ${OTHER}: EACCES`);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("gives each purge a bounded lock budget under --wait", async () => {
+      process.argv.push("--wait");
+      mocks.input.mockResolvedValue("purge 2");
+
+      await expect(main()).resolves.toBeUndefined();
+
+      expect(stdout(log)).toContain("Waiting up to");
+      expect(mocks.purgeTrashEntry).toHaveBeenCalledWith(ID, { lockWaitMs: DEFAULT_CONFIG.LOCK_WAIT_MS });
+      expect(mocks.purgeTrashEntry).toHaveBeenCalledWith(OTHER, { lockWaitMs: DEFAULT_CONFIG.LOCK_WAIT_MS });
+    });
+
+    it("lets an unexpected failure keep its stack", async () => {
+      mocks.input.mockResolvedValue("purge 2");
+      mocks.purgeTrashEntry.mockRejectedValue(new TypeError("boom"));
+
+      await expect(main()).rejects.toThrow("boom");
+    });
+  });
 });

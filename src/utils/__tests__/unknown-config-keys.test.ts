@@ -1,14 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  KNOWN_DEFAULTS_KEYS,
-  KNOWN_REPOSITORY_KEYS,
-  KNOWN_TOP_LEVEL_KEYS,
-  NESTED_KNOWN_KEYS,
-  collectUnknownConfigKeys,
-  formatUnknownConfigKey,
-  suggestConfigKey,
-} from "../unknown-config-keys";
+import { KNOWN_CONFIG_KEYS } from "../../services/config-schema";
+import { collectUnknownConfigKeys, formatUnknownConfigKey, suggestConfigKey } from "../unknown-config-keys";
 
 import type {
   ConfigFile,
@@ -21,18 +14,23 @@ import type {
   TrashConfig,
 } from "../../types";
 
+const KNOWN_REPOSITORY_KEYS = KNOWN_CONFIG_KEYS.repository;
+const KNOWN_DEFAULTS_KEYS = KNOWN_CONFIG_KEYS.defaults;
+const KNOWN_TOP_LEVEL_KEYS = KNOWN_CONFIG_KEYS.topLevel;
+const NESTED_KNOWN_KEYS = KNOWN_CONFIG_KEYS.nested;
+
+const collect = (config: Record<string, unknown>) => collectUnknownConfigKeys(config, KNOWN_CONFIG_KEYS);
+
 /**
  * Drift guard, runtime half.
  *
- * `Record<keyof X, true>` cannot be written with a key missing or a key too
- * many, so each map below is `keyof X` made into a runtime value by the
- * compiler rather than by hand. Adding a field to `Config` (or to a nested
- * block) and stopping there fails `pnpm typecheck` twice over — on the
- * `_...KeysComplete` assertions in unknown-config-keys.ts and on the map here.
- * Adding it to both and mis-assembling the exported list — the lists are joined
- * with spreads, which no `satisfies` clause covers — fails the expectations
- * below instead. Between them there is no way to change the real key set and
- * leave the inventory behind.
+ * The inventory is read off the config schema, so what this pins is that the
+ * schema declares exactly the keys the handwritten types do. `Record<keyof X,
+ * true>` cannot be written with a key missing or a key too many, so each map
+ * below is `keyof X` made into a runtime value by the compiler rather than by
+ * hand; the type-level half is in services/__tests__/config-schema.test.ts.
+ * Adding a field to `Config` (or to a nested block) and not to the schema
+ * fails `pnpm typecheck` there and the expectations below here.
  */
 const EVERY_REPOSITORY_KEY: Record<keyof RepositoryConfig, true> = {
   name: true,
@@ -123,6 +121,10 @@ describe("config key inventory", () => {
     expect([...KNOWN_TOP_LEVEL_KEYS].sort()).toEqual(Object.keys(EVERY_TOP_LEVEL_KEY).sort());
   });
 
+  it("declares no nested block the scan does not know", () => {
+    expect(Object.keys(NESTED_KNOWN_KEYS).sort()).toEqual(Object.keys(EVERY_NESTED_KEY).sort());
+  });
+
   it.each(Object.keys(EVERY_NESTED_KEY))("lists exactly the keys of the '%s' block", (block) => {
     const expected = Object.keys(EVERY_NESTED_KEY[block as keyof typeof EVERY_NESTED_KEY]).sort();
     expect([...NESTED_KNOWN_KEYS[block]].sort()).toEqual(expected);
@@ -187,27 +189,27 @@ describe("collectUnknownConfigKeys", () => {
   };
 
   it("reports nothing for a config using only known keys", () => {
-    expect(collectUnknownConfigKeys(cleanConfig)).toEqual([]);
+    expect(collect(cleanConfig)).toEqual([]);
   });
 
   it("reports nothing for a defaults-only key the loader rejects per repository", () => {
     // `syncOnStart` (like `runOnce`) is a whole-file switch: `validateConfigFile`
     // throws before this scan ever sees it on a repository entry, but it is a
     // perfectly good `defaults` key and warning on it would be a false alarm.
-    expect(collectUnknownConfigKeys({ defaults: { syncOnStart: false }, repositories: [] })).toEqual([]);
+    expect(collect({ defaults: { syncOnStart: false }, repositories: [] })).toEqual([]);
     expect(KNOWN_DEFAULTS_KEYS).toContain("syncOnStart");
   });
 
   it("reports nothing for internal keys the loader writes itself", () => {
     expect(
-      collectUnknownConfigKeys({
+      collect({
         repositories: [{ name: "web", __configFileDir: "/tmp", __configuredRepoDirs: ["/tmp/web"], logger: undefined }],
       }),
     ).toEqual([]);
   });
 
   it("names the repository, the key and the suggestion for a misspelled repository key", () => {
-    const found = collectUnknownConfigKeys({
+    const found = collect({
       repositories: [{ name: "reference", updateExistingWorktree: false }],
     });
 
@@ -221,7 +223,7 @@ describe("collectUnknownConfigKeys", () => {
   });
 
   it("reaches unknown keys under defaults and at the top level", () => {
-    const found = collectUnknownConfigKeys({
+    const found = collect({
       cronScedule: "0 * * * *",
       defaults: { updatExistingWorktrees: true },
       repositories: [],
@@ -236,7 +238,7 @@ describe("collectUnknownConfigKeys", () => {
   it("holds the three levels apart: each is scanned against its own inventory", () => {
     // A real `Config` key is still unknown at the top level, where nothing
     // reads it; `name` is a repository key and is unknown under `defaults`.
-    const found = collectUnknownConfigKeys({
+    const found = collect({
       updateExistingWorktrees: false,
       defaults: { name: "web" },
       repositories: [{ name: "web", repositories: [] }],
@@ -250,7 +252,7 @@ describe("collectUnknownConfigKeys", () => {
   });
 
   it("reaches one level down, into every block that is an object", () => {
-    const found = collectUnknownConfigKeys({
+    const found = collect({
       retry: { maxAttemptz: 5 },
       parallelism: { maxStatusCheck: 4 },
       defaults: { maintenance: { intervals: "7d" }, hooks: { onBranchCreate: [] } },
@@ -270,7 +272,7 @@ describe("collectUnknownConfigKeys", () => {
   it("treats a key present with the value undefined as present, not unknown", () => {
     // `{ maxStatusChecks: Number(process.env.X) || undefined }` is a real shape
     // in config files: a known key whose value is undefined is a known key.
-    const found = collectUnknownConfigKeys({
+    const found = collect({
       repositories: [{ name: "web", updateExistingWorktrees: undefined, parallelism: { maxStatusChecks: undefined } }],
     });
 
@@ -278,18 +280,18 @@ describe("collectUnknownConfigKeys", () => {
   });
 
   it("still reports an unknown key whose value is undefined", () => {
-    const found = collectUnknownConfigKeys({ repositories: [{ name: "web", updateExistingWorktree: undefined }] });
+    const found = collect({ repositories: [{ name: "web", updateExistingWorktree: undefined }] });
 
     expect(found.map((entry) => entry.keyPath)).toEqual(["updateExistingWorktree"]);
   });
 
   it("does not descend into a block whose value is not an object", () => {
-    expect(collectUnknownConfigKeys({ repositories: [{ name: "web", retry: "nope" }] })).toEqual([]);
-    expect(collectUnknownConfigKeys({ repositories: [{ name: "web", hooks: [{ nope: 1 }] }] })).toEqual([]);
+    expect(collect({ repositories: [{ name: "web", retry: "nope" }] })).toEqual([]);
+    expect(collect({ repositories: [{ name: "web", hooks: [{ nope: 1 }] }] })).toEqual([]);
   });
 
   it("falls back to the index when a repository has no usable name", () => {
-    const found = collectUnknownConfigKeys({ repositories: ["not-an-object", { nope: 1 }] });
+    const found = collect({ repositories: ["not-an-object", { nope: 1 }] });
 
     expect(found).toEqual([{ location: "in repository at index 1", keyPath: "nope", suggestion: undefined }]);
   });

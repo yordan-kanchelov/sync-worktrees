@@ -26,11 +26,15 @@ makes them worth keeping.
 
 One standing security item, which is the only entry here flagged as such:
 
-- **`bin/sync-worktrees.js` does not redact credential-bearing URLs.** The library redacts
+- **`bin/sync-worktrees.js` does not redact credential-bearing URLs.** _Resolved: the launcher
+  reports through `reportUnhandledError`, which redacts._ The library redacts
   them across logs, errors and MCP responses; the launcher script does not.
 - Two further places where URL redaction has drifted on the way to the terminal interface
   (`FU-T44-3`, `FU-T108-1`). Nothing enforces that a URL reaching the interface has been
   through a redaction helper, and the codebase has now drifted here three times.
+  _Resolved: every repository label comes from `repoDisplayLabel`, `AppEventEmitter.emit` scrubs
+  every string an event carries to the dashboard, and an ESLint `no-restricted-syntax` rule
+  refuses a raw `repoUrl` used as a fallback label, interpolated or concatenated in `src/`._
 
 ## Sections
 
@@ -121,7 +125,7 @@ One standing security item, which is the only entry here flagged as such:
 - T50: catch-all `console.error(label, err)` sites bypass the scrubbing logger (App.tsx 166/183/186/193/196/307, BranchCreationWizard.tsx:250, app-events.ts:53, disk-space.ts:74) and `process.stderr.write(err.message)` in mcp/index.ts and mcp/context.ts:257; traced as not leaking in practice but not defence-in-depth. Query-string secrets (`?token=`) are out of scope. An unescaped `@` in a password leaves the post-`@` fragment (matches git's own parsing).
 - T22: daemon cron tick runs with `logErrors: false` (InteractiveUIService.tsx ~187), so init-time rejections (origin mismatch, clone failure, network) are counted in `failures` but never written to the TUI log; only manual sync/reload shows them (pre-existing; belongs with Batch 7). README/changeset say `.git` is ignored unconditionally but normalization keeps it for file:// and bare local paths.
 - T21: the unchanged pre-check in initialize() still reuses a registered-but-prunable default worktree whose directory exists (broken gitfile, admin dir survives); a local-only default branch (no origin/<default>) now creates without upstream and fails at the first ff-merge instead of at init, with a misleading "push to set upstream" info line; main's creation now runs the LFS verification (warn line when git-lfs is absent).
-- T49: GIT_TERMINAL_PROMPT=0 fixes the HTTPS prompt hang only; ssh reads passphrases/host-key confirmations from /dev/tty itself, so an SSH key without an agent or an unknown host key still blocks until the 300 s inactivity timeout (pre-existing). A proper fix probes `core.sshCommand` per repo (async, once at init) and wraps whichever ssh command is in effect with `-o BatchMode=yes`; injecting GIT_SSH_COMMAND was rejected because it overrides core.sshCommand. With every client now passing an explicit env, a shell exporting GIT_CONFIG_KEY_n for a key outside simple-git's allowance set (core.hooksPath, core.editor, alias.*, gpg.program, filter.*) is rejected for every git call. HTTP 403 / "requested URL returned error" is still classified retryable. The interactive CLI can no longer type credentials at a prompt (intended, documented).
+- T49: _Resolved for ssh remotes, without the BatchMode wrapper: an ssh `repoUrl`'s clients run with `SSH_ASKPASS_REQUIRE=force` and `SSH_ASKPASS=false` (`sshNoPromptEnv` in src/utils/git-env.ts), so OpenSSH 8.4+ declines a passphrase or host-key question at once and the ssh command is never touched. The BatchMode approach was not taken: a probe of `core.sshCommand` taken once at init goes stale when the config changes under a running daemon, cannot see an `includeIf` that only matches the destination of a clone, and the injected GIT_SSH_COMMAND would outrank whatever the user configures afterwards. Still open: an HTTPS `repoUrl` rewritten to ssh by `url.<base>.insteadOf` gets no askpass settings, and OpenSSH older than 8.4 ignores them._ GIT_TERMINAL_PROMPT=0 fixes the HTTPS prompt hang only; ssh reads passphrases/host-key confirmations from /dev/tty itself, so an SSH key without an agent or an unknown host key still blocks until the 300 s inactivity timeout (pre-existing). A proper fix probes `core.sshCommand` per repo (async, once at init) and wraps whichever ssh command is in effect with `-o BatchMode=yes`; injecting GIT_SSH_COMMAND was rejected because it overrides core.sshCommand. With every client now passing an explicit env, a shell exporting GIT_CONFIG_KEY_n for a key outside simple-git's allowance set (core.hooksPath, core.editor, alias.*, gpg.program, filter.*) is rejected for every git call. HTTP 403 / "requested URL returned error" is still classified retryable. The interactive CLI can no longer type credentials at a prompt (intended, documented).
 - T47: `getRemovalAuditLogPath` still falls back to `$XDG_STATE_HOME` / `~/.cache` when there is no config dir (programmatic use); last `~/.cache` use in the tree. A checkout whose parent is read-only needs `SYNC_WORKTREES_LOCK_DIR` (documented).
 - T47 (reviewer): scripts/smoke-test.mjs still exports XDG_STATE_HOME (harmless, steers only the audit-log fallback); old-scheme lock files under ~/.cache/sync-worktrees/locks/ are orphaned after upgrade (harmless; operators can delete them).
 - T29: nested bareRepoDirs across entries (`/b` and `/b/inner`) are not rejected; path comparison uses path.resolve without following symlinks, so two dirs aliased via symlink slip through (same limitation as the pre-existing checks); an MCP startup whose auto-loaded config fails validation logs the error to stderr and continues with no config loaded (pre-existing).
@@ -638,7 +642,9 @@ One standing security item, which is the only entry here flagged as such:
 ## T70 (partial-clone cleanup tests) — a real hole found, NOT fixed
 
 - **`cloneCreatedDir` does not establish ownership — TOCTOU on the only
-  `rm -rf` in clone mode.** `clone-sync.service.ts:1573` sets it from
+  `rm -rf` in clone mode.** _Resolved: `prepareCloneDestination` (clone-sync/clone-bootstrap.ts)
+  creates the parents, then the destination with a non-recursive `mkdir`; EEXIST there means
+  another process made it, and the directory is left in place._ `clone-sync.service.ts:1573` sets it from
   `entries === null` (an ENOENT readdir), which records that the destination
   was ABSENT a moment earlier, not that this process created it. The very next
   line is `fs.mkdir(worktreeDir, { recursive: true })`, which is silent when
@@ -654,7 +660,8 @@ One standing security item, which is the only entry here flagged as such:
   `cloneCreatedDir`. Deliberately not fixed — T70 is a tests-only task, and
   this is a source change that deserves its own item.
 - **`mkdir -p` may create PARENT directories the leaf-only cleanup leaves
-  behind.** A failed clone into `/a/b/c` where none of `a`, `b`, `c` existed
+  behind.** _Resolved: after removing the destination, the cleanup `rmdir`s the parents this
+  init's `mkdir` created, innermost first, and stops at the first one that is not empty._ A failed clone into `/a/b/c` where none of `a`, `b`, `c` existed
   removes only `c`.
 - **No e2e for the `rm -rf` arm.** The unit tests plus killed mutants are what
   the acceptance asked for; the existing `incomplete-clone-checkout.e2e` covers
@@ -922,10 +929,11 @@ One standing security item, which is the only entry here flagged as such:
   recoverable at '<ref>' (<oid>)" through the repo logger AND the CLI prints "Commits kept at
   '<ref>' (<oid>)". Same ref, same oid, twice. The real fix is a quiet-by-default logger for
   one-shot commands — service `info` logs interleaving with CLI output is the underlying issue.
-- `--restore ""` / `--purge ""` fall through to a listing and exit 0 (truthiness check), so a script
+- _Resolved: an empty or blank id/name is a parse error (exit 1) in both the subcommand and the deprecated flag
+  forms, and dispatch is on a typed action rather than on truthiness._ `--restore ""` / `--purge ""` fall through to a listing and exit 0 (truthiness check), so a script
   running `--purge "$ID"` with an unset variable gets a table and a success exit. On a destructive
   flag that deserves an explicit rejection.
-- The `--wait` announcement tests `options.restore !== undefined` while dispatch tests truthiness,
+- _Resolved: the announcement and the dispatch both read the one parsed action._ The `--wait` announcement tests `options.restore !== undefined` while dispatch tests truthiness,
   so `--restore "" --wait` announces a wait and then prints a listing.
 - `purgeAll` in `reapUnlocked` is now a misnomer — it means "selection-based", not "all", and drives
   the audit action, the expiry skip and the wording. Rename to `isSelection`.
@@ -939,7 +947,7 @@ One standing security item, which is the only entry here flagged as such:
   `wait: true`. Harmless for a one-shot CLI, confusing to read.
 - `runList`/`runSync` catch broadly and `process.exit(1)`; `trash` now uses a narrow catch plus
   `process.exitCode`. Converging them is a small separate cleanup.
-- `--purge` takes one id, not a list — clearing several entries means one confirmation each.
+- _Resolved: `trash purge --all` purges every listed entry behind one typed `purge <count>`._ `--purge` takes one id, not a list — clearing several entries means one confirmation each.
 
 ## T90 — real-git trash coverage (leftovers, not done)
 - `restoreAsWorktree` calls `createBranchAt` OUTSIDE its own try/catch, so when the pinned commit is
@@ -1042,14 +1050,16 @@ The T33 worker's reported 1,432,411 bytes therefore includes 574 B that CI does 
   essentially every fetch. Mirrors the pre-existing `validateDepth` (which allows `depth: 1`), so it
   is house-consistent and was left alone. If a floor is wanted, both validators should get one
   together.
-- **FU-T33-2. `retry` validation is much looser than `depth`/timeouts.** `initialDelayMs`,
+- **FU-T33-2. `retry` validation is much looser than `depth`/timeouts.** _Resolved: every retry field refuses NaN and
+  Infinity and the two counts must be safe integers, all through the one numeric rule in `config-schema.ts`._ `initialDelayMs`,
   `maxDelayMs`, `jitterMs`, `maxLfsRetries` are checked only for `typeof === "number"` plus a bound,
   so `1.5`, `NaN` and `Infinity` all pass (`NaN < 0` is false). `retry.maxAttempts` likewise accepts
   `2.5`. Same class of hole T33 just closed for the timeouts.
 - **FU-T33-3. `trash.retentionDays` / `warnSizeBytes` use `Number.isFinite`, not
   `Number.isSafeInteger`**, so `retentionDays: 0.5` is accepted. Third inconsistent validator style
   in the same file. FU-T33-2 and -3 together argue for one shared numeric validator.
-- **FU-T33-4. `validateDepth` carries the same redundant `typeof` arm** that `validateTimeoutMs`
+- **FU-T33-4. `validateDepth` carries the same redundant `typeof` arm** _Resolved: both validators are gone; `depth` and
+  the timeouts are zod number rules in `config-schema.ts`._ that `validateTimeoutMs`
   does (unreachable at runtime — `Number.isSafeInteger` never coerces — but load-bearing for type
   narrowing). Noting so nobody "fixes" one without the other.
 - **FU-T33-5. The `defaults` half of T31's drop guard is weaker than the repository half**
@@ -1063,6 +1073,8 @@ The T33 worker's reported 1,432,411 bytes therefore includes 574 B that CI does 
 - **FU-T33-7. `src/services/__tests__/git.service.test.ts` contains 21 literal NUL bytes**
   (intentional `for-each-ref -z` fixtures). Harmless, but `grep` treats the file as binary and
   silently skips it, so a plain `grep -rn <symbol> src` under-reports. Use `grep -a`.
+  (D2 moved those fixtures, with the ref-inventory tests, to
+  `src/services/__tests__/branch-ref.service.test.ts`.)
 - **Still open from T31, unchanged by T33: the shipped example is not type-checked by CI.** Its
   `// @ts-check` + `@satisfies {SyncWorktreesConfig}` is decorative — `tsconfig.json` includes only
   `src/**/*`, eslint runs it without type information, and there is no self-link at
@@ -1140,7 +1152,9 @@ The T33 worker's reported 1,432,411 bytes therefore includes 574 B that CI does 
 
 ## T35 follow-ups
 
-- **FU-T35-1. No reload timeout.** A config that awaits a live handle (`await new Promise(r =>
+- **FU-T35-1. No reload timeout.** _Resolved: a reload's worker is terminated after
+  `CONFIG_RELOAD_TIMEOUT_MS` (30 s) and the reload fails with a message naming the file; the loaded
+  config stays in effect. Covers a hung await and a busy loop._ A config that awaits a live handle (`await new Promise(r =>
   setTimeout(r, 600000))`) hangs the reload permanently — the reviewer had to SIGKILL. NOT a
   regression (the same config hung the main thread before), and Node's unsettled-top-level-await
   detector rescues the handle-free case with exit code 13 → clean rejection. But the worker path is
@@ -1248,7 +1262,9 @@ tsc copies into the `.d.ts` where no consumer can use it — still the cheapest 
   this path, because `fullyPushedUpstreamDeleted` requires `recordedRefGone` and in the
   matched-nothing scenario the remote branch still exists. Any doc or audit text saying pruning is
   "recoverable within retentionDays" is wrong for `trash.enabled: false`.
-- **FU-T91-3. `maxAttempts` / `maxLfsRetries` now throw two different error classes.** The legacy
+- **FU-T91-3. `maxAttempts` / `maxLfsRetries` now throw two different error classes.** _Resolved: config validation is
+  one zod schema (`config-schema.ts`) and every failure is a `ConfigValidationError` listing all the problems found, with
+  `repositories[1].retry.maxAttempts`-style paths._ The legacy
   bound arm throws a plain `Error`, the new integer arm throws `ConfigValidationError`, so a caller
   catching `ConfigValidationError` to render `field`/`reason` gets it for only half the failures
   (`maxAttempts: 0` vs `maxAttempts: 0.5`). Accepted trade-off here — unifying would change pinned
@@ -1388,7 +1404,8 @@ Related, and FIXED by T93: `runList` and `runSync`'s load catch previously print
 
 ## T94 + T96 follow-ups
 
-- **FU-T94-1. `trash --filter`'s `-f` alias is unpinned** — deleting it fails no test (same for
+- **FU-T94-1. `trash --filter`'s `-f` alias is unpinned** — _Resolved for `trash`: the subcommand parse tests use
+  `-f`._ Deleting it fails no test (same for
   `list`). The README's new text does not claim short aliases for `trash`, so nothing is
   contradicted, but the alias could vanish silently.
 - **FU-T94-2. `repo.branch = branch.trim()` is unpinned** — removing the trim survives. Whitespace
@@ -1396,7 +1413,8 @@ Related, and FIXED by T93: `runList` and `runSync`'s load catch previously print
 - **FU-T94-3.** The init URL validator still calls `safeRepoName(value)` on the RAW string. Harmless
   only because `extractRepoNameFromUrl` trims internally. Inconsistent with the two sibling checks
   in the same validator, which now read `value.trim()`.
-- **FU-T94-4.** `trash --wait` on a bare listing parses and does nothing — no `.conflicts()` against
+- **FU-T94-4.** _Resolved for the subcommands: `--wait` exists only on `trash restore` and `trash purge`, so
+  `trash list --wait` is an unknown argument; the deprecated bare form keeps its old leniency._ `trash --wait` on a bare listing parses and does nothing — no `.conflicts()` against
   the no-op listing, and `lockWaitMs` is read only by restore/purge. Harmless; the README wording
   deliberately avoids over-promising ("applies to --restore and --purge" rather than "is only valid
   with").
@@ -2015,11 +2033,11 @@ behaviour it is defending is correct.**
 
 ## From T100+T101 review (2026-09-16)
 
-- **FU-T101-1 — `upstreamGone` false-positives on a branch tracking a local branch.** `branch.x.remote = "."` resolves `@{upstream}` to a bare local name that `git branch -r` never lists, so `upstreamGone` is true, the label is `stale` and `detect_context`'s `staleHint` is true for a perfectly healthy worktree. Measured on git 2.43.
-- **FU-T101-2 — `upstreamGone` is unreachable for the case it exists for.** A pruned upstream makes `rev-parse --abbrev-ref <b>@{upstream}` exit 128, so `snap.upstream` is null and the flag never sets. `fullyPushedUpstreamDeleted` covers the squash-merge case from metadata, but the `upstream gone` reason and the `stale` label are dead for their intended trigger. (So FU-T101-1 is the *only* way it fires, on healthy repos.)
+- **FU-T101-1 — `upstreamGone` false-positives on a branch tracking a local branch.** _Resolved: the status snapshot now takes the full upstream ref from one repository-wide `for-each-ref --format=%(refname)%00%(upstream)%00%(symref) refs/heads/ refs/remotes/` scan, so `refs/heads/main` is judged against the local branches; covered by `worktree-divergence.e2e.test.ts`._ `branch.x.remote = "."` resolves `@{upstream}` to a bare local name that `git branch -r` never lists, so `upstreamGone` is true, the label is `stale` and `detect_context`'s `staleHint` is true for a perfectly healthy worktree. Measured on git 2.43.
+- **FU-T101-2 — `upstreamGone` is unreachable for the case it exists for.** _Resolved: `%(upstream)` names the configured upstream whether or not its ref exists, so a pruned one reads as gone (divergence stays null); `rev-parse @{upstream}` is no longer spawned. Covered by `worktree-divergence.e2e.test.ts`._ A pruned upstream makes `rev-parse --abbrev-ref <b>@{upstream}` exit 128, so `snap.upstream` is null and the flag never sets. `fullyPushedUpstreamDeleted` covers the squash-merge case from metadata, but the `upstream gone` reason and the `stale` label are dead for their intended trigger. (So FU-T101-1 is the *only* way it fires, on healthy repos.)
 - **FU-T101-3 — MCP output schemas are almost entirely unvalidated by tests.** Only `create_worktree` and `sync` were ever `.parse()`d; T101's review added spot-parses for `list_worktrees` and `get_worktree_status`. `detectContextOutputSchema` and the rest have nothing, so a required field added to any of them can break `tools/call` on the wire with a fully green suite. Demonstrated: dropping `divergence` from `handleGetWorktreeStatus` passed all 289 MCP tests while breaking the advertised schema.
 - **FU-T101-4 — `list_worktrees` carries `divergence` twice per entry** (top level and under `status`). Schema-valid, consistent and backwards compatible, but duplicated wire bytes per worktree and the top-level copy is now derived — a deprecation candidate.
-- **FU-T101-5 — corrupt remote-tracking ref makes divergence report `{0,0}` where it used to report `null`.** Where the ref exists but its object does not (pointing at a missing oid, or at a non-commit), `git status` prints `[gone]` with 0/0 while the old rev-list failed. Deliberately not fixed in T101: separating the cases costs back the per-worktree process it removed, and the only zero-cost discriminator available would null out FU-T101-1's legitimate local-branch upstream. Documented in `worktree-status.service.ts`.
+- **FU-T101-5 — corrupt remote-tracking ref makes divergence report `{0,0}` where it used to report `null`.** Where the ref exists but its object does not (pointing at a missing oid, or at a non-commit), `git status` prints `[gone]` with 0/0 while the old rev-list failed. Deliberately not fixed in T101: separating the cases costs back the per-worktree process it removed, and the only zero-cost discriminator available would null out FU-T101-1's legitimate local-branch upstream. Documented in `worktree-status.service.ts`. _Update: the ref scan reads names only (a `%(objecttype)` makes one broken ref fail the whole `for-each-ref`), so such a ref now reads as present -- 0/0 and no longer labelled `stale` via `upstreamGone`. Still open; the discriminator is still a per-worktree object read._
 - **FU-T101-6 — the discovery-cache bound test asserts a loose ceiling** (`toBeLessThan(80)`), so it cannot tell 64 from 79; only a limit above the probe count trips it.
 - **FU-T101-7 — `detectFromPath` has no in-flight dedup**, so concurrent probes of the same path both miss and both detect.
 
@@ -2111,12 +2129,12 @@ behaviour it is defending is correct.**
 - **FU-T25-4** (performance, tui) — `.diverged` metadata reads are unbounded. The `du` walks are now bounded by the cache's limiter, but the `fs.readFile` of each `.diverged-info.json` still fans out over every subdirectory at once. Small files, so an fd-count question rather than a throughput one.
 - **FU-T44-1** (correctness, clone mode) — clone mode still swallows its own leftover-branch notice. The worktree path was fixed by having the rollback feed a `leftovers` collector the retry loop reads, but `clone-sync.service.ts:rollbackCreatedBranch` throws through `service.createAndPushBranch` and never touches that collector, so when the lease refuses AND the compare-and-swap delete also fails, the notice naming the orphaned branch is still discarded by the same retry. Fixing it properly wants a typed error or a shared notice helper across both services.
 - **FU-T44-2** (ergonomics, tui) — `resolveFreeBranchName` appends to the typed name, so a user who explicitly types `x-1` while `x-1` is taken is shown `x-1-1` (and the service then continues `x-1-2`, consistently with what was displayed). The service-side walk now continues a suffix rather than nesting it; the wizard's own derivation does not. Only matters when the user types a `-N` name by hand.
-- **FU-T44-3** (security, tui) — the credential redaction restored in `rollbackUnpushedBranch` covers the push-failure path. Worth a sweep for other `getErrorMessage(...)` results that reach the TUI from a network git command without passing through `redactSecretsInText`, since the two services drifted here once already and nothing enforces the pairing.
+- **FU-T44-3** (security, tui) — _Resolved: `AppEventEmitter.emit` scrubs every string in an event payload with `redactSecretsInText`, so nothing reaches the dashboard unredacted whichever path built it (the `App` log handler already did the same for log lines)._ The credential redaction restored in `rollbackUnpushedBranch` covers the push-failure path. Worth a sweep for other `getErrorMessage(...)` results that reach the TUI from a network git command without passing through `redactSecretsInText`, since the two services drifted here once already and nothing enforces the pairing.
 - **FU-T113-1** (testing, lock) — the real lock logic is still only covered on the happy path. Stale-lock takeover (`LOCK_STALE_MS`, 600 s), the mtime refresh timer (`LOCK_UPDATE_MS`, 30 s), the `onCompromised` warn-and-continue callback, and the `waitMs`/`retriesUntil` retry budget are exercised nowhere outside mocks — `repo-operation-lock.test.ts` mocks both `fs/promises` and `proper-lockfile`. A ~2 s two-process run cannot reach any of them; they need a test that fabricates an aged lock or drives the timers.
 - **FU-T113-2** (design, lock) — in worktree mode the bare-repo lock masks a `worktreeDir` lock-key regression. `acquireWorktreeModeLock` takes the bare lock first and returns early, so two processes are serialized by it regardless of what the worktreeDir key derives to: putting the pid in the lock filename still produced correct contention outcomes, and was caught only by an explicit assertion on the derived path. Nothing asserts the two-lock ordering, or the bare-lock release when the second lock cannot be taken. Clone mode's single-lock path is not exercised at all.
 - **FU-T113-3** (testing hygiene) — other e2e suites leave `os.tmpdir()` fixtures behind: `/tmp` accumulates stale `sync-worktrees-*`, `mcp-wtdir-*` and `test-config-*` directories across sessions. Worth finding which suites are responsible.
 - **FU-T113-4** (consistency) — the e2e layer spawns two different entry points: `lock-unavailable` and `node-env-independence` use `bin/sync-worktrees.js`, while `double-run` and `concurrent-runs` use `dist/index.js` directly. `bin/sync-worktrees.js` additionally does `process.env.NODE_ENV ??= "production"`, so the two paths are not the same child environment. Not a defect now that nothing branches on NODE_ENV, but someone should settle it deliberately.
-- **FU-T108-1** (security, tui) — `handleReload` builds `repo: repoConfig.name || repoConfig.repoUrl` for its clone-skip lines, so a repository with no configured `name` puts a **raw** `repoUrl` — credentials included — into the log panel, where `redactRepoUrl` is used everywhere else. Pre-existing, two lines from the code cluster 9 changed. Pairs with FU-T44-3: nothing enforces that a URL reaching the TUI has been through `redactSecretsInText`/`redactRepoUrl`, and the codebase has now drifted here twice.
+- **FU-T108-1** (security, tui) — _Resolved: `handleReload`, the cycle scheduler, clone mode and the hook runner take the label from `repoDisplayLabel` (name, or the redacted URL), and an ESLint rule refuses the raw `name || repoUrl` shape. The progress rows were the unscrubbed path: log lines were already redacted in `App`._ `handleReload` builds `repo: repoConfig.name || repoConfig.repoUrl` for its clone-skip lines, so a repository with no configured `name` puts a **raw** `repoUrl` — credentials included — into the log panel, where `redactRepoUrl` is used everywhere else. Pre-existing, two lines from the code cluster 9 changed. Pairs with FU-T44-3: nothing enforces that a URL reaching the TUI has been through `redactSecretsInText`/`redactRepoUrl`, and the codebase has now drifted here twice.
 - **FU-T108-2** (testing) — `interactive-ui.service.test.ts`'s `should re-inject loggers after reload` is now a weak duplicate: it asserts injection happened, which is true, but it is order-blind (verified — it passes under a mutation that moves the assignment after `initialize()`). The new order assertion in `interactive-ui.reload-logging.test.ts` supersedes it. Delete it or fold it in, so nobody reads it as covering the ordering.
 - **FU-T108-3** (tui) — a repository whose `initialize()` fails during a reload can leave a progress row keyed to its name. It is cleared when the reload's cycle closes (`setStatus("idle")` empties the list), so it is bounded to the reload, but nothing pins that clearing path specifically.
 - **FU-T109-1** (testing, tui) — `HelpModal.test.tsx`'s blind spot is only narrowed, not closed. T109 added the one assertion it needed (that the quit row names `q` alone), but the modal still advertises `s c o w x r ? h gg G j k` and the mouse wheel with **no test tying any of them to App's handler** — it asserts the help text renders, never that the listed keys work. That is exactly how `Esc` drifted. A table-driven App-level test over every advertised key would close it for good.
@@ -2129,4 +2147,9 @@ behaviour it is defending is correct.**
   - Files failing on that error: `bare-origin-mismatch`, `concurrent-runs`, `diverged-branch-reservation`, `double-run` (3 tests), `head-branch-filter` (2), `node-env-independence.e2e` (2), `skip-lfs-global-ignore.e2e`, `stale-registration`, `worktree-dir-collision.e2e` (all under `src/__tests__/e2e/`).
   - `src/mcp/__tests__/context.broken-config.test.ts` ("carries the note on an unmanaged worktree context…", `expected 'unmanaged' to be 'managed'`) is very likely the same mismatch, in `detectFromPath`'s path matching.
   - `src/__tests__/e2e/unshallow-inactivity-timeout.e2e.test.ts:151` ("still kills an unshallow that goes quiet…", the clone is no longer shallow after the kill) is a separate failure and has not been diagnosed. The test's `sleep` shim and how the process is killed may behave differently on darwin.
-  - When all of these pass on macOS, remove `continue-on-error` from the "Run Tests with Coverage" step in `pr.yml`.
+  - When all of these pass on macOS, remove `continue-on-error` from the "Run Tests with Coverage" step in `pr.yml` and from the "Run E2E Tests (with network)" step in `nightly.yml`.
+
+## From tui-dashboard (home-screen repository table, 2026-09-26)
+
+- **FU-DASH-1** (feature, tui) — the table's CHANGES column (dirty / unpushed worktrees) is only the last `w` status check of that repository, remembered by `RepositoryOperations.getWorktreeStatusForRepo`; until the view has been opened for a repository it reads `–`, and afterwards it is as stale as that check. A background refresh after each sync would fill it everywhere, but it costs a full status probe of every worktree per cycle (the thing status-perf just cut down), so it wants a budget of its own — at most one repository at a time, off the sync limiter, skipped while a sync is running — rather than riding on the cycle.
+- **FU-DASH-2** (feature, tui) — the table is read-only and not scrollable: when it has fewer rows than repositories, the last row only counts the rest (`… 12 more, 1 failed`). A selection with `Enter` opening that repository's status view (and `j`/`k` moving it while the log is folded) would make it the entry point for the per-repository actions; today `l`/`+`/`-` give it room and the `w` picker reaches the rest.

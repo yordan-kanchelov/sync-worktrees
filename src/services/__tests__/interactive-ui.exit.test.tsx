@@ -418,7 +418,7 @@ describe("InteractiveUIService exit path", () => {
       await sleep(60);
       harness.logs.length = 0;
 
-      harness.service.registerCronJob({
+      harness.service.scheduler.registerCronJob({
         stop: vi.fn(),
         destroy: vi.fn(() => Promise.reject(new Error("Destroy operation timed out"))),
       } as unknown as cron.ScheduledTask);
@@ -436,7 +436,7 @@ describe("InteractiveUIService exit path", () => {
       await sleep(60);
       harness.logs.length = 0;
 
-      harness.service.registerCronJob({
+      harness.service.scheduler.registerCronJob({
         stop: vi.fn(),
         destroy: (): never => {
           throw new Error("task already gone");
@@ -468,7 +468,7 @@ describe("InteractiveUIService exit path", () => {
         // promise it returns so it can record the settled result, which makes
         // every rejection it hands out a handled one. A spy here would pass
         // against no catch at all.
-        harness.service.registerCronJob({
+        harness.service.scheduler.registerCronJob({
           stop: vi.fn(),
           destroy: (): Promise<void> =>
             new Promise<void>((_resolve, reject) =>

@@ -5,24 +5,25 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { inspect } from "util";
 
-import { input } from "@inquirer/prompts";
-import Table from "cli-table3";
 import pLimit from "p-limit";
 
-import { CONFIG_FILE_NAMES, DEFAULT_CONFIG, GIT_CONSTANTS } from "./constants";
+import { runDoctor } from "./cli/doctor";
+import { runDryRun } from "./cli/dry-run";
+import { runTrash } from "./cli/trash-command";
+import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "./constants";
 import { ConfigFileExistsError, ConfigFileNotFoundError, SyncWorktreesError } from "./errors";
+import { runList } from "./cli/list";
 import { ConfigLoaderService } from "./services/config-loader.service";
 import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
-import { isWorktreeRestorable } from "./services/trash.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
 import { CLI_COMMANDS, parseArguments } from "./utils/cli";
 import { formatCloneSkipReason } from "./utils/clone-skip-format";
-import { findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
-import { formatBytes } from "./utils/disk-space";
+import { CONFIG_PATH_ENV_VAR, describeConfigPath, resolveConfigPath } from "./utils/config-discovery";
+import { generateConfigFile, getDefaultConfigPath } from "./utils/config-generator";
 import { fileExists } from "./utils/file-exists";
 import { redactRepoUrl, redactSecretsInText } from "./utils/git-url";
-import { getErrorMessage } from "./utils/errors";
+import { configLoadErrorMessage, getErrorMessage } from "./utils/errors";
 import { promptForInitConfig } from "./utils/interactive";
 import { maybeRegisterMcpClients } from "./utils/mcp-registration";
 import { setupSignalHandlers } from "./utils/signal-handlers";
@@ -31,9 +32,9 @@ import { formatDuration } from "./utils/timing";
 import { warnIfUnitTestShortcutEnabled } from "./utils/unit-test-shortcut";
 
 import type { CloneSkipReason } from "./services/clone-sync.service";
-import type { TrashEntry, TrashManifest } from "./services/trash.service";
 import type { ConfigFile, RepositoryConfig } from "./types";
-import type { CliOptions, TrashCliOptions } from "./utils/cli";
+import type { CliOptions } from "./utils/cli";
+import type { ResolvedConfigPath } from "./utils/config-discovery";
 
 export interface RunOptions {
   /** One-shot runs: only warnings, errors and the final summary line. */
@@ -86,8 +87,11 @@ export async function runMultipleRepositories(
           const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug, { quiet: options.quiet });
 
           // The blank line goes out unprefixed; "\n📦" through the repo logger
-          // printed a line holding nothing but "[name] ".
-          globalLogger.info("");
+          // printed a line holding nothing but "[name] ". Under --quiet the
+          // header it separates is not printed, so neither is the blank line.
+          if (!options.quiet) {
+            globalLogger.info("");
+          }
           repoLogger.info(`📦 Repository: ${repoConfig.name}`);
           repoLogger.info(`   URL: ${redactRepoUrl(repoConfig.repoUrl)}`);
           repoLogger.info(`   Worktrees: ${repoConfig.worktreeDir}`);
@@ -283,320 +287,6 @@ function countOf(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-// The loader already says "Failed to load config file: ..." for a file it
-// could not evaluate; the label in front of it must not say so a second time.
-function configLoadErrorMessage(error: unknown): string {
-  return redactSecretsInText(getErrorMessage(error).replace(/^Failed to load config file: /, ""));
-}
-
-async function runList(configPath: string, filter?: string): Promise<void> {
-  const configLoader = new ConfigLoaderService();
-
-  try {
-    const { repositories } = await configLoader.buildRepositories(configPath, { filter });
-
-    if (filter && repositories.length === 0) {
-      console.error(`❌ No repositories match filter: ${filter}`);
-      process.exit(1);
-    }
-
-    console.log("\n📋 Configured repositories:\n");
-
-    repositories.forEach((repo, index) => {
-      console.log(`${index + 1}. ${repo.name}`);
-      console.log(`   URL: ${redactRepoUrl(repo.repoUrl)}`);
-      console.log(`   Worktrees: ${repo.worktreeDir}`);
-      console.log(`   Schedule: ${repo.cronSchedule}`);
-      console.log(`   Run Once: ${repo.runOnce}`);
-      if (repo.bareRepoDir) {
-        console.log(`   Bare repo: ${repo.bareRepoDir}`);
-      }
-      if (repo.skipLfs) {
-        console.log(`   Skip LFS: ${repo.skipLfs}`);
-      }
-      console.log("");
-    });
-  } catch (error) {
-    console.error("❌ Error loading config file:", configLoadErrorMessage(error));
-    process.exit(1);
-  }
-}
-
-// A failure the person running `sync-worktrees trash` is expected to hit and
-// can do something about: a wrong id, a destination that is already occupied,
-// a lock somebody else holds, a confirmation they declined. Those get one line
-// and exit code 1. Anything else keeps its stack and goes to main().catch,
-// because a stack is the only useful thing to say about a bug.
-class TrashCliError extends Error {}
-
-// Ctrl+C at one of the confirmation prompts. @inquirer installs its own SIGINT
-// handler and rejects with an ExitPromptError rather than letting the signal
-// through, so declining a destructive prompt the most ordinary way there is
-// printed "❌ Unhandled error:" and ten frames of readline internals. Matched
-// by name because @inquirer/prompts does not re-export the class, and
-// @inquirer/core is not a dependency of this package.
-function isPromptCancellation(error: unknown): error is Error {
-  return error instanceof Error && error.name === "ExitPromptError";
-}
-
-function isExpectedTrashFailure(error: unknown): error is Error {
-  return error instanceof TrashCliError || error instanceof SyncWorktreesError || isPromptCancellation(error);
-}
-
-// `null`, not `0`: sizes are measured off the repository lock, so a freshly
-// trashed entry is genuinely unmeasured rather than empty, and rendering it as
-// "0 B" would invite exactly the wrong conclusion about what deleting it frees.
-function formatTrashSize(sizeBytes: number | null): string {
-  return sizeBytes === null ? "—" : formatBytes(sizeBytes);
-}
-
-function formatTrashExpiry(expiresAt: string, now: number): string {
-  const parsed = new Date(expiresAt);
-  const day = Number.isNaN(parsed.getTime()) ? expiresAt : parsed.toISOString().slice(0, 10);
-  return !Number.isNaN(parsed.getTime()) && parsed.getTime() <= now ? `${day} (expired)` : day;
-}
-
-// Branch when there is one. An "orphan" entry has none, and then the directory
-// it came from is the only thing that identifies it — dropping that would make
-// those rows unreadable, which is what the old tab-separated listing at least
-// got right by always printing originalPath.
-function trashEntryLabel(manifest: TrashManifest, worktreeDir: string): string {
-  if (manifest.branch) return manifest.branch;
-  const relative = path.relative(worktreeDir, manifest.originalPath);
-  return relative !== "" && !relative.startsWith("..") ? relative : manifest.originalPath;
-}
-
-// The rows this command printed from 5.2.0 until now. Kept for a piped stdout
-// so that `sync-worktrees trash | cut -f1` and anything else built on the tab
-// layout still works: cli-table3 draws box characters and ANSI colour with no
-// terminal detection of its own, so sending the table down a pipe would hand a
-// script escape sequences instead of fields. A human at a terminal gets the
-// table; everything else gets exactly what it got before, and `--json` is the
-// shape to build anything new on.
-function printTrashRows(entries: TrashEntry[], keepRefs: string[]): void {
-  for (const { manifest } of entries) {
-    console.log(`${manifest.id}\t${manifest.reason}\t${manifest.expiresAt}\t${manifest.originalPath}`);
-  }
-  for (const ref of keepRefs) console.log(`KEEP\t${ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length)}`);
-}
-
-function printTrashTable(entries: TrashEntry[], keepRefs: string[], worktreeDir: string): void {
-  if (!process.stdout.isTTY) {
-    printTrashRows(entries, keepRefs);
-    return;
-  }
-  if (entries.length === 0) {
-    console.log("No trash entries.");
-  } else {
-    const now = Date.now();
-    const table = new Table({
-      head: ["Id", "Branch / path", "Reason", "Size", "Expires", "Restores as", "Keep on reap"],
-      style: { head: ["cyan", "bold"], border: ["gray"] },
-    });
-    for (const { manifest } of entries) {
-      table.push([
-        manifest.id,
-        trashEntryLabel(manifest, worktreeDir),
-        manifest.reason,
-        formatTrashSize(manifest.sizeBytes),
-        formatTrashExpiry(manifest.expiresAt, now),
-        isWorktreeRestorable(manifest) ? "worktree" : "files only",
-        manifest.keepPinOnReap === true ? "yes" : "",
-      ]);
-    }
-    console.log(table.toString());
-  }
-
-  if (keepRefs.length > 0) {
-    console.log(`\nPermanent keep refs (commits held past payload expiry):`);
-    for (const ref of keepRefs) console.log(`  ${ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length)}`);
-  }
-}
-
-function printTrashJson(entries: TrashEntry[], invalid: string[], keepRefs: string[]): void {
-  console.log(
-    JSON.stringify(
-      {
-        entries: entries.map(({ manifest }) => ({
-          id: manifest.id,
-          branch: manifest.branch,
-          reason: manifest.reason,
-          originalPath: manifest.originalPath,
-          deletedAt: manifest.deletedAt,
-          expiresAt: manifest.expiresAt,
-          // Stays null when nothing has measured this payload yet.
-          sizeBytes: manifest.sizeBytes,
-          restoresAsWorktree: isWorktreeRestorable(manifest),
-          keepPinOnReap: manifest.keepPinOnReap === true,
-          source: manifest.source,
-        })),
-        invalidEntries: invalid,
-        keepRefs: keepRefs.map((ref) => ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length)),
-      },
-      null,
-      2,
-    ),
-  );
-}
-
-function requireTrashTTY(flag: string): void {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new TrashCliError(`${flag} requires an interactive TTY`);
-  }
-}
-
-async function runTrash(configPath: string, options: TrashCliOptions): Promise<void> {
-  try {
-    await executeTrash(configPath, options);
-  } catch (error) {
-    if (!isExpectedTrashFailure(error)) throw error;
-    console.error(`❌ ${redactSecretsInText(error.message)}`);
-    process.exitCode = 1;
-  }
-}
-
-async function executeTrash(configPath: string, options: TrashCliOptions): Promise<void> {
-  const configLoader = new ConfigLoaderService();
-  // Config loading throws plain Errors as well as typed ConfigErrors — a config
-  // file is user-supplied JS — and a config someone can fix is never a bug in
-  // this tool. `list` and the sync command already report these as one line;
-  // without this, `trash` was the only command that answered a missing
-  // `repoUrl` with a stack trace.
-  let repositories;
-  try {
-    ({ repositories } = await configLoader.buildRepositories(configPath, { filter: options.filter }));
-  } catch (error) {
-    throw new TrashCliError(`Error loading config file: ${configLoadErrorMessage(error)}`);
-  }
-  if (repositories.length !== 1) {
-    throw new TrashCliError(
-      `Trash operations require exactly one repository; matched ${repositories.length}. Use --filter.`,
-    );
-  }
-
-  const service = new WorktreeSyncService(repositories[0]);
-  if (service.isCloneMode()) {
-    throw new TrashCliError("Trash operations are only available for worktree-mode repositories");
-  }
-  // A bounded budget, never an open-ended block: see DEFAULT_CONFIG.LOCK_WAIT_MS.
-  const lockWaitMs = options.wait === true ? DEFAULT_CONFIG.LOCK_WAIT_MS : undefined;
-  // Announced before the wait begins, and only for the two operations that take
-  // the lock — a listing takes none, so saying it would wait for one is a lie
-  // told to whoever is watching the terminal.
-  if (lockWaitMs !== undefined && (options.restore !== undefined || options.purge !== undefined)) {
-    console.log(
-      `⏳ Waiting up to ${Math.round(lockWaitMs / 1000)}s for the repository lock if another process holds it`,
-    );
-  }
-
-  if (options.restore) {
-    const manifest = await service.restoreFromTrash(options.restore, { lockWaitMs });
-    console.log(`✅ Restored ${manifest.id} to ${manifest.originalPath}`);
-    return;
-  }
-  if (options.purge) {
-    await purgeTrashEntry(service, options.purge, lockWaitMs);
-    return;
-  }
-  if (options.dropKeepRef) {
-    requireTrashTTY("--drop-keep-ref");
-    const confirmation = await input({ message: `Type '${options.dropKeepRef}' to confirm deleting this keep ref:` });
-    if (confirmation !== options.dropKeepRef) {
-      throw new TrashCliError("Keep ref deletion was not confirmed");
-    }
-    await service.deleteKeepRef(options.dropKeepRef);
-    console.log(`✅ Deleted ${options.dropKeepRef}`);
-    return;
-  }
-  if (options.dropAllKeepRefs) {
-    requireTrashTTY("--drop-all-keep-refs");
-    // The names are read here, before the confirmation, and handed to the
-    // service as the set to act on: a sync running alongside this command can
-    // mint keep refs for entries it has just reaped, and those were never on
-    // screen. See deleteKeepRefs.
-    const names = (await service.listKeepRefs()).map((ref) => ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length));
-    if (names.length === 0) {
-      console.log("No keep refs to drop.");
-      return;
-    }
-    const phrase = `drop ${names.length}`;
-    const confirmation = await input({
-      message:
-        `Deleting ${names.length} keep ref(s) makes their commits eligible for 'git gc' and cannot be undone. ` +
-        `Type '${phrase}' to confirm:`,
-    });
-    if (confirmation !== phrase) {
-      throw new TrashCliError("Keep ref deletion was not confirmed");
-    }
-    const dropped = await service.deleteKeepRefs(names);
-    console.log(`✅ Deleted ${dropped.deleted} keep ref(s)`);
-    for (const ref of dropped.retained) {
-      console.log(`   Retained ${ref} — a '.diverged/' directory still depends on it`);
-    }
-    for (const error of dropped.errors) console.warn(`⚠️ Could not delete ${error}`);
-    return;
-  }
-
-  // Deliberately listEntries, not listEntriesWithSizes: sizing execs `du` over
-  // every payload, node_modules and all, and a listing that waits minutes to
-  // fill one column is worse than a column that says "—" for what nothing has
-  // measured yet.
-  const { entries, invalid } = await service.listTrashEntries();
-  const keepRefs = await service.listKeepRefs();
-  if (options.json === true) {
-    printTrashJson(entries, invalid, keepRefs);
-    return;
-  }
-  printTrashTable(entries, keepRefs, repositories[0].worktreeDir);
-  for (const invalidPath of invalid) console.warn(`⚠️ Invalid trash entry left untouched: ${invalidPath}`);
-}
-
-// Permanent deletion of one entry, gated exactly like --drop-keep-ref and
-// --drop-all-keep-refs: an interactive TTY, a typed confirmation naming what is
-// being destroyed, and an audit record — the last written by the reap path
-// inside the lock, so it records the attempt and not merely the intent.
-//
-// The entry is read once before the prompt so the prompt can say whether this
-// is a keep-on-reap entry, whose commits reached no remote and whose payload
-// may be the only copy. The purge itself re-reads under the lock; this listing
-// only decides what the person is told.
-async function purgeTrashEntry(
-  service: WorktreeSyncService,
-  id: string,
-  lockWaitMs: number | undefined,
-): Promise<void> {
-  requireTrashTTY("--purge");
-  const { entries } = await service.listTrashEntries();
-  const entry = entries.find((candidate) => candidate.manifest.id === id);
-  if (!entry) throw new TrashCliError(`No trash entry with id '${id}'`);
-
-  const keepNote = entry.manifest.keepPinOnReap
-    ? ` Its commits were on no remote when it was trashed, so '${GIT_CONSTANTS.KEEP_REF_PREFIX}${id}' is created first and the files are deleted only if that succeeds.`
-    : "";
-  const confirmation = await input({
-    message:
-      `Deleting trash entry '${id}' removes its files permanently and cannot be undone.${keepNote} ` +
-      `Type '${id}' to confirm:`,
-  });
-  if (confirmation !== id) throw new TrashCliError("Trash entry deletion was not confirmed");
-
-  const result = await service.purgeTrashEntry(id, { lockWaitMs });
-  if (!result.deleted) {
-    for (const ref of result.keepRefsMinted) console.log(`   Kept commits at '${ref}'`);
-    throw new TrashCliError(
-      `Trash entry '${id}' was not deleted and stays listed: ${result.errors.join("; ") || "no reason reported"}`,
-    );
-  }
-  console.log(`✅ Purged ${id}`);
-  // Ref and commit only. The reap path logs the full "recover with: git branch
-  // <name> <oid>" line as it mints the ref, and printing that verbatim a second
-  // time is how a two-line result becomes four lines of the same sentence.
-  for (const ref of result.keepRefsMinted) {
-    console.log(`   Commits kept at '${ref}' (${entry.manifest.headOid})`);
-  }
-  for (const error of result.errors) console.warn(`⚠️ ${error}`);
-}
-
 async function loadRunConfig(
   configPath: string,
   overrides: { runOnce: boolean; debug: boolean; filter?: string },
@@ -614,18 +304,25 @@ async function loadRunConfig(
   };
 }
 
-async function resolveConfigOrExit(cliPath: string | undefined): Promise<string> {
-  const resolved = cliPath ? path.resolve(cliPath) : await findConfigInCwd();
+async function resolveConfigOrExit(cliPath: string | undefined): Promise<ResolvedConfigPath> {
+  const resolved = await resolveConfigPath(cliPath);
   if (!resolved) {
     // Derived from CONFIG_FILE_NAMES, not restated: this message named
-    // `{js,mjs,cjs}` while `findConfigInCwd` — which shares that constant —
-    // already searched for `.ts` as well, so the one place a user is told what
-    // to create disagreed with what the CLI would find. Building it from the
-    // list is the same fix as pinning the list: the claim cannot drift again.
+    // `{js,mjs,cjs}` while discovery — which shares that constant — already
+    // searched for `.ts` as well, so the one place a user is told what to
+    // create disagreed with what the CLI would find. Building it from the list
+    // is the same fix as pinning the list: the claim cannot drift again.
     const extensions = CONFIG_FILE_NAMES.map((name) => path.extname(name).slice(1)).join(",");
     console.error(
-      `❌ No config file found. Pass --config <path>, run \`sync-worktrees init\` to create one, or place a sync-worktrees.config.{${extensions}} in this directory.`,
+      `❌ No config file found. Pass --config <path>, set ${CONFIG_PATH_ENV_VAR}, run \`sync-worktrees init\` to create one, or place a sync-worktrees.config.{${extensions}} in this directory or a parent.`,
     );
+    process.exit(1);
+  }
+  // A variable set in a shell profile and forgotten is invisible at the prompt,
+  // so a stale one is named here rather than surfacing as a bare "not found".
+  if (resolved.source === "env" && !(await fileExists(resolved.path))) {
+    console.error(`❌ ${CONFIG_PATH_ENV_VAR} points to a file that does not exist: ${resolved.path}`);
+    console.error(`💡 Fix or unset ${CONFIG_PATH_ENV_VAR}, or pass --config <path>.`);
     process.exit(1);
   }
   return resolved;
@@ -695,10 +392,15 @@ async function runInit(configPath: string | undefined, force: boolean): Promise<
 }
 
 async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMANDS.RUN }>): Promise<void> {
-  const configPath = await resolveConfigOrExit(options.config);
+  const resolved = await resolveConfigOrExit(options.config);
+  const configPath = resolved.path;
   const displayPath = path.relative(process.cwd(), configPath) || configPath;
-  if (!options.quiet) {
-    console.log(`📄 Using config: ${displayPath}`);
+  if (options.json) {
+    // stdout is the JSON document, so the one line that names the config
+    // goes where a script will not parse it.
+    console.error(`📄 Using config: ${describeConfigPath(resolved)}`);
+  } else if (!options.quiet) {
+    console.log(`📄 Using config: ${describeConfigPath(resolved)}`);
   }
 
   let loaded: { configFile: ConfigFile; repositories: RepositoryConfig[] };
@@ -714,6 +416,23 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
     process.exit(1);
   }
 
+  // Same matching and the same answer as `list --filter`: a filter that selects
+  // nothing is a typo, and syncing zero repositories would exit 0 on it.
+  if (options.filter && loaded.repositories.length === 0) {
+    console.error(`❌ No repositories match filter: ${options.filter}`);
+    process.exit(1);
+  }
+
+  // A dry run is one-shot by nature and needs no terminal: it plans every
+  // selected repository, prints the plans and exits.
+  if (options.dryRun) {
+    process.exitCode = await runDryRun(loaded.configFile, loaded.repositories, {
+      json: options.json,
+      debug: options.debug,
+    });
+    return;
+  }
+
   // The dashboard reads keys in raw mode and draws on stdout. Without a
   // terminal (systemd, docker, CI, `< /dev/null`) Ink printed "Raw mode is not
   // supported" with a stack and the process exited 0 having synced nothing.
@@ -722,13 +441,6 @@ async function runSync(options: Extract<CliOptions, { command: typeof CLI_COMMAN
     console.error(
       "💡 For unattended runs use 'sync-worktrees --run-once' (or runOnce: true in the config) from cron, a systemd timer or CI.",
     );
-    process.exit(1);
-  }
-
-  // Same matching and the same answer as `list --filter`: a filter that selects
-  // nothing is a typo, and syncing zero repositories would exit 0 on it.
-  if (options.filter && loaded.repositories.length === 0) {
-    console.error(`❌ No repositories match filter: ${options.filter}`);
     process.exit(1);
   }
 
@@ -762,13 +474,22 @@ export async function main(): Promise<void> {
     case CLI_COMMANDS.INIT:
       return runInit(options.config, options.force);
     case CLI_COMMANDS.LIST: {
-      const configPath = await resolveConfigOrExit(options.config);
-      return runList(configPath, options.filter);
+      const resolved = await resolveConfigOrExit(options.config);
+      const code = await runList(resolved, { filter: options.filter, json: options.json });
+      if (code !== 0) process.exit(code);
+      return;
     }
     case CLI_COMMANDS.TRASH: {
-      const configPath = await resolveConfigOrExit(options.config);
-      return runTrash(configPath, options);
+      const resolved = await resolveConfigOrExit(options.config);
+      // Trash operations restore and delete, so a config picked up from a
+      // parent directory or the environment is named before anything happens.
+      // On stderr: stdout is the tab-separated or JSON listing scripts read.
+      if (resolved.source !== "flag") console.error(`📄 Using config: ${describeConfigPath(resolved)}`);
+      return runTrash(resolved.path, options);
     }
+    case CLI_COMMANDS.DOCTOR:
+      process.exitCode = await runDoctor(options);
+      return;
     case CLI_COMMANDS.RUN:
       return runSync(options);
     default: {

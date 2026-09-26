@@ -16,17 +16,25 @@ Sleep 300ms
 Enter
 Sleep 2200ms
 
-# 2. The TUI syncs on start: every remote branch becomes a worktree.
+# 2. The TUI syncs on start: every remote branch becomes a worktree, and the dashboard shows each repository.
 Type "sync-worktrees"
 Sleep 300ms
 Enter
 Sleep 2500ms
 
-# 3. `w` opens the worktree status view; Enter picks the first repository, Escape backs out one step at a time.
+# 3. `/` opens the switcher: every worktree of every repository, filtered as you type.
+Type "/"
+Sleep 600ms
+Type@120ms "fix"
+Sleep 2200ms
+Escape
+Sleep 300ms
+
+# 4. `w` opens the worktree status view; Enter picks the first repository, Escape backs out one step at a time.
 Type "w"
-Sleep 1s
+Sleep 800ms
 Enter
-Sleep 2800ms
+Sleep 2200ms
 Escape
 Sleep 200ms
 Escape
@@ -34,7 +42,7 @@ Sleep 300ms
 Type "q"
 Sleep 800ms
 
-# 4. One folder per branch.
+# 5. One folder per branch, named after it.
 Hide
 Type "clear"
 Enter
@@ -44,24 +52,31 @@ Sleep 300ms
 Enter
 Sleep 3s
 
-# 5. Upstream moves on: a teammate pushes feature/payments and deletes feature/login.
+# 6. Upstream moves on: a teammate pushes feature/payments and deletes feature/login.
 Hide
 Type "$DEMO/upstream-change.sh /tmp/demo && clear"
 Enter
 Sleep 1s
 Show
 
-Type `sync-worktrees --run-once | grep -E "✅ (Created|Moved)"`
+# 7. --dry-run shows what the next sync would do, without doing it.
+Type "sync-worktrees --dry-run --filter frontend"
 Sleep 300ms
 Enter
-Sleep 2500ms
-Type "ls frontend frontend/.trash"
+Sleep 3200ms
+
+# 8. The real sync: --quiet keeps it to one line, fit for cron.
+Hide
+Type "clear"
+Enter
+Show
+Type "sync-worktrees --run-once --quiet && ls frontend frontend/.trash"
 Sleep 300ms
 Enter
 Sleep 2500ms
 
-# 6. The new branch is already a checkout: switching is just `cd`.
-Type "cd frontend/feature-payments-* && git log --oneline -1"
+# 9. The new branch is already a checkout: switching is just `cd`.
+Type "cd frontend/feature-payments && git log --oneline -1"
 Sleep 300ms
 Enter
 Sleep 2500ms

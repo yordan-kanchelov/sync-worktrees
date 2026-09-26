@@ -356,6 +356,8 @@ describe("runMultipleRepositories", () => {
     expect(infoLines.filter((line) => line.includes("Processed"))).toHaveLength(1);
     // No leading blank line: it separated the summary from output that --quiet dropped.
     expect(infoLines.find((line) => line.includes("Processed"))).toMatch(/^📊 Processed 1 repo in /);
+    // Nor the blank line that separates each repository's header block.
+    expect(infoLines).not.toContain("");
   });
 
   it("prints the banner and builds loud repository loggers without --quiet", async () => {

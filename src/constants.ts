@@ -78,7 +78,7 @@ export const DEFAULT_CONFIG = {
   CLONE_TIMEOUT_MS: 900_000,
   LOCK_STALE_MS: 600_000,
   LOCK_UPDATE_MS: 30_000,
-  // Budget `sync-worktrees trash --wait` spends on a repository lock another
+  // Budget `sync-worktrees trash restore|purge --wait` spends on a repository lock another
   // process holds. Long enough to outlast an ordinary sync tick, short enough
   // that a scripted invocation that will never get the lock still terminates
   // and reports why — this is a bound, not "block until it frees up".
@@ -114,6 +114,8 @@ export const ERROR_MESSAGES = {
 export const ENV_CONSTANTS = {
   GIT_LFS_SKIP_SMUDGE: "GIT_LFS_SKIP_SMUDGE",
   GIT_ATTR_SOURCE: "GIT_ATTR_SOURCE",
+  /** "0" stops read-only commands (`git status`, `git diff`) from refreshing the index as a side effect. */
+  GIT_OPTIONAL_LOCKS: "GIT_OPTIONAL_LOCKS",
   /** Set by src/__tests__/setup.ts to the vitest worker's pid; see src/utils/unit-test-shortcut.ts. */
   UNIT_TEST_SHORTCUT: "SYNC_WORKTREES_UNIT_TEST",
   /** Escape hatch that moves the repo lock files out of `<parent of worktreeDir>/.sync-worktrees-locks`;

@@ -374,6 +374,9 @@ Status legend: `[ ]` open · `[x]` done · `[~]` needs product decision first.
   refuse to overwrite. (Full path-hash keying is out of scope unless the naming scheme
   changes.)
 - **Acceptance**: unit test for the mismatch guard.
+- **Follow-up (D1)**: with plain folder names the guard is no longer advisory — a refused
+  write during worktree creation now fails the add and rolls it back, and naming avoids a
+  name whose leftover record belongs to another branch.
 
 ### [x] F20. `mcp-registration` treats every exit-1 as "unregistered"
 
@@ -391,7 +394,7 @@ Status legend: `[ ]` open · `[x]` done · `[~]` needs product decision first.
 
 ## Needs product decision (do not implement without maintainer sign-off)
 
-### [~] D1. Hash suffix on every worktree directory name vs docs
+### [x] D1. Hash suffix on every worktree directory name vs docs
 
 - **Location**: `src/services/path-resolution.service.ts:11-18` (`sanitizeBranchName`),
   README / CLAUDE.md examples showing `worktrees/main/`, `feature-1/`
@@ -405,8 +408,28 @@ Status legend: `[ ]` open · `[x]` done · `[~]` needs product decision first.
     migration story for existing hashed dirs.
 - **Decision needed**: (a) or (b). Note F19's metadata-uniqueness guard becomes mandatory
   under (b).
+- **Resolution**: done, option (b). `PathResolutionService.plainBranchName` flattens `/` to
+  `-` (`feature/login` -> `feature-login`) for names made only of ASCII letters, digits,
+  `.`, `_`, `-`, `/` (at most 80 characters, not starting with `.`/`-`, not ending with `.`,
+  not a Windows device name); `sanitizeBranchName` keeps the hashed form. A new worktree
+  gets the plain name unless `branchDirectoryName` finds it ambiguous: another known branch
+  flattens to it case-insensitively (all such branches are hashed, so the choice does not
+  depend on order), a registered worktree of another branch has that basename (anywhere:
+  metadata is keyed by basename), it is a component of the default branch's path or a
+  reserved tool directory, `probeTakenNames` finds a non-checkout entry at the plain path
+  (left alone instead of trashed/quarantined) or a leftover metadata record for another
+  branch. Every creator names through that context: the sync planner (built by the runner
+  from origin's branches, all registrations and a per-candidate disk probe), and
+  `GitService.resolveNewWorktreePath` for MCP `create_worktree` and the TUI, which returns
+  the branch's existing registration first. Existing (hashed) worktrees are never renamed;
+  the registration stays the source of truth. `extractBranchFromWorktreePath` no longer
+  existed (removed as dead code, T78); the one path→branch inversion left,
+  `worktreeDirCandidate` in `src/mcp/context.ts`, accepts both the plain and the hashed
+  form. F19's guard is now mandatory at creation: a refused metadata write (record under
+  that name for another upstream) fails the add and rolls the worktree back instead of
+  being ignored.
 
-### [~] D2. `GitService` decomposition
+### [x] D2. `GitService` decomposition
 
 - **Location**: `src/services/git.service.ts` (1372 lines)
 - **Observation**: mixes clone/init orchestration, the worktree-add matrix with three
@@ -416,6 +439,23 @@ Status legend: `[ ]` open · `[x]` done · `[~]` needs product decision first.
   (add-matrix + rollback + metadata) and `LfsVerificationService`; keep `GitService` as the
   thin git/porcelain wrapper. Pure refactor, no behavior change, high test-churn — needs
   maintainer appetite before anyone starts.
+- **Resolution**: done (approved; `git.service.ts` had grown to ~2500 lines by then). GitService
+  is now a facade (~940 lines) over focused services that share its cached git clients, logger,
+  default branch and LFS setting through a `GitServiceContext` (`git-service.types.ts`, which also
+  holds the shared types GitService re-exports):
+  - `worktree-creation.service.ts` — the worktree-add matrix, the stale-registration retry and
+    no-tracking fallback, the one rollback helper, typed `UpstreamSetupError` /
+    `WorktreeMetadataError` handling, metadata creation, stale-directory trash/quarantine;
+  - `worktree-registry.service.ts` — `git worktree list` / lock lookup / `worktree remove`;
+  - `branch-ref.service.ts` — branch/ref probes, origin branch inventory, create/push, CAS
+    delete with config cleanup, bundles and the not-on-remote commit count;
+  - `bare-repo.service.ts` — bare clone with the pending marker, origin check, clone-time branch
+    copies, default-branch detection;
+  - `lfs-verification.service.ts` — post-checkout LFS pointer sampling.
+  Callers are unchanged (every public GitService method delegates). Tests moved next to the
+  code: `git.service.test.ts` was split into per-service files sharing
+  `__tests__/helpers/git-service-fixture.ts`, and the topic files were renamed after the service
+  they cover.
 
 ---
 
@@ -427,4 +467,4 @@ Status legend: `[ ]` open · `[x]` done · `[~]` needs product decision first.
 - **Batch 4 (config loader)**: F9 — one file, several validations.
 - **Batch 5 (safety subsystems, review carefully)**: F5, F7, F18, F19 — touch the
   removal/trash paths; require the most careful tests.
-- D1/D2 blocked on maintainer decision.
+- D1 done (option b); D2 done.

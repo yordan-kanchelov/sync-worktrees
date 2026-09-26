@@ -20,6 +20,10 @@ export interface WorktreeStatusViewProps {
   onClose: () => void;
   /** Rows the view may use; defaults to the terminal height. */
   availableRows?: number;
+  /** Open straight on this repository instead of asking which one (the switcher's `w`). */
+  initialRepoIndex?: number;
+  /** With `initialRepoIndex`: filter to this branch and expand its entry once loaded. */
+  initialBranch?: string;
 }
 
 type RepositoryDiskUsageState =
@@ -67,7 +71,7 @@ const worktreeDetailLines = (entry: WorktreeStatusEntry): DetailLine[] => {
       lines.push({ text: ` Modified submodules: ${details.modifiedSubmodules.join(", ")}`, color: "yellow" });
     }
   }
-  if (status.upstreamGone) lines.push({ text: " Remote branch has been deleted", color: "red" });
+  if (status.upstreamGone) lines.push({ text: " Upstream branch no longer exists", color: "red" });
   if (status.reasons.length > 0) lines.push({ text: ` Reasons: ${status.reasons.join(", ")}`, dim: true });
   return lines;
 };
@@ -195,17 +199,30 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   deleteDivergedDirectory,
   onClose,
   availableRows,
+  initialRepoIndex,
+  initialBranch,
 }) => {
   const layout = useModalLayout(70, availableRows);
-  const [step, setStep] = useState<ViewStep>(repositories.length > 1 ? "SELECT_PROJECT" : "VIEW_STATUS");
+  const startsOnRepo =
+    initialRepoIndex !== undefined && repositories.some((repo) => repo.index === initialRepoIndex)
+      ? initialRepoIndex
+      : repositories.length === 1
+        ? repositories[0].index
+        : -1;
+  const [step, setStep] = useState<ViewStep>(startsOnRepo >= 0 ? "VIEW_STATUS" : "SELECT_PROJECT");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
-  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? repositories[0].index : -1);
+  const selectedRepoIndexRef = useRef<number>(startsOnRepo);
+  // Consumed by the first load only; ESC back to the repository choice and a
+  // second pick behave as they always have.
+  const initialBranchRef = useRef<string | undefined>(
+    startsOnRepo >= 0 && startsOnRepo === initialRepoIndex ? initialBranch : undefined,
+  );
 
   const [entries, setEntries] = useState<WorktreeStatusEntry[]>([]);
   const [divergedEntries, setDivergedEntries] = useState<DivergedDirectoryInfo[]>([]);
   const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
-  const [entryFilter, setEntryFilter] = useState("");
+  const [entryFilter, setEntryFilter] = useState(initialBranchRef.current ?? "");
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   // What ends the "not loaded yet" state is a load that finished, not a
@@ -281,8 +298,18 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         ]);
         setEntries(statusEntries);
         setDivergedEntries(divergedDirs);
-        setSelectedEntryIndex(0);
-        setExpandedEntry(null);
+        const branch = initialBranchRef.current;
+        initialBranchRef.current = undefined;
+        // The filtered list puts worktrees first, so an index into the
+        // matching worktrees is also the entry's index in the combined list.
+        const target =
+          branch === undefined
+            ? -1
+            : statusEntries
+                .filter((entry) => entry.branch.toLowerCase().includes(branch.toLowerCase()))
+                .findIndex((entry) => entry.branch === branch);
+        setSelectedEntryIndex(Math.max(0, target));
+        setExpandedEntry(target >= 0 ? target : null);
         setConfirmDelete(null);
       } catch (err) {
         setError(`Failed to load worktree status: ${String(err)}`);

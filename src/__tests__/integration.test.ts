@@ -362,14 +362,14 @@ branch refs/heads/dirty-branch
             ...mockGit,
             stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
             branch: vi.fn<any>().mockResolvedValue({ current: "old-feature" }),
-            status: vi.fn<any>().mockResolvedValue(cleanStatus),
+            status: vi.fn<any>().mockResolvedValue({ ...cleanStatus, current: "old-feature", detached: false }),
           };
         } else if (pathStr && pathStr.includes("dirty-branch")) {
           return {
             ...mockGit,
             stashList: vi.fn<any>().mockResolvedValue({ total: 0 }),
             branch: vi.fn<any>().mockResolvedValue({ current: "dirty-branch" }),
-            status: vi.fn<any>().mockResolvedValue(dirtyStatus),
+            status: vi.fn<any>().mockResolvedValue({ ...dirtyStatus, current: "dirty-branch", detached: false }),
           };
         } else if (pathStr && pathStr.includes(".bare")) {
           // For bare repo (used by addWorktree)
@@ -381,6 +381,14 @@ branch refs/heads/dirty-branch
         return mockGit;
       });
 
+      // Nothing sits at feature-2's plain folder name yet, so the new worktree gets it.
+      (fs.lstat as Mock<any>).mockImplementation(async (target: unknown) => {
+        if (target === "/test/worktrees/feature-2") {
+          throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+        }
+        return { isDirectory: () => true, isSymbolicLink: () => false };
+      });
+
       const service = new WorktreeSyncService(config);
       await service.initialize();
       await service.sync();
@@ -388,7 +396,7 @@ branch refs/heads/dirty-branch
       // Filter out the worktree list calls
       const operationCalls = mockRawCalls.filter((args) => !(args[1] === "list" && args[2] === "--porcelain"));
 
-      // Should add feature-2 with tracking (path is hashed for collision resistance)
+      // Should add feature-2 with tracking, under its plain folder name
       expect(operationCalls).toContainEqual(
         expect.arrayContaining([
           "worktree",
@@ -396,7 +404,7 @@ branch refs/heads/dirty-branch
           "--track",
           "-b",
           "feature-2",
-          expect.stringMatching(/^\/test\/worktrees\/feature-2-[a-f0-9]{8}$/),
+          "/test/worktrees/feature-2",
           "origin/feature-2",
         ]),
       );

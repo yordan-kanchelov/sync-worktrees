@@ -1,5 +1,7 @@
 import { Logger } from "../services/logger.service";
 
+import { redactSecretsInText } from "./git-url";
+
 export interface AppSyncProgress {
   repo: string;
   phase: string;
@@ -18,7 +20,30 @@ export type LastSyncOutcome = { kind: "ok" } | { kind: "failed"; count: number }
 // bar shows the earliest next run across all of them.
 export type CronScheduleDisplay = string | readonly string[] | undefined;
 
+// One row of the home screen's repository table. The service sends the whole
+// table whenever a row changes; the App renders it and never asks git itself.
+export type RepositoryRunState = "idle" | "syncing" | "failed" | "skipped";
+
+export interface RepositoryDashboardRow {
+  name: string;
+  state: RepositoryRunState;
+  /** How the last sync of this repository went, in a few words; null until one has finished. */
+  lastResult: string | null;
+  /** When a sync of this repository last ran to an end (epoch ms). A skip leaves it where it was. */
+  lastSyncAt: number | null;
+  /** Worktrees the repository had after its last sync or status check; null until known. */
+  worktrees: number | null;
+  /**
+   * Worktrees with uncommitted changes and with unpushed commits, as of the
+   * last time the status view (`w`) checked this repository; null until then.
+   */
+  changes: { dirty: number; unpushed: number } | null;
+  /** The cron expression this repository runs on; absent for `runOnce` or no schedule. */
+  schedule?: string;
+}
+
 type AppEventMap = {
+  setRepositoryDashboard: readonly RepositoryDashboardRow[];
   updateLastSyncTime: void;
   setLastSyncOutcome: LastSyncOutcome;
   setStatus: "idle" | "syncing";
@@ -29,6 +54,27 @@ type AppEventMap = {
   updateRepositoryCount: number;
   updateCronSchedule: CronScheduleDisplay;
 };
+
+/**
+ * Every string an event carries is on its way to the screen — a log line, a
+ * progress row's repository label and message — so this is where the
+ * dashboard's copy is scrubbed, whatever built it. A caller that forgot to
+ * redact a credential-bearing URL still never gets it rendered. Returns the
+ * payload itself when nothing needed scrubbing.
+ */
+function scrubPayload<T>(payload: T): T {
+  if (typeof payload === "string") return redactSecretsInText(payload) as T;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  let scrubbed: Record<string, unknown> | null = null;
+  for (const [key, value] of Object.entries(payload)) {
+    if (typeof value !== "string") continue;
+    const redacted = redactSecretsInText(value);
+    if (redacted === value) continue;
+    scrubbed ??= { ...(payload as Record<string, unknown>) };
+    scrubbed[key] = redacted;
+  }
+  return (scrubbed ?? payload) as T;
+}
 
 type EventCallback<T> = T extends void ? () => void : (payload: T) => void;
 
@@ -62,9 +108,10 @@ export class AppEventEmitter {
   emit<K extends keyof AppEventMap>(event: K, ...args: AppEventMap[K] extends void ? [] : [AppEventMap[K]]): void {
     const callbacks = this.listeners.get(event);
     if (callbacks) {
+      const payload = args.length > 0 ? scrubPayload(args[0]) : undefined;
       for (const callback of callbacks) {
         try {
-          (callback as (payload?: AppEventMap[K]) => void)(args[0]);
+          (callback as (payload?: AppEventMap[K]) => void)(payload);
         } catch (error) {
           this.logger.error(`[app-events] Error in '${String(event)}' listener:`, error);
         }

@@ -5,6 +5,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { AppProps } from "../App";
 import App, { LOG_FLUSH_INTERVAL_MS } from "../App";
 import { AppEventEmitter } from "../../utils/app-events";
+import type { RepositoryDashboardRow } from "../../utils/app-events";
+import { resizeTerminal } from "./terminal-size";
 
 // Helper to wait for React state updates
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
@@ -1050,6 +1052,315 @@ describe("App", () => {
       }
 
       expect(vi.mocked(defaultProps.getRepositoryList).mock.calls.length).toBe(callsWhileOpen);
+    });
+  });
+
+  describe("repository dashboard", () => {
+    const table = (count: number, overrides: Partial<RepositoryDashboardRow> = {}): RepositoryDashboardRow[] =>
+      Array.from({ length: count }, (_, index) => ({
+        name: `repo-${String(index).padStart(2, "0")}`,
+        state: index === 1 ? "failed" : "idle",
+        lastResult: index === 1 ? "fatal: remote hung up" : "up to date",
+        lastSyncAt: Date.now() - 180_000,
+        worktrees: 3,
+        changes: { dirty: 1, unpushed: 0 },
+        schedule: "0 * * * *",
+        ...overrides,
+      }));
+
+    const fillLogs = (count: number): void => {
+      for (let i = 0; i < count; i++) {
+        appEvents.emit("addLog", { message: `Log line ${i}`, level: "info" });
+      }
+    };
+
+    const logLinesShown = (frame: string): number =>
+      frame.split("\n").filter((line) => /Log line \d+/.test(line)).length;
+
+    it("leads the home screen with a row per repository, above the log", async () => {
+      const { lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("setRepositoryDashboard", table(3));
+      fillLogs(40);
+      await waitForStateUpdate();
+
+      const frame = lastFrame()!;
+      expect(frame).toContain("REPOSITORY");
+      expect(frame).toContain("✗ failed");
+      expect(frame).toContain("fatal: remote hung up");
+      expect(frame.indexOf("repo-02")).toBeLessThan(frame.indexOf("📋 Logs"));
+      expect(frame.split("\n")).toHaveLength(24);
+    });
+
+    it("folds the log to one line with l, keeps its latest entry in view, and brings it back", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      appEvents.emit("setRepositoryDashboard", table(3));
+      fillLogs(40);
+      await waitForStateUpdate();
+
+      stdin.write("l");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("(40 entries, l to expand)");
+      expect(lastFrame()).toContain("Log line 39");
+      expect(logLinesShown(lastFrame()!)).toBe(1);
+      expect(lastFrame()!.split("\n")).toHaveLength(24);
+
+      stdin.write("l");
+      await waitForStateUpdate();
+      expect(logLinesShown(lastFrame()!)).toBeGreaterThan(1);
+      expect(lastFrame()!.split("\n")).toHaveLength(24);
+    });
+
+    it("grows the log with + at the table's expense and shrinks it with -, down to one line", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      appEvents.emit("setRepositoryDashboard", table(8));
+      fillLogs(60);
+      await waitForStateUpdate();
+      const before = logLinesShown(lastFrame()!);
+
+      stdin.write("+");
+      await waitForStateUpdate();
+      const grown = logLinesShown(lastFrame()!);
+      expect(grown).toBeGreaterThan(before);
+      expect(lastFrame()!.split("\n")).toHaveLength(24);
+
+      for (let i = 0; i < 4; i++) {
+        stdin.write("-");
+        await waitForStateUpdate();
+      }
+      expect(lastFrame()).toContain("l to expand");
+      expect(logLinesShown(lastFrame()!)).toBe(1);
+      expect(lastFrame()).toContain("repo-07");
+      expect(lastFrame()!.split("\n")).toHaveLength(24);
+    });
+
+    it("hands the whole screen to the log when + is held", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      appEvents.emit("setRepositoryDashboard", table(3));
+      fillLogs(60);
+      await waitForStateUpdate();
+
+      for (let i = 0; i < 8; i++) {
+        stdin.write("+");
+        await waitForStateUpdate();
+      }
+
+      expect(lastFrame()).not.toContain("REPOSITORY");
+      expect(lastFrame()!.split("\n")).toHaveLength(24);
+    });
+
+    it("gives the screen to a modal and comes back after it", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      appEvents.emit("setRepositoryDashboard", table(3));
+      await waitForStateUpdate();
+
+      stdin.write("?");
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("REPOSITORY");
+
+      stdin.write("?");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("REPOSITORY");
+    });
+
+    describe("narrow and short terminals", () => {
+      it.each([
+        [80, 24],
+        [60, 20],
+        [40, 14],
+        [30, 10],
+      ])("fits a %ix%i terminal exactly while syncing", async (columns, rows) => {
+        const { stdout, lastFrame } = render(<App {...defaultProps} maxProgressLines={1} />);
+        resizeTerminal(stdout, columns, rows);
+        await waitForStateUpdate();
+        appEvents.emit("setRepositoryDashboard", table(5, { state: "syncing" }));
+        appEvents.emit("setStatus", "syncing");
+        appEvents.emit("setSyncProgress", { repo: "repo-00", phase: "fetch", message: "fetch receiving: 40%" });
+        fillLogs(50);
+        await waitForStateUpdate();
+
+        const lines = lastFrame()!.split("\n");
+        expect(lines).toHaveLength(rows);
+        for (const line of lines) {
+          expect([...line].length).toBeLessThanOrEqual(columns);
+        }
+        // The status bar is always the last thing on screen.
+        expect(lines[lines.length - 1]).toMatch(/^└/);
+      });
+
+      it("keeps the status bar on screen under the force-clean modal with many repositories", async () => {
+        const previews = Array.from({ length: 20 }, (_, index) => ({
+          repoIndex: index,
+          repoName: `repo-${index}`,
+          preview: {
+            trashEntries: 1,
+            trashBytes: 10,
+            unknownTrashSizes: 0,
+            invalidTrashEntries: 0,
+            keepRefs: 0,
+            trashEntryIds: ["a"],
+            keepRefNames: [],
+          },
+        }));
+        const { stdout, stdin, lastFrame } = render(
+          <App {...defaultProps} getForceCleanPreview={vi.fn().mockResolvedValue(previews)} />,
+        );
+        resizeTerminal(stdout, 80, 24);
+        await waitForStateUpdate();
+
+        stdin.write("x");
+        await waitForStateUpdate();
+
+        const lines = lastFrame()!.split("\n");
+        expect(lastFrame()).toContain("Force Clean");
+        expect(lastFrame()).toContain("to scroll");
+        expect(lines.length).toBeLessThanOrEqual(24);
+        expect(lastFrame()).toContain("Disk Space");
+      });
+    });
+  });
+
+  describe("worktree switcher", () => {
+    const TAB = "\t";
+
+    it.each([
+      ["/", "/"],
+      ["Ctrl-P", "\u0010"],
+    ])("opens with %s and closes with Esc", async (_name, key) => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      stdin.write(key);
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Go to worktree");
+      expect(lastFrame()).toContain("test-repo › main");
+
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("Go to worktree");
+    });
+
+    it("takes the main screen's keys as filter text while it is open", async () => {
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} />);
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write("q");
+      await waitForStateUpdate();
+      stdin.write("?");
+      await waitForStateUpdate();
+
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("Keyboard Shortcuts");
+      expect(lastFrame()).toContain("> q?");
+    });
+
+    it("syncs just the selected repository and says so", async () => {
+      const onSyncRepository = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onSyncRepository={onSyncRepository} />);
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("s");
+      await waitForStateUpdate();
+
+      expect(onSyncRepository).toHaveBeenCalledWith(0);
+      expect(defaultProps.onManualSync).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("Go to worktree");
+      expect(lastFrame()).toContain("Syncing test-repo");
+    });
+
+    it("refuses a repository sync while a sync is running", async () => {
+      const onSyncRepository = vi.fn();
+      const { stdin, lastFrame } = render(<App {...defaultProps} onSyncRepository={onSyncRepository} />);
+      await waitForStateUpdate();
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("s");
+      await waitForStateUpdate();
+
+      expect(onSyncRepository).not.toHaveBeenCalled();
+      expect(lastFrame()).toContain("A sync is in progress");
+      expect(lastFrame()).toContain("Go to worktree");
+    });
+
+    it("logs a repository sync that fails and returns to idle", async () => {
+      const onSyncRepository = vi.fn().mockRejectedValue(new Error("Invalid repository index: 0"));
+      const { stdin, lastFrame } = render(<App {...defaultProps} onSyncRepository={onSyncRepository} />);
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("s");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Sync failed: Invalid repository index: 0");
+      expect(lastFrame()).toContain("Idle");
+    });
+
+    it("confirms a copied path in the status bar", async () => {
+      const copyToClipboard = vi.fn().mockResolvedValue({ success: true });
+      const { stdin, lastFrame } = render(<App {...defaultProps} copyToClipboard={copyToClipboard} />);
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("y");
+      await waitForStateUpdate();
+
+      expect(copyToClipboard).toHaveBeenCalledWith("/worktrees/main");
+      expect(lastFrame()).toContain("Copied /worktrees/main");
+    });
+
+    it("hands over to the status view on the selected repository, skipping the repository choice", async () => {
+      const getRepositoryList = vi.fn().mockReturnValue([
+        { index: 0, name: "api", repoUrl: "" },
+        { index: 1, name: "web", repoUrl: "" },
+      ]);
+      const getWorktreesForRepo = vi.fn((index: number) =>
+        Promise.resolve(index === 1 ? [{ path: "/w/web/feat", branch: "feat" }] : []),
+      );
+      const getWorktreeStatusForRepo = vi.fn().mockResolvedValue([]);
+      const { stdin, lastFrame } = render(
+        <App
+          {...defaultProps}
+          getRepositoryList={getRepositoryList}
+          getWorktreesForRepo={getWorktreesForRepo}
+          getWorktreeStatusForRepo={getWorktreeStatusForRepo}
+        />,
+      );
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("w");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Worktree Status");
+      expect(lastFrame()).not.toContain("Select repository");
+      expect(getWorktreeStatusForRepo).toHaveBeenCalledWith(1);
     });
   });
 });
