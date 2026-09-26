@@ -243,8 +243,10 @@ Onboarding, step by step:
 
 ## Interactive TUI
 
-`sync-worktrees` with no arguments opens an Ink-based terminal UI: live logs, a manual sync trigger, wizards for the
-common operations, and a status view across every repository.
+`sync-worktrees` with no arguments opens an Ink-based terminal UI. Its home screen is a table with one row per
+repository (state, last result, how long ago it synced, worktrees, dirty/unpushed counts, next run) above the live log,
+which `l` folds to one line and `+` / `-` resize. It also has a manual sync trigger, wizards for the common operations,
+and a status view across every repository.
 
 | Key       | Action                                                                                                          |
 | --------- | --------------------------------------------------------------------------------------------------------------- |

@@ -1,10 +1,10 @@
 # Interactive TUI
 
-Running `sync-worktrees` with no arguments opens the terminal UI; this page lists every key, the three wizards, the
-status flags, and how terminal and editor launch is configured. The [README](../README.md#interactive-tui) has the
+Running `sync-worktrees` with no arguments opens the terminal UI; this page covers the home screen's repository table,
+every key, the three wizards, the status flags, and how terminal and editor launch is configured. The [README](../README.md#interactive-tui) has the
 eight keys you will use most.
 
-The UI has live log streaming, manual sync triggers, and wizards for the common operations. It syncs once on startup
+The UI has a per-repository table, live log streaming, manual sync triggers, and wizards for the common operations. It syncs once on startup
 (see `defaults.syncOnStart` in the [configuration reference](./configuration.md#whole-file-settings)) and then on the
 cron schedule; `s` triggers the same cycle by hand. Cycles do not pile up on one repository: a tick that finds a
 repository already syncing skips that repository and says so in the log. While the status line reads `Syncing...`, `s`,
@@ -13,6 +13,34 @@ is not replayed — the next tick, or an `s`, runs the cycle. There is no headle
 UI is what runs (when stdin or stdout is not a terminal it exits 1 and says to use `--run-once`), so leave it open in a
 `tmux` or `screen` window if you want it to keep going after you close the terminal (see
 [Running it unattended](../README.md#running-it-unattended)).
+
+## Home screen
+
+The screen opens on a table with one row per repository, the log under it and the status bar at the bottom.
+
+| Column      | Shows                                                                                                                         |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| STATE       | `● idle`, `⟳ syncing`, `✗ failed` (the sync threw, a sync action failed, or the repository lock could not be taken) or `⚠ skipped` (another sync or process held the repository) |
+| REPOSITORY  | The repository's `name` (or `repo-N`)                                                                                         |
+| LAST RESULT | What the last sync did (`2 created, 1 removed`, `up to date`), why it failed (first line of the error) or why it was skipped  |
+| SYNCED      | How long ago the last sync ran to an end (`just now`, `3m ago`, `5h ago`); it keeps counting while the screen is open. A skip leaves it alone |
+| WT          | Worktrees the repository has, as of its last sync or status check                                                             |
+| CHANGES     | `M2 ↑1`: worktrees with uncommitted changes and with unpushed commits, `✓` for none, `–` until known                          |
+| NEXT        | Time until the repository's next scheduled run; `–` for `runOnce` or no schedule                                              |
+
+Nothing in the table runs git while it is drawn. The worktree count is read once per repository after each sync, and
+the CHANGES column is the result of the last status check of that repository in the worktree status view (`w`), so it
+stays `–` until you have opened that view for it and is as fresh as that check.
+
+The table takes the rows it needs first, but leaves the log at least a few lines. `l` folds the log to a single line
+(its entry count and the latest entry, in red or yellow for an error or warning) and gives the table the room; `l`
+again brings it back. `+` grows the log and `-` shrinks it, three rows at a time: holding `+` hands the whole screen to
+the log, and `-` past the smallest panel folds it. When there are more repositories than rows, the last row counts the
+rest and says how many of them failed or are syncing.
+
+In a narrow terminal the table drops columns rather than wrapping, in this order: NEXT, WT, CHANGES, SYNCED, then LAST
+RESULT; STATE and REPOSITORY always stay. In a short one the log folds to one line on its own, and below that the table
+goes. The status bar's key legend shortens to the keys alone (`s c o w x r ?help q`) when the full one does not fit.
 
 The status bar shows:
 
@@ -44,6 +72,8 @@ The status bar shows:
 | wheel       | Scroll the log (hold `Shift` to select text)   |
 | `gg`        | Jump to top of log                             |
 | `G`         | Jump to bottom (re-enables auto-scroll)        |
+| `l`         | Fold the log to one line / bring it back       |
+| `+` / `-`   | Grow / shrink the log (the table gets the rest) |
 
 Inside the wizards and the status view, `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move through a list and any other printable key
 types into its filter. Keys that act on the selection are ones a filter cannot take: `Enter`, `Tab`, and `Ctrl-D` to
@@ -51,7 +81,9 @@ delete a `.diverged/` entry.
 
 The modals size themselves to the terminal: they are never wider than the window, their lists show as many rows as the
 height leaves room for, and the help screen drops its spacing and then scrolls (`↑`/`↓`, `j`/`k`, `Ctrl-P`/`Ctrl-N`) when
-the window is too short for all of it.
+the window is too short for all of it. The force-clean modal (`x`) shortens its explanation first and then scrolls its
+per-repository list with `↑`/`↓` or `Ctrl-P`/`Ctrl-N` (not `j`/`k`, which could be part of the word you type to
+confirm).
 
 `Esc` backs out rather than quits: it closes the help screen, cancels a wizard or steps one back to the previous
 question, and does nothing on the main screen. `q` is the only key that quits. With nothing running it quits straight

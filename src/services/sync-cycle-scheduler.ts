@@ -1,6 +1,7 @@
 import * as cron from "node-cron";
 import type pLimit from "p-limit";
 import type { WorktreeSyncService } from "./worktree-sync.service";
+import type { RepositoryDashboard } from "./repository-dashboard";
 import type { RepositoryConfig } from "../types";
 import type { AppEventEmitter, LastSyncOutcome } from "../utils/app-events";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
@@ -37,6 +38,8 @@ export interface SyncCycleHost {
   setLastSyncOutcome(outcome: LastSyncOutcome): void;
   updateLastSyncTime(): void;
   refreshDiskSpace(): Promise<void>;
+  /** Told as each repository's sync starts and settles; feeds the home screen's table. */
+  readonly dashboard?: Pick<RepositoryDashboard, "markSyncing" | "recordSettlement">;
 }
 
 /**
@@ -61,12 +64,17 @@ export class SyncCycleScheduler {
     public defaultSchedule?: string,
   ) {}
 
+  /** The schedule a cron job runs this repository on, or undefined when none does. */
+  public scheduleFor(service: WorktreeSyncService): string | undefined {
+    if (service.config.runOnce) return undefined;
+    return service.config.cronSchedule || this.defaultSchedule || undefined;
+  }
+
   private groupBySchedule(): Map<string, WorktreeSyncService[]> {
     const scheduleGroups = new Map<string, WorktreeSyncService[]>();
 
     for (const service of this.host.getServices()) {
-      if (service.config.runOnce) continue;
-      const schedule = service.config.cronSchedule || this.defaultSchedule;
+      const schedule = this.scheduleFor(service);
       if (!schedule) continue;
 
       if (!scheduleGroups.has(schedule)) {
@@ -310,11 +318,13 @@ export class SyncCycleScheduler {
   }
 
   public async runSyncServices(services: readonly WorktreeSyncService[]): Promise<SyncServicesResult> {
+    const dashboard = this.host.dashboard;
     const syncResults = await Promise.allSettled(
       services.map((service) => {
         const repoName = this.repoLabel(service);
-        return this.host
+        const settled = this.host
           .limit(async () => {
+            dashboard?.markSyncing(service);
             service.clearRecordedSkips();
             // A sync that fail-fasted never owned this repository, so it has no
             // progress row of its own to close: the row on screen belongs to
@@ -346,6 +356,16 @@ export class SyncCycleScheduler {
           .catch((error) => {
             throw Object.assign(error instanceof Error ? error : new Error(String(error)), { repoName });
           });
+        // Each row settles as its own repository does, not when the slowest
+        // repository of the cycle does. A branch of its own: the rejection is
+        // still the allSettled below's to count.
+        if (dashboard) {
+          void settled.then(
+            ({ result }) => dashboard.recordSettlement(service, { status: "fulfilled", result }),
+            (error: unknown) => dashboard.recordSettlement(service, { status: "rejected", error }),
+          );
+        }
+        return settled;
       }),
     );
 

@@ -83,6 +83,8 @@ export interface RepositoryOperationsHost {
   readonly hookExecutionService: HookExecutionService;
   /** Recompute the header's disk-space total. */
   refreshDiskSpace(): Promise<void>;
+  /** A status check of every worktree of a repository finished. */
+  onWorktreeStatus?(repoIndex: number, entries: readonly WorktreeStatusEntry[]): void;
 }
 
 /**
@@ -403,7 +405,7 @@ export class RepositoryOperations {
     //
     // One branch/remote-ref scan for the whole refresh, not one per worktree.
     const refScans = new RefScanScope();
-    return Promise.all(
+    const entries = await Promise.all(
       worktrees.map((wt) =>
         limit(async (): Promise<WorktreeStatusEntry> => {
           try {
@@ -421,6 +423,13 @@ export class RepositoryOperations {
         }),
       ),
     );
+    // The home screen's dirty/unpushed column is this check, remembered -- not
+    // a probe of its own. Only while the index still names this repository: a
+    // reload during the check hands the index to another one.
+    if (this.host.getServices()[repoIndex] === service) {
+      this.host.onWorktreeStatus?.(repoIndex, entries);
+    }
+    return entries;
   }
 
   private async getWorktreesFromService(

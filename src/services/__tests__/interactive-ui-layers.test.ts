@@ -94,6 +94,30 @@ describe("RepositoryOperations", () => {
     ]);
   });
 
+  // The home screen's dirty/unpushed column is this check remembered; it must
+  // not be credited to whichever repository a reload moved onto the index.
+  it("hands a finished status check to the host, unless a reload moved the index", async () => {
+    const status = { isClean: false, hasUnpushedCommits: true };
+    const probed = (name: string) =>
+      makeSyncService(name, {
+        getWorktrees: () => Promise.resolve([{ path: `/tmp/${name}/main`, branch: "main" }]),
+        getGitService: () => ({ getFullWorktreeStatus: () => Promise.resolve(status) }),
+      }).service;
+    const alpha = probed("alpha");
+    const { operations, host, swap } = makeOperations([alpha]);
+    const onWorktreeStatus = vi.fn();
+    host.onWorktreeStatus = onWorktreeStatus;
+
+    const entries = await operations.getWorktreeStatusForRepo(0);
+    expect(onWorktreeStatus).toHaveBeenCalledWith(0, entries);
+
+    onWorktreeStatus.mockClear();
+    const pending = operations.getWorktreeStatusForRepo(0);
+    swap([probed("beta")]);
+    await pending;
+    expect(onWorktreeStatus).not.toHaveBeenCalled();
+  });
+
   it("rejects an index outside the current generation", async () => {
     const { operations } = makeOperations([makeSyncService("alpha").service]);
 

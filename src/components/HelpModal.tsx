@@ -46,6 +46,7 @@ const SECTIONS: HelpSection[] = [
       // binding it to an exit as well would make one Esc too many, or a key
       // repeat, tear down the daemon and the hooks it still has running.
       { keys: ["q"], description: "Gracefully quit; asks if busy" },
+      { keys: ["l", "+", "-"], description: "Collapse / grow / shrink the log under the table" },
     ],
   },
   {

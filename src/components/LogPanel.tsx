@@ -166,11 +166,15 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
   // App reserved for it.
   return (
     <Box borderStyle="single" flexDirection="column" flexGrow={1} height={height} overflow="hidden" paddingX={1}>
-      <Box justifyContent="space-between">
-        <Text bold>📋 Logs {logs.length > 0 && <Text dimColor>({logs.length} entries)</Text>}</Text>
+      {/* One row at any width: the heading truncates rather than wraps into the lines below it. */}
+      <Box justifyContent="space-between" gap={1} height={1} flexShrink={0}>
+        <Text bold wrap="truncate-end">
+          📋 Logs {logs.length > 0 && <Text dimColor>({logs.length} entries)</Text>}
+        </Text>
         {isActive && (
-          <Text dimColor>
-            {hasMoreAbove || hasMoreBelow ? "↑/↓ scroll" : ""} {autoScroll ? "(auto)" : ""}
+          <Text dimColor wrap="truncate-end">
+            {hasMoreAbove || hasMoreBelow ? "↑/↓ scroll " : ""}
+            {autoScroll ? "(auto) " : ""}l hide
           </Text>
         )}
       </Box>
@@ -199,6 +203,29 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
     </Box>
   );
 };
+
+/**
+ * The log folded to one line (`l`): its count and the latest entry, so an
+ * error still shows up while the repository table has the screen.
+ */
+export const CollapsedLogLine: React.FC<{ logs: LogEntry[] }> = React.memo(({ logs }) => {
+  const latest = logs[logs.length - 1];
+  const color = latest?.level === "error" ? "red" : latest?.level === "warn" ? "yellow" : undefined;
+  return (
+    <Box height={1} flexShrink={0} paddingX={1}>
+      <Text wrap="truncate-end">
+        <Text bold>📋 Logs</Text> <Text dimColor>({logs.length} entries, l to expand)</Text>
+        {latest && (
+          <>
+            {" "}
+            <Text color={color}>{latest.message}</Text>
+          </>
+        )}
+      </Text>
+    </Box>
+  );
+});
+CollapsedLogLine.displayName = "CollapsedLogLine";
 
 // Memoised: status and progress events re-render the App without touching the
 // log. The comparator is load-bearing. A bare `React.memo` of a function
