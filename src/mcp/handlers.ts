@@ -4,7 +4,6 @@ import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG } from "../constants";
 import { SyncWorktreesError } from "../errors";
-import { PathResolutionService } from "../services/path-resolution.service";
 import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { RefScanScope, WorktreeStatusService } from "../services/worktree-status.service";
 import { filterBranchesByName } from "../utils/branch-filter";
@@ -53,7 +52,6 @@ type ListedWorktree = {
 };
 type RepoWorktreeListing = { worktrees: ListedWorktree[]; error?: string };
 
-const pathResolution = new PathResolutionService();
 const CLONE_MODE_WORKTREE_MUTATION_REASON =
   "clone-mode repositories have a single checkout; use sync for clone-mode updates";
 
@@ -569,8 +567,7 @@ export async function handleCreateWorktree(
       throw new SyncWorktreesError(`${exclusion} Adjust the config or pass force: true.`, "BRANCH_FILTERED");
     }
 
-    const worktreeDir = service.config.worktreeDir;
-    const worktreePath = pathResolution.getBranchWorktreePath(worktreeDir, branchName);
+    const worktreePath = await git.resolveNewWorktreePath(branchName);
     const existing = await git.getWorktrees();
     const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
     if (collision) {

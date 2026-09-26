@@ -57,6 +57,8 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         { branch: "feature", lastActivity: new Date() },
         { branch: "develop", lastActivity: new Date() },
       ]),
+      getBareRepoPath: vi.fn().mockReturnValue("/test/.bare/repo.git"),
+      readWorktreeMetadataOwner: vi.fn().mockResolvedValue(null),
       getWorktrees: vi.fn().mockResolvedValue([
         { path: "/test/worktrees/main", branch: "main", head: "main-head" },
         { path: "/test/worktrees/feature", branch: "feature", head: "feature-head" },

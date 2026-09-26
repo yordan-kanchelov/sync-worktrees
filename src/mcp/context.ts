@@ -1179,8 +1179,11 @@ const pathResolution = new PathResolutionService();
 // path is not one this tool would have produced.
 //
 // Two shapes exist and they are not alike. A branch worktree sits at
-// getBranchWorktreePath(worktreeDir, branch): one component, the branch name
-// flattened and suffixed with a hash of it. The default-branch worktree is the
+// `<worktreeDir>/<name>`: one component, either the branch name flattened
+// (`feature/x` -> `feature-x`) or, for worktrees created before plain names and
+// for names that were ambiguous, that flattening suffixed with a hash of the
+// branch name. Which one a worktree got depended on its siblings at creation
+// time, so both are accepted. The default-branch worktree is the
 // exception -- GitService anchors it at the plain join(worktreeDir, branch), so
 // a nested name such as `release/2024` contributes two components, which is
 // exactly what made dirname() the wrong answer here. Both shapes invert, so a
@@ -1193,9 +1196,13 @@ const pathResolution = new PathResolutionService();
 // rather than relying on it to abstain.
 function worktreeDirCandidate(worktree: DiscoveredWorktree): string | null {
   const resolved = path.resolve(worktree.path);
-  const hashedParent = path.dirname(resolved);
-  if (pathsEqual(pathResolution.getBranchWorktreePath(hashedParent, worktree.branch), resolved)) {
-    return hashedParent;
+  const flatParent = path.dirname(resolved);
+  const flatNames = [
+    pathResolution.sanitizeBranchName(worktree.branch),
+    pathResolution.plainBranchName(worktree.branch),
+  ];
+  if (flatNames.some((name) => name !== null && pathsEqual(path.join(flatParent, name), resolved))) {
+    return flatParent;
   }
   const segments = worktree.branch.split("/");
   let anchorParent = resolved;

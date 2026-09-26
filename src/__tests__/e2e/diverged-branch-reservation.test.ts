@@ -75,7 +75,7 @@ describe("Diverged branch reservation E2E test", () => {
   it("reserves a diverged branch only until its replacement is recorded", async () => {
     run();
 
-    const featureDir = (await fs.readdir(worktreeDir)).find((d) => d.startsWith("feature-1-"));
+    const featureDir = (await fs.readdir(worktreeDir)).find((d) => d === "feature-1");
     expect(featureDir).toBeDefined();
     const featurePath = path.join(worktreeDir, featureDir!);
 

@@ -1931,6 +1931,7 @@ describe("InteractiveUIService", () => {
           reasons: [],
         }),
         addWorktree: vi.fn().mockResolvedValue(undefined),
+        resolveNewWorktreePath: vi.fn().mockResolvedValue("/test/worktrees/feature-new"),
         fetchAll: vi.fn().mockResolvedValue(undefined),
       };
 
@@ -2575,10 +2576,9 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
         await service.operations.createWorktreeForBranch(0, "feature/new");
 
-        expect(mockGitService.addWorktree).toHaveBeenCalledWith(
-          "feature/new",
-          expect.stringMatching(/^\/test\/worktrees\/feature-new-[a-f0-9]{8}$/),
-        );
+        // The directory is named inside the queued operation, by GitService.
+        expect(mockGitService.resolveNewWorktreePath).toHaveBeenCalledWith("feature/new");
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/new", "/test/worktrees/feature-new");
 
         void service.destroy();
       });

@@ -54,7 +54,7 @@ claude mcp add --scope user sync-worktrees -- npx -y -p sync-worktrees sync-work
 
 `--scope user` makes the server available in every project on your machine. Claude Code's default scope is `local`,
 which loads a server only in the project (directory) you added it from — and every worktree is a different directory, so
-a locally scoped server added in `feature-a-0a5491ed/` is absent when you launch Claude Code in `feature-b-0a88c085/`.
+a locally scoped server added in `feature-a/` is absent when you launch Claude Code in `feature-b/`.
 
 </details>
 
@@ -282,8 +282,9 @@ anything that is not an `Error`; read `message`.
 The workflow the server is built for: one branch per agent, each in its own directory, several sessions at once.
 
 1. **One branch per agent.** `create_worktree {branchName: "feat/a", baseBranch: "main"}` creates the branch, checks it
-   out at `<worktreeDir>/feat-a-d54ad782/` (the branch name flattened plus eight hex characters of its SHA-256 — take
-   `worktreePath` from the response rather than building it) and pushes it straight away (unless `push: false`), so the
+   out at `<worktreeDir>/feat-a/` (the branch name with `/` flattened to `-`, plus a short hash only when that name
+   would be ambiguous — see [worktree folder names](./configuration.md#worktree-folder-names); take `worktreePath` from
+   the response rather than building it) and pushes it straight away (unless `push: false`), so the
    next sync keeps it rather than pruning a local-only branch.
 2. **Start the agent there.** `cd` to the `worktreePath` in the response, or use the TUI's `o` → Terminal, which opens a
    `tmux` session in the worktree. Register the server at user scope (Claude Code: `--scope user`, see above) so it
