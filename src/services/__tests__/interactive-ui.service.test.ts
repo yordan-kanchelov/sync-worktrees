@@ -570,6 +570,25 @@ describe("InteractiveUIService", () => {
       void service.destroy();
     });
 
+    it("syncs only the repository the switcher picked", async () => {
+      const mockService2 = {
+        ...mockSyncService,
+        sync: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+      };
+      const service = new InteractiveUIService([mockSyncService, mockService2 as any]);
+      const onSyncRepository = (mockRender.mock.calls[0][0].props as any).onSyncRepository;
+
+      await onSyncRepository(1);
+
+      expect(mockService2.sync).toHaveBeenCalledTimes(1);
+      expect(mockSyncService.sync).not.toHaveBeenCalled();
+      await expect(onSyncRepository(5)).rejects.toThrow("Invalid repository index: 5");
+
+      void service.destroy();
+    });
+
     it("should handle sync errors gracefully", async () => {
       mockSyncService.sync.mockRejectedValue(new Error("Sync failed"));
       const service = new InteractiveUIService([mockSyncService]);

@@ -1052,4 +1052,142 @@ describe("App", () => {
       expect(vi.mocked(defaultProps.getRepositoryList).mock.calls.length).toBe(callsWhileOpen);
     });
   });
+
+  describe("worktree switcher", () => {
+    const TAB = "\t";
+
+    it.each([
+      ["/", "/"],
+      ["Ctrl-P", "\u0010"],
+    ])("opens with %s and closes with Esc", async (_name, key) => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+
+      stdin.write(key);
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Go to worktree");
+      expect(lastFrame()).toContain("test-repo › main");
+
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toContain("Go to worktree");
+    });
+
+    it("takes the main screen's keys as filter text while it is open", async () => {
+      const onQuit = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} />);
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write("q");
+      await waitForStateUpdate();
+      stdin.write("?");
+      await waitForStateUpdate();
+
+      expect(onQuit).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("Keyboard Shortcuts");
+      expect(lastFrame()).toContain("> q?");
+    });
+
+    it("syncs just the selected repository and says so", async () => {
+      const onSyncRepository = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(<App {...defaultProps} onSyncRepository={onSyncRepository} />);
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("s");
+      await waitForStateUpdate();
+
+      expect(onSyncRepository).toHaveBeenCalledWith(0);
+      expect(defaultProps.onManualSync).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("Go to worktree");
+      expect(lastFrame()).toContain("Syncing test-repo");
+    });
+
+    it("refuses a repository sync while a sync is running", async () => {
+      const onSyncRepository = vi.fn();
+      const { stdin, lastFrame } = render(<App {...defaultProps} onSyncRepository={onSyncRepository} />);
+      await waitForStateUpdate();
+      appEvents.emit("setStatus", "syncing");
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("s");
+      await waitForStateUpdate();
+
+      expect(onSyncRepository).not.toHaveBeenCalled();
+      expect(lastFrame()).toContain("A sync is in progress");
+      expect(lastFrame()).toContain("Go to worktree");
+    });
+
+    it("logs a repository sync that fails and returns to idle", async () => {
+      const onSyncRepository = vi.fn().mockRejectedValue(new Error("Invalid repository index: 0"));
+      const { stdin, lastFrame } = render(<App {...defaultProps} onSyncRepository={onSyncRepository} />);
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("s");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Sync failed: Invalid repository index: 0");
+      expect(lastFrame()).toContain("Idle");
+    });
+
+    it("confirms a copied path in the status bar", async () => {
+      const copyToClipboard = vi.fn().mockResolvedValue({ success: true });
+      const { stdin, lastFrame } = render(<App {...defaultProps} copyToClipboard={copyToClipboard} />);
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("y");
+      await waitForStateUpdate();
+
+      expect(copyToClipboard).toHaveBeenCalledWith("/worktrees/main");
+      expect(lastFrame()).toContain("Copied /worktrees/main");
+    });
+
+    it("hands over to the status view on the selected repository, skipping the repository choice", async () => {
+      const getRepositoryList = vi.fn().mockReturnValue([
+        { index: 0, name: "api", repoUrl: "" },
+        { index: 1, name: "web", repoUrl: "" },
+      ]);
+      const getWorktreesForRepo = vi.fn((index: number) =>
+        Promise.resolve(index === 1 ? [{ path: "/w/web/feat", branch: "feat" }] : []),
+      );
+      const getWorktreeStatusForRepo = vi.fn().mockResolvedValue([]);
+      const { stdin, lastFrame } = render(
+        <App
+          {...defaultProps}
+          getRepositoryList={getRepositoryList}
+          getWorktreesForRepo={getWorktreesForRepo}
+          getWorktreeStatusForRepo={getWorktreeStatusForRepo}
+        />,
+      );
+      await waitForStateUpdate();
+
+      stdin.write("/");
+      await waitForStateUpdate();
+      stdin.write(TAB);
+      await waitForStateUpdate();
+      stdin.write("w");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Worktree Status");
+      expect(lastFrame()).not.toContain("Select repository");
+      expect(getWorktreeStatusForRepo).toHaveBeenCalledWith(1);
+    });
+  });
 });
