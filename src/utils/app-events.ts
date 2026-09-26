@@ -1,5 +1,7 @@
 import { Logger } from "../services/logger.service";
 
+import { redactSecretsInText } from "./git-url";
+
 export interface AppSyncProgress {
   repo: string;
   phase: string;
@@ -29,6 +31,27 @@ type AppEventMap = {
   updateRepositoryCount: number;
   updateCronSchedule: CronScheduleDisplay;
 };
+
+/**
+ * Every string an event carries is on its way to the screen — a log line, a
+ * progress row's repository label and message — so this is where the
+ * dashboard's copy is scrubbed, whatever built it. A caller that forgot to
+ * redact a credential-bearing URL still never gets it rendered. Returns the
+ * payload itself when nothing needed scrubbing.
+ */
+function scrubPayload<T>(payload: T): T {
+  if (typeof payload === "string") return redactSecretsInText(payload) as T;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  let scrubbed: Record<string, unknown> | null = null;
+  for (const [key, value] of Object.entries(payload)) {
+    if (typeof value !== "string") continue;
+    const redacted = redactSecretsInText(value);
+    if (redacted === value) continue;
+    scrubbed ??= { ...(payload as Record<string, unknown>) };
+    scrubbed[key] = redacted;
+  }
+  return (scrubbed ?? payload) as T;
+}
 
 type EventCallback<T> = T extends void ? () => void : (payload: T) => void;
 
@@ -62,9 +85,10 @@ export class AppEventEmitter {
   emit<K extends keyof AppEventMap>(event: K, ...args: AppEventMap[K] extends void ? [] : [AppEventMap[K]]): void {
     const callbacks = this.listeners.get(event);
     if (callbacks) {
+      const payload = args.length > 0 ? scrubPayload(args[0]) : undefined;
       for (const callback of callbacks) {
         try {
-          (callback as (payload?: AppEventMap[K]) => void)(args[0]);
+          (callback as (payload?: AppEventMap[K]) => void)(payload);
         } catch (error) {
           this.logger.error(`[app-events] Error in '${String(event)}' listener:`, error);
         }

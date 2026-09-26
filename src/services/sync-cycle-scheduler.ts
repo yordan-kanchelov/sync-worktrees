@@ -1,10 +1,10 @@
 import * as cron from "node-cron";
 import type pLimit from "p-limit";
 import type { WorktreeSyncService } from "./worktree-sync.service";
-import type { RepositoryConfig } from "../types";
 import type { AppEventEmitter, LastSyncOutcome } from "../utils/app-events";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/errors";
+import { repoDisplayLabel } from "../utils/git-url";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { formatDuration } from "../utils/timing";
 
@@ -176,7 +176,7 @@ export class SyncCycleScheduler {
   }
 
   private repoLabel(service: WorktreeSyncService): string {
-    return (service.config as RepositoryConfig).name || service.config.repoUrl;
+    return repoDisplayLabel(service.config);
   }
 
   // A cycle takes the repositories no other cycle holds, and leaves the rest to

@@ -43,7 +43,9 @@ Splitting a config across several files is supported, including on reload: reloa
 so the value a config file exports has to be plain data — strings, numbers, booleans, arrays, objects, and also `Date`,
 `RegExp`, `Map`, `Set` and `BigInt`. A function cannot cross that boundary, and neither can a symbol, a `WeakMap` or a
 `Proxy`; no setting takes any of them (`hooks.onBranchCreated` and the branch filters are arrays of strings), and a
-reload that finds one fails with a message naming the value, leaving the previously loaded config running.
+reload that finds one fails with a message naming the value, leaving the previously loaded config running. The same
+holds for a config that does not finish evaluating within 30 seconds — a top-level `await` that never settles, a loop
+that never ends: the reload is stopped and fails with a message saying so.
 
 Every load validates the whole file and reports every problem it finds at once, one line each, naming the setting by its
 path in the file and the repository it belongs to:
@@ -149,10 +151,15 @@ must come from a source that needs no prompt:
   prompts as it normally would and a run with no terminal waits instead.
 - **SSH** — a key loaded into `ssh-agent` (or one without a passphrase) and the host already present in
   `~/.ssh/known_hosts`. A key the remote rejects or a host key that does not match fails at once with a hint and is not
-  retried. Known limitation: `GIT_TERMINAL_PROMPT=0` covers git's own prompts only; ssh reads a key passphrase or an
-  unknown-host confirmation from the terminal itself, so a passphrase-protected key without an agent or a host missing
-  from `known_hosts` still blocks until the fetch inactivity timeout. sync-worktrees does not set `GIT_SSH_COMMAND`,
-  because git gives it precedence over the `core.sshCommand` config key.
+  retried. ssh asks for a key passphrase or an unknown-host confirmation on the terminal itself, so for a `repoUrl`
+  reached over ssh (`ssh://…` or `user@host:path`) sync-worktrees also sets `SSH_ASKPASS_REQUIRE=force` and
+  `SSH_ASKPASS=false`: ssh routes those questions to an askpass program that declines them, and a passphrase-protected
+  key without an agent or a host missing from `known_hosts` fails at once with the same hint. It needs OpenSSH 8.4 or
+  later; older versions ignore the variable and wait until the fetch inactivity timeout, as does a remote reached over
+  ssh only through a `url.<base>.insteadOf` rewrite of an HTTPS `repoUrl`. Nothing is set when you exported
+  `SSH_ASKPASS` or `SSH_ASKPASS_REQUIRE` yourself, when you exported `GIT_TERMINAL_PROMPT` to enable prompts, or on
+  Windows. sync-worktrees never sets `GIT_SSH_COMMAND`, because git gives it precedence over the `core.sshCommand`
+  config key; your ssh command runs as configured.
 
 ## Retry, LFS and timeouts
 

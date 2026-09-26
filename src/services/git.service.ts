@@ -5,6 +5,7 @@ import { GitOperationError, WorktreeError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
+import { sshNoPromptEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
@@ -184,9 +185,10 @@ export class GitService {
 
   // Per-client additions layered over the sanitized process environment by
   // createGitClient, which also forces the C locale every stderr match here
-  // ("stale info", missing-ref, LFS) depends on.
+  // ("stale info", missing-ref, LFS) depends on. An ssh remote also gets the
+  // askpass settings that keep ssh from waiting on a prompt (sshNoPromptEnv).
   private buildGitEnv(useLfsSkip: boolean, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...extra };
+    const env: NodeJS.ProcessEnv = { ...sshNoPromptEnv(this.config.repoUrl), ...extra };
     if (useLfsSkip) env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     return env;
   }
