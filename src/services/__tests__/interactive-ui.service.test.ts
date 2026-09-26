@@ -237,6 +237,25 @@ describe("InteractiveUIService", () => {
       void service.destroy();
     });
 
+    it("sends the repository table when the interface is ready, and again as a sync moves it", async () => {
+      const service = new InteractiveUIService([mockSyncService], undefined, "0 * * * *");
+      const tables: unknown[] = [];
+      service.getEvents().on("setRepositoryDashboard", (rows) => tables.push(rows));
+
+      service.getEvents().emit("uiReady");
+      expect(tables).toEqual([
+        [expect.objectContaining({ name: "repo-0", state: "idle", lastResult: null, schedule: "0 * * * *" })],
+      ]);
+
+      await (mockRender.mock.calls[0][0].props as any).onManualSync();
+
+      expect(tables).toContainEqual([expect.objectContaining({ name: "repo-0", state: "syncing" })]);
+      expect(tables[tables.length - 1]).toEqual([
+        expect.objectContaining({ name: "repo-0", state: "idle", lastResult: "synced" }),
+      ]);
+      void service.destroy();
+    });
+
     it("should be able to emit events after initialization", () => {
       const service = new InteractiveUIService([mockSyncService]);
       const statusSpy = vi.fn();
@@ -3605,6 +3624,8 @@ describe("InteractiveUIService", () => {
         const message = logs.map((entry) => entry.message).join("\n");
         expect(message).toContain("GC skipped");
         expect(message).not.toContain("GC failed");
+        // The modal may truncate its line; the log keeps the whole error.
+        expect(message).toContain("git gc skipped, git is busy in: /w/feature-1 (index.lock)");
 
         void ui.destroy();
       });

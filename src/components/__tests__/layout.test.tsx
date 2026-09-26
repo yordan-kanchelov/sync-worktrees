@@ -7,7 +7,20 @@ import ForceCleanModal from "../ForceCleanModal";
 import HelpModal from "../HelpModal";
 import OpenEditorWizard from "../OpenEditorWizard";
 import WorktreeStatusView from "../WorktreeStatusView";
-import { MIN_LIST_ROWS, listRowsFor, listWindow, modalWidth, wrappedRows } from "../layout";
+import {
+  DASHBOARD_CHROME_ROWS,
+  LOG_COLLAPSED_ROWS,
+  LOG_MIN_ROWS,
+  MIN_LIST_ROWS,
+  dashboardColumns,
+  formatAge,
+  formatUntil,
+  homeLayout,
+  listRowsFor,
+  listWindow,
+  modalWidth,
+  wrappedRows,
+} from "../layout";
 import type { WorktreeStatusResult } from "../../services/worktree-status.service";
 import type { WorktreeStatusEntry } from "../../types";
 import { borderWidths, frameLines, resizeTerminal } from "./terminal-size";
@@ -80,6 +93,125 @@ describe("layout helpers", () => {
     expect(wrappedRows("↑/↓ navigate • Type to filter • Enter to select • ESC to cancel", 54)).toBe(2);
     // A word longer than the line is broken across rows.
     expect(wrappedRows("x".repeat(25), 10)).toBe(3);
+  });
+});
+
+describe("home screen layout", () => {
+  const auto = { collapsed: false, rows: null };
+
+  it("gives the table every repository and the log the rest when there is room", () => {
+    expect(homeLayout(19, 3, auto)).toEqual({ dashboardRows: 6, logRows: 13, logCollapsed: false });
+    expect(homeLayout(45, 30, auto)).toEqual({ dashboardRows: 33, logRows: 12, logCollapsed: false });
+  });
+
+  it("leaves the log a readable panel when there are more repositories than rows", () => {
+    const layout = homeLayout(19, 30, auto);
+
+    expect(layout.dashboardRows + layout.logRows).toBe(19);
+    expect(layout.logRows).toBeGreaterThanOrEqual(8);
+    expect(layout.dashboardRows).toBeGreaterThan(DASHBOARD_CHROME_ROWS);
+  });
+
+  it("folds the log to one line when a panel and a table row do not both fit", () => {
+    expect(homeLayout(7, 3, auto)).toEqual({ dashboardRows: 6, logRows: 1, logCollapsed: true });
+    // Below an even split's first table row, the folded log still leaves one.
+    expect(homeLayout(6, 3, auto)).toEqual({ dashboardRows: 5, logRows: 1, logCollapsed: true });
+    expect(homeLayout(5, 1, auto)).toEqual({ dashboardRows: 4, logRows: 1, logCollapsed: true });
+    expect(homeLayout(5, 3, auto)).toEqual({ dashboardRows: 4, logRows: 1, logCollapsed: true });
+  });
+
+  it("never takes the table away as the screen grows", () => {
+    // The smallest screen a table row and a folded log both fit on.
+    const smallest = DASHBOARD_CHROME_ROWS + 1 + LOG_COLLAPSED_ROWS;
+    for (const repos of [1, 2, 3, 30]) {
+      for (const preference of [auto, { collapsed: true, rows: null }, { collapsed: false, rows: LOG_MIN_ROWS }]) {
+        let shown = false;
+        for (let available = 0; available <= 40; available++) {
+          const visible = homeLayout(available, repos, preference).dashboardRows > 0;
+          const expected = shown || visible || (preference.rows === null && available >= smallest);
+          expect({ available, repos, preference, visible }).toEqual({
+            available,
+            repos,
+            preference,
+            visible: expected,
+          });
+          shown ||= visible;
+        }
+      }
+    }
+  });
+
+  it("hides the table rather than draw it without a single row", () => {
+    expect(homeLayout(4, 3, auto)).toEqual({ dashboardRows: 0, logRows: 4, logCollapsed: false });
+    expect(homeLayout(19, 0, auto)).toEqual({ dashboardRows: 0, logRows: 19, logCollapsed: false });
+  });
+
+  it("collapses the log to one line on request and hands the table the room", () => {
+    expect(homeLayout(19, 30, { collapsed: true, rows: null })).toEqual({
+      dashboardRows: 18,
+      logRows: 1,
+      logCollapsed: true,
+    });
+  });
+
+  it("gives the log the rows asked for, down to hiding the table", () => {
+    expect(homeLayout(19, 30, { collapsed: false, rows: 6 })).toEqual({
+      dashboardRows: 13,
+      logRows: 6,
+      logCollapsed: false,
+    });
+    expect(homeLayout(19, 30, { collapsed: false, rows: 17 })).toEqual({
+      dashboardRows: 0,
+      logRows: 19,
+      logCollapsed: false,
+    });
+    // A request below the smallest panel still leaves one.
+    expect(homeLayout(19, 30, { collapsed: false, rows: 1 }).logRows).toBeGreaterThanOrEqual(1);
+  });
+
+  it("never hands out more rows than it was given", () => {
+    for (let available = 0; available <= 40; available++) {
+      for (const repos of [0, 1, 3, 30]) {
+        for (const preference of [auto, { collapsed: true, rows: null }, { collapsed: false, rows: LOG_MIN_ROWS }]) {
+          const layout = homeLayout(available, repos, preference);
+          expect(layout.dashboardRows + layout.logRows).toBeLessThanOrEqual(Math.max(1, available));
+        }
+      }
+    }
+  });
+
+  it("drops columns in order as the table narrows, keeping the state and the name", () => {
+    expect(dashboardColumns(96, 12).columns).toEqual([
+      "state",
+      "name",
+      "result",
+      "age",
+      "worktrees",
+      "changes",
+      "next",
+    ]);
+    expect(dashboardColumns(56, 12).columns).not.toContain("next");
+    expect(dashboardColumns(36, 12).columns).toEqual(["state", "name", "result"]);
+    expect(dashboardColumns(20, 12).columns).toEqual(["state", "name"]);
+  });
+
+  it("fits the columns and the spaces between them into the width", () => {
+    for (let width = 12; width <= 140; width++) {
+      const { columns, widths } = dashboardColumns(width, 40);
+      const used = columns.reduce((sum, column) => sum + widths[column], 0) + columns.length - 1;
+      expect(used).toBeLessThanOrEqual(Math.max(width, 20));
+    }
+  });
+
+  it("says how long ago and how long until in a few characters", () => {
+    const now = 1_000_000_000;
+    expect(formatAge(now - 5_000, now)).toBe("just now");
+    expect(formatAge(now - 3 * 60_000, now)).toBe("3m ago");
+    expect(formatAge(now - 5 * 3_600_000, now)).toBe("5h ago");
+    expect(formatAge(now - 72 * 3_600_000, now)).toBe("3d ago");
+    expect(formatUntil(now + 30_000, now)).toBe("<1m");
+    expect(formatUntil(now + 14 * 60_000, now)).toBe("14m");
+    expect(formatUntil(now + 3 * 3_600_000, now)).toBe("3h");
   });
 });
 
@@ -239,6 +371,114 @@ describe("responsive modals", () => {
 
       expect(lastFrame()).toContain("Path: /worktrees/branch-0");
       expect(frameLines(lastFrame()).length).toBeLessThanOrEqual(30);
+    });
+  });
+
+  describe("force-clean modal height", () => {
+    const previews = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        repoIndex: index,
+        repoName: `repository-${String(index).padStart(2, "0")}`,
+        preview: {
+          trashEntries: 2,
+          trashBytes: 1024,
+          unknownTrashSizes: 0,
+          invalidTrashEntries: 0,
+          keepRefs: 1,
+          trashEntryIds: ["a", "b"],
+          keepRefNames: ["refs/sync-worktrees/keep/a"],
+        },
+      }));
+    const listed = (frame: string | undefined): string[] =>
+      frameLines(frame)
+        .map((line) => line.match(/(repository-\d+):/)?.[1])
+        .filter((name): name is string => name !== undefined);
+
+    it("caps the per-repository list to the rows the status bar leaves", async () => {
+      const { stdout, lastFrame } = render(
+        <ForceCleanModal
+          availableRows={19}
+          getPreview={vi.fn().mockResolvedValue(previews(12))}
+          forceClean={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      );
+      resizeTerminal(stdout, 80, 24);
+      await settle();
+
+      expect(frameLines(lastFrame()).length).toBeLessThanOrEqual(19);
+      expect(listed(lastFrame()).length).toBeGreaterThan(0);
+      expect(listed(lastFrame()).length).toBeLessThan(12);
+      expect(lastFrame()).toMatch(/repositories 1–\d+ of 12 \(↑\/↓ to scroll\)/);
+      // The total and the confirmation are never what gives way.
+      expect(lastFrame()).toContain("Total: 24 trash");
+      expect(lastFrame()).toContain("press Enter to delete permanently");
+    });
+
+    it("scrolls the list with the arrows and leaves the confirmation word alone", async () => {
+      const forceClean = vi.fn().mockResolvedValue([]);
+      const { stdout, stdin, lastFrame } = render(
+        <ForceCleanModal
+          availableRows={19}
+          getPreview={vi.fn().mockResolvedValue(previews(12))}
+          forceClean={forceClean}
+          onClose={vi.fn()}
+        />,
+      );
+      resizeTerminal(stdout, 80, 24);
+      await settle();
+      const first = listed(lastFrame())[0];
+
+      for (let i = 0; i < 20; i++) {
+        stdin.write("\u001B[B");
+      }
+      await settle();
+
+      expect(listed(lastFrame())).toContain("repository-11");
+      expect(listed(lastFrame())).not.toContain(first);
+      expect(frameLines(lastFrame()).length).toBeLessThanOrEqual(19);
+
+      stdin.write("clean");
+      await settle();
+      stdin.write("\r");
+      await settle();
+      expect(forceClean).toHaveBeenCalledTimes(1);
+      expect(forceClean.mock.calls[0][0]).toHaveLength(12);
+    });
+
+    it("shortens its explanation before squeezing the list in a short terminal", async () => {
+      const { stdout, lastFrame } = render(
+        <ForceCleanModal
+          availableRows={14}
+          getPreview={vi.fn().mockResolvedValue(previews(5))}
+          forceClean={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      );
+      resizeTerminal(stdout, 80, 19);
+      await settle();
+
+      expect(frameLines(lastFrame()).length).toBeLessThanOrEqual(14);
+      expect(lastFrame()).not.toContain("A lock left behind");
+      expect(lastFrame()).toContain("finish any git command");
+      expect(listed(lastFrame()).length).toBeGreaterThanOrEqual(3);
+    });
+
+    it("shows the whole explanation and every repository when there is room", async () => {
+      const { stdout, lastFrame } = render(
+        <ForceCleanModal
+          availableRows={40}
+          getPreview={vi.fn().mockResolvedValue(previews(5))}
+          forceClean={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      );
+      resizeTerminal(stdout, 100, 45);
+      await settle();
+
+      expect(lastFrame()).toContain("A lock left behind");
+      expect(listed(lastFrame())).toHaveLength(5);
+      expect(lastFrame()).not.toContain("to scroll");
     });
   });
 

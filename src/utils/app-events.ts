@@ -20,7 +20,30 @@ export type LastSyncOutcome = { kind: "ok" } | { kind: "failed"; count: number }
 // bar shows the earliest next run across all of them.
 export type CronScheduleDisplay = string | readonly string[] | undefined;
 
+// One row of the home screen's repository table. The service sends the whole
+// table whenever a row changes; the App renders it and never asks git itself.
+export type RepositoryRunState = "idle" | "syncing" | "failed" | "skipped";
+
+export interface RepositoryDashboardRow {
+  name: string;
+  state: RepositoryRunState;
+  /** How the last sync of this repository went, in a few words; null until one has finished. */
+  lastResult: string | null;
+  /** When a sync of this repository last ran to an end (epoch ms). A skip leaves it where it was. */
+  lastSyncAt: number | null;
+  /** Worktrees the repository had after its last sync or status check; null until known. */
+  worktrees: number | null;
+  /**
+   * Worktrees with uncommitted changes and with unpushed commits, as of the
+   * last time the status view (`w`) checked this repository; null until then.
+   */
+  changes: { dirty: number; unpushed: number } | null;
+  /** The cron expression this repository runs on; absent for `runOnce` or no schedule. */
+  schedule?: string;
+}
+
 type AppEventMap = {
+  setRepositoryDashboard: readonly RepositoryDashboardRow[];
   updateLastSyncTime: void;
   setLastSyncOutcome: LastSyncOutcome;
   setStatus: "idle" | "syncing";

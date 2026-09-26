@@ -9,6 +9,7 @@ import { ConfigLoaderService } from "./config-loader.service";
 import { HookExecutionService } from "./hook-execution.service";
 import type { LogOutputFn, LogLevel } from "./logger.service";
 import { Logger } from "./logger.service";
+import { RepositoryDashboard } from "./repository-dashboard";
 import { RepositoryOperations } from "./repository-operations";
 import { SyncCycleScheduler, WAIT_SYNC_DEFAULT_TIMEOUT_MS, WAIT_SYNC_FAST_TIMEOUT_MS } from "./sync-cycle-scheduler";
 import { TerminalLauncher } from "./terminal-launcher";
@@ -66,6 +67,8 @@ export class InteractiveUIService {
   public readonly operations: RepositoryOperations;
   /** The editor and terminal "open" actions. */
   public readonly launcher: TerminalLauncher;
+  /** Per-repository state behind the home screen's table. */
+  public readonly dashboard: RepositoryDashboard;
 
   constructor(
     syncServices: WorktreeSyncService[],
@@ -100,6 +103,13 @@ export class InteractiveUIService {
     const log = (message: string, level: "info" | "warn" | "error"): void => this.addLog(message, level);
     const services = (): WorktreeSyncService[] => this.syncServices;
     const refreshDiskSpace = (): Promise<void> => this.calculateAndUpdateDiskSpace();
+    this.dashboard = new RepositoryDashboard({
+      events: this.events,
+      getServices: services,
+      getRepoName: (index) => this.operations.getRepoName(index),
+      scheduleFor: (service) => this.scheduler.scheduleFor(service),
+      isActive: () => !this.isDestroyed,
+    });
     this.scheduler = new SyncCycleScheduler(
       {
         events: this.events,
@@ -112,6 +122,7 @@ export class InteractiveUIService {
         setLastSyncOutcome: (outcome) => this.setLastSyncOutcome(outcome),
         updateLastSyncTime: () => this.updateLastSyncTime(),
         refreshDiskSpace,
+        dashboard: this.dashboard,
       },
       cronSchedule,
     );
@@ -122,6 +133,7 @@ export class InteractiveUIService {
       diskUsage: this.diskUsage,
       hookExecutionService: this.hookExecutionService,
       refreshDiskSpace,
+      onWorktreeStatus: (repoIndex, entries) => this.dashboard.recordWorktreeStatus(repoIndex, entries),
     });
     this.launcher = new TerminalLauncher({
       log,
@@ -157,6 +169,7 @@ export class InteractiveUIService {
     const unsubscribe = this.events.on("uiReady", () => {
       this.uiReady = true;
       this.flushLogBuffer();
+      this.dashboard.publish();
       unsubscribe();
       const index = this.unsubscribeCallbacks.indexOf(unsubscribe);
       if (index !== -1) this.unsubscribeCallbacks.splice(index, 1);
@@ -490,6 +503,7 @@ export class InteractiveUIService {
 
       this.events.emit("updateRepositoryCount", this.repositoryCount);
       this.events.emit("updateCronSchedule", this.scheduler.getScheduledCronExpressions());
+      this.dashboard.publish();
 
       // The reload's sync is a cycle like any other, so it claims the
       // repositories it is about to sync. `setupCronJobs()` just above has

@@ -7,11 +7,19 @@ import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
 import ForceCleanModal from "./ForceCleanModal";
 import FuzzySwitcher from "./FuzzySwitcher";
-import LogPanel from "./LogPanel";
+import LogPanel, { CollapsedLogLine } from "./LogPanel";
+import RepositoryDashboard from "./RepositoryDashboard";
+import { LOG_MIN_ROWS, LOG_RESIZE_STEP, homeLayout } from "./layout";
+import type { LogSizePreference } from "./layout";
 import { redactSecretsInText } from "../utils/git-url";
 import { isMouseSequence } from "../utils/mouse";
 import type { AppEventEmitter } from "../utils/app-events";
-import type { AppSyncProgress, CronScheduleDisplay, LastSyncOutcome } from "../utils/app-events";
+import type {
+  AppSyncProgress,
+  CronScheduleDisplay,
+  LastSyncOutcome,
+  RepositoryDashboardRow,
+} from "../utils/app-events";
 import type {
   HookContext,
   WorktreeStatusEntry,
@@ -154,6 +162,10 @@ const App: React.FC<AppProps> = ({
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [repoCount, setRepoCount] = useState(repositoryCount);
   const [schedule, setSchedule] = useState<CronScheduleDisplay>(cronSchedule);
+  const [dashboardRows, setDashboardRows] = useState<readonly RepositoryDashboardRow[]>([]);
+  // `l` folds the log to one line; `+` / `-` move the line between it and the
+  // repository table. Null rows: the table takes what it needs first.
+  const [logSize, setLogSize] = useState<LogSizePreference>({ collapsed: false, rows: null });
   // A key that cannot act right now says so here, for a moment, in place of
   // the key legend -- `s` during a sync used to do nothing at all.
   const [notice, setNotice] = useState<string | null>(null);
@@ -163,6 +175,17 @@ const App: React.FC<AppProps> = ({
   const quitRequestedRef = useRef(false);
 
   const { rows } = useWindowSize();
+
+  const progressLineCount = status === "syncing" ? Math.max(1, maxProgressLines) : 0;
+  const statusBarHeight = 5 + progressLineCount + activeOps.length;
+  const terminalRows = rows ?? 24;
+  const showModal =
+    showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher;
+  // What the home screen, or a modal in its place, may take without pushing
+  // the status bar off the screen.
+  const availableRows = Math.max(0, terminalRows - statusBarHeight);
+  const modalRows = availableRows;
+  const home = homeLayout(availableRows, dashboardRows.length, logSize);
 
   const pendingLogsRef = useRef<LogEntry[]>([]);
   const logFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -273,6 +296,30 @@ const App: React.FC<AppProps> = ({
       }
     } else if (input === "?" || input === "h") {
       setShowHelp(true);
+    } else if (input === "l") {
+      setLogSize((prev) => ({ ...prev, collapsed: !prev.collapsed }));
+    } else if (input === "+" || input === "=") {
+      // A log `l` folded comes back at the size it had; one folded for want
+      // of room comes back as the smallest panel, at the table's expense.
+      setLogSize(
+        logSize.collapsed
+          ? { ...logSize, collapsed: false }
+          : {
+              collapsed: false,
+              rows: Math.min(availableRows, home.logCollapsed ? LOG_MIN_ROWS : home.logRows + LOG_RESIZE_STEP),
+            },
+      );
+    } else if (input === "-" || input === "_") {
+      // Shrinking past the smallest panel -- or past the point where the
+      // table has every row it wants, so nothing would move -- folds the log
+      // to its one line.
+      if (!home.logCollapsed) {
+        const rows = home.logRows - LOG_RESIZE_STEP;
+        const next = { collapsed: false, rows };
+        const shrinks =
+          rows >= LOG_MIN_ROWS && homeLayout(availableRows, dashboardRows.length, next).logRows < home.logRows;
+        setLogSize(shrinks ? next : { collapsed: true, rows: Math.max(LOG_MIN_ROWS, rows) });
+      }
     } else if (input === "/" || (key.ctrl && input === "p")) {
       setShowSwitcher(true);
     } else if (input === "c") {
@@ -360,6 +407,9 @@ const App: React.FC<AppProps> = ({
       events.on("updateCronSchedule", (newSchedule: CronScheduleDisplay) => {
         setSchedule(newSchedule);
       }),
+      events.on("setRepositoryDashboard", (rows: readonly RepositoryDashboardRow[]) => {
+        setDashboardRows(rows);
+      }),
     ];
 
     events.emit("uiReady");
@@ -388,15 +438,6 @@ const App: React.FC<AppProps> = ({
       }
     : undefined;
 
-  const progressLineCount = status === "syncing" ? Math.max(1, maxProgressLines) : 0;
-  const statusBarHeight = 5 + progressLineCount + activeOps.length;
-  const terminalRows = rows ?? 24;
-  const logPanelHeight = Math.max(5, terminalRows - statusBarHeight);
-  const showModal =
-    showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher;
-  // What a modal may take without pushing the status bar off the screen.
-  const modalRows = Math.max(0, terminalRows - statusBarHeight);
-
   // One list per opened modal. Re-reading it on every render handed the modal
   // a fresh array for every log line and progress event, which re-ran every
   // effect keyed on it. A reload that changes the repository count while a
@@ -413,7 +454,14 @@ const App: React.FC<AppProps> = ({
 
   return (
     <Box flexDirection="column" minHeight={terminalRows}>
-      {!showModal && <LogPanel logs={logs} height={logPanelHeight} isActive={!showModal} />}
+      {!showModal && home.dashboardRows > 0 && <RepositoryDashboard rows={dashboardRows} height={home.dashboardRows} />}
+      {!showModal && !home.logCollapsed && <LogPanel logs={logs} height={home.logRows} isActive={!showModal} />}
+      {!showModal && home.logCollapsed && (
+        <>
+          <Box flexGrow={1} />
+          <CollapsedLogLine logs={logs} />
+        </>
+      )}
 
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} availableRows={modalRows} />}
 
@@ -521,6 +569,7 @@ const App: React.FC<AppProps> = ({
 
       {showForceClean && getForceCleanPreview && forceClean && (
         <ForceCleanModal
+          availableRows={modalRows}
           getPreview={getForceCleanPreview}
           forceClean={forceClean}
           onClose={() => setShowForceClean(false)}

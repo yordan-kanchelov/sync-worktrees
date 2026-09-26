@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StatusBarProps } from "../StatusBar";
 import StatusBar, { computeNextSyncTime } from "../StatusBar";
+import { frameLines, resizeTerminal } from "./terminal-size";
 
 // Helper to wait for React state updates and effects
 const waitForEffects = () => new Promise((resolve) => setTimeout(resolve, 100));
@@ -231,6 +232,47 @@ describe("StatusBar", () => {
       rerender(<StatusBar {...defaultProps} notice="A sync is in progress" />);
       expect(lastFrame()).toContain("A sync is in progress");
       expect(lastFrame()).not.toContain("help");
+    });
+  });
+
+  // The App budgets one row per line of the bar; a line Ink wrapped pushed the
+  // top of the screen off.
+  describe("narrow terminals", () => {
+    it("keeps the full key legend where it fits", async () => {
+      const { stdout, lastFrame } = render(<StatusBar {...defaultProps} diskSpaceUsed="1.2 GB" />);
+      resizeTerminal(stdout, 80, 24);
+      await waitForEffects();
+
+      expect(lastFrame()).toContain("xclean");
+      expect(frameLines(lastFrame())).toHaveLength(5);
+    });
+
+    it.each([60, 40, 30])("switches to the keys alone and stays five rows at %i columns", async (columns) => {
+      const { stdout, lastFrame } = render(
+        <StatusBar
+          {...defaultProps}
+          lastSyncTime={new Date()}
+          lastSyncOutcome={{ kind: "failed", count: 2 }}
+          cronSchedule="0 * * * *"
+        />,
+      );
+      resizeTerminal(stdout, columns, 24);
+      await waitForEffects();
+
+      const lines = frameLines(lastFrame());
+      expect(lines).toHaveLength(5);
+      for (const line of lines) {
+        expect([...line].length).toBeLessThanOrEqual(columns);
+      }
+      expect(lastFrame()).not.toContain("xclean");
+    });
+
+    it("names the help key in the short legend", async () => {
+      const { stdout, lastFrame } = render(<StatusBar {...defaultProps} />);
+      resizeTerminal(stdout, 60, 24);
+      await waitForEffects();
+
+      expect(lastFrame()).toContain("s c o w x r ?help q");
     });
   });
 
