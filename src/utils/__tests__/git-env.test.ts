@@ -4,6 +4,7 @@ import {
   GIT_REPOSITORY_SELECTION_VARS,
   GIT_UNSAFE_ALLOWANCES,
   sanitizeGitEnv,
+  sshNoPromptEnv,
   stripGitRepositorySelection,
 } from "../git-env";
 
@@ -221,5 +222,51 @@ describe("stripGitRepositorySelection", () => {
     stripGitRepositorySelection(input);
 
     expect(input).toEqual({ PATH: "/usr/bin", GIT_WORK_TREE: "/elsewhere" });
+  });
+});
+
+describe("sshNoPromptEnv", () => {
+  const SSH_URLS = ["git@github.com:org/repo.git", "ssh://git@github.com/org/repo.git", "SSH://host.example/repo.git"];
+  const NO_PROMPT = { SSH_ASKPASS: "false", SSH_ASKPASS_REQUIRE: "force" };
+
+  it.each(SSH_URLS)("routes ssh's prompts to a failing askpass for %s", (url) => {
+    expect(sshNoPromptEnv(url, { PATH: "/usr/bin" }, "linux")).toEqual(NO_PROMPT);
+    expect(sshNoPromptEnv(url, { PATH: "/usr/bin" }, "darwin")).toEqual(NO_PROMPT);
+  });
+
+  // git itself reads SSH_ASKPASS for HTTPS credentials, so setting it there
+  // would only put an askpass error in front of "terminal prompts disabled".
+  it.each(["https://github.com/org/repo.git", "http://127.0.0.1:8080/r.git", "/srv/repo.git", "file:///srv/r"])(
+    "adds nothing for a repository not reached over ssh (%s)",
+    (url) => {
+      expect(sshNoPromptEnv(url, { PATH: "/usr/bin" }, "linux")).toEqual({});
+    },
+  );
+
+  // Neither variable names an ssh command: whatever core.sshCommand,
+  // GIT_SSH_COMMAND or GIT_SSH says is still what runs.
+  it("never sets an ssh command", () => {
+    const env = sshNoPromptEnv(SSH_URLS[0], { GIT_SSH_COMMAND: "ssh -i ~/.ssh/work_key" }, "linux");
+
+    expect(env).toEqual(NO_PROMPT);
+    expect(env).not.toHaveProperty("GIT_SSH_COMMAND");
+    expect(env).not.toHaveProperty("GIT_SSH");
+  });
+
+  it("leaves a user's own askpass setup alone", () => {
+    expect(sshNoPromptEnv(SSH_URLS[0], { SSH_ASKPASS: "/usr/bin/ksshaskpass" }, "linux")).toEqual({});
+    expect(sshNoPromptEnv(SSH_URLS[0], { SSH_ASKPASS_REQUIRE: "never" }, "linux")).toEqual({});
+  });
+
+  it("follows the user's GIT_TERMINAL_PROMPT: prompts they asked for stay on", () => {
+    expect(sshNoPromptEnv(SSH_URLS[0], { GIT_TERMINAL_PROMPT: "1" }, "linux")).toEqual({});
+    expect(sshNoPromptEnv(SSH_URLS[0], { GIT_TERMINAL_PROMPT: "true" }, "linux")).toEqual({});
+    for (const disabled of ["0", "false", "No", "off", ""]) {
+      expect(sshNoPromptEnv(SSH_URLS[0], { GIT_TERMINAL_PROMPT: disabled }, "linux")).toEqual(NO_PROMPT);
+    }
+  });
+
+  it("adds nothing on Windows", () => {
+    expect(sshNoPromptEnv(SSH_URLS[0], {}, "win32")).toEqual({});
   });
 });

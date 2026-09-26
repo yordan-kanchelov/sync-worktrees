@@ -1,3 +1,5 @@
+import { parseGitUrl } from "./git-url";
+
 import type { SimpleGitOptions } from "simple-git";
 
 /**
@@ -224,18 +226,15 @@ export function stripGitRepositorySelection(env: NodeJS.ProcessEnv): NodeJS.Proc
  *   core.askPass, SSH_ASKPASS) still takes precedence over the terminal, so a
  *   GUI credential bridge keeps working.
  *
- * ssh is deliberately left alone. git gives GIT_SSH_COMMAND precedence over
- * the `core.sshCommand` config key (verified on git 2.43: env + config runs
- * the env command; legacy GIT_SSH + config runs the config command), so a
- * "ssh -o BatchMode=yes" default injected here would silently replace a
- * user's configured ssh command — includeIf keys, `ssh -i work_key`, agent
- * wrappers — and nothing synchronous in this factory can read that config.
- * Known limitation: GIT_TERMINAL_PROMPT=0 covers git's own prompts only; ssh
+ * The ssh command is deliberately left alone. git gives GIT_SSH_COMMAND
+ * precedence over the `core.sshCommand` config key (verified on git 2.43: env +
+ * config runs the env command; legacy GIT_SSH + config runs the config
+ * command), so a "ssh -o BatchMode=yes" default injected here would silently
+ * replace a user's configured ssh command — includeIf keys, `ssh -i work_key`,
+ * agent wrappers. GIT_TERMINAL_PROMPT=0 covers git's own prompts only; ssh
  * reads a key passphrase or an unknown-host confirmation from /dev/tty itself,
- * so a passphrase-protected key without an agent or a host missing from
- * known_hosts still blocks until the inactivity timeout (pre-existing
- * behaviour). A per-repository core.sshCommand-aware BatchMode wrapper is a
- * follow-up.
+ * and {@link sshNoPromptEnv} is what stops that for a repository reached over
+ * ssh, through ssh's askpass variables rather than its command line.
  */
 export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const sanitized = stripGitRepositorySelection(env);
@@ -246,4 +245,46 @@ export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     sanitized.GIT_TERMINAL_PROMPT = "0";
   }
   return sanitized;
+}
+
+/** The values git's own boolean parsing reads as false for GIT_TERMINAL_PROMPT. */
+const PROMPT_DISABLED_VALUES = new Set(["", "0", "false", "no", "off"]);
+
+/** `ssh://...` or the scp shorthand `user@host:path` — the two ways a repoUrl reaches its remote over ssh. */
+function usesSshTransport(repoUrl: string): boolean {
+  return /^ssh:\/\//i.test(repoUrl) || parseGitUrl(repoUrl)?.kind === "scp";
+}
+
+/**
+ * What a repository reached over ssh adds to its git clients' environment so
+ * that ssh fails at once instead of waiting on a prompt nobody can answer: a
+ * key passphrase without an agent, an unknown host key, a password or
+ * keyboard-interactive login. `SSH_ASKPASS_REQUIRE=force` (OpenSSH 8.4+) makes
+ * ssh ask the askpass program instead of the terminal, and `false` answers
+ * every question with a failure — an empty passphrase, "no" to the host key —
+ * so ssh ends with "Permission denied" or "Host key verification failed",
+ * which the run reports with its usual hint. Older OpenSSH ignores the
+ * variable and behaves as before.
+ *
+ * Neither variable touches the ssh command, so core.sshCommand, GIT_SSH_COMMAND
+ * and GIT_SSH keep working exactly as configured. Nothing is added when:
+ *
+ * - the user exported SSH_ASKPASS or SSH_ASKPASS_REQUIRE — theirs wins;
+ * - git prompts are enabled (GIT_TERMINAL_PROMPT exported as something other
+ *   than false) — that user asked to be prompted, and ssh follows suit;
+ * - the repository is not an ssh URL — git itself reads SSH_ASKPASS for HTTPS
+ *   credentials, and would print an askpass error in front of its own
+ *   "terminal prompts disabled" for a remote that is never reached over ssh;
+ * - on Windows, where ssh's askpass resolution differs and nothing was verified.
+ */
+export function sshNoPromptEnv(
+  repoUrl: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (platform === "win32" || !usesSshTransport(repoUrl)) return {};
+  if (env.SSH_ASKPASS !== undefined || env.SSH_ASKPASS_REQUIRE !== undefined) return {};
+  const terminalPrompt = env.GIT_TERMINAL_PROMPT;
+  if (terminalPrompt !== undefined && !PROMPT_DISABLED_VALUES.has(terminalPrompt.trim().toLowerCase())) return {};
+  return { SSH_ASKPASS: "false", SSH_ASKPASS_REQUIRE: "force" };
 }

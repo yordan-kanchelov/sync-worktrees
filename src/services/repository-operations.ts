@@ -18,7 +18,7 @@ import { appendGitAuthHint } from "../utils/git-auth-error";
 import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { formatBytes } from "../utils/disk-space";
 import type { DiskUsageCache } from "../utils/disk-usage-cache";
-import { getDefaultBareRepoDir, redactSecretsInText } from "../utils/git-url";
+import { getDefaultBareRepoDir, redactSecretsInText, repoDisplayLabel } from "../utils/git-url";
 import { resolveMode } from "../utils/repo-mode";
 import type {
   RepositoryConfig,
@@ -592,8 +592,6 @@ export class RepositoryOperations {
   public async createWorktreeForBranch(repoIndex: number, branchName: string): Promise<void> {
     const service = this.requireService(repoIndex);
     const gitService = service.getGitService();
-    const worktreeDir = service.config.worktreeDir;
-    const worktreePath = this.pathResolution.getBranchWorktreePath(worktreeDir, branchName);
 
     const result = await service.runQueuedRepoOperation(async () => {
       if (service.isCloneMode()) {
@@ -602,6 +600,9 @@ export class RepositoryOperations {
         await service.checkoutBranch(branchName, { allowConfigDrift: true });
         return;
       }
+      // Named inside the queued operation: the choice between the plain and
+      // the hashed directory name depends on what is registered and on disk.
+      const worktreePath = await gitService.resolveNewWorktreePath(branchName);
       await gitService.addWorktree(branchName, worktreePath);
     });
     if (!result.started) {
@@ -624,7 +625,7 @@ export class RepositoryOperations {
     }
 
     const config = this.host.getServices()[repoIndex].config;
-    const repoName = (config as RepositoryConfig).name || config.repoUrl;
+    const repoName = repoDisplayLabel(config);
 
     this.branchCreatedActions.runHooks({
       config,

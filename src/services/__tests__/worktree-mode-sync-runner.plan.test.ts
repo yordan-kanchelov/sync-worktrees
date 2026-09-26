@@ -38,7 +38,13 @@ describe("WorktreeModeSyncRunner.planSyncAttempt", () => {
 
   const wt = (branch: string): string => pathResolution.getBranchWorktreePath(worktreeDir, branch);
 
-  function readOnlyGitService(reads: Record<string, (...args: unknown[]) => unknown>): GitService {
+  function readOnlyGitService(overrides: Record<string, (...args: unknown[]) => unknown>): GitService {
+    // The naming probe every plan runs: both only read.
+    const reads: Record<string, (...args: unknown[]) => unknown> = {
+      getBareRepoPath: () => path.join(tempDir, ".bare"),
+      readWorktreeMetadataOwner: async () => null,
+      ...overrides,
+    };
     return new Proxy({} as GitService, {
       get(_target, property: string) {
         if (property === "then") return undefined;

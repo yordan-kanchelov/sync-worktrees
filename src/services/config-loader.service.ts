@@ -258,7 +258,28 @@ function workerEvalError(result: Extract<ConfigEvalResult, { ok: false }>, absol
   return error;
 }
 
-function evaluateConfigInWorker(absolutePath: string): Promise<unknown> {
+/**
+ * How long a reload may spend evaluating a config before it is abandoned. A
+ * config that awaits something which never settles while holding a live handle
+ * (a timer, a socket) would otherwise hang the reload for good — `r` in the
+ * dashboard and `load_config` over MCP both wait on it. Node's own detector
+ * only catches the handle-free case.
+ */
+export const CONFIG_RELOAD_TIMEOUT_MS = 30_000;
+
+/** Built without stack frames: the loader's own frames are no place to send someone fixing a config. */
+function reloadTimeoutError(absolutePath: string, timeoutMs: number): Error {
+  const seconds = timeoutMs / 1000;
+  const error = new Error(
+    `reloading '${path.basename(absolutePath)}' did not finish within ${seconds}s, so it was stopped and the ` +
+      `configuration already loaded stays in effect. A config file must finish evaluating on its own: look for a ` +
+      `top-level await that never settles or a loop that never ends`,
+  );
+  error.stack = `${error.name}: ${error.message}`;
+  return error;
+}
+
+function evaluateConfigInWorker(absolutePath: string, timeoutMs: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(CONFIG_EVAL_WORKER_SOURCE)}`), {
       // `argv` travels in workerData, not in the Worker's own `argv` option:
@@ -272,9 +293,13 @@ function evaluateConfigInWorker(absolutePath: string): Promise<unknown> {
     const settle = (deliver: () => void): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       void worker.terminate();
       deliver();
     };
+    // terminate() stops the thread even mid-loop, so the timeout also frees
+    // whatever the config was holding.
+    const timer = setTimeout(() => settle(() => reject(reloadTimeoutError(absolutePath, timeoutMs))), timeoutMs);
 
     worker.once("message", (result: ConfigEvalResult) => {
       settle(() => {
@@ -294,10 +319,15 @@ function evaluateConfigInWorker(absolutePath: string): Promise<unknown> {
 
 export class ConfigLoaderService {
   private readonly logger?: Logger;
+  private readonly reloadTimeoutMs: number;
 
-  /** Sink for the loader's warnings, and only those; unset it falls through to `console.warn`. Both are stderr. */
-  constructor(options: { logger?: Logger } = {}) {
+  /**
+   * `logger` is the sink for the loader's warnings, and only those; unset it falls through to `console.warn`.
+   * Both are stderr. `reloadTimeoutMs` bounds a reload's evaluation (see {@link CONFIG_RELOAD_TIMEOUT_MS}).
+   */
+  constructor(options: { logger?: Logger; reloadTimeoutMs?: number } = {}) {
     this.logger = options.logger;
+    this.reloadTimeoutMs = options.reloadTimeoutMs ?? CONFIG_RELOAD_TIMEOUT_MS;
   }
 
   private warn(message: string): void {
@@ -377,7 +407,7 @@ export class ConfigLoaderService {
    */
   private async importConfigModule(absolutePath: string): Promise<unknown> {
     if (configPathsEvaluatedInProcess.has(absolutePath)) {
-      return evaluateConfigInWorker(absolutePath);
+      return evaluateConfigInWorker(absolutePath, this.reloadTimeoutMs);
     }
     configPathsEvaluatedInProcess.add(absolutePath);
 

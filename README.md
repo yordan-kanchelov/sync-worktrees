@@ -46,14 +46,15 @@ With one repository declared and `init`'s default `worktreeDir` (`./<repo>`), th
 ├── .bare/
 │   └── my-repo/                   # Git history, stored once
 └── my-repo/                       # worktreeDir
-    ├── main/                      # the default branch keeps its plain name
-    ├── feature-login-df7c7aeb/    # feature/login
-    └── feature-2-df15e51b/        # feature-2
+    ├── main/                      # the default branch
+    ├── feature-login/             # feature/login
+    └── feature-2/                 # feature-2
 ```
 
 Every remote branch that passes your filters is a real checkout you can `cd` into, build in and open in an editor.
-A folder is named after its branch, made path-safe and suffixed with a short hash, identically on every machine; only
-the default branch keeps its plain name ([naming rules](./docs/configuration.md#worktree-folder-names)).
+A folder is named after its branch with `/` turned into `-`; a short hash is appended only when that name would be
+ambiguous (two branches that flatten to the same name, names differing only in case, something already in the way)
+([naming rules](./docs/configuration.md#worktree-folder-names)).
 
 On each sync, a branch that appeared upstream gets a folder, the folder of a branch deleted upstream moves to a
 reversible `.trash/`, and folders that are clean and fully pushed are fast-forwarded. The layout is the same on every
@@ -254,6 +255,7 @@ common operations, and a status view across every repository.
 
 | Key       | Action                                                                                                          |
 | --------- | --------------------------------------------------------------------------------------------------------------- |
+| `/`       | Jump to any worktree in any repository (fuzzy switcher); `Enter` opens it, `Tab` for more actions               |
 | `s`       | Sync all repositories now                                                                                       |
 | `c`       | Create a branch (wizard: repo, base branch, name)                                                               |
 | `o`       | Open a worktree in a terminal (`tmux`) or a GUI editor                                                          |

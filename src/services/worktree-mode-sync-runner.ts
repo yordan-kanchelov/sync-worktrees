@@ -18,7 +18,7 @@ import { trackPhaseItems } from "./progress-emitter";
 import { RemovalAuditService } from "./removal-audit.service";
 import { TrashService } from "./trash.service";
 import { RefScanScope } from "./worktree-status.service";
-import { createWorktreeSyncPlan } from "./worktree-sync-planner";
+import { createWorktreeSyncPlan, listBranchesToCreate } from "./worktree-sync-planner";
 
 import type { AddWorktreeResult, AheadBehindCounts, GitService, RegisteredWorktree } from "./git.service";
 import type { Logger } from "./logger.service";
@@ -271,19 +271,35 @@ export class WorktreeModeSyncRunner {
       this.logger.warn(`  - Skipping external worktree outside worktreeDir: ${worktree.path}`);
     }
 
-    const syncPlan = createWorktreeSyncPlan(
+    const planInput = {
+      remoteBranches: plannedBranches,
+      defaultBranch,
+      existingWorktrees: worktrees,
+      worktreeDir: this.config.worktreeDir,
+    };
+    // New worktrees get plain directory names unless another branch, a
+    // registered worktree, a leftover metadata record or an entry already on
+    // disk would share it. Every registration counts, external ones too:
+    // metadata is keyed by directory basename wherever the worktree lives.
+    const naming = await this.pathResolution.createProbedNamingContext(
       {
-        remoteBranches: plannedBranches,
+        branches: all,
+        branchesToName: listBranchesToCreate(planInput),
         defaultBranch,
-        existingWorktrees: worktrees,
-        worktreeDir: this.config.worktreeDir,
+        worktrees: registeredWorktrees,
       },
       {
-        pathResolution: this.pathResolution,
-        updateExistingWorktrees: this.config.updateExistingWorktrees !== false,
-        sparseCheckout: this.config.sparseCheckout,
+        worktreeDir: this.config.worktreeDir,
+        bareRepoPath: this.gitService.getBareRepoPath(),
+        readMetadataOwner: (name) => this.gitService.readWorktreeMetadataOwner(name),
       },
     );
+    const syncPlan = createWorktreeSyncPlan(planInput, {
+      naming,
+      pathResolution: this.pathResolution,
+      updateExistingWorktrees: this.config.updateExistingWorktrees !== false,
+      sparseCheckout: this.config.sparseCheckout,
+    });
 
     return {
       syncPlan,

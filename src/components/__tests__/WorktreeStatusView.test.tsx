@@ -1190,4 +1190,31 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).not.toContain("Failed to delete");
     });
   });
+
+  describe("opened from the switcher", () => {
+    it("starts on the given repository with that branch filtered and expanded", async () => {
+      const { lastFrame } = render(
+        <WorktreeStatusView {...defaultProps} initialRepoIndex={1} initialBranch="feature/auth" />,
+      );
+      await waitForStateUpdate();
+
+      const frame = lastFrame() ?? "";
+      expect(defaultProps.getWorktreeStatusForRepo).toHaveBeenCalledWith(1);
+      expect(frame).not.toContain("Select repository");
+      expect(frame).toContain("feature/auth");
+      expect(frame).not.toContain("hotfix/bug-123");
+      expect(frame).toContain("Modified: 2");
+      expect(frame).toContain("Unpushed commits: 3");
+    });
+
+    it("falls back to the repository choice for an index it does not have", async () => {
+      const { lastFrame } = render(
+        <WorktreeStatusView {...defaultProps} initialRepoIndex={7} initialBranch="feature/auth" />,
+      );
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Select repository");
+      expect(defaultProps.getWorktreeStatusForRepo).not.toHaveBeenCalled();
+    });
+  });
 });

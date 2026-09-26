@@ -16,7 +16,7 @@ import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/errors";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { DiskUsageCache } from "../utils/disk-usage-cache";
-import { getDefaultBareRepoDir, redactRepoUrl } from "../utils/git-url";
+import { getDefaultBareRepoDir, repoDisplayLabel } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
 import type { LastSyncOutcome } from "../utils/app-events";
 import { createMouseTracking } from "../utils/mouse";
@@ -251,6 +251,8 @@ export class InteractiveUIService {
         cronSchedule={this.scheduler.getScheduledCronExpressions()}
         maxProgressLines={this.maxRepositories}
         onManualSync={() => this.handleManualSync()}
+        onSyncRepository={(index: number) => this.handleSyncRepository(index)}
+        copyToClipboard={(text: string) => this.launcher.copyToClipboard(text)}
         onReload={() => this.handleReload()}
         onQuit={() => this.handleQuit()}
         getRepositoryList={() => ops.getRepositoryList()}
@@ -335,6 +337,19 @@ export class InteractiveUIService {
     await this.triggerInitialSync();
   }
 
+  // The switcher's `s`: one repository, through the same cycle machinery as
+  // `s`, so it claims the repository, drives the status bar and records its
+  // outcome exactly like a full cycle would.
+  private async handleSyncRepository(index: number): Promise<void> {
+    const service = this.syncServices[index];
+    if (!service) {
+      // A reload between opening the switcher and pressing `s` can shrink the list.
+      throw new Error(`Invalid repository index: ${index}`);
+    }
+    this.addLog(`🔄 Syncing '${this.operations.getRepoName(index)}'...`, "info");
+    await this.scheduler.runSyncCycle([service], { logErrors: true });
+  }
+
   public async triggerInitialSync(): Promise<void> {
     await this.scheduler.runSyncCycle(this.syncServices, { logErrors: true });
   }
@@ -401,7 +416,7 @@ export class InteractiveUIService {
             // every initialize() has resolved. Dropped again here — the ones
             // that survive are re-subscribed below, the ones that failed are
             // discarded.
-            const unsubscribeProgress = this.subscribeToProgress(service, repoConfig.name || repoConfig.repoUrl);
+            const unsubscribeProgress = this.subscribeToProgress(service, repoDisplayLabel(repoConfig));
             try {
               await service.initialize();
             } finally {
@@ -410,7 +425,7 @@ export class InteractiveUIService {
             return {
               service,
               clonePhaseSkips: service.getRecordedSkips().map((reason) => ({
-                repo: repoConfig.name || repoConfig.repoUrl,
+                repo: repoDisplayLabel(repoConfig),
                 reason: formatCloneSkipReason(reason),
               })),
             };
@@ -431,10 +446,7 @@ export class InteractiveUIService {
           // one off, and a git failure ('Permission denied (publickey)') names
           // nothing the user can find in the config.
           const failed = repositories[index];
-          this.addLog(
-            `Failed to initialize repository '${failed.name || redactRepoUrl(failed.repoUrl)}': ${result.reason}`,
-            "error",
-          );
+          this.addLog(`Failed to initialize repository '${repoDisplayLabel(failed)}': ${result.reason}`, "error");
         }
       }
 

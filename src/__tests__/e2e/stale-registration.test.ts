@@ -79,7 +79,7 @@ describe("Stale worktree registration E2E test", () => {
     execSync(command, { encoding: "utf8" });
 
     const dirs = await fs.readdir(worktreeDir);
-    const featureDir = dirs.find((d) => d.startsWith("feature-1-"));
+    const featureDir = dirs.find((d) => d === "feature-1");
     expect(featureDir).toBeDefined();
     const featurePath = path.join(worktreeDir, featureDir!);
     await expect(fs.readFile(path.join(featurePath, "feature-1.txt"), "utf8")).resolves.toBe("Content for feature-1");

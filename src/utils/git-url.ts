@@ -218,6 +218,16 @@ export function redactRepoUrl(url: string): string {
 }
 
 /**
+ * The label a repository is shown under: its configured `name`, or — for a
+ * repository configured without one — its URL with the credentials redacted.
+ * Every log line, progress row and message that names a repository takes its
+ * label from here; a raw `repoUrl` fallback is refused by the lint config.
+ */
+export function repoDisplayLabel(repo: { name?: string; repoUrl: string }): string {
+  return repo.name || redactRepoUrl(repo.repoUrl);
+}
+
+/**
  * Scrubs every `scheme://userinfo@` occurrence inside free text (git's own
  * error output, log lines, messages that embed one or more URLs), so a
  * credential-bearing remote URL never reaches a terminal or an API client.

@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG, ENV_CONSTANTS, PATH_CONSTANTS } from "../../constants";
 import { ConfigError } from "../../errors";
 import { getErrorMessage } from "../../utils/errors";
 import { createGitClient } from "../../utils/git-client";
+import { sshNoPromptEnv } from "../../utils/git-env";
 import { makeGitProgressHandler } from "../../utils/git-progress";
 import { redactRepoUrl } from "../../utils/git-url";
 import { isUnitTestShortcutEnabled } from "../../utils/unit-test-shortcut";
@@ -150,9 +151,10 @@ export class CloneGitClients {
 
   // Per-client additions layered over the sanitized process environment by
   // createGitClient, which also forces the C locale the missing-remote-ref and
-  // LFS error classification depends on.
+  // LFS error classification depends on. An ssh remote also gets the askpass
+  // settings that keep ssh from waiting on a prompt (sshNoPromptEnv).
   private buildGitEnv(opts: { forceLfsSkip?: boolean } = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...this.baseEnv };
+    const env: NodeJS.ProcessEnv = { ...sshNoPromptEnv(this.host.config.repoUrl), ...this.baseEnv };
     if (opts.forceLfsSkip || this.isLfsSkipEnabled()) {
       env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     }

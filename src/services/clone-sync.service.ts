@@ -2,7 +2,7 @@ import * as path from "path";
 
 import { PATH_CONSTANTS } from "../constants";
 import { fileExists, probePathExists } from "../utils/file-exists";
-import { redactRepoUrl } from "../utils/git-url";
+import { redactRepoUrl, repoDisplayLabel } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
 import { isMissingRemoteRefError } from "../utils/lfs-error";
 
@@ -36,7 +36,7 @@ import type { SyncOutcomeAccumulator } from "./sync-outcome";
 import type { SyncDryRunPlanBuilder, SyncDryRunStep } from "./sync-plan";
 import type { MutatingGitClients } from "./clone-sync/git-clients";
 import type { CloneSkipListener, CloneSkipReason, CloneSyncContext, PendingCloneSkip } from "./clone-sync/types";
-import type { Config, RepositoryConfig } from "../types";
+import type { Config } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { PhaseTimer } from "../utils/timing";
 
@@ -596,7 +596,7 @@ export class CloneSyncService {
   // Display name only (log lines and progress messages), so the URL fallback
   // is shown with any embedded credentials stripped.
   private get repoName(): string {
-    return (this.config as RepositoryConfig).name ?? redactRepoUrl(this.config.repoUrl);
+    return repoDisplayLabel(this.config);
   }
 
   // The view of this service the ./clone-sync modules work through. Every

@@ -4,6 +4,7 @@ import type { ChildProcess } from "child_process";
 import { existsSync } from "fs";
 import { TERMINAL_CONSTANTS } from "../constants";
 import { shellEscape } from "../utils/shell-escape";
+import { copyToClipboard } from "../utils/clipboard";
 import { PathResolutionService } from "./path-resolution.service";
 
 const DEFAULT_EDITOR = "code";
@@ -196,6 +197,19 @@ export class TerminalLauncher {
       this.host.log(`Failed to open terminal '${launcher.command}': ${errorMessage}`, "error");
       return { success: false, error: errorMessage };
     }
+  }
+
+  /**
+   * Put a worktree path on the system clipboard (`pbcopy`, `wl-copy`, `xclip`
+   * or `xsel`). A missing tool is an answer, not an exception: the result says
+   * what was looked for, and the log gets the path so it is not lost.
+   */
+  public async copyToClipboard(text: string): Promise<LaunchResult> {
+    const result = await copyToClipboard(text);
+    if (result.success) return { success: true };
+    const error = result.error ?? "Copy to clipboard failed";
+    this.host.log(`${error}; the path was not copied: ${text}`, "warn");
+    return { success: false, error };
   }
 
   private resolveTerminalLauncher(tmuxCommand: string): { command: string; args: string[] } | null {
