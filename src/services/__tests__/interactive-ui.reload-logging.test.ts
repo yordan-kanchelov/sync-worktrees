@@ -62,6 +62,8 @@ const {
       // The reload's call sequence per service, in the order the services
       // reached each step.
       trace: [] as string[],
+      // What getRecordedSkips() reports after initialize().
+      recordedSkips: [] as unknown[],
     },
   };
 });
@@ -133,7 +135,7 @@ vi.mock("../worktree-sync.service", async () => {
       }
 
       getRecordedSkips(): unknown[] {
-        return [];
+        return syncControl.recordedSkips;
       }
 
       clearRecordedSkips(): void {
@@ -176,6 +178,7 @@ describe("InteractiveUIService reload logging", () => {
     syncControl.repositories = [REPO_CONFIG];
     syncControl.failInit = new Set<string>();
     syncControl.trace = [];
+    syncControl.recordedSkips = [];
     (ink.render as unknown as Mock).mockReturnValue({
       unmount: vi.fn(),
       waitUntilExit: vi.fn(() => new Promise<void>(() => {})),
@@ -287,6 +290,29 @@ describe("InteractiveUIService reload logging", () => {
     const failure = panelLogs.find((line) => line.startsWith("Failed to initialize repository"));
     expect(failure).toContain("'repo-b'");
     expect(failure).toContain(INIT_FAILURE);
+  });
+
+  // A repository configured without a `name` is labelled by its URL, which can
+  // carry a token. Every place the reload names it -- the progress row and the
+  // clone-skip line -- shows it redacted.
+  it("never shows the credentials of a repository configured without a name", async () => {
+    const rawUrl = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
+    const redactedUrl = "https://***@github.com/test/repo.git";
+    syncControl.repositories = [{ ...REPO_CONFIG, name: undefined as unknown as string, repoUrl: rawUrl }];
+    syncControl.recordedSkips = [
+      { kind: "branch_mismatch", phase: "init", currentBranch: "dev", expectedBranch: "main" },
+    ];
+    const progress: AppSyncProgress[] = [];
+    events.on("setSyncProgress", (event: AppSyncProgress | null) => {
+      if (event) progress.push(event);
+    });
+
+    await reload();
+
+    expect(progress).toContainEqual(expect.objectContaining({ repo: redactedUrl, message: INIT_PROGRESS }));
+    expect(panelLogs).toContainEqual(expect.stringContaining(`Clone-mode skip for '${redactedUrl}'`));
+    expect(JSON.stringify(progress)).not.toContain("s3cr3t-token");
+    expect(panelLogs.join("\n")).not.toContain("s3cr3t-token");
   });
 
   // A reload runs a sync of its own, so it is one more cycle the status bar has

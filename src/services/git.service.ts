@@ -5,15 +5,18 @@ import { GitOperationError, WorktreeError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
+import { sshNoPromptEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
+import { pathsEqual } from "../utils/path-compare";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BareRepoService } from "./bare-repo.service";
 import { BranchRefService } from "./branch-ref.service";
 import { LfsVerificationService } from "./lfs-verification.service";
 import { Logger } from "./logger.service";
+import { PathResolutionService } from "./path-resolution.service";
 import { SparseCheckoutService } from "./sparse-checkout.service";
 import { WorktreeCreationService } from "./worktree-creation.service";
 import { WorktreeMetadataService } from "./worktree-metadata.service";
@@ -75,12 +78,23 @@ export class GitService {
   private readonly lfs: LfsVerificationService;
   private readonly bareRepo: BareRepoService;
   private readonly creation: WorktreeCreationService;
+  // Environment every client this service builds carries on top of the
+  // per-call LFS setting: empty for a syncing service, optional locks off for
+  // a read-only one.
+  private readonly baseEnv: NodeJS.ProcessEnv;
+  private readonly pathResolution = new PathResolutionService();
 
   constructor(
     private config: GitServiceOptions,
     logger?: Logger,
     private progressEmitter?: GitProgressEmitter,
+    options: { readOnly?: boolean } = {},
   ) {
+    // A read-only service (the dry run's) must leave the repository exactly as
+    // it found it, and `git status` / `git diff` refresh a worktree's index as
+    // a side effect unless optional locks are off. Nothing a read-only service
+    // runs needs that refresh.
+    this.baseEnv = options.readOnly ? { [ENV_CONSTANTS.GIT_OPTIONAL_LOCKS]: "0" } : {};
     this.logger = logger ?? Logger.createDefault(undefined, config.debug);
     this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, GIT_CONSTANTS.DEFAULT_BRANCH); // Temporary, will be updated
@@ -93,6 +107,7 @@ export class GitService {
       {
         skipLfs: this.config.skipLfs,
         maxConcurrentGitProcesses: this.config.parallelism?.maxStatusChecks,
+        ...(options.readOnly && { extraEnv: this.baseEnv }),
       },
       this.logger,
     );
@@ -151,6 +166,12 @@ export class GitService {
     );
   }
 
+  // The environment additions every client of this service carries, for the
+  // clients built outside it (clone mode's) that must behave the same way.
+  getBaseGitEnv(): NodeJS.ProcessEnv {
+    return { ...this.baseEnv };
+  }
+
   getSparseCheckoutService(): SparseCheckoutService {
     return this.sparseCheckoutService;
   }
@@ -181,9 +202,10 @@ export class GitService {
 
   // Per-client additions layered over the sanitized process environment by
   // createGitClient, which also forces the C locale every stderr match here
-  // ("stale info", missing-ref, LFS) depends on.
+  // ("stale info", missing-ref, LFS) depends on. An ssh remote also gets the
+  // askpass settings that keep ssh from waiting on a prompt (sshNoPromptEnv).
   private buildGitEnv(useLfsSkip: boolean, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...extra };
+    const env: NodeJS.ProcessEnv = { ...sshNoPromptEnv(this.config.repoUrl), ...this.baseEnv, ...extra };
     if (useLfsSkip) env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     return env;
   }
@@ -272,9 +294,10 @@ export class GitService {
   // Resolves to true when this call created the worktree.
   //
   // A registered worktree on the default branch at another path is adopted
-  // rather than duplicated: it is the hashed directory the sync created while
-  // the branch was an ordinary remote branch, before the remote made it the
-  // default, and git refuses a second worktree on a branch that is already
+  // rather than duplicated: it is the directory the sync created while the
+  // branch was an ordinary remote branch (a hashed or multi-segment name; a
+  // single-segment plain name already is this path), before the remote made it
+  // the default, and git refuses a second worktree on a branch that is already
   // checked out.
   private async ensureMainWorktree(bareGit: SimpleGit): Promise<boolean> {
     // Check if main worktree exists
@@ -357,6 +380,48 @@ export class GitService {
       );
     }
     return created;
+  }
+
+  // The dry run's stand-in for initialize(): the same bare-repository checks,
+  // the same fetch and the same default-branch resolution, with every write
+  // initialize() would make left out — no clone, no refspec config, no
+  // `remote set-head`, no default-branch worktree created or healed. The one
+  // write is the fetch itself, which updates remote-tracking refs (and brings
+  // in objects) exactly as the sync's own fetch would.
+  //
+  // Resolves to `missing` when there is no bare repository yet, decided
+  // before anything touches the disk. Otherwise the service is left able to
+  // answer the sync runner's reads; `anchorMissing` says the default branch
+  // has no worktree, in which case those reads run in the bare repository and
+  // a sync would create that worktree first.
+  //
+  // Only for a service constructed read-only and never used to sync: it marks
+  // the service initialized without the repairs initialize() makes.
+  async openForPlanning(): Promise<{ state: "missing" } | { state: "ready"; anchorMissing: boolean }> {
+    if ((await probePathExists(path.join(this.bareRepoPath, "HEAD"))) !== "exists") return { state: "missing" };
+    const bareGit = this.getCachedGit(this.bareRepoPath);
+    await this.bareRepo.assertBareRepoOriginMatches(bareGit);
+
+    // The sync's own fetch (`fetchAll`), run in the bare repository because
+    // the anchor may be missing; both name the same repository. No auto gc:
+    // repacking is not something a dry run should set off.
+    await this.getCachedNetworkGit(this.bareRepoPath, this.isLfsSkipEnabled()).fetch([
+      "--all",
+      "--prune",
+      "--no-auto-gc",
+      "--progress",
+    ]);
+
+    this.defaultBranch = await this.bareRepo.detectDefaultBranch(bareGit, { readOnly: true });
+    this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
+    const worktrees = await this.registry.getWorktreesFromBare(bareGit, true);
+    const target = path.resolve(this.mainWorktreePath);
+    const registered =
+      worktrees.find((w) => path.resolve(w.path) === target) ?? worktrees.find((w) => w.branch === this.defaultBranch);
+    const anchorMissing = !registered || (await probePathExists(registered.path)) !== "exists";
+    if (registered && !anchorMissing) this.mainWorktreePath = registered.path;
+    this.git = this.getCachedGit(anchorMissing ? this.bareRepoPath : this.mainWorktreePath);
+    return { state: "ready", anchorMissing };
   }
 
   getGit(): SimpleGit {
@@ -563,6 +628,55 @@ export class GitService {
 
   async getWorktreeLock(worktreePath: string): Promise<{ locked: boolean; reason?: string }> {
     return this.registry.getWorktreeLock(worktreePath);
+  }
+
+  /**
+   * The branch the metadata record under directory name `worktreeName` was
+   * written for, or null when there is none. Worktree naming reads it so a
+   * leftover record is never handed to another branch.
+   */
+  async readWorktreeMetadataOwner(worktreeName: string): Promise<string | null> {
+    return this.metadataService.readMetadataOwner(this.bareRepoPath, worktreeName);
+  }
+
+  /**
+   * Where a new worktree for `branchName` goes: the path of its existing
+   * registration inside worktreeDir when it has one (a worktree keeps the
+   * directory it was created with, hashed or not), otherwise
+   * `<worktreeDir>/<name>` with the name chosen by
+   * PathResolutionService.branchDirectoryName against origin's branches, the
+   * registered worktrees and what is on disk.
+   */
+  async resolveNewWorktreePath(branchName: string): Promise<string> {
+    const worktreeDir = path.resolve(this.config.worktreeDir);
+    // Detached checkouts are left to the disk probe, as in the sync: one of
+    // this repository's at the plain name keeps that name, so the caller meets
+    // it there (and refuses or adopts it) instead of creating a second
+    // worktree next to it.
+    const worktrees = await this.getWorktrees();
+    const own = worktrees.find(
+      (worktree) =>
+        worktree.branch === branchName && pathsEqual(path.dirname(path.resolve(worktree.path)), worktreeDir),
+    );
+    if (own) return own.path;
+
+    let branches: string[] = [];
+    try {
+      branches = await this.getRemoteBranches();
+    } catch (error) {
+      // Without origin's branches the name is still checked against the disk
+      // and the registrations; only a sibling with no worktree yet goes unseen.
+      this.logger.debug(`Could not list remote branches for worktree naming: ${getErrorMessage(error)}`);
+    }
+    const naming = await this.pathResolution.createProbedNamingContext(
+      { branches, branchesToName: [branchName], defaultBranch: this.defaultBranch, worktrees },
+      {
+        worktreeDir,
+        bareRepoPath: this.bareRepoPath,
+        readMetadataOwner: (name) => this.readWorktreeMetadataOwner(name),
+      },
+    );
+    return this.pathResolution.getBranchWorktreePath(this.config.worktreeDir, branchName, naming);
   }
 
   // Branch and ref operations on the bare repository — see BranchRefService.

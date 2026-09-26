@@ -34,6 +34,7 @@ const SECTIONS: HelpSection[] = [
   {
     title: "Actions",
     rows: [
+      { keys: ["/", "Ctrl-P"], description: "Jump to any worktree in any repo (switcher)" },
       { keys: ["s"], description: "Manually trigger sync for all repositories" },
       { keys: ["c"], description: "Create a new branch" },
       { keys: ["o"], description: "Open worktree in terminal or editor" },
@@ -50,9 +51,10 @@ const SECTIONS: HelpSection[] = [
     ],
   },
   {
-    title: "In wizards and the status view",
+    title: "In wizards, the switcher and the status view",
     rows: [
       { keys: ["Ctrl-P", "Ctrl-N"], description: "Move up / down a list (as well as ↑/↓)" },
+      { keys: ["Tab"], description: "Switcher: editor, terminal, copy, sync, status" },
       { keys: ["Ctrl-D"], description: "Delete the selected .diverged directory" },
     ],
   },

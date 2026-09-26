@@ -26,6 +26,15 @@ export interface CloneSkipDescriptor {
   progressDetail: string;
 }
 
+// A skip decided but not recorded yet, with the exact log and progress lines
+// the tick records it with. Lets a dry run report the same decision.
+export interface PendingCloneSkip {
+  skip: CloneSkipReason;
+  logMessage: string;
+  progressMessage: string;
+  logLevel: "warn" | "info";
+}
+
 // What the clone-mode modules share with the CloneSyncService that owns them.
 // Every member reads through to the service at the moment it is used — the
 // logger can be swapped by updateLogger, the outcome accumulator by each

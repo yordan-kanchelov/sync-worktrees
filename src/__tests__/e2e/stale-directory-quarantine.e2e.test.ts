@@ -33,7 +33,10 @@ describe("Stale directory at a managed path with trash disabled (E2E)", () => {
     const seedDir = path.join(tempDir, "seed");
     worktreeDir = path.join(tempDir, "worktrees");
     bareRepoDir = path.join(tempDir, ".bare", "app");
-    featPath = pathResolution.getBranchWorktreePath(worktreeDir, "feature/a");
+    // feature/a and feature-a flatten to the same plain name, so both get
+    // hashed directories: a stray directory can only sit at a hashed name if
+    // someone put it exactly there.
+    featPath = path.join(worktreeDir, pathResolution.sanitizeBranchName("feature/a"));
 
     await fs.mkdir(path.dirname(remote), { recursive: true });
     await simpleGit().init(["--bare", remote]);
@@ -50,6 +53,7 @@ describe("Stale directory at a managed path with trash disabled (E2E)", () => {
     await seed.addRemote("origin", remote);
     await seed.push("origin", "main");
     await seed.push("origin", "main:refs/heads/feature/a");
+    await seed.push("origin", "main:refs/heads/feature-a");
     await simpleGit(remote).raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
   });
 
@@ -110,5 +114,25 @@ describe("Stale directory at a managed path with trash disabled (E2E)", () => {
 
     await expectRegisteredWorktree();
     await expect(fs.access(path.join(path.dirname(featPath), GIT_CONSTANTS.REMOVED_DIR_NAME))).rejects.toThrow();
+  }, 60_000);
+
+  // A plain name is only used when nothing is there yet: a directory someone
+  // made by hand at a branch's plain name is not moved aside, the branch gets
+  // its hashed name instead.
+  it("leaves a directory at a branch's plain name alone and uses the hashed name", async () => {
+    await simpleGit(path.join(tempDir, "seed")).push("origin", "main:refs/heads/docs");
+    const strayPath = path.join(worktreeDir, "docs");
+    await fs.mkdir(strayPath, { recursive: true });
+    await fs.writeFile(path.join(strayPath, "notes.txt"), "mine\n");
+
+    const outcome = await syncOnce(new WorktreeSyncService(makeConfig(createMockLogger())));
+    expect(outcome.counts.failed).toBe(0);
+
+    const hashedDocs = path.join(worktreeDir, pathResolution.sanitizeBranchName("docs"));
+    const list = await simpleGit(bareRepoDir).raw(["worktree", "list", "--porcelain"]);
+    expect(list).toContain(`worktree ${hashedDocs}\n`);
+    expect(list).not.toContain(`worktree ${strayPath}\n`);
+    await expect(fs.readFile(path.join(strayPath, "notes.txt"), "utf8")).resolves.toBe("mine\n");
+    await expect(fs.access(path.join(worktreeDir, GIT_CONSTANTS.REMOVED_DIR_NAME))).rejects.toThrow();
   }, 60_000);
 });

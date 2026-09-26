@@ -28,6 +28,8 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       hasStashedChanges: vi.fn<any>().mockResolvedValue(false),
       hasOperationInProgress: vi.fn<any>().mockResolvedValue(false),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
+      getBareRepoPath: vi.fn().mockReturnValue("/test/.bare/repo.git"),
+      readWorktreeMetadataOwner: vi.fn<any>().mockResolvedValue(null),
       getWorktrees: vi.fn<any>().mockResolvedValue([
         { path: "/test/worktrees/main", branch: "main" },
         { path: "/test/worktrees/feature-ahead", branch: "feature-ahead" },

@@ -21,8 +21,12 @@ export class WorktreeMetadataService {
   }
 
   /**
-   * Metadata is keyed by worktree path basename. Branch names are sanitized
-   * into unique basenames before worktrees are created.
+   * Metadata is keyed by worktree path basename, in a store this tool owns
+   * (not git's own admin directories). Basenames are unique because a new
+   * worktree's directory name is checked against every registered worktree's
+   * basename and every leftover record before it is used (see
+   * PathResolutionService.branchDirectoryName), and saveMetadata refuses to
+   * overwrite a record written for another upstream.
    */
   private getWorktreeDirectoryName(worktreePath: string): string {
     return path.basename(worktreePath);
@@ -72,6 +76,22 @@ export class WorktreeMetadataService {
       // Return null if file doesn't exist or can't be parsed
       return null;
     }
+  }
+
+  /**
+   * The branch a metadata record under `worktreeName` was written for (its
+   * upstream without the `origin/` prefix), or null when there is no valid
+   * record. saveMetadata refuses to overwrite a record for another upstream,
+   * so a name whose record belongs to another branch cannot be given to a new
+   * worktree.
+   */
+  async readMetadataOwner(bareRepoPath: string, worktreeName: string): Promise<string | null> {
+    const existing = await this.loadMetadata(bareRepoPath, worktreeName);
+    if (!existing || !(await this.validateMetadata(existing))) return null;
+    const upstream = existing.upstreamBranch;
+    return upstream.startsWith(GIT_CONSTANTS.REMOTE_PREFIX)
+      ? upstream.slice(GIT_CONSTANTS.REMOTE_PREFIX.length)
+      : upstream;
   }
 
   async loadMetadataFromPath(bareRepoPath: string, worktreePath: string): Promise<SyncMetadata | null> {

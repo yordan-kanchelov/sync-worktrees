@@ -1151,6 +1151,111 @@ describe("CloneSyncService", () => {
         // success line belongs after the delete returns, not before it.
         expect(infoSpy).not.toHaveBeenCalledWith(`Cleaned up incomplete clone at '${WORKTREE_DIR}'.`);
       });
+
+      // prepareCloneDestination: the ENOENT probe proves only that the
+      // destination was absent a moment ago. Ownership is established by this
+      // init's own non-recursive mkdir, so a directory another process made in
+      // between is never this init's to delete.
+      it("creates the destination with a non-recursive mkdir after its parents", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git"] });
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect((fs.mkdir as unknown as Mock).mock.calls).toEqual([["/tmp", { recursive: true }], [WORKTREE_DIR]]);
+      });
+
+      it("leaves a destination another process created after the probe in place", async () => {
+        const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git"] });
+        (fs.mkdir as unknown as Mock).mockImplementation(
+          async (_target: unknown, options?: { recursive?: boolean }) => {
+            if (options?.recursive) return undefined;
+            throw Object.assign(new Error("EEXIST"), { code: "EEXIST" });
+          },
+        );
+        const warnSpy = vi.spyOn(logger, "warn");
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expectCloneFailureOutcome(service, cloneError);
+
+        expect(recursiveRemovals()).toEqual([]);
+        expect(fs.rmdir).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledWith(
+          `Clone failed; leaving '${WORKTREE_DIR}' for manual inspection (directory existed before clone attempt).`,
+        );
+      });
+
+      it("rethrows a mkdir failure other than EEXIST without cloning", async () => {
+        (fs.readdir as unknown as Mock).mockRejectedValueOnce(enoent());
+        (fs.mkdir as unknown as Mock).mockImplementation(
+          async (_target: unknown, options?: { recursive?: boolean }) => {
+            if (options?.recursive) return undefined;
+            throw eacces("permission denied");
+          },
+        );
+        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+        await expect(service.initialize()).rejects.toThrow("permission denied");
+        expect(gitMock.clone).not.toHaveBeenCalled();
+        expect(recursiveRemovals()).toEqual([]);
+      });
+
+      describe("parent directories the mkdir created", () => {
+        const NESTED_DIR = "/tmp/new-root/nested/clone-demo";
+
+        function mockNestedMkdir(createdParent: string | undefined): void {
+          (fs.mkdir as unknown as Mock).mockImplementation(
+            async (_target: unknown, options?: { recursive?: boolean }) =>
+              options?.recursive ? createdParent : undefined,
+          );
+        }
+
+        it("removes the parents it created, innermost first, with the destination", async () => {
+          const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git"] });
+          mockNestedMkdir("/tmp/new-root");
+          const service = new CloneSyncService(makeConfig({ worktreeDir: NESTED_DIR }), buildGitService(), logger);
+
+          await expect(service.initialize()).rejects.toBe(cloneError);
+
+          expect(recursiveRemovals()).toEqual([[NESTED_DIR, RM_ARGS]]);
+          expect((fs.rmdir as unknown as Mock).mock.calls).toEqual([["/tmp/new-root/nested"], ["/tmp/new-root"]]);
+        });
+
+        it("stops at a parent that is no longer empty", async () => {
+          const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git"] });
+          mockNestedMkdir("/tmp/new-root");
+          (fs.rmdir as unknown as Mock).mockRejectedValueOnce(
+            Object.assign(new Error("ENOTEMPTY"), { code: "ENOTEMPTY" }),
+          );
+          const service = new CloneSyncService(makeConfig({ worktreeDir: NESTED_DIR }), buildGitService(), logger);
+
+          await expect(service.initialize()).rejects.toBe(cloneError);
+
+          expect((fs.rmdir as unknown as Mock).mock.calls).toEqual([["/tmp/new-root/nested"]]);
+        });
+
+        it("removes no parent when every one of them already existed", async () => {
+          const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git"] });
+          mockNestedMkdir(undefined);
+          const service = new CloneSyncService(makeConfig({ worktreeDir: NESTED_DIR }), buildGitService(), logger);
+
+          await expect(service.initialize()).rejects.toBe(cloneError);
+
+          expect(recursiveRemovals()).toEqual([[NESTED_DIR, RM_ARGS]]);
+          expect(fs.rmdir).not.toHaveBeenCalled();
+        });
+
+        it("keeps the parents when the destination itself is left for inspection", async () => {
+          const cloneError = mockCloneFailingBeforeHead({ before: null, after: [".git", "README.md"] });
+          mockNestedMkdir("/tmp/new-root");
+          const service = new CloneSyncService(makeConfig({ worktreeDir: NESTED_DIR }), buildGitService(), logger);
+
+          await expect(service.initialize()).rejects.toBe(cloneError);
+
+          expect(recursiveRemovals()).toEqual([]);
+          expect(fs.rmdir).not.toHaveBeenCalled();
+        });
+      });
     });
 
     it("completes an interrupted init's pending file copy when adopting the existing clone (#review)", async () => {

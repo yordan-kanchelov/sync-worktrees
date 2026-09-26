@@ -33,9 +33,10 @@ export async function initializeClone(ctx: CloneSyncContext, branch: string): Pr
   try {
     entries = await fs.readdir(worktreeDir);
   } catch (error) {
-    // Only a definitively missing directory may proceed as a fresh clone:
-    // cloneCreatedDir below authorizes maybeCleanupPartialClone to rm -rf
-    // the directory after a failed clone, so a transient probe failure
+    // Only a definitively missing directory may proceed as a fresh clone: it
+    // is what lets prepareCloneDestination claim the destination, and that
+    // claim authorizes maybeCleanupPartialClone to rm -rf the directory
+    // after a failed clone, so a transient probe failure
     // (EMFILE, EACCES) must never read as "the directory did not exist" —
     // that would delete a pre-existing directory the tool never created.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -62,6 +63,38 @@ export async function initializeClone(ctx: CloneSyncContext, branch: string): Pr
 
   await cloneFresh(ctx, worktreeDir, branch, entries === null);
   return null;
+}
+
+// What a failed clone may remove. `createdDir` is true only when this init's
+// own mkdir made the destination; `createdParent` is the outermost ancestor the
+// same call had to create on the way, if any.
+interface CloneDestinationOwnership {
+  createdDir: boolean;
+  createdParent?: string;
+}
+
+// The readdir that found the destination missing proves only that it was
+// absent a moment ago, not that this process is the one that creates it. So
+// the parents are made first and the destination itself with a plain,
+// non-recursive mkdir: EEXIST there means somebody else created it in that
+// window, and a directory somebody else created is never this init's to
+// delete. A destination that already existed (empty) is not ours either.
+async function prepareCloneDestination(
+  worktreeDir: string,
+  destinationWasAbsent: boolean,
+): Promise<CloneDestinationOwnership> {
+  if (!destinationWasAbsent) {
+    await fs.mkdir(worktreeDir, { recursive: true });
+    return { createdDir: false };
+  }
+  const createdParent = await fs.mkdir(path.dirname(worktreeDir), { recursive: true });
+  try {
+    await fs.mkdir(worktreeDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    return { createdDir: false };
+  }
+  return { createdDir: true, createdParent };
 }
 
 async function adoptExistingClone(
@@ -115,9 +148,9 @@ async function cloneFresh(
   ctx: CloneSyncContext,
   worktreeDir: string,
   branch: string,
-  cloneCreatedDir: boolean,
+  destinationWasAbsent: boolean,
 ): Promise<void> {
-  await fs.mkdir(worktreeDir, { recursive: true });
+  const ownership = await prepareCloneDestination(worktreeDir, destinationWasAbsent);
 
   ctx.logger.info(`Cloning '${redactRepoUrl(ctx.config.repoUrl)}' (${branch}) into '${worktreeDir}'...`);
   ctx.emitProgress({ phase: "clone", message: `Cloning '${ctx.repoName}' (${branch})` });
@@ -128,7 +161,7 @@ async function cloneFresh(
   try {
     await cloneClient.clone(ctx.config.repoUrl, worktreeDir, buildCloneArgs(ctx, branch));
   } catch (error) {
-    checkoutRecovered = await settleFailedClone(ctx, worktreeDir, cloneCreatedDir, error);
+    checkoutRecovered = await settleFailedClone(ctx, worktreeDir, ownership, error);
     if (!checkoutRecovered) {
       // The outcome is what the MCP `sync` result and the run summary show, so
       // carry the credential hint there too (the thrown error gets it at the
@@ -256,7 +289,7 @@ async function validateExistingClone(
 async function settleFailedClone(
   ctx: CloneSyncContext,
   worktreeDir: string,
-  cloneCreatedDir: boolean,
+  ownership: CloneDestinationOwnership,
   cause: unknown,
 ): Promise<boolean> {
   // Only a definitively absent HEAD may reach maybeCleanupPartialClone: its
@@ -267,7 +300,7 @@ async function settleFailedClone(
   // directory that turns out to be fine costs an error the user can clear.
   const headProbe = await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, "HEAD"));
   if (headProbe === "missing") {
-    await maybeCleanupPartialClone(ctx, worktreeDir, cloneCreatedDir);
+    await maybeCleanupPartialClone(ctx, worktreeDir, ownership);
     return false;
   }
 
@@ -316,9 +349,9 @@ async function retryCheckoutWithLfsSkipped(ctx: CloneSyncContext, worktreeDir: s
 async function maybeCleanupPartialClone(
   ctx: CloneSyncContext,
   worktreeDir: string,
-  cloneCreatedDir: boolean,
+  ownership: CloneDestinationOwnership,
 ): Promise<void> {
-  if (!cloneCreatedDir) {
+  if (!ownership.createdDir) {
     ctx.logger.warn(
       `Clone failed; leaving '${worktreeDir}' for manual inspection (directory existed before clone attempt).`,
     );
@@ -341,6 +374,7 @@ async function maybeCleanupPartialClone(
     try {
       await fs.rm(worktreeDir, { recursive: true, force: true });
       ctx.logger.info(`Cleaned up incomplete clone at '${worktreeDir}'.`);
+      await removeCreatedParents(ctx, worktreeDir, ownership.createdParent);
     } catch (rmError) {
       ctx.logger.warn(`Failed to clean up incomplete clone at '${worktreeDir}': ${getErrorMessage(rmError)}`);
     }
@@ -349,4 +383,28 @@ async function maybeCleanupPartialClone(
       `Clone failed; leaving '${worktreeDir}' for manual inspection (post-failure contents do not look like an empty incomplete clone).`,
     );
   }
+}
+
+// The parents this init's mkdir created for the destination, innermost first,
+// up to and including the outermost one it made. rmdir only ever removes an
+// empty directory, so anything another process put there in the meantime
+// stops the walk instead of being deleted with it.
+async function removeCreatedParents(
+  ctx: CloneSyncContext,
+  worktreeDir: string,
+  createdParent: string | undefined,
+): Promise<void> {
+  if (createdParent === undefined) return;
+  const outermost = path.resolve(createdParent);
+  let dir = path.dirname(path.resolve(worktreeDir));
+  while (dir === outermost || dir.startsWith(outermost + path.sep)) {
+    try {
+      await fs.rmdir(dir);
+    } catch {
+      return;
+    }
+    if (dir === outermost) break;
+    dir = path.dirname(dir);
+  }
+  ctx.logger.debug(`Removed the parent directories created for '${worktreeDir}'.`);
 }

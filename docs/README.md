@@ -12,6 +12,7 @@ full.
 | [Hooks and file copying](./hooks-and-file-copying.md) | `hooks.onBranchCreated`, `filesToCopyOnBranchCreate`, pattern rules, hook timeout and quit semantics                                                           |
 | [Interactive TUI](./tui.md)                           | Every key, the wizards, status flags, terminal and editor launch                                                                                               |
 | [MCP server](./mcp.md)                                | Install in each client, auto-detect, every tool, safety, parallel agents                                                                                       |
+| [Previewing a sync](./dry-run.md)                     | `sync-worktrees --dry-run`: every step it reports, what it fetches and what it never touches, the `--json` shape                                               |
 | [Checking your setup](./doctor.md)                    | `sync-worktrees doctor`: every check, what passes, the exit code and the `--json` shape                                                                        |
 
 The annotated [example config](../sync-worktrees.config.example.js) shows every knob in place.

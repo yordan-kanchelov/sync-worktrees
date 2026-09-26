@@ -51,6 +51,30 @@ module.exports = defineConfig([
     },
   },
   {
+    // A repository URL can carry credentials (`https://user:token@host/...`), and redaction at the output has
+    // drifted more than once. These are the two shapes that put a raw one in front of a person: a label falling
+    // back to it, and a template string interpolating it. Use repoDisplayLabel / redactRepoUrl from utils/git-url.
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: testFiles,
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "LogicalExpression[right.type='MemberExpression'][right.property.name='repoUrl']",
+          message: "A raw repoUrl as a fallback label can leak credentials: use repoDisplayLabel() from utils/git-url.",
+        },
+        {
+          selector: "TemplateLiteral > MemberExpression.expressions[property.name='repoUrl']",
+          message: "Interpolating a raw repoUrl can leak credentials: wrap it in redactRepoUrl() from utils/git-url.",
+        },
+        {
+          selector: "BinaryExpression[operator='+'] > MemberExpression[property.name='repoUrl']",
+          message: "Concatenating a raw repoUrl can leak credentials: wrap it in redactRepoUrl() from utils/git-url.",
+        },
+      ],
+    },
+  },
+  {
     // Ink components and their tests.
     files: ["src/components/**/*.{ts,tsx}"],
     extends: [reactHooks.configs.flat.recommended],

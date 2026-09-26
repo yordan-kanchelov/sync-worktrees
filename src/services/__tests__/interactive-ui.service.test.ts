@@ -589,6 +589,25 @@ describe("InteractiveUIService", () => {
       void service.destroy();
     });
 
+    it("syncs only the repository the switcher picked", async () => {
+      const mockService2 = {
+        ...mockSyncService,
+        sync: vi.fn<any>().mockResolvedValue(undefined),
+        isInitialized: vi.fn<any>().mockReturnValue(true),
+        isSyncInProgress: vi.fn<any>().mockReturnValue(false),
+      };
+      const service = new InteractiveUIService([mockSyncService, mockService2 as any]);
+      const onSyncRepository = (mockRender.mock.calls[0][0].props as any).onSyncRepository;
+
+      await onSyncRepository(1);
+
+      expect(mockService2.sync).toHaveBeenCalledTimes(1);
+      expect(mockSyncService.sync).not.toHaveBeenCalled();
+      await expect(onSyncRepository(5)).rejects.toThrow("Invalid repository index: 5");
+
+      void service.destroy();
+    });
+
     it("should handle sync errors gracefully", async () => {
       mockSyncService.sync.mockRejectedValue(new Error("Sync failed"));
       const service = new InteractiveUIService([mockSyncService]);
@@ -1950,6 +1969,7 @@ describe("InteractiveUIService", () => {
           reasons: [],
         }),
         addWorktree: vi.fn().mockResolvedValue(undefined),
+        resolveNewWorktreePath: vi.fn().mockResolvedValue("/test/worktrees/feature-new"),
         fetchAll: vi.fn().mockResolvedValue(undefined),
       };
 
@@ -2594,10 +2614,9 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
         await service.operations.createWorktreeForBranch(0, "feature/new");
 
-        expect(mockGitService.addWorktree).toHaveBeenCalledWith(
-          "feature/new",
-          expect.stringMatching(/^\/test\/worktrees\/feature-new-[a-f0-9]{8}$/),
-        );
+        // The directory is named inside the queued operation, by GitService.
+        expect(mockGitService.resolveNewWorktreePath).toHaveBeenCalledWith("feature/new");
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/new", "/test/worktrees/feature-new");
 
         void service.destroy();
       });

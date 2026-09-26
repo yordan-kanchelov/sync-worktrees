@@ -30,6 +30,10 @@ export type CliOptions =
       debug: boolean;
       filter?: string;
       quiet: boolean;
+      /** Compute and print what a sync would do, change nothing, exit. Implies a one-shot run. */
+      dryRun: boolean;
+      /** With dryRun: print the plans as JSON on stdout. */
+      json: boolean;
     }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
   | { command: typeof CLI_COMMANDS.LIST; config?: string; filter?: string; json: boolean }
@@ -58,6 +62,7 @@ const FLAG_NAMES = [
   "debug",
   "filter",
   "quiet",
+  "dry-run",
   "force",
   ...TRASH_FLAG_NAMES,
   "help",
@@ -65,7 +70,7 @@ const FLAG_NAMES = [
 ] as const;
 
 /** Root-command flags, which yargs' completion leaves out because `$0` never runs its builder there. */
-const ROOT_FLAG_NAMES = ["config", "run-once", "debug", "filter", "quiet"] as const;
+const ROOT_FLAG_NAMES = ["config", "run-once", "debug", "filter", "quiet", "dry-run", "json"] as const;
 
 function toKebabCase(name: string): string {
   return name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
@@ -222,7 +227,19 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
             type: "boolean",
             description: "One-shot runs: print only warnings, errors and the final summary line.",
             default: false,
-          }),
+          })
+          .option("dry-run", {
+            type: "boolean",
+            description:
+              "Print what a sync would create, update, prune and skip, then exit without changing anything (fetches remote-tracking refs only). Implies --run-once.",
+            default: false,
+          })
+          .option("json", {
+            type: "boolean",
+            description: "With --dry-run: print the plans as a JSON array instead of a report.",
+            default: false,
+          })
+          .check((args) => !args.json || args.dryRun || "--json is only available with --dry-run."),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.RUN,
@@ -231,6 +248,8 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           debug: args.debug,
           filter: args.filter,
           quiet: args.quiet,
+          dryRun: args.dryRun,
+          json: args.json,
         };
       },
     )
@@ -336,6 +355,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
     .completion("completion", "Print a bash/zsh completion script", completeArguments)
     .example("$0 --run-once", "Sync once and exit (cron, CI)")
     .example("$0 --run-once -q -f backend", "Sync one repo; print only problems and the summary")
+    .example("$0 --dry-run -f backend", "Show what a sync would do to one repo, without doing it")
     .example('$0 list --filter "frontend-*"', "Show which repositories a filter matches")
     .example("$0 trash restore <id>", "Restore a worktree from the trash")
     .example("$0 doctor", "Check Node, git, the config, each remote and the directories")

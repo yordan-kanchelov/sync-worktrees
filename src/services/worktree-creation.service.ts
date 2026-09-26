@@ -510,7 +510,7 @@ export class WorktreeCreationService {
       // worktree's parent.
       const parentCommit = await bareGit.revparse([`${GIT_CONSTANTS.REFS.HEADS}${this.ctx.defaultBranch()}`]);
 
-      await this.deps.metadata.createInitialMetadataFromPath(
+      const written = await this.deps.metadata.createInitialMetadataFromPath(
         this.ctx.bareRepoPath,
         worktreePath,
         currentCommit,
@@ -518,6 +518,12 @@ export class WorktreeCreationService {
         this.ctx.defaultBranch(),
         parentCommit.trim(),
       );
+      // Metadata is keyed by directory name. A record under this name that
+      // belongs to another branch was left alone, and a worktree cannot be
+      // auto-managed on another branch's record, so the refusal fails the add.
+      if (written === false) {
+        throw new Error(`a metadata record for another branch already exists under '${path.basename(worktreePath)}'`);
+      }
       return currentCommit;
     } catch (metadataError) {
       this.logger.error(`  - ❌ Failed to create metadata for '${branchName}': ${String(metadataError)}`);

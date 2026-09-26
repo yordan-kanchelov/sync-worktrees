@@ -144,7 +144,9 @@ describe("Default branch renamed on the remote (E2E)", () => {
     ]);
     const worktrees = await registeredWorktrees(service);
     expect(worktrees).toContainEqual({ path: trunkPath, branch: "trunk" });
-    expect(worktrees.map((w) => w.path)).not.toContain(pathResolution.getBranchWorktreePath(worktreeDir, "trunk"));
+    expect(worktrees.map((w) => w.path)).not.toContain(
+      path.join(worktreeDir, pathResolution.sanitizeBranchName("trunk")),
+    );
     expect((await simpleGit(trunkPath).revparse(["HEAD"])).trim()).toBe(trunkTip);
     await expect(fs.readFile(path.join(trunkPath, "TRUNK.md"), "utf8")).resolves.toBe("# trunk");
 
@@ -171,11 +173,20 @@ describe("Default branch renamed on the remote (E2E)", () => {
     const service = new WorktreeSyncService(makeConfig(logger));
     await service.initialize();
 
-    // trunk is synced as an ordinary branch first, under its hashed directory...
-    await pushTrunk();
+    // trunk has an ordinary branch worktree under the hashed directory name
+    // every branch got before plain names, and sync keeps it there...
     expect((await syncOutcome(service)).counts.failed).toBe(0);
-    const hashedTrunkPath = pathResolution.getBranchWorktreePath(worktreeDir, "trunk");
+    await pushTrunk();
+    await service.getGitService().fetchAll();
+    const hashedTrunkPath = path.join(worktreeDir, pathResolution.sanitizeBranchName("trunk"));
+    await service.getGitService().addWorktree("trunk", hashedTrunkPath);
+    expect((await syncOutcome(service)).counts.failed).toBe(0);
     expect(await registeredWorktrees(service)).toContainEqual({ path: hashedTrunkPath, branch: "trunk" });
+    // ...while a branch new to this version gets its plain name.
+    expect(await registeredWorktrees(service)).toContainEqual({
+      path: path.join(worktreeDir, "feature-1"),
+      branch: "feature-1",
+    });
 
     // ...then the remote makes it the default and deletes main.
     await retireMain();
@@ -200,6 +211,33 @@ describe("Default branch renamed on the remote (E2E)", () => {
     expect(await registeredWorktrees(service)).toEqual([
       expect.objectContaining({ branch: "feature-1" }),
       { path: hashedTrunkPath, branch: "trunk" },
+    ]);
+  });
+
+  it("keeps a new default's plain-named branch worktree where it is, as the default's worktree", async () => {
+    const logger = createMockLogger();
+    const service = new WorktreeSyncService(makeConfig(logger));
+    await service.initialize();
+
+    // A single-segment branch's plain directory is the path the default
+    // branch's worktree uses, so nothing has to move when trunk becomes it.
+    await pushTrunk();
+    expect((await syncOutcome(service)).counts.failed).toBe(0);
+    expect(await registeredWorktrees(service)).toContainEqual({ path: trunkPath, branch: "trunk" });
+
+    await retireMain();
+    const outcome = await syncOutcome(service);
+
+    expect(outcome.counts.failed).toBe(0);
+    expect(await service.getDefaultBranch()).toBe("trunk");
+    expect(actionsFor(outcome, "trunk")).toEqual([
+      expect.objectContaining({ kind: "noop", reason: "already_up_to_date", path: trunkPath }),
+    ]);
+    expect(actionsFor(outcome, "main")).toEqual([
+      expect.objectContaining({ kind: "removed", branch: "main", path: mainPath }),
+    ]);
+    expect((await registeredWorktrees(service)).filter((w) => w.branch === "trunk")).toEqual([
+      { path: trunkPath, branch: "trunk" },
     ]);
   });
 

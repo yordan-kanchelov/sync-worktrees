@@ -28,6 +28,43 @@ export async function applySparseCheckoutAfterClone(
   await (recoveredGit ?? clients.git).raw(["checkout", "HEAD"]);
 }
 
+export type CloneSparseAssessment =
+  | { kind: "in-sync" }
+  | { kind: "apply"; narrowing: boolean }
+  | { kind: "unsafe-narrowing" }
+  | { kind: "failed"; error: unknown };
+
+// The read-only half of reapplySparseCheckout, which a dry run reports.
+export async function assessSparseCheckout(
+  ctx: CloneSyncContext,
+  worktreeDir: string,
+  cfg: SparseCheckoutConfig,
+): Promise<CloneSparseAssessment> {
+  const sparseService = ctx.gitService.getSparseCheckoutService();
+  try {
+    if (!(await sparseService.needsUpdate(worktreeDir, cfg))) return { kind: "in-sync" };
+
+    // Narrowing drops paths out of the cone, and git then has to decide what
+    // to do with whatever the user left in them. It keeps modified, staged
+    // and untracked files: they stay on disk, and git warns about it on its
+    // own stderr, which simple-git captures and this tool never prints — so
+    // the preservation is real but silent. This gate is therefore not what
+    // stands between the user and data loss — docs/sparse-checkout.md's
+    // "Narrowing safety" section is the tool's promise to skip rather than
+    // git's promise to preserve, and worktree mode has always kept it. The
+    // deferred narrowing lands on the first tick that finds a clean tree.
+    const current = await sparseService.readCurrent(worktreeDir);
+    const narrowing = sparseService.isNarrowing(current, sparseService.buildPatterns(cfg));
+    // The same notion of "clean" the ff-merge gate uses: uncommitted and
+    // untracked changes. Unpushed commits are a clone-mode skip of their
+    // own and their content is safe in the object store either way.
+    if (narrowing && !(await ctx.gitService.checkWorktreeStatus(worktreeDir))) return { kind: "unsafe-narrowing" };
+    return { kind: "apply", narrowing };
+  } catch (error) {
+    return { kind: "failed", error };
+  }
+}
+
 // Reconciles the clone's sparse patterns with the config, the same three
 // steps worktree mode runs over every worktree it manages: is an update
 // needed, is that update a narrowing one, and is the tree clean enough to
@@ -45,36 +82,23 @@ export async function reapplySparseCheckout(
   const sparseService = ctx.gitService.getSparseCheckoutService();
 
   try {
-    if (!(await sparseService.needsUpdate(worktreeDir, cfg))) return;
+    const assessment = await assessSparseCheckout(ctx, worktreeDir, cfg);
+    if (assessment.kind === "failed") throw assessment.error;
+    if (assessment.kind === "in-sync") return;
 
-    // Narrowing drops paths out of the cone, and git then has to decide what
-    // to do with whatever the user left in them. It keeps modified, staged
-    // and untracked files: they stay on disk, and git warns about it on its
-    // own stderr, which simple-git captures and this tool never prints — so
-    // the preservation is real but silent. This gate is therefore not what
-    // stands between the user and data loss — docs/sparse-checkout.md's
-    // "Narrowing safety" section is the tool's promise to skip rather than
-    // git's promise to preserve, and worktree mode has always kept it. The
-    // deferred narrowing lands on the first tick that finds a clean tree.
-    const current = await sparseService.readCurrent(worktreeDir);
-    if (sparseService.isNarrowing(current, sparseService.buildPatterns(cfg))) {
-      // The same notion of "clean" the ff-merge gate uses: uncommitted and
-      // untracked changes. Unpushed commits are a clone-mode skip of their
-      // own and their content is safe in the object store either way.
-      if (!(await ctx.gitService.checkWorktreeStatus(worktreeDir))) {
-        const message = "working tree has local changes";
-        ctx.logger.warn(`⏭️  Skipping sparse-checkout narrowing for '${ctx.repoName}' — ${message}.`);
-        ctx.emitProgress({
-          phase: "sparse_checkout",
-          message: `Skipping sparse-checkout narrowing for '${ctx.repoName}': ${message}`,
-        });
-        ctx.outcome?.recordSkipped("sparse-checkout", "sparse_narrowing_unsafe", {
-          branch,
-          path: worktreeDir,
-          message,
-        });
-        return;
-      }
+    if (assessment.kind === "unsafe-narrowing") {
+      const message = "working tree has local changes";
+      ctx.logger.warn(`⏭️  Skipping sparse-checkout narrowing for '${ctx.repoName}' — ${message}.`);
+      ctx.emitProgress({
+        phase: "sparse_checkout",
+        message: `Skipping sparse-checkout narrowing for '${ctx.repoName}': ${message}`,
+      });
+      ctx.outcome?.recordSkipped("sparse-checkout", "sparse_narrowing_unsafe", {
+        branch,
+        path: worktreeDir,
+        message,
+      });
+      return;
     }
 
     ctx.emitProgress({ phase: "sparse_checkout", message: `Updating sparse-checkout for '${ctx.repoName}'` });

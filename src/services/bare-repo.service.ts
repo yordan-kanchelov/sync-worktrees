@@ -252,7 +252,7 @@ export class BareRepoService {
   // (scheme/host case, trailing slash, forge `.git`) so equivalent spellings
   // don't false-positive, and are shown redacted. A bare repo whose origin
   // cannot be read is not a mismatch — the fetch that follows reports it.
-  private async assertBareRepoOriginMatches(bareGit: SimpleGit): Promise<void> {
+  async assertBareRepoOriginMatches(bareGit: SimpleGit): Promise<void> {
     const bareRepoPath = path.resolve(this.ctx.bareRepoPath);
 
     let originUrl: string;
@@ -321,7 +321,10 @@ export class BareRepoService {
   // name, so it is trusted only while its target is still a remote branch.
   // Otherwise the remote is asked again, and failing that a common default
   // name that does exist is used.
-  async detectDefaultBranch(bareGit: SimpleGit): Promise<string> {
+  //
+  // `readOnly` (the dry run) asks the remote with `ls-remote --symref` instead
+  // of `remote set-head -a`: the same question, without rewriting the symref.
+  async detectDefaultBranch(bareGit: SimpleGit, options: { readOnly?: boolean } = {}): Promise<string> {
     const remoteBranches = await this.listRemoteBranchNames(bareGit);
     const fromSymref = await this.readOriginHead(bareGit);
     if (fromSymref !== null && (remoteBranches === null || remoteBranches.has(fromSymref))) {
@@ -336,7 +339,14 @@ export class BareRepoService {
     try {
       // The only command here that talks to the remote, so it runs on the
       // network client (the caller's bareGit is the local one).
-      await this.ctx.networkGit(this.ctx.bareRepoPath).raw(["remote", "set-head", "origin", "-a"]);
+      const networkGit = this.ctx.networkGit(this.ctx.bareRepoPath);
+      if (options.readOnly) {
+        const out = await networkGit.raw(["ls-remote", "--symref", "origin", "HEAD"]);
+        const advertised = /^ref: refs\/heads\/(\S+)\s+HEAD/m.exec(out)?.[1];
+        if (advertised) return advertised;
+        throw new Error("origin did not advertise a HEAD symref");
+      }
+      await networkGit.raw(["remote", "set-head", "origin", "-a"]);
       const refreshed = await this.readOriginHead(bareGit);
       if (refreshed !== null) {
         return refreshed;

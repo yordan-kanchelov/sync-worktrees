@@ -2,7 +2,7 @@
 
 Running `sync-worktrees` with no arguments opens the terminal UI; this page covers the home screen's repository table,
 every key, the three wizards, the status flags, and how terminal and editor launch is configured. The
-[README](../README.md#interactive-tui) has the eight keys you will use most.
+[README](../README.md#interactive-tui) has the nine keys you will use most.
 
 The UI has a per-repository table, live log streaming, manual sync triggers, and wizards for the common operations. It
 syncs once on startup (see `defaults.syncOnStart` in the [configuration reference](./configuration.md#whole-file-settings)) and then on the
@@ -58,6 +58,7 @@ The status bar shows:
 
 | Key         | Action                                         |
 | ----------- | ---------------------------------------------- |
+| `/` / `Ctrl-P` | [Worktree switcher](#worktree-switcher): jump to any worktree in any repository |
 | `s`         | Manually trigger sync for all repositories     |
 | `c`         | Create a new branch (wizard)                   |
 | `o`         | Open a worktree in terminal or editor (wizard) |
@@ -91,6 +92,39 @@ away. While a sync, an `onBranchCreated` hook or a worktree creation is still ru
 running and a second `q` confirms; any other key cancels. Quitting waits for a running sync (press `q` again to stop
 waiting) and terminates any hooks still running (see [Hooks and file copying](./hooks-and-file-copying.md)). `r` and `s`
 pressed after that do nothing.
+
+## Worktree switcher
+
+Press `/` or `Ctrl-P` on the main screen. The switcher lists every worktree of every configured repository as `repo › branch` and narrows the list as you type.
+Matching is fuzzy: the letters you type have to appear in order but not side by side, so `apilog` finds
+`api › feature/login`. Matches that start a word or run together rank higher. Spaces split the query into terms that
+must all match, in any order, so `web fix` finds `web › fix/header`. The path of the selected worktree is shown under
+the list. Each time it opens, the switcher reads `git worktree list` again for every repository (four at a time), and
+worktrees appear as each repository answers. A repository that cannot be listed is named under the list.
+
+| Key                      | Action                                                         |
+| ------------------------ | -------------------------------------------------------------- |
+| typing                   | Filter; `Backspace` deletes a character, `Ctrl-U` clears it all |
+| `↑`/`↓`, `Ctrl-P`/`Ctrl-N` | Move the selection                                           |
+| `Enter`                  | Open the selected worktree in the editor                       |
+| `Tab`                    | Open the actions menu for the selected worktree                |
+| `Esc`                    | Close the switcher                                             |
+
+Every letter goes into the filter, so the per-worktree actions are in a menu that `Tab` opens. `Tab` or `Esc` goes back
+to the list with the filter kept. In the menu:
+
+| Key            | Action                                                                                                          |
+| -------------- | --------------------------------------------------------------------------------------------------------------- |
+| `e` / `Enter`  | Open in the editor (`$EDITOR` / `$VISUAL`, as in the [Open wizard](#wizards))                                   |
+| `t`            | Open a terminal attached to a `tmux` session in the worktree (see [Terminal mode](#terminal-mode-environment-variables)) |
+| `y`            | Copy the worktree's path to the clipboard                                                                       |
+| `s`            | Sync only this repository. Like `s` on the main screen, it does nothing while a sync is running and says so    |
+| `w`            | Open the [status view](#wizards) on this repository with this worktree expanded                                 |
+
+Copying uses `pbcopy` on macOS. On Linux it uses `wl-copy` in a Wayland session, then `xclip` or `xsel`. When none of
+them is installed, or the one found fails (for example with no display to talk to), the switcher stays open and shows
+the reason with the path, so you can still select the path by hand (hold `Shift` while dragging). The log gets the
+same line. A launch that fails keeps the switcher open with the reason, too.
 
 ## Wizards
 

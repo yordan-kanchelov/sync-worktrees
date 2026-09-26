@@ -43,7 +43,9 @@ Splitting a config across several files is supported, including on reload: reloa
 so the value a config file exports has to be plain data — strings, numbers, booleans, arrays, objects, and also `Date`,
 `RegExp`, `Map`, `Set` and `BigInt`. A function cannot cross that boundary, and neither can a symbol, a `WeakMap` or a
 `Proxy`; no setting takes any of them (`hooks.onBranchCreated` and the branch filters are arrays of strings), and a
-reload that finds one fails with a message naming the value, leaving the previously loaded config running.
+reload that finds one fails with a message naming the value, leaving the previously loaded config running. The same
+holds for a config that does not finish evaluating within 30 seconds — a top-level `await` that never settles, a loop
+that never ends: the reload is stopped and fails with a message saying so.
 
 Every load validates the whole file and reports every problem it finds at once, one line each, naming the setting by its
 path in the file and the repository it belongs to:
@@ -89,11 +91,29 @@ tick.
 
 ### Worktree folder names
 
-In worktree mode every branch gets a folder directly under `worktreeDir`, named from the branch name: `/` becomes `-`,
-any other character outside letters, digits, `_` and `-` becomes `_`, and that stem is capped at 80 characters. The name
-then ends in `-` plus the first eight hex characters of the branch name's SHA-256, so it is stable across machines and
-unique per branch even when two names sanitize to the same stem: `feature/login` is always
-`feature-login-df7c7aeb`. Only the default branch keeps its plain name (`main/`).
+In worktree mode every branch gets a folder directly under `worktreeDir`. The default branch's folder is its name
+(`main/`). Any other branch gets its **plain name**, the branch name with every `/` turned into `-`
+(`feature/login` → `feature-login/`), unless that name would be ambiguous. In that case, and only then, it gets the
+**hashed name**: the same flattening with any character outside letters, digits, `_` and `-` turned into `_`, capped
+at 80 characters, then `-` and the first eight hex characters of the branch name's SHA-256
+(`feature/login` → `feature-login-df7c7aeb/`).
+
+A new worktree gets the hashed name when:
+
+- the branch name holds anything other than ASCII letters, digits, `.`, `_`, `-` and `/`, flattens to more than 80
+  characters, starts with `.` or `-`, ends with `.`, or is a Windows device name (`con`, `nul`, `com1`, ...);
+- another branch on origin flattens to the same name, compared case-insensitively. Both get hashed names, so
+  `feature/login` and `feature-login` never race for `feature-login/`, and neither do `Docs` and `docs`;
+- the name is already used by a registered worktree of another branch (anywhere, since per-worktree metadata is keyed
+  by folder name), by the default branch's folder (`main`, or `release` and `2024` for `release/2024`), by the tool's
+  own folders (`.bare`, `.trash`, `.diverged`, `.removed`, ...), or by a metadata record another branch left behind;
+- something that is not a checkout of this repository already sits at `<worktreeDir>/<plain name>`: a folder you
+  made, a file, a symlink. It is left alone rather than moved aside.
+
+The choice is made once, when the worktree is created. A worktree keeps the folder it was created with, so worktrees
+created by earlier versions keep their hashed names and are never renamed; delete such a folder's worktree (or let sync
+prune it) and the branch gets its plain name the next time it is created. A branch whose plain name becomes ambiguous
+later (someone pushes `feature-login` next to `feature/login`) keeps its folder too; only the newcomer is hashed.
 
 ## Branch filtering
 
@@ -131,10 +151,15 @@ must come from a source that needs no prompt:
   prompts as it normally would and a run with no terminal waits instead.
 - **SSH** — a key loaded into `ssh-agent` (or one without a passphrase) and the host already present in
   `~/.ssh/known_hosts`. A key the remote rejects or a host key that does not match fails at once with a hint and is not
-  retried. Known limitation: `GIT_TERMINAL_PROMPT=0` covers git's own prompts only; ssh reads a key passphrase or an
-  unknown-host confirmation from the terminal itself, so a passphrase-protected key without an agent or a host missing
-  from `known_hosts` still blocks until the fetch inactivity timeout. sync-worktrees does not set `GIT_SSH_COMMAND`,
-  because git gives it precedence over the `core.sshCommand` config key.
+  retried. ssh asks for a key passphrase or an unknown-host confirmation on the terminal itself, so for a `repoUrl`
+  reached over ssh (`ssh://…` or `user@host:path`) sync-worktrees also sets `SSH_ASKPASS_REQUIRE=force` and
+  `SSH_ASKPASS=false`: ssh routes those questions to an askpass program that declines them, and a passphrase-protected
+  key without an agent or a host missing from `known_hosts` fails at once with the same hint. It needs OpenSSH 8.4 or
+  later; older versions ignore the variable and wait until the fetch inactivity timeout, as does a remote reached over
+  ssh only through a `url.<base>.insteadOf` rewrite of an HTTPS `repoUrl`. Nothing is set when you exported
+  `SSH_ASKPASS` or `SSH_ASKPASS_REQUIRE` yourself, when you exported `GIT_TERMINAL_PROMPT` to enable prompts, or on
+  Windows. sync-worktrees never sets `GIT_SSH_COMMAND`, because git gives it precedence over the `core.sshCommand`
+  config key; your ssh command runs as configured.
 
 ## Retry, LFS and timeouts
 
