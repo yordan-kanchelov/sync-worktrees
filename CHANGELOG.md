@@ -1,5 +1,65 @@
 # sync-worktrees
 
+## 7.2.0
+
+### Minor Changes
+
+- eaca1bf: **The CLI finds its config from a subdirectory, honours `SYNC_WORKTREES_CONFIG`, and `list` gains `--json` and on-disk counts.**
+
+  - **Config discovery walks up.** Without `--config`, `sync-worktrees`, `list` and `trash` used to look for `sync-worktrees.config.{js,mjs,cjs,ts}` in the current directory only, so running them from inside a worktree or any subdirectory failed with "No config file found". They now walk up from the current directory to the first directory that has one, the way git finds `.git`. When the walk starts inside your home directory it stops there: a config in `~` is found, one in `/home` or `/` is not.
+  - **`SYNC_WORKTREES_CONFIG`.** The CLI reads this variable when `--config` is not given. The order is `--config`, then the variable, then discovery. A relative value resolves against the current directory, an empty one counts as unset, and a path that does not exist fails with a message naming the variable rather than falling through to discovery. The MCP server still ignores the variable, as it has since 7.0.0.
+  - **Which file was used.** The `📄 Using config:` line from `sync-worktrees` (and now `list`) says when the file came from a parent directory or from the variable. `trash` prints the same line on stderr whenever the path did not come from `--config`, so its tab-separated and JSON output are unchanged.
+  - **`list --json`** prints an array with one object per repository: `name`, `mode`, `repoUrl` (credentials removed), `worktreeDir`, `bareRepoDir`, `branch`, `schedule`, `runOnce`, `skipLfs`, `filters` (`branchInclude`, `branchExclude`, `branchMaxAge`), `sparseCheckout` (with defaults filled in) and `counts`. Every key is always present, with `null` when it does not apply. Failures go to stderr with exit 1, so stdout is never half a document.
+  - **On-disk counts.** `list` now shows, for each repository, the registered worktrees whose directory exists and the entries in its trash (for a clone-mode repository, whether the clone exists yet). It only reads `git worktree list` and the `.trash` directory and takes no lock, so it is safe to run next to a sync. A count that cannot be read is shown as unknown, with the reason, instead of as zero.
+  - The human `list` output also gains `Mode`, `Branch` (clone mode), `Branch filters` and `Sparse checkout` lines.
+
+- 613c02b: Add `sync-worktrees doctor`: checks the Node.js and git versions, git-lfs (when a synced repository uses LFS), that the config file is found and valid, and for each repository that `repoUrl` answers a non-interactive `git ls-remote --heads`, that its directories and lock/state directories are writable, and that there is free disk space. Prints one PASS/WARN/FAIL line per check with a fix hint (`--quiet` keeps only problems, `--json` prints an array), honours `--filter` and `NO_COLOR`, and exits 1 only when a check failed.
+- cbd67cd: Config validation now reports every problem in the file at once, and names each setting by its path in the file and
+  the repository it belongs to, followed by the value it found:
+
+  ```text
+  Invalid configuration for 'repositories[1].cronSchedule' (repository 'api'): '0 * *' is not a valid cron expression
+  Invalid configuration for 'defaults.retry.maxAttempts': must be 'unlimited' or a positive safe integer, got 0
+  ```
+
+  Previously the load stopped at the first problem, and the messages came in several shapes ("Repository 'api' has
+  invalid cron expression", "Invalid 'maxAttempts' in retry config", ...). Every validation failure is now a
+  `ConfigValidationError`, so it is no longer prefixed with "Failed to load config file:".
+
+  The rules themselves are unchanged, with a few nonsensical shapes now refused instead of silently ignored: an array
+  where a block (`retry`, `hooks`, `trash`, ...) belongs, a `defaults` that is `false`, `0` or `""` (`null` still means
+  no defaults), a whitespace-only repository `name` or `worktreeDir`, and a non-string `defaults.repoUrl`,
+  `defaults.worktreeDir` or `defaults.bareRepoDir`. Unknown keys are still warnings with a "did you mean" suggestion.
+
+- 1493fa9: New branch worktrees get plain folder names: the branch name with `/` turned into `-` (`feature/login` → `worktrees/feature-login/` instead of `feature-login-df7c7aeb/`). The short hash suffix is now added only when the plain name would be ambiguous: another branch on origin flattens to the same name (`feature/login` next to `feature-login`, or names that differ only in case; all of them are hashed), the branch name holds characters a folder name would have to substitute, the name is taken by another branch's worktree, the default branch's folder or a leftover metadata record, or something that is not a checkout of the repository already sits at that path (it is now left alone instead of being moved to trash). Existing worktrees keep the folders they were created with and are never renamed, so a workspace from an earlier version can hold hashed and plain folders side by side; a hashed worktree gets its plain name only when it is created again. The same rule applies to worktrees made by the MCP `create_worktree` tool and the TUI. Worktree creation now also fails, and rolls back, when the metadata record under its folder name belongs to another branch, instead of silently keeping the other branch's record.
+- 43afb7e: Add `sync-worktrees --dry-run`: prints what a sync would do to each repository (worktrees to create, fast-forward, prune with the reason it is safe to, replace after a divergence, and skip with the reason) and exits without changing anything. It fetches like a sync does, so remote-tracking refs are updated; nothing else is written, and git runs with optional locks off so even `git status` leaves every index alone. Works in worktree and clone mode, honours `--filter`, needs no terminal, and `--json` prints the plans as a JSON array. Exits 1 only when a repository could not be planned. See `docs/dry-run.md`.
+- f3d8ac0: `sync-worktrees trash` has subcommands: `trash list` (the default), `trash restore <id>`, `trash purge <id>`, the new `trash purge --all` (every listed entry behind one typed confirmation), `trash drop-keep-ref <name>` and `trash drop-all-keep-refs`. The old flag forms (`trash --restore <id>`, `--purge`, `--drop-keep-ref`, `--drop-all-keep-refs`) keep working and print a one-line hint to the new form on stderr. An empty id or name (`--purge "$ID"` with `$ID` unset) is now rejected instead of falling through to a listing.
+- 3ddfed2: **A worktree switcher in the TUI: `/` or `Ctrl-P` lists every worktree of every repository and filters as you type.**
+
+  - **One list across repositories.** Entries read `repo › branch` and come from `git worktree list` for each configured repository, read afresh each time the switcher opens (four repositories at a time). A repository that cannot be listed is named under the list, and the rest still show.
+  - **Fuzzy filtering.** The letters you type have to appear in order but not side by side (`apilog` finds `api › feature/login`). Consecutive letters and letters that start a word rank higher, spaces split the query into terms that must all match, and the matched letters are highlighted. `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move, `Ctrl-U` clears the filter and `Esc` closes.
+  - **Actions.** `Enter` opens the selected worktree in the editor. `Tab` opens a menu for it: `e` editor, `t` terminal (`tmux`), `y` copy the path, `s` sync only that repository and `w` open the status view on that repository with the worktree expanded. The actions sit behind `Tab` because every letter goes into the filter. The editor and terminal launch the same way as in the Open wizard. A repository sync follows the same rules as `s`: it does not start while a sync is running, and it says so.
+  - **Clipboard.** Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. When none is installed or the one found fails, the switcher stays open, shows the reason with the path, and logs it, instead of failing silently.
+  - The help screen and `docs/tui.md` list the new keys.
+
+- 6532bc5: The TUI home screen now leads with a repository table instead of the log: one row per repository with its state (`● idle`, `⟳ syncing`, `✗ failed`, `⚠ skipped`), how its last sync went, how long ago that was, its worktree count, how many worktrees have uncommitted changes or unpushed commits (as of the last `w` status check), and when it runs next. The log sits underneath: `l` folds it to one line showing the latest entry, and `+` / `-` grow or shrink it. The table, the log heading and the status bar keep to one row per line in narrow terminals, dropping columns and switching to a short key legend rather than wrapping. The force-clean modal (`x`) now fits the rows above the status bar: it shortens its explanation and scrolls its per-repository list (`↑`/`↓`) instead of pushing the status bar off screen.
+
+### Patch Changes
+
+- d6207a9: A remote reached over ssh no longer blocks a sync on a prompt nobody can answer: its git runs with `SSH_ASKPASS_REQUIRE=force` and `SSH_ASKPASS=false`, so with OpenSSH 8.4 or later a passphrase-protected key without an agent, or a host missing from `known_hosts`, fails at once with the usual hint instead of waiting for the 300-second inactivity timeout. Your ssh command (`core.sshCommand`, `GIT_SSH_COMMAND`) is never changed, and nothing is set when you exported `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE` or a `GIT_TERMINAL_PROMPT` that enables prompts.
+
+  A config reload (`r` in the dashboard, `load_config` over MCP) that has not finished evaluating the config after 30 seconds is stopped and reported, and the loaded config stays in effect; before, it hung for good.
+
+  A repository configured without a `name` is labelled by its redacted URL everywhere, including the dashboard's progress rows during a reload and `SYNC_WORKTREES_REPO_NAME` for `onBranchCreated` hooks; every string sent to the dashboard is now redacted on the way in.
+
+  A failed clone no longer deletes a destination directory another process created between the tool's check and its own `mkdir`, and it now also removes the empty parent directories it created for the destination.
+
+- bcde408: `--run-once --quiet` no longer prints a blank line per repository before its one-line summary.
+- 3006086: Internal: split the clone-mode sync service into focused modules (clone bootstrap and cleanup, fetch and the shallow-depth ratchet, remote-config convergence and the stale-ref sweep, sparse reconciliation, fast-forward undo, branch operations, phase timing). No behaviour change.
+- 30206cc: Internal refactor: the worktree-mode git layer is split into focused services (worktree creation, worktree registry, branch refs, bare repository, LFS verification) behind the existing `GitService`. No behaviour change.
+- 23d648d: Internal: the interactive UI service is split into a sync-cycle scheduler, a terminal/editor launcher and a repository-operations layer that the TUI now goes through for branch, worktree and cleanup actions. No change in behaviour.
+- 0944b75: Worktree status checks spawn fewer git processes: the checked-out branch now comes from `git status`, and branches, remote-tracking refs and upstreams are read once per repository per pass (prune checks, the TUI status view, `list_worktrees`, `detect_context`) instead of running `git branch`, `git branch -r` and `rev-parse @{upstream}` for every worktree. `upstreamGone` (the `stale` label) no longer fires for a branch that tracks an existing local branch, and now does fire when the upstream has been pruned. During a rebase or bisect, stashes made on the branch are no longer missed.
+
 ## 7.1.0
 
 ### Minor Changes
