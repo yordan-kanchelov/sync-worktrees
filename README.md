@@ -22,7 +22,7 @@ discarded. A new machine is one config file.
 </picture>
 
 **Before:** `git stash && git checkout feature/login`, rebuild, and back again later. **After:**
-`cd frontend/feature-login-df7c7aeb`, while every other branch stays checked out and built.
+`cd frontend/feature-login`, while every other branch stays checked out and built.
 
 **Contents:** [What you get](#what-you-get) · [Why](#why-sync-worktrees) · [How it works](#how-it-works) ·
 [What it will never do](#what-it-will-never-do) · [Install and quick start](#install-and-quick-start) ·

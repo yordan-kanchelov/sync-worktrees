@@ -19,7 +19,7 @@ One block per repository, one line per step, then a summary:
 
 ```text
 📦 app (worktree mode)
-   + create  fresh     /home/me/code/app/fresh-d098ab5e (new branch on origin)
+   + create  fresh     /home/me/code/app/fresh (new branch on origin)
    ✗ remove  excluded  excluded by branchInclude/branchExclude/branchMaxAge; clean, every commit is on a remote; moved to trash
    ✗ remove  gone      fully pushed, remote branch deleted; moved to trash
    ↑ update  behind    fast-forward: 1 commit behind origin/behind
@@ -82,17 +82,17 @@ repository is reported as `not planned` and the dry run still exits 0.
       "fetched": true,
       "notes": [],
       "steps": [
-        { "kind": "create", "branch": "fresh", "path": "/home/me/code/app/fresh-d098ab5e", "reason": "new_branch" },
+        { "kind": "create", "branch": "fresh", "path": "/home/me/code/app/fresh", "reason": "new_branch" },
         {
           "kind": "remove",
           "branch": "gone",
-          "path": "/home/me/code/app/gone-283bb9de",
+          "path": "/home/me/code/app/gone",
           "reason": "deleted_on_remote",
           "basis": "fully_pushed_remote_deleted",
           "disposal": "trash",
           "message": "fully pushed, remote branch deleted; moved to trash"
         },
-        { "kind": "skip", "scope": "worktree", "reason": "dirty_worktree", "branch": "dirty", "path": "/home/me/code/app/dirty-5c1f0a2e" }
+        { "kind": "skip", "scope": "worktree", "reason": "dirty_worktree", "branch": "dirty", "path": "/home/me/code/app/dirty" }
       ],
       "counts": { "clone": 0, "create": 1, "update": 0, "replace": 0, "remove": 1, "skip": 1, "noop": 0 }
     }
