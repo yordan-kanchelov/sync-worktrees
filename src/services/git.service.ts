@@ -8,12 +8,14 @@ import { GitClientCache } from "../utils/git-client-cache";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
+import { pathsEqual } from "../utils/path-compare";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BareRepoService } from "./bare-repo.service";
 import { BranchRefService } from "./branch-ref.service";
 import { LfsVerificationService } from "./lfs-verification.service";
 import { Logger } from "./logger.service";
+import { PathResolutionService } from "./path-resolution.service";
 import { SparseCheckoutService } from "./sparse-checkout.service";
 import { WorktreeCreationService } from "./worktree-creation.service";
 import { WorktreeMetadataService } from "./worktree-metadata.service";
@@ -75,6 +77,7 @@ export class GitService {
   private readonly lfs: LfsVerificationService;
   private readonly bareRepo: BareRepoService;
   private readonly creation: WorktreeCreationService;
+  private readonly pathResolution = new PathResolutionService();
 
   constructor(
     private config: GitServiceOptions,
@@ -272,9 +275,10 @@ export class GitService {
   // Resolves to true when this call created the worktree.
   //
   // A registered worktree on the default branch at another path is adopted
-  // rather than duplicated: it is the hashed directory the sync created while
-  // the branch was an ordinary remote branch, before the remote made it the
-  // default, and git refuses a second worktree on a branch that is already
+  // rather than duplicated: it is the directory the sync created while the
+  // branch was an ordinary remote branch (a hashed or multi-segment name; a
+  // single-segment plain name already is this path), before the remote made it
+  // the default, and git refuses a second worktree on a branch that is already
   // checked out.
   private async ensureMainWorktree(bareGit: SimpleGit): Promise<boolean> {
     // Check if main worktree exists
@@ -563,6 +567,55 @@ export class GitService {
 
   async getWorktreeLock(worktreePath: string): Promise<{ locked: boolean; reason?: string }> {
     return this.registry.getWorktreeLock(worktreePath);
+  }
+
+  /**
+   * The branch the metadata record under directory name `worktreeName` was
+   * written for, or null when there is none. Worktree naming reads it so a
+   * leftover record is never handed to another branch.
+   */
+  async readWorktreeMetadataOwner(worktreeName: string): Promise<string | null> {
+    return this.metadataService.readMetadataOwner(this.bareRepoPath, worktreeName);
+  }
+
+  /**
+   * Where a new worktree for `branchName` goes: the path of its existing
+   * registration inside worktreeDir when it has one (a worktree keeps the
+   * directory it was created with, hashed or not), otherwise
+   * `<worktreeDir>/<name>` with the name chosen by
+   * PathResolutionService.branchDirectoryName against origin's branches, the
+   * registered worktrees and what is on disk.
+   */
+  async resolveNewWorktreePath(branchName: string): Promise<string> {
+    const worktreeDir = path.resolve(this.config.worktreeDir);
+    // Detached checkouts are left to the disk probe, as in the sync: one of
+    // this repository's at the plain name keeps that name, so the caller meets
+    // it there (and refuses or adopts it) instead of creating a second
+    // worktree next to it.
+    const worktrees = await this.getWorktrees();
+    const own = worktrees.find(
+      (worktree) =>
+        worktree.branch === branchName && pathsEqual(path.dirname(path.resolve(worktree.path)), worktreeDir),
+    );
+    if (own) return own.path;
+
+    let branches: string[] = [];
+    try {
+      branches = await this.getRemoteBranches();
+    } catch (error) {
+      // Without origin's branches the name is still checked against the disk
+      // and the registrations; only a sibling with no worktree yet goes unseen.
+      this.logger.debug(`Could not list remote branches for worktree naming: ${getErrorMessage(error)}`);
+    }
+    const naming = await this.pathResolution.createProbedNamingContext(
+      { branches, branchesToName: [branchName], defaultBranch: this.defaultBranch, worktrees },
+      {
+        worktreeDir,
+        bareRepoPath: this.bareRepoPath,
+        readMetadataOwner: (name) => this.readWorktreeMetadataOwner(name),
+      },
+    );
+    return this.pathResolution.getBranchWorktreePath(this.config.worktreeDir, branchName, naming);
   }
 
   // Branch and ref operations on the bare repository — see BranchRefService.

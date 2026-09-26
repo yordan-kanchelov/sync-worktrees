@@ -46,14 +46,115 @@ describe("worktree sync planner", () => {
       expect(actions[0]?.path).not.toContain("/feat/LCR-8879");
     });
 
+    it("gives a new branch its plain directory name", () => {
+      const actions = planCreateActions(makeInventory(), { pathResolution });
+
+      expect(actions).toEqual([{ kind: "create", branch: "feature/signup", path: `${worktreeDir}/feature-signup` }]);
+    });
+
+    it("hashes every branch that flattens to the same name as another (slash vs dash)", () => {
+      const actions = planCreateActions(
+        makeInventory({ remoteBranches: ["main", "feature/x", "feature-x"], existingWorktrees: [] }),
+        { pathResolution },
+      );
+
+      expect(actions).toEqual([
+        {
+          kind: "create",
+          branch: "feature/x",
+          path: `${worktreeDir}/${pathResolution.sanitizeBranchName("feature/x")}`,
+        },
+        {
+          kind: "create",
+          branch: "feature-x",
+          path: `${worktreeDir}/${pathResolution.sanitizeBranchName("feature-x")}`,
+        },
+      ]);
+    });
+
+    it("hashes branches whose names differ only in case", () => {
+      const actions = planCreateActions(
+        makeInventory({ remoteBranches: ["main", "Feature-X", "feature-x"], existingWorktrees: [] }),
+        { pathResolution },
+      );
+
+      expect(actions.map((action) => action.path)).toEqual([
+        `${worktreeDir}/${pathResolution.sanitizeBranchName("Feature-X")}`,
+        `${worktreeDir}/${pathResolution.sanitizeBranchName("feature-x")}`,
+      ]);
+    });
+
+    it("never gives a branch the default branch's directory name, in any case", () => {
+      const actions = planCreateActions(
+        makeInventory({ remoteBranches: ["main", "Main", "release"], defaultBranch: "main", existingWorktrees: [] }),
+        { pathResolution },
+      );
+
+      expect(actions).toEqual([
+        { kind: "create", branch: "Main", path: `${worktreeDir}/${pathResolution.sanitizeBranchName("Main")}` },
+        { kind: "create", branch: "release", path: `${worktreeDir}/release` },
+      ]);
+    });
+
+    it("keeps a nested default branch's directory components reserved", () => {
+      const actions = planCreateActions(
+        makeInventory({
+          remoteBranches: ["release/2024", "2024", "Release"],
+          defaultBranch: "release/2024",
+          existingWorktrees: [],
+        }),
+        { pathResolution },
+      );
+
+      // `<worktreeDir>/release/2024` is the anchor, and `2024` is its metadata key.
+      expect(actions.map((action) => action.path)).toEqual([
+        `${worktreeDir}/${pathResolution.sanitizeBranchName("2024")}`,
+        `${worktreeDir}/${pathResolution.sanitizeBranchName("Release")}`,
+      ]);
+    });
+
+    it("hashes the name when another branch's registered worktree already holds it", () => {
+      const actions = planCreateActions(
+        makeInventory({
+          remoteBranches: ["main", "feature/new"],
+          existingWorktrees: [{ path: `${worktreeDir}/feature-new`, branch: "legacy/path-owner" }],
+        }),
+        { pathResolution },
+      );
+
+      expect(actions).toEqual([
+        {
+          kind: "create",
+          branch: "feature/new",
+          path: `${worktreeDir}/${pathResolution.sanitizeBranchName("feature/new")}`,
+        },
+      ]);
+    });
+
+    it("leaves existing hashed worktrees where they are while new branches get plain names", () => {
+      const hashedLogin = `${worktreeDir}/${pathResolution.sanitizeBranchName("feature/login")}`;
+      const plan = createWorktreeSyncPlan(
+        makeInventory({ existingWorktrees: [{ path: hashedLogin, branch: "feature/login" }] }),
+        { pathResolution },
+      );
+
+      expect(plan.create).toEqual([
+        { kind: "create", branch: "feature/signup", path: `${worktreeDir}/feature-signup` },
+      ]);
+      expect(plan.update).toEqual([{ kind: "update-candidate", branch: "feature/login", path: hashedLogin }]);
+      expect(plan.prune).toEqual([]);
+    });
+
     it("skips create actions when a resolved path collides with another branch", () => {
+      // A naming context that does not know about the registration (the
+      // runner's always does): the planner's own path check is the backstop.
       const collidingPath = wtPath("feature/new");
       const actions = planCreateActions(
         makeInventory({
           remoteBranches: ["main", "feature/new"],
           existingWorktrees: [{ path: collidingPath, branch: "legacy/path-owner" }],
         }),
-        { pathResolution },
+        { pathResolution, naming: pathResolution.createNamingContext({ branches: [] }) },
       );
 
       expect(actions).toEqual([

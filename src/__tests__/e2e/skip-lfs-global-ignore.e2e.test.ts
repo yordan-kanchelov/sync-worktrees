@@ -106,7 +106,7 @@ describe("skipLfs status probes honour the global git excludes file", () => {
     expect(firstRun.status, firstRun.stderr).toBe(0);
     expect(firstRun.stdout).toContain("Synchronization finished");
 
-    const featureDir = (await fs.readdir(worktreeDir)).find((d) => d.startsWith("feature-1-"));
+    const featureDir = (await fs.readdir(worktreeDir)).find((d) => d === "feature-1");
     expect(featureDir).toBeDefined();
     const featurePath = path.join(worktreeDir, featureDir!);
 

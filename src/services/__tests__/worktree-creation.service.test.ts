@@ -614,6 +614,18 @@ describe("WorktreeCreationService (through GitService)", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feature-1"]);
     });
 
+    // Metadata is keyed by directory name: a record there for another branch
+    // is refused by saveMetadata, and the worktree must not go on without one.
+    it("rolls back when the metadata record under its name belongs to another branch", async () => {
+      mockShowRef({ local: false, remote: true });
+      mockMetadataService.createInitialMetadataFromPath.mockResolvedValueOnce(false);
+
+      const error = await gitService.addWorktree("feature-1", "/test/worktrees/feature-1").catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(WorktreeMetadataError);
+      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feature-1"]);
+    });
+
     // Every raw call addWorktree spawned that was a `worktree <sub>` command.
     const worktreeCommands = (sub: string): string[][] =>
       (mockGit.raw as Mock).mock.calls

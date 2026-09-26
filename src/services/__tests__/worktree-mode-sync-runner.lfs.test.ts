@@ -52,6 +52,8 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
       getRemoteBranchTips: vi.fn().mockResolvedValue(new Map()),
       setLfsSkipEnabled: vi.fn(),
       fetchBranch: vi.fn().mockResolvedValue(undefined),
+      getBareRepoPath: vi.fn().mockReturnValue(path.join(tempDir, "bare")),
+      readWorktreeMetadataOwner: vi.fn().mockResolvedValue(null),
     };
   });
 

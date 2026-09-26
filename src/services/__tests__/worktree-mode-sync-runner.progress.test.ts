@@ -54,6 +54,8 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
       getRemoteBranchTips: vi.fn().mockResolvedValue(new Map()),
       recordRemoteTip: vi.fn().mockResolvedValue(undefined),
       setLfsSkipEnabled: vi.fn(),
+      getBareRepoPath: vi.fn().mockReturnValue(path.join(tempDir, "bare")),
+      readWorktreeMetadataOwner: vi.fn().mockResolvedValue(null),
     };
   });
 

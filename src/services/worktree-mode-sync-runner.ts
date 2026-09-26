@@ -18,7 +18,7 @@ import { trackPhaseItems } from "./progress-emitter";
 import { RemovalAuditService } from "./removal-audit.service";
 import { TrashService } from "./trash.service";
 import { RefScanScope } from "./worktree-status.service";
-import { createWorktreeSyncPlan } from "./worktree-sync-planner";
+import { createWorktreeSyncPlan, listBranchesToCreate } from "./worktree-sync-planner";
 
 import type { AddWorktreeResult, AheadBehindCounts, GitService } from "./git.service";
 import type { Logger } from "./logger.service";
@@ -72,7 +72,7 @@ export class WorktreeModeSyncRunner {
     await this.ensureFetchAnchor(outcome);
     await this.fetchLatestRemoteData(phaseTimer, syncContext);
 
-    const { remoteBranches, defaultBranch } = await this.resolveSyncBranches(outcome);
+    const { remoteBranches, allRemoteBranches, defaultBranch } = await this.resolveSyncBranches(outcome);
     const pendingDivergedBranches = await this.getPendingDivergedBranches();
 
     await fs.mkdir(this.config.worktreeDir, { recursive: true });
@@ -89,19 +89,35 @@ export class WorktreeModeSyncRunner {
       this.logger.warn(`  - Skipping external worktree outside worktreeDir: ${worktree.path}`);
     }
 
-    const syncPlan = createWorktreeSyncPlan(
+    const inventory = {
+      remoteBranches: plannedBranches,
+      defaultBranch,
+      existingWorktrees: worktrees,
+      worktreeDir: this.config.worktreeDir,
+    };
+    // New worktrees get plain directory names unless another branch, a
+    // registered worktree, a leftover metadata record or an entry already on
+    // disk would share it. Every registration counts, external ones too:
+    // metadata is keyed by directory basename wherever the worktree lives.
+    const naming = await this.pathResolution.createProbedNamingContext(
       {
-        remoteBranches: plannedBranches,
+        branches: allRemoteBranches,
+        branchesToName: listBranchesToCreate(inventory),
         defaultBranch,
-        existingWorktrees: worktrees,
-        worktreeDir: this.config.worktreeDir,
+        worktrees: registeredWorktrees,
       },
       {
-        pathResolution: this.pathResolution,
-        updateExistingWorktrees: this.config.updateExistingWorktrees !== false,
-        sparseCheckout: this.config.sparseCheckout,
+        worktreeDir: this.config.worktreeDir,
+        bareRepoPath: this.gitService.getBareRepoPath(),
+        readMetadataOwner: (name) => this.gitService.readWorktreeMetadataOwner(name),
       },
     );
+    const syncPlan = createWorktreeSyncPlan(inventory, {
+      naming,
+      pathResolution: this.pathResolution,
+      updateExistingWorktrees: this.config.updateExistingWorktrees !== false,
+      sparseCheckout: this.config.sparseCheckout,
+    });
 
     await this.createNewWorktreesWithTiming(syncPlan, phaseTimer, syncContext, outcome);
     // One listing of origin's tips for the whole attempt: the tip recording
@@ -365,7 +381,7 @@ export class WorktreeModeSyncRunner {
 
   private async resolveSyncBranches(
     outcome: SyncOutcomeAccumulator,
-  ): Promise<{ remoteBranches: string[]; defaultBranch: string }> {
+  ): Promise<{ remoteBranches: string[]; allRemoteBranches: string[]; defaultBranch: string }> {
     const { all, filtered: remoteBranches } = this.config.branchMaxAge
       ? await this.getRemoteBranchesFilteredByActivity()
       : await this.getRemoteBranchesFilteredByName();
@@ -384,7 +400,7 @@ export class WorktreeModeSyncRunner {
       this.logger.info(`Ensuring default branch '${defaultBranch}' is retained.`);
     }
 
-    return { remoteBranches, defaultBranch };
+    return { remoteBranches, allRemoteBranches: all, defaultBranch };
   }
 
   // A default branch absent from the freshly fetched refs means the remote

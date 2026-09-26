@@ -39,7 +39,10 @@ function makeSyncService(
     clearRecordedSkips: vi.fn(),
     getRecordedSkips: () => [],
     sync: vi.fn(() => Promise.resolve({ started: true })),
-    getGitService: () => ({ addWorktree }),
+    getGitService: () => ({
+      addWorktree,
+      resolveNewWorktreePath: (branch: string) => Promise.resolve(`/tmp/${name}/${branch.replace(/\//g, "-")}`),
+    }),
     runQueuedRepoOperation: vi.fn(async (operation: () => Promise<unknown>) => ({
       started: true,
       value: await operation(),
