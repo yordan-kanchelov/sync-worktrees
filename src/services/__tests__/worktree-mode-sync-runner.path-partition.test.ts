@@ -113,6 +113,8 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
       // removal keeps the phase to a mocked call per worktree.
       getFullWorktreeStatus: vi.fn().mockResolvedValue({ canRemove: false, reasons: ["has uncommitted changes"] }),
       setLfsSkipEnabled: vi.fn(),
+      getBareRepoPath: vi.fn().mockReturnValue(path.join(tempDir, "bare")),
+      readWorktreeMetadataOwner: vi.fn().mockResolvedValue(null),
     };
   });
 

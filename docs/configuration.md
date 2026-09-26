@@ -91,11 +91,29 @@ tick.
 
 ### Worktree folder names
 
-In worktree mode every branch gets a folder directly under `worktreeDir`, named from the branch name: `/` becomes `-`,
-any other character outside letters, digits, `_` and `-` becomes `_`, and that stem is capped at 80 characters. The name
-then ends in `-` plus the first eight hex characters of the branch name's SHA-256, so it is stable across machines and
-unique per branch even when two names sanitize to the same stem: `feature/login` is always
-`feature-login-df7c7aeb`. Only the default branch keeps its plain name (`main/`).
+In worktree mode every branch gets a folder directly under `worktreeDir`. The default branch's folder is its name
+(`main/`). Any other branch gets its **plain name**, the branch name with every `/` turned into `-`
+(`feature/login` → `feature-login/`), unless that name would be ambiguous. In that case, and only then, it gets the
+**hashed name**: the same flattening with any character outside letters, digits, `_` and `-` turned into `_`, capped
+at 80 characters, then `-` and the first eight hex characters of the branch name's SHA-256
+(`feature/login` → `feature-login-df7c7aeb/`).
+
+A new worktree gets the hashed name when:
+
+- the branch name holds anything other than ASCII letters, digits, `.`, `_`, `-` and `/`, flattens to more than 80
+  characters, starts with `.` or `-`, ends with `.`, or is a Windows device name (`con`, `nul`, `com1`, ...);
+- another branch on origin flattens to the same name, compared case-insensitively. Both get hashed names, so
+  `feature/login` and `feature-login` never race for `feature-login/`, and neither do `Docs` and `docs`;
+- the name is already used by a registered worktree of another branch (anywhere, since per-worktree metadata is keyed
+  by folder name), by the default branch's folder (`main`, or `release` and `2024` for `release/2024`), by the tool's
+  own folders (`.bare`, `.trash`, `.diverged`, `.removed`, ...), or by a metadata record another branch left behind;
+- something that is not a checkout of this repository already sits at `<worktreeDir>/<plain name>`: a folder you
+  made, a file, a symlink. It is left alone rather than moved aside.
+
+The choice is made once, when the worktree is created. A worktree keeps the folder it was created with, so worktrees
+created by earlier versions keep their hashed names and are never renamed; delete such a folder's worktree (or let sync
+prune it) and the branch gets its plain name the next time it is created. A branch whose plain name becomes ambiguous
+later (someone pushes `feature-login` next to `feature/login`) keeps its folder too; only the newcomer is hashed.
 
 ## Branch filtering
 

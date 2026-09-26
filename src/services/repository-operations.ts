@@ -592,8 +592,6 @@ export class RepositoryOperations {
   public async createWorktreeForBranch(repoIndex: number, branchName: string): Promise<void> {
     const service = this.requireService(repoIndex);
     const gitService = service.getGitService();
-    const worktreeDir = service.config.worktreeDir;
-    const worktreePath = this.pathResolution.getBranchWorktreePath(worktreeDir, branchName);
 
     const result = await service.runQueuedRepoOperation(async () => {
       if (service.isCloneMode()) {
@@ -602,6 +600,9 @@ export class RepositoryOperations {
         await service.checkoutBranch(branchName, { allowConfigDrift: true });
         return;
       }
+      // Named inside the queued operation: the choice between the plain and
+      // the hashed directory name depends on what is registered and on disk.
+      const worktreePath = await gitService.resolveNewWorktreePath(branchName);
       await gitService.addWorktree(branchName, worktreePath);
     });
     if (!result.started) {

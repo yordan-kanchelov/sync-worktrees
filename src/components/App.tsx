@@ -6,6 +6,7 @@ import BranchCreationWizard from "./BranchCreationWizard";
 import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
 import ForceCleanModal from "./ForceCleanModal";
+import FuzzySwitcher from "./FuzzySwitcher";
 import LogPanel from "./LogPanel";
 import { redactSecretsInText } from "../utils/git-url";
 import { isMouseSequence } from "../utils/mouse";
@@ -58,6 +59,10 @@ export interface AppProps {
   getForceCleanPreview?: () => Promise<ForceCleanRepositoryPreview[]>;
   forceClean?: (selections: ForceCleanRepositorySelection[]) => Promise<ForceCleanRepositoryResult[]>;
   getRunningHookCount?: () => number;
+  /** Sync one repository (the switcher's `s`); absent, the switcher does not offer it. */
+  onSyncRepository?: (index: number) => void | Promise<void>;
+  /** Copy text to the system clipboard (the switcher's `y`); absent, the switcher does not offer it. */
+  copyToClipboard?: (text: string) => Promise<{ success: boolean; error?: string }>;
 }
 
 export interface LogEntry {
@@ -126,8 +131,13 @@ const App: React.FC<AppProps> = ({
   getForceCleanPreview,
   forceClean,
   getRunningHookCount,
+  onSyncRepository,
+  copyToClipboard,
 }) => {
   const [showHelp, setShowHelp] = useState(false);
+  const [showSwitcher, setShowSwitcher] = useState(false);
+  // Set when the switcher hands over to the status view for one worktree.
+  const [statusTarget, setStatusTarget] = useState<{ repoIndex: number; branch: string } | null>(null);
   const [showBranchWizard, setShowBranchWizard] = useState(false);
   const [showOpenEditorWizard, setShowOpenEditorWizard] = useState(false);
   const [showWorktreeStatus, setShowWorktreeStatus] = useState(false);
@@ -240,7 +250,7 @@ const App: React.FC<AppProps> = ({
       return;
     }
 
-    if (showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean) {
+    if (showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher) {
       return;
     }
 
@@ -263,6 +273,8 @@ const App: React.FC<AppProps> = ({
       }
     } else if (input === "?" || input === "h") {
       setShowHelp(true);
+    } else if (input === "/" || (key.ctrl && input === "p")) {
+      setShowSwitcher(true);
     } else if (input === "c") {
       setShowBranchWizard(true);
     } else if (input === "o") {
@@ -358,11 +370,30 @@ const App: React.FC<AppProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The switcher's `s`: the same guard and status handling as the `s` key, for
+  // one repository. Returns why it did not start, for the switcher to show.
+  const syncRepository = onSyncRepository
+    ? (repoIndex: number): string | null => {
+        if (status === "syncing") return "A sync is in progress; try again when it finishes.";
+        setStatus("syncing");
+        (async () => {
+          try {
+            await onSyncRepository(repoIndex);
+          } catch (error) {
+            addLog(`Sync failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+            setStatus("idle");
+          }
+        })().catch((err) => console.error("Repository sync unhandled error:", err));
+        return null;
+      }
+    : undefined;
+
   const progressLineCount = status === "syncing" ? Math.max(1, maxProgressLines) : 0;
   const statusBarHeight = 5 + progressLineCount + activeOps.length;
   const terminalRows = rows ?? 24;
   const logPanelHeight = Math.max(5, terminalRows - statusBarHeight);
-  const showModal = showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean;
+  const showModal =
+    showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher;
   // What a modal may take without pushing the status bar off the screen.
   const modalRows = Math.max(0, terminalRows - statusBarHeight);
 
@@ -370,7 +401,7 @@ const App: React.FC<AppProps> = ({
   // a fresh array for every log line and progress event, which re-ran every
   // effect keyed on it. A reload that changes the repository count while a
   // modal is open still refreshes it.
-  const showRepositoryPicker = showBranchWizard || showOpenEditorWizard || showWorktreeStatus;
+  const showRepositoryPicker = showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showSwitcher;
   const repositories = useMemo(
     () => (showRepositoryPicker ? getRepositoryList() : []),
     // `repoCount` is not read, only a signal that a reload changed the list.
@@ -456,7 +487,35 @@ const App: React.FC<AppProps> = ({
           getRepositoryDiskUsage={getRepositoryDiskUsage}
           getDivergedDirectoriesForRepo={getDivergedDirectoriesForRepo}
           deleteDivergedDirectory={deleteDivergedDirectory}
-          onClose={() => setShowWorktreeStatus(false)}
+          initialRepoIndex={statusTarget?.repoIndex}
+          initialBranch={statusTarget?.branch}
+          onClose={() => {
+            setShowWorktreeStatus(false);
+            setStatusTarget(null);
+          }}
+        />
+      )}
+
+      {showSwitcher && (
+        <FuzzySwitcher
+          repositories={repositories}
+          availableRows={modalRows}
+          getWorktreesForRepo={getWorktreesForRepo}
+          openEditorInWorktree={openEditorInWorktree}
+          openTerminalInWorktree={openTerminalInWorktree}
+          copyToClipboard={copyToClipboard}
+          syncRepository={syncRepository}
+          showStatus={
+            getWorktreeStatusForRepo
+              ? (repoIndex, branch) => {
+                  setStatusTarget({ repoIndex, branch });
+                  setShowSwitcher(false);
+                  setShowWorktreeStatus(true);
+                }
+              : undefined
+          }
+          notify={showNotice}
+          onClose={() => setShowSwitcher(false)}
         />
       )}
 
