@@ -1,0 +1,561 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face {
+        font-family: Inter;
+        font-weight: 400;
+        src: url(fonts/inter-latin-400-normal.woff2) format("woff2");
+      }
+      @font-face {
+        font-family: Inter;
+        font-weight: 500;
+        src: url(fonts/inter-latin-500-normal.woff2) format("woff2");
+      }
+      @font-face {
+        font-family: Inter;
+        font-weight: 600;
+        src: url(fonts/inter-latin-600-normal.woff2) format("woff2");
+      }
+      @font-face {
+        font-family: Inter;
+        font-weight: 700;
+        src: url(fonts/inter-latin-700-normal.woff2) format("woff2");
+      }
+      @font-face {
+        font-family: JBM;
+        font-weight: 400;
+        src: url(fonts/jetbrains-mono-latin-400-normal.woff2) format("woff2");
+      }
+      @font-face {
+        font-family: JBM;
+        font-weight: 500;
+        src: url(fonts/jetbrains-mono-latin-500-normal.woff2) format("woff2");
+      }
+
+      :root {
+        --ink-950: #070910;
+        --ink-900: #0e1119;
+        --ink-800: #181c2a;
+        --ink-700: #262b3c;
+        --ink-600: #383f54;
+        --ink-500: #525a70;
+        --ink-400: #7a8295;
+        --ink-300: #aab1c2;
+        --ink-200: #d6dae3;
+        --ink-100: #eceef3;
+        --accent-300: #85bcff;
+        --accent-400: #4d97ff;
+        --accent-500: #2974ff;
+        --green: #22c55e;
+        --red: #ef4444;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--ink-950);
+      }
+      body {
+        font-family: Inter, sans-serif;
+        color: #fff;
+        -webkit-font-smoothing: antialiased;
+      }
+      .mono {
+        font-family: JBM, monospace;
+      }
+
+      #bg {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(1100px 700px at var(--gx, 70%) var(--gy, 20%), rgba(41, 116, 255, 0.13), transparent 70%),
+          linear-gradient(to right, rgba(148, 163, 184, 0.055) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(148, 163, 184, 0.055) 1px, transparent 1px), var(--ink-950);
+        background-size:
+          100% 100%,
+          64px 64px,
+          64px 64px,
+          100% 100%;
+      }
+      .scene {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+      }
+      .abs {
+        position: absolute;
+      }
+
+      /* 1. hook */
+      #s1 .cmd {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 56px;
+        white-space: nowrap;
+      }
+      #s1 .cmd span {
+        white-space: pre;
+      }
+      #s1 .prompt {
+        color: var(--ink-500);
+      }
+      #cmd1 {
+        top: 520px;
+        color: var(--ink-200);
+      }
+      #cmd2 {
+        top: 640px;
+        color: var(--accent-400);
+      }
+      #strike {
+        position: absolute;
+        left: 0;
+        top: 50%;
+        height: 5px;
+        background: var(--red);
+        border-radius: 3px;
+        width: 0;
+      }
+      .caret {
+        display: inline-block;
+        width: 0.55em;
+        height: 1.05em;
+        vertical-align: -0.18em;
+        background: currentColor;
+        margin-left: 4px;
+      }
+      #cap1 {
+        top: 320px;
+        width: 100%;
+        text-align: center;
+        font-size: 76px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+      #cap1 .cd {
+        font-family: JBM, monospace;
+        font-weight: 500;
+        color: var(--accent-400);
+      }
+
+      /* 2. reveal */
+      .wordmark {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        font-family: JBM, monospace;
+        font-size: 34px;
+        color: var(--ink-300);
+      }
+      .dot {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 18px rgba(34, 197, 94, 0.6);
+      }
+      #s2 .wordmark {
+        top: 330px;
+        left: 50%;
+        transform: translateX(-50%);
+      }
+      #h2a,
+      #h2b {
+        width: 100%;
+        text-align: center;
+        font-size: 110px;
+        letter-spacing: -0.035em;
+        line-height: 1.1;
+      }
+      #h2a {
+        top: 430px;
+        font-weight: 600;
+      }
+      #h2b {
+        top: 565px;
+        font-weight: 500;
+        color: var(--ink-400);
+      }
+      #h2b .cd {
+        font-family: JBM, monospace;
+        font-weight: 500;
+        color: var(--accent-400);
+        letter-spacing: 0;
+      }
+
+      /* 3. folders */
+      #cap3 {
+        top: 120px;
+        left: 110px;
+        font-size: 70px;
+        font-weight: 600;
+        letter-spacing: -0.025em;
+      }
+      .card {
+        background: rgba(14, 17, 25, 0.92);
+        border: 1px solid var(--ink-700);
+        border-radius: 18px;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+      }
+      #config {
+        top: 290px;
+        left: 110px;
+        width: 800px;
+        padding: 34px 38px;
+        font-size: 22px;
+        line-height: 1.62;
+        white-space: pre;
+        color: var(--ink-200);
+      }
+      #config .c {
+        color: var(--ink-500);
+      }
+      #config .k {
+        color: var(--accent-300);
+      }
+      #config .s {
+        color: #a6e3a1;
+      }
+      #arrow {
+        top: 520px;
+        left: 928px;
+        font-size: 56px;
+        color: var(--ink-500);
+      }
+      #tree {
+        top: 290px;
+        left: 1010px;
+        width: 800px;
+        padding: 34px 38px;
+        font-size: 28px;
+        line-height: 1.55;
+      }
+      #tree .row {
+        white-space: pre;
+        display: flex;
+        justify-content: space-between;
+      }
+      #tree .g {
+        color: var(--ink-600);
+      }
+      #tree .dir {
+        color: #fff;
+      }
+      #tree .repo {
+        color: var(--ink-300);
+      }
+      #tree .root {
+        color: var(--ink-400);
+      }
+      #tree .br {
+        color: var(--ink-500);
+        font-size: 20px;
+        align-self: center;
+        margin-left: 24px;
+      }
+
+      /* 4-5. product */
+      #term {
+        top: 215px;
+        left: 410px;
+        width: 1100px;
+        height: 730px;
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow:
+          0 40px 100px rgba(0, 0, 0, 0.55),
+          0 0 0 1px var(--ink-700);
+        background: #1e1e2e;
+      }
+      #term img {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+      .cap-side {
+        left: 0;
+        width: 100%;
+        text-align: center;
+        font-size: 62px;
+        font-weight: 600;
+        letter-spacing: -0.025em;
+        line-height: 1.12;
+      }
+      #cap4,
+      #cap5 {
+        top: 105px;
+      }
+      #sub5 {
+        top: 835px;
+        width: 100%;
+        text-align: center;
+      }
+      .key {
+        display: inline-block;
+        font-family: JBM, monospace;
+        font-weight: 500;
+        font-size: 50px;
+        color: var(--accent-400);
+        border: 2px solid var(--accent-500);
+        border-radius: 12px;
+        padding: 0 18px;
+        line-height: 1.25;
+        background: rgba(41, 116, 255, 0.1);
+      }
+      .flag {
+        font-family: JBM, monospace;
+        font-weight: 500;
+        color: var(--accent-400);
+        letter-spacing: 0;
+      }
+      .sub {
+        font-size: 36px;
+        font-weight: 500;
+        color: var(--ink-300);
+        letter-spacing: -0.01em;
+        line-height: 1.35;
+      }
+      .sub .ok {
+        color: var(--green);
+      }
+
+      /* 6. outro */
+      #s6 .wordmark {
+        top: 250px;
+        left: 50%;
+        transform: translateX(-50%);
+      }
+      #h6 {
+        top: 345px;
+        width: 100%;
+        text-align: center;
+        font-size: 100px;
+        font-weight: 600;
+        letter-spacing: -0.035em;
+        line-height: 1.1;
+      }
+      #h6 span {
+        color: var(--ink-400);
+        font-weight: 500;
+      }
+      #install {
+        top: 640px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 40px;
+        padding: 22px 38px;
+        color: var(--ink-100);
+        white-space: pre;
+        border-radius: 14px;
+      }
+      #install .p {
+        color: var(--ink-500);
+      }
+      #url {
+        top: 790px;
+        width: 100%;
+        text-align: center;
+        font-size: 32px;
+        font-weight: 500;
+        color: var(--ink-400);
+      }
+      #url b {
+        color: var(--ink-200);
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bg"></div>
+
+    <div class="scene" id="s1">
+      <div class="abs" id="cap1">Stop stashing. Just <span class="cd">cd</span>.</div>
+      <div class="cmd mono" id="cmd1">
+        <span class="prompt">$ </span><span class="t"></span><span class="caret"></span>
+        <div id="strike"></div>
+      </div>
+      <div class="cmd mono" id="cmd2">
+        <span class="prompt">$ </span><span class="t"></span><span class="caret"></span>
+      </div>
+    </div>
+
+    <div class="scene" id="s2">
+      <div class="abs wordmark"><span class="dot"></span>sync-worktrees</div>
+      <div class="abs" id="h2a">Keep every branch checked out.</div>
+      <div class="abs" id="h2b">Switching is just <span class="cd">cd</span>.</div>
+    </div>
+
+    <div class="scene" id="s3">
+      <div class="abs" id="cap3">Every branch becomes a folder.</div>
+      <pre class="abs card mono" id="config"><span class="c">// sync-worktrees.config.js</span>
+export default {
+  repositories: [
+    { <span class="k">name</span>: <span class="s">"frontend"</span>,
+      <span class="k">repoUrl</span>: <span class="s">"git@github.com:company/frontend.git"</span>,
+      <span class="k">worktreeDir</span>: <span class="s">"./frontend"</span> },
+    { <span class="k">name</span>: <span class="s">"backend"</span>,
+      <span class="k">repoUrl</span>: <span class="s">"git@github.com:company/backend.git"</span>,
+      <span class="k">worktreeDir</span>: <span class="s">"./backend"</span> },
+  ],
+};</pre>
+      <div class="abs" id="arrow">→</div>
+      <div class="abs card mono" id="tree"></div>
+    </div>
+
+    <div class="scene" id="s45">
+      <div class="abs" id="term"><img id="termimg" src="demoA/0001.jpg" /></div>
+      <div class="abs cap-side" id="cap4">Every repo on one screen. Jump anywhere with <span class="key">/</span></div>
+      <div class="abs cap-side" id="cap5">Preview every sync with <span class="flag">--dry-run</span>.</div>
+      <div class="abs sub" id="sub5"><span class="ok">✓</span> Uncommitted work is never touched.</div>
+    </div>
+
+    <div class="scene" id="s6">
+      <div class="abs wordmark"><span class="dot"></span>sync-worktrees</div>
+      <div class="abs" id="h6">Every branch, checked out<br /><span>and kept in sync.</span></div>
+      <div class="abs card mono" id="install"><span class="p">$ </span>npm install -g sync-worktrees</div>
+      <div class="abs" id="url"><b>sync-worktrees.com</b> · open source · MIT</div>
+    </div>
+
+    <script>
+      const $ = (s) => document.querySelector(s);
+      const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+      const lin = (t, a, b) => clamp((t - a) / (b - a));
+      const ease = (x) => 1 - Math.pow(1 - x, 3);
+      const easeIO = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+      const p = (t, a, b) => ease(lin(t, a, b));
+
+      // Scene window: eased in over 0.35 s after `a`, eased out over 0.25 s before `b` (no out when b is null).
+      function sceneAlpha(t, a, b) {
+        const i = p(t, a, a + 0.35);
+        const o = b == null ? 1 : 1 - easeIO(lin(t, b - 0.25, b));
+        return i * o;
+      }
+      // An element that rises in at `a` (and fades with its scene).
+      function rise(el, t, a, dur = 0.4, dy = 26) {
+        const k = p(t, a, a + dur);
+        el.style.opacity = k;
+        el.style.translate = `0 ${(1 - k) * dy}px`;
+      }
+
+      const CMD1 = "git stash && git checkout feature/login";
+      const CMD2 = "cd feature-login";
+      const TREE = [
+        ["root", "~/work", ""],
+        ["repo", "├── frontend/", ""],
+        ["dir", "│   ├── main/", ""],
+        ["dir", "│   ├── feature-login/", "feature/login"],
+        ["dir", "│   ├── feature-search/", "feature/search"],
+        ["dir", "│   └── fix-header/", "fix/header"],
+        ["repo", "└── backend/", ""],
+        ["dir", "    ├── main/", ""],
+        ["dir", "    ├── feature-rate-limit/", "feature/rate-limit"],
+        ["dir", "    └── fix-n-plus-one/", "fix/n-plus-one"],
+      ];
+      $("#tree").innerHTML = TREE.map(([cls, text, br]) => {
+        const m = text.match(/^([│├└─\s]*)(.*)$/);
+        return `<div class="row"><span><span class="g">${m[1]}</span><span class="${cls}">${m[2]}</span></span><span class="br">${br ? "← " + br : ""}</span></div>`;
+      }).join("");
+      const treeRows = [...document.querySelectorAll("#tree .row")];
+      window.TREE_TIMES = TREE.map((_, i) => 7.7 + i * 0.11);
+
+      let currentSrc = "";
+      async function setTerm(src) {
+        if (src === currentSrc) return;
+        const img = $("#termimg");
+        currentSrc = src;
+        img.src = src;
+        await img.decode();
+      }
+
+      window.render = async function render(t) {
+        // background glow drifts slowly
+        $("#bg").style.setProperty("--gx", `${62 + 10 * Math.sin(t * 0.25)}%`);
+        $("#bg").style.setProperty("--gy", `${22 + 8 * Math.cos(t * 0.2)}%`);
+
+        // 1. hook: 0–3.5
+        $("#s1").style.opacity = sceneAlpha(t, -1, 3.5);
+        const n1 = Math.round(CMD1.length * lin(t, 0.15, 1.1));
+        $("#cmd1 .t").textContent = CMD1.slice(0, n1);
+        $("#cmd1 .caret").style.opacity = t < 1.25 && (t < 1.1 || Math.floor(t * 4) % 2 === 0) ? 1 : 0;
+        $("#strike").style.width = `${easeIO(lin(t, 1.3, 1.55)) * 100}%`;
+        $("#cmd1").style.opacity = 1 - 0.62 * p(t, 1.35, 1.65);
+        const n2 = Math.round(CMD2.length * lin(t, 1.65, 2.05));
+        $("#cmd2").style.opacity = t >= 1.6 ? 1 : 0;
+        $("#cmd2 .t").textContent = CMD2.slice(0, n2);
+        $("#cmd2 .caret").style.opacity = t < 2.05 || Math.floor(t * 2.5) % 2 === 0 ? 1 : 0;
+        rise($("#cap1"), t, 2.15, 0.4);
+
+        // 2. reveal: 3.5–7.0
+        $("#s2").style.opacity = sceneAlpha(t, 3.55, 7.0);
+        rise($("#s2 .wordmark"), t, 3.6, 0.45, 18);
+        rise($("#h2a"), t, 3.75, 0.5, 34);
+        rise($("#h2b"), t, 4.15, 0.5, 34);
+
+        // 3. folders: 7.0–11.0
+        $("#s3").style.opacity = sceneAlpha(t, 7.05, 11.0);
+        rise($("#cap3"), t, 7.15, 0.45);
+        rise($("#config"), t, 7.3, 0.5, 30);
+        rise($("#arrow"), t, 7.55, 0.4, 0);
+        $("#arrow").style.translate = `${(1 - p(t, 7.55, 7.95)) * -24}px 0`;
+        rise($("#tree"), t, 7.45, 0.5, 30);
+        treeRows.forEach((row, i) => {
+          const a = window.TREE_TIMES[i];
+          const k = p(t, a, a + 0.28);
+          row.style.opacity = k;
+          row.style.translate = `${(1 - k) * 22}px 0`;
+        });
+
+        // 4–5. the real product: 11.0–18.5 (one window, content swaps at 14.5)
+        $("#s45").style.opacity = sceneAlpha(t, 11.05, 18.5);
+        const term = $("#term");
+        const tk = p(t, 11.1, 11.6);
+        term.style.opacity = tk;
+        term.style.transform = `translateY(${(1 - tk) * 40}px) scale(${0.97 + 0.03 * tk})`;
+        let src;
+        if (t < 14.5) {
+          const f = clamp(Math.floor((t - 11.1) * 30) + 1, 1, 102);
+          src = `demoA/${String(f).padStart(4, "0")}.jpg`;
+        } else {
+          const f = clamp(Math.floor((t - 14.6) * 30) + 1, 1, 90);
+          src = `demoB/${String(f).padStart(4, "0")}.jpg`;
+        }
+        // dip the window's content through its own background at the swap
+        term.style.height = `${730 - (730 - 572) * easeIO(lin(t, 14.42, 14.58))}px`;
+        $("#termimg").style.opacity = t < 14.5 ? 1 - easeIO(lin(t, 14.3, 14.5)) : easeIO(lin(t, 14.5, 14.72));
+        const c4 = $("#cap4");
+        rise(c4, t, 11.3, 0.45);
+        c4.style.opacity = Number(c4.style.opacity) * (1 - easeIO(lin(t, 14.2, 14.45)));
+        rise($("#cap5"), t, 14.75, 0.45);
+        const sub = $("#sub5");
+        const sk = p(t, 15.35, 15.8);
+        sub.style.opacity = sk;
+        sub.style.translate = `0 ${(1 - sk) * 16}px`;
+
+        // 6. outro: 18.5–22.0
+        $("#s6").style.opacity = sceneAlpha(t, 18.55, null);
+        rise($("#s6 .wordmark"), t, 18.6, 0.45, 18);
+        rise($("#h6"), t, 18.75, 0.55, 34);
+        rise($("#install"), t, 19.3, 0.45, 24);
+        rise($("#url"), t, 19.6, 0.45, 18);
+
+        await setTerm(src);
+      };
+
+      window.ready = (async () => {
+        await document.fonts.ready;
+        await Promise.all(["Inter", "JBM"].map((f) => document.fonts.load(`500 40px ${f}`)));
+        await document.fonts.load("600 40px Inter");
+        await document.fonts.load("400 40px JBM");
+      })();
+    </script>
+  </body>
+</html>
