@@ -39,7 +39,12 @@ type ClientHost = Pick<CloneSyncContext, "config" | "gitService" | "logger" | "r
 // inactivity timeout that kind of command needs, and the primary-checkout
 // guard every write goes through.
 export class CloneGitClients {
-  constructor(private readonly host: ClientHost) {}
+  // `baseEnv` is carried by every client built here: optional locks off for
+  // the dry run's read-only service, so a clone's reads leave its index alone.
+  constructor(
+    private readonly host: ClientHost,
+    private readonly baseEnv: NodeJS.ProcessEnv = {},
+  ) {}
 
   getCloneTimeoutMs(): number {
     if (isUnitTestShortcutEnabled()) return 0;
@@ -149,7 +154,7 @@ export class CloneGitClients {
   // LFS error classification depends on. An ssh remote also gets the askpass
   // settings that keep ssh from waiting on a prompt (sshNoPromptEnv).
   private buildGitEnv(opts: { forceLfsSkip?: boolean } = {}): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = sshNoPromptEnv(this.host.config.repoUrl);
+    const env: NodeJS.ProcessEnv = { ...sshNoPromptEnv(this.host.config.repoUrl), ...this.baseEnv };
     if (opts.forceLfsSkip || this.isLfsSkipEnabled()) {
       env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE] = "1";
     }

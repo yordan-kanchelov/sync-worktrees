@@ -47,13 +47,7 @@ export async function configureSingleBranchRemote(
   options: { sweepStaleRefs?: "always" } = {},
 ): Promise<void> {
   const refspec = getBranchRefspec(branch);
-  const current = await readRemoteConfigValues(clients.git);
-  const holds = (key: string, value: string): boolean => {
-    const values = current?.get(key);
-    return values !== undefined && values.length === 1 && values[0] === value;
-  };
-  const refspecConverged = holds("remote.origin.fetch", refspec);
-  const tagOptConverged = holds("remote.origin.tagopt", "--no-tags");
+  const { refspecConverged, tagOptConverged } = await assessSingleBranchRemote(clients.git, branch);
 
   // Stale refs are what a wide refspec fetched, so they are swept on the
   // call that narrows it — and before that write, not after: the two are not
@@ -70,6 +64,23 @@ export async function configureSingleBranchRemote(
   if (!tagOptConverged) {
     await clients.git.raw(["config", "--replace-all", "remote.origin.tagOpt", "--no-tags"]);
   }
+}
+
+// The read half of configureSingleBranchRemote: whether origin already has
+// the single-branch shape, so `sync --dry-run` can say a sync would narrow it.
+export async function assessSingleBranchRemote(
+  git: SimpleGit,
+  branch: string,
+): Promise<{ refspecConverged: boolean; tagOptConverged: boolean }> {
+  const current = await readRemoteConfigValues(git);
+  const holds = (key: string, value: string): boolean => {
+    const values = current?.get(key);
+    return values !== undefined && values.length === 1 && values[0] === value;
+  };
+  return {
+    refspecConverged: holds("remote.origin.fetch", getBranchRefspec(branch)),
+    tagOptConverged: holds("remote.origin.tagopt", "--no-tags"),
+  };
 }
 
 // Both keys in one spawn, as `key\nvalue` records separated by NUL. The

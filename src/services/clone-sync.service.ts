@@ -1,8 +1,8 @@
 import * as path from "path";
 
 import { PATH_CONSTANTS } from "../constants";
-import { fileExists } from "../utils/file-exists";
-import { repoDisplayLabel } from "../utils/git-url";
+import { fileExists, probePathExists } from "../utils/file-exists";
+import { redactRepoUrl, repoDisplayLabel } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
 import { isMissingRemoteRefError } from "../utils/lfs-error";
 
@@ -19,21 +19,23 @@ import {
   classifyWithDeepening,
   describeDeepenAttempt,
   fetchWithRecovery,
+  getDeepenTargets,
   recordMissingRemoteRefSkip,
   unshallowIfDepthRemoved,
 } from "./clone-sync/fetch";
 import { CloneGitClients } from "./clone-sync/git-clients";
-import { hasRemoteBranch, parseLsRemoteHeads, readHeadCommit } from "./clone-sync/git-helpers";
+import { hasRemoteBranch, isShallowRepository, parseLsRemoteHeads, readHeadCommit } from "./clone-sync/git-helpers";
 import { CLONE_SYNC_PHASES, timePhase } from "./clone-sync/phases";
-import { configureSingleBranchRemote, evaluateOriginMatch } from "./clone-sync/remote-config";
-import { reapplySparseCheckout } from "./clone-sync/sparse";
+import { assessSingleBranchRemote, configureSingleBranchRemote, evaluateOriginMatch } from "./clone-sync/remote-config";
+import { assessSparseCheckout, reapplySparseCheckout } from "./clone-sync/sparse";
 import { cloneSkipToOutcomeAction } from "./sync-outcome";
 
-import type { GitService } from "./git.service";
+import type { GitService, RemoteRelationship } from "./git.service";
 import type { Logger } from "./logger.service";
 import type { SyncOutcomeAccumulator } from "./sync-outcome";
+import type { SyncDryRunPlanBuilder, SyncDryRunStep } from "./sync-plan";
 import type { MutatingGitClients } from "./clone-sync/git-clients";
-import type { CloneSkipListener, CloneSkipReason, CloneSyncContext } from "./clone-sync/types";
+import type { CloneSkipListener, CloneSkipReason, CloneSyncContext, PendingCloneSkip } from "./clone-sync/types";
 import type { Config } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { PhaseTimer } from "../utils/timing";
@@ -69,13 +71,16 @@ export class CloneSyncService {
       branchCreatedActions?: BranchCreatedActionsService;
       progressEmitter?: GitProgressEmitter;
       onSkip?: CloneSkipListener;
+      // A dry run's service: its clients carry the read-only GitService's
+      // environment. Only planSyncAttempt may be called on it.
+      readOnly?: boolean;
     } = {},
   ) {
     this.branchCreatedActions = options.branchCreatedActions ?? new BranchCreatedActionsService();
     this.progressEmitter = options.progressEmitter;
     this.onSkip = options.onSkip;
     this.ctx = CloneSyncService.createContext(this);
-    this.clients = new CloneGitClients(this.ctx);
+    this.clients = new CloneGitClients(this.ctx, options.readOnly ? gitService.getBaseGitEnv() : {});
   }
 
   updateLogger(logger: Logger): void {
@@ -202,41 +207,9 @@ export class CloneSyncService {
       CLONE_SYNC_PHASES.VALIDATE,
       async (): Promise<{ branch: string; clients: MutatingGitClients } | null> => {
         const branch = await this.resolveBranch();
-        const readGit = this.clients.localClientFor(worktreeDir);
-
-        let currentBranch: string;
-        try {
-          currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-        } catch (error) {
-          const errorMessage = getErrorMessage(error);
-          this.recordSkip(
-            { kind: "head_unreadable", phase: "sync", error: errorMessage },
-            `Could not read current branch from '${worktreeDir}': ${errorMessage}`,
-            `Skipping '${this.repoName}': could not read current branch`,
-          );
-          return null;
-        }
-
-        if (currentBranch !== branch) {
-          this.recordSkip(
-            { kind: "branch_mismatch", phase: "sync", currentBranch, expectedBranch: branch },
-            `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge. ` +
-              `Update 'branch' in the config or switch the clone back.`,
-            `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
-          );
-          return null;
-        }
-
-        // Re-check every tick (not just at init): the daemon reuses this service, so
-        // a clone whose origin no longer matches repoUrl must keep being skipped
-        // rather than fetching from the wrong remote.
-        const originMismatch = await evaluateOriginMatch(this.ctx, readGit, worktreeDir);
-        if (originMismatch) {
-          this.recordSkip(
-            originMismatch.skip,
-            originMismatch.warnMessage,
-            `Skipping '${this.repoName}': ${originMismatch.progressDetail}`,
-          );
+        const blocked = await this.checkTickPreconditions(worktreeDir, branch);
+        if (blocked) {
+          this.recordSkip(blocked.skip, blocked.logMessage, blocked.progressMessage, blocked.logLevel);
           return null;
         }
 
@@ -340,35 +313,14 @@ export class CloneSyncService {
       return;
     }
 
-    if (relationship !== "fast_forward") {
-      if (relationship === "local_ahead") {
-        this.recordSkip(
-          { kind: "ahead_unpushed", branch },
-          `⏭️  '${this.repoName}' has unpushed commits ahead of origin/${branch}. Skipping merge.`,
-          `Skipping merge for '${this.repoName}': unpushed commits ahead of origin/${branch}`,
-          "info",
-        );
-      } else if (relationship === "indeterminate_shallow") {
-        const detail = describeDeepenAttempt(lastDeepenedTo);
-        const progressDetail =
-          lastDeepenedTo === null
-            ? `no deepening attempted (configured depth at/above limits)`
-            : `shallow depth budget exhausted at ${lastDeepenedTo}`;
-        this.recordSkip(
-          { kind: "indeterminate_shallow", branch, deepenedTo: lastDeepenedTo },
-          `⏭️  '${this.repoName}' could not classify origin/${branch} after ${detail}. ` +
-            `Skipping merge — remove 'depth' from the config to unshallow the clone.`,
-          `Skipping merge for '${this.repoName}': ${progressDetail}`,
-          "info",
-        );
-      } else {
-        this.recordSkip(
-          { kind: "diverged", branch },
-          `⏭️  '${this.repoName}' has diverged from origin/${branch}. Skipping merge (no auto-reset).`,
-          `Skipping merge for '${this.repoName}': diverged from origin/${branch}`,
-          "info",
-        );
-      }
+    const relationshipSkip = this.relationshipSkip(relationship, branch, lastDeepenedTo);
+    if (relationshipSkip) {
+      this.recordSkip(
+        relationshipSkip.skip,
+        relationshipSkip.logMessage,
+        relationshipSkip.progressMessage,
+        relationshipSkip.logLevel,
+      );
       return;
     }
 
@@ -376,12 +328,8 @@ export class CloneSyncService {
       this.gitService.checkWorktreeStatus(worktreeDir),
     );
     if (!isClean) {
-      this.recordSkip(
-        { kind: "dirty_tree" },
-        `⏭️  Skipping ff-merge for '${this.repoName}' — working tree has local changes.`,
-        `Skipping merge for '${this.repoName}': working tree has local changes`,
-        "info",
-      );
+      const dirty = this.dirtyTreeSkip();
+      this.recordSkip(dirty.skip, dirty.logMessage, dirty.progressMessage, dirty.logLevel);
       return;
     }
 
@@ -402,6 +350,247 @@ export class CloneSyncService {
     this.logger.info(`✅ Updated '${this.repoName}' to origin/${branch}.`);
     this.emitProgress({ phase: "merge", message: `Updated '${this.repoName}' to origin/${branch}` });
     this.outcomeAccumulator?.recordUpdated(branch, worktreeDir, "fast_forward");
+  }
+
+  // `sync --dry-run` for a clone: the tick's decisions — the same
+  // preconditions, fetch, classification and working-tree check — reported as
+  // plan steps instead of acted on. It fetches the tracked branch exactly as
+  // the tick does (remote-tracking ref and objects; the shallow boundary moves
+  // the way the tick's own fetch would move it) and writes nothing else: no
+  // clone, no unshallow, no refspec narrowing, no deepening, no sparse
+  // reapply, no merge. Where the tick would do one of those first, the plan
+  // says so in a note.
+  async planSyncAttempt(plan: SyncDryRunPlanBuilder): Promise<void> {
+    const worktreeDir = this.config.worktreeDir;
+    const branch = await this.resolveBranch();
+
+    if ((await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR))) !== "exists") {
+      const depth = this.config.depth !== undefined ? ` at depth ${this.config.depth}` : "";
+      plan.add({
+        kind: "clone",
+        path: path.resolve(worktreeDir),
+        branch,
+        message: `clone ${redactRepoUrl(this.config.repoUrl)} (branch '${branch}')${depth}`,
+      });
+      return;
+    }
+
+    const blocked = await this.checkTickPreconditions(worktreeDir, branch);
+    if (blocked) {
+      plan.add(this.skipStep(blocked.skip));
+      return;
+    }
+
+    const clients = await this.clients.mutatingClientsFor(worktreeDir);
+    if (this.config.depth === undefined && (await isShallowRepository(clients.git))) {
+      plan.note("The clone is shallow and no depth is configured: a sync first fetches its full history.");
+    }
+    if (!(await assessSingleBranchRemote(clients.git, branch)).refspecConverged) {
+      plan.note(
+        `origin's fetch refspec is not the single-branch one: a sync first narrows it to '${branch}' and deletes the other origin/* remote-tracking refs.`,
+      );
+    }
+
+    const fetchArgs = await buildSyncFetchArgs(this.ctx, clients.git, branch);
+    const fetched = await fetchWithRecovery(this.ctx, clients, fetchArgs, worktreeDir, branch, false);
+    if (fetched.skipped) {
+      plan.add(this.skipStep({ kind: "missing_remote_ref", branch, source: "fetch_error" }));
+      return;
+    }
+    plan.markFetched();
+    if (!(await hasRemoteBranch(clients.git, branch))) {
+      plan.add(this.skipStep({ kind: "missing_remote_ref", branch, source: "post_fetch_verify" }));
+      return;
+    }
+
+    const sparseConfig = this.config.sparseCheckout;
+    if (sparseConfig) {
+      const sparse = await assessSparseCheckout(this.ctx, worktreeDir, sparseConfig);
+      const details = { branch, path: worktreeDir };
+      if (sparse.kind === "apply") {
+        plan.add({
+          kind: "update",
+          ...details,
+          reason: "sparse_checkout",
+          message: sparse.narrowing ? "narrows the sparse-checkout patterns" : "rewrites the sparse-checkout patterns",
+        });
+      } else if (sparse.kind === "unsafe-narrowing") {
+        plan.add({
+          kind: "skip",
+          scope: "sparse-checkout",
+          reason: "sparse_narrowing_unsafe",
+          ...details,
+          message: "working tree has local changes",
+        });
+      } else if (sparse.kind === "failed") {
+        plan.add({
+          kind: "skip",
+          scope: "sparse-checkout",
+          reason: "sparse_check_failed",
+          ...details,
+          message: getErrorMessage(sparse.error),
+        });
+      }
+    }
+
+    const relationship = await this.gitService.classifyRemoteRelationship(worktreeDir, branch);
+    if (relationship === "up_to_date") {
+      plan.add({
+        kind: "noop",
+        scope: "repo",
+        reason: "already_up_to_date",
+        branch,
+        path: worktreeDir,
+        message: `Already up to date with origin/${branch}`,
+      });
+      return;
+    }
+    // Too shallow to classify with a deepen budget left: the tick would spend
+    // it (more fetches, each moving the shallow boundary) before deciding, and
+    // the dry run does not. The outcome's wording for this skip assumes the
+    // budget is spent or empty, so the step says what was not simulated.
+    const deepenBudget = getDeepenTargets(this.ctx);
+    if (relationship === "indeterminate_shallow" && deepenBudget.length > 0) {
+      const deepest = deepenBudget[deepenBudget.length - 1];
+      plan.add({
+        kind: "skip",
+        scope: "repo",
+        reason: "clone_indeterminate_shallow",
+        branch,
+        path: worktreeDir,
+        message:
+          `history too short to relate HEAD to origin/${branch}; deepening up to ${deepest} commits ` +
+          `is not simulated by a dry run — a sync deepens first and may then fast-forward`,
+      });
+      return;
+    }
+    const relationshipSkip = this.relationshipSkip(relationship, branch, null);
+    if (relationshipSkip) {
+      plan.add(this.skipStep(relationshipSkip.skip));
+      return;
+    }
+
+    if (!(await this.gitService.checkWorktreeStatus(worktreeDir))) {
+      plan.add(this.skipStep(this.dirtyTreeSkip().skip));
+      return;
+    }
+    plan.add({ kind: "update", branch, path: worktreeDir, reason: "fast_forward", message: `to origin/${branch}` });
+  }
+
+  // The tick's checks before it writes anything: HEAD readable, on the
+  // tracked branch, and origin still the configured repoUrl. A failed check
+  // is a skip, returned rather than recorded so a dry run can report it.
+  private async checkTickPreconditions(worktreeDir: string, branch: string): Promise<PendingCloneSkip | null> {
+    const readGit = this.clients.localClientFor(worktreeDir);
+
+    let currentBranch: string;
+    try {
+      currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+      return {
+        skip: { kind: "head_unreadable", phase: "sync", error: errorMessage },
+        logMessage: `Could not read current branch from '${worktreeDir}': ${errorMessage}`,
+        progressMessage: `Skipping '${this.repoName}': could not read current branch`,
+        logLevel: "warn",
+      };
+    }
+
+    if (currentBranch !== branch) {
+      return {
+        skip: { kind: "branch_mismatch", phase: "sync", currentBranch, expectedBranch: branch },
+        logMessage:
+          `Clone at '${worktreeDir}' is on '${currentBranch}', expected '${branch}'. Skipping fetch+merge. ` +
+          `Update 'branch' in the config or switch the clone back.`,
+        progressMessage: `Skipping '${this.repoName}': current branch '${currentBranch}' is not '${branch}'`,
+        logLevel: "warn",
+      };
+    }
+
+    // Re-check every tick (not just at init): the daemon reuses this service, so
+    // a clone whose origin no longer matches repoUrl must keep being skipped
+    // rather than fetching from the wrong remote.
+    const originMismatch = await evaluateOriginMatch(this.ctx, readGit, worktreeDir);
+    if (originMismatch) {
+      return {
+        skip: originMismatch.skip,
+        logMessage: originMismatch.warnMessage,
+        progressMessage: `Skipping '${this.repoName}': ${originMismatch.progressDetail}`,
+        logLevel: "warn",
+      };
+    }
+    return null;
+  }
+
+  // The merge the classification rules out, if it rules one out. Null for
+  // `up_to_date` and `fast_forward`, which the caller handles itself.
+  private relationshipSkip(
+    relationship: RemoteRelationship,
+    branch: string,
+    lastDeepenedTo: number | null,
+  ): PendingCloneSkip | null {
+    switch (relationship) {
+      case "up_to_date":
+      case "fast_forward":
+        return null;
+      case "local_ahead":
+        return {
+          skip: { kind: "ahead_unpushed", branch },
+          logMessage: `⏭️  '${this.repoName}' has unpushed commits ahead of origin/${branch}. Skipping merge.`,
+          progressMessage: `Skipping merge for '${this.repoName}': unpushed commits ahead of origin/${branch}`,
+          logLevel: "info",
+        };
+      case "indeterminate_shallow": {
+        const detail = describeDeepenAttempt(lastDeepenedTo);
+        const progressDetail =
+          lastDeepenedTo === null
+            ? `no deepening attempted (configured depth at/above limits)`
+            : `shallow depth budget exhausted at ${lastDeepenedTo}`;
+        return {
+          skip: { kind: "indeterminate_shallow", branch, deepenedTo: lastDeepenedTo },
+          logMessage:
+            `⏭️  '${this.repoName}' could not classify origin/${branch} after ${detail}. ` +
+            `Skipping merge — remove 'depth' from the config to unshallow the clone.`,
+          progressMessage: `Skipping merge for '${this.repoName}': ${progressDetail}`,
+          logLevel: "info",
+        };
+      }
+      default:
+        return {
+          skip: { kind: "diverged", branch },
+          logMessage: `⏭️  '${this.repoName}' has diverged from origin/${branch}. Skipping merge (no auto-reset).`,
+          progressMessage: `Skipping merge for '${this.repoName}': diverged from origin/${branch}`,
+          logLevel: "info",
+        };
+    }
+  }
+
+  private dirtyTreeSkip(): PendingCloneSkip {
+    return {
+      skip: { kind: "dirty_tree" },
+      logMessage: `⏭️  Skipping ff-merge for '${this.repoName}' — working tree has local changes.`,
+      progressMessage: `Skipping merge for '${this.repoName}': working tree has local changes`,
+      logLevel: "info",
+    };
+  }
+
+  // A clone skip as a plan step, worded and coded the way the tick's outcome
+  // records it.
+  private skipStep(reason: CloneSkipReason): SyncDryRunStep {
+    const action = cloneSkipToOutcomeAction(reason, {
+      branch: this.resolvedBranch ?? this.config.branch,
+      path: this.config.worktreeDir,
+    });
+    return action.kind === "skipped"
+      ? {
+          kind: "skip",
+          scope: action.scope,
+          reason: action.reason,
+          ...(action.branch !== undefined && { branch: action.branch }),
+          ...(action.path !== undefined && { path: action.path }),
+          ...(action.message !== undefined && { message: action.message }),
+        }
+      : { kind: "skip", scope: "repo", reason: `clone_${reason.kind}` };
   }
 
   // Display name only (log lines and progress messages), so the URL fallback
