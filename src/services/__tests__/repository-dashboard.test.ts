@@ -126,7 +126,7 @@ describe("describeSettlement", () => {
     });
     expect(describeSettlement({ status: "fulfilled", result: { started: false, reason: "in_progress" } })).toEqual({
       state: "skipped",
-      lastResult: "already syncing",
+      lastResult: "busy with another sync or operation",
     });
     expect(
       describeSettlement({
@@ -288,6 +288,17 @@ describe("RepositoryDashboard", () => {
     swap([makeService("alpha"), makeService("beta")]);
     dashboard.publish();
     expect(latest()[1]).toMatchObject({ name: "beta", changes: null });
+  });
+
+  it("settles a row whose sync started before a reload swapped its service out", () => {
+    const old = makeService("alpha");
+    const { dashboard, latest, swap } = makeDashboard([old], { now: () => 1000 });
+    dashboard.markSyncing(old);
+
+    swap([makeService("alpha")]);
+    dashboard.recordSettlement(old, { status: "fulfilled", result: undefined });
+
+    expect(latest()[0]).toMatchObject({ name: "alpha", state: "idle", lastSyncAt: 1000 });
   });
 
   it("sends nothing once the interface is gone", () => {

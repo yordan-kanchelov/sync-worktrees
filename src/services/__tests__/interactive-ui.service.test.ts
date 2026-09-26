@@ -3605,6 +3605,8 @@ describe("InteractiveUIService", () => {
         const message = logs.map((entry) => entry.message).join("\n");
         expect(message).toContain("GC skipped");
         expect(message).not.toContain("GC failed");
+        // The modal may truncate its line; the log keeps the whole error.
+        expect(message).toContain("git gc skipped, git is busy in: /w/feature-1 (index.lock)");
 
         void ui.destroy();
       });

@@ -178,6 +178,17 @@ export function homeLayout(available: number, repositoryCount: number, preferenc
       : Math.min(wanted, rows - preference.rows),
   );
   if (dashboardRows > 0 && rows - dashboardRows < LOG_MIN_ROWS) return collapsed();
+  // Left to itself, a table squeezed below one row by the even split still
+  // fits beside a folded log: fold the log rather than lose the table. (A size
+  // `+` / `-` asked for is kept: it is how the log takes the whole screen.)
+  if (
+    dashboardRows === 0 &&
+    preference.rows === null &&
+    wanted > 0 &&
+    rows >= DASHBOARD_CHROME_ROWS + 1 + LOG_COLLAPSED_ROWS
+  ) {
+    return collapsed();
+  }
   return { dashboardRows, logRows: rows - dashboardRows, logCollapsed: false };
 }
 

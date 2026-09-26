@@ -581,8 +581,15 @@ export class RepositoryOperations {
               leftBehind > 0
                 ? `; left ${result.skippedNewEntries} trash entries and ${result.skippedNewKeepRefs} recovery refs added after the preview`
                 : "";
+            // The modal truncates its result lines once they scroll, so the
+            // log is where the full notes and errors stay readable.
+            const retained =
+              result.keepRefsRetained > 0
+                ? `; kept ${result.keepRefsRetained} recovery refs still backing a .diverged copy`
+                : "";
+            const errors = result.errors.length > 0 ? ` (${result.errors.join("; ")})` : "";
             this.host.log(
-              `🧹 Force clean ${repoName}: deleted ${result.trashDeleted} trash entries and ${result.keepRefsDeleted} recovery refs; GC ${result.gcSkipped ? "skipped" : result.gcSucceeded ? "complete" : "failed"}${skipped}`,
+              `🧹 Force clean ${repoName}: deleted ${result.trashDeleted} trash entries and ${result.keepRefsDeleted} recovery refs; GC ${result.gcSkipped ? "skipped" : result.gcSucceeded ? "complete" : "failed"}${retained}${skipped}${errors}`,
               level,
             );
             return { repoIndex, repoName, result };

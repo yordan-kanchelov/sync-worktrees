@@ -9,6 +9,7 @@ import OpenEditorWizard from "../OpenEditorWizard";
 import WorktreeStatusView from "../WorktreeStatusView";
 import {
   DASHBOARD_CHROME_ROWS,
+  LOG_COLLAPSED_ROWS,
   LOG_MIN_ROWS,
   MIN_LIST_ROWS,
   dashboardColumns,
@@ -113,6 +114,31 @@ describe("home screen layout", () => {
 
   it("folds the log to one line when a panel and a table row do not both fit", () => {
     expect(homeLayout(7, 3, auto)).toEqual({ dashboardRows: 6, logRows: 1, logCollapsed: true });
+    // Below an even split's first table row, the folded log still leaves one.
+    expect(homeLayout(6, 3, auto)).toEqual({ dashboardRows: 5, logRows: 1, logCollapsed: true });
+    expect(homeLayout(5, 1, auto)).toEqual({ dashboardRows: 4, logRows: 1, logCollapsed: true });
+    expect(homeLayout(5, 3, auto)).toEqual({ dashboardRows: 4, logRows: 1, logCollapsed: true });
+  });
+
+  it("never takes the table away as the screen grows", () => {
+    // The smallest screen a table row and a folded log both fit on.
+    const smallest = DASHBOARD_CHROME_ROWS + 1 + LOG_COLLAPSED_ROWS;
+    for (const repos of [1, 2, 3, 30]) {
+      for (const preference of [auto, { collapsed: true, rows: null }, { collapsed: false, rows: LOG_MIN_ROWS }]) {
+        let shown = false;
+        for (let available = 0; available <= 40; available++) {
+          const visible = homeLayout(available, repos, preference).dashboardRows > 0;
+          const expected = shown || visible || (preference.rows === null && available >= smallest);
+          expect({ available, repos, preference, visible }).toEqual({
+            available,
+            repos,
+            preference,
+            visible: expected,
+          });
+          shown ||= visible;
+        }
+      }
+    }
   });
 
   it("hides the table rather than draw it without a single row", () => {

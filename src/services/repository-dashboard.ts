@@ -33,7 +33,9 @@ interface RepositoryRecord {
 const FRESH: RepositoryRecord = { state: "idle", lastResult: null, lastSyncAt: null, worktrees: null, changes: null };
 
 const SKIP_REASONS: Record<string, string> = {
-  in_progress: "already syncing",
+  // The repository's lock refuses a sync while another sync, or an
+  // interactive operation such as a worktree removal, holds it.
+  in_progress: "busy with another sync or operation",
   locked: "locked by another process",
 };
 
@@ -88,6 +90,11 @@ export class RepositoryDashboard {
   // Keyed by name, which the config keeps unique, so a reload that rebuilds
   // every service keeps each repository's history.
   private records = new Map<string, RepositoryRecord>();
+  // The name each running sync was marked under. A cron tick can start a sync
+  // on an old-generation service while a reload is loading the new config;
+  // the reload swaps the services before that sync settles, so the service
+  // no longer maps to a name and the row would be left `syncing`.
+  private syncingAs = new WeakMap<WorktreeSyncService, string>();
   private readonly now: () => number;
 
   constructor(
@@ -109,11 +116,14 @@ export class RepositoryDashboard {
   }
 
   public markSyncing(service: WorktreeSyncService): void {
-    this.update(this.nameOf(service), { state: "syncing" });
+    const name = this.nameOf(service);
+    if (name !== null) this.syncingAs.set(service, name);
+    this.update(name, { state: "syncing" });
   }
 
   public recordSettlement(service: WorktreeSyncService, settled: RepositorySyncSettlement): void {
-    const name = this.nameOf(service);
+    const name = this.nameOf(service) ?? this.syncingAs.get(service) ?? null;
+    this.syncingAs.delete(service);
     const { state, lastResult } = describeSettlement(settled);
     // A skip did not sync anything, so the age column keeps the last sync that did.
     this.update(name, state === "skipped" ? { state, lastResult } : { state, lastResult, lastSyncAt: this.now() });

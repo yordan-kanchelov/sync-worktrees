@@ -1,11 +1,11 @@
 # Interactive TUI
 
 Running `sync-worktrees` with no arguments opens the terminal UI; this page covers the home screen's repository table,
-every key, the three wizards, the status flags, and how terminal and editor launch is configured. The [README](../README.md#interactive-tui) has the
-eight keys you will use most.
+every key, the three wizards, the status flags, and how terminal and editor launch is configured. The
+[README](../README.md#interactive-tui) has the eight keys you will use most.
 
-The UI has a per-repository table, live log streaming, manual sync triggers, and wizards for the common operations. It syncs once on startup
-(see `defaults.syncOnStart` in the [configuration reference](./configuration.md#whole-file-settings)) and then on the
+The UI has a per-repository table, live log streaming, manual sync triggers, and wizards for the common operations. It
+syncs once on startup (see `defaults.syncOnStart` in the [configuration reference](./configuration.md#whole-file-settings)) and then on the
 cron schedule; `s` triggers the same cycle by hand. Cycles do not pile up on one repository: a tick that finds a
 repository already syncing skips that repository and says so in the log. While the status line reads `Syncing...`, `s`,
 `r` and `x` do not act; the key legend briefly reads "A sync is in progress" instead. A tick the machine slept through
