@@ -1,0 +1,31 @@
+---
+// The 22-second launch video, rendered by demo/launch/render.sh into the repo's assets/ and copied into public/ by
+// scripts/copy-assets.mjs. It follows the problem section on purpose: its first scene is the stash-and-checkout
+// ritual that section describes. Click to play, with sound: the hero's terminal recording is the one that autoplays.
+---
+<section class="bg-ink-50 pb-20 sm:pb-28">
+  <div class="mx-auto max-w-6xl px-6">
+    <div class="max-w-2xl">
+      <p class="font-mono text-xs uppercase tracking-wide text-ink-500">See it in 20 seconds</p>
+      <h2 class="mt-2 text-3xl font-semibold tracking-tight text-ink-900 sm:text-4xl">
+        From <code class="font-mono text-[0.9em] font-medium">git stash</code> to
+        <code class="font-mono text-[0.9em] font-medium text-accent-600">cd</code>.
+      </h2>
+    </div>
+
+    <div class="mt-10 overflow-hidden rounded-2xl border border-ink-200 bg-ink-950 shadow-sm">
+      <video
+        class="block aspect-video h-auto w-full"
+        controls
+        playsinline
+        preload="none"
+        poster="/launch-poster.jpg"
+        width="1920"
+        height="1080"
+        aria-label="Launch video: the stash-and-checkout ritual replaced by cd, one config file, one folder per branch, the terminal dashboard and switcher, and a dry run of the next sync"
+      >
+        <source src="/launch.mp4" type="video/mp4" />
+      </video>
+    </div>
+  </div>
+</section>

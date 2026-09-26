@@ -21,10 +21,12 @@ coverage/
 # User config files (but keep examples)
 sync-worktrees.config.js
 
-# Astro site build artifacts (site/scripts/copy-assets.mjs copies the demo video in from assets/)
+# Astro site build artifacts (site/scripts/copy-assets.mjs copies the demo and launch videos in from assets/)
 site/.astro/
 site/public/demo.mp4
 site/public/demo-poster.webp
+site/public/launch.mp4
+site/public/launch-poster.jpg
 
 # MCP stdio integration-test build dirs (bundled inside the repo so the spawned
 # server resolves node_modules; removed in the test's finally block)
