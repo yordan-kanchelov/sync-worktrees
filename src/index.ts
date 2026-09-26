@@ -87,8 +87,11 @@ export async function runMultipleRepositories(
           const repoLogger = Logger.createDefault(repoConfig.name, repoConfig.debug, { quiet: options.quiet });
 
           // The blank line goes out unprefixed; "\n📦" through the repo logger
-          // printed a line holding nothing but "[name] ".
-          globalLogger.info("");
+          // printed a line holding nothing but "[name] ". Under --quiet the
+          // header it separates is not printed, so neither is the blank line.
+          if (!options.quiet) {
+            globalLogger.info("");
+          }
           repoLogger.info(`📦 Repository: ${repoConfig.name}`);
           repoLogger.info(`   URL: ${redactRepoUrl(repoConfig.repoUrl)}`);
           repoLogger.info(`   Worktrees: ${repoConfig.worktreeDir}`);
