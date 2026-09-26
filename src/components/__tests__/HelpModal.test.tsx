@@ -27,7 +27,9 @@ describe("HelpModal", () => {
     });
 
     it("names q as the only way to quit, and does not offer Esc", () => {
-      const { lastFrame } = render(<HelpModal {...defaultProps} />);
+      // Tall enough for the whole sheet: at 24 rows it scrolls, and the quit
+      // row is below the fold.
+      const { lastFrame } = render(<HelpModal {...defaultProps} availableRows={40} />);
 
       const quitRow = (lastFrame() ?? "").split("\n").find((line) => line.includes("Gracefully quit"));
 

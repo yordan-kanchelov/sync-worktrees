@@ -251,6 +251,8 @@ export class InteractiveUIService {
         cronSchedule={this.scheduler.getScheduledCronExpressions()}
         maxProgressLines={this.maxRepositories}
         onManualSync={() => this.handleManualSync()}
+        onSyncRepository={(index: number) => this.handleSyncRepository(index)}
+        copyToClipboard={(text: string) => this.launcher.copyToClipboard(text)}
         onReload={() => this.handleReload()}
         onQuit={() => this.handleQuit()}
         getRepositoryList={() => ops.getRepositoryList()}
@@ -333,6 +335,19 @@ export class InteractiveUIService {
 
   private async handleManualSync(): Promise<void> {
     await this.triggerInitialSync();
+  }
+
+  // The switcher's `s`: one repository, through the same cycle machinery as
+  // `s`, so it claims the repository, drives the status bar and records its
+  // outcome exactly like a full cycle would.
+  private async handleSyncRepository(index: number): Promise<void> {
+    const service = this.syncServices[index];
+    if (!service) {
+      // A reload between opening the switcher and pressing `s` can shrink the list.
+      throw new Error(`Invalid repository index: ${index}`);
+    }
+    this.addLog(`🔄 Syncing '${this.operations.getRepoName(index)}'...`, "info");
+    await this.scheduler.runSyncCycle([service], { logErrors: true });
   }
 
   public async triggerInitialSync(): Promise<void> {

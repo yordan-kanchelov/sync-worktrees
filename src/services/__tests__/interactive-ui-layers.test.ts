@@ -18,6 +18,10 @@ const cronMocks = vi.hoisted(() => ({
 
 vi.mock("node-cron", () => ({ schedule: cronMocks.schedule }));
 
+const clipboardMocks = vi.hoisted(() => ({ copyToClipboard: vi.fn() }));
+
+vi.mock("../../utils/clipboard", () => ({ copyToClipboard: clipboardMocks.copyToClipboard }));
+
 // The three layers InteractiveUIService is built from, exercised without Ink:
 // none of them imports the interface, and each reads the repositories through
 // its host, so a reload that swaps the generation is seen on the next call.
@@ -193,5 +197,20 @@ describe("TerminalLauncher", () => {
       error: "Invalid repository index: 3",
     });
     expect(log).toHaveBeenCalledWith("Invalid repository index: 3", "error");
+  });
+
+  it("reports a failed copy and logs the path so it is not lost", async () => {
+    clipboardMocks.copyToClipboard.mockResolvedValueOnce({ success: false, error: "No clipboard tool found" });
+    const log = vi.fn();
+    const launcher = new TerminalLauncher({ log, getRepoName: () => "repo" });
+
+    await expect(launcher.copyToClipboard("/w/repo/main")).resolves.toEqual({
+      success: false,
+      error: "No clipboard tool found",
+    });
+    expect(log).toHaveBeenCalledWith("No clipboard tool found; the path was not copied: /w/repo/main", "warn");
+
+    clipboardMocks.copyToClipboard.mockResolvedValueOnce({ success: true, tool: "pbcopy" });
+    await expect(launcher.copyToClipboard("/w/repo/main")).resolves.toEqual({ success: true });
   });
 });

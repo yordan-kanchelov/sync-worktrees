@@ -248,6 +248,7 @@ common operations, and a status view across every repository.
 
 | Key       | Action                                                                                                          |
 | --------- | --------------------------------------------------------------------------------------------------------------- |
+| `/`       | Jump to any worktree in any repository (fuzzy switcher); `Enter` opens it, `Tab` for more actions               |
 | `s`       | Sync all repositories now                                                                                       |
 | `c`       | Create a branch (wizard: repo, base branch, name)                                                               |
 | `o`       | Open a worktree in a terminal (`tmux`) or a GUI editor                                                          |
