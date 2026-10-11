@@ -357,22 +357,6 @@ export class WorktreeStatusService {
     const snap = await this.collectSnapshot(worktreePath, lastSyncCommit, lastKnownRemoteTip, refScans);
 
     const isClean = this.deriveIsClean(snap);
-    // Removal requires BOTH unpushed checks to pass independently: commits
-    // missing from every remote AND commits made since the last sync. Relying
-    // on lastSyncCommit alone hides unpushed work when metadata records HEAD.
-    const anyRemoteUnpushed = (snap.unpushedAnyRemoteCount ?? 1) > 0;
-    const sinceSyncUnpushed = snap.sinceSyncChecked && (snap.sinceSyncCount ?? 1) > 0;
-    const hasUnpushedCommits = !snap.plainDetached && (anyRemoteUnpushed || sinceSyncUnpushed);
-    // "Unpushed" override for squash-merge + branch deletion: only when the
-    // recorded upstream ref is verifiably gone (see recordedRefGone) AND HEAD
-    // is an ancestor of the tip recorded while the ref still existed.
-    const fullyPushedUpstreamDeleted =
-      hasUnpushedCommits && snap.recordedRefGone && snap.headPushedToRecordedTip === true;
-    const hasStashedChanges = snap.stashTotal === null ? true : snap.stashTotal > 0;
-    const hasOperationInProgress =
-      snap.gitDir === null ? true : snap.operationFile !== null || snap.operationProbeUnknown;
-    const hasModifiedSubmodules = this.deriveModifiedSubmodules(snap).length > 0 || snap.submoduleStatus === null;
-    const upstreamGone = snap.upstream === "gone";
 
     // Ahead/behind against @{upstream}, read off the `## <branch>...<upstream>
     // [ahead N, behind M]` header `git status -b` already printed. It is the
@@ -398,6 +382,27 @@ export class WorktreeStatusService {
       snap.status !== null && snap.upstream === "present"
         ? { ahead: snap.status.ahead, behind: snap.status.behind }
         : null;
+
+    // Removal requires BOTH unpushed checks to pass independently: commits
+    // missing from every remote AND commits made since the last sync. Relying
+    // on lastSyncCommit alone hides unpushed work when metadata records HEAD.
+    // lastSyncCommit only moves when this tool creates or fast-forwards the
+    // worktree, so commits pushed (or pulled) from inside it would count
+    // forever; they are waived only once HEAD is on its own existing upstream.
+    const anyRemoteUnpushed = (snap.unpushedAnyRemoteCount ?? 1) > 0;
+    const headOnUpstream = divergence !== null && divergence.ahead === 0;
+    const sinceSyncUnpushed = snap.sinceSyncChecked && (snap.sinceSyncCount ?? 1) > 0 && !headOnUpstream;
+    const hasUnpushedCommits = !snap.plainDetached && (anyRemoteUnpushed || sinceSyncUnpushed);
+    // "Unpushed" override for squash-merge + branch deletion: only when the
+    // recorded upstream ref is verifiably gone (see recordedRefGone) AND HEAD
+    // is an ancestor of the tip recorded while the ref still existed.
+    const fullyPushedUpstreamDeleted =
+      hasUnpushedCommits && snap.recordedRefGone && snap.headPushedToRecordedTip === true;
+    const hasStashedChanges = snap.stashTotal === null ? true : snap.stashTotal > 0;
+    const hasOperationInProgress =
+      snap.gitDir === null ? true : snap.operationFile !== null || snap.operationProbeUnknown;
+    const hasModifiedSubmodules = this.deriveModifiedSubmodules(snap).length > 0 || snap.submoduleStatus === null;
+    const upstreamGone = snap.upstream === "gone";
 
     const reasons: string[] = [];
     if (!isClean) reasons.push("uncommitted changes");
