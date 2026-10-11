@@ -149,6 +149,9 @@ const REF_SCAN_ARGS = [
 ];
 const REMOTE_TRACKING_PREFIX = "refs/remotes/";
 
+// Past this many changed paths a skip reason counts them instead of naming them.
+const MAX_NAMED_UNCOMMITTED_PATHS = 3;
+
 export interface RefScan {
   /** Full names of every branch and remote-tracking ref, symrefs excluded. */
   refs: ReadonlySet<string>;
@@ -405,7 +408,7 @@ export class WorktreeStatusService {
     const upstreamGone = snap.upstream === "gone";
 
     const reasons: string[] = [];
-    if (!isClean) reasons.push("uncommitted changes");
+    if (!isClean) reasons.push(this.describeUncommitted(snap));
     if (hasUnpushedCommits && !fullyPushedUpstreamDeleted) reasons.push("unpushed commits");
     if (hasStashedChanges) reasons.push("stashed changes");
     if (hasOperationInProgress) reasons.push("operation in progress");
@@ -656,6 +659,28 @@ export class WorktreeStatusService {
       status.conflicted.length > 0;
     if (hasTracked) return false;
     return snap.untrackedNotIgnored.length === 0;
+  }
+
+  // Names the paths deriveIsClean found while they are few, so a skip reason
+  // tells a stray file (an accidental lockfile) from real work at a glance.
+  // Keeps the "uncommitted changes" prefix every reader already knows.
+  private describeUncommitted(snap: WorktreeSnapshot): string {
+    const status = snap.status;
+    if (!status) return "uncommitted changes";
+    // A path staged as added and then modified sits in two lists: one change.
+    const tracked = new Set([
+      ...status.modified,
+      ...status.deleted,
+      ...status.renamed.map((r) => r.to),
+      ...status.created,
+      ...status.conflicted,
+    ]);
+    const untracked = snap.untrackedNotIgnored;
+    if (tracked.size + untracked.length > MAX_NAMED_UNCOMMITTED_PATHS) {
+      return `uncommitted changes (${tracked.size} tracked, ${untracked.length} untracked)`;
+    }
+    const names = [...[...tracked].map((p) => `'${p}'`), ...untracked.map((p) => `'${p}' (untracked)`)];
+    return `uncommitted changes: ${names.join(", ")}`;
   }
 
   private deriveModifiedSubmodules(snap: WorktreeSnapshot): string[] {

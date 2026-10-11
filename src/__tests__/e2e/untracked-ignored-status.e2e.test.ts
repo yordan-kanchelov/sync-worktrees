@@ -93,7 +93,7 @@ describe("Untracked vs ignored worktree status (E2E)", () => {
 
     const full = await service.getFullWorktreeStatus(worktreePath, true);
     expect(full.isClean).toBe(true);
-    expect(full.reasons).not.toContain("uncommitted changes");
+    expect(full.reasons.filter((reason) => reason.startsWith("uncommitted changes"))).toEqual([]);
     expect(full.details?.untrackedFiles).toBe(0);
 
     const commands = await spawnedCommands();
@@ -114,8 +114,8 @@ describe("Untracked vs ignored worktree status (E2E)", () => {
     const full = await service.getFullWorktreeStatus(worktreePath, true);
     expect(full.isClean).toBe(false);
     expect(full.canRemove).toBe(false);
-    expect(full.reasons).toContain("uncommitted changes");
     // b.txt only: git left a.tmp out of the status in the first place.
+    expect(full.reasons).toContain("uncommitted changes: 'b.txt' (untracked)");
     expect(full.details?.untrackedFilesList).toEqual(["b.txt"]);
 
     const commands = await spawnedCommands();
@@ -154,7 +154,8 @@ describe("Untracked vs ignored worktree status (E2E)", () => {
 
       const full = await service.getFullWorktreeStatus(worktreePath, true);
       expect(full.isClean).toBe(false);
-      expect(full.reasons).toContain("uncommitted changes");
+      // Counted, never joined: tens of thousands of names do not belong in a log line.
+      expect(full.reasons).toContain(`uncommitted changes (0 tracked, ${index} untracked)`);
       expect(full.details?.untrackedFiles).toBe(index);
 
       const commands = await spawnedCommands();

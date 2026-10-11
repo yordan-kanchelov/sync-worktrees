@@ -267,7 +267,7 @@ describe("WorktreeStatusService", () => {
       const result = await service.getFullWorktreeStatus("/test/worktree");
 
       expect(result.canRemove).toBe(false);
-      expect(result.reasons).toContain("uncommitted changes");
+      expect(result.reasons).toContain("uncommitted changes: 'file.ts'");
       expect(result.reasons).toContain("unpushed commits");
       expect(result.reasons).toContain("operation in progress");
     });
@@ -358,10 +358,37 @@ describe("WorktreeStatusService", () => {
 
       expect(result.isClean).toBe(false);
       expect(result.canRemove).toBe(false);
-      expect(result.reasons).toEqual(["uncommitted changes"]);
+      expect(result.reasons).toEqual(["uncommitted changes: 'src/scratch.ts' (untracked), 'notes.md' (untracked)"]);
       expect(result.details?.untrackedFiles).toBe(2);
       expect(result.details?.untrackedFilesList).toEqual(["src/scratch.ts", "notes.md"]);
       expect(gitSubcommands()).not.toContain("check-ignore");
+    });
+
+    // A few names let a skip reason tell a stray file from real work; past
+    // that, counts keep the reason one readable line. A path git lists twice
+    // (staged as added, then modified) is one change, not two.
+    it("should count rather than name the paths once there are more than three", async () => {
+      mockGit.status.mockResolvedValue({
+        modified: ["src/a.ts", "src/new.ts"],
+        deleted: [],
+        renamed: [{ from: "old.ts", to: "src/renamed.ts" }],
+        created: ["src/new.ts"],
+        conflicted: [],
+        not_added: ["notes.md"],
+      } as any);
+      mockGit.raw.mockImplementation((async (...args: any[]) => {
+        const firstArg = Array.isArray(args[0]) ? args[0] : args;
+        if (firstArg[0] === "submodule") return "";
+        return "0\n";
+      }) as any);
+      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
+      (fs.access as Mock<any>)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
+
+      const result = await service.getFullWorktreeStatus("/test/worktree");
+
+      expect(result.reasons).toEqual(["uncommitted changes (3 tracked, 1 untracked)"]);
     });
 
     // `git worktree add` never initializes submodules, so `git submodule status`
@@ -1047,7 +1074,7 @@ describe("WorktreeStatusService", () => {
         expect.fail("Should have thrown");
       } catch (error) {
         expect(error).toBeInstanceOf(WorktreeNotCleanError);
-        expect((error as WorktreeNotCleanError).reasons).toContain("uncommitted changes");
+        expect((error as WorktreeNotCleanError).reasons).toContain("uncommitted changes: 'file.ts'");
         expect((error as WorktreeNotCleanError).reasons).toContain("unpushed commits");
       }
     });
