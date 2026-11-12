@@ -1574,7 +1574,9 @@ describe("InteractiveUIService", () => {
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(4);
+        // Once per service by the reload; the cycle's sync() initializes
+        // itself rather than calling initialize() first.
+        expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(2);
         expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalledTimes(2);
 
         void service.destroy();

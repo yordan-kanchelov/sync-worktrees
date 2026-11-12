@@ -125,11 +125,12 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
   });
 
   it("still kills a network command that goes quiet for longer than fetchTimeoutMs", async () => {
+    await gitService.initialize();
     useSlowGit();
 
-    // initialize() reaches `git fetch --all` on the bare repository — a network
-    // command, so the inactivity kill is still armed there.
-    await expect(gitService.initialize()).rejects.toThrow(/block timeout reached/i);
+    // The sync's `git fetch --all` is a network command, so the inactivity
+    // kill is still armed there.
+    await expect(gitService.fetchAll()).rejects.toThrow(/block timeout reached/i);
   });
 
   /**
@@ -144,9 +145,8 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
   describe("configured through a config file", () => {
     // The loader only accepts a non-zero window of at least one second, so
     // these run with a 1 s window behind a wrapper that is silent for 1.5 s —
-    // but only in front of `fetch` and `clone`, the commands under test, so a
-    // run that has to get all the way through initialize() does not pay the
-    // silence on every local command.
+    // but only in front of `fetch` and `clone`, the commands under test, so
+    // local commands do not pay the silence.
     const CONFIG_TIMEOUT_MS = 1_000;
     const NETWORK_SILENCE_MS = 1_500;
 
@@ -201,32 +201,35 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
 
     it("kills a silent fetch at the fetchTimeoutMs written on the repository entry", async () => {
       const service = await serviceFromConfigFile({ repo: `fetchTimeoutMs: ${CONFIG_TIMEOUT_MS},` });
+      await service.initialize();
       await useSlowNetworkGit();
 
-      await expect(service.initialize()).rejects.toThrow(/block timeout reached/i);
+      await expect(service.fetchAll()).rejects.toThrow(/block timeout reached/i);
     });
 
     it("kills a silent fetch at a fetchTimeoutMs inherited from defaults", async () => {
       const service = await serviceFromConfigFile({
         defaults: `defaults: { fetchTimeoutMs: ${CONFIG_TIMEOUT_MS} },\n  `,
       });
+      await service.initialize();
       await useSlowNetworkGit();
 
-      await expect(service.initialize()).rejects.toThrow(/block timeout reached/i);
+      await expect(service.fetchAll()).rejects.toThrow(/block timeout reached/i);
     });
 
     it("disables the kill entirely at fetchTimeoutMs 0, which beats a defaults value", async () => {
       // 0 has to mean "no inactivity kill", not "kill immediately": simple-git
       // only installs its timeout plugin for a positive block, and so do both
       // services. With the same silence that fails the two tests above, this
-      // one has to get all the way through initialize().
+      // one has to get all the way through the fetch.
       const service = await serviceFromConfigFile({
         defaults: `defaults: { fetchTimeoutMs: ${CONFIG_TIMEOUT_MS} },\n  `,
         repo: "fetchTimeoutMs: 0,",
       });
+      await service.initialize();
       await useSlowNetworkGit();
 
-      await expect(service.initialize()).resolves.toBeDefined();
+      await expect(service.fetchAll()).resolves.toBeUndefined();
     });
 
     it("kills the silent bare clone at the cloneTimeoutMs written in defaults", async () => {

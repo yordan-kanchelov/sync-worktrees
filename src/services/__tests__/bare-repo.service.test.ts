@@ -258,6 +258,7 @@ describe("BareRepoService (through GitService)", () => {
       mockGit.raw
         .mockResolvedValueOnce(`${originUrl}\n` as any) // config remote.origin.url
         .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
         .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
         .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
 
@@ -272,6 +273,7 @@ describe("BareRepoService (through GitService)", () => {
       mockGit.raw
         .mockResolvedValueOnce("" as any) // config remote.origin.url (unset)
         .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
         .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
         .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
 
@@ -287,6 +289,7 @@ describe("BareRepoService (through GitService)", () => {
       mockGit.raw
         .mockRejectedValueOnce(new Error("error: No such remote 'origin'")) // config remote.origin.url
         .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
         .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
         .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
 
@@ -411,6 +414,7 @@ describe("BareRepoService (through GitService)", () => {
       mockGit.raw
         .mockResolvedValueOnce(TEST_URLS.github as any) // config remote.origin.url
         .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
         .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
         .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
 

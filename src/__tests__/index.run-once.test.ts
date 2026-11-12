@@ -9,7 +9,7 @@ import type { ConfigFile, RepositoryConfig, SyncOutcomeCounts } from "../types";
 const mocks = vi.hoisted(() => ({
   createLogger: vi.fn(),
   getRecordedSkips: vi.fn(),
-  initialize: vi.fn(),
+  isInitialized: vi.fn(),
   logger: {
     error: vi.fn(),
     info: vi.fn(),
@@ -41,14 +41,14 @@ vi.mock("../services/logger.service", () => ({
 }));
 
 vi.mock("../services/worktree-sync.service", () => ({
-  // The name is passed through to `initialize` so a test can make one
-  // repository's initialization fail while the others succeed, the way a
-  // parallel run does.
+  // The name is passed through so a test can make one repository's
+  // initialization fail while the others succeed, the way a parallel run does.
+  // No `initialize`: run-once leaves that to sync().
   WorktreeSyncService: vi.fn(function (config: RepositoryConfig) {
     return {
       getRecordedSkips: mocks.getRecordedSkips,
-      initialize: (): Promise<void> => mocks.initialize(config.name) as Promise<void>,
-      sync: mocks.sync,
+      isInitialized: (): boolean => mocks.isInitialized(config.name) as boolean,
+      sync: (): unknown => mocks.sync(config.name),
     };
   }),
 }));
@@ -93,7 +93,7 @@ describe("runMultipleRepositories", () => {
 
     mocks.createLogger.mockReturnValue(mocks.logger);
     mocks.getRecordedSkips.mockReturnValue([]);
-    mocks.initialize.mockResolvedValue(undefined);
+    mocks.isInitialized.mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -262,13 +262,15 @@ describe("runMultipleRepositories", () => {
   it("names the repository whose initialization failed", async () => {
     const repoB: RepositoryConfig = { ...repo, name: "repo-b", worktreeDir: "/tmp/repo-b" };
     const repoC: RepositoryConfig = { ...repo, name: "repo-c", worktreeDir: "/tmp/repo-c" };
-    mocks.initialize.mockImplementation((name: string) =>
-      name === "repo-b" ? Promise.reject(new Error("clone failed")) : Promise.resolve(),
+    mocks.isInitialized.mockImplementation((name: string) => name !== "repo-b");
+    mocks.sync.mockImplementation((name: string) =>
+      name === "repo-b"
+        ? Promise.reject(new Error("clone failed"))
+        : Promise.resolve({
+            started: true,
+            outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
+          }),
     );
-    mocks.sync.mockResolvedValue({
-      started: true,
-      outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
-    });
 
     await runMultipleRepositories(configFile, [repo, repoB, repoC]);
 
@@ -304,7 +306,8 @@ describe("runMultipleRepositories", () => {
   });
 
   it("points at --debug after a failure, and at repoUrl/credentials when a repository did not initialize", async () => {
-    mocks.initialize.mockRejectedValue(new Error("clone failed"));
+    mocks.isInitialized.mockReturnValue(false);
+    mocks.sync.mockRejectedValue(new Error("clone failed"));
 
     await runMultipleRepositories(configFile, [repo]);
 
@@ -314,7 +317,8 @@ describe("runMultipleRepositories", () => {
   });
 
   it("does not print the --debug hint when debug is already on", async () => {
-    mocks.initialize.mockRejectedValue(new Error("clone failed"));
+    mocks.isInitialized.mockReturnValue(false);
+    mocks.sync.mockRejectedValue(new Error("clone failed"));
 
     await runMultipleRepositories(configFile, [{ ...repo, debug: true }]);
 

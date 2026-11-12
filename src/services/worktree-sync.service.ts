@@ -755,11 +755,22 @@ export class WorktreeSyncService {
         const syncContext = this.retryPolicy.createContext();
         const retryOptions = { ...this.retryPolicy.createOptions(syncContext), signal: options.signal };
         let durationMs: number | undefined;
+        // An init that failed never printed "Starting", so it prints no "finished".
+        let syncStarted = false;
 
         try {
           let clonedThisOperation = false;
           if (!this.isInitialized()) {
-            await this.initializeUnlocked(outcome);
+            // Under the same retry policy as the sync attempt: init fetches or
+            // clones, so a briefly unreachable remote is retried here too.
+            const initBaseline = outcome.snapshot();
+            await retry(() => this.initializeUnlocked(outcome), {
+              ...retryOptions,
+              onRetry: (error: unknown, attempt: number, context?: LfsErrorContext): void => {
+                outcome.restore(initBaseline);
+                retryOptions.onRetry?.(error, attempt, context);
+              },
+            });
             // `outcome` was constructed a few lines up and nothing else has
             // written to it, so a `created` action in it can only be the clone
             // this init just made — not an adopted existing clone, which records
@@ -768,7 +779,7 @@ export class WorktreeSyncService {
             // branch, so the sync attempt below would fetch a ref it already has
             // and scan a working tree git checked out moments ago. The check is
             // deliberately scoped to an init that ran *inside this operation*:
-            // a standalone `initialize()` (the run-once CLI, the TUI, the MCP
+            // a standalone `initialize()` (the TUI reload, the MCP
             // `initialize` tool) can be followed by a sync at any distance, and
             // a flag carried across that boundary cannot tell a sync a second
             // later from one an hour later — a sync that silently does nothing
@@ -781,6 +792,7 @@ export class WorktreeSyncService {
           }
 
           this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
+          syncStarted = true;
 
           const retryOutcomeBaseline = outcome.snapshot();
           const retryOptionsWithOutcomeReset = {
@@ -819,7 +831,7 @@ export class WorktreeSyncService {
           throw error;
         } finally {
           this.retryPolicy.resetLfsSkipIfNeeded(syncContext);
-          this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
+          if (syncStarted) this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
           durationMs = totalTimer.stop();
           this.lastOutcome = outcome.toOutcome(durationMs);
 

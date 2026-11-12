@@ -168,6 +168,7 @@ describe("GitService", () => {
       mockGit.raw
         .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
         .mockRejectedValueOnce(new Error("config not found")) // Second call: config check throws
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/: none yet, so fetch
         .mockResolvedValueOnce(
           createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
         ); // Third call: worktree list
@@ -178,7 +179,7 @@ describe("GitService", () => {
       expect(simpleGit).toHaveBeenCalledWith(".bare/repo", expect.objectContaining({ progress: expect.any(Function) }));
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
-      // Fetch is always called to ensure remote refs are up-to-date
+      // No remote-tracking refs yet, so initialize fetches
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(git).toBe(mockGit);
     });
@@ -255,7 +256,7 @@ describe("GitService", () => {
 
       await gitService.initialize();
 
-      // Fetch is always called to ensure remote refs are up-to-date
+      // No remote-tracking refs yet, so initialize fetches
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(fs.mkdir).toHaveBeenCalledWith(TEST_PATHS.worktree, { recursive: true });
       expect(addCalls).toEqual([["worktree", "add", "--track", "-b", "main", MAIN_WORKTREE_PATH, "origin/main"]]);
@@ -277,7 +278,7 @@ describe("GitService", () => {
 
       await relativeGitService.initialize();
 
-      // Fetch is always called to ensure remote refs are up-to-date
+      // No remote-tracking refs yet, so initialize fetches
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       // Verify that the worktree add command received an absolute path
       expect(addCalls).toEqual([["worktree", "add", "--track", "-b", "main", expectedAbsolutePath, "origin/main"]]);
@@ -411,6 +412,7 @@ describe("GitService", () => {
       mockGit.raw
         .mockResolvedValueOnce(TEST_URLS.github as any) // First call: origin URL matches repoUrl
         .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*") // Second call: config exists
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/: none yet, so fetch
         .mockResolvedValueOnce(
           createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
         ); // Third call: worktree list
@@ -421,9 +423,33 @@ describe("GitService", () => {
       expect(simpleGit).toHaveBeenCalledWith(".bare/repo", expect.objectContaining({ progress: expect.any(Function) }));
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).not.toHaveBeenCalled(); // Should not add config if it already exists
-      // Fetch is always called to ensure remote refs are up-to-date
+      // No remote-tracking refs yet, so initialize fetches
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
       expect(git).toBe(mockGit);
+    });
+
+    // sync() fetches right after initialize, so an existing bare repository
+    // with remote-tracking refs is not fetched here a second time.
+    it("does not fetch when the bare repository already has remote-tracking refs", async () => {
+      (fs.access as Mock<any>).mockResolvedValue(undefined);
+      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
+      mockGit.raw
+        .mockResolvedValueOnce(TEST_URLS.github as any) // origin URL matches repoUrl
+        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*") // fetch config exists
+        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // for-each-ref refs/remotes/origin/
+        .mockResolvedValueOnce(
+          createWorktreeListOutput([{ path: TEST_PATHS.worktree + "/main", branch: "main", commit: "abc123" }]) as any,
+        );
+
+      await gitService.initialize();
+
+      expect(mockGit.raw).toHaveBeenCalledWith([
+        "for-each-ref",
+        "--count=1",
+        "--format=%(refname)",
+        "refs/remotes/origin/",
+      ]);
+      expect(mockGit.fetch).not.toHaveBeenCalled();
     });
   });
 
@@ -907,15 +933,17 @@ describe("GitService", () => {
       // Sequence all raw calls in order of execution:
       // 1. remote get-url origin → matches repoUrl
       // 2. config check → reject (triggers addConfig)
-      // 3. for-each-ref → reject (the remote branch listing fails, so no
+      // 3. for-each-ref refs/remotes/origin/ → none yet, so fetch
+      // 4. for-each-ref → reject (the remote branch listing fails, so no
       //    common default name can be confirmed to exist either)
-      // 4. symbolic-ref → reject (first detection attempt fails)
-      // 5. set-head → reject (skips second symbolic-ref)
-      // 6. worktree list → returns main worktree so no creation needed
+      // 5. symbolic-ref → reject (first detection attempt fails)
+      // 6. set-head → reject (skips second symbolic-ref)
+      // 7. worktree list → returns main worktree so no creation needed
       mockGit.raw.mockReset();
       mockGit.raw
         .mockResolvedValueOnce(TEST_URLS.github as any)
         .mockRejectedValueOnce(new Error("config not found"))
+        .mockResolvedValueOnce("" as any)
         .mockRejectedValueOnce(new Error("ref listing failed"))
         .mockRejectedValueOnce(new Error("not a symbolic ref"))
         .mockRejectedValueOnce(new Error("set-head failed"))

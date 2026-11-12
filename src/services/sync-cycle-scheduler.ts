@@ -334,9 +334,7 @@ export class SyncCycleScheduler {
             // sync that threw, still has to close its row.
             let ownedProgressRow = true;
             try {
-              if (!service.isInitialized()) {
-                await service.initialize();
-              }
+              // sync() initializes under its lock and retry policy.
               const result = await service.sync();
               if (result?.started === false) {
                 ownedProgressRow = false;

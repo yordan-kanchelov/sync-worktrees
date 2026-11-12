@@ -100,9 +100,9 @@ export async function runMultipleRepositories(
           }
 
           // A copy, not an assignment: the loaded configuration stays as it
-          // was read, whoever else holds it.
+          // was read, whoever else holds it. Not initialized here: sync() does
+          // that under its lock and retry policy.
           const syncService = new WorktreeSyncService({ ...repoConfig, logger: repoConfig.logger ?? repoLogger });
-          await syncService.initialize();
           return { name: repoConfig.name, service: syncService };
         }),
       ),
@@ -130,7 +130,8 @@ export async function runMultipleRepositories(
           try {
             return await service.sync();
           } catch (error) {
-            globalLogger.error(`❌ Error syncing repository '${name}':`, error);
+            const failed = service.isInitialized() ? "Error syncing" : "Failed to initialize";
+            globalLogger.error(`❌ ${failed} repository '${name}':`, error);
             throw error;
           }
         }),
@@ -223,8 +224,11 @@ export async function runMultipleRepositories(
     if (failedCount > 0) {
       process.exitCode = 1;
       if (!anyDebug) {
+        const neverInitialized = syncResults.some(
+          (result, index) => result.status === "rejected" && !servicesToSync[index].service.isInitialized(),
+        );
         const cloneHint =
-          initFailures > 0
+          initFailures > 0 || neverInitialized
             ? " A repository that fails to initialize usually has a wrong repoUrl or missing credentials."
             : "";
         globalLogger.info(`💡 Re-run with --debug (or set debug: true) for full error details.${cloneHint}`);

@@ -275,10 +275,13 @@ export class GitService {
     await this.bareRepo.ensureBareRepository();
     const bareGit = this.getCachedGit(this.bareRepoPath);
 
-    // Always fetch to ensure remote refs are up-to-date
-    // This is needed for branch creation UI even when repo already exists
-    this.logger.info("Fetching remote branches...");
-    await this.getCachedNetworkGit(this.bareRepoPath).fetch(["--all", "--progress"]);
+    // Fetch only when there are no remote-tracking refs yet (a fresh clone):
+    // sync() fetches right after, and the TUI wizard and MCP fetch themselves.
+    const remoteRefs = await bareGit.raw(["for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes/origin/"]);
+    if (remoteRefs.trim() === "") {
+      this.logger.info("Fetching remote branches...");
+      await this.getCachedNetworkGit(this.bareRepoPath).fetch(["--all", "--progress"]);
+    }
 
     // Detect the default branch (works from local refs even without fetch)
     this.defaultBranch = await this.bareRepo.detectDefaultBranch(bareGit);
