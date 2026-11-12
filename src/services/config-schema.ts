@@ -7,6 +7,7 @@ import { parseDuration } from "../utils/date-filter";
 import { MAX_TIMER_DELAY_MS, MIN_GIT_TIMEOUT_MS, SIMPLE_GIT_CLIENT_CONCURRENCY } from "../utils/git-client";
 import { isValidGitUrl, redactSecretsInText } from "../utils/git-url";
 import { REPOSITORY_MODES } from "../utils/repo-mode";
+import { sanitizeNameForPath } from "../utils/sanitize-name";
 import { findConeRuleViolations } from "./sparse-checkout.service";
 
 import type { ConfigValidationIssue } from "../errors";
@@ -479,7 +480,16 @@ const REPO_URL_FORMATS =
   "host, but then the entry needs an explicit 'bareRepoDir'";
 
 export const repositorySchema = block({
-  name: nonEmptyText(),
+  // Used as a path segment (lock, audit log, duplicate-URL bare dir).
+  name: nonEmptyText().superRefine((name, ctx) => {
+    if (name.trim() === "") return;
+    try {
+      sanitizeNameForPath(name);
+    } catch (error) {
+      if (!(error instanceof ConfigValidationError)) throw error;
+      ctx.addIssue({ code: "custom", message: error.reason });
+    }
+  }),
   repoUrl: text().refine((url) => isValidGitUrl(url), {
     error: (issue) => `is not a repository URL, got ${describeValue(issue.input)}. ${REPO_URL_FORMATS}`,
   }),

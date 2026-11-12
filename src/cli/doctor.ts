@@ -493,7 +493,15 @@ export async function runDoctorChecks(options: DoctorOptions, deps: DoctorDeps):
   checks.push(configCheck);
 
   const limit = pLimit(REMOTE_CHECK_CONCURRENCY);
-  const perRepository = await Promise.all(repositories.map((repo) => limit(() => checkRepository(repo, deps))));
+  const perRepository = await Promise.all(
+    repositories.map((repo) =>
+      limit(() =>
+        checkRepository(repo, deps).catch((error: unknown) => [
+          check("repository", repo.name, "fail", getErrorMessage(error)),
+        ]),
+      ),
+    ),
+  );
   for (const repoChecks of perRepository) checks.push(...repoChecks);
   return checks;
 }

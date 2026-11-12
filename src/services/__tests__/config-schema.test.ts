@@ -230,6 +230,18 @@ describe("validateConfigFile: the file and its repository entries", () => {
     );
   });
 
+  it("rejects a name that cannot become a path segment", () => {
+    expect(onlyIssue(config({}, { name: ".." }))).toBe(
+      "repositories[0].name: '..' produces an empty path segment after sanitization",
+    );
+  });
+
+  it("accepts names that are reserved only on Windows", () => {
+    for (const name of ["aux", "CON", "nul", "com1"]) {
+      expect(issuesOf(config({}, { name })), name).toEqual([]);
+    }
+  });
+
   it("names the formats a repoUrl may take, and redacts the credentials in the one it got", () => {
     const [issue] = issuesOf(config({}, { repoUrl: "ftp://bot:s3cr3t@example.com/repo.git" }));
 

@@ -385,6 +385,18 @@ describe("runDoctorChecks", () => {
     expect(doctorExitCode(checks)).toBe(1);
   });
 
+  it("turns a repository whose checks throw into a failed check and keeps checking the others", async () => {
+    const d = deps({
+      loadRepositories: async () => [repo({ name: "..", __configFileDir: "/work" }), repo({ name: "web" })],
+    });
+    const checks = await runDoctorChecks({}, d);
+    const broken = byCheck(checks, "repository", "..");
+    expect(broken?.status).toBe("fail");
+    expect(broken?.message).toContain("empty path segment");
+    expect(byCheck(checks, "remote", "web")).toBeDefined();
+    expect(doctorExitCode(checks)).toBe(1);
+  });
+
   it("exits 0 with warnings only", async () => {
     const checks = await runDoctorChecks({}, deps({ nodeVersion: "22.0.0" }));
     expect(checks.some((item) => item.status === "warn")).toBe(true);

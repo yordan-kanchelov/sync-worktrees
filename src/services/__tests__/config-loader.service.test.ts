@@ -3660,11 +3660,10 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       );
     });
 
-    it("rejects Windows-reserved name", () => {
+    it("accepts a name reserved only on Windows", () => {
       const all = [makeRepo("first"), makeRepo("CON")];
-      expect(() => configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all)).toThrow(
-        /reserved name/,
-      );
+      const resolved = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
+      expect(resolved.bareRepoDir).toBe("/cfg/.bare/CON");
     });
   });
 
