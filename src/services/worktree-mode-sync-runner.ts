@@ -146,10 +146,8 @@ export class WorktreeModeSyncRunner {
     }
 
     if (this.config.sparseCheckout) {
-      await this.reapplySparseCheckout(syncPlan.sparse, syncContext, outcome);
+      await this.reapplySparseCheckoutWithTiming(syncPlan.sparse, phaseTimer, syncContext, outcome);
     }
-
-    await this.finalizeSyncAttempt(phaseTimer);
   }
 
   // `sync --dry-run`: every decision runSyncAttempt makes, taken by the same
@@ -364,6 +362,20 @@ export class WorktreeModeSyncRunner {
           path: anchorPath,
           message: `Default-branch worktree at '${anchorPath}' is on a detached HEAD, so '${defaultBranch}' is not synced; ${fix}`,
         };
+  }
+
+  private async reapplySparseCheckoutWithTiming(
+    actions: SparseAction[],
+    phaseTimer: PhaseTimer,
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<void> {
+    phaseTimer.startPhase("Phase 5: Sparse");
+
+    await this.reapplySparseCheckout(actions, syncContext, outcome);
+
+    phaseTimer.setPhaseCount("Phase 5: Sparse", actions.filter((action) => action.kind === "check-sparse").length);
+    phaseTimer.endPhase();
   }
 
   private async reapplySparseCheckout(
@@ -763,12 +775,6 @@ export class WorktreeModeSyncRunner {
     }
 
     return { all: allBranches, filtered: remoteBranches };
-  }
-
-  private async finalizeSyncAttempt(phaseTimer: PhaseTimer): Promise<void> {
-    phaseTimer.startPhase("Phase 5: Cleanup");
-    this.progressEmitter.emit({ phase: "cleanup", message: "Cleanup complete" });
-    phaseTimer.endPhase();
   }
 
   private async createNewWorktreesWithTiming(
