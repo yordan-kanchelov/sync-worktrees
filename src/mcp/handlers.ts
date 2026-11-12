@@ -639,7 +639,7 @@ export async function handleSync(
   const dispose = attachProgressReporter(service, handlerContext);
   try {
     const start = Date.now();
-    const result = await service.sync();
+    const result = await service.sync({ signal: handlerContext?.mcpReq.signal });
     if (!result.started) {
       throw notStartedError(ctx, params.repoName, result);
     }

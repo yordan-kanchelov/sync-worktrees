@@ -725,7 +725,7 @@ export class WorktreeSyncService {
     this.progressEmitter.emit(event);
   }
 
-  async sync(): Promise<SyncResult> {
+  async sync(options: { signal?: AbortSignal } = {}): Promise<SyncResult> {
     // Set as the first statement inside the exclusive operation so the `finally`
     // below can tell "the operation ran" from "it never started". The result
     // object cannot answer that on the failure path: a sync that trashes a
@@ -753,7 +753,7 @@ export class WorktreeSyncService {
           repoName: (this.config as { name?: string }).name,
         });
         const syncContext = this.retryPolicy.createContext();
-        const retryOptions = this.retryPolicy.createOptions(syncContext);
+        const retryOptions = { ...this.retryPolicy.createOptions(syncContext), signal: options.signal };
         let durationMs: number | undefined;
 
         try {

@@ -788,8 +788,14 @@ export class RepositoryContext {
     }
     if (!entry.service) {
       const logger = createStderrLogger(entry.name);
+      // A tool call has to answer: "unlimited" would retry an unreachable
+      // remote forever while holding the repository lock.
+      const retry = entry.config.retry;
       entry.service = new WorktreeSyncService({
         ...entry.config,
+        ...(retry?.maxAttempts === "unlimited"
+          ? { retry: { ...retry, maxAttempts: DEFAULT_CONFIG.RETRY.MAX_ATTEMPTS } }
+          : {}),
         logger,
       });
     }

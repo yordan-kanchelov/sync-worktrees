@@ -44,11 +44,15 @@ async function main(): Promise<void> {
     },
   );
 
+  const shutdown = (): void => {
+    void handle.close().finally(() => process.exit(0));
+  };
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => {
-      void handle.close().finally(() => process.exit(0));
-    });
+    process.once(signal, shutdown);
   }
+  // The stdio transport ignores EOF; a retry backoff or lock refresh timer
+  // would keep a disconnected server alive. Closing aborts in-flight calls.
+  process.stdin.once("end", shutdown);
 }
 
 main().catch((err) => {

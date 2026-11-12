@@ -28,9 +28,13 @@ export interface RetryOptions {
   shouldRetry?: (error: unknown, context?: LfsErrorContext) => boolean;
   onRetry?: (error: unknown, attempt: number, context?: LfsErrorContext) => void;
   lfsRetryHandler?: (context: LfsErrorContext) => void;
+  /** Stops retrying once aborted: no new attempt starts and a pending backoff ends early. */
+  signal?: AbortSignal;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttempts: number | "unlimited" } = {
+const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts" | "signal">> & {
+  maxAttempts: number | "unlimited";
+} = {
   maxAttempts: "unlimited",
   maxLfsRetries: 2,
   initialDelayMs: 1000,
@@ -92,7 +96,9 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
   let lfsAttempt = 0;
   const lfsContext: LfsErrorContext = { isLfsError: false };
 
+  const signal = opts.signal;
   while (true) {
+    signal?.throwIfAborted();
     try {
       return await fn();
     } catch (error) {
@@ -100,7 +106,7 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
       lfsContext.isLfsError = false;
 
       // Check if we should retry
-      if (!opts.shouldRetry(error, lfsContext)) {
+      if (signal?.aborted || !opts.shouldRetry(error, lfsContext)) {
         throw error;
       }
 
@@ -138,8 +144,29 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
 
       opts.onRetry(error, attempt, lfsContext);
 
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (await sleepUnlessAborted(delay, signal)) {
+        throw error;
+      }
       attempt++;
     }
   }
+}
+
+/** Resolves true when the signal aborted before the delay elapsed. */
+function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(true);
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(false);
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

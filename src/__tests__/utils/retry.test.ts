@@ -428,4 +428,44 @@ describe("retry", () => {
       ).rejects.toThrow(/Consider setting 'skipLfs: true' for this repository \(or under 'defaults'\)/);
     });
   });
+  describe("abort signal", () => {
+    const retryable = (): Error => Object.assign(new Error("unreachable"), { code: "ECONNREFUSED" });
+
+    it("ends a pending backoff with the last error when aborted", async () => {
+      const controller = new AbortController();
+      const error = retryable();
+      const mockFn = vi.fn().mockRejectedValue(error);
+
+      const pending = retry(mockFn, {
+        maxAttempts: "unlimited",
+        initialDelayMs: 60_000,
+        signal: controller.signal,
+        onRetry: () => controller.abort(),
+      });
+
+      await expect(pending).rejects.toBe(error);
+      expect(mockFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry an attempt that failed after the abort", async () => {
+      const controller = new AbortController();
+      const error = retryable();
+      const mockFn = vi.fn().mockImplementation(async () => {
+        controller.abort();
+        throw error;
+      });
+
+      await expect(retry(mockFn, { initialDelayMs: 1, signal: controller.signal })).rejects.toBe(error);
+      expect(mockFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not start when already aborted", async () => {
+      const controller = new AbortController();
+      controller.abort(new Error("cancelled"));
+      const mockFn = vi.fn().mockResolvedValue("x");
+
+      await expect(retry(mockFn, { signal: controller.signal })).rejects.toThrow("cancelled");
+      expect(mockFn).not.toHaveBeenCalled();
+    });
+  });
 });

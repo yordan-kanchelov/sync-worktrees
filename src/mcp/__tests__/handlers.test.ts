@@ -1047,6 +1047,15 @@ describe("handleSync", () => {
     expect(service.sync).toHaveBeenCalledTimes(1);
   });
 
+  it("passes the request's abort signal to sync", async () => {
+    const { ctx, service } = makeCtx({});
+    const controller = new AbortController();
+
+    await handleSync(ctx, {}, { mcpReq: { signal: controller.signal, _meta: {} } } as any);
+
+    expect(service.sync).toHaveBeenCalledWith({ signal: controller.signal });
+  });
+
   it("denies sync from durable capabilities when the discovery cache is empty", async () => {
     const { ctx, service } = makeCtx({
       baseCapabilities: makeCapabilities({
