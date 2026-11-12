@@ -149,12 +149,17 @@ export class HookExecutionService {
   }
 
   private resolveCommandPlaceholders(command: string, context: HookContext): string {
-    return command
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.BRANCH_NAME, shellEscape(context.branchName))
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.WORKTREE_PATH, shellEscape(context.worktreePath))
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.REPO_NAME, shellEscape(context.repoName))
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.BASE_BRANCH, shellEscape(context.baseBranch))
-      .replaceAll(HOOK_CONSTANTS.PLACEHOLDERS.REPO_URL, shellEscape(context.repoUrl));
+    // One pass with a function replacer: no `$` patterns, no re-expansion.
+    const values: Record<string, string> = {
+      [HOOK_CONSTANTS.PLACEHOLDERS.BRANCH_NAME]: context.branchName,
+      [HOOK_CONSTANTS.PLACEHOLDERS.WORKTREE_PATH]: context.worktreePath,
+      [HOOK_CONSTANTS.PLACEHOLDERS.REPO_NAME]: context.repoName,
+      [HOOK_CONSTANTS.PLACEHOLDERS.BASE_BRANCH]: context.baseBranch,
+      [HOOK_CONSTANTS.PLACEHOLDERS.REPO_URL]: context.repoUrl,
+    };
+    return command.replace(/\{[A-Z_]+\}/g, (match) =>
+      Object.hasOwn(values, match) ? shellEscape(values[match]) : match,
+    );
   }
 
   private executeCommandInBackground(

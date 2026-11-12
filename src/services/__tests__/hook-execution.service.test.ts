@@ -15,6 +15,7 @@ import type { HookExecutionCallbacks } from "../hook-execution.service";
 const NODE = process.execPath;
 
 const nodeScript = (body: string): string => `"${NODE}" -e "${body.replace(/"/g, '\\"')}"`;
+const printArgs = nodeScript("process.stdout.write(process.argv.slice(1).join(' '))");
 
 describe("HookExecutionService", () => {
   let service: HookExecutionService;
@@ -240,11 +241,56 @@ describe("HookExecutionService", () => {
           " {BRANCH_NAME} {BRANCH_NAME} {BRANCH_NAME}",
         expected: "feature/test-branch feature/test-branch feature/test-branch",
       },
-    ])("should replace placeholders correctly ($desc)", async ({ template, expected }) => {
+      {
+        desc: "branch ending in $ followed by more command",
+        context: { branchName: "fix/price$" },
+        template: `${printArgs} {BRANCH_NAME} end`,
+        resolved: `${printArgs} 'fix/price$' end`,
+        expected: "fix/price$ end",
+      },
+      {
+        desc: "repo url containing $$",
+        context: { repoUrl: "https://u:pa$$word@h/r.git" },
+        template: `${printArgs} {REPO_URL}`,
+        resolved: `${printArgs} 'https://u:pa$$word@h/r.git'`,
+        expected: "https://u:pa$$word@h/r.git",
+      },
+      {
+        desc: "value containing $&",
+        context: { branchName: "a$&b" },
+        template: `${printArgs} {BRANCH_NAME} end`,
+        resolved: `${printArgs} 'a$&b' end`,
+        expected: "a$&b end",
+      },
+      {
+        desc: "value containing a later placeholder",
+        context: { branchName: "a{REPO_URL}b" },
+        template: `${printArgs} {BRANCH_NAME} {REPO_URL}`,
+        resolved: `${printArgs} 'a{REPO_URL}b' 'https://github.com/test/repo.git'`,
+        expected: "a{REPO_URL}b https://github.com/test/repo.git",
+      },
+    ] as Array<{
+      desc: string;
+      template: string;
+      expected: string;
+      context?: Partial<HookContext>;
+      resolved?: string;
+    }>)("should replace placeholders correctly ($desc)", async ({ template, expected, context, resolved }) => {
       const stdoutCallback = vi.fn();
+      const completeCallback = vi.fn();
 
-      await runAndWait({ onBranchCreated: [template] }, mockContext, { onStdout: stdoutCallback });
+      await runAndWait(
+        { onBranchCreated: [template] },
+        { ...mockContext, ...context },
+        {
+          onStdout: stdoutCallback,
+          onComplete: completeCallback,
+        },
+      );
 
+      if (resolved !== undefined) {
+        expect(completeCallback).toHaveBeenCalledWith(resolved, 0);
+      }
       expect(stdoutCallback).toHaveBeenCalledWith(expected);
     });
 
