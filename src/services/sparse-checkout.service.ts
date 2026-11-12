@@ -18,7 +18,7 @@ const compareUtf8 = (a: string, b: string): number => Buffer.compare(Buffer.from
 // attaches to the answer. Both callers must agree: the validator refuses cone
 // patterns git would refuse, so it has to be looking at the same mode the
 // apply step will pick.
-const modeFor = (cfg: SparseCheckoutConfig): SparseCheckoutMode => {
+export const modeFor = (cfg: SparseCheckoutConfig): SparseCheckoutMode => {
   if (cfg.mode === "no-cone") return "no-cone";
   if ((cfg.exclude?.length ?? 0) > 0 || cfg.include.some((p) => p.trim().startsWith("!"))) return "no-cone";
   return cfg.mode ?? "cone";
