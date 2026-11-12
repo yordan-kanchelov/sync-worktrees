@@ -3147,7 +3147,8 @@ describe("WorktreeSyncService", () => {
         isNarrowing,
         buildPatterns: vi.fn().mockReturnValue(["apps"]),
         needsUpdate: vi.fn().mockResolvedValue(true),
-        resolveMode: vi.fn(),
+        resolveMode: vi.fn().mockReturnValue("cone"),
+        readCurrentMode: vi.fn().mockResolvedValue("cone"),
         patternsEqual: vi.fn((a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i])),
       } as any);
       (fs.access as Mock).mockResolvedValue(undefined);
@@ -3177,6 +3178,7 @@ describe("WorktreeSyncService", () => {
         buildPatterns: real.buildPatterns.bind(real),
         needsUpdate: vi.fn().mockResolvedValue(true),
         resolveMode: real.resolveMode.bind(real),
+        readCurrentMode: vi.fn().mockResolvedValue("cone"),
         patternsEqual: real.patternsEqual.bind(real),
       } as any);
       readCurrent.mockResolvedValue(["apps"]);

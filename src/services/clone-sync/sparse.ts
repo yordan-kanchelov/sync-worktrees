@@ -53,8 +53,14 @@ export async function assessSparseCheckout(
     // "Narrowing safety" section is the tool's promise to skip rather than
     // git's promise to preserve, and worktree mode has always kept it. The
     // deferred narrowing lands on the first tick that finds a clean tree.
-    const current = await sparseService.readCurrent(worktreeDir);
-    const narrowing = sparseService.isNarrowing(current, sparseService.buildPatterns(cfg));
+    const currentMode = await sparseService.readCurrentMode(worktreeDir);
+    const current = await sparseService.readCurrent(worktreeDir, currentMode);
+    const narrowing = sparseService.isNarrowing(
+      current,
+      sparseService.buildPatterns(cfg),
+      currentMode,
+      sparseService.resolveMode(cfg),
+    );
     // The same notion of "clean" the ff-merge gate uses: uncommitted and
     // untracked changes. Unpushed commits are a clone-mode skip of their
     // own and their content is safe in the object store either way.

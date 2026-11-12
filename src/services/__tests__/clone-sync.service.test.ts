@@ -87,6 +87,7 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     applyToWorktree: vi.fn().mockResolvedValue(undefined),
     buildPatterns: vi.fn().mockReturnValue(["src"]),
     readCurrent: vi.fn().mockResolvedValue(null),
+    readCurrentMode: vi.fn().mockResolvedValue("cone"),
     patternsEqual: vi.fn().mockReturnValue(false),
     needsUpdate: vi.fn().mockResolvedValue(true),
     isNarrowing: vi.fn().mockReturnValue(false),
@@ -2758,7 +2759,7 @@ describe("CloneSyncService", () => {
 
       await service.runSyncAttempt(outcome);
 
-      expect(sparseService.isNarrowing).toHaveBeenCalledWith(["other", "pkg"], ["pkg"]);
+      expect(sparseService.isNarrowing).toHaveBeenCalledWith(["other", "pkg"], ["pkg"], "cone", "cone");
       expect(sparseService.applyToWorktree).not.toHaveBeenCalled();
       expect(outcome.toOutcome().actions).toContainEqual(
         expect.objectContaining({

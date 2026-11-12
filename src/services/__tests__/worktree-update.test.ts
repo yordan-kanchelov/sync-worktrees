@@ -873,6 +873,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         pathsTouchSparse: vi.fn().mockReturnValue(true),
         buildPatterns: vi.fn().mockReturnValue(["src"]),
         readCurrent: vi.fn().mockResolvedValue(["src"]),
+        readCurrentMode: vi.fn().mockResolvedValue("cone"),
         patternsEqual: vi.fn().mockReturnValue(true),
         isNarrowing: vi.fn().mockReturnValue(false),
         applyToWorktree: vi.fn().mockResolvedValue(undefined),

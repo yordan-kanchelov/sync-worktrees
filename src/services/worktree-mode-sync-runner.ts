@@ -30,7 +30,7 @@ import type { SyncRetryContext } from "./sync-retry-policy";
 import type { TrashEntry } from "./trash.service";
 import type { WorktreeStatusDetails, WorktreeStatusResult } from "./worktree-status.service";
 import type { CreateAction, PruneAction, SparseAction, SyncPlan, UpdateAction } from "./worktree-sync-planner";
-import type { Config } from "../types";
+import type { Config, SparseCheckoutConfig } from "../types";
 import type { PhaseTimer } from "../utils/timing";
 
 // How many worktreeDir containment probes may be in flight at once. Pure stat
@@ -242,7 +242,7 @@ export class WorktreeModeSyncRunner {
       const desired = sparseService.buildPatterns(sparseConfig);
       for (const action of syncPlan.sparse) {
         if (action.kind !== "check-sparse") continue;
-        const assessment = await this.assessSparseAction(action, desired);
+        const assessment = await this.assessSparseAction(action, sparseConfig, desired);
         const step = this.describeSparseAssessment(action, assessment);
         if (step) plan.add(step);
       }
@@ -339,7 +339,7 @@ export class WorktreeModeSyncRunner {
     await Promise.all(
       checks.map((action) =>
         limit(async () => {
-          const assessment = await this.assessSparseAction(action, desired);
+          const assessment = await this.assessSparseAction(action, sparseConfig, desired);
           try {
             switch (assessment.kind) {
               case "absent":
@@ -386,6 +386,7 @@ export class WorktreeModeSyncRunner {
   // safe on a worktree that could be removed outright.
   private async assessSparseAction(
     action: { branch: string; path: string },
+    sparseConfig: SparseCheckoutConfig,
     desired: string[],
   ): Promise<SparseAssessment> {
     const sparseService = this.gitService.getSparseCheckoutService();
@@ -396,10 +397,14 @@ export class WorktreeModeSyncRunner {
         return { kind: "absent" };
       }
 
-      const current = await sparseService.readCurrent(action.path);
-      if (current !== null && sparseService.patternsEqual(current, desired)) return { kind: "in-sync" };
+      const desiredMode = sparseService.resolveMode(sparseConfig);
+      const currentMode = await sparseService.readCurrentMode(action.path);
+      const current = await sparseService.readCurrent(action.path, currentMode);
+      if (currentMode === desiredMode && current !== null && sparseService.patternsEqual(current, desired)) {
+        return { kind: "in-sync" };
+      }
 
-      const narrowing = sparseService.isNarrowing(current, desired);
+      const narrowing = sparseService.isNarrowing(current, desired, currentMode, desiredMode);
       if (narrowing) {
         const status = await this.gitService.getFullWorktreeStatus(action.path, false);
         if (!status.canRemove) return { kind: "unsafe-narrowing", reasons: status.reasons };
