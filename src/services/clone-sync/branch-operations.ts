@@ -1,7 +1,13 @@
 import * as path from "path";
 
 import { PATH_CONSTANTS } from "../../constants";
-import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../../errors";
+import {
+  ConfigError,
+  FastForwardError,
+  GitOperationError,
+  UnpushedBranchLeftoverError,
+  WorktreeNotCleanError,
+} from "../../errors";
 import { getErrorMessage } from "../../utils/errors";
 import { probePathExists } from "../../utils/file-exists";
 import { appendGitAuthHint } from "../../utils/git-auth-error";
@@ -301,15 +307,7 @@ export async function createAndPushCloneBranch(
   try {
     await clients.git.raw(["branch", "--no-track", branchName, `origin/${baseBranch}`]);
   } catch (error) {
-    // The commonest failure here is a directory/file ref conflict -- 'feat'
-    // already exists, so 'feat/sub' cannot be created. Say "already exists"
-    // so the wizard suffixes and retries, which does resolve it, rather than
-    // handing the user a bare git message with no repository in it.
-    throw new GitOperationError(
-      "branch",
-      `cannot create '${branchName}' in '${ctx.repoName}': the name conflicts with a branch that ` +
-        `already exists there (${summarizeGitFailure(getErrorMessage(error))}); choose another name`,
-    );
+    throw describeBranchCreateFailure(ctx, branchName, getErrorMessage(error));
   }
   const createdAt = await readBranchCommit(clients.git, branchName);
   ctx.logger.info(`Created branch '${branchName}' from 'origin/${baseBranch}' in '${ctx.repoName}'`);
@@ -410,5 +408,29 @@ async function rollbackCreatedBranch(
       `\`git -C "${path.resolve(worktreeDir)}" branch -D ${branchName}\`.`;
   }
 
-  throw new GitOperationError("push", `${detail}.${leftover}`, pushError instanceof Error ? pushError : undefined);
+  const cause = pushError instanceof Error ? pushError : undefined;
+  if (leftover) throw new UnpushedBranchLeftoverError(`${detail}.${leftover}`, cause);
+  throw new GitOperationError("push", `${detail}.${leftover}`, cause);
+}
+
+// A ref conflict says "already exists" only when a suffix can resolve it: with
+// 'feat' present, every 'feat/sub-N' is blocked too, so that is not retryable.
+function describeBranchCreateFailure(ctx: CloneSyncContext, branchName: string, message: string): GitOperationError {
+  const prefix = `cannot create '${branchName}' in '${ctx.repoName}'`;
+  const blocking = /'(refs\/heads\/[^']+)' exists; cannot create/.exec(message)?.[1];
+  if (blocking && `refs/heads/${branchName}`.startsWith(`${blocking}/`)) {
+    return new GitOperationError(
+      "branch",
+      `${prefix}: the branch '${blocking}' exists, so no branch can be created under it; ` +
+        `choose a name outside '${blocking.slice("refs/heads/".length)}/'`,
+    );
+  }
+  const summary = summarizeGitFailure(message);
+  if (blocking || /blocking reference/.test(message)) {
+    return new GitOperationError(
+      "branch",
+      `${prefix}: the name conflicts with a branch that already exists there (${summary}); choose another name`,
+    );
+  }
+  return new GitOperationError("branch", `${prefix}: ${summary}`);
 }

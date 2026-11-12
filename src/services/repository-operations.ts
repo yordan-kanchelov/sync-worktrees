@@ -3,7 +3,7 @@ import * as fs from "fs/promises";
 import type { Dirent } from "fs";
 import pLimit from "p-limit";
 import { DEFAULT_CONFIG, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
-import { GitOperationError } from "../errors";
+import { GitOperationError, UnpushedBranchLeftoverError } from "../errors";
 import type { WorktreeSyncService } from "./worktree-sync.service";
 import type { GitService } from "./git.service";
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
@@ -261,9 +261,6 @@ export class RepositoryOperations {
 
     const service = this.host.getServices()[repoIndex];
     const gitService = service.getGitService();
-    // Every branch a rollback below could not remove. The loop reads it rather
-    // than sniffing the message it is about to discard.
-    const leftovers: string[] = [];
 
     // A clone-mode repo has no bare repository, which GitService's write
     // helpers all run in. Clone mode creates and publishes the branch inside
@@ -278,7 +275,7 @@ export class RepositoryOperations {
           try {
             await gitService.pushBranch(name);
           } catch (error) {
-            await this.rollbackUnpushedBranch(gitService, name, createdAt, error, leftovers);
+            await this.rollbackUnpushedBranch(gitService, name, createdAt, error);
           }
         };
 
@@ -310,7 +307,7 @@ export class RepositoryOperations {
           // about: '<name>' orphaned locally and never pushed while
           // '<name>-1' is created instead. Retrying would also discard the
           // message that names it, which is the only place the user is told.
-          if (errorMessage.includes("already exists") && leftovers.length === 0) {
+          if (errorMessage.includes("already exists") && !(error instanceof UnpushedBranchLeftoverError)) {
             suffix++;
             nextName = `${stem}-${suffix}`;
             continue;
@@ -348,7 +345,6 @@ export class RepositoryOperations {
     branchName: string,
     createdAt: string | null,
     pushError: unknown,
-    leftovers: string[],
   ): Promise<never> {
     // git's stderr for an https remote carries the credential in the URL it
     // failed on ("unable to access 'https://x-access-token:<token>@…'"), and
@@ -379,10 +375,11 @@ export class RepositoryOperations {
         ` The local branch '${branchName}' is still in the bare repository — removing it failed ` +
         `(${getErrorMessage(deleteError)}); delete it with ` +
         `\`git -C "${path.resolve(gitService.getBareRepoPath())}" branch -D ${branchName}\`.`;
-      leftovers.push(leftover);
     }
 
-    throw new GitOperationError("push", `${detail}.${leftover}`, pushError instanceof Error ? pushError : undefined);
+    const cause = pushError instanceof Error ? pushError : undefined;
+    if (leftover) throw new UnpushedBranchLeftoverError(`${detail}.${leftover}`, cause);
+    throw new GitOperationError("push", `${detail}.${leftover}`, cause);
   }
 
   public async getWorktreesForRepo(repoIndex: number): Promise<Array<{ path: string; branch: string }>> {
@@ -669,7 +666,8 @@ export class RepositoryOperations {
     const service = this.host.getServices()[repoIndex];
     const config = service.config;
 
-    if (!config.filesToCopyOnBranchCreate?.length) {
+    // A clone has one checkout, already on the new branch: nothing to copy between.
+    if (!config.filesToCopyOnBranchCreate?.length || service.isCloneMode()) {
       return;
     }
 

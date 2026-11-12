@@ -53,6 +53,8 @@ export type { CloneSkipListener, CloneSkipReason } from "./clone-sync/types";
 export class CloneSyncService {
   private initialized = false;
   private resolvedBranch: string | null = null;
+  // The default branch resolveBranch found with no `branch` configured.
+  private defaultBranch: string | null = null;
   private branchCreatedActions: BranchCreatedActionsService;
   private progressEmitter?: GitProgressEmitter;
   private onSkip?: CloneSkipListener;
@@ -127,14 +129,14 @@ export class CloneSyncService {
     }
     const recorded = await this.readCloneTimeDefaultBranch();
     if (recorded) {
-      this.resolvedBranch = recorded;
+      this.resolvedBranch = this.defaultBranch = recorded;
       this.logger.info(`No branch configured for '${this.repoName}'; using '${recorded}', the default at clone time.`);
       this.emitProgress({ phase: "branch", message: `Using clone-time default branch '${recorded}'` });
       return recorded;
     }
     this.logger.info(`No branch configured for '${this.repoName}', detecting remote default branch...`);
     this.emitProgress({ phase: "branch", message: `Resolving remote default branch for '${this.repoName}'` });
-    this.resolvedBranch = await this.gitService.getRemoteDefaultBranch(this.config.repoUrl);
+    this.resolvedBranch = this.defaultBranch = await this.gitService.getRemoteDefaultBranch(this.config.repoUrl);
     this.logger.info(`  ↳ resolved default branch: ${this.resolvedBranch}`);
     this.emitProgress({ phase: "branch", message: `Resolved default branch '${this.resolvedBranch}'` });
     return this.resolvedBranch;
@@ -169,7 +171,9 @@ export class CloneSyncService {
       await this.initialize();
     }
 
-    const targetBranch = await this.resolveBranch();
+    await this.resolveBranch();
+    // What the config resolves to, not the branch an earlier switch left.
+    const targetBranch = this.config.branch ?? this.defaultBranch ?? branch;
     await switchCloneBranch(this.ctx, branch, targetBranch, options);
     this.resolvedBranch = branch;
     this.pendingInitSkip = null;

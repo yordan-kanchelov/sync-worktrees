@@ -28,6 +28,14 @@ export class GitOperationError extends GitError {
   }
 }
 
+// A failed push whose rollback left the new local branch behind. The wizard's
+// suffix retry must stop on it rather than discard the message naming it.
+export class UnpushedBranchLeftoverError extends GitOperationError {
+  constructor(details: string, cause?: Error) {
+    super("push", details, cause);
+  }
+}
+
 export class FastForwardError extends GitError {
   constructor(
     public readonly branchName: string,

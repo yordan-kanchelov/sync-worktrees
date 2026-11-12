@@ -1570,6 +1570,35 @@ describe("CloneSyncService", () => {
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`Set branch: "feature/new" in the config file`));
     });
 
+    // The drift warning quotes what the config says, not the branch the
+    // previous in-session switch left behind.
+    it.each([
+      ["configured", "main", "still says branch 'main'"],
+      ["resolved default", undefined, "resolves the remote default 'main'"],
+    ])("names the %s branch on a second consecutive drift", async (_label, branch, expected) => {
+      const warnSpy = vi.spyOn(logger, "warn");
+      const service = new CloneSyncService(makeConfig({ branch }), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        if (key.startsWith("show-ref --verify refs/heads/")) throw new Error("missing local branch");
+        return "";
+      });
+
+      await service.checkoutBranch("featA", { allowConfigDrift: true });
+      await service.checkoutBranch("featB", { allowConfigDrift: true });
+
+      const driftWarnings = warnSpy.mock.calls.map((call) => String(call[0])).filter((m) => m.includes("now tracks"));
+      expect(driftWarnings).toHaveLength(2);
+      expect(driftWarnings[1]).toContain("now tracks 'featB'");
+      expect(driftWarnings[1]).toContain(expected);
+      expect(driftWarnings[1]).not.toContain("featA");
+    });
+
     it("does not fetch from a clone whose origin mismatches config during initialization", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git"]);
       const service = new CloneSyncService(makeConfig({ branch: "feature/new" }), buildGitService(), logger);
@@ -2024,16 +2053,16 @@ describe("CloneSyncService", () => {
       expect(gitMock.fetch).not.toHaveBeenCalled();
     });
 
-    // 'feat' already existing makes 'feat/sub' impossible. Git says so, but the
-    // wizard only suffix-retries on "already exists", and a bare git message
-    // names no repository.
+    // 'feature/new/x' existing makes 'feature/new' impossible, but a suffixed
+    // name is free, so this is worded for the wizard's suffix retry.
     it("reports a name that collides with an existing branch path in the wizard's own wording", async () => {
       mockWizardRaw();
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = Array.isArray(args) ? args.join(" ") : String(args);
         if (key.startsWith("branch --no-track")) {
           throw new Error(
-            `fatal: cannot lock ref 'refs/heads/${NEW_BRANCH}': 'refs/heads/feat' exists; cannot create '${NEW_BRANCH}'`,
+            `fatal: cannot lock ref 'refs/heads/${NEW_BRANCH}': 'refs/heads/${NEW_BRANCH}/x' exists; ` +
+              `cannot create 'refs/heads/${NEW_BRANCH}'`,
           );
         }
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
@@ -2051,6 +2080,20 @@ describe("CloneSyncService", () => {
         message: expect.stringContaining("already exists"),
       });
 
+      expect(gitMock.push).not.toHaveBeenCalled();
+    });
+
+    it("does not word an unrelated branch failure as a collision", async () => {
+      mockWizardRaw((key) => {
+        if (key.startsWith("branch --no-track")) throw new Error("fatal: unable to write new index file");
+        return undefined;
+      });
+      const service = buildWizardService();
+
+      const error = await service.createAndPushBranch("main", NEW_BRANCH).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(GitOperationError);
+      expect((error as Error).message).toContain("unable to write new index file");
+      expect((error as Error).message).not.toContain("already exists");
       expect(gitMock.push).not.toHaveBeenCalled();
     });
 
