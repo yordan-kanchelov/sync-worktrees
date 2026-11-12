@@ -89,6 +89,7 @@ export class WorktreeModeSyncRunner {
   // — a sync that threw before phase 1, the TUI holding an idle instance —
   // cannot vouch for anything.
   private remoteRefsPrunedThisAttempt = false;
+  private warnedBadExpiry = new Set<string>();
 
   constructor(
     private config: Config,
@@ -606,13 +607,21 @@ export class WorktreeModeSyncRunner {
     // not be read. Swallowing that reads as "nothing reserved" and lets sync take
     // a path a payload is still waiting on, so the sync fails loudly instead.
     const { entries } = await this.trashService.listEntries();
+    const now = Date.now();
     for (const { manifest } of entries) {
-      if (
-        manifest.reason === "diverged-replace" &&
-        manifest.branch &&
-        !manifest.replacedAt &&
-        (await probePathExists(manifest.originalPath)) === "missing"
-      ) {
+      if (manifest.reason !== "diverged-replace" || !manifest.branch || manifest.replacedAt) continue;
+      // The reaper can keep an expired entry listed; the reserve ends at expiresAt.
+      const expiresAt = Date.parse(manifest.expiresAt);
+      if (Number.isNaN(expiresAt)) {
+        if (!this.warnedBadExpiry.has(manifest.id)) {
+          this.warnedBadExpiry.add(manifest.id);
+          this.logger.warn(
+            `  - Trash entry '${manifest.id}' has an unparseable expiry (${manifest.expiresAt}); not reserving '${manifest.branch}'.`,
+          );
+        }
+        continue;
+      }
+      if (expiresAt > now && (await probePathExists(manifest.originalPath)) === "missing") {
         pending.add(manifest.branch);
         this.logger.info(
           `  - Reserving '${manifest.originalPath}' for trash entry '${manifest.id}'; '${manifest.branch}' stays unsynced until it is restored or expires (${manifest.expiresAt}).`,

@@ -1110,6 +1110,65 @@ describe("WorktreeSyncService", () => {
       }
     });
 
+    // The reaper can leave an expired entry listed (keep-ref mint failure,
+    // payload delete refused, ...). The reservation must end at expiresAt
+    // regardless, or the branch never gets a worktree again.
+    function listDivergedEntry(expiresAt: string): ReturnType<typeof vi.spyOn> {
+      return vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({
+        entries: [
+          {
+            manifest: {
+              id: "trash-id",
+              reason: "diverged-replace",
+              branch: "feature-1",
+              originalPath: wtPath("/test/worktrees", "feature-1"),
+              expiresAt,
+            },
+          } as any,
+        ],
+        invalid: [],
+      });
+    }
+
+    it("does not reserve a branch for an expired diverged entry that is still listed", async () => {
+      await useTrashEnabledService();
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
+      mockGitService.getWorktrees.mockResolvedValue([]);
+      const listSpy = listDivergedEntry("2000-01-01T00:00:00.000Z");
+      (fs.access as Mock<any>).mockRejectedValue(
+        Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }),
+      );
+
+      try {
+        await service.sync();
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", wtPath("/test/worktrees", "feature-1"));
+      } finally {
+        listSpy.mockRestore();
+      }
+    });
+
+    it("does not reserve a branch for a diverged entry with an unparseable expiry, and warns once", async () => {
+      await useTrashEnabledService();
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
+      mockGitService.getWorktrees.mockResolvedValue([]);
+      const listSpy = listDivergedEntry("not-a-date");
+      (fs.access as Mock<any>).mockRejectedValue(
+        Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }),
+      );
+
+      try {
+        await service.sync();
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", wtPath("/test/worktrees", "feature-1"));
+        await service.sync();
+        const warnings = (mockLogger.warn as Mock<any>).mock.calls.filter(([msg]) =>
+          String(msg).includes("unparseable expiry"),
+        );
+        expect(warnings).toHaveLength(1);
+      } finally {
+        listSpy.mockRestore();
+      }
+    });
+
     // With trash off the reaper never touches existing entries, so a reservation
     // taken here could never expire — the branch would stop syncing for good.
     it("does not reserve a branch from trash entries when trash is disabled", async () => {
