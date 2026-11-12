@@ -1,10 +1,16 @@
+import { DEFAULT_CONFIG } from "../constants";
+
 import { isGitAuthErrorFromError } from "./git-auth-error";
 import { isLfsErrorFromError } from "./lfs-error";
 
 interface ErrorWithCode {
   code?: string;
   message?: string;
+  plugin?: string;
 }
+
+// What git prints for DNS, refused and timed-out connections (https and ssh).
+const NETWORK_ERROR_MESSAGES = ["Could not resolve host", "Connection refused", "Connection timed out"];
 
 export interface LfsErrorContext {
   isLfsError: boolean;
@@ -35,12 +41,12 @@ export interface RetryOptions {
 const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts" | "signal">> & {
   maxAttempts: number | "unlimited";
 } = {
-  maxAttempts: "unlimited",
-  maxLfsRetries: 2,
-  initialDelayMs: 1000,
-  maxDelayMs: 600000, // 10 minutes
-  backoffMultiplier: 2,
-  jitterMs: 0,
+  maxAttempts: DEFAULT_CONFIG.RETRY.MAX_ATTEMPTS,
+  maxLfsRetries: DEFAULT_CONFIG.RETRY.MAX_LFS_RETRIES,
+  initialDelayMs: DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS,
+  maxDelayMs: DEFAULT_CONFIG.RETRY.MAX_DELAY_MS,
+  backoffMultiplier: DEFAULT_CONFIG.RETRY.BACKOFF_MULTIPLIER,
+  jitterMs: DEFAULT_CONFIG.RETRY.JITTER_MS,
   shouldRetry: (error, context) => {
     const err = error as ErrorWithCode;
 
@@ -52,7 +58,8 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts" | "signal">> & 
       return true;
     }
 
-    if (err.code === "ENOTFOUND" || err.code === "ECONNREFUSED" || err.code === "ETIMEDOUT") {
+    // simple-git's inactivity kill (fetchTimeoutMs / cloneTimeoutMs).
+    if (err.plugin === "timeout" || err.message?.includes("block timeout reached")) {
       return true;
     }
 
@@ -70,6 +77,10 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts" | "signal">> & 
     // and costs minutes of backoff.
     if (isGitAuthErrorFromError(error)) {
       return false;
+    }
+
+    if (NETWORK_ERROR_MESSAGES.some((m) => err.message?.includes(m))) {
+      return true;
     }
 
     if (err.message?.includes("Could not read from remote repository")) {

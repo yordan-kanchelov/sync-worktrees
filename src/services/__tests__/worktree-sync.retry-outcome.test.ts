@@ -92,7 +92,7 @@ describe("WorktreeSyncService retry outcomes", () => {
             branch: "feature",
             path: "/tmp/worktrees/feature",
           });
-          throw Object.assign(new Error("temporary network error"), { code: "ETIMEDOUT" });
+          throw new Error("temporary network error: Connection timed out");
         }
 
         outcome.recordNoop("repo", "retry_succeeded", {});

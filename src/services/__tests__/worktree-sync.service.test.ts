@@ -2969,8 +2969,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should retry entire sync operation on network errors", async () => {
-      const networkError = new Error("Network connection failed");
-      (networkError as any).code = "ECONNREFUSED";
+      const networkError = new Error("Network connection failed: Connection refused");
 
       mockGitService.fetchAll.mockRejectedValueOnce(networkError).mockResolvedValueOnce(undefined);
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "develop"]);
@@ -2997,8 +2996,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should respect maxAttempts configuration", async () => {
-      const error = new Error("Persistent network error");
-      (error as any).code = "ETIMEDOUT";
+      const error = new Error("Persistent network error: Connection timed out");
 
       mockGitService.fetchAll.mockRejectedValue(error);
 
@@ -3088,8 +3086,7 @@ describe("WorktreeSyncService", () => {
       mockGitService.fetchAll.mockImplementation(() => {
         attempts++;
         if (attempts < 5) {
-          const error = new Error("Network error");
-          (error as any).code = "ECONNREFUSED";
+          const error = new Error("Network error: Connection refused");
           return Promise.reject(error);
         }
         return Promise.resolve(undefined);
@@ -3104,8 +3101,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should log retry attempts", async () => {
-      const error = new Error("Network timeout");
-      (error as any).code = "ETIMEDOUT";
+      const error = new Error("Network timeout: Connection timed out");
 
       mockGitService.fetchAll
         .mockRejectedValueOnce(error)

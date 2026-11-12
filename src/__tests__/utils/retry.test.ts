@@ -1,5 +1,7 @@
+import { GitPluginError } from "simple-git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_CONFIG } from "../../constants";
 import { retry } from "../../utils/retry";
 
 import type { RetryOptions } from "../../utils/retry";
@@ -20,10 +22,8 @@ describe("retry", () => {
     });
 
     it("should return result after retries", async () => {
-      const error1 = new Error("Connection failed");
-      (error1 as any).code = "ECONNREFUSED";
-      const error2 = new Error("Timeout");
-      (error2 as any).code = "ETIMEDOUT";
+      const error1 = new Error("Connection failed: Connection refused");
+      const error2 = new Error("Timeout: Connection timed out");
 
       const mockFn = vi.fn().mockRejectedValueOnce(error1).mockRejectedValueOnce(error2).mockResolvedValue("success");
 
@@ -35,27 +35,16 @@ describe("retry", () => {
   });
 
   describe("retry attempts", () => {
-    it("should retry unlimited times by default", async () => {
-      let attempts = 0;
-      const mockFn = vi.fn().mockImplementation(() => {
-        attempts++;
-        if (attempts < 10) {
-          const error = new Error("Network error");
-          (error as any).code = "ECONNREFUSED";
-          throw error;
-        }
-        return Promise.resolve("success");
-      });
+    it("should default to DEFAULT_CONFIG.RETRY.MAX_ATTEMPTS attempts", async () => {
+      const mockFn = vi.fn().mockRejectedValue(new Error("Network error: Connection refused"));
 
-      const result = await retry(mockFn, { initialDelayMs: 1, maxDelayMs: 5 });
+      await expect(retry(mockFn, { initialDelayMs: 1, maxDelayMs: 5 })).rejects.toThrow("Network error");
 
-      expect(result).toBe("success");
-      expect(mockFn).toHaveBeenCalledTimes(10);
+      expect(mockFn).toHaveBeenCalledTimes(DEFAULT_CONFIG.RETRY.MAX_ATTEMPTS);
     });
 
     it("should respect maxAttempts when set to a number", async () => {
-      const error = new Error("Always fails");
-      (error as any).code = "ECONNREFUSED";
+      const error = new Error("Always fails: Connection refused");
       const mockFn = vi.fn().mockRejectedValue(error);
 
       await expect(retry(mockFn, { maxAttempts: 3, initialDelayMs: 1 })).rejects.toThrow("Always fails");
@@ -77,8 +66,7 @@ describe("retry", () => {
       const mockFn = vi.fn().mockImplementation(() => {
         attempts++;
         if (attempts < 5) {
-          const error = new Error("Network error");
-          (error as any).code = "ETIMEDOUT";
+          const error = new Error("Network error: Connection timed out");
           throw error;
         }
         return Promise.resolve("success");
@@ -101,12 +89,9 @@ describe("retry", () => {
         return {} as NodeJS.Timeout;
       });
 
-      const error1 = new Error("fail 1");
-      (error1 as any).code = "ECONNREFUSED";
-      const error2 = new Error("fail 2");
-      (error2 as any).code = "ETIMEDOUT";
-      const error3 = new Error("fail 3");
-      (error3 as any).code = "ENOTFOUND";
+      const error1 = new Error("fail 1: Connection refused");
+      const error2 = new Error("fail 2: Connection timed out");
+      const error3 = new Error("fail 3: Could not resolve host");
 
       const mockFn = vi
         .fn()
@@ -116,6 +101,7 @@ describe("retry", () => {
         .mockResolvedValue("success");
 
       await retry(mockFn, {
+        maxAttempts: 4,
         initialDelayMs: 100,
         backoffMultiplier: 2,
         maxDelayMs: 1000,
@@ -149,6 +135,7 @@ describe("retry", () => {
         .mockResolvedValue("success");
 
       await retry(mockFn, {
+        maxAttempts: 5,
         initialDelayMs: 100,
         backoffMultiplier: 3,
         maxDelayMs: 500,
@@ -161,8 +148,7 @@ describe("retry", () => {
 
   describe("shouldRetry", () => {
     it("should retry on default retryable errors", async () => {
-      const networkError = new Error("Network failed");
-      (networkError as any).code = "ECONNREFUSED";
+      const networkError = new Error("Network failed: Connection refused");
 
       const mockFn = vi.fn().mockRejectedValueOnce(networkError).mockResolvedValue("success");
 
@@ -194,6 +180,25 @@ describe("retry", () => {
       const result = await retry(mockFn, options);
 
       expect(result).toBe("success");
+      expect(mockFn).toHaveBeenCalledTimes(2);
+    });
+
+    it("should retry simple-git's fetch inactivity timeout up to maxAttempts", async () => {
+      const mockFn = vi.fn().mockRejectedValue(new GitPluginError(undefined, "timeout", "block timeout reached"));
+
+      await expect(retry(mockFn, { maxAttempts: 3, initialDelayMs: 1 })).rejects.toThrow("block timeout reached");
+      expect(mockFn).toHaveBeenCalledTimes(3);
+    });
+
+    it.each([
+      "fatal: unable to access 'https://example.invalid/r.git/': Could not resolve host: example.invalid",
+      "ssh: Could not resolve hostname example.invalid: Name or service not known",
+      "ssh: connect to host example.invalid port 22: Connection refused",
+      "ssh: connect to host example.invalid port 22: Connection timed out",
+    ])("should retry the git network failure %s", async (message) => {
+      const mockFn = vi.fn().mockRejectedValueOnce(new Error(message)).mockResolvedValue("success");
+
+      await expect(retry(mockFn, { initialDelayMs: 1 })).resolves.toBe("success");
       expect(mockFn).toHaveBeenCalledTimes(2);
     });
 
@@ -251,10 +256,8 @@ describe("retry", () => {
   describe("onRetry callback", () => {
     it("should call onRetry with error and attempt number", async () => {
       const onRetry = vi.fn();
-      const error1 = new Error("Attempt 1");
-      (error1 as any).code = "ECONNREFUSED";
-      const error2 = new Error("Attempt 2");
-      (error2 as any).code = "ETIMEDOUT";
+      const error1 = new Error("Attempt 1: Connection refused");
+      const error2 = new Error("Attempt 2: Connection timed out");
 
       const mockFn = vi.fn().mockRejectedValueOnce(error1).mockRejectedValueOnce(error2).mockResolvedValue("success");
 
@@ -279,7 +282,7 @@ describe("retry", () => {
       expect(mockFn).toHaveBeenCalledTimes(1);
     });
 
-    it("should default to 10 minute max delay", async () => {
+    it("should default to DEFAULT_CONFIG.RETRY delays", async () => {
       const delays: number[] = [];
       const mockSetTimeout = vi.spyOn(global, "setTimeout");
       mockSetTimeout.mockImplementation((fn: any, delay?: number) => {
@@ -288,24 +291,16 @@ describe("retry", () => {
         return {} as NodeJS.Timeout;
       });
 
-      // Create enough failures to exceed 10 minutes with exponential backoff
       const mockFn = vi.fn();
-      for (let i = 0; i < 15; i++) {
-        const error = new Error(`Fail ${i}`);
-        (error as any).code = "ECONNREFUSED";
-        mockFn.mockRejectedValueOnce(error);
+      for (let i = 0; i < 8; i++) {
+        mockFn.mockRejectedValueOnce(new Error(`Fail ${i}: Connection refused`));
       }
       mockFn.mockResolvedValue("success");
 
-      await retry(mockFn);
+      await retry(mockFn, { maxAttempts: "unlimited" });
 
-      // With backoff multiplier of 2 and initial delay of 1000ms:
-      // 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s, then capped at 600s (10 min)
-      const expectedDelays = [
-        1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000, 512000, 600000, 600000, 600000, 600000, 600000,
-      ];
-
-      expect(delays).toEqual(expectedDelays);
+      // 1s doubling, capped at 30s.
+      expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
       mockSetTimeout.mockRestore();
     });
   });
@@ -400,8 +395,7 @@ describe("retry", () => {
     });
 
     it("should not apply LFS retry limit to non-LFS errors", async () => {
-      const networkError = new Error("Network error");
-      (networkError as any).code = "ECONNREFUSED";
+      const networkError = new Error("Network error: Connection refused");
       const mockFn = vi.fn().mockRejectedValue(networkError);
 
       await expect(
@@ -429,7 +423,7 @@ describe("retry", () => {
     });
   });
   describe("abort signal", () => {
-    const retryable = (): Error => Object.assign(new Error("unreachable"), { code: "ECONNREFUSED" });
+    const retryable = (): Error => new Error("unreachable: Connection refused");
 
     it("ends a pending backoff with the last error when aborted", async () => {
       const controller = new AbortController();
