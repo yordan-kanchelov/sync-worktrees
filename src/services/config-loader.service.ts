@@ -287,7 +287,10 @@ function evaluateConfigInWorker(absolutePath: string, timeoutMs: number): Promis
       // when it was evaluated on the main thread, and the option can only
       // append to an array the worker built for itself.
       workerData: { configPath: absolutePath, token: Date.now(), argv: process.argv },
+      // A config's stdout goes to stderr: stdout is the MCP JSON-RPC stream.
+      stdout: true,
     });
+    worker.stdout.on("data", (chunk: Buffer) => process.stderr.write(chunk));
 
     let settled = false;
     const settle = (deliver: () => void): void => {
