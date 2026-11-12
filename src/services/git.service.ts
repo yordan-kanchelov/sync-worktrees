@@ -9,7 +9,7 @@ import { sshNoPromptEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
-import { pathsEqual } from "../utils/path-compare";
+import { findByWorktreePath, sameWorktreePath } from "../utils/path-compare";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BareRepoService } from "./bare-repo.service";
@@ -304,10 +304,8 @@ export class GitService {
     let needsMainWorktree = true;
     try {
       const worktrees = await this.registry.getWorktreesFromBare(bareGit, true);
-      const target = path.resolve(this.mainWorktreePath);
-      const registered =
-        worktrees.find((w) => path.resolve(w.path) === target) ??
-        worktrees.find((w) => w.branch === this.defaultBranch);
+      const atTarget = await findByWorktreePath(worktrees, this.mainWorktreePath);
+      const registered = atTarget ?? worktrees.find((w) => w.branch === this.defaultBranch);
       if (registered) {
         const registeredPath = path.resolve(registered.path);
         // A registration whose directory was destroyed out-of-band (rm -rf, a
@@ -332,7 +330,7 @@ export class GitService {
             needsMainWorktree = false;
           }
         } else {
-          if (registeredPath !== target) {
+          if (!atTarget) {
             this.logger.info(
               `${this.defaultBranch} is already checked out at "${registered.path}"; using it as the ${this.defaultBranch} worktree.`,
             );
@@ -415,9 +413,9 @@ export class GitService {
     this.defaultBranch = await this.bareRepo.detectDefaultBranch(bareGit, { readOnly: true });
     this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
     const worktrees = await this.registry.getWorktreesFromBare(bareGit, true);
-    const target = path.resolve(this.mainWorktreePath);
     const registered =
-      worktrees.find((w) => path.resolve(w.path) === target) ?? worktrees.find((w) => w.branch === this.defaultBranch);
+      (await findByWorktreePath(worktrees, this.mainWorktreePath)) ??
+      worktrees.find((w) => w.branch === this.defaultBranch);
     const anchorMissing = !registered || (await probePathExists(registered.path)) !== "exists";
     if (registered && !anchorMissing) this.mainWorktreePath = registered.path;
     this.git = this.getCachedGit(anchorMissing ? this.bareRepoPath : this.mainWorktreePath);
@@ -654,11 +652,11 @@ export class GitService {
     // it there (and refuses or adopts it) instead of creating a second
     // worktree next to it.
     const worktrees = await this.getWorktrees();
-    const own = worktrees.find(
-      (worktree) =>
-        worktree.branch === branchName && pathsEqual(path.dirname(path.resolve(worktree.path)), worktreeDir),
-    );
-    if (own) return own.path;
+    for (const worktree of worktrees) {
+      if (worktree.branch === branchName && (await sameWorktreePath(path.dirname(worktree.path), worktreeDir))) {
+        return worktree.path;
+      }
+    }
 
     let branches: string[] = [];
     try {

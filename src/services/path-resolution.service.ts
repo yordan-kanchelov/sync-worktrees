@@ -6,8 +6,7 @@ import * as path from "path";
 import pLimit from "p-limit";
 
 import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
-import { fileExists } from "../utils/file-exists";
-import { isCaseInsensitiveFs } from "../utils/path-compare";
+import { isCaseInsensitiveFs, resolveRealPathAsync } from "../utils/path-compare";
 
 const BRANCH_STEM_MAX = 80;
 const BRANCH_HASH_LEN = 8;
@@ -309,33 +308,6 @@ export class PathResolutionService {
     }
   }
 
-  // The async twin of resolveRealPath: same walk up to the deepest component
-  // that exists, same suffix re-join, same "answer with the lexical path" for a
-  // path with no existing ancestor and for a realpath that throws. `fileExists`
-  // probes with the same `access` call `existsSync` makes and, like it, reads
-  // any error as "not there", so the two agree on unreadable parents and on
-  // path strings the fs layer rejects outright.
-  private async resolveRealPathAsync(inputPath: string): Promise<string> {
-    const absolute = path.resolve(inputPath);
-    const missing: string[] = [];
-    let current = absolute;
-
-    while (!(await fileExists(current))) {
-      const parent = path.dirname(current);
-      if (parent === current) {
-        return absolute;
-      }
-      missing.unshift(path.basename(current));
-      current = parent;
-    }
-
-    try {
-      return path.join(await fsp.realpath(current), ...missing);
-    } catch {
-      return absolute;
-    }
-  }
-
   private isResolvedPathInsideBase(resolved: string, resolvedBase: string): boolean {
     const fold = (p: string): string => (isCaseInsensitiveFs() ? p.toLowerCase() : p);
     const a = fold(resolved);
@@ -360,7 +332,7 @@ export class PathResolutionService {
    * single batch rather than caching it across operations.
    */
   async resolveBaseDir(baseDir: string): Promise<string> {
-    return this.resolveRealPathAsync(baseDir);
+    return resolveRealPathAsync(baseDir);
   }
 
   /**
@@ -372,7 +344,7 @@ export class PathResolutionService {
    * synchronous variant rejects it.
    */
   async isPathInsideResolvedBaseDir(targetPath: string, resolvedBaseDir: string): Promise<boolean> {
-    const resolved = await this.resolveRealPathAsync(targetPath);
+    const resolved = await resolveRealPathAsync(targetPath);
     return this.isResolvedPathInsideBase(resolved, resolvedBaseDir);
   }
 }

@@ -1,11 +1,19 @@
-import { describe, expect, it } from "vitest";
+import * as fs from "fs/promises";
+import * as os from "os";
+import * as path from "path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { symlinksSupported } from "../../__tests__/helpers/symlink-support";
 
 import {
+  findByWorktreePath,
   isCaseInsensitiveFs,
   isPathEqualOrInside,
   isPathStrictlyInside,
   normalizePathForCompare,
   pathsEqual,
+  sameWorktreePath,
 } from "../path-compare";
 
 describe("isCaseInsensitiveFs", () => {
@@ -88,5 +96,36 @@ describe("isPathEqualOrInside", () => {
   it("is false for a prefix sibling and for an ancestor", () => {
     expect(isPathEqualOrInside("/xy", "/x", "linux")).toBe(false);
     expect(isPathEqualOrInside("/x", "/x/inner", "linux")).toBe(false);
+  });
+});
+
+describe("sameWorktreePath / findByWorktreePath", async () => {
+  const canSymlink = await symlinksSupported();
+  let tempDir: string;
+  let real: string;
+  let link: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-path-compare-")));
+    real = path.join(tempDir, "real");
+    link = path.join(tempDir, "link");
+    await fs.mkdir(path.join(real, "wt"), { recursive: true });
+    if (canSymlink) await fs.symlink(real, link, "dir");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it.skipIf(!canSymlink)("matches a symlinked spelling, including a not-yet-created tail", async () => {
+    expect(await sameWorktreePath(path.join(link, "wt"), path.join(real, "wt"))).toBe(true);
+    expect(await sameWorktreePath(path.join(link, "wt", "new"), path.join(real, "wt", "new"))).toBe(true);
+    expect(await sameWorktreePath(path.join(link, "wt", "a"), path.join(real, "wt", "b"))).toBe(false);
+  });
+
+  it.skipIf(!canSymlink)("finds the entry git lists under its canonical path", async () => {
+    const entries = [{ path: path.join(real, "other") }, { path: path.join(real, "wt") }];
+    expect(await findByWorktreePath(entries, path.join(link, "wt"))).toBe(entries[1]);
+    expect(await findByWorktreePath(entries, path.join(link, "missing"))).toBeUndefined();
   });
 });

@@ -1,4 +1,7 @@
+import * as fsp from "fs/promises";
 import * as path from "path";
+
+import { fileExists } from "./file-exists";
 
 // darwin default filesystem (APFS default, HFS+) is case-insensitive.
 // Case-sensitive APFS volumes on macOS exist but are rare; those will see false-positive
@@ -56,4 +59,49 @@ export function isPathEqualOrInside(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   return pathsEqual(child, parent, platform) || isPathStrictlyInside(child, parent, platform);
+}
+
+// realpath of the deepest existing ancestor, with the missing tail re-joined;
+// the lexical path when nothing exists or realpath throws. `fileExists`, like
+// `existsSync`, reads any access error as "not there".
+export async function resolveRealPathAsync(inputPath: string): Promise<string> {
+  const absolute = path.resolve(inputPath);
+  const missing: string[] = [];
+  let current = absolute;
+
+  while (!(await fileExists(current))) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return absolute;
+    }
+    missing.unshift(path.basename(current));
+    current = parent;
+  }
+
+  try {
+    return path.join(await fsp.realpath(current), ...missing);
+  } catch {
+    return absolute;
+  }
+}
+
+// git lists worktrees by canonical path, so a configured path that runs
+// through a symlink (all of /tmp on macOS) never matches it lexically.
+export async function sameWorktreePath(a: string, b: string): Promise<boolean> {
+  if (pathsEqual(a, b)) return true;
+  const [realA, realB] = await Promise.all([resolveRealPathAsync(a), resolveRealPathAsync(b)]);
+  return pathsEqual(realA, realB);
+}
+
+// The entry whose path is `target`, compared as sameWorktreePath does.
+export async function findByWorktreePath<T extends { path: string }>(
+  entries: readonly T[],
+  target: string,
+): Promise<T | undefined> {
+  const lexical = entries.find((entry) => pathsEqual(entry.path, target));
+  if (lexical || entries.length === 0) return lexical;
+  const realTarget = await resolveRealPathAsync(target);
+  const realPaths = await Promise.all(entries.map((entry) => resolveRealPathAsync(entry.path)));
+  const index = realPaths.findIndex((real) => pathsEqual(real, realTarget));
+  return index === -1 ? undefined : entries[index];
 }
