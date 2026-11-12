@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppEventEmitter } from "../../utils/app-events";
 import { calculateDirectorySize, calculateSyncDiskSpace, formatBytes } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
+import { PathResolutionService } from "../path-resolution.service";
 import { RefScanScope } from "../worktree-status.service";
 
 import type { Config } from "../../types";
@@ -3471,6 +3472,24 @@ describe("InteractiveUIService", () => {
         expect(result).toHaveLength(1);
         expect(result[0].originalBranch).toBe("my-branch");
         expect(result[0].divergedAt).toBe("2024-03-20");
+
+        void service.destroy();
+      });
+
+      it("strips the hash and base36 suffixes from a name made like the sync runner makes it", async () => {
+        const safeBranch = new PathResolutionService().sanitizeBranchName("feat-two");
+        const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
+        const names = [`2026-11-12-${safeBranch}-${uniqueSuffix}`, "2026-11-12-feat-two-2a383c54-mwd95i8ughnw3"];
+        (fs.readdir as Mock<any>).mockResolvedValue(
+          names.map((name) => ({ name, isDirectory: () => true, isFile: () => false })),
+        );
+        (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.operations.getDivergedDirectoriesForRepo(0);
+
+        expect(result.map((r) => r.originalBranch)).toEqual(["feat-two", "feat-two"]);
+        expect(result.map((r) => r.divergedAt)).toEqual(["2026-11-12", "2026-11-12"]);
 
         void service.destroy();
       });

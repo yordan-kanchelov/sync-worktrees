@@ -478,8 +478,8 @@ export class RepositoryOperations {
           if (typeof info.divergedAt === "string") divergedAt = info.divergedAt;
           if (typeof info.keepRef === "string") keepRef = info.keepRef;
         } catch {
-          // Extract date and branch from directory name pattern: YYYY-MM-DD-branch-suffix
-          const match = entry.name.match(/^(\d{4}-\d{2}-\d{2})-(.+?)(?:-[a-f0-9]+)?$/);
+          // Name is YYYY-MM-DD-<branch>[-<8-hex hash>]-<base36 suffix>
+          const match = entry.name.match(/^(\d{4}-\d{2}-\d{2})-(.+?)(?:(?:-[0-9a-f]{8})?-[0-9a-z]+)?$/);
           if (match) {
             divergedAt = match[1];
             originalBranch = match[2];
