@@ -133,6 +133,8 @@ export class WorktreeSyncService {
           this.skipsAccumulator.push(reason);
         },
       });
+      const cloneSync = this.cloneSyncService;
+      this.maintenanceService.setTargetGuard(() => cloneSync.assertPrimaryCheckout());
     }
   }
 

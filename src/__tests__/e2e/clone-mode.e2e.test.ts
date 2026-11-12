@@ -1017,6 +1017,56 @@ export default {
     expect(readPrimary()).toEqual(before);
   }, 60000);
 
+  // On the wrong branch the tick soft-skips before the primary-checkout guard,
+  // so the sync "succeeds" — and maintenance must still not gc the repository
+  // that owns the linked worktree.
+  it("does not run git gc in the owner of a linked worktree on the wrong branch", async () => {
+    const remoteBare = await createLocalRemote("linked-gc");
+    const baseDir = path.join(tmpBase, "linked-gc");
+    const primaryDir = path.join(baseDir, "primary");
+    const linkedDir = path.join(baseDir, "linked");
+    await fs.mkdir(baseDir, { recursive: true });
+    execSync(`git clone "file://${remoteBare}" "${primaryDir}"`, { encoding: "utf-8" });
+    execSync(`git -C "${primaryDir}" worktree add -b "feat/side" "${linkedDir}" main`, { encoding: "utf-8" });
+
+    const packDir = path.join(primaryDir, ".git", "objects", "pack");
+    const listObjects = async (): Promise<string[]> => {
+      const pack = (await fs.readdir(packDir)).sort();
+      const loose = (await fs.readdir(path.join(primaryDir, ".git", "objects"))).sort();
+      return [...pack, "|", ...loose];
+    };
+    const before = await listObjects();
+
+    const configPath = path.join(baseDir, "linked-gc.config.js");
+    await fs.writeFile(
+      configPath,
+      `export default {
+  defaults: { runOnce: true },
+  repositories: [{
+    name: "linked-gc",
+    repoUrl: "file://${remoteBare}",
+    worktreeDir: "${linkedDir.replace(/\\/g, "/")}",
+    mode: "clone",
+    branch: "main",
+    maintenance: { enabled: true, aggressive: true }
+  }]
+};
+`,
+    );
+
+    let output: string;
+    try {
+      output = execSync(`node "${cliPath}" --config "${configPath}" 2>&1`, { encoding: "utf-8", timeout: 60000 });
+    } catch (error) {
+      const err = error as { stdout?: Buffer | string };
+      output = String(err.stdout ?? "");
+    }
+
+    expect(output).toContain("expected 'main'");
+    expect(output).not.toContain("Running git gc");
+    expect(await listObjects()).toEqual(before);
+  }, 60000);
+
   it("rejects clone mode combined with branchInclude (validation error)", async () => {
     const configPath = path.join(tmpBase, "bad-config.config.js");
     const configContent = `

@@ -100,6 +100,19 @@ describe("GitMaintenanceService", () => {
       expect(raw).toHaveBeenCalledWith(["gc", `--prune=${MAINTENANCE_CONSTANTS.FORCE_CLEAN_PRUNE_EXPIRE}`]);
     });
 
+    it("skips gc, forced or due, when the target guard rejects the checkout", async () => {
+      const { factory, raw } = createGitFactory();
+      const svc = new GitMaintenanceService(config(), gitService, logger, factory);
+      svc.setTargetGuard(() => Promise.reject(new Error("not a primary checkout")));
+
+      await svc.runIfDueUnlocked(NOW);
+      await expect(svc.runNowUnlocked(NOW)).resolves.toBe(false);
+
+      expect(raw).not.toHaveBeenCalled();
+      await expect(fs.access(path.join(tmpDir, ".git", MAINTENANCE_CONSTANTS.STATE_FILENAME))).rejects.toThrow();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping git gc"));
+    });
+
     it("skips when the repo is not initialized (no .git dir)", async () => {
       await fs.rm(path.join(tmpDir, ".git"), { recursive: true, force: true });
       const { factory, raw } = createGitFactory();

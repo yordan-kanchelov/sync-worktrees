@@ -95,6 +95,11 @@ export class CloneSyncService {
     this.pendingInitSkip = null;
   }
 
+  // Throws unless worktreeDir is a primary checkout this tool may write to.
+  async assertPrimaryCheckout(): Promise<void> {
+    await this.clients.mutatingClientsFor(this.config.worktreeDir);
+  }
+
   async getWorktrees(): Promise<Array<{ path: string; branch: string }>> {
     const worktreeDir = path.resolve(this.config.worktreeDir);
     if (!(await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR)))) {
