@@ -137,7 +137,7 @@ export class WorktreeModeSyncRunner {
     }
 
     if (this.config.sparseCheckout) {
-      await this.reapplySparseCheckout(syncPlan.sparse, outcome);
+      await this.reapplySparseCheckout(syncPlan.sparse, syncContext, outcome);
     }
 
     await this.finalizeSyncAttempt(phaseTimer);
@@ -317,7 +317,11 @@ export class WorktreeModeSyncRunner {
     };
   }
 
-  private async reapplySparseCheckout(actions: SparseAction[], outcome: SyncOutcomeAccumulator): Promise<void> {
+  private async reapplySparseCheckout(
+    actions: SparseAction[],
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<void> {
     const sparseConfig = this.config.sparseCheckout;
     if (!sparseConfig) return;
 
@@ -354,8 +358,10 @@ export class WorktreeModeSyncRunner {
                 });
                 return;
               case "apply":
-                await sparseService.applyToWorktree(action.path, sparseConfig);
-                await this.gitService.checkoutHead(action.path);
+                await this.withLfsFallback(action.branch, action.path, syncContext, outcome, async () => {
+                  await sparseService.applyToWorktree(action.path, sparseConfig);
+                  await this.gitService.checkoutHead(action.path);
+                });
                 this.logger.info(`  - ✅ Sparse-checkout updated for '${action.branch}'`);
                 outcome.recordUpdated(action.branch, action.path, "sparse_checkout");
                 return;
@@ -842,16 +848,30 @@ export class WorktreeModeSyncRunner {
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<AddWorktreeResult> {
+    return this.withLfsFallback(branchName, worktreePath, syncContext, outcome, () =>
+      this.gitService.addWorktree(branchName, worktreePath),
+    );
+  }
+
+  // The update phase's fast-forward and the sparse re-apply check files out
+  // too, so they get the same one-retry fallback.
+  private async withLfsFallback<T>(
+    branchName: string,
+    worktreePath: string,
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const skipAlreadyEnabled = this.config.skipLfs === true || syncContext.lfsSkipEnabled;
 
     try {
-      return await this.gitService.addWorktree(branchName, worktreePath);
+      return await operation();
     } catch (error) {
       if (skipAlreadyEnabled || !isLfsError(getErrorMessage(error))) throw error;
 
       this.logger.warn(`  - ⚠️ LFS checkout failed for '${branchName}': ${getErrorMessage(error)}`);
       this.enableLfsSkipForSync(syncContext, outcome, branchName, worktreePath);
-      return await this.gitService.addWorktree(branchName, worktreePath);
+      return await operation();
     }
   }
 
@@ -1724,7 +1744,9 @@ export class WorktreeModeSyncRunner {
           let changed = true;
           try {
             this.logger.info(`  - Updating worktree '${worktree.branch}'...`);
-            const { updated } = await this.gitService.updateWorktree(worktree.path, worktree.branch);
+            const { updated } = await this.withLfsFallback(worktree.branch, worktree.path, syncContext, outcome, () =>
+              this.gitService.updateWorktree(worktree.path, worktree.branch),
+            );
             if (updated) {
               this.logger.info(`    ✅ Successfully updated '${worktree.branch}'.`);
               outcome.recordUpdated(worktree.branch, worktree.path, "fast_forward");

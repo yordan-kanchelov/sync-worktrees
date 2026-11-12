@@ -13,6 +13,7 @@ import { findByWorktreePath, sameWorktreePath } from "../utils/path-compare";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BareRepoService } from "./bare-repo.service";
+import { undoRejectedFastForwardIn } from "./clone-sync/fast-forward-undo";
 import { BranchRefService } from "./branch-ref.service";
 import { LfsVerificationService } from "./lfs-verification.service";
 import { Logger } from "./logger.service";
@@ -36,7 +37,7 @@ import type {
 } from "./git-service.types";
 import type { RefScanScope, WorktreeStatusResult } from "./worktree-status.service";
 import type { SyncMetadata } from "../types/sync-metadata";
-import type { GitProgressEmitter } from "../utils/git-progress";
+import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export type {
@@ -848,7 +849,22 @@ export class GitService {
     const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
 
     const before = (await worktreeGit.revparse(["HEAD"])).trim();
-    await worktreeGit.merge([`origin/${branch}`, "--ff-only"]);
+    try {
+      await worktreeGit.merge([`origin/${branch}`, "--ff-only"]);
+    } catch (error) {
+      // A checkout that dies part way (an LFS smudge) leaves the paths before
+      // it written; undo them so the worktree is not left dirty for good.
+      const message = getErrorMessage(error);
+      if (!ERROR_MESSAGES.FAST_FORWARD_FAILED.some((msg) => message.includes(msg))) {
+        const host = {
+          logger: this.logger,
+          repoName: worktreePath,
+          emitProgress: (e: GitProgressEvent) => this.progressEmitter?.(e),
+        };
+        await undoRejectedFastForwardIn(host, worktreeGit, worktreePath, branch, before);
+      }
+      throw error;
+    }
     const after = (await worktreeGit.revparse(["HEAD"])).trim();
     const updated = after !== before;
 
