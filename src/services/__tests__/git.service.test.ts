@@ -439,7 +439,7 @@ describe("GitService", () => {
       await gitService.initialize();
 
       await gitService.fetchBranch("feature-1");
-      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "feature-1", "--prune", "--progress"]);
+      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "refs/heads/feature-1", "--prune", "--progress"]);
     });
 
     it("should respect LFS skip when fetching branch", async () => {
@@ -455,7 +455,7 @@ describe("GitService", () => {
       await svc.initialize();
       await svc.fetchBranch("feature-2");
       expect(mockGit.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
-      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "feature-2", "--prune", "--progress"]);
+      expect(mockGit.fetch).toHaveBeenCalledWith(["origin", "refs/heads/feature-2", "--prune", "--progress"]);
     });
   });
 

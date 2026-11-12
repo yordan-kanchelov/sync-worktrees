@@ -541,7 +541,8 @@ export class GitService {
 
   async fetchBranch(branchName: string): Promise<void> {
     this.assertInitialized();
-    await this.fetchFromAnchor(["origin", branchName, "--prune", "--progress"]);
+    // Full ref: a short name resolves to a same-named tag first.
+    await this.fetchFromAnchor(["origin", `refs/heads/${branchName}`, "--prune", "--progress"]);
   }
 
   // Fetches run in the default branch's worktree. When that directory is gone,

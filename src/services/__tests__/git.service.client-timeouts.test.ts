@@ -227,7 +227,7 @@ describe("GitService git client timeouts", () => {
       expect(fetchers).toHaveLength(1);
       expect(fetchers[0].baseDir).toBe(MAIN_WORKTREE_PATH);
       expect(fetchers[0].options.timeout).toEqual({ block: DEFAULT_CONFIG.FETCH_TIMEOUT_MS });
-      expect(onlyClientThatRan("fetch", "origin", "feature-1").options.timeout).toEqual({
+      expect(onlyClientThatRan("fetch", "origin", "refs/heads/feature-1").options.timeout).toEqual({
         block: DEFAULT_CONFIG.FETCH_TIMEOUT_MS,
       });
     });
