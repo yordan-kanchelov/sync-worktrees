@@ -211,14 +211,22 @@ const cronSchedule = text("must be a cron expression string").refine((value) => 
   error: (issue) => `'${String(issue.input)}' is not a valid cron expression`,
 });
 
-const DURATION = "must be a duration string like '14d', '12h', or '2w'";
-const duration = text(DURATION).refine((value) => parseDuration(value) !== null, { error: because(DURATION) });
-
 // Zero parses fine but would disable throttling entirely (gc every tick).
 const POSITIVE_DURATION = "must be a positive duration string like '7d', '24h', or '2w'";
 const positiveDuration = text(POSITIVE_DURATION).refine((value) => (parseDuration(value) ?? 0) > 0, {
   error: because(POSITIVE_DURATION),
 });
+
+// Zero keeps no branch (prunes every worktree); past ~273000y the cutoff is an Invalid Date.
+const MAX_AGE = "must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y";
+const MAX_AGE_LIMIT_MS = parseDuration("200000y")!;
+const branchMaxAge = text(MAX_AGE).refine(
+  (value) => {
+    const ms = parseDuration(value) ?? 0;
+    return ms > 0 && ms < MAX_AGE_LIMIT_MS;
+  },
+  { error: because(MAX_AGE) },
+);
 
 /**
  * `branchInclude` / `branchExclude`, at either level.
@@ -439,7 +447,7 @@ const sharedFields = {
   cronSchedule: cronSchedule.optional(),
   bareRepoDir: text().optional(),
   retry: retrySchema.optional(),
-  branchMaxAge: duration.optional(),
+  branchMaxAge: branchMaxAge.optional(),
   branchInclude: branchPatterns.optional(),
   branchExclude: branchPatterns.optional(),
   skipLfs: flag().optional(),

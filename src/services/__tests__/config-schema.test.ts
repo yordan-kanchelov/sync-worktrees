@@ -178,7 +178,17 @@ describe("validateConfigFile: the file and its repository entries", () => {
     [
       "an unparseable branchMaxAge",
       config({}, { branchMaxAge: "two weeks" }),
-      `repositories[0].branchMaxAge: must be a duration string like '14d', '12h', or '2w', got "two weeks"`,
+      `repositories[0].branchMaxAge: must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "two weeks"`,
+    ],
+    [
+      "a zero branchMaxAge",
+      config({}, { branchMaxAge: "0d" }),
+      `repositories[0].branchMaxAge: must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "0d"`,
+    ],
+    [
+      "a branchMaxAge too large for a cutoff date",
+      config({}, { branchMaxAge: "999999999y" }),
+      `repositories[0].branchMaxAge: must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "999999999y"`,
     ],
     [
       "a non-integer depth",
@@ -459,6 +469,11 @@ describe("validateConfigFile: defaults", () => {
     ],
     ["an unknown mode", { mode: "bare" }, `defaults.mode: must be 'clone' or 'worktree', got "bare"`],
     ["a non-string worktreeDir", { worktreeDir: 3 }, "defaults.worktreeDir: must be a string, got 3"],
+    [
+      "a zero branchMaxAge",
+      { branchMaxAge: "0d" },
+      `defaults.branchMaxAge: must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "0d"`,
+    ],
     [
       "a nested block error",
       { retry: { jitterMs: -5 } },

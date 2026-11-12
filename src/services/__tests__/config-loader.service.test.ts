@@ -512,7 +512,7 @@ describe("ConfigLoaderService", () => {
       [
         "branchMaxAge",
         `branchMaxAge: "14 days"`,
-        `branchMaxAge' (repository 'test-repo'): must be a duration string like '14d', '12h', or '2w', got "14 days"`,
+        `branchMaxAge' (repository 'test-repo'): must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "14 days"`,
       ],
       ["skipLfs", `skipLfs: "yes"`, `skipLfs' (repository 'test-repo'): must be a boolean, got "yes"`],
       [
