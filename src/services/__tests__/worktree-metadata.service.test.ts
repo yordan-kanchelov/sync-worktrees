@@ -543,18 +543,20 @@ describe("WorktreeMetadataService", () => {
       (simpleGit as unknown as Mock).mockReturnValue(mockGit);
     });
 
+    // `symbolic-ref -q HEAD` names the checked-out branch; no upstream is configured.
+    const headOn = (branch: string): any =>
+      vi.fn<any>(async (args: string[]) => {
+        if (args[0] === "symbolic-ref") return `refs/heads/${branch}\n`;
+        throw new Error("fatal: no upstream configured");
+      });
+
     it("should create metadata when missing", async () => {
       const worktreePath = "/test/worktrees/feature-branch";
 
       (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
-      mockGit.branch = vi.fn<any>().mockResolvedValue({
-        current: "feature-branch",
-        all: ["feature-branch"],
-        branches: {},
-      }) as any;
-      mockGit.raw = vi.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured")) as any;
+      mockGit.raw = headOn("feature-branch");
 
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -565,7 +567,7 @@ describe("WorktreeMetadataService", () => {
       expect(logSpy).toHaveBeenCalledWith("  Attempting to create initial metadata...");
       expect(logSpy).toHaveBeenCalledWith("  ✅ Created metadata for feature-branch");
       expect(mockGit.revparse).toHaveBeenCalledWith(["HEAD"]);
-      expect(mockGit.branch).toHaveBeenCalled();
+      expect(mockGit.raw).toHaveBeenCalledWith(["symbolic-ref", "-q", "HEAD"]);
       expect(mockFileHandle.writeFile).toHaveBeenCalled();
 
       consoleSpy.mockRestore();
@@ -607,12 +609,7 @@ describe("WorktreeMetadataService", () => {
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
       mockGit.revparse.mockResolvedValue(currentCommit);
-      mockGit.branch = vi.fn<any>().mockResolvedValue({
-        current: "feature/foo",
-        all: ["feature/foo"],
-        branches: {},
-      }) as any;
-      mockGit.raw = vi.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured")) as any;
+      mockGit.raw = headOn("feature/foo");
 
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -639,12 +636,7 @@ describe("WorktreeMetadataService", () => {
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
       mockGit.revparse.mockResolvedValue(currentCommit);
-      mockGit.branch = vi.fn<any>().mockResolvedValue({
-        current: "feature-branch",
-        all: ["feature-branch"],
-        branches: {},
-      }) as any;
-      mockGit.raw = vi.fn<any>().mockRejectedValue(new Error("fatal: no upstream configured")) as any;
+      mockGit.raw = headOn("feature-branch");
 
       const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

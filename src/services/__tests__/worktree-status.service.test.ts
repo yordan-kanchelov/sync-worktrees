@@ -47,6 +47,8 @@ describe("WorktreeStatusService", () => {
   // The repository-wide ref scan, kept apart from `raw` so the per-worktree
   // subcommand assertions below see only per-worktree commands.
   let mockForEachRef: Mock<(args: string[]) => Promise<string>>;
+  // `symbolic-ref -q HEAD`, which hasStashedChanges reads the branch from.
+  let mockSymbolicRef: Mock<(args: string[]) => Promise<string>>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -69,11 +71,17 @@ describe("WorktreeStatusService", () => {
 
     header = { current: "main", detached: false, tracking: "origin/main", ahead: 0, behind: 0 };
     mockForEachRef = vi.fn(async () => refScanOutput({ main: "refs/remotes/origin/main" }, ["origin/main"]));
+    mockSymbolicRef = vi.fn(async () => "refs/heads/main\n");
 
     (simpleGit as unknown as Mock).mockReturnValue({
       ...mockGit,
       status: async (...args: any[]) => ({ files: [], ...header, ...(await (mockGit.status as any)(...args)) }),
-      raw: (args: string[]) => (args[0] === "for-each-ref" ? mockForEachRef(args) : (mockGit.raw as any)(args)),
+      raw: (args: string[]) =>
+        args[0] === "for-each-ref"
+          ? mockForEachRef(args)
+          : args[0] === "symbolic-ref"
+            ? mockSymbolicRef(args)
+            : (mockGit.raw as any)(args),
     });
   });
 
@@ -793,7 +801,7 @@ describe("WorktreeStatusService", () => {
       });
 
       it("ignores stashes made on another branch", async () => {
-        mockGit.branch.mockResolvedValue({ current: "feature/a", detached: false } as any);
+        mockSymbolicRef.mockResolvedValue("refs/heads/feature/a\n");
         mockGit.stashList.mockResolvedValue(
           listing({ subject: "WIP on main: abc123 msg" }, { subject: "On other: my: message" }),
         );
@@ -803,7 +811,7 @@ describe("WorktreeStatusService", () => {
       });
 
       it("counts a stash made on the checked-out branch, custom message with colons included", async () => {
-        mockGit.branch.mockResolvedValue({ current: "feature/a", detached: false } as any);
+        mockSymbolicRef.mockResolvedValue("refs/heads/feature/a\n");
         mockGit.stashList.mockResolvedValue(
           listing({ subject: "WIP on main: abc123 msg" }, { subject: "On feature/a: fix: half done" }),
         );
@@ -812,7 +820,7 @@ describe("WorktreeStatusService", () => {
       });
 
       it("counts every named stash when the checked-out branch cannot be read", async () => {
-        mockGit.branch.mockRejectedValue(new Error("branch failed"));
+        mockSymbolicRef.mockRejectedValue(new Error("symbolic-ref failed"));
         mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on main: abc123 msg" }));
 
         await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
@@ -846,14 +854,28 @@ describe("WorktreeStatusService", () => {
         expect(revListCalls()).toEqual([]);
       });
 
-      // During a rebase or bisect `git branch` prints `* (no branch, rebasing
-      // feature/a)`, which simple-git parses as a checked-out branch named
-      // "(no". Matching stashes against that name counted none of them.
-      it("counts every named stash when `git branch` reports a rebase in progress", async () => {
-        mockGit.branch.mockResolvedValue({ current: "(no", detached: false } as any);
+      // A paused rebase or bisect detaches HEAD while the stashes made before
+      // it name the branch being worked on: count every named stash.
+      it("counts every named stash when HEAD is detached by a rebase in progress", async () => {
+        mockSymbolicRef.mockResolvedValue("");
+        (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (String(target).endsWith("rebase-merge")) return undefined;
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        });
         mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on feature/a: abc123 msg" }));
 
         await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
+      });
+
+      it("ignores a named stash on a plain detached HEAD", async () => {
+        mockSymbolicRef.mockResolvedValue("");
+        (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+        (fs.access as Mock<any>).mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+        mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on feature/a: abc123 msg" }));
+
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(false);
+        expect(mockGit.branch).not.toHaveBeenCalled();
       });
 
       it("reports only this worktree's stashes in the status details", async () => {

@@ -187,8 +187,11 @@ export class WorktreeMetadataService {
         const worktreeGit = createGitClient(worktreePath);
         const currentCommit = await worktreeGit.revparse(["HEAD"]);
 
-        const branchSummary = await worktreeGit.branch();
-        const actualBranchName = branchSummary.current;
+        // Not `branch()`: that runs `git branch -v -a`, a walk of every branch.
+        const headRef = (await worktreeGit.raw(["symbolic-ref", "-q", "HEAD"])).trim();
+        const actualBranchName = headRef.startsWith(GIT_CONSTANTS.REFS.HEADS)
+          ? headRef.slice(GIT_CONSTANTS.REFS.HEADS.length)
+          : "";
 
         if (!actualBranchName) {
           throw new Error("Could not determine current branch name");

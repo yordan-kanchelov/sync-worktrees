@@ -263,9 +263,11 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
       expect(count(commands, "branch")).toBe(0);
       expect(count(commands, "rev-parse")).toBe(0);
     }
-    // Per worktree: status, stash list, submodule status and one unpushed
-    // rev-list; plus the one scan. It used to be seven per worktree.
-    expect(shared).toHaveLength(4 * worktrees.length + 1);
+    expect(count(shared, "stash list")).toBe(1);
+    expect(count(unshared, "stash list")).toBe(worktrees.length);
+    // Per worktree: status, submodule status and one unpushed rev-list; plus
+    // the one scan and the one stash listing. It used to be seven per worktree.
+    expect(shared).toHaveLength(3 * worktrees.length + 2);
     expect(unshared).toHaveLength(5 * worktrees.length);
   });
 });

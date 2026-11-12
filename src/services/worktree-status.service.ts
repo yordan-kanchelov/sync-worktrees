@@ -125,7 +125,11 @@ export function stashSubjectBranch(subject: string): string | null {
   return match ? match[1] : null;
 }
 
-type StashListing = Awaited<ReturnType<SimpleGit["stashList"]>>;
+// Structural, not simple-git's type: RefScanScope is in the public typings.
+interface StashListing {
+  readonly total: number;
+  readonly all: ReadonlyArray<unknown>;
+}
 
 // Every local branch and remote-tracking ref of a repository, from one
 // `for-each-ref`. refs/heads and refs/remotes live in the common git dir, so
@@ -212,16 +216,27 @@ export function parseRefScan(raw: string): RefScan {
  */
 export class RefScanScope {
   private readonly scans = new Map<string, Promise<RefScan | null>>();
+  // refs/stash lives in the common git dir too: one listing per repository.
+  private readonly stashes = new Map<string, Promise<StashListing | null>>();
 
   /** The scan already started for this common git dir, or `scan()`'s. */
   share(commonDir: string, scan: () => Promise<RefScan | null>): Promise<RefScan | null> {
-    let pending = this.scans.get(commonDir);
-    if (!pending) {
-      pending = scan();
-      this.scans.set(commonDir, pending);
-    }
-    return pending;
+    return shareOnce(this.scans, commonDir, scan);
   }
+
+  /** The stash listing already started for this common git dir, or `list()`'s. */
+  shareStashes(commonDir: string, list: () => Promise<StashListing | null>): Promise<StashListing | null> {
+    return shareOnce(this.stashes, commonDir, list);
+  }
+}
+
+function shareOnce<T>(cache: Map<string, Promise<T>>, key: string, start: () => Promise<T>): Promise<T> {
+  let pending = cache.get(key);
+  if (!pending) {
+    pending = start();
+    cache.set(key, pending);
+  }
+  return pending;
 }
 
 // What a snapshot knows about the checked-out branch's upstream:
@@ -458,8 +473,8 @@ export class WorktreeStatusService {
     };
   }
 
-  // Per worktree: `status`, `stash list`, `submodule status` and the
-  // unpushed-commit rev-lists. The checked-out branch and whether HEAD is
+  // Per worktree: `status`, `submodule status` and the unpushed-commit
+  // rev-lists; `stash list` is per repository in a RefScanScope pass. The checked-out branch and whether HEAD is
   // detached come off the `## ` header `status -b` prints anyway, and what the
   // branch tracks and whether that ref still exists come from the
   // repository-wide ref scan, so no `git branch`, `branch -r` or `rev-parse
@@ -473,16 +488,24 @@ export class WorktreeStatusService {
     const git = this.createGitInstance(worktreePath);
 
     const gitDirProbe = this.resolveGitDir(worktreePath);
+    // Keys the scope's per-repository reads; null runs them unshared.
+    const commonDirProbe = refScans
+      ? gitDirProbe.then((gitDir) => this.resolveCommonDir(gitDir)).catch(() => null)
+      : Promise.resolve(null);
+    const listStashes = (): Promise<StashListing | null> =>
+      this.listStashes(git).catch((e: unknown) => {
+        this.logger.error(`Error checking stash`, e);
+        return null;
+      });
     const [status, refScan, stashResult, submoduleResult, gitDirResult] = await Promise.all([
       this.runGit(() => git.status(["--ignore-submodules=none"])).catch((e: unknown) => {
         this.logger.error(`Error reading status for ${worktreePath}`, e);
         return null;
       }),
-      this.scanRefsFor(git, gitDirProbe, refScans),
-      this.listStashes(git).catch((e: unknown) => {
-        this.logger.error(`Error checking stash`, e);
-        return null;
-      }),
+      this.scanRefsFor(git, commonDirProbe, refScans),
+      commonDirProbe.then((commonDir) =>
+        refScans && commonDir !== null ? refScans.shareStashes(commonDir, listStashes) : listStashes(),
+      ),
       this.runGit(() => git.raw(["submodule", "status"])).catch((e: unknown) => {
         this.logger.error(`Error checking submodule status`, e);
         return null;
@@ -522,6 +545,9 @@ export class WorktreeStatusService {
     // The probes below all ask about HEAD, so they run for a checked-out branch
     // and for a detached HEAD mid-operation alike.
     if (currentBranch || (detached && !plainDetached)) {
+      const countSince = (oid: string): Promise<string> =>
+        this.runGit(() => git.raw(["rev-list", "--count", `${oid}..HEAD`]));
+      const sinceSyncProbe = lastSyncCommit ? countSince(lastSyncCommit) : null;
       const [anyRemoteResult, sinceSyncResult, recordedTipResult] = await Promise.all([
         // HEAD, never the short branch name: git resolves a bare name through
         // refs/tags/<name> before refs/heads/<name>, so a tag sharing the
@@ -534,8 +560,8 @@ export class WorktreeStatusService {
           (raw) => ({ ok: true as const, value: raw }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
-        lastSyncCommit
-          ? this.runGit(() => git.raw(["rev-list", "--count", `${lastSyncCommit}..HEAD`])).then(
+        sinceSyncProbe
+          ? sinceSyncProbe.then(
               (raw) => ({ ok: true as const, value: raw }),
               (error: unknown) => ({ ok: false as const, error }),
             )
@@ -547,8 +573,12 @@ export class WorktreeStatusService {
         // Only asked when the answer can matter: the proof is consulted only
         // once the recorded ref is gone, and while it exists the ordinary
         // unpushed check already covers the branch.
+        // The same range as the since-sync count in the usual prune case.
         lastKnownRemoteTip && recordedRefGone
-          ? this.runGit(() => git.raw(["rev-list", "--count", `${lastKnownRemoteTip.oid}..HEAD`])).then(
+          ? (sinceSyncProbe && lastKnownRemoteTip.oid === lastSyncCommit
+              ? sinceSyncProbe
+              : countSince(lastKnownRemoteTip.oid)
+            ).then(
               (raw) => this.parseCount(raw) === 0,
               () => false,
             )
@@ -629,13 +659,11 @@ export class WorktreeStatusService {
    */
   private async scanRefsFor(
     git: SimpleGit,
-    gitDirProbe: Promise<string>,
+    commonDirProbe: Promise<string | null>,
     refScans: RefScanScope | undefined,
   ): Promise<RefScan | null> {
-    if (refScans) {
-      const commonDir = await gitDirProbe.then((gitDir) => this.resolveCommonDir(gitDir)).catch(() => null);
-      if (commonDir !== null) return refScans.share(commonDir, () => this.scanRefs(git));
-    }
+    const commonDir = await commonDirProbe;
+    if (refScans && commonDir !== null) return refScans.share(commonDir, () => this.scanRefs(git));
     return this.scanRefs(git);
   }
 
@@ -756,25 +784,29 @@ export class WorktreeStatusService {
     const worktreeGit = this.createGitInstance(worktreePath);
 
     try {
-      const [stashList, branchSummary] = await Promise.all([
+      const [stashList, currentBranch] = await Promise.all([
         this.listStashes(worktreeGit),
-        this.runGit(() => worktreeGit.branch()).catch(() => null),
+        this.readCurrentBranch(worktreePath, worktreeGit),
       ]);
       if (stashList.total === 0) return false;
-      // During a rebase or bisect `git branch` prints `* (no branch, rebasing
-      // <b>)`, which simple-git parses as a branch named "(no" -- not
-      // detached. No branch name starts with "(", so that reads as unknown.
-      const current = branchSummary?.current ?? "";
-      const currentBranch =
-        branchSummary === null || current.startsWith("(")
-          ? undefined
-          : !current || branchSummary.detached
-            ? null
-            : current;
       return (await this.countOwnStashes(worktreeGit, stashList, currentBranch)) > 0;
     } catch (error) {
       this.logger.error(`Error checking stash`, error);
       return true; // Conservative: assume unsafe to delete
+    }
+  }
+
+  // The checked-out branch; null for a plain detached HEAD; undefined when
+  // unreadable or a rebase or bisect is paused (its stashes name the branch).
+  private async readCurrentBranch(worktreePath: string, git: SimpleGit): Promise<string | null | undefined> {
+    try {
+      // -q: a detached HEAD exits 1 silently, which simple-git resolves as "".
+      const ref = (await this.runGit(() => git.raw(["symbolic-ref", "-q", "HEAD"]))).trim();
+      if (ref.startsWith(GIT_CONSTANTS.REFS.HEADS)) return ref.slice(GIT_CONSTANTS.REFS.HEADS.length);
+      if (ref) return undefined;
+      return (await this.hasOperationInProgress(worktreePath)) ? undefined : null;
+    } catch {
+      return undefined;
     }
   }
 
