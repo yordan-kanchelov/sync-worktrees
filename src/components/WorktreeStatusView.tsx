@@ -234,6 +234,8 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   // another project still loads exactly once, and reset when ESC goes back to
   // that choice.
   const loadedForRepoRef = useRef<number | null>(null);
+  // Bumped per load and on ESC; a load whose number is stale is dropped.
+  const loadGenRef = useRef(0);
   const [repoDiskUsage, setRepoDiskUsage] = useState<Record<number, RepositoryDiskUsageState>>({});
   const requestedDiskUsageRef = useRef<Set<number>>(new Set());
   const mountedRef = useRef(true);
@@ -290,12 +292,14 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   const loadStatus = useCallback(
     async (repoIndex: number) => {
+      const gen = ++loadGenRef.current;
       setLoading(true);
       try {
         const [statusEntries, divergedDirs] = await Promise.all([
           getWorktreeStatusForRepo(repoIndex),
           getDivergedDirectoriesForRepo?.(repoIndex) ?? Promise.resolve([]),
         ]);
+        if (gen !== loadGenRef.current) return;
         setEntries(statusEntries);
         setDivergedEntries(divergedDirs);
         const branch = initialBranchRef.current;
@@ -312,6 +316,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         setExpandedEntry(target >= 0 ? target : null);
         setConfirmDelete(null);
       } catch (err) {
+        if (gen !== loadGenRef.current) return;
         setError(`Failed to load worktree status: ${String(err)}`);
         setStep("ERROR");
       }
@@ -434,6 +439,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         onClose();
       } else if (step === "VIEW_STATUS") {
         if (repositories.length > 1) {
+          loadGenRef.current++;
+          initialBranchRef.current = undefined;
+          setLoading(false);
           setEntries([]);
           setDivergedEntries([]);
           setEntryFilter("");

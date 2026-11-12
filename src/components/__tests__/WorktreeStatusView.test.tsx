@@ -1217,4 +1217,69 @@ describe("WorktreeStatusView", () => {
       expect(defaultProps.getWorktreeStatusForRepo).not.toHaveBeenCalled();
     });
   });
+
+  // A load that resolves after the user has gone back and picked another
+  // repository must not replace that repository's list.
+  describe("a late load for a repository the user left", () => {
+    it("keeps the second repository's rows and deletes from that repository", async () => {
+      const divergedFor = (name: string): DivergedDirectoryInfo => ({
+        name,
+        path: `/wt/.diverged/${name}`,
+        originalBranch: name,
+        divergedAt: "2024-01-01",
+        sizeBytes: 1,
+        sizeFormatted: "1 B",
+      });
+      let resolveA: (entries: WorktreeStatusEntry[]) => void = () => {};
+      const getWorktreeStatusForRepo = vi.fn((index: number) =>
+        index === 0
+          ? new Promise<WorktreeStatusEntry[]>((resolve) => {
+              resolveA = resolve;
+            })
+          : Promise.resolve([makeEntry("b-main")]),
+      );
+      const getDivergedDirectoriesForRepo = vi.fn(async (index: number) => [
+        divergedFor(index === 0 ? "a-gone" : "b-gone"),
+      ]);
+      const deleteDivergedDirectory = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(
+        <WorktreeStatusView
+          {...defaultProps}
+          getWorktreeStatusForRepo={getWorktreeStatusForRepo}
+          getDivergedDirectoriesForRepo={getDivergedDirectoriesForRepo}
+          deleteDivergedDirectory={deleteDivergedDirectory}
+        />,
+      );
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("b-main");
+
+      resolveA([makeEntry("a-main")]);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Repository: repo-2");
+      expect(lastFrame()).toContain("b-main");
+      expect(lastFrame()).not.toContain("a-main");
+      expect(lastFrame()).not.toContain("a-gone");
+
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\u0004");
+      await waitForStateUpdate();
+      stdin.write("y");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(deleteDivergedDirectory).toHaveBeenCalledTimes(1);
+      expect(deleteDivergedDirectory).toHaveBeenCalledWith(1, "b-gone");
+    });
+  });
 });

@@ -65,6 +65,8 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   const [loading, setLoading] = useState(false);
 
   const branchesLoadedRef = useRef(false);
+  // Bumped per load and on ESC; a load whose number is stale is dropped.
+  const loadGenRef = useRef(0);
   const [isFetching, setIsFetching] = useState(false);
 
   const filteredProjects = useMemo(() => {
@@ -93,13 +95,15 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
   const loadBranches = useCallback(
     async (repoIndex: number) => {
+      const gen = ++loadGenRef.current;
+      const stale = () => gen !== loadGenRef.current;
       setLoading(true);
       setIsFetching(false);
       try {
         let branchList = await getBranchesForRepo(repoIndex);
 
         // If no branches found and we haven't tried fetching yet, fetch and retry
-        if (branchList.length === 0 && fetchForRepo) {
+        if (branchList.length === 0 && fetchForRepo && !stale()) {
           setIsFetching(true);
           await fetchForRepo(repoIndex);
           branchList = await getBranchesForRepo(repoIndex);
@@ -115,11 +119,13 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         } catch {
           defaultBr = "";
         }
+        if (stale()) return;
         setBranches(branchList);
         setDefaultBranch(defaultBr);
         const defaultIndex = branchList.indexOf(defaultBr);
         setSelectedBranchIndex(defaultIndex >= 0 ? defaultIndex : 0);
       } catch {
+        if (stale()) return;
         setBranches([]);
       }
       setLoading(false);
@@ -204,6 +210,8 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         onClose();
       } else if (step === "SELECT_BRANCH") {
         if (repositories.length > 1) {
+          loadGenRef.current++;
+          setLoading(false);
           setBranches([]);
           setBranchFilter("");
           branchesLoadedRef.current = false;

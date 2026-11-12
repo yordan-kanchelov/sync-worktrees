@@ -48,6 +48,8 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   // round trip, forever. Keyed by repository index so picking another project
   // still loads exactly once, and reset when ESC goes back to that choice.
   const loadedForRepoRef = useRef<number | null>(null);
+  // Bumped per load and on ESC; a load whose number is stale is dropped.
+  const loadGenRef = useRef(0);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -65,12 +67,15 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
 
   const loadWorktrees = useCallback(
     async (repoIndex: number) => {
+      const gen = ++loadGenRef.current;
       setLoading(true);
       try {
         const wts = await getWorktreesForRepo(repoIndex);
+        if (gen !== loadGenRef.current) return;
         setWorktrees(wts);
         setSelectedWorktreeIndex(0);
       } catch (err) {
+        if (gen !== loadGenRef.current) return;
         setError(`Failed to load worktrees: ${String(err)}`);
         setStep("ERROR");
       }
@@ -119,6 +124,8 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
         onClose();
       } else if (step === "SELECT_WORKTREE") {
         if (repositories.length > 1) {
+          loadGenRef.current++;
+          setLoading(false);
           setWorktrees([]);
           setWorktreeFilter("");
           selectedRepoIndexRef.current = -1;

@@ -503,4 +503,50 @@ describe("OpenEditorWizard", () => {
       expect(defaultProps.getWorktreesForRepo).toHaveBeenCalledWith(2);
     });
   });
+
+  // A load that resolves after the user has gone back and picked another
+  // repository must not replace that repository's list.
+  describe("a late load for a repository the user left", () => {
+    it("keeps the second repository's worktrees and opens one of them", async () => {
+      let resolveA: (worktrees: Array<{ path: string; branch: string }>) => void = () => {};
+      const getWorktreesForRepo = vi.fn((index: number) =>
+        index === 0
+          ? new Promise<Array<{ path: string; branch: string }>>((resolve) => {
+              resolveA = resolve;
+            })
+          : Promise.resolve([{ path: "/b/b-main", branch: "b-main" }]),
+      );
+      const openTerminalInWorktree = vi.fn().mockReturnValue({ success: true });
+      const { stdin, lastFrame } = render(
+        <OpenEditorWizard
+          {...defaultProps}
+          getWorktreesForRepo={getWorktreesForRepo}
+          openTerminalInWorktree={openTerminalInWorktree}
+        />,
+      );
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("b-main");
+
+      resolveA([{ path: "/a/a-main", branch: "a-main" }]);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("b-main");
+      expect(lastFrame()).not.toContain("a-main");
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      expect(openTerminalInWorktree).toHaveBeenCalledTimes(1);
+      expect(openTerminalInWorktree).toHaveBeenCalledWith(1, "/b/b-main", "b-main");
+    });
+  });
 });
