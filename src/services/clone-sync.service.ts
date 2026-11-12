@@ -180,6 +180,13 @@ export class CloneSyncService {
   }
 
   private async runSyncAttemptInternal(phaseTimer?: PhaseTimer): Promise<void> {
+    // A clone removed out-of-band since init: run init again so it re-clones.
+    if (
+      this.initialized &&
+      (await probePathExists(path.join(this.config.worktreeDir, PATH_CONSTANTS.GIT_DIR))) === "missing"
+    ) {
+      this.initialized = false;
+    }
     if (!this.initialized) {
       await this.initialize();
       // init ran here and recorded any skip itself; no duplicate to suppress.
