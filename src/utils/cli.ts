@@ -187,6 +187,25 @@ function completeArguments(
   });
 }
 
+/**
+ * `--config` and `--filter` need a non-blank value: an empty `--filter "$UNSET"`
+ * would select every repository. A repeated `--filter` is a union; a repeated
+ * `--config` has no single file to load.
+ */
+function checkConfigAndFilter(args: { config?: unknown; filter?: unknown }): string | true {
+  if (Array.isArray(args.config)) return "--config was given more than once";
+  if (typeof args.config === "string" && args.config.trim() === "") return "--config needs a non-empty path";
+  const filters: unknown[] = Array.isArray(args.filter) ? args.filter : [args.filter];
+  if (filters.some((value) => typeof value === "string" && value.trim() === "")) {
+    return "--filter needs a non-empty pattern";
+  }
+  return true;
+}
+
+function joinFilter(filter: unknown): string | undefined {
+  return Array.isArray(filter) ? filter.join(",") : (filter as string | undefined);
+}
+
 export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptions {
   let parsed: CliOptions | undefined;
 
@@ -204,6 +223,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
         y
           .option("config", {
             alias: "c",
+            requiresArg: true,
             type: "string",
             description: CONFIG_OPTION_DESCRIPTION,
           })
@@ -219,6 +239,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
           })
           .option("filter", {
             alias: "f",
+            requiresArg: true,
             type: "string",
             description: "Only sync repositories whose name matches (wildcards, comma-separated).",
           })
@@ -239,14 +260,15 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
             description: "With --dry-run: print the plans as a JSON array instead of a report.",
             default: false,
           })
-          .check((args) => !args.json || args.dryRun || "--json is only available with --dry-run."),
+          .check((args) => !args.json || args.dryRun || "--json is only available with --dry-run.")
+          .check(checkConfigAndFilter),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.RUN,
           config: args.config,
           runOnce: args.runOnce,
           debug: args.debug,
-          filter: args.filter,
+          filter: joinFilter(args.filter),
           quiet: args.quiet,
           dryRun: args.dryRun,
           json: args.json,
@@ -260,6 +282,7 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
         y
           .option("config", {
             alias: "c",
+            requiresArg: true,
             type: "string",
             description: "Target path for the generated config file (default: ./sync-worktrees.config.js).",
           })
@@ -267,7 +290,8 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
             type: "boolean",
             description: "Overwrite the target file if it already exists.",
             default: false,
-          }),
+          })
+          .check(checkConfigAndFilter),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.INIT,
@@ -283,11 +307,13 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
         y
           .option("config", {
             alias: "c",
+            requiresArg: true,
             type: "string",
             description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("filter", {
             alias: "f",
+            requiresArg: true,
             type: "string",
             description: "Filter repositories by name (wildcards, comma-separated).",
           })
@@ -295,12 +321,13 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
             type: "boolean",
             description: "Print the repositories as a JSON array instead of a report.",
             default: false,
-          }),
+          })
+          .check(checkConfigAndFilter),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.LIST,
           config: args.config,
-          filter: args.filter,
+          filter: joinFilter(args.filter),
           json: args.json,
         };
       },
@@ -323,11 +350,13 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
         y
           .option("config", {
             alias: "c",
+            requiresArg: true,
             type: "string",
             description: CONFIG_OPTION_DESCRIPTION,
           })
           .option("filter", {
             alias: "f",
+            requiresArg: true,
             type: "string",
             description: "Only check repositories whose name matches (wildcards, comma-separated).",
           })
@@ -341,12 +370,13 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
             type: "boolean",
             description: "Print only warnings, failures and the summary line (ignored with --json).",
             default: false,
-          }),
+          })
+          .check(checkConfigAndFilter),
       (args) => {
         parsed = {
           command: CLI_COMMANDS.DOCTOR,
           config: args.config,
-          filter: args.filter,
+          filter: joinFilter(args.filter),
           json: args.json,
           quiet: args.quiet,
         };
@@ -364,8 +394,9 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
     .demandCommand(0, 0)
     .fail((msg, err) => {
       // A .check() that returns a message hands it over as `err` too; that is
-      // a usage error to report, not an exception.
-      if (err && typeof (err as unknown) !== "string") throw err;
+      // a usage error to report, not an exception; so is a YError ("Not enough
+      // arguments following: filter").
+      if (err && typeof (err as unknown) !== "string" && err.name !== "YError") throw err;
       const subcommandFlag = argv.find((arg) => arg === "--init" || arg === "--list");
       if (subcommandFlag) {
         const subcommand = subcommandFlag.slice(2);

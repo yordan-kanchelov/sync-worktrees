@@ -256,6 +256,55 @@ describe("parseArguments", () => {
     expect(output).toContain("--json is only available with --dry-run");
   });
 
+  describe("--filter and --config values", () => {
+    const errors = (): string => (console.error as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+
+    it("joins a repeated --filter into one comma-separated union", () => {
+      expect(parseArguments(["list", "-f", "a", "-f", "b"])).toMatchObject({ command: "list", filter: "a,b" });
+      expect(parseArguments(["--run-once", "--filter", "a", "--filter", "b,c"])).toMatchObject({
+        command: "run",
+        filter: "a,b,c",
+      });
+      expect(parseArguments(["doctor", "-f", "a", "-f", "b"])).toMatchObject({ command: "doctor", filter: "a,b" });
+    });
+
+    it.each([
+      [["--filter", ""]],
+      [["--run-once", "--filter="]],
+      [["list", "-f", "  "]],
+      [["doctor", "-f", "a", "-f", ""]],
+    ])("rejects an empty --filter: %j", (argv) => {
+      expect(() => parseArguments(argv)).toThrow(/process\.exit\(1\)/);
+      expect(errors()).toContain("--filter");
+    });
+
+    it.each([[["--filter"]], [["list", "-f"]], [["--config"]], [["doctor", "-c"]]])(
+      "requires a value after the flag: %j",
+      (argv) => {
+        expect(() => parseArguments(argv)).toThrow(/process\.exit\(1\)/);
+      },
+    );
+
+    it.each([[["--config", ""]], [["list", "-c", ""]], [["doctor", "--config="]], [["init", "-c", ""]]])(
+      "rejects an empty --config: %j",
+      (argv) => {
+        expect(() => parseArguments(argv)).toThrow(/process\.exit\(1\)/);
+        expect(errors()).toContain("--config");
+      },
+    );
+
+    it.each([[["list", "-c", "x", "-c", "y"]], [["-c", "x", "--config", "y"]], [["init", "-c", "x", "-c", "y"]]])(
+      "rejects a repeated --config with one line: %j",
+      (argv) => {
+        expect(() => parseArguments(argv)).toThrow(/process\.exit\(1\)/);
+        const lines = errors()
+          .split("\n")
+          .filter((line) => line.includes("--config"));
+        expect(lines).toEqual(["--config was given more than once"]);
+      },
+    );
+  });
+
   it("prints the package version for --version", () => {
     expect(() => parseArguments(["--version"])).toThrow(/process\.exit/);
 
