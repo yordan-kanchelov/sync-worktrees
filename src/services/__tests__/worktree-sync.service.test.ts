@@ -2108,47 +2108,27 @@ describe("WorktreeSyncService", () => {
     });
 
     describe("LFS error handling", () => {
-      it("should call setLfsSkipEnabled when falling back to branch-by-branch fetch", async () => {
-        mockGitService.fetchAll = vi.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed")) as any;
+      // A fetch never runs the smudge filter, but an LFS-shaped fetch error still
+      // reaches retry()'s LFS handler, which turns the skip on for the next attempt.
+      it("retries an LFS-failed fetch with LFS downloads off, never branch by branch", async () => {
+        mockGitService.fetchAll = vi
+          .fn<any>()
+          .mockRejectedValueOnce(new Error("smudge filter lfs failed"))
+          .mockResolvedValue(undefined) as any;
         mockGitService.fetchBranch = vi.fn<any>().mockResolvedValue(undefined) as any;
+        service = new WorktreeSyncService({ ...mockConfig, retry: { initialDelayMs: 0, jitterMs: 0 } });
+        service["gitService"] = mockGitService;
 
         await service.sync();
 
-        expect(mockGitService.fetchBranch).toHaveBeenCalled();
+        expect(mockGitService.fetchAll).toHaveBeenCalledTimes(2);
+        expect(mockGitService.fetchBranch).not.toHaveBeenCalled();
         expect(mockGitService.setLfsSkipEnabled).toHaveBeenCalledWith(true);
-        // Should be reset after sync completes
-        expect(mockGitService.setLfsSkipEnabled).toHaveBeenCalledWith(false);
+        expect(mockGitService.setLfsSkipEnabled).toHaveBeenLastCalledWith(false);
       });
 
-      it("should handle partial LFS branch-by-branch fetch failures gracefully", async () => {
-        mockGitService.fetchAll = vi.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed")) as any;
-
-        // Some branches succeed, some fail
-        mockGitService.fetchBranch = vi.fn<any>().mockImplementation((...args: unknown[]) => {
-          const branch = args[0] as string;
-          if (branch === "feature-1") {
-            return Promise.reject(new Error("LFS error on feature-1"));
-          }
-          return Promise.resolve(undefined);
-        }) as any;
-
-        mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
-
-        await service.sync();
-
-        // All branches should have been attempted
-        expect(mockGitService.fetchBranch).toHaveBeenCalledWith("main");
-        expect(mockGitService.fetchBranch).toHaveBeenCalledWith("feature-1");
-        expect(mockGitService.fetchBranch).toHaveBeenCalledWith("feature-2");
-
-        // Should log about partial success
-        expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("2/3 successful"));
-        expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Failed to fetch 1 branches"));
-      });
-
-      // The smudge filter runs at checkout, not at fetch, so the fallback has to
-      // engage from the create phase as well — and the skip it turns on there
-      // must be restored when the sync ends, exactly like the fetch fallback's.
+      // The smudge filter runs at checkout, so the fallback engages from the
+      // create phase — and the skip it turns on must be restored when the sync ends.
       it("retries a worktree checkout that failed with an LFS error and restores the skip", async () => {
         mockGitService.addWorktree = vi
           .fn<any>()
@@ -2169,7 +2149,7 @@ describe("WorktreeSyncService", () => {
         );
       });
 
-      it("should not retry LFS branch-by-branch if skipLfs is already configured", async () => {
+      it("gives up on an LFS-failed fetch if skipLfs is already configured", async () => {
         // Configure to skip LFS from the start
         mockConfig.skipLfs = true;
         service = new WorktreeSyncService(mockConfig);
@@ -2180,7 +2160,6 @@ describe("WorktreeSyncService", () => {
 
         await expect(service.sync()).rejects.toThrow("LFS error retry limit exceeded");
 
-        // Should not attempt branch-by-branch fetch when skipLfs is true
         expect(mockGitService.fetchBranch).not.toHaveBeenCalled();
       });
     });

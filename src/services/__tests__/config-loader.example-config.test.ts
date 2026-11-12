@@ -132,7 +132,7 @@ describe("sync-worktrees.config.example.js", () => {
     // nested value is read back off the RESOLVED repository — the object the
     // services actually receive — rather than off the config file.
     const topLevelBlocksReachRepos = byName.get("my-main-project");
-    expect(topLevelBlocksReachRepos?.parallelism?.maxBranchFetches).toBe(3);
+    expect(topLevelBlocksReachRepos?.parallelism?.maxWorktreeUpdates).toBe(3);
     expect(topLevelBlocksReachRepos?.parallelism?.maxStatusChecks).toBe(20);
     expect(topLevelBlocksReachRepos?.retry?.jitterMs).toBe(500);
 

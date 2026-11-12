@@ -424,6 +424,14 @@ export class ConfigLoaderService {
     validateConfigFile(config);
     this.warnOnDuplicateRepoUrls(config.repositories);
     this.warnOnUnknownConfigKeys(config);
+    this.warnOnDeprecatedConfigKeys(config);
+  }
+
+  private warnOnDeprecatedConfigKeys(config: ConfigFile): void {
+    const blocks = [config.parallelism, config.defaults?.parallelism, ...config.repositories.map((r) => r.parallelism)];
+    if (blocks.some((block) => block?.maxBranchFetches !== undefined)) {
+      this.warn("[sync-worktrees] 'parallelism.maxBranchFetches' is deprecated and has no effect; remove it.");
+    }
   }
 
   // Everything the schema never looked at. Why it warns rather than rejects,

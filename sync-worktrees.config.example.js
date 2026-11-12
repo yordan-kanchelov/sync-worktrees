@@ -80,7 +80,6 @@ const config = {
     maxWorktreeUpdates: 3, // Max concurrent worktree updates (default: 3)
     maxWorktreeRemoval: 3, // Max concurrent worktree removals (default: 3)
     maxStatusChecks: 20, // Max concurrent git processes for status probes (default: 20)
-    maxBranchFetches: 3, // Max concurrent per-branch fetches, bulk-fetch fallback (default: 3)
   },
 
   // Performance tuning tips:
@@ -93,11 +92,10 @@ const config = {
   //   `git submodule status` runs a helper script and a child per submodule,
   //   about 3 processes per call on an 8-submodule superproject.
   // - maxWorktreeUpdates: Can safely increase to 5-10 on fast systems
-  // - maxWorktreeCreation, maxWorktreeRemoval and maxBranchFetches each run
-  //   their main git command through one shared client that stops at 5
-  //   concurrent processes, so raising them far above 5 buys little: fetches
-  //   stop at 5 outright, while creation and removal grow a little past it for
-  //   the few commands they run on each worktree's own client
+  // - maxWorktreeCreation and maxWorktreeRemoval each run their main git
+  //   command through one shared client that stops at 5 concurrent processes,
+  //   so raising them far above 5 buys little: they grow only a little past it
+  //   for the few commands they run on each worktree's own client
   // - maxRepositories: Higher values speed up multi-repo syncs but use more resources
   // - A repository's phases run one after another (create, then prune, then
   //   update), so peak git processes = maxRepositories × the widest single

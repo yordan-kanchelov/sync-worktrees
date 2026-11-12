@@ -2117,11 +2117,9 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/Consider reducing maxRepositories/);
     });
 
-    // Every branch fetch goes through the anchor worktree's one git client,
-    // whose scheduler stops at 5 — measured: 40 concurrent fetches through one
-    // cached client peak at 9 processes, never 40. Rejecting this config would
-    // break a working setup over processes that cannot be spawned.
-    it("should accept a maxBranchFetches the shared fetch client cannot reach", async () => {
+    // maxBranchFetches is deprecated and bounds nothing, so it never counts
+    // toward the peak: rejecting this config would break a working setup.
+    it("should still accept a large deprecated maxBranchFetches", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
         export default {
@@ -2142,7 +2140,7 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       expect(config.parallelism?.maxBranchFetches).toBe(200);
     });
 
-    it("leaves the branch-fetch fallback out of the peak entirely", () => {
+    it("leaves the deprecated maxBranchFetches out of the peak entirely", () => {
       const peak = computeParallelismPeak({ maxRepositories: 1, maxBranchFetches: 1000 });
 
       expect(peak.widestPhase.field).toBe("maxStatusChecks");

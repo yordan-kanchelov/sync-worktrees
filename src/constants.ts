@@ -65,7 +65,6 @@ export const DEFAULT_CONFIG = {
     // status probe of a repository runs through it, so this bounds git
     // processes rather than worktrees.
     MAX_STATUS_CHECKS: 20,
-    MAX_BRANCH_FETCHES: 3,
     // Ceiling on concurrent git processes across the whole run, checked by the
     // config loader as maxRepositories × the widest sync phase (phases run one
     // after another, so their limits are never summed, and a phase that shares

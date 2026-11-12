@@ -137,7 +137,7 @@ describe("ConfigLoaderService unknown-key warnings", () => {
     const configPath = await writeConfig(`
       export default {
         retry: { maxAttempts: 3, maxLfsRetries: 2, initialDelayMs: 1000, maxDelayMs: 60000, backoffMultiplier: 2, jitterMs: 500 },
-        parallelism: { maxRepositories: 2, maxWorktreeCreation: 1, maxWorktreeUpdates: 3, maxWorktreeRemoval: 3, maxStatusChecks: 20, maxBranchFetches: 3 },
+        parallelism: { maxRepositories: 2, maxWorktreeCreation: 1, maxWorktreeUpdates: 3, maxWorktreeRemoval: 3, maxStatusChecks: 20 },
         defaults: {
           cronSchedule: "0 * * * *",
           runOnce: false,
@@ -180,7 +180,7 @@ describe("ConfigLoaderService unknown-key warnings", () => {
             maintenance: { interval: "1d" },
             trash: { enabled: false },
             retry: { jitterMs: 10 },
-            parallelism: { maxBranchFetches: 1 }
+            parallelism: { maxWorktreeUpdates: 1 }
           }
         ]
       };

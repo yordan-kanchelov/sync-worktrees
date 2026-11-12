@@ -98,13 +98,7 @@ export interface ParallelismConfig {
    * ~3 processes in total per call on an eight-submodule superproject.
    */
   maxStatusChecks?: number;
-  /**
-   * Max concurrent per-branch fetches when falling back from bulk fetch
-   * (default: 3). Every fetch goes through the anchor worktree's one git
-   * client, whose scheduler stops at 5, so values above 5 have no effect. This
-   * fallback is left out of the configured peak entirely; see
-   * PARALLELISM_PHASES for why, and for the hole that leaves.
-   */
+  /** @deprecated Has no effect; still accepted so older configs load. */
   maxBranchFetches?: number;
 }
 

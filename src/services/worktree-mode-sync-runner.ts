@@ -117,7 +117,7 @@ export class WorktreeModeSyncRunner {
     // answer.
     this.remoteRefsPrunedThisAttempt = false;
     await this.ensureFetchAnchor(outcome);
-    await this.fetchLatestRemoteData(phaseTimer, syncContext);
+    await this.fetchLatestRemoteData(phaseTimer);
 
     await fs.mkdir(this.config.worktreeDir, { recursive: true });
 
@@ -650,18 +650,15 @@ export class WorktreeModeSyncRunner {
   // Did this attempt bring every `refs/remotes/*` ref up to date with the
   // remote and drop the ones the remote no longer has?
   //
-  // Only `fetchAll` ("fetch --all --prune") earns a true. The LFS fallback
-  // below fetches branch by branch, and a `--prune` restricted to refspecs
-  // named on the command line prunes only those branches — so a branch deleted
-  // on the remote can keep a remote-tracking ref through it. The reaper uses
-  // this to decide whether a "these commits are on a remote" reading is
-  // trustworthy enough to release a permanent recovery ref, so anything short
-  // of the full pruning fetch answers false.
+  // Only a completed `fetchAll` ("fetch --all --prune") earns a true. The
+  // reaper uses this to decide whether a "these commits are on a remote"
+  // reading is trustworthy enough to release a permanent recovery ref, so
+  // anything short of the full pruning fetch answers false.
   didPruneAllRemoteRefs(): boolean {
     return this.remoteRefsPrunedThisAttempt;
   }
 
-  private async fetchLatestRemoteData(phaseTimer: PhaseTimer, syncContext: SyncRetryContext): Promise<void> {
+  private async fetchLatestRemoteData(phaseTimer: PhaseTimer): Promise<void> {
     this.logger.info("Step 1: Fetching latest data from remote...");
     phaseTimer.startPhase("Phase 1: Fetch");
     this.progressEmitter.emit({ phase: "fetch", message: "Fetching latest data from remote" });
@@ -669,18 +666,6 @@ export class WorktreeModeSyncRunner {
     try {
       await this.gitService.fetchAll();
       this.remoteRefsPrunedThisAttempt = true;
-    } catch (fetchError) {
-      const errorMessage = getErrorMessage(fetchError);
-
-      if (isLfsError(errorMessage) && !syncContext.lfsSkipEnabled && !this.config.skipLfs) {
-        this.logger.info("⚠️  Fetch all failed due to LFS error. Attempting branch-by-branch fetch...");
-        this.logger.info("⚠️  Temporarily disabling LFS downloads for branch-by-branch fetch...");
-        this.gitService.setLfsSkipEnabled(true);
-        syncContext.lfsSkipEnabled = true;
-        await this.fetchBranchByBranch();
-      } else {
-        throw fetchError;
-      }
     } finally {
       phaseTimer.endPhase();
     }
@@ -892,9 +877,8 @@ export class WorktreeModeSyncRunner {
     this.logger.info(`  Created ${successCount}/${plan.length} worktrees successfully`);
   }
 
-  // `git fetch` into a bare repository never runs the LFS smudge filter, so the
-  // fallback in fetchLatestRemoteData is not where LFS actually fails — the
-  // checkout inside `git worktree add` is (an object missing on the server, an
+  // `git fetch` into a bare repository never runs the LFS smudge filter, so
+  // LFS fails in the checkout inside `git worktree add` (an object missing on the server, an
   // endpoint the daemon holds no credentials for). That failure was recorded as
   // create_failed and then dropped by the create phase's allSettled, so it never
   // reached retry()'s LFS handler: the branch failed again on every tick while
@@ -1445,46 +1429,6 @@ export class WorktreeModeSyncRunner {
     }
 
     this.logger.info("");
-  }
-
-  private async fetchBranchByBranch(): Promise<void> {
-    this.logger.info("Fetching branches individually to isolate LFS errors...");
-
-    const remoteBranches = await this.gitService.getRemoteBranches();
-    this.logger.info(`Found ${remoteBranches.length} remote branches to fetch.`);
-
-    const fetchLimit = pLimit(
-      this.config.parallelism?.maxBranchFetches ?? DEFAULT_CONFIG.PARALLELISM.MAX_BRANCH_FETCHES,
-    );
-    const failedBranches: string[] = [];
-    let successCount = 0;
-
-    const results = await Promise.allSettled(
-      remoteBranches.map((branch) =>
-        fetchLimit(async () => {
-          await this.gitService.fetchBranch(branch);
-          return branch;
-        }),
-      ),
-    );
-
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      if (result.status === "fulfilled") {
-        successCount++;
-      } else {
-        const errorMessage = getErrorMessage(result.reason);
-        this.logger.info(`  ⚠️  Failed to fetch branch '${remoteBranches[i]}': ${errorMessage}`);
-        failedBranches.push(remoteBranches[i]);
-      }
-    }
-
-    this.logger.info(`Branch-by-branch fetch completed: ${successCount}/${remoteBranches.length} successful`);
-
-    if (failedBranches.length > 0) {
-      this.logger.info(`⚠️  Failed to fetch ${failedBranches.length} branches due to errors.`);
-      this.logger.info(`   These branches will be skipped: ${failedBranches.join(", ")}`);
-    }
   }
 
   private async updateExistingWorktreesWithTiming(

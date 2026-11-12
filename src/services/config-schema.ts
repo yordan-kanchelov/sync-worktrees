@@ -31,25 +31,6 @@ import type { KnownConfigKeys } from "../utils/unknown-config-keys";
 const asConfigured = (configured: number): number => configured;
 const cappedByOneClient = (configured: number): number => Math.min(configured, SIMPLE_GIT_CLIENT_CONCURRENCY);
 /**
- * The branch-by-branch fetch is a fallback that only runs when a bulk fetch
- * failed on LFS errors, and it goes through the anchor worktree's one client,
- * so it can never exceed SIMPLE_GIT_CLIENT_CONCURRENCY however high
- * `maxBranchFetches` is set. It is left out of the peak entirely rather than
- * counted at that ceiling, because counting it -- even at 5 -- would newly
- * reject configs that load today: 21 to 25 repositories with every other limit
- * at 1 sum to 84-100 under the old rule but reach 105-125 at 5 per repository.
- * Leaving it out is what makes "no config that loads today is rejected" hold
- * for every input rather than merely for the ones we swept.
- *
- * This is a deliberate hole, not an impossibility: `maxRepositories` repos can
- * each run 5 concurrent fallback fetches, so a config the peak reports as 42
- * can spawn ~105 fetch processes if every repository hits the LFS fallback at
- * once. The fallback has one call site and is gated on an LFS failure, so that
- * is a narrow path. The setting is still validated as a positive integer.
- */
-const notCounted = (): number => 0;
-
-/**
  * Every per-repository parallelism phase: the phase it bounds, and the git
  * processes that phase can really run at once. The phases run one after another
  * — create, then prune, then update — so a repository's peak is the widest
@@ -93,12 +74,6 @@ const PARALLELISM_PHASES = [
     default: DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS,
     // Enforced exactly by WorktreeStatusService's shared process budget.
     concurrentProcesses: asConfigured,
-  },
-  {
-    field: "maxBranchFetches",
-    label: "branch fetches",
-    default: DEFAULT_CONFIG.PARALLELISM.MAX_BRANCH_FETCHES,
-    concurrentProcesses: notCounted,
   },
 ] as const satisfies ReadonlyArray<{
   field: keyof ParallelismConfig;
@@ -349,6 +324,7 @@ const parallelismSchema = block({
   maxWorktreeUpdates: parallelismLimit,
   maxWorktreeRemoval: parallelismLimit,
   maxStatusChecks: parallelismLimit,
+  // Deprecated, no effect: still validated so older configs load unchanged.
   maxBranchFetches: parallelismLimit,
 });
 

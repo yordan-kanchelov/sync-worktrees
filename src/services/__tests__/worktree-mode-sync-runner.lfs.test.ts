@@ -228,9 +228,7 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
   });
   // The trash reaper releases a permanent recovery ref only when the
   // remote-tracking refs are current, and only `fetch --all --prune` makes them
-  // so. A `--prune` restricted to refspecs named on the command line — which is
-  // what the branch-by-branch fallback issues — prunes only those branches, so
-  // it cannot vouch for the ref set.
+  // so.
   describe("didPruneAllRemoteRefs", () => {
     it("is false before any attempt has fetched", () => {
       expect(makeRunner().didPruneAllRemoteRefs()).toBe(false);
@@ -245,13 +243,13 @@ describe("WorktreeModeSyncRunner LFS checkout fallback", () => {
       expect(runner.didPruneAllRemoteRefs()).toBe(true);
     });
 
-    it("is false when the fetch fell back to fetching branch by branch", async () => {
+    it("is false when the fetch failed with an LFS error, and nothing is fetched branch by branch", async () => {
       gitService.fetchAll.mockRejectedValue(new Error(LFS_FAILURE));
       const runner = makeRunner();
 
-      await run(runner);
+      await expect(run(runner)).rejects.toThrow(LFS_FAILURE);
 
-      expect(gitService.fetchBranch).toHaveBeenCalled();
+      expect(gitService.fetchBranch).not.toHaveBeenCalled();
       expect(runner.didPruneAllRemoteRefs()).toBe(false);
     });
 
