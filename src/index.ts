@@ -10,10 +10,11 @@ import pLimit from "p-limit";
 import { runDoctor } from "./cli/doctor";
 import { runDryRun } from "./cli/dry-run";
 import { runTrash } from "./cli/trash-command";
-import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "./constants";
+import { CONFIG_FILE_NAMES } from "./constants";
 import { ConfigFileExistsError, ConfigFileNotFoundError, SyncWorktreesError } from "./errors";
 import { runList } from "./cli/list";
 import { ConfigLoaderService } from "./services/config-loader.service";
+import { resolveMaxRepositories } from "./services/config-schema";
 import { InteractiveUIService } from "./services/InteractiveUIService";
 import { Logger } from "./services/logger.service";
 import { WorktreeSyncService } from "./services/worktree-sync.service";
@@ -65,10 +66,7 @@ export async function runMultipleRepositories(
   // would advertise a granularity it does not have — the daemon runs exactly one
   // startup cycle across every service.
   const syncOnStart = configFile.defaults?.syncOnStart ?? true;
-  const maxParallel =
-    configFile.parallelism?.maxRepositories ??
-    configFile.defaults?.parallelism?.maxRepositories ??
-    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+  const maxParallel = resolveMaxRepositories(configFile);
 
   const limit = pLimit(maxParallel);
 

@@ -23,7 +23,7 @@ const CONFIG_CHEATSHEET = `
 //   depth: 10,                              // shallow clone; omit for full history
 // any repo, or under "defaults":
 //   debug: true,
-//   parallelism: { maxRepositories: 3, maxWorktreeUpdates: 3 },
+//   parallelism: { maxWorktreeUpdates: 3 },   // maxRepositories only at top level or in "defaults"
 //   hooks: { onBranchCreated: ["<command>"] },  // see README for placeholders
 // Full reference: https://github.com/yordan-kanchelov/sync-worktrees#configuration
 `;

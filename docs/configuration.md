@@ -207,7 +207,8 @@ run `git lfs pull` in those worktrees, or fix LFS access and recreate them.
 ## Parallelism
 
 `parallelism` bounds concurrent **git processes**, not worktrees. It can sit at the top level (as below), under
-`defaults`, or on a single repository — each layer overrides the one before it:
+`defaults`, or on a single repository — each layer overrides the one before it. `maxRepositories` is the exception: it
+is read from the top level and `defaults` only, and a repository-level one is ignored with a warning:
 
 ```javascript
 parallelism: {

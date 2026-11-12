@@ -432,6 +432,14 @@ export class ConfigLoaderService {
     if (blocks.some((block) => block?.maxBranchFetches !== undefined)) {
       this.warn("[sync-worktrees] 'parallelism.maxBranchFetches' is deprecated and has no effect; remove it.");
     }
+    for (const repo of config.repositories) {
+      if (repo.parallelism?.maxRepositories !== undefined) {
+        this.warn(
+          `[sync-worktrees] 'parallelism.maxRepositories' in repository '${repo.name}' has no effect on a repository; ` +
+            "set it at the top level or under defaults.",
+        );
+      }
+    }
   }
 
   // Everything the schema never looked at. Why it warns rather than rejects,

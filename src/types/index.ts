@@ -63,7 +63,7 @@ export interface SparseCheckoutConfig {
  * single repository; each layer overrides the one before it.
  */
 export interface ParallelismConfig {
-  /** Max concurrent repositories to sync (default: 2) */
+  /** Max concurrent repositories to sync (default: 2). Top level or `defaults` only. */
   maxRepositories?: number;
   /**
    * Max concurrent worktree creations (default: 1).

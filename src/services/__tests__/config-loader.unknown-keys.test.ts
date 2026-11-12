@@ -77,6 +77,17 @@ describe("ConfigLoaderService unknown-key warnings", () => {
     expect(repositories[0].updateExistingWorktrees).toBeUndefined();
   });
 
+  it("warns that a repository-level parallelism.maxRepositories has no effect", async () => {
+    const configPath = await writeConfig(repoBody("parallelism: { maxRepositories: 4 },"));
+
+    await new ConfigLoaderService({ logger }).buildRepositories(configPath);
+
+    expect(warnings).toEqual([
+      "[sync-worktrees] 'parallelism.maxRepositories' in repository 'reference' has no effect on a repository; " +
+        "set it at the top level or under defaults.",
+    ]);
+  });
+
   it("warns for the other spellings the audit collected", async () => {
     const configPath = await writeConfig(
       repoBody(`branchIncludes: ["main"], sparseCheckOut: { include: ["src"] }, maxAge: "30d", retries: 3,`),

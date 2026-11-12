@@ -340,7 +340,7 @@ const parallelismSchema = block({
 /**
  * The top-level and `defaults` blocks, each checked on its own against the
  * built-in defaults for whatever it leaves out. A repository's block is only
- * half a configuration (it still inherits `maxRepositories` from above), so it
+ * half a configuration (`maxRepositories` comes only from above), so it
  * is weighed merged instead, in checkMergedParallelismPeak.
  */
 const levelParallelismSchema = parallelismSchema.superRefine((parallelism, ctx) => {
@@ -581,6 +581,21 @@ function checkModeSpecificFields(config: ValidatedConfigFile, ctx: z.RefinementC
   });
 }
 
+type MaxRepositoriesLevel = { maxRepositories?: number } | null;
+type MaxRepositoriesSource = {
+  parallelism?: MaxRepositoriesLevel;
+  defaults?: { parallelism?: MaxRepositoriesLevel } | null;
+};
+
+/** Repositories synced at once: `defaults` overrides the top level, like every other field. */
+export function resolveMaxRepositories(config: MaxRepositoriesSource): number {
+  return (
+    config.defaults?.parallelism?.maxRepositories ??
+    config.parallelism?.maxRepositories ??
+    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES
+  );
+}
+
 /**
  * The parallelism ceiling applied to what each repository will actually run,
  * once the top-level, `defaults` and per-repository blocks are merged the way
@@ -594,14 +609,13 @@ function checkModeSpecificFields(config: ValidatedConfigFile, ctx: z.RefinementC
  * slots, not 120). With no per-repository overrides this collapses to the
  * per-level check, which has already passed by the time this runs.
  *
- * `maxRepositories` is read global-first, the way runMultipleRepositories
- * reads it. A repository-level `maxRepositories` is still validated as a
- * positive integer, but it bounds nothing: nothing consumes it there.
+ * A repository-level `maxRepositories` is still validated as a positive
+ * integer, but it bounds nothing: nothing consumes it there.
  */
 function checkMergedParallelismPeak(config: ValidatedConfigFile, ctx: z.RefinementCtx): void {
   const global = config.parallelism ?? {};
   const defaults = config.defaults?.parallelism ?? {};
-  const maxRepos = global.maxRepositories ?? defaults.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+  const maxRepos = resolveMaxRepositories(config);
 
   const peaks = config.repositories
     .map((repo) => ({

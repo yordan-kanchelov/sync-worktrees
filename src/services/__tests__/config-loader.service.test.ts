@@ -2430,9 +2430,9 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       );
     });
 
-    // A repository-level `maxRepositories` is validated as a positive integer,
-    // but it bounds nothing: runMultipleRepositories reads the global or
-    // `defaults` one and nothing else. Counting it here would reject a config
+    // A repository-level `maxRepositories` is validated as a positive integer
+    // (and warned about), but it bounds nothing: runMultipleRepositories reads
+    // the global or `defaults` one and nothing else. Counting it here would reject a config
     // that runs three repositories two at a time perfectly safely.
     it("ignores a repository-level maxRepositories, which bounds nothing", async () => {
       const configPath = await writeConfig(
@@ -2470,16 +2470,15 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       );
     });
 
-    // runMultipleRepositories reads maxRepositories global-first, unlike every
-    // other setting, where `defaults` wins. The guard has to read it the same
-    // way or it weighs a width the run will never reach: here only one
-    // repository ever syncs at a time, so the peak is 25, not 5 x 25.
-    it("reads maxRepositories global-first, the way the runner does", async () => {
+    // `defaults` overrides the top level for maxRepositories as for every
+    // other setting, and the guard reads it the way the runner does: here only
+    // one repository ever syncs at a time, so the peak is 25, not 5 x 25.
+    it("reads maxRepositories with `defaults` overriding the top level, the way the runner does", async () => {
       const configPath = await writeConfig(
         "max-repos-precedence.config.js",
         `
-          parallelism: { maxRepositories: 1, maxStatusChecks: 25 },
-          defaults: { parallelism: { maxRepositories: 5 } },
+          parallelism: { maxRepositories: 5 },
+          defaults: { parallelism: { maxRepositories: 1, maxStatusChecks: 25 } },
           repositories: [
             ${repoEntry("a")}, ${repoEntry("b")}, ${repoEntry("c")}, ${repoEntry("d")}, ${repoEntry("e")}
           ],

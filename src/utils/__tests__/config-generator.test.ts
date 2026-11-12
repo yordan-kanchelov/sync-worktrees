@@ -172,6 +172,20 @@ describe("Config Generator", () => {
       expect(content).toContain("github.com/yordan-kanchelov/sync-worktrees#configuration");
     });
 
+    it("does not advertise maxRepositories as a per-repository option", async () => {
+      const input = makeInput([
+        { repoUrl: "https://github.com/user/repo.git", worktreeDir: "/path/to/worktrees", mode: "worktree" },
+      ]);
+
+      const configPath = path.join(tempDir, "test.config.js");
+      await generateConfigFile(input, configPath);
+
+      const content = await fs.readFile(configPath, "utf-8");
+      const perRepo = content.slice(content.indexOf("any repo"), content.indexOf("Full reference"));
+      expect(perRepo).toContain("parallelism:");
+      expect(perRepo).not.toMatch(/maxRepositories\s*:/);
+    });
+
     it("uses relative worktreeDir when target sits in config dir", async () => {
       const input = makeInput([
         {
