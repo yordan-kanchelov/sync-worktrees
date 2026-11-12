@@ -19,7 +19,9 @@ import {
 import { configureSingleBranchRemote, evaluateOriginMatch } from "./remote-config";
 import { applySparseCheckoutAfterClone } from "./sparse";
 
+import type { MutatingGitClients } from "./git-clients";
 import type { CloneSkipDescriptor, CloneSkipReason, CloneSyncContext } from "./types";
+import type { SparseCheckoutConfig } from "../../types";
 
 // Brings `config.worktreeDir` to a clone init can hand to the sync tick:
 // adopts an existing clone (after validating it), or clones into an absent or
@@ -212,7 +214,7 @@ async function cloneFresh(
   if (ctx.config.sparseCheckout) {
     ctx.logger.info(`Applying sparse-checkout patterns to '${worktreeDir}'...`);
     ctx.emitProgress({ phase: "sparse_checkout", message: `Applying sparse-checkout for '${ctx.repoName}'` });
-    await applySparseCheckoutAfterClone(ctx, freshClients, worktreeDir, ctx.config.sparseCheckout, checkoutRecovered);
+    await checkOutSparseClone(ctx, freshClients, worktreeDir, ctx.config.sparseCheckout, checkoutRecovered);
     ctx.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout applied for '${ctx.repoName}'` });
   }
 
@@ -227,8 +229,57 @@ async function cloneFresh(
   ctx.outcome?.recordCreated(branch, worktreeDir);
 }
 
+// The clone ran with `--no-checkout`, so this is its first checkout. The
+// incomplete-clone marker brackets it like the clone's own checkout, and an
+// LFS failure gets the same one retry with smudging off.
+async function checkOutSparseClone(
+  ctx: CloneSyncContext,
+  clients: MutatingGitClients,
+  worktreeDir: string,
+  cfg: SparseCheckoutConfig,
+  lfsSkipped: boolean,
+): Promise<void> {
+  await writeIncompleteCloneMarker(ctx, worktreeDir, "sparse checkout was interrupted");
+  try {
+    await applySparseCheckoutAfterClone(ctx, clients, worktreeDir, cfg, lfsSkipped);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    await writeIncompleteCloneMarker(ctx, worktreeDir, message);
+    if (
+      lfsSkipped ||
+      !isLfsError(message) ||
+      !(await retrySparseCheckoutWithLfsSkipped(ctx, clients, worktreeDir, cfg))
+    ) {
+      throw error;
+    }
+    ctx.logger.warn(
+      `⚠️  '${ctx.repoName}' was checked out with LFS smudging disabled: its LFS paths hold pointer files ` +
+        `until 'git lfs pull' succeeds there.`,
+    );
+  }
+  await clearIncompleteCloneMarker(ctx, worktreeDir);
+}
+
+async function retrySparseCheckoutWithLfsSkipped(
+  ctx: CloneSyncContext,
+  clients: MutatingGitClients,
+  worktreeDir: string,
+  cfg: SparseCheckoutConfig,
+): Promise<boolean> {
+  ctx.logger.info(`⚠️  LFS error during checkout of '${ctx.repoName}'; retrying the checkout with LFS disabled.`);
+  try {
+    await applySparseCheckoutAfterClone(ctx, clients, worktreeDir, cfg, true);
+    return true;
+  } catch (error) {
+    ctx.logger.warn(`Checkout retry with LFS disabled failed for '${ctx.repoName}': ${getErrorMessage(error)}`);
+    return false;
+  }
+}
+
 function buildCloneArgs(ctx: CloneSyncContext, branch: string): string[] {
   const args = ["--branch", branch, "--single-branch", "--no-tags", "--progress"];
+  // Only the cone is checked out, after the patterns are set.
+  if (ctx.config.sparseCheckout) args.push("--no-checkout");
   if (ctx.config.depth !== undefined) {
     args.push("--depth", String(ctx.config.depth));
   }

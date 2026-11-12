@@ -882,6 +882,93 @@ describe("CloneSyncService", () => {
         expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
       });
 
+      describe("sparse clone checked out after the patterns are set", () => {
+        function mockFreshClone(): void {
+          (fs.readdir as unknown as Mock).mockRejectedValueOnce(enoent());
+          (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+          (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+          (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+          (fs.access as unknown as Mock).mockRejectedValue(enoent());
+        }
+
+        it("clones with --no-checkout and brackets the checkout with the incomplete-clone marker", async () => {
+          mockFreshClone();
+          const gitService = buildGitService();
+          const service = new CloneSyncService(
+            makeConfig({ sparseCheckout: { include: ["src"] } }),
+            gitService,
+            logger,
+          );
+
+          await expect(service.initialize()).resolves.toBeUndefined();
+
+          expect(gitMock.clone.mock.calls[0][2]).toContain("--no-checkout");
+          expect(gitService.getSparseCheckoutService().applyToWorktree).toHaveBeenCalledTimes(1);
+          expect(gitMock.raw).toHaveBeenCalledWith(["checkout", "HEAD"]);
+          expect(fs.writeFile).toHaveBeenCalledWith(INCOMPLETE_MARKER, expect.any(String));
+          expect(fs.rm).toHaveBeenCalledWith(INCOMPLETE_MARKER, { force: true });
+        });
+
+        it("does not pass --no-checkout without sparseCheckout", async () => {
+          mockFreshClone();
+          const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+          await service.initialize();
+
+          expect(gitMock.clone.mock.calls[0][2]).not.toContain("--no-checkout");
+          expect(fs.writeFile).not.toHaveBeenCalledWith(INCOMPLETE_MARKER, expect.any(String));
+        });
+
+        it("retries an LFS-failed checkout with smudging disabled", async () => {
+          mockFreshClone();
+          gitMock.raw.mockImplementation(async (args: string[]) => {
+            const key = args.join(" ");
+            if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+            if (key === "checkout HEAD") throw new Error("fatal: a.bin: smudge filter lfs failed");
+            return "";
+          });
+          const gitService = buildGitService();
+          const service = new CloneSyncService(
+            makeConfig({ sparseCheckout: { include: ["src"] } }),
+            gitService,
+            logger,
+          );
+
+          await expect(service.initialize()).resolves.toBeUndefined();
+
+          expect(gitMock.raw).toHaveBeenCalledWith(["checkout", "-f", "HEAD"]);
+          expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+          expect(fs.rm).toHaveBeenCalledWith(INCOMPLETE_MARKER, { force: true });
+          expect(service.isInitialized()).toBe(true);
+        });
+
+        it("leaves the marker and fails when the checkout cannot be repaired", async () => {
+          mockFreshClone();
+          gitMock.raw.mockImplementation(async (args: string[]) => {
+            const key = args.join(" ");
+            if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+            if (key.endsWith("checkout HEAD") || key.endsWith("checkout -f HEAD")) {
+              throw new Error("fatal: a.bin: smudge filter lfs failed");
+            }
+            return "";
+          });
+          const service = new CloneSyncService(
+            makeConfig({ sparseCheckout: { include: ["src"] } }),
+            buildGitService(),
+            logger,
+          );
+
+          await expect(service.initialize()).rejects.toThrow("smudge filter lfs failed");
+
+          expect(fs.writeFile).toHaveBeenCalledWith(
+            INCOMPLETE_MARKER,
+            expect.stringContaining("smudge filter lfs failed"),
+          );
+          expect(fs.rm).not.toHaveBeenCalledWith(INCOMPLETE_MARKER, { force: true });
+          expect(service.isInitialized()).toBe(false);
+        });
+      });
+
       // The marker is the only thing that tells a clone of ours that never
       // finished from a clone the user made, so "cannot read it" must never
       // resolve to "there is no marker" — that is the adoption this guard
