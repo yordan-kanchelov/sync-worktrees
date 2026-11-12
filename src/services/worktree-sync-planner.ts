@@ -35,7 +35,15 @@ export type PruneAction =
 // update phase compares it against origin/<branch>'s tip to answer "nothing
 // changed" without spawning anything per worktree, so it is carried through the
 // plan rather than probed again.
-export type UpdateAction = { kind: "update-candidate"; branch: string; path: string; head?: string };
+// `locked`/`lockReason` keep diverged handling from moving a locked worktree.
+export type UpdateAction = {
+  kind: "update-candidate";
+  branch: string;
+  path: string;
+  head?: string;
+  locked?: boolean;
+  lockReason?: string;
+};
 
 export type SparseAction =
   | { kind: "check-sparse"; branch: string; path: string }
@@ -151,6 +159,8 @@ export function planUpdateActions(inventory: WorktreeInventory): UpdateAction[] 
       branch: worktree.branch,
       path: worktree.path,
       ...(worktree.head !== undefined && { head: worktree.head }),
+      ...(worktree.locked === true && { locked: true }),
+      ...(worktree.lockReason !== undefined && { lockReason: worktree.lockReason }),
     }));
 }
 

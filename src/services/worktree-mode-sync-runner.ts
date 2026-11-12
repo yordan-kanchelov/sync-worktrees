@@ -54,7 +54,7 @@ type PruneAssessment =
       status: WorktreeStatusResult;
     };
 
-type UpdateWorktreeRef = { path: string; branch: string };
+type UpdateWorktreeRef = { path: string; branch: string; locked?: boolean; lockReason?: string };
 
 type UpdateAssessment =
   | { action: "update"; worktree: UpdateWorktreeRef; behind: number }
@@ -66,7 +66,8 @@ type DivergedAssessment =
   | { kind: "stash_present" }
   | { kind: "not_diverged"; counts: AheadBehindCounts }
   | { kind: "reset"; observedHead: string; treesIdentical: boolean }
-  | { kind: "replace"; observedHead: string };
+  | { kind: "replace"; observedHead: string }
+  | { kind: "locked"; lockReason?: string };
 
 type SparseAssessment =
   | { kind: "absent" }
@@ -74,6 +75,10 @@ type SparseAssessment =
   | { kind: "apply"; narrowing: boolean }
   | { kind: "unsafe-narrowing"; reasons: string[] }
   | { kind: "failed"; error: unknown };
+
+function lockedMessage(lockReason: string | undefined): string {
+  return `worktree is locked${lockReason !== undefined ? `: ${lockReason}` : ""}`;
+}
 
 export class WorktreeModeSyncRunner {
   private pathResolution = new PathResolutionService();
@@ -1438,8 +1443,8 @@ export class WorktreeModeSyncRunner {
 
     const checkResults = await this.assessUpdates(actions, remoteTips);
 
-    const worktreesToUpdate: { path: string; branch: string }[] = [];
-    const divergedWorktrees: { path: string; branch: string }[] = [];
+    const worktreesToUpdate: UpdateWorktreeRef[] = [];
+    const divergedWorktrees: UpdateWorktreeRef[] = [];
 
     checkResults.forEach((result) => {
       switch (result.action) {
@@ -1499,7 +1504,12 @@ export class WorktreeModeSyncRunner {
     const checkResults = await Promise.allSettled(
       actions.map((action) =>
         limit(async (): Promise<UpdateAssessment> => {
-          const worktree = { path: action.path, branch: action.branch };
+          const worktree: UpdateWorktreeRef = {
+            path: action.path,
+            branch: action.branch,
+            ...(action.locked === true && { locked: true }),
+            ...(action.lockReason !== undefined && { lockReason: action.lockReason }),
+          };
 
           try {
             await fs.access(worktree.path);
@@ -1673,14 +1683,22 @@ export class WorktreeModeSyncRunner {
           message: `diverged with local changes; moved to ${preservedIn === "trash" ? "trash" : GIT_CONSTANTS.DIVERGED_DIR_NAME + "/"} and recreated from origin/${details.branch}`,
         };
       }
+      case "locked":
+        return {
+          kind: "skip",
+          scope: "worktree",
+          reason: "worktree_locked",
+          ...details,
+          message: lockedMessage(assessment.lockReason),
+        };
     }
   }
 
   // Phase 4b: the mutations the assessment asked for, fast-forwards and
   // diverged handling, at the lower update concurrency.
   private async applyUpdates(
-    worktreesToUpdate: { path: string; branch: string }[],
-    divergedWorktrees: { path: string; branch: string }[],
+    worktreesToUpdate: UpdateWorktreeRef[],
+    divergedWorktrees: UpdateWorktreeRef[],
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
@@ -1789,11 +1807,16 @@ export class WorktreeModeSyncRunner {
   }
 
   private async handleDivergedBranch(
-    worktree: { path: string; branch: string },
+    worktree: UpdateWorktreeRef,
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<boolean> {
     const assessment = await this.assessDiverged(worktree);
+
+    if (assessment.kind === "locked") {
+      this.recordDivergedLocked(worktree, outcome);
+      return false;
+    }
 
     if (assessment.kind === "stash_present") {
       this.logger.warn(
@@ -1831,6 +1854,11 @@ export class WorktreeModeSyncRunner {
       this.logger.warn(
         `⚠️  Refusing to reset '${worktree.branch}' because the final safety check found local or ignored files that upstream would overwrite.`,
       );
+      // git refuses to remove a locked worktree, so it cannot be moved aside.
+      if (worktree.locked) {
+        this.recordDivergedLocked(worktree, outcome);
+        return false;
+      }
     }
     this.logger.info(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
 
@@ -1896,7 +1924,7 @@ export class WorktreeModeSyncRunner {
   // with this worktree — leave it (stash, or not diverged after all), reset it
   // to origin/<branch> (nothing local would be lost), or preserve it and
   // recreate it (local changes since the last sync).
-  private async assessDiverged(worktree: { path: string; branch: string }): Promise<DivergedAssessment> {
+  private async assessDiverged(worktree: UpdateWorktreeRef): Promise<DivergedAssessment> {
     this.logger.info(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
 
     if (await this.gitService.hasStashedChanges(worktree.path)) return { kind: "stash_present" };
@@ -1915,7 +1943,24 @@ export class WorktreeModeSyncRunner {
     const hasLocalChanges = treesIdentical
       ? false
       : await this.hasLocalChangesSinceLastSync(worktree.path, observedHead);
-    return hasLocalChanges ? { kind: "replace", observedHead } : { kind: "reset", observedHead, treesIdentical };
+    if (!hasLocalChanges) return { kind: "reset", observedHead, treesIdentical };
+    // Replacing moves the directory, which git refuses for a locked worktree.
+    if (worktree.locked) {
+      return { kind: "locked", ...(worktree.lockReason !== undefined && { lockReason: worktree.lockReason }) };
+    }
+    return { kind: "replace", observedHead };
+  }
+
+  private recordDivergedLocked(worktree: UpdateWorktreeRef, outcome: SyncOutcomeAccumulator): void {
+    const message = lockedMessage(worktree.lockReason);
+    this.logger.info(
+      `  - 🔒 Skipping diverged replace of '${worktree.branch}' - the ${message}. To let sync replace it: git worktree unlock ${worktree.path}`,
+    );
+    outcome.recordSkipped("worktree", "worktree_locked", {
+      branch: worktree.branch,
+      path: worktree.path,
+      message: `diverged, but ${message}`,
+    });
   }
 
   // The re-verification in handleDivergedBranch found the worktree not
