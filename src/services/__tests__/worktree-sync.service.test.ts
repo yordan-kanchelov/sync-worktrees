@@ -848,7 +848,8 @@ describe("WorktreeSyncService", () => {
     describe("created worktree tip verification", () => {
       beforeEach(() => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
-        mockGitService.getWorktrees.mockResolvedValue([]);
+        // Only the anchor: an empty listing reads as a detached anchor.
+        mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/main", branch: "main" }]);
         mockGitService.addWorktree.mockImplementation(async (branch: string) => ({
           status: "created",
           head: branch === "feature-1" ? "aaaa1111" : "bbbb2222",

@@ -8,6 +8,7 @@ import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { probePathExists } from "../utils/file-exists";
+import { findByWorktreePath, sameWorktreePath } from "../utils/path-compare";
 import { getErrorMessage } from "../utils/errors";
 import { isLfsError } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
@@ -119,7 +120,14 @@ export class WorktreeModeSyncRunner {
 
     await fs.mkdir(this.config.worktreeDir, { recursive: true });
 
-    const { worktrees, syncPlan } = await this.collectInventory((all) => this.resolveDefaultBranch(all, outcome));
+    const { worktrees, syncPlan, anchorSkip } = await this.collectInventory((all) =>
+      this.resolveDefaultBranch(all, outcome),
+    );
+    if (anchorSkip) {
+      const { reason, ...details } = anchorSkip;
+      this.logger.warn(`  ⏭️ ${details.message}`);
+      outcome.recordSkipped("worktree", reason, details);
+    }
 
     await this.createNewWorktreesWithTiming(syncPlan, phaseTimer, syncContext, outcome);
     // One listing of origin's tips for the whole attempt: the tip recording
@@ -174,6 +182,7 @@ export class WorktreeModeSyncRunner {
       return current;
     });
     const { syncPlan, allRemoteBranches, pendingDivergedBranches, rebuiltBranches } = inventory;
+    if (inventory.anchorSkip) plan.add({ kind: "skip", scope: "worktree", ...inventory.anchorSkip });
 
     for (const worktree of inventory.externalWorktrees) {
       plan.add({
@@ -261,11 +270,13 @@ export class WorktreeModeSyncRunner {
     allRemoteBranches: Set<string>;
     pendingDivergedBranches: Set<string>;
     rebuiltBranches: Set<string>;
+    anchorSkip?: { reason: string; branch: string; path: string; message: string };
   }> {
     const { all, remoteBranches, defaultBranch } = await this.resolveSyncBranches(resolveDefault);
     const pendingDivergedBranches = await this.getPendingDivergedBranches();
 
     const registeredWorktrees = await this.gitService.getWorktrees();
+    const anchorSkip = await this.assessAnchorBranch(registeredWorktrees, defaultBranch);
     const { worktrees, externalWorktrees } = await this.partitionByWorktreeDir(registeredWorktrees);
     const externalBranches = new Set(externalWorktrees.map((worktree) => worktree.branch));
     const plannedBranches = remoteBranches.filter(
@@ -306,6 +317,14 @@ export class WorktreeModeSyncRunner {
       updateExistingWorktrees: this.config.updateExistingWorktrees !== false,
       sparseCheckout: this.config.sparseCheckout,
     });
+    // Every fetch runs in the anchor, whatever it has checked out: never prune it.
+    if (anchorSkip) {
+      const kept: PruneAction[] = [];
+      for (const action of syncPlan.prune) {
+        if (!(await sameWorktreePath(action.path, anchorSkip.path))) kept.push(action);
+      }
+      syncPlan.prune = kept;
+    }
 
     return {
       syncPlan,
@@ -314,7 +333,36 @@ export class WorktreeModeSyncRunner {
       allRemoteBranches: new Set(all),
       pendingDivergedBranches,
       rebuiltBranches,
+      anchorSkip,
     };
+  }
+
+  // The anchor is matched by path, so a checkout there that left the default
+  // branch (detached, or switched) is still adopted; the planner never plans
+  // the default branch, so without this it would silently fall behind.
+  private async assessAnchorBranch(
+    registered: RegisteredWorktree[],
+    defaultBranch: string,
+  ): Promise<{ reason: string; branch: string; path: string; message: string } | undefined> {
+    const anchorPath = this.gitService.getMainWorktreePath();
+    if ((await probePathExists(anchorPath)) !== "exists") return undefined;
+    // The listing leaves out detached worktrees.
+    const entry = await findByWorktreePath(registered, anchorPath);
+    if (entry?.branch === defaultBranch) return undefined;
+    const fix = `check '${defaultBranch}' back out there to have it synced again`;
+    return entry
+      ? {
+          reason: "default_branch_mismatch",
+          branch: defaultBranch,
+          path: anchorPath,
+          message: `Default-branch worktree at '${anchorPath}' has '${entry.branch}' checked out, so '${defaultBranch}' is not synced; ${fix}`,
+        }
+      : {
+          reason: "default_branch_detached",
+          branch: defaultBranch,
+          path: anchorPath,
+          message: `Default-branch worktree at '${anchorPath}' is on a detached HEAD, so '${defaultBranch}' is not synced; ${fix}`,
+        };
   }
 
   private async reapplySparseCheckout(

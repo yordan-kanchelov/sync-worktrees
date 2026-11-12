@@ -486,6 +486,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
             new Map(branches.map((branch) => [branch, `${branch}-head`])),
           );
           mockGitService.getDefaultBranch.mockReturnValue("b0");
+          mockGitService.getMainWorktreePath.mockReturnValue("/test/worktrees/b0");
 
           service = new WorktreeSyncService(mockConfig);
           attachMockGitService();
@@ -752,11 +753,10 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     });
 
     it("re-resolves the default, records its new worktree and prunes the old default instead of retaining it", async () => {
-      (mockGitService.refreshDefaultBranch as Mock).mockResolvedValue({
-        previous: "main",
-        defaultBranch: "trunk",
-        mainWorktreePath: "/test/worktrees/trunk",
-        created: true,
+      (mockGitService.refreshDefaultBranch as Mock).mockImplementation(async () => {
+        // The switch re-points the anchor, as GitService does.
+        (mockGitService.getMainWorktreePath as Mock).mockReturnValue("/test/worktrees/trunk");
+        return { previous: "main", defaultBranch: "trunk", mainWorktreePath: "/test/worktrees/trunk", created: true };
       });
 
       const result = await service.sync();

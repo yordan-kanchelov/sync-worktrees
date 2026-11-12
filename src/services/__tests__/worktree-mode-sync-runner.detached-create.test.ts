@@ -51,6 +51,7 @@ describe("WorktreeModeSyncRunner create phase, detached worktree at the target p
 
     gitService = {
       ensureAnchorWorktree: vi.fn().mockResolvedValue(false),
+      getMainWorktreePath: vi.fn().mockReturnValue(mainPath),
       fetchAll: vi.fn().mockResolvedValue(undefined),
       getRemoteBranches: vi.fn().mockResolvedValue(["main", "feature-x"]),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
