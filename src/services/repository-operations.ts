@@ -19,8 +19,9 @@ import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { formatBytes } from "../utils/disk-space";
 import type { DiskUsageCache } from "../utils/disk-usage-cache";
 import { getDefaultBareRepoDir, redactSecretsInText, repoDisplayLabel } from "../utils/git-url";
-import { resolveMode } from "../utils/repo-mode";
+import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import type {
+  Config,
   RepositoryConfig,
   RepoOperationNotStarted,
   HookContext,
@@ -95,6 +96,19 @@ export interface RepositoryOperationsHost {
  * GitService, so each operation's queueing behind the repository lock and its
  * clone-mode branch live in one place.
  */
+// The directories a repository occupies: its bare store (worktree mode only)
+// and worktreeDir. Shared by the status view and the TUI header total.
+export function getRepositoryDiskTargets(
+  config: Pick<Config, "mode" | "repoUrl" | "worktreeDir" | "bareRepoDir">,
+): Array<{ kind: "bare" | "worktree"; path: string }> {
+  return [
+    ...(resolveMode(config) === REPOSITORY_MODES.WORKTREE
+      ? [{ kind: "bare" as const, path: config.bareRepoDir || getDefaultBareRepoDir(config.repoUrl) }]
+      : []),
+    { kind: "worktree", path: config.worktreeDir },
+  ];
+}
+
 export class RepositoryOperations {
   private readonly branchCreatedActions = new BranchCreatedActionsService();
   private readonly pathResolution = new PathResolutionService();
@@ -134,13 +148,7 @@ export class RepositoryOperations {
     const service = this.requireService(repoIndex);
     const config = service.config;
     const repoName = this.getRepoName(repoIndex);
-    const mode = resolveMode(config);
-    const sizeTargets: Array<{ kind: "bare" | "worktree"; path: string }> = [
-      ...(mode === "worktree"
-        ? [{ kind: "bare" as const, path: config.bareRepoDir || getDefaultBareRepoDir(config.repoUrl) }]
-        : []),
-      { kind: "worktree", path: config.worktreeDir },
-    ];
+    const sizeTargets = getRepositoryDiskTargets(config);
 
     let bareSizeBytes = 0;
     let worktreeSizeBytes = 0;
@@ -257,10 +265,9 @@ export class RepositoryOperations {
     // than sniffing the message it is about to discard.
     const leftovers: string[] = [];
 
-    // A clone-mode repo has no bare repository, and GitService's write helpers
-    // all run in one — falling back to the relative '.bare/<repo name>', which
-    // is either missing or another repository's store. Clone mode creates and
-    // publishes the branch inside the clone itself instead.
+    // A clone-mode repo has no bare repository, which GitService's write
+    // helpers all run in. Clone mode creates and publishes the branch inside
+    // the clone itself instead.
     const createAndPush = service.isCloneMode()
       ? (name: string): Promise<void> => service.createAndPushBranch(baseBranch, name)
       : async (name: string): Promise<void> => {

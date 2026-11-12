@@ -10,14 +10,14 @@ import { HookExecutionService } from "./hook-execution.service";
 import type { LogOutputFn, LogLevel } from "./logger.service";
 import { Logger } from "./logger.service";
 import { RepositoryDashboard } from "./repository-dashboard";
-import { RepositoryOperations } from "./repository-operations";
+import { RepositoryOperations, getRepositoryDiskTargets } from "./repository-operations";
 import { SyncCycleScheduler, WAIT_SYNC_DEFAULT_TIMEOUT_MS, WAIT_SYNC_FAST_TIMEOUT_MS } from "./sync-cycle-scheduler";
 import { TerminalLauncher } from "./terminal-launcher";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/errors";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { DiskUsageCache } from "../utils/disk-usage-cache";
-import { getDefaultBareRepoDir, repoDisplayLabel } from "../utils/git-url";
+import { repoDisplayLabel } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
 import type { LastSyncOutcome } from "../utils/app-events";
 import { createMouseTracking } from "../utils/mouse";
@@ -485,8 +485,7 @@ export class InteractiveUIService {
       // header total -- so drop what the cache holds for these paths rather
       // than serve the status view a figure from before the reload.
       for (const service of newServices) {
-        this.diskUsage.invalidate(service.config.bareRepoDir || getDefaultBareRepoDir(service.config.repoUrl));
-        this.diskUsage.invalidate(service.config.worktreeDir);
+        for (const target of getRepositoryDiskTargets(service.config)) this.diskUsage.invalidate(target.path);
       }
       this.repositoryCount = this.syncServices.length;
       this.subscribeToServiceProgress();
@@ -622,10 +621,9 @@ export class InteractiveUIService {
 
   public async calculateAndUpdateDiskSpace(): Promise<void> {
     try {
-      const bareRepoDirs = this.syncServices.map(
-        (service) => service.config.bareRepoDir || getDefaultBareRepoDir(service.config.repoUrl),
-      );
-      const worktreeDirs = this.syncServices.map((service) => service.config.worktreeDir);
+      const targets = this.syncServices.flatMap((service) => getRepositoryDiskTargets(service.config));
+      const bareRepoDirs = targets.filter((target) => target.kind === "bare").map((target) => target.path);
+      const worktreeDirs = targets.filter((target) => target.kind === "worktree").map((target) => target.path);
 
       const diskSpace = await calculateSyncDiskSpace(bareRepoDirs, worktreeDirs, (dirPath) =>
         this.diskUsage.refresh(dirPath),

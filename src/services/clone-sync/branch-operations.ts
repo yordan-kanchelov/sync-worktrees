@@ -202,12 +202,9 @@ export function warnConfigDriftAfterCheckout(ctx: CloneSyncContext, branch: stri
 }
 
 // The clone-mode half of the TUI's branch wizard. Worktree mode creates the
-// branch in the bare repository; a clone-mode repo has none, and GitService's
-// `bareRepoPath` falls back to the RELATIVE '.bare/<repo name>' there — a
-// directory that does not exist or, when the daemon runs from a directory
-// that happens to hold a bare store of the same repository NAME, another
-// repository's refs. So the branch is created and published from the clone
-// itself, which is also the only place that can afterwards check it out.
+// branch in the bare repository; a clone-mode repo has none. So the branch is
+// created and published from the clone itself, which is also the only place
+// that can afterwards check it out.
 //
 // Publishing transfers no objects: the new branch points at the tip of
 // origin/<baseBranch>, which the remote already has, so a shallow clone can

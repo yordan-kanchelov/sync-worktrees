@@ -267,6 +267,18 @@ describe("disk usage measurement", () => {
     expect(mocks.directorySizes).toHaveBeenCalledTimes(4);
   });
 
+  it("measures only the clone directory of a clone-mode repository for the header total", async () => {
+    const service = makePlainService("repo-c");
+    const config = service.config as unknown as Record<string, unknown>;
+    config.mode = "clone";
+    delete config.bareRepoDir;
+    const ui = new InteractiveUIService([service], undefined, undefined, 2, new AppEventEmitter());
+
+    await ui.calculateAndUpdateDiskSpace();
+
+    expect(mocks.directorySizes.mock.calls.map((call) => call[0])).toEqual(["/tmp/repo-c/worktrees"]);
+  });
+
   it("serves the status view from the walk the header total just did", async () => {
     const ui = new InteractiveUIService([makePlainService("repo-a")], undefined, undefined, 2, new AppEventEmitter());
 

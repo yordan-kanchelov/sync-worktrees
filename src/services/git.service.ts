@@ -1,7 +1,7 @@
 import * as path from "path";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS } from "../constants";
-import { GitOperationError, WorktreeError } from "../errors";
+import { ConfigError, GitOperationError, WorktreeError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
@@ -10,6 +10,7 @@ import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
 import { findByWorktreePath, sameWorktreePath } from "../utils/path-compare";
+import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BareRepoService } from "./bare-repo.service";
@@ -65,7 +66,8 @@ export type {
  */
 export class GitService {
   private git: SimpleGit | null = null;
-  private bareRepoPath: string;
+  // null in clone mode: there is no bare repository to name.
+  private readonly bareRepoPathOrNull: string | null;
   private mainWorktreePath: string;
   private defaultBranch: string = GIT_CONSTANTS.DEFAULT_BRANCH; // Will be updated after detection
   private metadataService: WorktreeMetadataService;
@@ -97,7 +99,10 @@ export class GitService {
     // runs needs that refresh.
     this.baseEnv = options.readOnly ? { [ENV_CONSTANTS.GIT_OPTIONAL_LOCKS]: "0" } : {};
     this.logger = logger ?? Logger.createDefault(undefined, config.debug);
-    this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
+    this.bareRepoPathOrNull =
+      resolveMode(this.config) === REPOSITORY_MODES.CLONE
+        ? null
+        : this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, GIT_CONSTANTS.DEFAULT_BRANCH); // Temporary, will be updated
     this.metadataService = new WorktreeMetadataService(this.logger);
     // `maxStatusChecks` is a ceiling on git processes, not on worktrees: the
@@ -137,13 +142,23 @@ export class GitService {
     });
   }
 
+  private get bareRepoPath(): string {
+    if (this.bareRepoPathOrNull === null) {
+      throw new ConfigError("A clone-mode repository has no bare repository", "WORKTREE_MODE_REQUIRED");
+    }
+    return this.bareRepoPathOrNull;
+  }
+
   // The view of this service its sub-services work through. Every accessor
   // reads the current value, so updateLogger, a default-branch switch and
   // setLfsSkipEnabled reach them without any re-wiring.
   private createContext(): GitServiceContext {
+    const readBareRepoPath = (): string => this.bareRepoPath;
     return {
       config: this.config,
-      bareRepoPath: this.bareRepoPath,
+      get bareRepoPath(): string {
+        return readBareRepoPath();
+      },
       logger: () => this.logger,
       defaultBranch: () => this.defaultBranch,
       localGit: (dirPath, useLfsSkip) => this.getCachedGit(dirPath, useLfsSkip),
@@ -639,7 +654,8 @@ export class GitService {
    * leftover record is never handed to another branch.
    */
   async readWorktreeMetadataOwner(worktreeName: string): Promise<string | null> {
-    return this.metadataService.readMetadataOwner(this.bareRepoPath, worktreeName);
+    if (this.bareRepoPathOrNull === null) return null;
+    return this.metadataService.readMetadataOwner(this.bareRepoPathOrNull, worktreeName);
   }
 
   /**
@@ -762,7 +778,7 @@ export class GitService {
     includeDetails = false,
     refScans?: RefScanScope,
   ): Promise<WorktreeStatusResult> {
-    const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
+    const metadata = await this.getWorktreeMetadata(worktreePath);
     return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails, {
       lastSyncCommit: metadata?.lastSyncCommit,
       lastKnownRemoteTip: metadata?.lastKnownRemoteTip,
@@ -1075,6 +1091,7 @@ export class GitService {
   }
 
   async getWorktreeMetadata(worktreePath: string): Promise<SyncMetadata | null> {
-    return this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
+    if (this.bareRepoPathOrNull === null) return null;
+    return this.metadataService.loadMetadataFromPath(this.bareRepoPathOrNull, worktreePath);
   }
 }
