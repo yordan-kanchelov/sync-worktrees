@@ -28,7 +28,17 @@ import type { CloneSkipDescriptor, CloneSkipReason, CloneSyncContext } from "./t
 // keep the tick that follows from recording it a second time; null otherwise.
 export async function initializeClone(ctx: CloneSyncContext, branch: string): Promise<CloneSkipReason | null> {
   const worktreeDir = ctx.config.worktreeDir;
+  const destination = await inspectCloneDestination(worktreeDir);
+  if (destination === "clone") {
+    return adoptExistingClone(ctx, worktreeDir, branch);
+  }
+  await cloneFresh(ctx, worktreeDir, branch, destination === "absent");
+  return null;
+}
 
+// init's read-only destination checks, shared with `sync --dry-run`: throws
+// where init refuses the destination, else says what init does with it.
+export async function inspectCloneDestination(worktreeDir: string): Promise<"clone" | "absent" | "empty"> {
   let entries: string[] | null;
   try {
     entries = await fs.readdir(worktreeDir);
@@ -49,9 +59,7 @@ export async function initializeClone(ctx: CloneSyncContext, branch: string): Pr
     entries = null;
   }
 
-  if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) {
-    return adoptExistingClone(ctx, worktreeDir, branch);
-  }
+  if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) return "clone";
 
   if (entries && entries.length > 0) {
     throw new ConfigError(
@@ -61,8 +69,7 @@ export async function initializeClone(ctx: CloneSyncContext, branch: string): Pr
     );
   }
 
-  await cloneFresh(ctx, worktreeDir, branch, entries === null);
-  return null;
+  return entries === null ? "absent" : "empty";
 }
 
 // What a failed clone may remove. `createdDir` is true only when this init's

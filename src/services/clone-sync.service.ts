@@ -12,7 +12,8 @@ import {
   switchCloneBranch,
   warnConfigDriftAfterCheckout,
 } from "./clone-sync/branch-operations";
-import { initializeClone } from "./clone-sync/clone-bootstrap";
+import { initializeClone, inspectCloneDestination } from "./clone-sync/clone-bootstrap";
+import { assertPreviousCloneCompleted } from "./clone-sync/clone-markers";
 import { undoRejectedFastForward } from "./clone-sync/fast-forward-undo";
 import {
   buildSyncFetchArgs,
@@ -394,12 +395,12 @@ export class CloneSyncService {
   // the way the tick's own fetch would move it) and writes nothing else: no
   // clone, no unshallow, no refspec narrowing, no deepening, no sparse
   // reapply, no merge. Where the tick would do one of those first, the plan
-  // says so in a note.
+  // says so in a note. A destination init would refuse fails the plan too.
   async planSyncAttempt(plan: SyncDryRunPlanBuilder): Promise<void> {
     const worktreeDir = this.config.worktreeDir;
     const branch = await this.resolveBranch();
 
-    if ((await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR))) !== "exists") {
+    if ((await inspectCloneDestination(worktreeDir)) !== "clone") {
       const depth = this.config.depth !== undefined ? ` at depth ${this.config.depth}` : "";
       plan.add({
         kind: "clone",
@@ -409,6 +410,7 @@ export class CloneSyncService {
       });
       return;
     }
+    await assertPreviousCloneCompleted(worktreeDir);
 
     const blocked = await this.checkTickPreconditions(worktreeDir, branch);
     if (blocked) {
