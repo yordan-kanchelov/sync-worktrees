@@ -110,4 +110,24 @@ describe("WorktreeSyncService retry outcomes", () => {
     expect(result.outcome.counts.noop).toBe(1);
     expect(result.outcome.actions).toEqual([{ kind: "noop", scope: "repo", reason: "retry_succeeded" }]);
   });
+  it("keeps an anchor rebuild recorded by an attempt that later fails with a retryable error", async () => {
+    let attempt = 0;
+    mocks.runSyncAttempt.mockImplementation(
+      async (_phaseTimer: unknown, _syncContext: unknown, outcome: SyncOutcomeAccumulator) => {
+        attempt++;
+        if (attempt === 1) {
+          outcome.recordCreated("main", "/tmp/worktrees/main");
+          throw new Error("fatal: unable to access: Could not resolve host: github.com");
+        }
+      },
+    );
+
+    const service = new WorktreeSyncService(makeConfig());
+    const result = await service.sync();
+
+    if (!result.started) throw new Error(`Expected sync to start, got ${result.reason}`);
+    expect(mocks.runSyncAttempt).toHaveBeenCalledTimes(2);
+    expect(result.outcome.counts.created).toBe(1);
+    expect(result.outcome.actions).toEqual([{ kind: "created", branch: "main", path: "/tmp/worktrees/main" }]);
+  });
 });
