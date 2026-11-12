@@ -36,31 +36,10 @@ import type { MutatingGitClients } from "./git-clients";
 import type { CloneSyncContext } from "./types";
 
 // The clone-mode branch switch behind CloneSyncService.checkoutBranch, from
-// the origin check through the final remote narrowing. `targetBranch` is the
-// branch the configuration resolves to; switching anywhere else needs
-// `allowConfigDrift`. The caller records the new branch as tracked once this
-// returns.
-export async function switchCloneBranch(
-  ctx: CloneSyncContext,
-  branch: string,
-  targetBranch: string,
-  options: { allowConfigDrift?: boolean },
-): Promise<void> {
-  // Checkout is a convergence action by default: it brings an existing clone
-  // in line with the configured branch. Arbitrary targets would leave
-  // config.branch stale, so every later sync (and every restart) soft-skips
-  // with branch_mismatch after the refspec was already narrowed.
-  // allowConfigDrift is the TUI's explicit opt-out for branches it just
-  // created and pushed — the drift is then intentional and warned about.
-  if (branch !== targetBranch && !options.allowConfigDrift) {
-    throw new ConfigError(
-      ctx.config.branch
-        ? `Cannot switch '${ctx.repoName}' to '${branch}': clone mode tracks the configured branch '${targetBranch}'. Update 'branch' in the config file first, then run checkout to converge.`
-        : `Cannot switch '${ctx.repoName}' to '${branch}': no 'branch' is configured, so this clone tracks the remote default branch '${targetBranch}'. Set branch: "${branch}" in the config file first.`,
-      "CLONE_BRANCH_MISMATCH",
-    );
-  }
-
+// the origin check through the final remote narrowing. Its one caller is the
+// TUI wizard, right after createAndPushCloneBranch made `branch` locally. The
+// caller records the new branch as tracked once this returns.
+export async function switchCloneBranch(ctx: CloneSyncContext, branch: string): Promise<void> {
   const worktreeDir = ctx.config.worktreeDir;
   const readGit = ctx.clients.localClientFor(worktreeDir);
   const originMismatch = await evaluateOriginMatch(ctx, readGit, worktreeDir);
@@ -81,15 +60,13 @@ export async function switchCloneBranch(
       `'${ctx.repoName}' is on a detached HEAD; check out a branch manually (preserving any local commits) before switching the tracked branch`,
     );
   }
+  if (!(await localBranchExists(readGit, branch))) {
+    throw new GitOperationError("checkout", `'${ctx.repoName}' has no local branch '${branch}' to switch to`);
+  }
   // Nothing above this line writes; everything below does. Refuse a linked
   // worktree or submodule here, before the first mutation reaches the
   // repository that actually owns this directory's git dir.
   const clients = await ctx.clients.mutatingClientsFor(worktreeDir);
-
-  if (currentBranch === branch) {
-    await configureSingleBranchRemote(ctx, clients, branch);
-    return;
-  }
 
   const isClean = await ctx.gitService.checkWorktreeStatus(worktreeDir);
   if (!isClean) {
@@ -110,9 +87,8 @@ export async function switchCloneBranch(
     throw error;
   }
 
-  // `branch` is not always one the clone has never seen — localBranchExists
-  // below has a path for a branch it already holds — so this fetch's `--depth`
-  // can re-cut or deepen the clone rather than merely bound a new ref. See
+  // `branch` already exists locally, so this fetch's `--depth` can re-cut or
+  // deepen the clone rather than merely bound a new ref. See
   // buildUntrackedBranchFetchArgs.
   const fetchArgs = await buildUntrackedBranchFetchArgs(ctx, clients.git, branch);
   if ((await fetchWithRecovery(ctx, clients, fetchArgs, worktreeDir, branch, false)).skipped) {
@@ -125,54 +101,50 @@ export async function switchCloneBranch(
     throw new GitOperationError("checkout", `origin/${branch} did not materialize after fetch for '${ctx.repoName}'`);
   }
 
-  if (await localBranchExists(clients.git, branch)) {
-    // The same classification, and the same deepening budget, a sync tick
-    // spends on this branch — asked about `refs/heads/<branch>` because the
-    // switch has not happened yet, so a shallow clone whose remote moved
-    // further than `depth` is deepened rather than refused.
-    const { relationship, deepenedTo } = await classifyWithDeepening(
-      ctx,
-      clients,
-      worktreeDir,
-      branch,
-      `refs/heads/${branch}`,
+  // The same classification, and the same deepening budget, a sync tick
+  // spends on this branch — asked about `refs/heads/<branch>` because the
+  // switch has not happened yet, so a shallow clone whose remote moved
+  // further than `depth` is deepened rather than refused.
+  const { relationship, deepenedTo } = await classifyWithDeepening(
+    ctx,
+    clients,
+    worktreeDir,
+    branch,
+    `refs/heads/${branch}`,
+  );
+  if (relationship === "indeterminate_shallow") {
+    // Not a FastForwardError: nothing was established about the two
+    // histories, and 'cannot fast-forward' is exactly the wrong thing to
+    // tell a user whose branch may well be fast-forwardable.
+    throw new GitOperationError(
+      "checkout",
+      `cannot tell whether '${branch}' fast-forwards to origin/${branch} in '${ctx.repoName}': the clone is ` +
+        `shallow and the histories do not meet after ${describeDeepenAttempt(deepenedTo)}. ` +
+        `Remove 'depth' from the config to unshallow the clone, then switch again`,
     );
-    if (relationship === "indeterminate_shallow") {
-      // Not a FastForwardError: nothing was established about the two
-      // histories, and 'cannot fast-forward' is exactly the wrong thing to
-      // tell a user whose branch may well be fast-forwardable.
-      throw new GitOperationError(
-        "checkout",
-        `cannot tell whether '${branch}' fast-forwards to origin/${branch} in '${ctx.repoName}': the clone is ` +
-          `shallow and the histories do not meet after ${describeDeepenAttempt(deepenedTo)}. ` +
-          `Remove 'depth' from the config to unshallow the clone, then switch again`,
-      );
-    }
-    if (relationship !== "up_to_date" && relationship !== "fast_forward") {
-      throw new FastForwardError(branch);
-    }
+  }
+  if (relationship !== "up_to_date" && relationship !== "fast_forward") {
+    throw new FastForwardError(branch);
+  }
 
-    let switched = false;
-    let headBeforeMerge: string | null = null;
-    try {
-      await clients.git.raw(["switch", branch]);
-      switched = true;
-      headBeforeMerge = await readHeadCommit(clients.git);
-      await clients.git.merge([`origin/${branch}`, "--ff-only"]);
-    } catch (error) {
-      if (switched) {
-        // This merge rejects the same way a sync's does, and leaves the same
-        // half-applied checkout behind. It is reported loudly rather than
-        // skipped, but the stray files would still wedge every later tick
-        // with dirty_tree — and `git switch` back would have to carry them
-        // across — so they are undone first.
-        await undoRejectedFastForward(ctx, clients, worktreeDir, branch, headBeforeMerge);
-        await restoreBranchAfterCheckoutFailure(ctx, clients, currentBranch, branch);
-      }
-      throw error;
+  let switched = false;
+  let headBeforeMerge: string | null = null;
+  try {
+    await clients.git.raw(["switch", branch]);
+    switched = true;
+    headBeforeMerge = await readHeadCommit(clients.git);
+    await clients.git.merge([`origin/${branch}`, "--ff-only"]);
+  } catch (error) {
+    if (switched) {
+      // This merge rejects the same way a sync's does, and leaves the same
+      // half-applied checkout behind. It is reported loudly rather than
+      // skipped, but the stray files would still wedge every later tick
+      // with dirty_tree — and `git switch` back would have to carry them
+      // across — so they are undone first.
+      await undoRejectedFastForward(ctx, clients, worktreeDir, branch, headBeforeMerge);
+      await restoreBranchAfterCheckoutFailure(ctx, clients, currentBranch, branch);
     }
-  } else {
-    await clients.git.raw(["switch", "-c", branch, "--track", `origin/${branch}`]);
+    throw error;
   }
 
   await configureSingleBranchRemote(ctx, clients, branch);
@@ -216,7 +188,7 @@ export function warnConfigDriftAfterCheckout(ctx: CloneSyncContext, branch: stri
 // origin/<baseBranch>, which the remote already has, so a shallow clone can
 // create and push it exactly like a full one and a sparse one is untouched —
 // neither command reads the working tree. The caller follows with
-// checkoutBranch(branchName, { allowConfigDrift: true }), which is where the
+// checkoutBranch(branchName), which is where the
 // tree actually switches and where shallow state converges.
 export async function createAndPushCloneBranch(
   ctx: CloneSyncContext,

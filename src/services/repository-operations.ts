@@ -617,7 +617,7 @@ export class RepositoryOperations {
       if (service.isCloneMode()) {
         // The wizard just created and pushed this branch — switching to it is
         // intentional config drift; checkoutBranch warns to update config.branch.
-        await service.checkoutBranch(branchName, { allowConfigDrift: true });
+        await service.checkoutBranch(branchName);
         return;
       }
       // Named inside the queued operation: the choice between the plain and

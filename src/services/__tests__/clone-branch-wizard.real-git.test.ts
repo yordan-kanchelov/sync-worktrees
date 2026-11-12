@@ -137,6 +137,41 @@ describe("Clone-mode branch wizard failures (real git)", () => {
     }
   });
 
+  // The wizard's own sequence: create and push, then switch to the new branch.
+  it("switches the clone to the branch the wizard just created and narrows the remote to it", async () => {
+    const ui = await buildUI();
+    try {
+      expect((await ui.operations.createAndPushBranch(0, "main", "feature/wiz")).success).toBe(true);
+      await ui.operations.createWorktreeForBranch(0, "feature/wiz");
+
+      expect(git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/wiz");
+      expect(git(cloneDir, "rev-parse", "HEAD")).toBe(git(remote, "rev-parse", "refs/heads/feature/wiz"));
+      expect(git(cloneDir, "status", "--porcelain")).toBe("");
+      expect(git(cloneDir, "config", "--get-all", "remote.origin.fetch")).toBe(
+        "+refs/heads/feature/wiz:refs/remotes/origin/feature/wiz",
+      );
+      expect(remoteBranches().sort()).toEqual(["feature/wiz", "main"]);
+    } finally {
+      await ui.destroy(true);
+    }
+  });
+
+  it("refuses a branch the clone does not hold locally without touching the checkout", async () => {
+    git(remote, "branch", "elsewhere", "main");
+    const ui = await buildUI();
+    try {
+      await expect(service.checkoutBranch("elsewhere")).rejects.toThrow("no local branch 'elsewhere'");
+
+      expect(git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+      expect(git(cloneDir, "status", "--porcelain")).toBe("");
+      expect(git(cloneDir, "config", "--get-all", "remote.origin.fetch")).toBe(
+        "+refs/heads/main:refs/remotes/origin/main",
+      );
+    } finally {
+      await ui.destroy(true);
+    }
+  });
+
   it("does not warn about missing worktrees when copying files after a clone-mode create", async () => {
     const ui = await buildUI({ filesToCopyOnBranchCreate: [".env.local"] });
     try {

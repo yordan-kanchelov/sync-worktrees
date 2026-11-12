@@ -166,7 +166,7 @@ export class CloneSyncService {
     return parseLsRemoteHeads(output);
   }
 
-  async checkoutBranch(branch: string, options: { allowConfigDrift?: boolean } = {}): Promise<void> {
+  async checkoutBranch(branch: string): Promise<void> {
     if (!this.initialized) {
       await this.initialize();
     }
@@ -174,7 +174,7 @@ export class CloneSyncService {
     await this.resolveBranch();
     // What the config resolves to, not the branch an earlier switch left.
     const targetBranch = this.config.branch ?? this.defaultBranch ?? branch;
-    await switchCloneBranch(this.ctx, branch, targetBranch, options);
+    await switchCloneBranch(this.ctx, branch);
     this.resolvedBranch = branch;
     this.pendingInitSkip = null;
     warnConfigDriftAfterCheckout(this.ctx, branch, targetBranch);

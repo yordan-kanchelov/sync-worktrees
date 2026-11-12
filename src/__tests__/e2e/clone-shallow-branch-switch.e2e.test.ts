@@ -85,7 +85,7 @@ describe("Clone-mode branch switch on a shallow clone (E2E)", () => {
     git(seed, "push", "-q", "origin", "feature/race");
     const remoteTip = git(seed, "rev-parse", "feature/race");
 
-    await service.checkoutBranch("feature/race", { allowConfigDrift: true });
+    await service.checkoutBranch("feature/race");
 
     expect(git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/race");
     // The fast-forward ran, rather than the switch stopping at the old tip.
@@ -119,7 +119,7 @@ describe("Clone-mode branch switch on a shallow clone (E2E)", () => {
     await commit("four", "four.txt");
     git(seed, "push", "-q", "origin", "feature/split");
 
-    await expect(service.checkoutBranch("feature/split", { allowConfigDrift: true })).rejects.toMatchObject({
+    await expect(service.checkoutBranch("feature/split")).rejects.toMatchObject({
       name: "FastForwardError",
       branchName: "feature/split",
     });

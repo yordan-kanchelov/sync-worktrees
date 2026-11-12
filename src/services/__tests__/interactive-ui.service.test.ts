@@ -2482,7 +2482,7 @@ describe("InteractiveUIService", () => {
         // ...and the wizard's follow-up switches the clone in place rather
         // than adding a worktree — the branch it just pushed is now real.
         await service.operations.createWorktreeForBranch(0, "feature/x");
-        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/x", { allowConfigDrift: true });
+        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/x");
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
         void service.destroy();
@@ -2634,9 +2634,9 @@ describe("InteractiveUIService", () => {
 
         await service.operations.createWorktreeForBranch(0, "feature/new");
 
-        // allowConfigDrift: the wizard just created+pushed this branch, so the
-        // switch is intentional drift from config.branch (warned downstream).
-        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new", { allowConfigDrift: true });
+        // The wizard just created+pushed this branch; the drift from
+        // config.branch is warned downstream.
+        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new");
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
         void service.destroy();
