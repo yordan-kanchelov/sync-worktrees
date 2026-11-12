@@ -54,7 +54,7 @@ its history twice. Pin `bareRepoDir` explicitly on duplicate entries if you want
 
 ## Updates that touch nothing in the sparse set
 
-By default a sparse worktree is **not** fast-forwarded when the upstream change touches nothing inside its sparse set:
+By default a sparse worktree (or clone-mode checkout) is **not** fast-forwarded when the upstream change touches nothing inside its sparse set:
 the working tree would not change either way, so HEAD is deliberately left behind the remote, and `git status` in that
 worktree reports it as behind `origin/<branch>` until a change lands inside the set. Set
 `sparseCheckout.skipUpdateWhenOutsideSparse: false` to always fast-forward. The check is honoured in cone mode only —

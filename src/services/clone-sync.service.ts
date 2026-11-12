@@ -373,6 +373,16 @@ export class CloneSyncService {
       return;
     }
 
+    if (await this.upstreamOutsideSparse(worktreeDir, branch)) {
+      this.logger.info(`⏭️  Skipping '${this.repoName}' - upstream changes outside sparse paths`);
+      this.emitProgress({
+        phase: "skip",
+        message: `Skipping merge for '${this.repoName}': upstream changes outside sparse paths`,
+      });
+      this.outcomeAccumulator?.recordSkipped("repo", "outside_sparse_checkout", { branch, path: worktreeDir });
+      return;
+    }
+
     this.logger.info(`Fast-forwarding '${this.repoName}' to origin/${branch}...`);
     this.emitProgress({ phase: "merge", message: `Fast-forwarding '${this.repoName}' to origin/${branch}` });
     await timePhase(phaseTimer, CLONE_SYNC_PHASES.MERGE, async () => {
@@ -515,7 +525,22 @@ export class CloneSyncService {
       plan.add(this.skipStep(this.dirtyTreeSkip().skip));
       return;
     }
+    if (await this.upstreamOutsideSparse(worktreeDir, branch)) {
+      plan.add({ kind: "skip", scope: "repo", reason: "outside_sparse_checkout", branch, path: worktreeDir });
+      return;
+    }
     plan.add({ kind: "update", branch, path: worktreeDir, reason: "fast_forward", message: `to origin/${branch}` });
+  }
+
+  // sparseCheckout.skipUpdateWhenOutsideSparse, as worktree mode applies it:
+  // cone mode only, and an unreadable diff never skips.
+  private async upstreamOutsideSparse(worktreeDir: string, branch: string): Promise<boolean> {
+    const cfg = this.config.sparseCheckout;
+    if (!cfg || cfg.skipUpdateWhenOutsideSparse === false) return false;
+    const sparseService = this.gitService.getSparseCheckoutService();
+    if (sparseService.resolveMode(cfg) !== "cone") return false;
+    const diff = await this.gitService.getChangedPathsInRange(worktreeDir, "HEAD", `origin/${branch}`);
+    return diff !== null && !sparseService.pathsTouchSparse(diff, cfg);
   }
 
   // The tick's checks before it writes anything: HEAD readable, on the

@@ -109,7 +109,9 @@ export async function reapplySparseCheckout(
 
     ctx.emitProgress({ phase: "sparse_checkout", message: `Updating sparse-checkout for '${ctx.repoName}'` });
     await sparseService.applyToWorktree(worktreeDir, cfg);
+    ctx.logger.info(`✅ Sparse-checkout updated for '${ctx.repoName}'.`);
     ctx.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout updated for '${ctx.repoName}'` });
+    ctx.outcome?.recordUpdated(branch, worktreeDir, "sparse_checkout");
   } catch (error) {
     // Not fatal — the fetch and merge after it are what the sync is for, and
     // a stale pattern list does not block them. But it is recorded: warning

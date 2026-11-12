@@ -317,6 +317,47 @@ describe("WorktreeSyncService", () => {
 
       expect(runSyncAttempt).toHaveBeenCalledTimes(1);
     });
+
+    // A sparse failure is caught and the tick goes on; the error that later
+    // ends the tick still has to show in the outcome.
+    it("records sync_failed even when a sparse failure was recorded earlier in the tick", async () => {
+      stubInitialize(false);
+      vi.spyOn(CloneSyncService.prototype, "runSyncAttempt").mockImplementation(
+        async (outcome?: SyncOutcomeAccumulator): Promise<void> => {
+          outcome?.recordFailed("sparse-checkout", "bad pattern", { reason: "sparse_checkout_failed" });
+          throw new Error("merge exploded");
+        },
+      );
+      vi.spyOn(WorktreeSyncService.prototype, "isInitialized").mockReturnValueOnce(false);
+
+      service = new WorktreeSyncService({ ...cloneConfig(), retry: { maxAttempts: 1 } });
+      await expect(service.sync()).rejects.toThrow("merge exploded");
+
+      expect(service.getLastOutcome()?.actions).toEqual([
+        expect.objectContaining({ kind: "failed", scope: "sparse-checkout", reason: "sparse_checkout_failed" }),
+        expect.objectContaining({ kind: "failed", scope: "repo", reason: "sync_failed", error: "merge exploded" }),
+      ]);
+    });
+
+    // A failure already recorded for the error that ends the tick is not
+    // reported twice.
+    it("does not add sync_failed when the thrown error was already recorded", async () => {
+      stubInitialize(false);
+      vi.spyOn(CloneSyncService.prototype, "runSyncAttempt").mockImplementation(
+        async (outcome?: SyncOutcomeAccumulator): Promise<void> => {
+          outcome?.recordFailed("repo", "clone exploded", { reason: "clone_failed" });
+          throw new Error("clone exploded");
+        },
+      );
+      vi.spyOn(WorktreeSyncService.prototype, "isInitialized").mockReturnValueOnce(false);
+
+      service = new WorktreeSyncService({ ...cloneConfig(), retry: { maxAttempts: 1 } });
+      await expect(service.sync()).rejects.toThrow("clone exploded");
+
+      expect(service.getLastOutcome()?.actions).toEqual([
+        expect.objectContaining({ kind: "failed", scope: "repo", reason: "clone_failed" }),
+      ]);
+    });
   });
 
   describe("permanent keep refs", () => {

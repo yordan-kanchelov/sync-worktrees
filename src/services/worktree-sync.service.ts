@@ -840,7 +840,8 @@ export class WorktreeSyncService {
           // A credential / ssh failure carries its remedy hint from here on:
           // the outcome, this log line and the rejection every consumer reports.
           const error = withGitAuthHint(rawError);
-          if (outcome.getCounts().failed === 0) {
+          // Sparse failures are caught and never what ends the tick.
+          if (!outcome.hasFailureOutside("sparse-checkout")) {
             outcome.recordFailed("repo", getErrorMessage(error), { reason: "sync_failed" });
           }
           this.logger.error("\n❌ Error during worktree synchronization after all retry attempts:", error);

@@ -92,6 +92,7 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     needsUpdate: vi.fn().mockResolvedValue(true),
     isNarrowing: vi.fn().mockReturnValue(false),
     resolveMode: vi.fn().mockReturnValue("cone"),
+    pathsTouchSparse: vi.fn().mockReturnValue(true),
   };
   const stub: Partial<Record<keyof GitService | "getSparseCheckoutService", unknown>> = {
     getRemoteDefaultBranch: vi.fn().mockResolvedValue("main"),
@@ -99,6 +100,7 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     getSparseCheckoutService: vi.fn().mockReturnValue(sparseService),
     checkWorktreeStatus: vi.fn().mockResolvedValue(true),
     classifyRemoteRelationship: vi.fn().mockResolvedValue("fast_forward"),
+    getChangedPathsInRange: vi.fn().mockResolvedValue(["src/a.ts"]),
     isLfsSkipEnabled: vi.fn().mockReturnValue(false),
     setLfsSkipEnabled: vi.fn(),
     ...overrides,
@@ -2864,6 +2866,90 @@ describe("CloneSyncService", () => {
       );
       // Still not fatal: the fast-forward the sync exists for runs anyway.
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+    });
+
+    describe("skipUpdateWhenOutsideSparse", () => {
+      function outsideCone(diff: string[] | null = ["docs/readme.md"]): GitService {
+        const gitService = buildGitService({ getChangedPathsInRange: vi.fn().mockResolvedValue(diff) });
+        const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+        (sparseService.needsUpdate as Mock).mockResolvedValue(false);
+        (sparseService.pathsTouchSparse as Mock).mockReturnValue(false);
+        return gitService;
+      }
+
+      it("leaves HEAD behind when the upstream change is outside the cone", async () => {
+        const gitService = outsideCone();
+        const config = makeConfig({ sparseCheckout: { include: ["src"] } });
+        const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+        const skips: CloneSkipReason[] = [];
+        const service = new CloneSyncService(config, gitService, logger, { onSkip: (reason) => skips.push(reason) });
+        setInitialized(service);
+
+        await service.runSyncAttempt(outcome);
+
+        expect(gitService.getChangedPathsInRange).toHaveBeenCalledWith(config.worktreeDir, "HEAD", "origin/main");
+        expect(gitMock.merge).not.toHaveBeenCalled();
+        expect(outcome.toOutcome().actions).toContainEqual(
+          expect.objectContaining({
+            kind: "skipped",
+            reason: "outside_sparse_checkout",
+            branch: "main",
+            path: config.worktreeDir,
+          }),
+        );
+        // Informational, like worktree mode: not a clone-mode skip warning.
+        expect(skips).toEqual([]);
+      });
+
+      it("fast-forwards when the option is false", async () => {
+        const gitService = outsideCone();
+        const config = makeConfig({ sparseCheckout: { include: ["src"], skipUpdateWhenOutsideSparse: false } });
+        const service = new CloneSyncService(config, gitService, logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitService.getChangedPathsInRange).not.toHaveBeenCalled();
+        expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      });
+
+      it("fast-forwards when the diff cannot be read", async () => {
+        const gitService = outsideCone(null);
+        const service = new CloneSyncService(makeConfig({ sparseCheckout: { include: ["src"] } }), gitService, logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      });
+
+      it("fast-forwards in no-cone mode", async () => {
+        const gitService = outsideCone();
+        const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+        (sparseService.resolveMode as Mock).mockReturnValue("no-cone");
+        const service = new CloneSyncService(
+          makeConfig({ sparseCheckout: { include: ["src"], mode: "no-cone" } }),
+          gitService,
+          logger,
+        );
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      });
+
+      it("fast-forwards when the change touches the cone", async () => {
+        const gitService = outsideCone(["src/a.ts"]);
+        const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+        (sparseService.pathsTouchSparse as Mock).mockReturnValue(true);
+        const service = new CloneSyncService(makeConfig({ sparseCheckout: { include: ["src"] } }), gitService, logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      });
     });
   });
 

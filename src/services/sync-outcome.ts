@@ -104,6 +104,10 @@ export class SyncOutcomeAccumulator {
     this.add({ kind: "failed", scope, error, ...details });
   }
 
+  hasFailureOutside(scope: SyncOutcomeScope): boolean {
+    return this.actions.some((action) => action.kind === "failed" && action.scope !== scope);
+  }
+
   getCounts(): SyncOutcomeCounts {
     return cloneCounts(this.counts);
   }
