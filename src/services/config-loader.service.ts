@@ -12,7 +12,7 @@ import { isPathEqualOrInside, isPathStrictlyInside, normalizePathForCompare, pat
 import { REPOSITORY_MODES } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 import { collectUnknownConfigKeys, formatUnknownConfigKey } from "../utils/unknown-config-keys";
-import { KNOWN_CONFIG_KEYS, validateConfigFile } from "./config-schema";
+import { KNOWN_CONFIG_KEYS, definedOnly, validateConfigFile } from "./config-schema";
 
 import type { Logger } from "./logger.service";
 import type { Config, ConfigFile, RepositoryConfig, RepositoryMode } from "../types";
@@ -643,9 +643,9 @@ export class ConfigLoaderService {
 
     if (repo.retry || defaults?.retry || globalRetry) {
       resolved.retry = {
-        ...(globalRetry || {}),
-        ...(defaults?.retry || {}),
-        ...(repo.retry || {}),
+        ...definedOnly(globalRetry),
+        ...definedOnly(defaults?.retry),
+        ...definedOnly(repo.retry),
       };
     }
 
@@ -655,9 +655,9 @@ export class ConfigLoaderService {
     // repository at all, so per-repo limits silently stayed at their defaults.
     if (repo.parallelism || defaults?.parallelism || globalParallelism) {
       resolved.parallelism = {
-        ...(globalParallelism || {}),
-        ...(defaults?.parallelism || {}),
-        ...(repo.parallelism || {}),
+        ...definedOnly(globalParallelism),
+        ...definedOnly(defaults?.parallelism),
+        ...definedOnly(repo.parallelism),
       };
     }
 
@@ -669,8 +669,8 @@ export class ConfigLoaderService {
 
     if (repo.hooks || defaults?.hooks) {
       resolved.hooks = {
-        ...(defaults?.hooks || {}),
-        ...(repo.hooks || {}),
+        ...definedOnly(defaults?.hooks),
+        ...definedOnly(repo.hooks),
       };
     }
 
@@ -681,15 +681,15 @@ export class ConfigLoaderService {
 
     if (repo.maintenance || defaults?.maintenance) {
       resolved.maintenance = {
-        ...(defaults?.maintenance || {}),
-        ...(repo.maintenance || {}),
+        ...definedOnly(defaults?.maintenance),
+        ...definedOnly(repo.maintenance),
       };
     }
 
     if (repo.trash || defaults?.trash) {
       resolved.trash = {
-        ...(defaults?.trash || {}),
-        ...(repo.trash || {}),
+        ...definedOnly(defaults?.trash),
+        ...definedOnly(repo.trash),
       };
     }
 

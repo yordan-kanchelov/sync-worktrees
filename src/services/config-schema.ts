@@ -595,6 +595,15 @@ export function resolveMaxRepositories(config: MaxRepositoriesSource): number {
 }
 
 /**
+ * A config block without its `undefined`-valued keys, so spreading it over an
+ * inherited block keeps the inherited value instead of resetting it.
+ */
+export function definedOnly<T extends object>(block: T | undefined): Partial<T> {
+  if (!block) return {};
+  return Object.fromEntries(Object.entries(block).filter(([, value]) => value !== undefined)) as Partial<T>;
+}
+
+/**
  * The parallelism ceiling applied to what each repository will actually run,
  * once the top-level, `defaults` and per-repository blocks are merged the way
  * resolveRepositoryConfig merges them.
@@ -611,14 +620,14 @@ export function resolveMaxRepositories(config: MaxRepositoriesSource): number {
  * integer, but it bounds nothing: nothing consumes it there.
  */
 function checkMergedParallelismPeak(config: ValidatedConfigFile, ctx: z.RefinementCtx): void {
-  const global = config.parallelism ?? {};
-  const defaults = config.defaults?.parallelism ?? {};
+  const global = definedOnly(config.parallelism);
+  const defaults = definedOnly(config.defaults?.parallelism);
   const maxRepos = resolveMaxRepositories(config);
 
   const peaks = config.repositories
     .map((repo) => ({
       name: repo.name,
-      peak: computeParallelismPeak({ ...global, ...defaults, ...repo.parallelism }),
+      peak: computeParallelismPeak({ ...global, ...defaults, ...definedOnly(repo.parallelism) }),
     }))
     .sort((a, b) => b.peak.perRepository - a.peak.perRepository);
 

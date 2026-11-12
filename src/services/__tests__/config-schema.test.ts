@@ -557,6 +557,14 @@ describe("validateConfigFile: rules across fields", () => {
       /^parallelism: peak concurrent git processes \(110\) exceeds safe limit \(100\) once global, defaults and per-repository parallelism are merged\./,
     );
   });
+
+  it("lets a repository key set to undefined inherit the level above in the merged peak", () => {
+    const repositories = Array.from({ length: 6 }, (_, i) =>
+      repo({ name: `r${i}`, worktreeDir: `/tmp/r${i}`, parallelism: { maxStatusChecks: undefined } }),
+    );
+
+    expect(issuesOf({ repositories, parallelism: { maxRepositories: 6, maxStatusChecks: 10 } })).toEqual([]);
+  });
 });
 
 describe("validateConfigFile: reporting", () => {

@@ -1628,6 +1628,63 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       });
     });
 
+    it("inherits nested values the repository sets to undefined", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        retry: { maxAttempts: undefined, maxDelayMs: 1000 },
+        parallelism: { maxStatusChecks: undefined },
+        hooks: { onBranchCreated: undefined },
+        maintenance: { enabled: undefined },
+        trash: { retentionDays: undefined },
+      };
+      const defaults = {
+        retry: { initialDelayMs: undefined },
+        hooks: { onBranchCreated: ["echo hi"] },
+        maintenance: { enabled: false },
+        trash: { retentionDays: 3 },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(
+        repo,
+        defaults,
+        tempDir,
+        {
+          maxAttempts: "unlimited",
+          initialDelayMs: 500,
+        },
+        undefined,
+        { maxStatusChecks: 5 },
+      );
+
+      expect(resolved.retry).toEqual({ maxAttempts: "unlimited", initialDelayMs: 500, maxDelayMs: 1000 });
+      expect(resolved.parallelism).toEqual({ maxStatusChecks: 5 });
+      expect(resolved.hooks).toEqual({ onBranchCreated: ["echo hi"] });
+      expect(resolved.maintenance).toEqual({ enabled: false });
+      expect(resolved.trash).toEqual({ retentionDays: 3 });
+    });
+
+    it("keeps a global retry.maxAttempts when a loaded repository sets it to undefined", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { retry: { maxAttempts: "unlimited" }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees", retry: { maxAttempts: undefined } }] };`,
+      );
+
+      const config = await configLoader.loadConfigFile(configPath);
+      const resolved = configLoader.resolveRepositoryConfig(
+        config.repositories[0],
+        config.defaults,
+        tempDir,
+        config.retry,
+      );
+
+      expect(resolved.retry?.maxAttempts).toBe("unlimited");
+    });
+
     it("should handle no retry config", () => {
       const repo = {
         name: "test",
