@@ -67,7 +67,7 @@ function buildGitMock(rawMap: Record<string, string> = {}): FakeGitClient {
       // repository behind it.
       if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
       if (key.startsWith("rev-parse --abbrev-ref HEAD")) return "main";
-      if (key.startsWith("remote get-url origin")) return "https://github.com/example/repo.git";
+      if (key.startsWith("config --local --get remote.origin.url")) return "https://github.com/example/repo.git";
       if (key.startsWith("checkout HEAD")) return "";
       return "";
     }),
@@ -152,7 +152,7 @@ function buildSyncRawMock(opts: {
   return async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-    if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+    if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
     if (key === "rev-parse --abbrev-ref HEAD") return "main";
     if (key === "rev-parse --is-shallow-repository") return opts.shallow ? "true" : "false";
     if (key === REMOTE_HISTORY_WALK) {
@@ -389,7 +389,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
       });
@@ -416,7 +416,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "config --get-all remote.origin.fetch") return "+refs/heads/*:refs/remotes/origin/*\n";
         return "";
@@ -444,7 +444,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "config --get-all remote.origin.fetch") {
           return ["+refs/heads/main:refs/remotes/origin/main", "+refs/pull/*/head:refs/remotes/origin/pr/*"].join("\n");
@@ -475,7 +475,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "develop";
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         return "";
       });
 
@@ -515,7 +515,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "develop";
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         return "";
       });
       const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
@@ -543,7 +543,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "remote get-url origin") return "https://github.com/example/other.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/other.git";
         return "";
       });
       const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
@@ -570,7 +570,7 @@ describe("CloneSyncService", () => {
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         // config repoUrl is "...repo.git"; on-disk origin lacks the .git suffix.
-        if (key === "remote get-url origin") return "https://github.com/example/repo";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo";
         return "";
       });
       const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
@@ -592,7 +592,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") throw new Error("fatal: not a git repository");
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         return "";
       });
 
@@ -1531,7 +1531,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "HEAD";
         return "";
       });
@@ -1556,7 +1556,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false";
         if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
@@ -1575,7 +1575,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/other.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/other.git";
         return "";
       });
 
@@ -1599,7 +1599,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true";
         if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
@@ -1653,7 +1653,7 @@ describe("CloneSyncService", () => {
       async (args: string[]): Promise<string> => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return isShallow;
         if (key === "show-ref --verify refs/heads/feature/existing") return "";
@@ -1801,7 +1801,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "show-ref --verify refs/remotes/origin/feature/new") throw new Error("missing remote ref");
         return "";
@@ -1821,7 +1821,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true";
         if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
@@ -1857,7 +1857,7 @@ describe("CloneSyncService", () => {
         const override = overrides(key);
         if (override !== undefined) return override;
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false";
         if (key === `show-ref --verify ${NEW_BRANCH_REF}`) throw new Error("missing local branch");
@@ -2036,7 +2036,7 @@ describe("CloneSyncService", () => {
           );
         }
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false";
         if (key === `show-ref --verify ${NEW_BRANCH_REF}`) throw new Error("missing local branch");
@@ -2221,7 +2221,7 @@ describe("CloneSyncService", () => {
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true\n";
-        if (key.startsWith("remote get-url origin")) return "https://github.com/example/repo.git";
+        if (key.startsWith("config --local --get remote.origin.url")) return "https://github.com/example/repo.git";
         return "";
       });
       gitMock.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/main"));
@@ -3131,7 +3131,7 @@ describe("CloneSyncService", () => {
           const key = args.join(" ");
           if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
           if (key === "rev-parse --abbrev-ref HEAD") return "main";
-          if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+          if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
           if (key === "rev-parse HEAD") return `${headReads++ === 0 ? HEAD_BEFORE_MERGE : headAfterMerge}\n`;
           if (key === "diff --name-only -z HEAD refs/remotes/origin/main") {
             return options.mergePaths.map((mergePath) => `${mergePath}\0`).join("");
@@ -3447,7 +3447,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false";
         if (key === SCAN_REFS.join(" ")) return ["refs/remotes/origin/main", ...staleRefs].join("\n");
@@ -3477,7 +3477,10 @@ describe("CloneSyncService", () => {
       expect(rawCalls()).not.toContainEqual(WRITE_REFSPEC);
       expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
       expect(rawCalls()).not.toContainEqual(SCAN_REFS);
-      expect(rawCalls().filter((args) => args[0] === "config")).toEqual([CONFIG_READ]);
+      // The origin check's read of remote.origin.url is a separate gate.
+      expect(rawCalls().filter((args) => args[0] === "config" && args[3] !== "remote.origin.url")).toEqual([
+        CONFIG_READ,
+      ]);
     });
 
     // The spawn budget of the commonest thing this tool does: one tick over a
@@ -3495,7 +3498,7 @@ describe("CloneSyncService", () => {
         // The tick's own gates: the branch it stands on, the origin it points
         // at, and the primary-checkout guard every write path goes through.
         "rev-parse --abbrev-ref HEAD",
-        "remote get-url origin",
+        "config --local --get remote.origin.url",
         PRIMARY_CHECKOUT_GIT_DIR_PROBE,
         // Shallow state, then the remote-config read that replaced the two
         // writes and the ref scan.
@@ -3749,7 +3752,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "remote get-url origin") return OTHER_TOKEN_URL;
+        if (key === "config --local --get remote.origin.url") return OTHER_TOKEN_URL;
         return "";
       });
       const warnSpy = vi.spyOn(logger, "warn");
@@ -3796,7 +3799,7 @@ describe("CloneSyncService", () => {
     function adoptedDirectoryWith(gitDirs: string): (key: string) => string | undefined {
       return (key) => {
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return gitDirs;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
       };
@@ -3819,8 +3822,7 @@ describe("CloneSyncService", () => {
             args[0] === "branch" ||
             args[0] === "switch" ||
             args[0] === "remote",
-        )
-        .filter((args) => args[0] !== "remote" || args[1] !== "get-url");
+        );
     }
 
     function expectNothingWritten(): void {
@@ -3904,7 +3906,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) throw new Error("fatal: not a git repository");
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
       });

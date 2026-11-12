@@ -180,7 +180,7 @@ describe("WorktreeSyncService", () => {
     const cloneGitClient = {
       raw: vi.fn(async (args: string[]) => {
         const key = args.join(" ");
-        if (key === "remote get-url origin") return "https://github.com/test/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/test/repo.git";
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
@@ -232,7 +232,7 @@ describe("WorktreeSyncService", () => {
       const cloneGitClient = {
         raw: vi.fn(async (args: string[]) => {
           const key = args.join(" ");
-          if (key === "remote get-url origin") return "https://github.com/test/repo.git";
+          if (key === "config --local --get remote.origin.url") return "https://github.com/test/repo.git";
           if (key === "rev-parse --abbrev-ref HEAD") return "develop";
           return "";
         }),

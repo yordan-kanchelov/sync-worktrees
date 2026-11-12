@@ -122,7 +122,7 @@ export const mockInitializeGit = (
   (mockGit.raw as Mock).mockImplementation((args: unknown) => {
     if (!Array.isArray(args)) return Promise.resolve("");
     const [command, subcommand] = args as string[];
-    if (command === "remote" && subcommand === "get-url") return Promise.resolve(TEST_URLS.github);
+    if (command === "config" && (args as string[])[3] === "remote.origin.url") return Promise.resolve(TEST_URLS.github);
     if (command === "symbolic-ref") return Promise.resolve("refs/remotes/origin/main");
     if (command === "worktree" && subcommand === "list") {
       return Promise.resolve(

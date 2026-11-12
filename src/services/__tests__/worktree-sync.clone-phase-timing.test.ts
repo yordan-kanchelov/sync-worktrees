@@ -78,7 +78,7 @@ function installGitMock(options: { shallow?: boolean } = {}): { fetch: Mock; mer
         spend(500);
         return "main";
       }
-      if (key === "remote get-url origin") {
+      if (key === "config --local --get remote.origin.url") {
         spend(500);
         return "https://github.com/example/repo.git";
       }

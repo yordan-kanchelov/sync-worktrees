@@ -77,7 +77,7 @@ describe("CloneSyncService unshallow fetch", () => {
   const rawOutput = (args: string[]): string => {
     const key = args.join(" ");
     if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-    if (key.startsWith("remote get-url origin")) return REPO_URL;
+    if (key.startsWith("config --local --get remote.origin.url")) return REPO_URL;
     if (key.startsWith("rev-parse --abbrev-ref HEAD")) return "main";
     // The clone this suite describes: shallow on disk, with no depth configured.
     if (key === "rev-parse --is-shallow-repository") return "true\n";

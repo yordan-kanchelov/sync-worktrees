@@ -252,19 +252,24 @@ export class BareRepoService {
   // (scheme/host case, trailing slash, forge `.git`) so equivalent spellings
   // don't false-positive, and are shown redacted. A bare repo whose origin
   // cannot be read is not a mismatch — the fetch that follows reports it.
+  // The stored value is read, not `remote get-url`, which applies insteadOf.
   async assertBareRepoOriginMatches(bareGit: SimpleGit): Promise<void> {
     const bareRepoPath = path.resolve(this.ctx.bareRepoPath);
 
-    let originUrl: string;
+    // An unset key exits 1 with empty stderr, which simple-git resolves as "".
+    let originUrl = "";
     try {
-      originUrl = (await bareGit.raw(["remote", "get-url", "origin"])).trim();
+      originUrl = (await bareGit.raw(["config", "--local", "--get", "remote.origin.url"])).trim();
     } catch {
+      // handled below
+    }
+    if (!originUrl) {
       this.logger.warn(`Could not read 'origin' remote URL from existing bare repository at '${bareRepoPath}'.`);
       return;
     }
 
     const { repoUrl } = this.ctx.config;
-    if (!originUrl || normalizeRepoUrlForComparison(originUrl) === normalizeRepoUrlForComparison(repoUrl)) {
+    if (normalizeRepoUrlForComparison(originUrl) === normalizeRepoUrlForComparison(repoUrl)) {
       return;
     }
 

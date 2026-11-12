@@ -241,7 +241,7 @@ describe("GitService", () => {
       expect(simpleGit).toHaveBeenCalledWith(expect.objectContaining({ progress: expect.any(Function) }));
       expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare", "--progress"]);
       // A fresh clone's origin is repoUrl by construction; only an existing bare repo is checked.
-      expect(mockGit.raw).not.toHaveBeenCalledWith(["remote", "get-url", "origin"]);
+      expect(mockGit.raw).not.toHaveBeenCalledWith(["config", "--local", "--get", "remote.origin.url"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["config", "--get-all", "remote.origin.fetch"]);
       expect(mockGit.addConfig).toHaveBeenCalledWith("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
       expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);

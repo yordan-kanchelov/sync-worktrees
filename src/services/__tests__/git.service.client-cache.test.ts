@@ -58,7 +58,7 @@ describe("GitService cached git clients", () => {
 
   const rawOutput = (args: string[]): string => {
     const key = args.join(" ");
-    if (key.startsWith("remote get-url origin")) return TEST_URLS.github;
+    if (key.startsWith("config --local --get remote.origin.url")) return TEST_URLS.github;
     if (key.startsWith("config --get-all remote.origin.fetch")) return GIT_CONSTANTS.FETCH_CONFIG;
     if (key.startsWith("worktree list")) {
       return createWorktreeListOutput(
