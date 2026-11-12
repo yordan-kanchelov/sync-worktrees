@@ -96,14 +96,25 @@ async function resolveSyncFetchDepth(ctx: CloneSyncContext, git: SimpleGit, bran
 // is what an unknown ref gives), and the empty string simple-git resolves
 // with when git exits non-zero without writing to stderr.
 async function measureLocalHistoryDepth(git: SimpleGit, startRef: string): Promise<number | null> {
+  return (await walkLocalHistory(git, startRef))?.depth ?? null;
+}
+
+// `parentless` is every commit printed without parents: true roots and
+// grafted shallow boundaries alike.
+async function walkLocalHistory(
+  git: SimpleGit,
+  startRef: string,
+): Promise<{ depth: number; parentless: string[] } | null> {
   let output: string;
   try {
     output = await git.raw(["rev-list", "--topo-order", "--parents", startRef]);
   } catch {
     return null;
   }
+  if (typeof output !== "string") return null;
 
   const depthByCommit = new Map<string, number>();
+  const parentless: string[] = [];
   let deepest = -1;
   for (const line of output.split("\n")) {
     const ids = line.trim().split(" ");
@@ -113,13 +124,33 @@ async function measureLocalHistoryDepth(git: SimpleGit, startRef: string): Promi
     // depth 0.
     const depth = depthByCommit.get(commit) ?? 0;
     if (depth > deepest) deepest = depth;
+    if (ids.length === 1) parentless.push(commit);
     for (let i = 1; i < ids.length; i++) {
       const parent = ids[i];
       const known = depthByCommit.get(parent);
       if (known === undefined || known > depth + 1) depthByCommit.set(parent, depth + 1);
     }
   }
-  return deepest < 0 ? null : deepest + 1;
+  return deepest < 0 ? null : { depth: deepest + 1, parentless };
+}
+
+// The window origin/<branch> already holds, in deepen-target units: a target
+// at or below it can only cut the clone back. Infinity when every parentless
+// commit under the ref is a true root (its object names no parent), as no
+// deepen can add to a complete history. The shallow file is no guide there:
+// `--depth N` on an N-level history lists the root too. Null when unknown.
+async function measureDeepenWindow(git: SimpleGit, branch: string): Promise<number | null> {
+  const walk = await walkLocalHistory(git, `refs/remotes/origin/${branch}`);
+  if (!walk) return null;
+  for (const commit of walk.parentless) {
+    try {
+      const object = await git.raw(["cat-file", "commit", commit]);
+      if (typeof object !== "string" || /^parent /m.test(object)) return walk.depth;
+    } catch {
+      return walk.depth;
+    }
+  }
+  return Infinity;
 }
 
 // The TUI branch switch and the branch wizard's base-branch fetch. Both keep
@@ -288,7 +319,15 @@ export async function classifyWithDeepening(
   // messages need; `deepenFetches` says how many fetches that took, which is
   // what the tick's timing table counts.
   let deepenFetches = 0;
-  for (const target of getDeepenTargets(ctx)) {
+  const targets = getDeepenTargets(ctx);
+  // Targets the clone already holds are not refetched, so a budget that
+  // failed once does not re-run on every later tick.
+  const window = targets.length > 0 ? await measureDeepenWindow(clients.git, branch) : null;
+  for (const target of targets) {
+    if (window !== null && target <= window) {
+      deepenedTo = target;
+      continue;
+    }
     await deepenShallowHistoryToDepth(ctx, clients, branch, target);
     deepenedTo = target;
     deepenFetches++;

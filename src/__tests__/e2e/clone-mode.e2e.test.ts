@@ -904,6 +904,61 @@ export default {
     expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeSecondRun);
   }, 120000);
 
+  // Once the budget has failed on a pair it cannot fail differently later: the
+  // fetched ref already holds every target, or its whole history. Re-running it
+  // re-truncated the clone to 50 and rebought the rest every tick. Two remote
+  // lengths: past the largest target, and short enough to be held whole.
+  it.each([
+    ["past the largest deepen target", 1100],
+    ["held in full by the clone", 120],
+  ])(
+    "spends the deepen budget once on unrelated history %s",
+    async (label, commits) => {
+      const slug = `shallow-unrelated-${commits}`;
+      const remoteBare = await createLocalRemote(`${slug}-remote`);
+      const configDir = path.join(tmpBase, `${slug}-config`);
+      const worktreeDir = path.join(configDir, "clone");
+      const configPath = path.join(configDir, `${slug}.config.js`);
+      await fs.mkdir(configDir, { recursive: true });
+
+      await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir, ",\n      depth: 1");
+      execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+
+      const pushDir = path.join(tmpBase, `${slug}-push`);
+      execSync(`git clone -q "${remoteBare}" "${pushDir}"`, { encoding: "utf-8" });
+      execSync(`git -C "${pushDir}" config user.name "Test User"`, { encoding: "utf-8" });
+      execSync(`git -C "${pushDir}" config user.email "test@example.com"`, { encoding: "utf-8" });
+      execSync(
+        `git checkout -q --orphan unrelated && for i in $(seq 1 ${commits}); do git commit -q --allow-empty -m "U $i"; done`,
+        { encoding: "utf-8", cwd: pushDir },
+      );
+      execSync(`git -C "${pushDir}" push -q --force origin unrelated:main`, { encoding: "utf-8" });
+
+      const readObjects = (): string =>
+        execSync(`git -C "${worktreeDir}" count-objects -v`, { encoding: "utf-8" })
+          .split("\n")
+          .filter((line) => /^(count|in-pack|packs):/.test(line))
+          .join(" ");
+      const readHead = (): string => execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+      const headBefore = readHead();
+
+      const firstRun = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+      expect(firstRun, label).toContain("[deepen]");
+      expect(firstRun, label).toContain("could not classify origin/main");
+      const objectsAfterBudget = readObjects();
+
+      for (const tick of [2, 3]) {
+        const run = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+        // The sync fetch is the tick's only fetch.
+        expect(run, `${label}, tick ${tick}`).not.toContain("[deepen]");
+        expect(run, `${label}, tick ${tick}`).toContain("could not classify origin/main");
+        expect(readObjects(), `${label}, tick ${tick}`).toBe(objectsAfterBudget);
+        expect(readHead()).toBe(headBefore);
+      }
+    },
+    240000,
+  );
+
   // A merge is the case a capped fetch cannot classify on its own. The clone
   // never advertised the commits on the merged-in side, and the cap stops the
   // fetch from walking past the merge commit to reach the history the clone

@@ -43,7 +43,8 @@ fast-forward from a divergence, so every remote advance would buy another deepen
 
 **The deepen budget.** When a sync fetch cannot tell whether the tracked branch fast-forwarded or diverged — the clone
 is too shallow to reach a common ancestor — the sync deepens it in steps, `--depth 50`, then `200`, then `1000`,
-stopping at the first that settles the question. Only steps above `depth` are used.
+stopping at the first that settles the question. Only steps above `depth` are used, and a step `origin/<branch>`
+already holds (or any step, once it holds the branch's whole history) is not refetched.
 
 Both numbers are **ancestry levels**, not commits — `--depth N` keeps every commit within N parent steps of the fetched
 tip, so one level of a merge-built history holds several — and the clone is measured from `origin/<branch>` rather than
@@ -62,8 +63,9 @@ Three fetches escape the ratchet — the deepen budget uses the target it picked
 value verbatim — and in each case a `--depth` below the current depth shortens the clone:
 
 - The deepen budget refetches at `--depth 50`, `200` or `1000` when it cannot classify the tracked branch, so a clone
-  grown past the target it picks is cut back to it — and when the budget cannot settle the question either, because a
-  force-push moved the branch off the clone's tip entirely, that repeats every tick until the divergence is resolved.
+  grown past the target it picks would be cut back to it. It skips the steps `origin/<branch>` already holds, so when
+  a force-push moved the branch off the clone's tip entirely, the budget is spent once and later ticks make only the
+  sync fetch until the divergence is resolved.
 - Switching the clone to another branch from the TUI, and the branch wizard's base-branch fetch, re-apply `depth` to
   whatever ref they name. The shallow boundary is repository-wide, so those can shorten **or** deepen the clone whether
   or not you edited `depth` — including when the ref is the tracked branch itself, which the wizard offers among the

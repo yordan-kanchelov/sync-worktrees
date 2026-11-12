@@ -143,12 +143,15 @@ function mergeHistory(merges: number): string {
 // behind the fetched tip, and defaults to the same graph for the ticks where
 // the two coincide. `missingRemoteRef` makes the origin/main walk reject the
 // way `git rev-list` rejects an unknown ref, which is the first sync.
+// A shallow clone's parentless commits are grafted boundaries, so `cat-file`
+// shows them a parent; `completeHistory` makes them true roots instead.
 function buildSyncRawMock(opts: {
   shallow: boolean;
   history?: string | (() => string);
   headHistory?: string | (() => string);
   historyError?: Error;
   missingRemoteRef?: boolean;
+  completeHistory?: boolean;
 }): (args: string[]) => Promise<string> {
   const resolve = (source: string | (() => string) | undefined): string =>
     typeof source === "function" ? source() : (source ?? "");
@@ -168,6 +171,9 @@ function buildSyncRawMock(opts: {
     if (key === HEAD_HISTORY_WALK) {
       if (opts.historyError) throw opts.historyError;
       return resolve(opts.headHistory ?? opts.history);
+    }
+    if (args[0] === "cat-file" && args[1] === "commit") {
+      return opts.shallow && !opts.completeHistory ? "tree t\nparent cut\n\nmsg\n" : "tree t\n\nmsg\n";
     }
     return "";
   };
@@ -2747,6 +2753,38 @@ describe("CloneSyncService", () => {
       expect(depthArgs).toEqual([50, 200, 1000]);
       expect(classify).toHaveBeenCalledTimes(4);
       expect(gitMock.merge).not.toHaveBeenCalled();
+      expect(skips).toEqual([{ kind: "indeterminate_shallow", branch: "main", deepenedTo: 1000 }]);
+    });
+
+    // A failed budget leaves origin/main holding its targets, and refetching
+    // one it holds would only cut the clone back and buy it again.
+    it.each([
+      ["skips deepen targets the fetched ref already holds", { history: linearHistory(200) }, [1000]],
+      [
+        "skips every deepen target when the fetched ref holds its whole history",
+        { history: linearHistory(120), completeHistory: true },
+        [],
+      ],
+    ])("%s", async (_label, mockOpts, expectedTargets) => {
+      gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, ...mockOpts }));
+      const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
+      const skips: CloneSkipReason[] = [];
+      const service = new CloneSyncService(
+        makeConfig({ depth: 1 }),
+        buildGitService({ classifyRemoteRelationship: classify }),
+        logger,
+        { onSkip: (reason) => skips.push(reason) },
+      );
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      const deepenTargets = gitMock.fetch.mock.calls
+        .slice(1)
+        .map((call) => call[0] as string[])
+        .map((args) => Number(args[args.indexOf("--depth") + 1]));
+      expect(deepenTargets).toEqual(expectedTargets);
+      expect(classify).toHaveBeenCalledTimes(1 + expectedTargets.length);
       expect(skips).toEqual([{ kind: "indeterminate_shallow", branch: "main", deepenedTo: 1000 }]);
     });
 
