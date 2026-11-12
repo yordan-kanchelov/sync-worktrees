@@ -276,6 +276,42 @@ export default {
     expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeTick);
   }, 90000);
 
+  // With `branch` unset the default branch is the one resolved at clone time:
+  // a later move of the remote's HEAD must not strand an existing clone.
+  it("keeps syncing the clone-time default branch after the remote HEAD moves", async () => {
+    const remoteBare = await createLocalRemote("default-moved-remote");
+    const configDir = path.join(tmpBase, "default-moved");
+    const worktreeDir = path.join(configDir, "wt");
+    const configPath = path.join(configDir, "default-moved.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir);
+    // Same config as the other tests, minus `branch`.
+    const config = await fs.readFile(configPath, "utf-8");
+    await fs.writeFile(configPath, config.replace(/,\s*branch: "main"/, ""));
+    expect(await fs.readFile(configPath, "utf-8")).not.toContain("branch:");
+    const run = (): string =>
+      execSync(`node "${cliPath}" --config "${configPath}" 2>&1`, {
+        encoding: "utf-8",
+        timeout: 60000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+    run();
+    expect(execSync(`git -C "${worktreeDir}" rev-parse --abbrev-ref HEAD`, { encoding: "utf-8" }).trim()).toBe("main");
+
+    const pushedHead = await pushCommit(remoteBare, "default-moved", "three.txt", "Add three");
+    execSync(`git -C "${remoteBare}" branch trunk main`, { encoding: "utf-8" });
+    execSync(`git -C "${remoteBare}" symbolic-ref HEAD refs/heads/trunk`, { encoding: "utf-8" });
+
+    const output = run();
+
+    expect(output).not.toContain("expected 'trunk'");
+    expect(output).not.toContain("Clone-mode skips");
+    expect(output).toMatch(/Processed 1 repo in \S+: 1 synced, 0 failed/);
+    expect(execSync(`git -C "${worktreeDir}" rev-parse --abbrev-ref HEAD`, { encoding: "utf-8" }).trim()).toBe("main");
+    expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(pushedHead);
+  }, 90000);
+
   // simple-git puts a type change (` T`) in no status bucket: only in
   // `status.files`. The dirty check used to read that as clean and
   // fast-forward over a tracked file replaced by a symlink.

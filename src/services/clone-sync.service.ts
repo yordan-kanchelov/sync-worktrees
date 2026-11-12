@@ -124,12 +124,35 @@ export class CloneSyncService {
       this.emitProgress({ phase: "branch", message: `Using configured branch '${this.resolvedBranch}'` });
       return this.resolvedBranch;
     }
+    const recorded = await this.readCloneTimeDefaultBranch();
+    if (recorded) {
+      this.resolvedBranch = recorded;
+      this.logger.info(`No branch configured for '${this.repoName}'; using '${recorded}', the default at clone time.`);
+      this.emitProgress({ phase: "branch", message: `Using clone-time default branch '${recorded}'` });
+      return recorded;
+    }
     this.logger.info(`No branch configured for '${this.repoName}', detecting remote default branch...`);
     this.emitProgress({ phase: "branch", message: `Resolving remote default branch for '${this.repoName}'` });
     this.resolvedBranch = await this.gitService.getRemoteDefaultBranch(this.config.repoUrl);
     this.logger.info(`  ↳ resolved default branch: ${this.resolvedBranch}`);
     this.emitProgress({ phase: "branch", message: `Resolved default branch '${this.resolvedBranch}'` });
     return this.resolvedBranch;
+  }
+
+  // `git clone` records the remote HEAD it saw as refs/remotes/origin/HEAD, and
+  // nothing here rewrites it. Null for no clone or no such symref.
+  private async readCloneTimeDefaultBranch(): Promise<string | null> {
+    const worktreeDir = path.resolve(this.config.worktreeDir);
+    if (!(await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR)))) return null;
+    try {
+      const git = this.clients.localClientFor(worktreeDir);
+      const target = (await git.raw(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])).trim();
+      const prefix = "refs/remotes/origin/";
+      const branch = target.startsWith(prefix) ? target.slice(prefix.length) : "";
+      return branch && branch !== "HEAD" ? branch : null;
+    } catch {
+      return null;
+    }
   }
 
   async getRemoteBranches(): Promise<string[]> {
