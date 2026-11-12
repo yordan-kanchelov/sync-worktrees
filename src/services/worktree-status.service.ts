@@ -13,7 +13,7 @@ import { Logger } from "./logger.service";
 
 import type { LastKnownRemoteTip } from "../types/sync-metadata";
 import type { LimitFunction } from "p-limit";
-import type { SimpleGit } from "simple-git";
+import type { SimpleGit, StatusResult } from "simple-git";
 
 export interface WorktreeStatusDetails {
   modifiedFiles: number;
@@ -151,6 +151,30 @@ const REMOTE_TRACKING_PREFIX = "refs/remotes/";
 
 // Past this many changed paths a skip reason counts them instead of naming them.
 const MAX_NAMED_UNCOMMITTED_PATHS = 3;
+
+// simple-git buckets only some porcelain codes: a type change (` T`, `T `) or a
+// mixed state (`MD`, `AD`) is in `files` alone, so cleanliness is read from it.
+function unbucketedTrackedPaths(status: StatusResult): string[] {
+  const bucketed = new Set([
+    ...status.modified,
+    ...status.deleted,
+    ...status.renamed.map((r) => r.to),
+    ...status.created,
+    ...status.conflicted,
+  ]);
+  return status.files.filter((f) => f.index !== "?" && f.index !== "!" && !bucketed.has(f.path)).map((f) => f.path);
+}
+
+function hasTrackedChanges(status: StatusResult): boolean {
+  return (
+    status.modified.length > 0 ||
+    status.deleted.length > 0 ||
+    status.renamed.length > 0 ||
+    status.created.length > 0 ||
+    status.conflicted.length > 0 ||
+    unbucketedTrackedPaths(status).length > 0
+  );
+}
 
 export interface RefScan {
   /** Full names of every branch and remote-tracking ref, symrefs excluded. */
@@ -301,16 +325,7 @@ export class WorktreeStatusService {
     const worktreeGit = this.createGitInstance(worktreePath);
     const status = await this.runGit(() => worktreeGit.status());
 
-    const hasTrackedChanges =
-      status.modified.length > 0 ||
-      status.deleted.length > 0 ||
-      status.renamed.length > 0 ||
-      status.created.length > 0 ||
-      status.conflicted.length > 0;
-
-    if (hasTrackedChanges) {
-      return false;
-    }
+    if (hasTrackedChanges(status)) return false;
 
     // `status.not_added` is already the untracked-and-not-ignored list: git
     // only writes a path to a `??` line when no exclude rule matched it, and
@@ -651,13 +666,7 @@ export class WorktreeStatusService {
   private deriveIsClean(snap: WorktreeSnapshot): boolean {
     const status = snap.status;
     if (!status) return false;
-    const hasTracked =
-      status.modified.length > 0 ||
-      status.deleted.length > 0 ||
-      status.renamed.length > 0 ||
-      status.created.length > 0 ||
-      status.conflicted.length > 0;
-    if (hasTracked) return false;
+    if (hasTrackedChanges(status)) return false;
     return snap.untrackedNotIgnored.length === 0;
   }
 
@@ -674,6 +683,7 @@ export class WorktreeStatusService {
       ...status.renamed.map((r) => r.to),
       ...status.created,
       ...status.conflicted,
+      ...unbucketedTrackedPaths(status),
     ]);
     const untracked = snap.untrackedNotIgnored;
     if (tracked.size + untracked.length > MAX_NAMED_UNCOMMITTED_PATHS) {
@@ -690,8 +700,10 @@ export class WorktreeStatusService {
 
   private buildStatusDetails(snap: WorktreeSnapshot): WorktreeStatusDetails {
     const status = snap.status;
+    // Type changes and mixed states (` T`, `MD`) are listed as modified.
+    const modified = status ? [...status.modified, ...unbucketedTrackedPaths(status)] : [];
     const details: WorktreeStatusDetails = {
-      modifiedFiles: status?.modified.length ?? 0,
+      modifiedFiles: modified.length,
       deletedFiles: status?.deleted.length ?? 0,
       renamedFiles: status?.renamed.length ?? 0,
       createdFiles: status?.created.length ?? 0,
@@ -699,7 +711,7 @@ export class WorktreeStatusService {
       untrackedFiles: snap.untrackedNotIgnored.length,
     };
     if (status) {
-      if (status.modified.length > 0) details.modifiedFilesList = status.modified;
+      if (modified.length > 0) details.modifiedFilesList = modified;
       if (status.deleted.length > 0) details.deletedFilesList = status.deleted;
       if (status.renamed.length > 0) {
         details.renamedFilesList = status.renamed.map((r) => ({ from: r.from, to: r.to }));

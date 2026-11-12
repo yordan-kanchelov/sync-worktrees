@@ -276,6 +276,37 @@ export default {
     expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeTick);
   }, 90000);
 
+  // simple-git puts a type change (` T`) in no status bucket: only in
+  // `status.files`. The dirty check used to read that as clean and
+  // fast-forward over a tracked file replaced by a symlink.
+  it("skips a clone whose tracked file was replaced by a symlink once origin moves ahead", async () => {
+    const remoteBare = await createLocalRemote("typechange-remote");
+    const configDir = path.join(tmpBase, "typechange");
+    const worktreeDir = path.join(configDir, "wt");
+    const configPath = path.join(configDir, "typechange.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir);
+    const command = `node "${cliPath}" --config "${configPath}" 2>&1`;
+    const run = (): string =>
+      execSync(command, { encoding: "utf-8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] });
+
+    run();
+
+    await fs.rm(path.join(worktreeDir, "one.txt"));
+    await fs.symlink("two.txt", path.join(worktreeDir, "one.txt"));
+    expect(execSync(`git -C "${worktreeDir}" status --porcelain`, { encoding: "utf-8" })).toBe(" T one.txt\n");
+    const headBeforeTick = execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+
+    await pushCommit(remoteBare, "typechange", "three.txt", "Add three");
+
+    const output = run();
+
+    expect(output).toContain("working tree has local changes");
+    expect(output).toMatch(/Processed 1 repo in \S+: 0 synced, 1 with clone-mode skips, 0 failed/);
+    expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeTick);
+    expect((await fs.lstat(path.join(worktreeDir, "one.txt"))).isSymbolicLink()).toBe(true);
+  }, 90000);
+
   it("narrows legacy all-branches clone refspecs and deletes stale remote refs", async () => {
     const remoteBare = await createLocalRemote("legacy-remote-branches");
     const seedDir = path.join(tmpBase, "legacy-remote-branches-seed");

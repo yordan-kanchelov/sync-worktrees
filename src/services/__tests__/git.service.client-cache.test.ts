@@ -101,6 +101,7 @@ describe("GitService cached git clients", () => {
             created: [],
             conflicted: [],
             not_added: [],
+            files: [],
           }),
         ),
         stashList: vi.fn(() => settle(["stash", "list"], { total: 0 })),

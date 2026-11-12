@@ -293,6 +293,7 @@ branch refs/heads/dirty-branch
         created: [],
         conflicted: [],
         not_added: [],
+        files: [],
       };
       const dirtyStatus = { ...cleanStatus, modified: ["file.txt"] };
 

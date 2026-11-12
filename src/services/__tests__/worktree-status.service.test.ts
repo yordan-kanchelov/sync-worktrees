@@ -72,7 +72,7 @@ describe("WorktreeStatusService", () => {
 
     (simpleGit as unknown as Mock).mockReturnValue({
       ...mockGit,
-      status: async (...args: any[]) => ({ ...header, ...(await (mockGit.status as any)(...args)) }),
+      status: async (...args: any[]) => ({ files: [], ...header, ...(await (mockGit.status as any)(...args)) }),
       raw: (args: string[]) => (args[0] === "for-each-ref" ? mockForEachRef(args) : (mockGit.raw as any)(args)),
     });
   });
