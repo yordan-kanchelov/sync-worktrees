@@ -99,7 +99,14 @@ export async function undoRejectedFastForwardIn(
   // outside that set is somebody's own work and is never touched.
   let mergePaths: string[];
   try {
-    const output = await git.raw(["diff", "--name-only", "-z", "HEAD", `refs/remotes/origin/${branch}`]);
+    const output = await git.raw([
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      "HEAD",
+      `refs/remotes/origin/${branch}`,
+    ]);
     mergePaths = output.split("\0").filter((mergePath) => mergePath.length > 0);
   } catch (error) {
     ctx.logger.warn(

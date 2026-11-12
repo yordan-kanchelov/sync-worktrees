@@ -3134,7 +3134,7 @@ describe("CloneSyncService", () => {
           if (key === "rev-parse --abbrev-ref HEAD") return "main";
           if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
           if (key === "rev-parse HEAD") return `${headReads++ === 0 ? HEAD_BEFORE_MERGE : headAfterMerge}\n`;
-          if (key === "diff --name-only -z HEAD refs/remotes/origin/main") {
+          if (key === "diff --name-only --no-renames -z HEAD refs/remotes/origin/main") {
             return options.mergePaths.map((mergePath) => `${mergePath}\0`).join("");
           }
           if (args[0] === "ls-tree") {
@@ -3230,7 +3230,14 @@ describe("CloneSyncService", () => {
 
         await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
 
-        expect(gitMock.raw).toHaveBeenCalledWith(["diff", "--name-only", "-z", "HEAD", "refs/remotes/origin/main"]);
+        expect(gitMock.raw).toHaveBeenCalledWith([
+          "diff",
+          "--name-only",
+          "--no-renames",
+          "-z",
+          "HEAD",
+          "refs/remotes/origin/main",
+        ]);
         // Only the dirty half of the merge's path set is ever weighed: the
         // paths git never got to are not on disk to compare.
         expect(gitMock.raw).toHaveBeenCalledWith(["hash-object", "--", ".gitattributes"]);
