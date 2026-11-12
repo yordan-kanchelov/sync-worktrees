@@ -17,7 +17,7 @@ import {
 import { ENV_CONSTANTS } from "../../constants";
 
 import type { ForceCleanResult, ForceCleanSelection } from "../../types";
-import { ConfigError, WorktreeNotCleanError } from "../../errors";
+import { ConfigError, TrashError, WorktreeNotCleanError } from "../../errors";
 import { CloneSyncService } from "../clone-sync.service";
 import { GitMaintenanceService } from "../git-maintenance.service";
 import { PathResolutionService } from "../path-resolution.service";
@@ -351,11 +351,45 @@ describe("WorktreeSyncService", () => {
 
     it("deletes an explicitly selected keep ref under the repo lock", async () => {
       await service.initialize();
+      mockGitService.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/preserved-entry"]);
 
       await service.deleteKeepRef("preserved-entry");
 
       expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/preserved-entry");
       expect(handleWrites.some((write) => write.content.includes('"action":"keep_ref_delete"'))).toBe(true);
+    });
+
+    // `update-ref -d` exits 0 for a ref that is not there, so a typo used to
+    // print success and audit a deletion that never happened.
+    it("rejects a keep ref that does not exist and audits nothing", async () => {
+      await service.initialize();
+      mockGitService.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/other"]);
+
+      await expect(service.deleteKeepRef("missing")).rejects.toThrow(/no keep ref named 'missing'/i);
+      await expect(service.deleteKeepRef("missing")).rejects.toBeInstanceOf(TrashError);
+
+      expect(mockGitService.deleteRef).not.toHaveBeenCalled();
+      expect(handleWrites.some((write) => write.content.includes('"action":"keep_ref_delete"'))).toBe(false);
+    });
+
+    it("refuses a keep ref a '.diverged/' directory still depends on", async () => {
+      await service.initialize();
+      mockGitService.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/still-on-disk"]);
+      mockBusyWorktrees({}, ["still-on-disk"]);
+
+      await expect(service.deleteKeepRef("still-on-disk")).rejects.toThrow(/retained/);
+      await expect(service.deleteKeepRef("still-on-disk")).rejects.toBeInstanceOf(TrashError);
+
+      expect(mockGitService.deleteRef).not.toHaveBeenCalled();
+      expect(handleWrites.some((write) => write.content.includes('"action":"keep_ref_delete"'))).toBe(false);
+    });
+
+    it("reports a keep ref git refused to delete as a trash error", async () => {
+      await service.initialize();
+      mockGitService.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/locked"]);
+      mockGitService.deleteRef.mockRejectedValueOnce(new Error("cannot lock ref"));
+
+      await expect(service.deleteKeepRef("locked")).rejects.toThrow(/cannot lock ref/);
     });
 
     describe("batch drop", () => {

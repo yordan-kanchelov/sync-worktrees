@@ -531,30 +531,7 @@ export class WorktreeSyncService {
     const selected = new Set(names.map((name) => `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`));
     const result = await this.runExclusiveRepoOperation<KeepRefDropResult>(
       async () => {
-        const dropped: KeepRefDropResult = { deleted: 0, retained: [], errors: [] };
-        // Intersecting the live listing with the selection covers both
-        // directions: a ref minted since the listing is never in `selected`, and
-        // a selected ref already gone never shows up here.
-        const present = (await this.listKeepRefs()).filter((ref) => selected.has(ref));
-        const reservedNames = await this.getDivergedDirectoryNames();
-        for (const ref of present) {
-          if (this.isKeepRefReserved(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length), reservedNames)) {
-            dropped.retained.push(ref);
-            continue;
-          }
-          try {
-            await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
-            await this.gitService.deleteRef(ref);
-            dropped.deleted++;
-            await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
-          } catch (error) {
-            const message = getErrorMessage(error);
-            dropped.errors.push(`${ref}: ${message}`);
-            await this.removalAudit
-              .record({ action: "keep_ref_delete", result: "failure", path: ref, error: message })
-              .catch(() => undefined);
-          }
-        }
+        const { missing: _missing, ...dropped } = await this.dropKeepRefsUnlocked(selected);
         return dropped;
       },
       { wait: true },
@@ -573,18 +550,55 @@ export class WorktreeSyncService {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error(`Invalid keep ref name '${name}'`);
   }
 
+  private async dropKeepRefsUnlocked(selected: Set<string>): Promise<KeepRefDropResult & { missing: string[] }> {
+    const dropped: KeepRefDropResult & { missing: string[] } = { deleted: 0, retained: [], errors: [], missing: [] };
+    // Intersecting the live listing with the selection covers both
+    // directions: a ref minted since the listing is never in `selected`, and
+    // a selected ref already gone never shows up here.
+    const listed = new Set(await this.listKeepRefs());
+    const present = [...selected].filter((ref) => listed.has(ref));
+    dropped.missing = [...selected].filter((ref) => !listed.has(ref));
+    const reservedNames = await this.getDivergedDirectoryNames();
+    for (const ref of present) {
+      if (this.isKeepRefReserved(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length), reservedNames)) {
+        dropped.retained.push(ref);
+        continue;
+      }
+      try {
+        await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
+        await this.gitService.deleteRef(ref);
+        dropped.deleted++;
+        await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
+      } catch (error) {
+        const message = getErrorMessage(error);
+        dropped.errors.push(`${ref}: ${message}`);
+        await this.removalAudit
+          .record({ action: "keep_ref_delete", result: "failure", path: ref, error: message })
+          .catch(() => undefined);
+      }
+    }
+    return dropped;
+  }
+
+  // Same checks as the batch: `update-ref -d` exits 0 for a missing ref.
   async deleteKeepRef(name: string): Promise<void> {
     this.assertKeepRefName(name);
     const ref = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`;
-    const result = await this.runExclusiveRepoOperation(
-      async () => {
-        await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
-        await this.gitService.deleteRef(ref);
-        await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
-      },
-      { wait: true },
-    );
+    const result = await this.runExclusiveRepoOperation(() => this.dropKeepRefsUnlocked(new Set([ref])), {
+      wait: true,
+    });
     if (!result.started) throw new TrashError(`Cannot delete keep ref: ${describeNotStarted(result)}`, "KEEP_REF_DROP");
+    const dropped = result.value;
+    if (dropped.missing.length > 0) throw new TrashError(`No keep ref named '${name}'`, "KEEP_REF_DROP");
+    if (dropped.retained.length > 0) {
+      throw new TrashError(
+        `Keep ref '${name}' retained: a '.diverged/' directory still depends on it`,
+        "KEEP_REF_DROP",
+      );
+    }
+    if (dropped.errors.length > 0) {
+      throw new TrashError(`Could not delete keep ref '${name}': ${dropped.errors.join("; ")}`, "KEEP_REF_DROP");
+    }
   }
 
   async discardDivergedDirectory(targetPath: string, keepRef?: string): Promise<void> {

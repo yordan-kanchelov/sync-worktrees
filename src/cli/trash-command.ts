@@ -563,9 +563,14 @@ async function dropAllKeepRefs(service: WorktreeSyncService, label: string): Pro
   const dropped = await service.deleteKeepRefs(names);
   console.log(`✅ Deleted ${dropped.deleted} keep ref(s)`);
   for (const ref of dropped.retained) {
-    console.log(`   Retained ${ref} — a '.diverged/' directory still depends on it`);
+    console.log(`   Retained ${shortKeepRef(ref)} — a '.diverged/' directory still depends on it`);
   }
-  for (const error of dropped.errors) console.warn(`⚠️ Could not delete ${error}`);
+  for (const error of dropped.errors) console.warn(`⚠️ Could not delete ${shortKeepRef(error)}`);
+}
+
+// Output uses the short names the commands accept, not full ref paths.
+function shortKeepRef(text: string): string {
+  return text.startsWith(GIT_CONSTANTS.KEEP_REF_PREFIX) ? text.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length) : text;
 }
 
 // Permanent deletion of one entry, gated exactly like the keep-ref drops: an
