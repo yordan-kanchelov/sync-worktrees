@@ -12,6 +12,7 @@ import { getErrorMessage } from "../utils/errors";
 import { isLfsError } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { copyTreePreservingSymlinks } from "../utils/preserving-copy";
+import { detachGitLink } from "../utils/detach-git-link";
 
 import { PathResolutionService } from "./path-resolution.service";
 import { trackPhaseItems } from "./progress-emitter";
@@ -1840,20 +1841,28 @@ export class WorktreeModeSyncRunner {
     const relativePath = path.relative(process.cwd(), divergedPath);
     outcome.recordPreservedDiverged(worktree.branch, worktree.path, divergedPath);
 
-    this.logger.info(`   Moved to: ${relativePath}`);
-    this.logger.info(`   Your local changes are preserved. To review:`);
-    this.logger.info(`     cd ${relativePath}`);
-    this.logger.info(`     git diff origin/${worktree.branch}`);
+    this.logger.info(`   Moved to: ${relativePath} (detached from git; do not run git inside it)`);
 
     if (!unregistered) {
       // force is safe here: the directory was already moved to .diverged/,
       // so only the stale registration is being cleared.
       await this.gitService.removeWorktree(worktree.path, { force: true });
+      await detachGitLink(divergedPath).catch((error: unknown) =>
+        this.logger.warn(`⚠️ Could not detach the .git link of '${divergedPath}': ${getErrorMessage(error)}`),
+      );
       // Deliberately fatal on failure: addWorktree below would silently
       // recreate from the stale local branch instead of upstream.
       await this.gitService.deleteLocalBranch(worktree.branch);
+    }
+    const recoverRef = keepRef ?? trashEntry?.manifest.headOid;
+    if (recoverRef) {
       this.logger.info(
-        `   Never-pushed commits remain recoverable at '${keepRef}' — recover with: git branch <name> ${keepRef}`,
+        `   Your commits are preserved. Recover them with: ${this.recoverCommand(worktree.branch, recoverRef)}`,
+      );
+    }
+    if (trashEntry) {
+      this.logger.info(
+        `   Get the files back with: sync-worktrees trash restore ${trashEntry.manifest.id} (remove the replacement worktree and its branch first)`,
       );
     }
     await this.removalAudit
@@ -1979,11 +1988,18 @@ export class WorktreeModeSyncRunner {
           `cannot delete stale branch '${branchName}' after trashing: ${branchRefError}`,
         );
       }
-      await this.writeDivergedInfoFile(entry.payloadPath, worktreePath, branchName, entry.manifest.headOid).catch(
-        (error: unknown) =>
-          this.logger.warn(
-            `⚠️ Could not write diverged metadata for trash entry '${entry.manifest.id}': ${getErrorMessage(error)}`,
-          ),
+      // Next to manifest.json, not in the payload: restore would leave it untracked.
+      await this.writeDivergedInfoFile(
+        entry.containerPath,
+        worktreePath,
+        branchName,
+        entry.manifest.headOid,
+        null,
+        entry.manifest.id,
+      ).catch((error: unknown) =>
+        this.logger.warn(
+          `⚠️ Could not write diverged metadata for trash entry '${entry.manifest.id}': ${getErrorMessage(error)}`,
+        ),
       );
       return { divergedPath: entry.payloadPath, keepRef: null, unregistered: true, trashEntry: entry };
     }
@@ -2049,39 +2065,47 @@ export class WorktreeModeSyncRunner {
     return { divergedPath, keepRef, unregistered: false, trashEntry: null };
   }
 
+  private recoverCommand(branchName: string, ref: string): string {
+    return `git -C ${this.gitService.getBareRepoPath()} branch ${branchName}-recovered ${ref}`;
+  }
+
   private async writeDivergedInfoFile(
-    preservedPath: string,
+    infoDir: string,
     originalPath: string,
     branchName: string,
-    knownLocalCommit: string | null,
+    localCommit: string | null,
     keepRef: string | null = null,
+    trashId: string | null = null,
   ): Promise<void> {
+    const recoverRef = keepRef ?? localCommit;
     const metadata = {
       originalBranch: branchName,
       divergedAt: new Date().toISOString(),
       reason: METADATA_CONSTANTS.DIVERGED_REASON,
       originalPath,
-      localCommit: knownLocalCommit ?? (await this.gitService.getCurrentCommit(preservedPath)),
+      localCommit,
       remoteCommit: await this.gitService.getRemoteCommit(`origin/${branchName}`),
       keepRef,
-      // Two preservation mechanisms, two different ways back. A trashed copy is
-      // restored through the trash CLI and has no keep ref to release; a
-      // `.diverged/` copy is held only by its keep ref.
-      instruction: `To preserve your changes:
-  1. Review: git diff origin/${branchName}
-  2. Keep changes: git push --force-with-lease origin ${branchName}
+      trashId,
+      // The copy is detached from git, so every step runs elsewhere. A trashed
+      // copy comes back through the trash CLI; a `.diverged/` copy is held only
+      // by its keep ref.
+      instruction: `This copy is detached from git: do not run git inside it.
+  1. Recover the commits: ${recoverRef ? this.recoverCommand(branchName, recoverRef) : "no commit was recorded"}
+  2. ${
+    trashId
+      ? `Get the files back: sync-worktrees trash restore ${trashId} (remove the replacement worktree and its branch first)`
+      : "Get the files back: copy what you need out of this directory"
+  }
   3. Discard changes: ${
     keepRef
       ? "use the TUI worktree status view so the keep ref is released safely"
-      : `restore it first with 'sync-worktrees trash restore <id>' if you want it back, then delete the entry`
+      : `the files age out with the trash retention window; the commit is then kept by 'keep/${trashId}' until 'sync-worktrees trash drop-keep-ref ${trashId}'`
   }
 
   Original worktree location: ${originalPath}`,
     };
 
-    await fs.writeFile(
-      path.join(preservedPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE),
-      JSON.stringify(metadata, null, 2),
-    );
+    await fs.writeFile(path.join(infoDir, METADATA_CONSTANTS.DIVERGED_INFO_FILE), JSON.stringify(metadata, null, 2));
   }
 }

@@ -125,6 +125,8 @@ export const ENV_CONSTANTS = {
 
 export const PATH_CONSTANTS = {
   GIT_DIR: ".git",
+  /** A preserved copy's `.git` link, renamed so git no longer resolves it. */
+  DETACHED_GIT_LINK: ".git.detached",
   CLONE_INIT_MARKER: ".sync-worktrees-clone-init",
   /** Written the moment the clone resolves, before any post-clone step, and
    * removed once the initial file copy lands — its presence marks a

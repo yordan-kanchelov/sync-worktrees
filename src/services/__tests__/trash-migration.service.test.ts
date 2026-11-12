@@ -20,6 +20,7 @@ function makeGitStub() {
     deleteRef: vi.fn<any>().mockResolvedValue(undefined),
     listRefs: vi.fn<any>().mockResolvedValue([]),
     createBundleFromRef: vi.fn<any>().mockResolvedValue(true),
+    getBareRepoPath: vi.fn<any>().mockReturnValue("/repo/.bare"),
   };
 }
 
@@ -378,6 +379,10 @@ describe("TrashMigrationService", () => {
       // `.diverged/` directories, which this payload has left.
       expect(info.instruction).not.toContain("TUI");
       expect(info.instruction).toContain(`sync-worktrees trash restore ${id}`);
+      // The copy is detached from git, so recovery runs against the bare repo.
+      expect(info.instruction).toContain(`git -C /repo/.bare branch feat-recovered ${entries[0].manifest.headOid}`);
+      expect(info.instruction).not.toContain("git diff");
+      expect(info.instruction).not.toContain("git push");
       // An adopted backup is keepPinOnReap: the reaper mints a permanent
       // `keep/<id>` for its never-pushed commits rather than letting expiry
       // collect them, so only the FILES age out. An instruction that says

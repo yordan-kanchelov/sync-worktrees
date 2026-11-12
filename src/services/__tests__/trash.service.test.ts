@@ -388,7 +388,7 @@ describe("TrashService", () => {
     });
 
     it("restores the source when unregistering fails, so a partial removal never hides the worktree", async () => {
-      const source = await makeSourceDir("feature-rollback");
+      const source = await makeSourceDir("feature-rollback", { "file.txt": "data", ".git": "gitdir: /x\n" });
       gitStub.removeWorktree.mockRejectedValue(new Error("registration locked"));
 
       await expect(
@@ -396,6 +396,9 @@ describe("TrashService", () => {
       ).rejects.toThrow("restored the directory to its original path");
 
       await expect(fs.readFile(path.join(source, "file.txt"), "utf-8")).resolves.toBe("data");
+      // The detached .git link is put back with the directory.
+      await expect(fs.readFile(path.join(source, ".git"), "utf-8")).resolves.toBe("gitdir: /x\n");
+      await expect(fs.access(path.join(source, ".git.detached"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(fs.readdir(service.getTrashRoot())).resolves.toEqual([]);
     });
 

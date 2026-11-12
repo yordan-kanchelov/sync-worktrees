@@ -53,9 +53,10 @@ first).
 
 ### Recovering the commits
 
-The moved copy is not a working checkout any more: its `.git` link points at a worktree registration the sync removed,
-so `git` inside it answers "not a git repository". Recover through the bare repository instead. The entry's
-`manifest.json` holds the `branch` and the `headOid`, and the pin ref keeps that commit alive:
+The moved copy is not a working checkout any more: its `.git` link is renamed to `.git.detached`, because the fresh
+worktree re-registers under the same name and git run inside the copy would act on the live branch. Do not run git
+there; recover through the bare repository instead. The entry's `manifest.json` holds the `branch` and the `headOid`
+(also in the `.diverged-info.json` beside it), and the pin ref keeps that commit alive:
 
 ```bash
 sync-worktrees trash list --filter <repository-name>               # find the entry's id
@@ -94,7 +95,7 @@ my-repo-worktrees/
 
 Recover the same way, from the keep ref named in `.diverged-info.json`
 (`git -C <bare-repo> branch feature-x-recovered refs/sync-worktrees/keep/<name>`); the copy itself is not a git
-checkout. The TUI's worktree status view (`w`) lists `.diverged/` directories and offers a guided delete (`Ctrl-D` with
+checkout (its `.git` link is renamed to `.git.detached`), so do not run git inside it. The TUI's worktree status view (`w`) lists `.diverged/` directories and offers a guided delete (`Ctrl-D` with
 `y`/`n` confirmation) once you've decided.
 
 ## Trash layout and pin refs
@@ -109,6 +110,7 @@ my-repo-worktrees/
 └── .trash/
     └── 2026-06-06T18-30-00-000Z-feature-x-a1b2c3/
         ├── manifest.json     # branch, reason, original path, HEAD commit, expiry
+        ├── .diverged-info.json  # diverged-replace entries only: the recovery steps
         └── payload/          # the directory exactly as it was, including uncommitted work
 ```
 
@@ -257,6 +259,7 @@ git -C <bare-repo> branch <branch> <headOid>
 git -C <bare-repo> worktree add --no-checkout <originalPath> <branch>
 cp -R payload/. <originalPath>/   # then restore the .git link git wrote:
 git -C <bare-repo> worktree repair <originalPath>
+rm -f <originalPath>/.git.detached <originalPath>/.diverged-info.json
 git -C <originalPath> reset       # index at HEAD, payload shows as unstaged changes
 ```
 

@@ -122,7 +122,9 @@ describe("restoring a trashed worktree by renaming the payload back (real git)",
     const dirPath = await makeDirtyWorktree();
     const { entry } = await trash.trashAndUnregisterWorktree({ dirPath, branch: "feature", reason: "prune" });
     const payloadInode = (await fs.stat(entry.payloadPath)).ino;
-    const staleLink = await fs.readFile(path.join(entry.payloadPath, ".git"), "utf-8");
+    // Detached on trashing, so git run inside the payload resolves nothing.
+    const staleLink = await fs.readFile(path.join(entry.payloadPath, ".git.detached"), "utf-8");
+    await expect(fs.access(path.join(entry.payloadPath, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
     await occupyAdminName();
 
     // Exactly what `worktree add --no-checkout` wrote, captured as it wrote it.
@@ -139,6 +141,7 @@ describe("restoring a trashed worktree by renaming the payload back (real git)",
     expect(freshLink).not.toBeNull();
     expect(freshLink).not.toBe(staleLink);
     await expect(fs.readFile(path.join(dirPath, ".git"), "utf-8")).resolves.toBe(freshLink);
+    await expect(fs.access(path.join(dirPath, ".git.detached"))).rejects.toMatchObject({ code: "ENOENT" });
     // The directory itself was moved, not copied file by file.
     expect((await fs.stat(dirPath)).ino).toBe(payloadInode);
     await expect(fs.access(entry.containerPath)).rejects.toMatchObject({ code: "ENOENT" });

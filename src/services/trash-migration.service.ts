@@ -189,8 +189,8 @@ export class TrashMigrationService {
   // `.diverged/` directories only, which this payload has just left. Nothing
   // the user put in the worktree is touched; only the fields the tool itself
   // owns are rewritten, in place and atomically, to the flow that now applies.
-  // The trash-enabled diverge path already writes this same shape into a
-  // payload, so an adopted entry ends up describing itself like a native one.
+  // Same shape as a native entry's (which sits beside its manifest); restore
+  // drops this payload copy so it does not come back as an untracked file.
   private async rewriteAdoptedDivergedInfo(entry: TrashEntry, keepRefReleased: boolean): Promise<void> {
     const infoPath = path.join(entry.payloadPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE);
     const raw = await fs.readFile(infoPath, "utf-8");
@@ -210,10 +210,10 @@ export class TrashMigrationService {
     updated.instruction = `This backup was adopted into the trash as '${entry.manifest.id}'${
       keepRefReleased ? " and the keep ref that used to hold it has been released" : ""
     }.
-To preserve your changes:
-  1. Review: git diff origin/${branch}
-  2. Keep changes: git push --force-with-lease origin ${branch}
-  3. Discard changes: the files age out with the trash retention window, but the commit does not — it is held by this entry until then and by a permanent 'keep/${entry.manifest.id}' ref afterwards. Drop that with 'sync-worktrees trash drop-keep-ref ${entry.manifest.id}' once you are sure. To get the files back before they expire: 'sync-worktrees trash restore ${entry.manifest.id}'
+This copy is detached from git: do not run git inside it.
+  1. Recover the commits: git -C ${this.trashService.getBareRepoPath()} branch ${branch}-recovered ${entry.manifest.headOid}
+  2. Get the files back: sync-worktrees trash restore ${entry.manifest.id}
+  3. Discard changes: the files age out with the trash retention window, but the commit does not — it is held by this entry until then and by a permanent 'keep/${entry.manifest.id}' ref afterwards. Drop that with 'sync-worktrees trash drop-keep-ref ${entry.manifest.id}' once you are sure.
 
   Original worktree location: ${entry.manifest.originalPath}`;
 

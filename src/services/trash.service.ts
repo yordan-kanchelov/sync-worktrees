@@ -4,9 +4,10 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG, GIT_CONSTANTS, PATH_CONSTANTS, TRASH_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, GIT_CONSTANTS, METADATA_CONSTANTS, PATH_CONSTANTS, TRASH_CONSTANTS } from "../constants";
 import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { atomicWriteFile } from "../utils/atomic-write";
+import { detachGitLink, dropDetachedGitLink } from "../utils/detach-git-link";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { filenameTimestamp } from "../utils/filename-timestamp";
@@ -132,6 +133,10 @@ export class TrashService {
 
   getTrashRoot(): string {
     return path.join(this.config.worktreeDir, GIT_CONSTANTS.TRASH_DIR_NAME);
+  }
+
+  getBareRepoPath(): string {
+    return this.gitService.getBareRepoPath();
   }
 
   getRetentionDays(): number {
@@ -265,6 +270,9 @@ export class TrashService {
         error instanceof Error ? error : undefined,
       );
     }
+    await detachGitLink(payloadPath).catch((error: unknown) =>
+      this.logger.warn(`⚠️ Could not detach the .git link of trash entry '${id}': ${getErrorMessage(error)}`),
+    );
 
     await this.removalAudit
       .record({
@@ -429,6 +437,14 @@ export class TrashService {
       await this.gitService.removeWorktree(options.dirPath, { force: true });
     } catch (error) {
       try {
+        await fs
+          .rename(
+            path.join(entry.payloadPath, PATH_CONSTANTS.DETACHED_GIT_LINK),
+            path.join(entry.payloadPath, PATH_CONSTANTS.GIT_DIR),
+          )
+          .catch((renameError: NodeJS.ErrnoException) => {
+            if (renameError.code !== "ENOENT") throw renameError;
+          });
         await fs.rename(entry.payloadPath, options.dirPath);
         await this.undoPartialTrash(entry.containerPath, entry.manifest.pinRef);
         // trashDirectory already logged a `trash_create: success` for a
@@ -541,6 +557,7 @@ export class TrashService {
           `   If '${manifest.branch}' is still in this repository's synced set, the next sync finds an unregistered directory at '${manifest.originalPath}' and moves it back to trash as a new 'orphan' entry. Copy what you need out of it first, or exclude the branch.`,
         );
       }
+      await this.stripToolFiles(manifest, payloadPath);
       await fs.rename(payloadPath, manifest.originalPath);
     }
 
@@ -590,8 +607,8 @@ export class TrashService {
 
     try {
       // The pre-rename HEAD verification is not atomic with this deletion: a
-      // commit can still land in the moved payload (its .git link stays valid
-      // until unregistration). Deleting with headOid as the expected old
+      // commit can still land in the payload before its .git link is
+      // detached. Deleting with headOid as the expected old
       // value makes the race lose safely — a moved ref is refused and lands
       // in the caller's leftover-branch-ref hygiene path instead of orphaning
       // the new commit.
@@ -644,6 +661,14 @@ export class TrashService {
     return "released";
   }
 
+  // Tool-written leftovers would read as untracked files in the restored tree.
+  private async stripToolFiles(manifest: TrashManifest, payloadPath: string): Promise<void> {
+    await dropDetachedGitLink(payloadPath);
+    if (manifest.reason === "diverged-replace" || manifest.source === ".diverged") {
+      await fs.rm(path.join(payloadPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE), { force: true });
+    }
+  }
+
   private async restoreAsWorktree(manifest: TrashManifest, payloadPath: string): Promise<void> {
     const branch = manifest.branch as string;
     const headOid = manifest.headOid as string;
@@ -657,6 +682,7 @@ export class TrashService {
       );
     }
 
+    await this.stripToolFiles(manifest, payloadPath);
     if (existingBranchOid === null) {
       await this.gitService.createBranchAt(branch, headOid);
       createdBranch = true;
@@ -798,8 +824,8 @@ export class TrashService {
   }
 
   // The cross-device fallback for movePayloadInto, overlaying rather than
-  // moving. The payload's top-level .git points at a pruned admin dir; the
-  // fresh link already written into the destination must survive the copy.
+  // moving. The payload's top-level .git is stale; the fresh link already
+  // written into the destination must survive the copy.
   private async copyPayloadOver(payloadPath: string, destination: string): Promise<void> {
     await copyTreePreservingSymlinks(payloadPath, destination, {
       force: true,
