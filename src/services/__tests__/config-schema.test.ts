@@ -13,6 +13,7 @@ import type {
   MaintenanceConfig,
   ParallelismConfig,
   RepositoryConfig,
+  RepositoryOnlyKey,
   RetryConfig,
   SparseCheckoutConfig,
   TrashConfig,
@@ -42,14 +43,14 @@ type WholeFileKeys = "runOnce" | "syncOnStart";
 type ValueShape<T, K extends keyof T> = { [P in K]-?: Exclude<T[P], undefined> };
 
 type _RepositoryKeysMatch = Expect<Equal<keyof RepositoryOutput, keyof RepositoryConfig>>;
-type _DefaultsKeysMatch = Expect<Equal<keyof DefaultsOutput, keyof Config>>;
+type _DefaultsKeysMatch = Expect<Equal<keyof DefaultsOutput, Exclude<keyof Config, RepositoryOnlyKey>>>;
 type _TopLevelKeysMatch = Expect<Equal<keyof ConfigFileOutput, keyof ConfigFile>>;
 
 type RepositoryValueKeys = Exclude<keyof RepositoryConfig, InternalKeys | WholeFileKeys>;
 type _RepositoryValuesMatch = Expect<
   Equal<ValueShape<RepositoryOutput, RepositoryValueKeys>, ValueShape<RepositoryConfig, RepositoryValueKeys>>
 >;
-type DefaultsValueKeys = Exclude<keyof Config, InternalKeys>;
+type DefaultsValueKeys = Exclude<keyof Config, InternalKeys | RepositoryOnlyKey>;
 type _DefaultsValuesMatch = Expect<
   Equal<ValueShape<DefaultsOutput, DefaultsValueKeys>, ValueShape<Config, DefaultsValueKeys>>
 >;
@@ -468,7 +469,6 @@ describe("validateConfigFile: defaults", () => {
       "defaults.cronSchedule: '* *' is not a valid cron expression",
     ],
     ["an unknown mode", { mode: "bare" }, `defaults.mode: must be 'clone' or 'worktree', got "bare"`],
-    ["a non-string worktreeDir", { worktreeDir: 3 }, "defaults.worktreeDir: must be a string, got 3"],
     [
       "a zero branchMaxAge",
       { branchMaxAge: "0d" },
@@ -481,6 +481,10 @@ describe("validateConfigFile: defaults", () => {
     ],
   ])("rejects %s", (_label, defaults, expected) => {
     expect(onlyIssue(config({ defaults }))).toBe(expected);
+  });
+
+  it("leaves repoUrl, worktreeDir and bareRepoDir under defaults to the unknown-key warning", () => {
+    expect(issuesOf(config({ defaults: { repoUrl: 3, worktreeDir: 3, bareRepoDir: 3 } }))).toEqual([]);
   });
 
   it("keeps loading `defaults: null` as no defaults", () => {
@@ -504,6 +508,11 @@ describe("validateConfigFile: rules across fields", () => {
       expect(onlyIssue(config({}, { mode: "clone", [field]: values[field] }))).toBe(
         `repositories[0].${field}: not supported when mode is 'clone'`,
       );
+      if (field === "bareRepoDir") {
+        // Nothing inherits defaults.bareRepoDir, so there is nothing to reject.
+        expect(issuesOf(config({ defaults: { bareRepoDir: "/tmp/bare" } }, { mode: "clone" }))).toEqual([]);
+        return;
+      }
       expect(onlyIssue(config({ defaults: { [field]: values[field] } }, { mode: "clone" }))).toBe(
         `repositories[0].${field}: not supported when mode is 'clone' (inherited from defaults.${field})`,
       );

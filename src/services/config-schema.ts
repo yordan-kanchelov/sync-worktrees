@@ -445,7 +445,6 @@ const trashSchema = block({
 /** Settings a repository entry and `defaults` share; a repository's own value wins. */
 const sharedFields = {
   cronSchedule: cronSchedule.optional(),
-  bareRepoDir: text().optional(),
   retry: retrySchema.optional(),
   branchMaxAge: branchMaxAge.optional(),
   branchInclude: branchPatterns.optional(),
@@ -502,6 +501,7 @@ export const repositorySchema = block({
     error: (issue) => `is not a repository URL, got ${describeValue(issue.input)}. ${REPO_URL_FORMATS}`,
   }),
   worktreeDir: nonEmptyText(),
+  bareRepoDir: text().optional(),
   ...sharedFields,
   parallelism: parallelismSchema.optional(),
   runOnce: wholeFileSetting("runOnce"),
@@ -509,11 +509,8 @@ export const repositorySchema = block({
   ...internalFields,
 });
 
+// No repoUrl/worktreeDir/bareRepoDir: nothing inherits them, so they warn as unknown.
 export const defaultsSchema = block({
-  // Known so they are not reported as unknown, but a repository's own entry is
-  // the only place either is read.
-  repoUrl: text().optional(),
-  worktreeDir: text().optional(),
   ...sharedFields,
   parallelism: levelParallelismSchema.optional(),
   runOnce: flag().optional(),
@@ -570,7 +567,8 @@ function checkModeSpecificFields(config: ValidatedConfigFile, ctx: z.RefinementC
         ? [CLONE_MODE_CONFLICTING_FIELDS, "not supported when mode is 'clone'"]
         : [CLONE_MODE_ONLY_FIELDS, "only supported when mode is 'clone'"];
     for (const field of fields) {
-      const inherited = repo[field] === undefined && defaults?.[field] !== undefined;
+      const fromDefaults = field === "bareRepoDir" ? undefined : defaults?.[field];
+      const inherited = repo[field] === undefined && fromDefaults !== undefined;
       if (repo[field] === undefined && !inherited) continue;
       ctx.addIssue({
         code: "custom",

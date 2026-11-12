@@ -212,7 +212,7 @@ export interface Config {
   // Sync once at daemon startup instead of waiting for the first cron tick.
   // Default: true. Whole-file like `runOnce`: the daemon reads it off
   // `defaults`, and it is never resolved onto a repository — it is declared
-  // here only because `ConfigFile.defaults` is `Partial<Config>` and the
+  // here only because `ConfigFile.defaults` is derived from `Config` and the
   // config schema's `defaults` level is pinned to `keyof Config`. A line
   // comment, not JSDoc: tsc copies a member's JSDoc into the .d.ts and this
   // interface is not the public input surface — SyncWorktreesDefaultsBase
@@ -371,8 +371,11 @@ export interface InitConfigInput {
   cronSchedule: string;
 }
 
+/** Read from a repository's own entry only; `defaults` does not carry them. */
+export type RepositoryOnlyKey = "repoUrl" | "worktreeDir" | "bareRepoDir";
+
 export interface ConfigFile {
-  defaults?: Partial<Config>;
+  defaults?: Partial<Omit<Config, RepositoryOnlyKey>>;
   repositories: RepositoryConfig[];
   retry?: RetryConfig;
   parallelism?: ParallelismConfig;

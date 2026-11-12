@@ -136,6 +136,50 @@ describe("ConfigLoaderService unknown-key warnings", () => {
     ]);
   });
 
+  it("warns for the per-repository directory and URL keys under defaults, which nothing inherits", async () => {
+    const configPath = await writeConfig(`
+      export default {
+        defaults: { bareRepoDir: "./shared-bare", repoUrl: "${TEST_URLS.github}", worktreeDir: "./zzz" },
+        repositories: [
+          {
+            name: "reference",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "${path.join(tempDir, "worktrees")}"
+          }
+        ]
+      };
+    `);
+
+    const { repositories } = await new ConfigLoaderService({ logger }).buildRepositories(configPath);
+
+    expect(warnings).toEqual([
+      "[sync-worktrees] Unknown config key 'bareRepoDir' in defaults is ignored",
+      "[sync-worktrees] Unknown config key 'repoUrl' in defaults is ignored",
+      "[sync-worktrees] Unknown config key 'worktreeDir' in defaults is ignored",
+    ]);
+    expect(repositories[0].bareRepoDir).not.toContain("shared-bare");
+  });
+
+  it("loads a clone-mode repository beside a stray defaults.bareRepoDir, warning instead of rejecting", async () => {
+    const configPath = await writeConfig(`
+      export default {
+        defaults: { bareRepoDir: "./shared-bare" },
+        repositories: [
+          {
+            name: "reference",
+            mode: "clone",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "${path.join(tempDir, "checkout")}"
+          }
+        ]
+      };
+    `);
+
+    await new ConfigLoaderService({ logger }).buildRepositories(configPath);
+
+    expect(warnings).toEqual(["[sync-worktrees] Unknown config key 'bareRepoDir' in defaults is ignored"]);
+  });
+
   /**
    * A clean config that exercises the whole inventory rather than a minimal
    * one: a fixture that sets three keys would pass this even if the inventory
