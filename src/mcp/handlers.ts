@@ -578,8 +578,16 @@ export async function handleCreateWorktree(
       await service.initializeUnlocked();
     }
 
-    await git.fetchAll();
+    // Best-effort: offline, existence is judged from the last fetch's refs.
+    let fetchWarning: string | undefined;
+    try {
+      await git.fetchAll();
+    } catch (err) {
+      fetchWarning = `Could not fetch from origin (${redactSecretsInText(getErrorMessage(err))}); whether '${branchName}' exists on origin was judged from the last successful fetch.`;
+    }
     const existence = await git.branchExists(branchName);
+    const withFetchWarning = (warning: string | undefined): string | undefined =>
+      [fetchWarning, warning].filter(Boolean).join(" ") || undefined;
 
     const exclusion = await branchPrunedBySync(service.config, git, branchName, existence.remote);
     if (exclusion && !params.force) {
@@ -628,7 +636,7 @@ export async function handleCreateWorktree(
           worktreeExisted,
           pushed: false,
           pushError: err instanceof Error ? err.message : String(err),
-          warning: pruneRiskWarning(branchName, exclusion, true),
+          warning: withFetchWarning(pruneRiskWarning(branchName, exclusion, true)),
         });
       }
     }
@@ -640,7 +648,7 @@ export async function handleCreateWorktree(
       created,
       worktreeExisted,
       pushed,
-      warning: pruneRiskWarning(branchName, exclusion, !existence.remote && !pushed),
+      warning: withFetchWarning(pruneRiskWarning(branchName, exclusion, !existence.remote && !pushed)),
     });
   });
 }
