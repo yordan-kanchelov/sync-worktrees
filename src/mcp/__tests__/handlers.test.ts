@@ -139,6 +139,16 @@ function makeDiscovered(overrides: Partial<DiscoveredRepoContext> = {}): Discove
   };
 }
 
+function syncOutcome(): Record<string, unknown> {
+  return {
+    mode: "worktree",
+    started: true,
+    counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 0, noop: 0 },
+    actions: [],
+    durationMs: 0,
+  };
+}
+
 type MockGit = {
   fetchAll: ReturnType<typeof vi.fn>;
   fetchBranch: ReturnType<typeof vi.fn>;
@@ -153,6 +163,7 @@ type MockGit = {
   getWorktreeMetadata: ReturnType<typeof vi.fn>;
   getRemoteBranchesWithActivity: ReturnType<typeof vi.fn>;
   resolveNewWorktreePath: ReturnType<typeof vi.fn>;
+  didInitializeFetch: ReturnType<typeof vi.fn>;
 };
 
 function makeCtx(opts: {
@@ -190,6 +201,7 @@ function makeCtx(opts: {
       .mockImplementation(async (branch: unknown) =>
         new PathResolutionService().getBranchWorktreePath("/repo/worktrees", String(branch)),
       ),
+    didInitializeFetch: vi.fn<any>().mockReturnValue(false),
     ...opts.git,
   };
 
@@ -210,6 +222,7 @@ function makeCtx(opts: {
         started: true,
         counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 0, noop: 0 },
         actions: [],
+        durationMs: 5,
       },
     }),
     getGitService: () => git,
@@ -569,6 +582,52 @@ describe("handleCreateWorktree", () => {
 
     expect(body.success).toBe(true);
     expect(callOrder).toEqual(["fetchAll", "branchExists"]);
+  });
+
+  it("skips its own fetch when initialize just fetched in the same operation", async () => {
+    const { ctx, git, service } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: true }),
+        didInitializeFetch: vi.fn<any>().mockReturnValue(true),
+      },
+    });
+    service.isInitialized.mockReturnValue(false);
+
+    const body = parseResponse(await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" }));
+
+    expect(body.success).toBe(true);
+    expect(service.initializeUnlocked).toHaveBeenCalledTimes(1);
+    expect(git.fetchAll).not.toHaveBeenCalled();
+  });
+
+  it("still fetches when initialize ran without fetching (remote refs already present)", async () => {
+    const { ctx, git, service } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: true }),
+        didInitializeFetch: vi.fn<any>().mockReturnValue(false),
+      },
+    });
+    service.isInitialized.mockReturnValue(false);
+
+    await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+
+    expect(service.initializeUnlocked).toHaveBeenCalledTimes(1);
+    expect(git.fetchAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists worktrees once and hands that listing to path resolution", async () => {
+    const listing = [{ path: "/repo/worktrees/main", branch: "main" }];
+    const { ctx, git } = makeCtx({
+      git: {
+        branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: true }),
+        getWorktrees: vi.fn<any>().mockResolvedValue(listing),
+      },
+    });
+
+    await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
+
+    expect(git.getWorktrees).toHaveBeenCalledTimes(1);
+    expect(git.resolveNewWorktreePath).toHaveBeenCalledWith("feature/x", listing);
   });
 
   it("creates and pushes a missing branch by default when baseBranch is provided", async () => {
@@ -1169,17 +1228,23 @@ describe("handleSync", () => {
     expect(body.outcome.mode).toBe("clone");
   });
 
-  it("treats a result without an outcome as a success with no failures", async () => {
+  it("returns the sync's own outcome, durationMs included, unchanged", async () => {
     const { ctx, service } = makeCtx({});
-    service.sync.mockResolvedValue({ started: true });
+    const outcome = {
+      repoName: "test",
+      mode: "worktree",
+      started: true,
+      counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 0, noop: 0 },
+      actions: [],
+      durationMs: 1234,
+    };
+    service.sync.mockResolvedValue({ started: true, outcome });
 
     const result = await invoke(handleSync, ctx, {});
     const body = parseResponse(result);
 
     expect(body.success).toBe(true);
-    expect(body.failed).toBe(0);
-    expect(body.failures).toEqual([]);
-    expect(body.outcome.counts.failed).toBe(0);
+    expect(body.outcome).toEqual(outcome);
     expect(syncOutputSchema.safeParse(result.structuredContent).success).toBe(true);
   });
 
@@ -1342,7 +1407,7 @@ describe("handleSync", () => {
     service.sync.mockImplementation(async () => {
       for (const l of progressListeners) l({ phase: "fetch", message: "Fetching" });
       for (const l of progressListeners) l({ phase: "create", message: "Creating" });
-      return { started: true };
+      return { started: true, outcome: syncOutcome() };
     });
 
     const notify = vi.fn<any>().mockResolvedValue(undefined);
@@ -1368,7 +1433,7 @@ describe("handleSync", () => {
     service.sync.mockImplementation(async () => {
       emit({ phase: "create", message: "Creating worktrees: 'feature-1' (1/3)", processed: 1, total: 3 });
       emit({ phase: "create", message: "Creating worktrees: 'feature-2' (2/3)", processed: 2, total: 3 });
-      return { started: true };
+      return { started: true, outcome: syncOutcome() };
     });
 
     const notify = vi.fn<any>().mockResolvedValue(undefined);
@@ -1418,7 +1483,7 @@ describe("handleSync", () => {
       // Same phase, second stage: the count starts over at 1.
       emit({ phase: "prune", message: "Pruning stale worktrees: 'g1' (1/1)", processed: 1, total: 1 });
       emit({ phase: "cleanup", message: "Cleanup complete" });
-      return { started: true };
+      return { started: true, outcome: syncOutcome() };
     });
 
     const notify = vi.fn<any>().mockResolvedValue(undefined);
@@ -1465,7 +1530,7 @@ describe("handleSync", () => {
       for (const processed of [1, 2, 3]) {
         emit({ phase: "create", message: `Creating worktrees: 'b${processed}' (${processed}/3)`, processed, total: 3 });
       }
-      return { started: true };
+      return { started: true, outcome: syncOutcome() };
     });
 
     const notify = vi.fn<any>().mockResolvedValue(undefined);
@@ -1494,7 +1559,7 @@ describe("handleSync", () => {
       // The attempt was abandoned there; the retry plans far fewer items.
       emit({ phase: "update", message: "Checking worktrees for updates: 'a' (1/4)", processed: 1, total: 4 });
       emit({ phase: "update", message: "Checking worktrees for updates: 'b' (2/4)", processed: 2, total: 4 });
-      return { started: true };
+      return { started: true, outcome: syncOutcome() };
     });
 
     const notify = vi.fn<any>().mockResolvedValue(undefined);
@@ -2318,7 +2383,7 @@ describe("handleCreateWorktree target naming", () => {
 
     await invoke(handleCreateWorktree, ctx, { branchName: "feature/x" });
 
-    expect(git.resolveNewWorktreePath).toHaveBeenCalledWith("feature/x");
+    expect(git.resolveNewWorktreePath).toHaveBeenCalledWith("feature/x", []);
     expect(git.addWorktree).toHaveBeenCalledWith("feature/x", `/repo/worktrees/${hashed}`);
   });
 });

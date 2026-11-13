@@ -140,17 +140,6 @@ export class SyncOutcomeAccumulator {
   }
 }
 
-export function createEmptySyncOutcome(mode: SyncOutcomeMode, repoName?: string, durationMs?: number): SyncOutcome {
-  return {
-    repoName,
-    mode,
-    started: true,
-    counts: cloneCounts(EMPTY_COUNTS),
-    actions: [],
-    durationMs,
-  };
-}
-
 export function cloneSkipToOutcomeAction(
   reason: CloneSkipReason,
   details: { branch?: string; path?: string } = {},

@@ -70,6 +70,7 @@ export class GitService {
   private readonly bareRepoPathOrNull: string | null;
   private mainWorktreePath: string;
   private defaultBranch: string = GIT_CONSTANTS.DEFAULT_BRANCH; // Will be updated after detection
+  private initializeFetched = false;
   private metadataService: WorktreeMetadataService;
   private statusService: WorktreeStatusService;
   // Optional locks off, for callers that only report (MCP read-only tools).
@@ -290,6 +291,11 @@ export class GitService {
     this.sparseCheckoutService.updateLogger(logger);
   }
 
+  // Whether the last initialize() fetched; lets MCP skip a second fetch.
+  didInitializeFetch(): boolean {
+    return this.initializeFetched;
+  }
+
   async initialize(): Promise<SimpleGit> {
     await this.bareRepo.ensureBareRepository();
     const bareGit = this.getCachedGit(this.bareRepoPath);
@@ -297,9 +303,11 @@ export class GitService {
     // Fetch only when there are no remote-tracking refs yet (a fresh clone):
     // sync() fetches right after, and the TUI wizard and MCP fetch themselves.
     const remoteRefs = await bareGit.raw(["for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes/origin/"]);
+    this.initializeFetched = false;
     if (remoteRefs.trim() === "") {
       this.logger.info("Fetching remote branches...");
       await this.getCachedNetworkGit(this.bareRepoPath).fetch(["--all", "--progress"]);
+      this.initializeFetched = true;
     }
 
     // Detect the default branch (works from local refs even without fetch)
@@ -670,13 +678,13 @@ export class GitService {
    * PathResolutionService.branchDirectoryName against origin's branches, the
    * registered worktrees and what is on disk.
    */
-  async resolveNewWorktreePath(branchName: string): Promise<string> {
+  async resolveNewWorktreePath(branchName: string, listed?: RegisteredWorktree[]): Promise<string> {
     const worktreeDir = path.resolve(this.config.worktreeDir);
     // Detached checkouts are left to the disk probe, as in the sync: one of
     // this repository's at the plain name keeps that name, so the caller meets
     // it there (and refuses or adopts it) instead of creating a second
     // worktree next to it.
-    const worktrees = await this.getWorktrees();
+    const worktrees = listed ?? (await this.getWorktrees());
     for (const worktree of worktrees) {
       if (worktree.branch === branchName && (await sameWorktreePath(path.dirname(worktree.path), worktreeDir))) {
         return worktree.path;

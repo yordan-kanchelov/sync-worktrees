@@ -4,7 +4,6 @@ import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../constants";
 import { SyncWorktreesError } from "../errors";
-import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { RefScanScope, WorktreeStatusService } from "../services/worktree-status.service";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
@@ -580,16 +579,20 @@ export async function handleCreateWorktree(
   ensureWorktreeModeService(service, "create_worktree");
 
   return runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
+    let initFetched = false;
     if (!service.isInitialized()) {
       await service.initializeUnlocked();
+      initFetched = git.didInitializeFetch();
     }
 
     // Best-effort: offline, existence is judged from the last fetch's refs.
     let fetchWarning: string | undefined;
-    try {
-      await git.fetchAll();
-    } catch (err) {
-      fetchWarning = `Could not fetch from origin (${redactSecretsInText(getErrorMessage(err))}); whether '${branchName}' exists on origin was judged from the last successful fetch.`;
+    if (!initFetched) {
+      try {
+        await git.fetchAll();
+      } catch (err) {
+        fetchWarning = `Could not fetch from origin (${redactSecretsInText(getErrorMessage(err))}); whether '${branchName}' exists on origin was judged from the last successful fetch.`;
+      }
     }
     const existence = await git.branchExists(branchName);
     const withFetchWarning = (warning: string | undefined): string | undefined =>
@@ -600,8 +603,8 @@ export async function handleCreateWorktree(
       throw new SyncWorktreesError(`${exclusion} Adjust the config or pass force: true.`, "BRANCH_FILTERED");
     }
 
-    const worktreePath = await git.resolveNewWorktreePath(branchName);
     const existing = await git.getWorktrees();
+    const worktreePath = await git.resolveNewWorktreePath(branchName, existing);
     const collision = existing.find((w) => pathsEqual(w.path, worktreePath) && w.branch !== branchName);
     if (collision) {
       throw new Error(
@@ -678,13 +681,7 @@ export async function handleSync(
     }
     const duration = Date.now() - start;
     ctx.invalidateDiscovered();
-    const outcome =
-      result.outcome ??
-      createEmptySyncOutcome(
-        isCloneModeService(service) ? "clone" : "worktree",
-        ctx.getEntry(params.repoName)?.name ?? params.repoName,
-        duration,
-      );
+    const outcome = result.outcome;
     const skips = service.getRecordedSkips().map((reason) => ({
       ...reason,
       message: formatCloneSkipReason(reason),
@@ -701,10 +698,7 @@ export async function handleSync(
       duration,
       failed,
       failures,
-      outcome: {
-        ...outcome,
-        durationMs: outcome.durationMs ?? duration,
-      },
+      outcome,
       skips,
     });
   } finally {

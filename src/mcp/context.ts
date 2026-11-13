@@ -250,24 +250,7 @@ export class RepositoryContext {
     const setDefaultCurrent = options.setDefaultCurrent ?? true;
     const absolutePath = path.resolve(configPath);
     const fingerprint = await configFileFingerprint(absolutePath);
-    const configFile = await this.configLoader.loadConfigFile(absolutePath);
-
-    const configDir = path.dirname(absolutePath);
-    const globalDefaults = configFile.defaults;
-
-    const resolvedAll: RepositoryConfig[] = [];
-    for (const repo of configFile.repositories) {
-      const resolved = this.configLoader.resolveRepositoryConfig(
-        repo,
-        globalDefaults,
-        configDir,
-        configFile.retry,
-        configFile.repositories,
-        configFile.parallelism,
-      );
-      resolvedAll.push(resolved);
-    }
-    this.configLoader.detectPathCollisions(resolvedAll);
+    const { repositories: resolvedAll, configFile } = await this.configLoader.buildRepositories(absolutePath);
     const realPaths = await Promise.all(resolvedAll.map(realRepoPaths));
 
     for (const [name, entry] of this.repos) {
