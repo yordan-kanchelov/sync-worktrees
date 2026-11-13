@@ -9,6 +9,8 @@ import docsTrashAndRecovery from "../../../docs/trash-and-recovery.md?raw";
 import docsHooksAndFileCopying from "../../../docs/hooks-and-file-copying.md?raw";
 import docsTui from "../../../docs/tui.md?raw";
 import docsMcp from "../../../docs/mcp.md?raw";
+import docsDryRun from "../../../docs/dry-run.md?raw";
+import docsDoctor from "../../../docs/doctor.md?raw";
 
 const byOrder = (a: { data: { order: number } }, b: { data: { order: number } }) => a.data.order - b.data.order;
 
@@ -21,6 +23,8 @@ const docs = [
   { title: "Hooks and file copying", path: "docs/hooks-and-file-copying.md", text: docsHooksAndFileCopying },
   { title: "Interactive TUI", path: "docs/tui.md", text: docsTui },
   { title: "MCP server", path: "docs/mcp.md", text: docsMcp },
+  { title: "Previewing a sync", path: "docs/dry-run.md", text: docsDryRun },
+  { title: "Checking your setup", path: "docs/doctor.md", text: docsDoctor },
 ];
 
 export const GET: APIRoute = async () => {
@@ -67,7 +71,7 @@ export const GET: APIRoute = async () => {
     c.runTui,
     "```",
     "",
-    "For CI or scripted runs, add --runOnce.",
+    "For CI or scripted runs, add --run-once.",
     "",
     "## AI agents",
     "",

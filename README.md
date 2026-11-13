@@ -154,9 +154,9 @@ any repository failed (see [Exit codes](#exit-codes)). sync-worktrees sets `GIT_
 it yourself), so credentials must come from a credential helper or `ssh-agent`. See
 [Authentication](./docs/configuration.md#authentication).
 
-Without `--config`, `sync-worktrees`, `list` and `trash` use `$SYNC_WORKTREES_CONFIG` when it is set, and otherwise
-the nearest `sync-worktrees.config.{js,mjs,cjs,ts}` in the current directory or a parent, the way git finds `.git`.
-The walk stops at your home directory when it starts inside it. `sync-worktrees` and `list` print the file they used.
+Without `--config`, `sync-worktrees`, `list`, `trash` and `doctor` use `$SYNC_WORKTREES_CONFIG` when it is set, and
+otherwise the nearest `sync-worktrees.config.{js,mjs,cjs,ts}` in the current directory or a parent, the way git finds
+`.git`. The walk stops at your home directory when it starts inside it. `sync-worktrees` and `list` print the file they used.
 If the config lives elsewhere, pass it explicitly:
 
 ```bash
@@ -404,7 +404,7 @@ Subcommands:
 ## Documentation
 
 - [docs/](./docs/README.md): one reference page per topic: configuration, clone mode, sparse checkout, trash and
-  recovery, hooks and file copying, the TUI, the MCP server.
+  recovery, hooks and file copying, the TUI, the MCP server, previewing a sync, checking your setup.
 - [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js): every setting, annotated.
 - [CHANGELOG.md](./CHANGELOG.md): what changed in each release.
 - [sync-worktrees.com](https://sync-worktrees.com): the landing page, the same FAQ, and

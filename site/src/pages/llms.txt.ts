@@ -29,6 +29,8 @@ sync-worktrees keeps every selected branch checked out as its own folder, one fo
 - [Hooks and file copying](${repo}/blob/main/docs/hooks-and-file-copying.md): \`hooks.onBranchCreated\`, \`filesToCopyOnBranchCreate\`, pattern rules, hook timeout and quit semantics.
 - [Interactive TUI](${repo}/blob/main/docs/tui.md): Every key, the wizards, status flags, terminal and editor launch.
 - [MCP server](${repo}/blob/main/docs/mcp.md): Install in each client, auto-detect, every tool, safety, parallel agents.
+- [Previewing a sync](${repo}/blob/main/docs/dry-run.md): \`sync-worktrees --dry-run\`: every step it reports, what it fetches and what it never touches, the \`--json\` shape.
+- [Checking your setup](${repo}/blob/main/docs/doctor.md): \`sync-worktrees doctor\`: every check, what passes, the exit code and the \`--json\` shape.
 - [Full landing-page text](${site}/llms-full.txt): Hero copy, problem statement, feature descriptions, every MCP config snippet, FAQ, the README and its docs pages, all as plain text.
 - [Example config](${repo}/blob/main/sync-worktrees.config.example.js): Annotated reference covering worktree mode, clone mode, filtering, retry, and cron scheduling.
 
