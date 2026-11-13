@@ -671,6 +671,40 @@ describe("App", () => {
     });
   });
 
+  describe("repositoriesReloaded event", () => {
+    // A reload that reorders the repositories at the same count used to leave
+    // an open picker on the old list, so its indexes named other repositories.
+    it("closes an open picker so no call goes out with a stale index", async () => {
+      const getRepositoryList = vi.fn().mockReturnValue([
+        { index: 0, name: "api", repoUrl: "" },
+        { index: 1, name: "web", repoUrl: "" },
+      ]);
+      const getWorktreesForRepo = vi.fn().mockResolvedValue([{ path: "/w/x", branch: "main" }]);
+      const { stdin, lastFrame } = render(
+        <App {...defaultProps} getRepositoryList={getRepositoryList} getWorktreesForRepo={getWorktreesForRepo} />,
+      );
+      await waitForStateUpdate();
+
+      stdin.write("o");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Select repository");
+
+      getRepositoryList.mockReturnValue([
+        { index: 0, name: "web", repoUrl: "" },
+        { index: 1, name: "api", repoUrl: "" },
+      ]);
+      appEvents.emit("updateRepositoryCount", 2);
+      appEvents.emit("repositoriesReloaded", 1);
+      await waitForStateUpdate();
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("Select repository");
+      expect(getWorktreesForRepo).not.toHaveBeenCalled();
+    });
+  });
+
   describe("updateCronSchedule event", () => {
     it("should update cron schedule when event is emitted", async () => {
       const { lastFrame } = render(<App {...defaultProps} cronSchedule="0 * * * *" />);

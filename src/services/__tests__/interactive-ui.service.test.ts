@@ -1454,6 +1454,32 @@ describe("InteractiveUIService", () => {
 
         void service.destroy();
       });
+
+      it("emits an increasing repositoriesReloaded generation on every successful reload", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo-1",
+              repoUrl: "https://github.com/test/repo1.git",
+              worktreeDir: "/test/worktrees1",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+        const generations: number[] = [];
+        service.getEvents().on("repositoriesReloaded", (generation) => generations.push(generation));
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+        await onReload();
+
+        expect(generations).toEqual([1, 2]);
+
+        void service.destroy();
+      });
     });
 
     describe("service lifecycle on reload", () => {

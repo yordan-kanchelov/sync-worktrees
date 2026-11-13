@@ -161,6 +161,7 @@ const App: React.FC<AppProps> = ({
   const [diskSpaceUsed, setDiskSpaceUsed] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [repoCount, setRepoCount] = useState(repositoryCount);
+  const [reloadGeneration, setReloadGeneration] = useState(0);
   const [schedule, setSchedule] = useState<CronScheduleDisplay>(cronSchedule);
   const [dashboardRows, setDashboardRows] = useState<readonly RepositoryDashboardRow[]>([]);
   // `l` folds the log to one line; `+` / `-` move the line between it and the
@@ -404,6 +405,15 @@ const App: React.FC<AppProps> = ({
       events.on("updateRepositoryCount", (count: number) => {
         setRepoCount(count);
       }),
+      // An open picker holds indexes into the old list; close it.
+      events.on("repositoriesReloaded", (generation: number) => {
+        setReloadGeneration(generation);
+        setShowBranchWizard(false);
+        setShowOpenEditorWizard(false);
+        setShowWorktreeStatus(false);
+        setShowSwitcher(false);
+        setStatusTarget(null);
+      }),
       events.on("updateCronSchedule", (newSchedule: CronScheduleDisplay) => {
         setSchedule(newSchedule);
       }),
@@ -440,14 +450,13 @@ const App: React.FC<AppProps> = ({
 
   // One list per opened modal. Re-reading it on every render handed the modal
   // a fresh array for every log line and progress event, which re-ran every
-  // effect keyed on it. A reload that changes the repository count while a
-  // modal is open still refreshes it.
+  // effect keyed on it. A reload closes the pickers and re-keys the list.
   const showRepositoryPicker = showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showSwitcher;
   const repositories = useMemo(
     () => (showRepositoryPicker ? getRepositoryList() : []),
-    // `repoCount` is not read, only a signal that a reload changed the list.
+    // `reloadGeneration` is not read, only a signal that a reload changed the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [showRepositoryPicker, getRepositoryList, repoCount],
+    [showRepositoryPicker, getRepositoryList, reloadGeneration],
   );
   // StatusBar is memoised; a fresh array here would defeat that on every log flush.
   const activeOpLabels = useMemo(() => activeOps.map((op) => op.label), [activeOps]);

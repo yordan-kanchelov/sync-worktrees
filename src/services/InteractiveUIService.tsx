@@ -48,6 +48,7 @@ export class InteractiveUIService {
   private readonly diskUsage: DiskUsageCache;
   private maxRepositories: number;
   private reloadInProgress = false;
+  private reloadGeneration = 0;
   private isDestroyed = false;
   private readonly events: AppEventEmitter;
   private ownsEvents: boolean;
@@ -501,6 +502,7 @@ export class InteractiveUIService {
       this.scheduler.setupCronJobs();
 
       this.events.emit("updateRepositoryCount", this.repositoryCount);
+      this.events.emit("repositoriesReloaded", ++this.reloadGeneration);
       this.events.emit("updateCronSchedule", this.scheduler.getScheduledCronExpressions());
       this.dashboard.publish();
 
