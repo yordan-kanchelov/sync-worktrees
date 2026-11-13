@@ -340,6 +340,23 @@ describe("ConfigLoaderService", () => {
       expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain("s3cr3t-token");
     });
 
+    it("warns about repoUrls that differ only by a trailing .git", async () => {
+      const configPath = path.join(tempDir, "duplicate-url-git-suffix.config.js");
+      const configContent = `
+        export default {
+          repositories: [
+            { name: "first", repoUrl: "https://example.com/o/r.git", worktreeDir: "/worktrees1" },
+            { name: "second", repoUrl: "https://example.com/o/r", worktreeDir: "/worktrees2" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await configLoader.loadConfigFile(configPath);
+
+      expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("appears in multiple entries (first, second)"));
+    });
+
     it("should throw error for empty repositories array", async () => {
       const configPath = path.join(tempDir, "empty.config.js");
       const configContent = `
@@ -3642,6 +3659,17 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       expect(r2.bareRepoDir).toBe("/cfg/.bare/repo");
     });
 
+    it("treats repoUrls that differ only by a trailing .git as duplicates", () => {
+      const all = [
+        makeRepo("first", { repoUrl: "https://example.com/o/r.git" }),
+        makeRepo("second", { repoUrl: "https://example.com/o/r" }),
+      ];
+      const r1 = configLoader.resolveRepositoryConfig(all[0], undefined, "/cfg", undefined, all);
+      const r2 = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
+      expect(r1.bareRepoDir).toBe("/cfg/.bare/r");
+      expect(r2.bareRepoDir).toBe("/cfg/.bare/second");
+    });
+
     it("sanitizes name with slashes for path", () => {
       const all = [makeRepo("first"), makeRepo("group/sub-name")];
       const resolved = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
@@ -3849,6 +3877,23 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       ];
       expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
       expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'a' and 'b'.*same bareRepoDir/);
+    });
+
+    it("does not call different repositories that share a basename duplicate repoUrls", () => {
+      const repos = [
+        makeEntry("a", { repoUrl: "https://github.com/one/app.git", worktreeDir: "/w/a", bareRepoDir: "/b/app" }),
+        makeEntry("b", { repoUrl: "https://github.com/two/app.git", worktreeDir: "/w/b", bareRepoDir: "/b/app" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/same bareRepoDir/);
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow(/duplicate repoUrl/);
+    });
+
+    it("keeps the duplicate repoUrl hint when the repoUrls match after normalization", () => {
+      const repos = [
+        makeEntry("a", { repoUrl: "https://example.com/o/r.git", worktreeDir: "/w/a", bareRepoDir: "/b/r" }),
+        makeEntry("b", { repoUrl: "https://example.com/o/r", worktreeDir: "/w/b", bareRepoDir: "/b/r" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/duplicate repoUrl/);
     });
 
     it("does not throw when bareRepoDirs differ", () => {

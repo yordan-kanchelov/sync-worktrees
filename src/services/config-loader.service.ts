@@ -7,7 +7,13 @@ import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
 import { fileExists } from "../utils/file-exists";
-import { getDefaultBareRepoDir, parseGitUrl, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
+import {
+  getDefaultBareRepoDir,
+  normalizeRepoUrlForComparison,
+  parseGitUrl,
+  redactRepoUrl,
+  redactSecretsInText,
+} from "../utils/git-url";
 import { isPathEqualOrInside, isPathStrictlyInside, normalizePathForCompare, pathsEqual } from "../utils/path-compare";
 import { REPOSITORY_MODES } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
@@ -459,13 +465,14 @@ export class ConfigLoaderService {
   }
 
   private warnOnDuplicateRepoUrls(repositories: RepositoryConfig[]): void {
-    const seen = new Map<string, string[]>();
+    const seen = new Map<string, { url: string; names: string[] }>();
     for (const repo of repositories) {
-      const list = seen.get(repo.repoUrl) ?? [];
-      list.push(repo.name);
-      seen.set(repo.repoUrl, list);
+      const key = normalizeRepoUrlForComparison(repo.repoUrl);
+      const entry = seen.get(key) ?? { url: repo.repoUrl, names: [] };
+      entry.names.push(repo.name);
+      seen.set(key, entry);
     }
-    for (const [url, names] of seen) {
+    for (const { url, names } of seen.values()) {
       if (names.length > 1) {
         this.warn(
           `[sync-worktrees] repoUrl '${redactRepoUrl(url)}' appears in multiple entries (${names.join(", ")}). ` +
@@ -697,9 +704,10 @@ export class ConfigLoaderService {
   }
 
   private isDuplicateRepoUrl(repo: RepositoryConfig, all: RepositoryConfig[], defaults?: Partial<Config>): boolean {
+    const url = normalizeRepoUrlForComparison(repo.repoUrl);
     const firstIndex = all.findIndex((r) => {
       const mode = r.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
-      return r.repoUrl === repo.repoUrl && mode === REPOSITORY_MODES.WORKTREE;
+      return normalizeRepoUrlForComparison(r.repoUrl) === url && mode === REPOSITORY_MODES.WORKTREE;
     });
     const myIndex = all.indexOf(repo);
     return firstIndex !== -1 && myIndex !== -1 && myIndex !== firstIndex;
@@ -731,10 +739,13 @@ export class ConfigLoaderService {
     }
 
     if (a.bareRepoDir && b.bareRepoDir && pathsEqual(a.bareRepoDir, b.bareRepoDir)) {
+      const sameUrl = normalizeRepoUrlForComparison(a.repoUrl) === normalizeRepoUrlForComparison(b.repoUrl);
       throw new ConfigValidationError(
         `Repositories '${a.name}' and '${b.name}' bareRepoDir`,
         `resolve to the same bareRepoDir '${path.resolve(a.bareRepoDir)}'. ` +
-          `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`,
+          (sameUrl
+            ? `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`
+            : `Set 'bareRepoDir' explicitly so each repository gets its own directory.`),
       );
     }
 
