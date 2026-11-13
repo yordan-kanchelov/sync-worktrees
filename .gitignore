@@ -5,7 +5,6 @@ dist/
 .env
 .env.local
 coverage/
-.nyc_output/
 *.tsbuildinfo
 
 # Local Codex CLI config

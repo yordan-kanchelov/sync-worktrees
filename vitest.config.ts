@@ -20,13 +20,13 @@ export default defineConfig({
     environment: "node",
     // `include` lives on each project: a project that extends this config would
     // concatenate its own list onto a root one, not replace it.
-    exclude: ["node_modules", "dist", "**/*.skip"],
+    exclude: ["node_modules", "dist"],
     coverage: {
       provider: "v8",
       // json-summary feeds the PR job summary (scripts/coverage-summary.mjs).
       reporter: ["text", "lcov", "html", "json-summary"],
       include: ["src/**/*.ts", "src/**/*.tsx"],
-      exclude: ["src/**/*.d.ts", "src/index.ts", "src/utils/cli.ts", "src/**/__tests__/**", "src/**/__mocks__/**"],
+      exclude: ["src/**/*.d.ts", "src/index.ts", "src/utils/cli.ts", "src/**/__tests__/**"],
       thresholds: {
         branches: 74,
         functions: 73,
@@ -64,10 +64,5 @@ export default defineConfig({
         },
       },
     ],
-  },
-  resolve: {
-    alias: {
-      "~": path.resolve(__dirname, "./src"),
-    },
   },
 });

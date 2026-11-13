@@ -4,15 +4,13 @@ import * as path from "path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const shouldSkip = process.env.SKIP_E2E_TESTS === "true";
-const describeOrSkip = shouldSkip ? describe.skip : describe;
 const shouldRunNetworkE2E = process.env.RUN_NETWORK_E2E === "true";
 const itNetwork = shouldRunNetworkE2E ? it : it.skip;
 
 const HELLO_WORLD = "https://github.com/octocat/Hello-World.git";
 const GITIGNORE = "https://github.com/github/gitignore.git";
 
-describeOrSkip("Clone-mode E2E tests", () => {
+describe("Clone-mode E2E tests", () => {
   const cliPath = path.join(process.cwd(), "dist", "index.js");
   const tmpBase = path.join(process.cwd(), "tmp-e2e-clone-mode");
 

@@ -12,9 +12,6 @@ import { createMockLogger } from "../test-utils";
 import type { GitService } from "../../services/git.service";
 import type { Config } from "../../types";
 
-const shouldSkip = process.env.SKIP_E2E_TESTS === "true";
-const describeOrSkip = shouldSkip ? describe.skip : describe;
-
 function git(repo: string, args: string): string {
   return execSync(`git -C "${repo}" ${args}`, { encoding: "utf-8" }).trim();
 }
@@ -47,7 +44,7 @@ function objectExists(repo: string, sha: string): boolean {
   }
 }
 
-describeOrSkip("GitMaintenanceService E2E", () => {
+describe("GitMaintenanceService E2E", () => {
   let repo: string;
   const gitServiceStub = { getBareRepoPath: () => "" } as unknown as GitService;
 

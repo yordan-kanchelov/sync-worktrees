@@ -90,38 +90,9 @@ export async function cleanupTempDirectories(): Promise<void> {
   tempDirs = [];
 }
 
-// File System Mock Helpers
-export function mockFileSystem(): {
-  mkdir: ReturnType<typeof vi.spyOn>;
-  access: ReturnType<typeof vi.spyOn>;
-  readdir: ReturnType<typeof vi.spyOn>;
-  rm: ReturnType<typeof vi.spyOn>;
-  stat: ReturnType<typeof vi.spyOn>;
-  restore: () => void;
-} {
-  const mocks = {
-    mkdir: vi.spyOn(fs, "mkdir").mockResolvedValue(undefined as any),
-    access: vi.spyOn(fs, "access").mockResolvedValue(undefined as any),
-    readdir: vi.spyOn(fs, "readdir").mockResolvedValue([] as any),
-    rm: vi.spyOn(fs, "rm").mockResolvedValue(undefined as any),
-    stat: vi.spyOn(fs, "stat").mockImplementation(() => {
-      throw new Error(`ENOENT: no such file or directory`);
-    }),
-  };
-
-  return {
-    ...mocks,
-    restore: () => Object.values(mocks).forEach((mock) => mock.mockRestore()),
-  } as any;
-}
-
 // Git Raw Output Helpers
 export function createWorktreeListOutput(worktrees: Array<{ path: string; branch: string; commit: string }>): string {
   return worktrees.map((wt) => `worktree ${wt.path}\nHEAD ${wt.commit}\nbranch refs/heads/${wt.branch}\n`).join("\n");
-}
-
-export function createBranchListOutput(branches: string[]): string {
-  return branches.map((branch) => `  remotes/origin/${branch}`).join("\n");
 }
 
 // One `for-each-ref --format=%(refname)%00%(objectname) refs/remotes/origin`
@@ -135,16 +106,6 @@ export function createRemoteRefListOutput(entries: Array<string | { ref: string;
       typeof entry === "string" ? `refs/remotes/origin/${entry}\0${entry}-oid` : `${entry.ref}\0${entry.oid}`,
     )
     .join("\n");
-}
-
-// Test Execution Helper
-export async function withTempDirectory<T>(fn: (tempDir: string) => Promise<T>): Promise<T> {
-  const tempDir = await createTempDirectory();
-  try {
-    return await fn(tempDir);
-  } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
-  }
 }
 
 // Mock Response Builders
@@ -166,18 +127,6 @@ export function buildGitStatusResponse(
     deleted,
     renamed: [],
     staged: [],
-  };
-}
-
-export function buildGitLogResponse(commits: Array<{ hash: string; message: string }> = []) {
-  return {
-    all: commits.map((c) => ({
-      hash: c.hash,
-      message: c.message,
-      date: new Date().toISOString(),
-      author_name: "Test Author",
-      author_email: "test@example.com",
-    })),
   };
 }
 

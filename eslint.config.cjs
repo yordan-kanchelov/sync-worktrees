@@ -4,12 +4,7 @@ const reactHooks = require("eslint-plugin-react-hooks");
 const globals = require("globals");
 const tseslint = require("typescript-eslint");
 
-const testFiles = [
-  "src/**/__tests__/**/*.{ts,tsx}",
-  "src/**/__mocks__/**/*.{ts,tsx}",
-  "src/**/*.test.{ts,tsx}",
-  "src/**/*.spec.{ts,tsx}",
-];
+const testFiles = ["src/**/__tests__/**/*.{ts,tsx}", "src/**/*.test.{ts,tsx}"];
 
 module.exports = defineConfig([
   {
@@ -29,7 +24,7 @@ module.exports = defineConfig([
     extends: [tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: {
-        // tsconfig.json covers the src/ sources, tsconfig.spec.json covers tests and mocks.
+        // tsconfig.json covers the src/ sources, tsconfig.spec.json covers tests.
         project: ["./tsconfig.json", "./tsconfig.spec.json"],
         tsconfigRootDir: __dirname,
       },

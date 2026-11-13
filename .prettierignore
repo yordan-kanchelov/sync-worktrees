@@ -6,7 +6,7 @@ node_modules/
 pnpm-lock.yaml
 .mcp-stdio-test-*
 
-# Markdown is hand-wrapped (README, TODO, review notes) or generated (CHANGELOG, changesets)
+# Markdown is hand-wrapped (README, review notes) or generated (CHANGELOG, changesets)
 *.md
 
 # Binary assets
