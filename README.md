@@ -16,8 +16,9 @@ discarded. A new machine is one config file.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./assets/demo-dark.gif">
   <source media="(prefers-color-scheme: light)" srcset="./assets/demo-light.gif">
-  <img alt="Demo: the config, the TUI syncing two repositories, the worktree status view, one folder per branch, then a
-    one-shot sync that adds a new upstream branch and moves a deleted one to .trash/"
+  <img alt="Demo: the config, the TUI syncing two repositories, the / switcher filtering worktrees, the worktree status
+    view, one folder per branch, a --dry-run preview, then a one-shot sync that adds a new upstream branch and moves a
+    deleted one to .trash/, and a cd into the new branch's folder"
     src="https://raw.githubusercontent.com/yordan-kanchelov/sync-worktrees/main/assets/demo-dark.gif" width="1000">
 </picture>
 

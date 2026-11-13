@@ -29,7 +29,8 @@ iteration 2 (two APPROVE, 47 findings → 35 pain points, no blockers) was preci
 26 findings → 17 pain points) was the closing pass.
 
 How to re-verify: every relative link's target must exist and every `#anchor` must match a GitHub-slugged heading in
-its target file (131 links and anchors across `README.md` and the seven `docs/` pages); a stock runner such as
+its target file (131 links and anchors across `README.md` and the seven `docs/` pages of the time; there are nine
+now); a stock runner such as
 `npx markdown-link-check README.md docs/*.md` (or `lychee README.md docs/*.md`) reproduces the check — the loop used a
 small node script kept outside the repository. To re-verify a move, `grep -l "<phrase>" README.md docs/*.md` for a
 distinctive phrase of the old README (the iteration 1 spot check used 37 of them, all found).
