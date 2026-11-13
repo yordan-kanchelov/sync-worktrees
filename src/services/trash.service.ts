@@ -422,7 +422,7 @@ export class TrashService {
     ]);
   }
 
-  // The full reversible-removal sequence shared by prune and manual removal:
+  // The full reversible-removal sequence shared by prune and diverge-replace:
   // payload to trash, dangling registration cleared, branch ref deleted.
   // A ref-delete failure is a hygiene problem, not a failed removal — the
   // payload and pin ref already capture everything restore needs, and restore
@@ -770,7 +770,7 @@ export class TrashService {
    * and restore() has already refused a destination that existed, so there is
    * nothing in there to preserve but that link. Take it, drop the directory,
    * rename the payload into its place and write the link back over the stale
-   * one the payload carries — the README's manual recipe, which repairs that
+   * one the payload carries — the manual recipe in docs/trash-and-recovery.md, which repairs that
    * link after its `cp -R`, in O(1) rather than O(payload) under the
    * repository lock. Git is unbothered by the replacement: its admin dir
    * addresses the checkout by path, so an identical `.git` at the same path

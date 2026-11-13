@@ -29,8 +29,8 @@ export interface RemovalAuditEntry {
   error?: string;
 }
 
-// Append-only JSONL log of every destructive worktree operation. Console logs
-// die with the terminal; this record survives the process.
+// Append-only JSONL log of destructive worktree operations (not the stale-dir
+// rmdir/quarantine at worktree creation). It outlives the terminal's logs.
 export class RemovalAuditService {
   constructor(private readonly logFilePath: string) {}
 

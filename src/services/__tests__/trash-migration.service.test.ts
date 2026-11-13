@@ -126,6 +126,26 @@ describe("TrashMigrationService", () => {
     expect(entries).toHaveLength(0);
   });
 
+  it("warns about an un-adoptable entry once across ticks, and again only after it reappears", async () => {
+    const unknownDir = path.join(worktreeDir, ".removed", "hand-made-backup");
+    const badDiverged = path.join(worktreeDir, ".diverged", "no-info");
+    await fs.mkdir(unknownDir, { recursive: true });
+    await fs.mkdir(badDiverged, { recursive: true });
+    const count = (text: string) =>
+      vi.mocked(logger.warn).mock.calls.filter(([message]) => String(message).includes(text)).length;
+
+    await migration.migrateLegacyUnlocked();
+    await migration.migrateLegacyUnlocked();
+    expect(count("Leaving unrecognized entry 'hand-made-backup'")).toBe(1);
+    expect(count("Leaving entry 'no-info'")).toBe(1);
+
+    await fs.rm(unknownDir, { recursive: true });
+    await migration.migrateLegacyUnlocked();
+    await fs.mkdir(unknownDir, { recursive: true });
+    await migration.migrateLegacyUnlocked();
+    expect(count("Leaving unrecognized entry 'hand-made-backup'")).toBe(2);
+  });
+
   it("adopts .diverged/ backups from their info file, pinning the recorded local commit", async () => {
     const legacyDir = path.join(worktreeDir, ".diverged", "2026-06-02-feat-abc12");
     await fs.mkdir(legacyDir, { recursive: true });

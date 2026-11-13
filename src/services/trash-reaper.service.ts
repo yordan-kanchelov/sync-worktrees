@@ -40,10 +40,10 @@ export interface TrashReapResult {
   errors: string[];
 }
 
-// Deletes expired trash entries at the tail of a successful sync, inside the
-// already-held repo lock. Same fail-closed discipline as the removal pipeline:
-// only manifested entries whose realpath stays under the trash root, and only
-// after the attempt is durably recorded in the audit log.
+// Deletes expired trash entries at the tail of every sync attempt, failed ones
+// included, inside the already-held repo lock. Same fail-closed discipline as
+// the removal pipeline: only manifested entries whose realpath stays under the
+// trash root, and only after the attempt is durably recorded in the audit log.
 export class TrashReaperService {
   // Unrecognized containers and legacy flat pin refs are steady states the
   // reaper deliberately never acts on, so repeating the warning on every tick

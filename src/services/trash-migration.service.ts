@@ -28,6 +28,11 @@ interface DivergedInfo {
 // the exact formats those flows wrote are adopted — anything else is warned
 // about and left alone (the reaper never touches unmanifested content).
 export class TrashMigrationService {
+  // Warn-once, as in the reaper: a stuck entry warns when it first appears and
+  // again only after it has gone away and come back.
+  private warned = new Set<string>();
+  private warnedThisRun = new Set<string>();
+
   constructor(
     private readonly config: Config,
     private readonly trashService: TrashService,
@@ -44,8 +49,18 @@ export class TrashMigrationService {
 
   async migrateLegacyUnlocked(): Promise<void> {
     if (!this.isEnabled()) return;
-    await this.migrateRemovedDir();
-    await this.migrateDivergedDir();
+    this.warnedThisRun = new Set();
+    try {
+      await this.migrateRemovedDir();
+      await this.migrateDivergedDir();
+    } finally {
+      this.warned = this.warnedThisRun;
+    }
+  }
+
+  private warnOnce(message: string): void {
+    this.warnedThisRun.add(message);
+    if (!this.warned.has(message)) this.logger.warn(message);
   }
 
   private async migrateRemovedDir(): Promise<void> {
@@ -56,7 +71,7 @@ export class TrashMigrationService {
       const match = REMOVED_ENTRY_RE.exec(name);
       const quarantinedAt = match ? this.parseQuarantineTimestamp(match[1]) : null;
       if (!match || !quarantinedAt) {
-        this.logger.warn(`⚠️ Leaving unrecognized entry '${name}' in ${GIT_CONSTANTS.REMOVED_DIR_NAME}/ alone`);
+        this.warnOnce(`⚠️ Leaving unrecognized entry '${name}' in ${GIT_CONSTANTS.REMOVED_DIR_NAME}/ alone`);
         continue;
       }
 
@@ -75,7 +90,7 @@ export class TrashMigrationService {
           `♻️ Adopted '${name}' from ${GIT_CONSTANTS.REMOVED_DIR_NAME}/ as trash entry '${entry.manifest.id}'`,
         );
       } catch (error) {
-        this.logger.warn(`⚠️ Failed to adopt '${name}' into trash: ${getErrorMessage(error)}`);
+        this.warnOnce(`⚠️ Failed to adopt '${name}' into trash: ${getErrorMessage(error)}`);
       }
     }
 
@@ -110,7 +125,7 @@ export class TrashMigrationService {
         !quarantinedAt ||
         Number.isNaN(quarantinedAt.getTime())
       ) {
-        this.logger.warn(
+        this.warnOnce(
           `⚠️ Leaving entry '${name}' in ${GIT_CONSTANTS.DIVERGED_DIR_NAME}/ alone (no parseable ${METADATA_CONSTANTS.DIVERGED_INFO_FILE})`,
         );
         continue;
@@ -139,7 +154,7 @@ export class TrashMigrationService {
         // Nothing below runs for a failed adoption — in particular the legacy
         // keep ref is not touched, because the backup is still in .diverged/
         // and that ref is still the only thing holding its commits.
-        this.logger.warn(`⚠️ Failed to adopt '${name}' into trash: ${getErrorMessage(error)}`);
+        this.warnOnce(`⚠️ Failed to adopt '${name}' into trash: ${getErrorMessage(error)}`);
         continue;
       }
       this.logger.info(

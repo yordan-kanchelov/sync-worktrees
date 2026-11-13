@@ -2,7 +2,8 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { glob } from "glob";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FileCopyService } from "../file-copy.service";
 
@@ -645,6 +646,29 @@ describe("FileCopyService", () => {
 
       expect(result.copied).toEqual([".env"]);
       await expect(fs.stat(path.join(destDir, "api"))).rejects.toThrow();
+    });
+
+    it("resolves only directories reached through a symlink, not every walked directory", async () => {
+      for (const dir of ["a/b/c", "d/e", "real"]) await fs.mkdir(path.join(sourceDir, dir), { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "a", "b", "c", ".env"), "x");
+      await fs.symlink(path.join(sourceDir, "real"), path.join(sourceDir, "link"));
+      const [probe] = await glob("a", { cwd: sourceDir, withFileTypes: true });
+      let proto: object | null = probe;
+      while (proto && !Object.prototype.hasOwnProperty.call(proto, "realpathSync")) {
+        proto = Object.getPrototypeOf(proto) as object | null;
+      }
+      const spy = vi.spyOn(proto as { realpathSync(): unknown }, "realpathSync");
+
+      try {
+        const result = await service.copyFiles(sourceDir, destDir, ["**/.env"], {
+          excludeDirs: [path.join(tempDir, "elsewhere"), destDir],
+        });
+        expect(result.copied).toEqual(["a/b/c/.env"]);
+        const resolved = spy.mock.contexts.map((node) => (node as { relative(): string }).relative());
+        expect(resolved.every((rel) => rel.split(/[\\/]/)[0] === "link")).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });
