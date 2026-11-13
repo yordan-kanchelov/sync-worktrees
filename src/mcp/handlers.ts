@@ -14,7 +14,13 @@ import { getErrorMessage } from "../utils/errors";
 import { probePathExists } from "../utils/file-exists";
 import { redactSecretsInText } from "../utils/git-url";
 import { isValidGitBranchName } from "../utils/git-validation";
-import { isPathEqualOrInside, isPathStrictlyInside, pathsEqual, resolveRealPathAsync } from "../utils/path-compare";
+import {
+  findByWorktreePath,
+  isPathEqualOrInside,
+  isPathStrictlyInside,
+  pathsEqual,
+  resolveRealPathAsync,
+} from "../utils/path-compare";
 
 import {
   CapabilityUnavailableError,
@@ -157,7 +163,7 @@ async function ensureRepoWorktree(params: WorktreePathParams, service: RepoServi
   let missing: RegisteredWorktree | undefined;
   try {
     const worktrees = await service.getWorktrees({ includeDetached: true });
-    const match = worktrees.find((w) => pathsEqual(w.path, targetPath));
+    const match = await findByWorktreePath(worktrees, targetPath);
     if (match && (await isCheckoutMissing(match))) {
       missing = match;
     } else if (match) {

@@ -12,7 +12,7 @@ import { WorktreeSyncService } from "../services/worktree-sync.service";
 import { findConfigUpTree } from "../utils/config-discovery";
 import { createGitClient } from "../utils/git-client";
 import { redactRepoUrl } from "../utils/git-url";
-import { normalizePathForCompare, pathsEqual } from "../utils/path-compare";
+import { normalizePathForCompare, pathsEqual, resolveRealPathAsync } from "../utils/path-compare";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { parseWorktreeListPorcelain, readWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
@@ -115,6 +115,9 @@ interface RepoEntry {
   // (RepoEntry is not exported, but __registerForTest names it, so tsc emits
   // this interface into the .d.ts -- a /** */ comment here would ship too.)
   worktreeDirUndetermined?: boolean;
+  // Config entries: bareRepoDir/worktreeDir realpathed at load, since git
+  // reports canonical paths.
+  realPaths?: { bareRepoDir: string | null; worktreeDir: string };
 }
 
 type RepositorySelectionDecision =
@@ -265,6 +268,7 @@ export class RepositoryContext {
       resolvedAll.push(resolved);
     }
     this.configLoader.detectPathCollisions(resolvedAll);
+    const realPaths = await Promise.all(resolvedAll.map(realRepoPaths));
 
     for (const [name, entry] of this.repos) {
       if (entry.source === "config") {
@@ -279,13 +283,14 @@ export class RepositoryContext {
     this.loadedConfigFingerprint = fingerprint;
     this.loadedConfigCheckedMtimeMs = fingerprint.mtimeMs;
     this.loadedConfigChanged = false;
-    for (const resolved of resolvedAll) {
+    resolvedAll.forEach((resolved, i) => {
       this.repos.set(resolved.name, {
         name: resolved.name,
         config: resolved,
         source: "config",
+        realPaths: realPaths[i],
       });
-    }
+    });
 
     this.reselectDetectedCurrentRepoIfConfigured();
 
@@ -303,7 +308,9 @@ export class RepositoryContext {
   }
 
   async detectFromPath(dirPath: string): Promise<DiscoveredRepoContext> {
-    const absolutePath = path.resolve(dirPath);
+    const lexicalPath = path.resolve(dirPath);
+    // Agents pass $PWD, which keeps symlinks; git lists canonical paths.
+    const absolutePath = await resolveRealPathAsync(lexicalPath);
     await this.checkLoadedConfigChanged();
 
     const cached = this.discoveryCache.get(absolutePath);
@@ -316,7 +323,7 @@ export class RepositoryContext {
     }
 
     if (this.configPath === null) {
-      const found = await findConfigUpTree(absolutePath);
+      const found = await findConfigUpTree(lexicalPath);
       if (found === null) {
         this.lastConfigLoadFailure = null;
       } else {
@@ -418,11 +425,12 @@ export class RepositoryContext {
 
     const configCandidates = Array.from(this.repos.values())
       .filter((entry) => entry.source === "config" && !!entry.config.bareRepoDir)
+      .filter((entry) => !configPathMatches(entry, "bareRepoDir", currentBareRepoPath))
       .map((entry) => {
         const bareRepoPath = path.resolve(entry.config.bareRepoDir as string);
-        return { entry, bareRepoPath, foldedBare: normalizePathForCompare(bareRepoPath) };
-      })
-      .filter((c) => c.foldedBare !== currentBare);
+        const realBare = entry.realPaths?.bareRepoDir ?? bareRepoPath;
+        return { entry, bareRepoPath, foldedBare: normalizePathForCompare(realBare) };
+      });
 
     const configPresence = await Promise.all(configCandidates.map((c) => isDirectory(c.bareRepoPath)));
     configCandidates.forEach(({ entry, bareRepoPath, foldedBare }, i) => {
@@ -507,18 +515,12 @@ export class RepositoryContext {
 
     for (const entry of this.repos.values()) {
       if (entry.source !== "config") continue;
-      if (
-        detectedBare &&
-        entry.config.bareRepoDir &&
-        normalizePathForCompare(path.resolve(entry.config.bareRepoDir)) ===
-          normalizePathForCompare(path.resolve(detectedBare))
-      ) {
+      if (detectedBare && configPathMatches(entry, "bareRepoDir", detectedBare)) {
         return entry;
       }
       if (
         resolveMode(entry.config) === REPOSITORY_MODES.CLONE &&
-        normalizePathForCompare(path.resolve(entry.config.worktreeDir)) ===
-          normalizePathForCompare(path.resolve(detectedWorktree))
+        configPathMatches(entry, "worktreeDir", detectedWorktree)
       ) {
         return entry;
       }
@@ -653,7 +655,7 @@ export class RepositoryContext {
       };
     }
 
-    const bareRepoPath = located.found.bareRepoPath;
+    const bareRepoPath = await resolveRealPathAsync(located.found.bareRepoPath);
     const adminDir = located.found.adminDir;
 
     let repoUrl: string | null = null;
@@ -702,14 +704,11 @@ export class RepositoryContext {
 
     const derivedWorktreeDir = deriveWorktreeDir(worktrees);
 
-    const foldedBare = normalizePathForCompare(bareRepoPath);
     let matchedConfig: RepoEntry | null = null;
     for (const entry of this.repos.values()) {
-      if (entry.source === "config" && entry.config.bareRepoDir) {
-        if (normalizePathForCompare(entry.config.bareRepoDir) === foldedBare) {
-          matchedConfig = entry;
-          break;
-        }
+      if (entry.source === "config" && configPathMatches(entry, "bareRepoDir", bareRepoPath)) {
+        matchedConfig = entry;
+        break;
       }
     }
 
@@ -1157,10 +1156,9 @@ export class RepositoryContext {
   }
 
   private findConfiguredCloneEntry(worktreeRoot: string): RepoEntry | null {
-    const foldedRoot = normalizePathForCompare(path.resolve(worktreeRoot));
     for (const entry of this.repos.values()) {
       if (entry.source !== "config" || resolveMode(entry.config) !== REPOSITORY_MODES.CLONE) continue;
-      if (normalizePathForCompare(path.resolve(entry.config.worktreeDir)) === foldedRoot) {
+      if (configPathMatches(entry, "worktreeDir", worktreeRoot)) {
         return entry;
       }
     }
@@ -1220,9 +1218,7 @@ export class RepositoryContext {
           {
             path: worktreePath,
             branch,
-            isCurrent:
-              currentWorktreePath !== null &&
-              normalizePathForCompare(worktreePath) === normalizePathForCompare(currentWorktreePath),
+            isCurrent: currentWorktreePath !== null && configPathMatches(entry, "worktreeDir", currentWorktreePath),
           },
         ],
       };
@@ -1233,6 +1229,23 @@ export class RepositoryContext {
 }
 
 const pathResolution = new PathResolutionService();
+
+async function realRepoPaths(config: Config): Promise<NonNullable<RepoEntry["realPaths"]>> {
+  const [bareRepoDir, worktreeDir] = await Promise.all([
+    config.bareRepoDir ? resolveRealPathAsync(config.bareRepoDir) : null,
+    resolveRealPathAsync(config.worktreeDir),
+  ]);
+  return { bareRepoDir, worktreeDir };
+}
+
+// True when the entry's configured path, as written or realpathed, is `target`.
+function configPathMatches(entry: RepoEntry, key: "bareRepoDir" | "worktreeDir", target: string): boolean {
+  const configured = entry.config[key];
+  if (!configured) return false;
+  if (pathsEqual(configured, target)) return true;
+  const real = entry.realPaths?.[key];
+  return !!real && pathsEqual(real, target);
+}
 
 // Where a registered worktree says its parent directory is, or null when its
 // path is not one this tool would have produced.
@@ -1282,9 +1295,8 @@ function worktreeDirCandidate(worktree: DiscoveredWorktree): string | null {
 // and an agent is most likely to be standing in exactly the hand-placed
 // worktree that disagrees, so it confirms rather than overrides: letting it
 // override put a new worktree beside one stray while five tool-made ones said
-// otherwise. When it is absent from the list (git stores canonical paths, so a
-// symlinked cwd matches none of them) or abstains (a detached entry), the count
-// stands alone -- there is nothing to corroborate with, not a reason to refuse.
+// otherwise. When it is absent from the list or abstains (a detached entry),
+// the count stands alone -- there is nothing to corroborate with, not a reason to refuse.
 //
 // A single vote still wins: the shape it matched already fixes how many
 // components its branch name contributed, which is the fact a probe path cannot
