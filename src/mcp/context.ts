@@ -1033,11 +1033,17 @@ export class RepositoryContext {
     this.currentRepo = repoName;
   }
 
-  getRepositoryList(): Array<{ name: string; repoUrl: string; worktreeDir: string; source: "config" | "detected" }> {
+  getRepositoryList(): Array<{
+    name: string;
+    repoUrl: string;
+    worktreeDir: string | null;
+    source: "config" | "detected";
+  }> {
     return Array.from(this.repos.values()).map((e) => ({
       name: e.name,
       repoUrl: redactRepoUrl(e.config.repoUrl),
-      worktreeDir: e.config.worktreeDir,
+      // null, as detect_context reports it, not the placeholder.
+      worktreeDir: e.worktreeDirUndetermined ? null : e.config.worktreeDir,
       source: e.source,
     }));
   }

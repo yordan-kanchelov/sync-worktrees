@@ -186,6 +186,11 @@ describe("RepositoryContext.detectFromPath", () => {
     expect(result.notes.some((n: string) => n.startsWith("Could not determine worktreeDir"))).toBe(true);
     expect(result.capabilities.listWorktrees.available).toBe(true);
     expect(result.capabilities.getStatus.available).toBe(true);
+    // load_config / set_current_repository list it the way detect_context does,
+    // not with the internal placeholder directory.
+    expect(ctx.getRepositoryList()).toEqual([
+      expect.objectContaining({ name: result.repoName, worktreeDir: null, source: "detected" }),
+    ]);
   });
 
   it("recognises a hashed branch worktree whose branch name has more segments than its path", async () => {

@@ -248,6 +248,20 @@ describe("tool input schemas", () => {
     expect(create.annotations).toMatchObject({ idempotentHint: true, readOnlyHint: false, destructiveHint: false });
   });
 
+  it("describes includeDetails and set_current_repository as they behave", () => {
+    const tools = (createServer(new RepositoryContext()) as any)._registeredTools as Record<
+      string,
+      { description: string; inputSchema: { shape: Record<string, { description?: string }> } }
+    >;
+    const includeDetails = tools.get_worktree_status.inputSchema.shape.includeDetails.description;
+    expect(includeDetails).toBe(
+      "Add `details`: per-category file counts and lists (modified, deleted, renamed, created, conflicted, untracked), unpushed/stash counts. Default: false (no `details`; the boolean flags and reasons only).",
+    );
+    expect(tools.set_current_repository.description).toBe(
+      "Set current repo for tool calls that omit repoName. Applies to this server process. repoName must be a registered repository (configured or auto-detected).",
+    );
+  });
+
   it("still accepts declared keys and applies declared defaults", async () => {
     const detect = await schemaFor("detect_context")["~standard"].validate({ includeStatus: true });
     expect(detect.issues).toBeUndefined();
@@ -263,7 +277,7 @@ describe("tool input schemas", () => {
 });
 
 describe("stdio protocol", () => {
-  it("serves MCP 2026-07-28 and rejects a legacy handshake", async () => {
+  it("serves MCP 2026-07-28 and still serves a legacy 2025-11-25 handshake", async () => {
     const buildDir = await fs.mkdtemp(path.join(process.cwd(), ".mcp-stdio-test-"));
     const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-stdio-runtime-"));
     const entry = path.join(buildDir, "mcp-server.mjs");

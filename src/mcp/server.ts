@@ -99,8 +99,8 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
       description:
         "Workspace context: isWorktree, kind, currentWorktreePath, currentBranch, allWorktrees, siblingRepositories, configPath, capabilities {available,reason}, configuredRepositories (server-wide loaded-config inventory). {isWorktree:false} when outside any workspace.",
       mimeType: "application/json",
-      // Live git state, re-probed on every read: never cache, and never share
-      // between clients (the payload carries local filesystem paths).
+      // Live git state (served from detect_context's 5 s discovery cache): no
+      // client caching, and never shared (the payload carries local paths).
       cacheHint: { ttlMs: 0, cacheScope: "private" },
     },
     async (uri) => {
@@ -194,7 +194,9 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
         includeDetails: z
           .boolean()
           .optional()
-          .describe("Include file-level lists (modified, untracked, staged). Default: false (counts only)."),
+          .describe(
+            "Add `details`: per-category file counts and lists (modified, deleted, renamed, created, conflicted, untracked), unpushed/stash counts. Default: false (no `details`; the boolean flags and reasons only).",
+          ),
       }),
       outputSchema: getWorktreeStatusOutputSchema,
       annotations: {
@@ -340,7 +342,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "set_current_repository",
     {
       description:
-        "Set current repo for tool calls that omit repoName. Applies to this server process. Preconditions: load_config called.",
+        "Set current repo for tool calls that omit repoName. Applies to this server process. repoName must be a registered repository (configured or auto-detected).",
       inputSchema: z.strictObject({
         repoName: z.string().describe("Repo name from loaded config repositories[].name."),
       }),

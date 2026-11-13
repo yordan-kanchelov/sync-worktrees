@@ -125,7 +125,7 @@ const listedWorktreeSchema = z.looseObject({
 const repositoryListEntrySchema = z.looseObject({
   name: z.string(),
   repoUrl: z.string(),
-  worktreeDir: z.string(),
+  worktreeDir: z.string().nullable(),
   source: z.enum(["config", "detected"]),
 });
 
