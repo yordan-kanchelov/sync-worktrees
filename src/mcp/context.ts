@@ -167,6 +167,9 @@ const DISCOVERY_CACHE_TTL_MS = 5000;
 const DISCOVERY_CACHE_LIMIT = 64;
 const NO_REMOTE_URL_REASON = "no remote origin URL detected";
 const NO_CONFIG_NO_URL_REASON = "no config and no remote URL";
+const NOT_REGISTERED_NO_URL_REASON =
+  "repository is not registered: no remote origin URL detected and no loaded config lists it; " +
+  "add an origin remote, or list it in a config and call load_config";
 const CLONE_MODE_REASON = "clone-mode repositories have a single checkout; use sync for clone-mode updates";
 const UNDETERMINED_WORKTREE_DIR_REASON =
   "cannot determine worktreeDir: the registered worktrees and the worktree this call came from do not agree on " +
@@ -564,7 +567,10 @@ export class RepositoryContext {
     const worktreeRoot =
       located.found?.worktreeRoot ?? located.skipped[0]?.path ?? located.undetermined?.path ?? absolutePath;
 
-    const unsupported = (reason: string): { result: DiscoveredRepoContext; adminDir: string | null } => {
+    const unsupported = (
+      reason: string,
+      capabilities: Capabilities = emptyCapabilities(reason),
+    ): { result: DiscoveredRepoContext; adminDir: string | null } => {
       notes.push(reason);
       return {
         result: {
@@ -579,7 +585,7 @@ export class RepositoryContext {
           siblingRepositories: [],
           configPath: this.configPath,
           repoName: null,
-          capabilities: emptyCapabilities(reason),
+          capabilities,
           notes,
         },
         adminDir: null,
@@ -592,7 +598,21 @@ export class RepositoryContext {
       // false, so the exhausted answer enumerates what the walk passed. It is
       // the only note in this case, which is why the per-skip notes below are
       // not also pushed here.
-      return unsupported(describeExhaustedWalk(absolutePath, located));
+      const reason = describeExhaustedWalk(absolutePath, located);
+      // Not a checkout, but tools without repoName still act on the default
+      // repository: report what they will do there. An unreadable .git stops
+      // short of answering for any enclosing repository.
+      const decision = located.undetermined === null ? this.selectDefaultRepository() : null;
+      const selected = decision?.kind === "selected" ? this.repos.get(decision.repoName) : undefined;
+      if (selected) {
+        const result = unsupported(reason, this.computeBaseCapabilities(selected));
+        notes.push(
+          `Path is not inside a checkout; capabilities are those of repository '${selected.name}', ` +
+            `which tools act on when repoName is omitted`,
+        );
+        return result;
+      }
+      return unsupported(reason);
     }
     for (const skip of located.skipped) {
       notes.push(`Walked past ${skip.reason} at ${skip.path}`);
@@ -721,20 +741,20 @@ export class RepositoryContext {
 
     // Start from the entry's durable capabilities so that discovery can only
     // narrow them, never widen them (see computeBaseCapabilities).
+    // No entry means nothing is registered for this repository, so no tool can
+    // select it.
     const capabilities: Capabilities = entry
       ? this.computeBaseCapabilities(entry)
       : {
-          listWorktrees: { available: true },
-          getStatus: { available: true },
-          createWorktree: { available: false, reason: NO_REMOTE_URL_REASON },
-          updateWorktree: { available: true },
+          ...emptyCapabilities(NOT_REGISTERED_NO_URL_REASON),
           sync: { available: false, reason: NO_CONFIG_NO_URL_REASON },
           initialize: { available: false, reason: NO_CONFIG_NO_URL_REASON },
         };
     if (repoUrl === null) {
-      // A bare repo without an origin URL cannot create worktrees, even when a
-      // loaded config lists one for it.
+      // Without an origin URL there is nothing to create from or fast-forward
+      // to, even when a loaded config lists the repository.
       capabilities.createWorktree = { available: false, reason: NO_REMOTE_URL_REASON };
+      capabilities.updateWorktree = { available: false, reason: NO_REMOTE_URL_REASON };
     }
     if (worktreeDir === null) {
       // Both tools resolve a target under worktreeDir — createWorktree through

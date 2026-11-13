@@ -190,8 +190,9 @@ No config path is needed: the server runs in **auto-detect mode**.
   `sync-worktrees.config.{js,mjs,cjs,ts}` it finds, and when that directory sits inside a worktree managed by
   sync-worktrees it locates the bare repo, enumerates sibling worktrees and enables per-worktree operations.
 - Without a config it still serves `detect_context`, `list_worktrees`, `get_worktree_status`, `create_worktree` and
-  `update_worktree` for the repository it detected (the last two when the bare repository has an `origin` URL and the
-  registered worktrees agree on a `worktreeDir`; otherwise `capabilities` names the reason).
+  `update_worktree` for the repository it detected, when the bare repository has an `origin` URL (the last two also
+  need the registered worktrees to agree on a `worktreeDir`; otherwise `capabilities` names the reason). A bare
+  repository with no `origin` URL and no config listing it is not registered, so only `detect_context` serves it.
 - With a config that lists the repository it also serves `sync` and `initialize`. They stay unavailable for
   auto-detected repositories no matter which other tools have run.
 - A config that is not in the CWD or one of its parents is loaded at runtime with `load_config {configPath}`, or —
@@ -202,7 +203,7 @@ No config path is needed: the server runs in **auto-detect mode**.
 | Launched from | The server finds | What the agent should do |
 | --- | --- | --- |
 | A worktree under the directory holding the config | The config and the repository; every tool is available (worktree mode — a clone-mode repository gets `sync` and `initialize` but not `create_worktree` / `update_worktree`) | Nothing |
-| The directory holding the config, or any directory under it that is not a worktree (the workspace root, where `sync-worktrees` itself is run) | The config, auto-loaded, with every repository it lists; a single repository is selected. `detect_context` still answers `isWorktree: false` with every capability `available: false` — that block describes the probed path, not the server; read `configPath` and `configuredRepositories` instead, and every tool works | Nothing (`set_current_repository`, or pass `repoName`, when the config lists several repositories) |
+| The directory holding the config, or any directory under it that is not a worktree (the workspace root, where `sync-worktrees` itself is run) | The config, auto-loaded, with every repository it lists; a single repository is selected. `detect_context` answers `isWorktree: false`; while a repository is selected its `capabilities` are that repository's, with a note naming it (with several repositories and none selected, every capability is `available: false` — read `configPath` and `configuredRepositories`) | Nothing (`set_current_repository`, or pass `repoName`, when the config lists several repositories) |
 | A worktree from which no config is reachable by walking up (an absolute `worktreeDir` outside the config's tree, for example) | The repository only: the worktree tools work, `sync` and `initialize` are refused with code `CAPABILITY_UNAVAILABLE` ("no config file loaded (running in auto-detect mode)") | `load_config {configPath}` |
 | A directory with no config above it and no checkout above it (`~`, say) | Nothing: `detect_context` answers "No .git file found in path or any parent directory", every capability is `available: false`, and a bare `load_config` fails with "configPath required" | `detect_context {path: "<a worktree under the directory holding the config>"}` (walks up from that path, loads the config and selects the repository), or `load_config {configPath}` (required when the worktree lives outside the config's tree) |
 
