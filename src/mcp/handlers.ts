@@ -2,7 +2,7 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG } from "../constants";
+import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../constants";
 import { SyncWorktreesError } from "../errors";
 import { createEmptySyncOutcome } from "../services/sync-outcome";
 import { RefScanScope, WorktreeStatusService } from "../services/worktree-status.service";
@@ -240,7 +240,7 @@ export async function handleDetectContext(
   // `worktree list --porcelain` reads of the same repository -- is probed once
   // and both lists report the same answer.
   const enrich = createWorktreeEnricher(
-    new WorktreeStatusService(),
+    new WorktreeStatusService({ extraEnv: { [ENV_CONSTANTS.GIT_OPTIONAL_LOCKS]: "0" } }),
     pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
   );
 
@@ -440,7 +440,7 @@ async function listWorktreesForRepo(
         }
 
         const [{ status, statusError }, metadata, sizeBytes] = await Promise.all([
-          probeWorktreeStatus(git.getFullWorktreeStatus(wt.path, false, refScans)),
+          probeWorktreeStatus(git.getFullWorktreeStatus(wt.path, false, refScans, { readOnly: true })),
           git.getWorktreeMetadata(wt.path).catch(() => null),
           includeSize ? calculateDirectorySize(wt.path).catch(() => null) : Promise.resolve(null),
         ]);
@@ -483,7 +483,9 @@ export async function handleGetWorktreeStatus(
     toolName: "get_worktree_status",
   });
   const resolvedPath = (await ensureRepoWorktree(params, service)).path;
-  const status = await git.getFullWorktreeStatus(params.path, params.includeDetails ?? false);
+  const status = await git.getFullWorktreeStatus(params.path, params.includeDetails ?? false, undefined, {
+    readOnly: true,
+  });
 
   // `divergence` rides in on the spread: it is a field of the status result now.
   return formatToolResponse({

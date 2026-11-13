@@ -72,6 +72,8 @@ export class GitService {
   private defaultBranch: string = GIT_CONSTANTS.DEFAULT_BRANCH; // Will be updated after detection
   private metadataService: WorktreeMetadataService;
   private statusService: WorktreeStatusService;
+  // Optional locks off, for callers that only report (MCP read-only tools).
+  private probeStatusService: WorktreeStatusService | null = null;
   private sparseCheckoutService: SparseCheckoutService;
   private logger: Logger;
   private lfsSkipOverride = false;
@@ -240,6 +242,7 @@ export class GitService {
   private forgetCachedClients(dirPath: string): void {
     this.gitInstances.forget(dirPath);
     this.statusService.forgetWorktree(dirPath);
+    this.probeStatusService?.forgetWorktree(dirPath);
   }
 
   // Client for local commands (worktree add/remove/list/prune, merge,
@@ -283,6 +286,7 @@ export class GitService {
     this.logger = logger;
     this.metadataService.updateLogger(logger);
     this.statusService.updateLogger(logger);
+    this.probeStatusService?.updateLogger(logger);
     this.sparseCheckoutService.updateLogger(logger);
   }
 
@@ -772,18 +776,34 @@ export class GitService {
    * @param refScans shares one branch/remote-ref scan between every worktree
    *   probed with it; pass one scope per pass over the worktrees, and none for
    *   a check that must see the refs as they are now.
+   * @param readOnly leave the worktree's index untouched (no stat refresh).
    */
   async getFullWorktreeStatus(
     worktreePath: string,
     includeDetails = false,
     refScans?: RefScanScope,
+    { readOnly = false }: { readOnly?: boolean } = {},
   ): Promise<WorktreeStatusResult> {
     const metadata = await this.getWorktreeMetadata(worktreePath);
-    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails, {
+    const statusService = readOnly ? this.getProbeStatusService() : this.statusService;
+    return statusService.getFullWorktreeStatus(worktreePath, includeDetails, {
       lastSyncCommit: metadata?.lastSyncCommit,
       lastKnownRemoteTip: metadata?.lastKnownRemoteTip,
       refScans,
     });
+  }
+
+  private getProbeStatusService(): WorktreeStatusService {
+    if (this.baseEnv[ENV_CONSTANTS.GIT_OPTIONAL_LOCKS] === "0") return this.statusService;
+    this.probeStatusService ??= new WorktreeStatusService(
+      {
+        skipLfs: this.config.skipLfs,
+        maxConcurrentGitProcesses: this.config.parallelism?.maxStatusChecks,
+        extraEnv: { [ENV_CONSTANTS.GIT_OPTIONAL_LOCKS]: "0" },
+      },
+      this.logger,
+    );
+    return this.probeStatusService;
   }
 
   /** Map of remote branch name (without "origin/") → tip oid, from the bare repo. */
