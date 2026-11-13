@@ -12,7 +12,7 @@ export { ConfigFileExistsError };
 const CONFIG_CHEATSHEET = `
 // ─── More options (copy into a repository entry above) ────────────────
 // worktree mode (default):
-//   branchMaxAge: "14d",                    // ignore/remove branches older than N (d/h/w)
+//   branchMaxAge: "14d",                    // ignore/remove branches older than N (h/d/w/m/y)
 //   branchInclude: ["main", "release/*"],   // only sync matching branches
 //   branchExclude: ["dependabot/*"],
 //   sparseCheckout: { include: ["packages/app", "jenkins"] },
@@ -23,7 +23,7 @@ const CONFIG_CHEATSHEET = `
 // any repo, or under "defaults":
 //   debug: true,
 //   parallelism: { maxWorktreeUpdates: 3 },   // maxRepositories only at top level or in "defaults"
-//   hooks: { onBranchCreated: ["<command>"] },  // see README for placeholders
+//   hooks: { onBranchCreated: ["<command>"] },  // placeholders: docs/hooks-and-file-copying.md
 // Full reference: https://github.com/yordan-kanchelov/sync-worktrees#configuration
 `;
 

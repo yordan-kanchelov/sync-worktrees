@@ -88,6 +88,8 @@ tick.
   when the config loads, naming both entries and the path. A `worktreeDir` nested inside another entry's `worktreeDir`
   loads with a warning.
 - Repository-specific settings override `defaults`.
+- `debug` (default `false`), on a repository or under `defaults`, logs debug output and full error details (the stack,
+  git's whole output) for that repository. `--debug` turns it on for every repository.
 
 ### Worktree folder names
 

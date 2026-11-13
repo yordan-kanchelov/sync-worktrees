@@ -22,12 +22,13 @@ const config = {
     // (default: true). Set false to wait for the schedule instead. Whole-file
     // like `runOnce`, and ignored when `runOnce` is on.
     // syncOnStart: false,
-    // Maximum age of branches to sync (optional)
-    // branchMaxAge: "30d",  // Only sync branches active in last 30 days
+    // branchMaxAge and updateExistingWorktrees are worktree-mode only: set here,
+    // they would reach the clone-mode entries below and fail validation, so the
+    // example sets them on "my-main-project" instead.
     // Skip Git LFS downloads (optional)
     // skipLfs: true,  // Skip downloading large files tracked by Git LFS
-    // Auto-update worktrees that are behind upstream (optional)
-    // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
+    // Log debug output and full git error details (optional; --debug overrides)
+    // debug: true,
     // Inactivity timeouts (optional) for the git commands that talk to the
     // remote. Each kills its command when no output arrives inside its window,
     // so a stalled connection ends the attempt instead of hanging the sync
@@ -118,6 +119,11 @@ const config = {
 
       // Override default schedule for this repo (every 15 minutes)
       cronSchedule: "*/15 * * * *",
+
+      // Maximum age of branches to sync (optional)
+      // branchMaxAge: "30d",  // Only sync branches active in last 30 days
+      // Auto-update worktrees that are behind upstream (optional)
+      // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
     },
 
     {

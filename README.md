@@ -138,8 +138,9 @@ Requirements:
 - An MCP-capable client, only for the optional `sync-worktrees-mcp` server
 
 The three commands under [What you get](#what-you-get) are the whole setup: `sync-worktrees init` walks you through one
-repository and writes `sync-worktrees.config.js` in the current directory (`.mjs`, `.cjs` and `.ts` are also accepted);
-to add repositories, edit that file and add entries under `repositories`. See [Configuration](#configuration).
+or more repositories and writes `sync-worktrees.config.js` in the current directory (`.mjs`, `.cjs` and `.ts` are also
+accepted); to add repositories later, edit that file and add entries under `repositories`. See
+[Configuration](#configuration).
 `sync-worktrees doctor` then checks the whole setup (git, the config, each remote's credentials, the directories)
 before the first sync.
 

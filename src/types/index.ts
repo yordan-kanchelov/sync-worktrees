@@ -117,10 +117,10 @@ export interface Config {
   /**
    * Reversible removals: every automatic or manual removal moves the directory
    * into `<worktreeDir>/.trash/<id>/` with a manifest and a pin ref
-   * (`refs/sync-worktrees/trash/<id>`) that keeps the trashed HEAD's objects
-   * alive through `git gc` for the retention window. A reaper deletes expired
-   * items at the tail of a successful sync. Worktree mode only — clone mode
-   * never removes its checkout.
+   * (`refs/sync-worktrees/trash/<hash>/<id>`) that keeps the trashed HEAD's
+   * objects alive through `git gc` for the retention window. A reaper deletes
+   * expired items at the tail of every sync attempt, failed ones included.
+   * Worktree mode only — clone mode never removes its checkout.
    */
   trash?: TrashConfig;
   /**
