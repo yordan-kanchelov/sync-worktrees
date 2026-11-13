@@ -291,6 +291,49 @@ describe("TrashService", () => {
 
       await expect(fs.access(source)).resolves.toBeUndefined();
     });
+
+    // A kill while the bundle is written leaves only the first manifest on
+    // disk: that one must still list (and age out), not land in `invalid`.
+    it("keeps a keep-on-reap entry listable while its bundle is still being created", async () => {
+      let releaseBundle!: () => void;
+      let bundleStarted!: () => void;
+      const started = new Promise<void>((resolve) => (bundleStarted = resolve));
+      const bundleGate = new Promise<boolean>((resolve) => (releaseBundle = () => resolve(true)));
+      const stub = gitStub as ReturnType<typeof makeGitStub> & { createBundleFromRef: ReturnType<typeof vi.fn> };
+      stub.createBundleFromRef = vi.fn<any>(() => {
+        bundleStarted();
+        return bundleGate;
+      });
+      const source = await makeSourceDir("keep-mid-bundle");
+
+      const pending = service.trashDirectory({
+        dirPath: source,
+        branch: "keep-mid-bundle",
+        reason: "manual",
+        keepPinOnReap: true,
+      });
+      await started;
+
+      const fresh = new TrashService(
+        config,
+        gitStub as unknown as GitService,
+        logger,
+        audit as unknown as RemovalAuditService,
+      );
+      const { entries, invalid } = await fresh.listEntries();
+      expect(invalid).toEqual([]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].manifest.branch).toBe("keep-mid-bundle");
+
+      releaseBundle();
+      const entry = await pending;
+      expect(entry.manifest.keepPinOnReap).toBe(true);
+      expect(entry.manifest.bundleFile).toBe(TRASH_CONSTANTS.BUNDLE_FILENAME);
+      const onDisk = JSON.parse(
+        await fs.readFile(path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME), "utf-8"),
+      );
+      expect(onDisk.keepPinOnReap).toBe(true);
+    });
   });
 
   describe("trashAndUnregisterWorktree", () => {

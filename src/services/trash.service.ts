@@ -182,7 +182,8 @@ export class TrashService {
       source: options.source ?? "worktree",
       legacyOriginalName: options.legacyOriginalName ?? null,
       legacyQuarantinedAt: options.legacyQuarantinedAt?.toISOString() ?? null,
-      keepPinOnReap,
+      // Set in the second write: the validator rejects keepPinOnReap with a null pinRef.
+      keepPinOnReap: false,
     };
 
     // Manifest goes down BEFORE the pin ref: a crash in between leaves a
@@ -257,6 +258,7 @@ export class TrashService {
     const payloadPath = path.join(containerPath, TRASH_CONSTANTS.PAYLOAD_DIRNAME);
     manifest.pinRef = pinRef;
     manifest.bundleFile = bundleFile;
+    manifest.keepPinOnReap = keepPinOnReap;
 
     try {
       await this.writeManifest(containerPath, manifest);
