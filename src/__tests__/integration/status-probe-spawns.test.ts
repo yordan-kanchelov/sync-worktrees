@@ -11,7 +11,7 @@ import { RefScanScope, WorktreeStatusService } from "../../services/worktree-sta
 import { createMockLogger } from "../test-utils";
 
 // Real git, counted with a `git` shim first on PATH (see
-// untracked-ignored-status.e2e.test.ts). refs/stash lives in the common git
+// untracked-ignored-status.test.ts). refs/stash lives in the common git
 // dir, so one `stash list` answers for every worktree of a repository; the
 // current branch needs no `git branch -v -a` walk of every branch; and a
 // rev-list asked twice with the same range is spawned once.

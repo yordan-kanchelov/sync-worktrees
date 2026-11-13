@@ -415,10 +415,10 @@ Subcommands:
 
 Issues and pull requests are welcome. After `pnpm install`:
 
-- `pnpm test:unit` runs the unit tests. It needs no build.
+- `pnpm test:unit` runs the unit tests and the integration suites (services against real git). It needs no build.
 - `pnpm test:e2e` builds the CLI and runs the end-to-end suites against `dist/`. `pnpm test:e2e:network` adds the cases
   that clone from GitHub; [`nightly.yml`](./.github/workflows/nightly.yml) runs those daily on Linux and macOS.
-- `pnpm test` runs both, but does not build: run `pnpm build` first, or the end-to-end suites fail.
+- `pnpm test` runs all of them, but does not build: run `pnpm build` first, or the end-to-end suites fail.
 
 [`pr.yml`](./.github/workflows/pr.yml) checks every PR (lint, format, typecheck, build, smoke test, tests with a coverage
 summary on the run page). A PR that touches code needs a changeset (`pnpm changeset`); changesets cut the release and

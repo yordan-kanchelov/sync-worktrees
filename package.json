@@ -27,7 +27,7 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.spec.json",
     "test": "vitest run",
-    "test:unit": "vitest run --project unit",
+    "test:unit": "vitest run --project unit --project integration",
     "test:e2e": "pnpm run build && vitest run --project e2e",
     "test:e2e:local": "pnpm run test:e2e",
     "test:e2e:network": "pnpm run build && RUN_NETWORK_E2E=true vitest run --project e2e",
