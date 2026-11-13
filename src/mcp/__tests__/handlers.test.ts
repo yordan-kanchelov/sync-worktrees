@@ -1999,7 +1999,8 @@ describe("handleGetWorktreeStatus", () => {
     const body = parseResponse(result);
 
     expect(result.isError).toBe(true);
-    expect(body.message).toContain("not a registered worktree");
+    expect(body.code).toBe("WORKTREE_MISSING");
+    expect(body.message).toContain("directory is missing");
     expect(git.getFullWorktreeStatus).not.toHaveBeenCalled();
   });
 });

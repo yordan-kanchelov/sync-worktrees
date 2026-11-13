@@ -41,6 +41,9 @@ export interface DiscoveredWorktree {
   divergence?: Divergence | null;
   staleHint?: boolean;
   statusError?: string;
+  prunable?: boolean;
+  locked?: boolean;
+  detached?: boolean;
 }
 
 export interface SiblingRepository {
@@ -1278,6 +1281,9 @@ function parseWorktreeList(output: string, currentPath: string | null): Discover
       path: resolved,
       branch,
       isCurrent: foldedCurrent !== null && normalizePathForCompare(resolved) === foldedCurrent,
+      ...(wt.prunable && { prunable: true }),
+      ...(wt.locked && { locked: true }),
+      ...(wt.detached && { detached: true }),
     });
   }
   return results;

@@ -52,6 +52,9 @@ const discoveredWorktreeSchema = z.looseObject({
     .string()
     .optional()
     .describe("Why the status probe failed (label is then 'unknown'). Only present when it failed."),
+  prunable: z.boolean().optional().describe("Directory is gone; only present when true."),
+  locked: z.boolean().optional().describe("git worktree lock is held; only present when true."),
+  detached: z.boolean().optional().describe("No branch checked out; only present when true."),
 });
 
 const siblingRepositorySchema = z.looseObject({
@@ -114,6 +117,9 @@ const listedWorktreeSchema = z.looseObject({
   safeToRemove: safeToRemoveSchema,
   lastSyncAt: z.string().nullable(),
   sizeBytes: z.number().nullable().describe("null unless includeSize=true."),
+  prunable: z.boolean().optional().describe("Directory is gone; only present when true."),
+  locked: z.boolean().optional().describe("git worktree lock is held; only present when true."),
+  detached: z.boolean().optional().describe("No branch checked out; only present when true."),
 });
 
 const repositoryListEntrySchema = z.looseObject({

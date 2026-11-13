@@ -21,6 +21,7 @@ import {
   RepoLockUnavailableError,
   SyncInProgressError,
   WorktreeDetachedError,
+  WorktreeMissingError,
   WorktreeTargetExistsError,
   formatToolResponse,
 } from "./utils";
@@ -28,6 +29,7 @@ import { deriveLabel, deriveSafeToRemove } from "./worktree-summary";
 
 import type { Capabilities, DiscoveredRepoContext, DiscoveredWorktree, RepositoryContext } from "./context";
 import type { HandlerContext } from "./utils";
+import type { RegisteredWorktree } from "../services/git-service.types";
 import type { Divergence, WorktreeLabel } from "./worktree-summary";
 import type { ProgressEvent, RepoOperationNotStarted } from "../services/worktree-sync.service";
 import type { CallToolResult } from "@modelcontextprotocol/server";
@@ -49,9 +51,13 @@ type ListedWorktree = {
   safeToRemove: ReturnType<typeof deriveSafeToRemove>;
   lastSyncAt: string | null;
   sizeBytes: number | null;
+  prunable?: boolean;
+  locked?: boolean;
+  detached?: boolean;
 };
 type RepoWorktreeListing = { worktrees: ListedWorktree[]; error?: string };
 
+const MISSING_CHECKOUT_REASON = "worktree directory is missing; run 'git worktree prune'";
 const CLONE_MODE_WORKTREE_MUTATION_REASON =
   "clone-mode repositories have a single checkout; use sync for clone-mode updates";
 
@@ -129,6 +135,13 @@ async function runExclusiveRepoOperation<T>(
   return result.value;
 }
 
+// Git never marks a locked row prunable, so a locked row is probed on disk; an
+// unverifiable path ("unknown") counts as present.
+async function isCheckoutMissing(wt: Pick<RegisteredWorktree, "path" | "isPrunable" | "locked">): Promise<boolean> {
+  if (wt.isPrunable === true) return true;
+  return wt.locked === true && (await probePathExists(wt.path)) === "missing";
+}
+
 /**
  * Resolves `params.path` to a registered worktree of this repository, always
  * from git's own listing. The discovery snapshot has no freshness check, so it
@@ -136,19 +149,18 @@ async function runExclusiveRepoOperation<T>(
  *
  * Detached worktrees are included (git omits them otherwise) and carry
  * `detached` plus their HEAD oid with `branch` empty; a caller that acts on the
- * branch must refuse them. Prunable rows (checkout gone) read as absent.
+ * branch must refuse them. A registration whose checkout is gone throws
+ * WORKTREE_MISSING (prunable detached rows are dropped by git's listing).
  */
 async function ensureRepoWorktree(params: WorktreePathParams, service: RepoService): Promise<RepoWorktree> {
   const targetPath = params.path;
+  let missing: RegisteredWorktree | undefined;
   try {
     const worktrees = await service.getWorktrees({ includeDetached: true });
-    const match = worktrees.find((w) => pathsEqual(w.path, targetPath) && w.isPrunable !== true);
-    // Git never marks a locked row prunable, so a locked detached row whose
-    // checkout is gone is probed here; DETACHED_HEAD would name a remedy that
-    // cannot be performed. An unverifiable path ("unknown") keeps the answer.
-    const vanished =
-      match?.detached === true && match.locked === true && (await probePathExists(match.path)) === "missing";
-    if (match && !vanished) {
+    const match = worktrees.find((w) => pathsEqual(w.path, targetPath));
+    if (match && (await isCheckoutMissing(match))) {
+      missing = match;
+    } else if (match) {
       return {
         path: path.resolve(match.path),
         branch: match.branch,
@@ -161,6 +173,7 @@ async function ensureRepoWorktree(params: WorktreePathParams, service: RepoServi
     throw new Error(`Could not verify worktree membership: ${cause}`);
   }
 
+  if (missing) throw new WorktreeMissingError(path.resolve(missing.path), missing.locked === true);
   throw new Error(`Path '${targetPath}' is not a registered worktree of the current repository`);
 }
 
@@ -281,6 +294,9 @@ function createWorktreeEnricher(statusService: WorktreeStatusService, limit: Lim
     if (existing !== undefined) return existing;
 
     const pending = limit(async (): Promise<WorktreeEnrichment> => {
+      if (await isCheckoutMissing({ path: wt.path, isPrunable: wt.prunable, locked: wt.locked })) {
+        return { label: "unknown", divergence: null, staleHint: false, statusError: MISSING_CHECKOUT_REASON };
+      }
       const { status, statusError } = await probeWorktreeStatus(
         statusService.getFullWorktreeStatus(wt.path, false, { refScans }),
       );
@@ -351,12 +367,20 @@ async function listWorktreesForRepo(
     toolName: "list_worktrees",
   });
 
-  let worktrees: Array<{ path: string; branch: string }>;
+  let worktrees: RegisteredWorktree[];
   try {
-    worktrees = await service.getWorktrees();
+    worktrees = (await service.getWorktrees({ includeDetached: true })).map((w) =>
+      w.detached === true ? { ...w, branch: `(detached ${(w.head ?? "").slice(0, 7)})` } : w,
+    );
   } catch (err) {
     if (discovered) {
-      worktrees = discovered.allWorktrees.map((w) => ({ path: w.path, branch: w.branch }));
+      worktrees = discovered.allWorktrees.map((w) => ({
+        path: w.path,
+        branch: w.branch,
+        isPrunable: w.prunable,
+        locked: w.locked,
+        detached: w.detached,
+      }));
     } else {
       // The common way here is a configured repository that has never been
       // cloned: `git worktree list` runs against a bare directory that does not
@@ -394,12 +418,41 @@ async function listWorktreesForRepo(
       limit(async () => {
         const resolvedPath = path.resolve(wt.path);
         const isCurrent = currentPath !== null && pathsEqual(wt.path, currentPath);
+        const flags = {
+          ...(wt.locked === true && { locked: true }),
+          ...(wt.detached === true && { detached: true }),
+        };
+
+        if (await isCheckoutMissing(wt)) {
+          return {
+            path: resolvedPath,
+            branch: wt.branch,
+            isCurrent: false,
+            label: "unknown" as const,
+            status: null,
+            divergence: null,
+            safeToRemove: { safe: false, reason: MISSING_CHECKOUT_REASON },
+            lastSyncAt: null,
+            sizeBytes: null,
+            prunable: true,
+            ...flags,
+          };
+        }
 
         const [{ status, statusError }, metadata, sizeBytes] = await Promise.all([
           probeWorktreeStatus(git.getFullWorktreeStatus(wt.path, false, refScans)),
           git.getWorktreeMetadata(wt.path).catch(() => null),
           includeSize ? calculateDirectorySize(wt.path).catch(() => null) : Promise.resolve(null),
         ]);
+
+        let safeToRemove = status
+          ? deriveSafeToRemove(status)
+          : { safe: false, reason: `status unavailable: ${statusError}` };
+        if (wt.locked === true) {
+          safeToRemove = { safe: false, reason: `worktree is locked${wt.lockReason ? `: ${wt.lockReason}` : ""}` };
+        } else if (wt.detached === true) {
+          safeToRemove = { safe: false, reason: "detached HEAD" };
+        }
 
         return {
           path: resolvedPath,
@@ -408,11 +461,10 @@ async function listWorktreesForRepo(
           label: status ? deriveLabel(status, isCurrent) : isCurrent ? "current" : "unknown",
           status,
           divergence: status?.divergence ?? null,
-          safeToRemove: status
-            ? deriveSafeToRemove(status)
-            : { safe: false, reason: `status unavailable: ${statusError}` },
+          safeToRemove,
           lastSyncAt: metadata?.lastSyncDate ?? null,
           sizeBytes,
+          ...flags,
         };
       }),
     ),

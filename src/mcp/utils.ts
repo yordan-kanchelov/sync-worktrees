@@ -133,6 +133,17 @@ export class WorktreeDetachedError extends SyncWorktreesError {
   }
 }
 
+// A registration whose checkout directory is gone: nothing to run git in.
+export class WorktreeMissingError extends SyncWorktreesError {
+  constructor(worktreePath: string, locked: boolean) {
+    super(
+      `Worktree at '${worktreePath}' is registered but its directory is missing; ` +
+        (locked ? "unlock it and run 'git worktree prune'" : "run 'git worktree prune' or sync"),
+      "WORKTREE_MISSING",
+    );
+  }
+}
+
 export function wrapHandler<P>(
   fn: (params: P, ctx: HandlerContext) => Promise<CallToolResult>,
 ): (params: P, ctx: HandlerContext) => Promise<CallToolResult> {
