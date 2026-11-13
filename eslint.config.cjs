@@ -8,7 +8,17 @@ const testFiles = ["src/**/__tests__/**/*.{ts,tsx}", "src/**/*.test.{ts,tsx}"];
 
 module.exports = defineConfig([
   {
-    ignores: ["**/dist/", "**/coverage/", "**/node_modules/", "**/.astro/", "**/.git/", "**/build/", "site/"],
+    ignores: [
+      "**/dist/",
+      "**/coverage/",
+      "**/node_modules/",
+      "**/.astro/",
+      "**/.git/",
+      "**/build/",
+      "site/",
+      "tmp-e2e-*/",
+      ".mcp-stdio-test-*/",
+    ],
   },
   js.configs.recommended,
   {

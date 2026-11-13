@@ -26,12 +26,13 @@ export default defineConfig({
       // json-summary feeds the PR job summary (scripts/coverage-summary.mjs).
       reporter: ["text", "lcov", "html", "json-summary"],
       include: ["src/**/*.ts", "src/**/*.tsx"],
-      exclude: ["src/**/*.d.ts", "src/index.ts", "src/utils/cli.ts", "src/**/__tests__/**"],
+      exclude: ["src/**/*.d.ts", "src/**/__tests__/**"],
+      // ~3 points under the Linux totals; other OS legs skip a few suites.
       thresholds: {
-        branches: 74,
-        functions: 73,
-        lines: 79,
-        statements: 79,
+        branches: 84,
+        functions: 89,
+        lines: 90,
+        statements: 89,
       },
     },
     setupFiles: ["./src/__tests__/setup.ts"],

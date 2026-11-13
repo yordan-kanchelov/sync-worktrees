@@ -2,9 +2,9 @@ import { GitPluginError } from "simple-git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../constants";
-import { retry } from "../../utils/retry";
+import { retry } from "../retry";
 
-import type { RetryOptions } from "../../utils/retry";
+import type { RetryOptions } from "../retry";
 
 describe("retry", () => {
   beforeEach(() => {
