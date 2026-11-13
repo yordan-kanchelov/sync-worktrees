@@ -108,6 +108,30 @@ describe("RepositoryDashboard", () => {
     expect(rowOf(lastFrame(), "infra")).toContain("10m ago");
   });
 
+  it("commits once per change of rows", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = new Date("2026-01-01T12:00:00Z").getTime();
+    vi.setSystemTime(start);
+    let commits = 0;
+    const onRender = (): void => {
+      commits++;
+    };
+    const tree = (data: RepositoryDashboardRow[]) => (
+      <React.Profiler id="dashboard" onRender={onRender}>
+        <RepositoryDashboard rows={data} height={10} />
+      </React.Profiler>
+    );
+    const { rerender } = render(tree(rows(start)));
+    await settle();
+
+    commits = 0;
+    vi.setSystemTime(start + 5_000);
+    rerender(tree(rows(start)));
+    await settle();
+
+    expect(commits).toBe(1);
+  });
+
   it("counts the repositories it has no room for, and names the ones that need a look", async () => {
     const { stdout, lastFrame } = render(<RepositoryDashboard rows={rows(Date.now())} height={5} />);
     resizeTerminal(stdout, 120, 30);

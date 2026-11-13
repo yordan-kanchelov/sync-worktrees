@@ -110,6 +110,7 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
     const limit = pLimit(LOAD_CONCURRENCY);
     for (const repo of repositoriesRef.current) {
       void limit(async () => {
+        if (!mountedRef.current) return;
         try {
           const worktrees = await getWorktreesRef.current(repo.index);
           if (!mountedRef.current) return;
@@ -129,6 +130,7 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
         }
       });
     }
+    return () => limit.clearQueue();
   }, []);
 
   const snapshot = repositoriesRef.current;

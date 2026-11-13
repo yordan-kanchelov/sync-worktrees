@@ -50,7 +50,12 @@ function changesCell(changes: RepositoryDashboardRow["changes"]): string {
     .join(" ");
 }
 
-function cell(row: RepositoryDashboardRow, column: DashboardColumn, now: number): { text: string; color?: Color } {
+function cell(
+  row: RepositoryDashboardRow,
+  column: DashboardColumn,
+  now: number,
+  nextRuns: ReadonlyMap<string, Date | null>,
+): { text: string; color?: Color } {
   switch (column) {
     case "state": {
       const state = STATES[row.state];
@@ -70,7 +75,7 @@ function cell(row: RepositoryDashboardRow, column: DashboardColumn, now: number)
         color: row.changes && (row.changes.dirty > 0 || row.changes.unpushed > 0) ? "yellow" : undefined,
       };
     case "next": {
-      const next = row.schedule ? computeNextSyncTime([row.schedule], new Date(now)) : null;
+      const next = row.schedule ? nextRuns.get(row.schedule) : undefined;
       return { text: next ? formatUntil(next.getTime(), now) : "–" };
     }
   }
@@ -90,10 +95,21 @@ const RepositoryDashboard: React.FC<RepositoryDashboardProps> = ({
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), refreshMs);
     return () => clearInterval(timer);
-  }, [refreshMs, rows]);
+  }, [refreshMs]);
+
+  // Cron parsing once per schedule and minute, not per row and render.
+  const minuteStart = Math.floor(now / 60_000) * 60_000;
+  const nextRuns = useMemo(() => {
+    const runs = new Map<string, Date | null>();
+    for (const row of rows) {
+      if (row.schedule && !runs.has(row.schedule)) {
+        runs.set(row.schedule, computeNextSyncTime([row.schedule], new Date(minuteStart)));
+      }
+    }
+    return runs;
+  }, [rows, minuteStart]);
 
   // At least the heading's width, while the result column can spare it.
   const longestName = useMemo(
@@ -147,7 +163,7 @@ const RepositoryDashboard: React.FC<RepositoryDashboardProps> = ({
       {shown.map((row) =>
         renderCells(
           `repo-${row.name}`,
-          columns.map((column) => cell(row, column, now)),
+          columns.map((column) => cell(row, column, now, nextRuns)),
         ),
       )}
       {overflow && (
