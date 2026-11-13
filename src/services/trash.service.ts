@@ -114,6 +114,9 @@ export interface TrashDirectoryOptions {
 // Reversible removal: directories land in <worktreeDir>/.trash/<id>/payload
 // with a manifest sidecar and (when a commit is known) a pin ref that keeps
 // the trashed HEAD's objects alive through `git gc` until the reaper runs.
+// Payloads whose `du` failed; re-walking them every sync tick would be wasted I/O.
+const unsizablePayloads = new Set<string>();
+
 export class TrashService {
   private pathResolution = new PathResolutionService();
   constructor(
@@ -346,8 +349,8 @@ export class TrashService {
    *
    * Best effort per entry: a payload that cannot be scanned, or a size that
    * cannot be written back, leaves that entry at `null` — the value every
-   * consumer reports as an unknown size rather than as zero — and the next
-   * call tries again.
+   * consumer reports as an unknown size rather than as zero. A payload whose
+   * scan failed is not walked again in this process.
    */
   async listEntriesWithSizes(): Promise<{ entries: TrashEntry[]; invalid: string[] }> {
     const listing = await this.listEntries();
@@ -381,10 +384,13 @@ export class TrashService {
   private async measurePayload(entry: TrashEntry): Promise<number | null> {
     if (await hasPayloadPendingDeletion(entry.containerPath)) return null;
 
+    if (unsizablePayloads.has(entry.payloadPath)) return null;
+
     let sizeBytes: number;
     try {
       sizeBytes = await calculateDirectorySize(entry.payloadPath);
     } catch (error) {
+      unsizablePayloads.add(entry.payloadPath);
       this.logger.debug(`Could not size trash payload for '${entry.manifest.id}': ${getErrorMessage(error)}`);
       return null;
     }
