@@ -135,7 +135,12 @@ export class TrashReaperService {
       return result;
     }
 
-    const { entries, invalid } = await this.trashService.listEntries();
+    const listing = await this.trashService.listEntries();
+    const entries = listing.entries;
+    const invalid: string[] = [];
+    for (const invalidPath of listing.invalid) {
+      if (!(await this.removeIfCrashLeftover(invalidPath))) invalid.push(invalidPath);
+    }
     for (const invalidPath of invalid) {
       if (this.warnedInvalidPaths.has(invalidPath)) continue;
       this.logger.warn(`⚠️ Trash reaper: leaving unrecognized entry '${invalidPath}' alone (no valid manifest)`);
@@ -278,6 +283,25 @@ export class TrashReaperService {
 
     this.warnIfOverThreshold(entries.filter((entry) => !reapedIds.has(entry.manifest.id)));
     return result;
+  }
+
+  // A crash between container mkdir and the first manifest write, or a
+  // recursive rm that unlinked the manifest before a refused rmdir, leaves a
+  // dir holding nothing or only atomic-write temp files. Non-recursive rmdir
+  // so anything else that appears meanwhile keeps it in place.
+  private async removeIfCrashLeftover(containerPath: string): Promise<boolean> {
+    try {
+      if (!(await fs.lstat(containerPath)).isDirectory()) return false;
+      const names = await fs.readdir(containerPath);
+      if (!names.every((name) => name.endsWith(".tmp"))) return false;
+      for (const name of names) await fs.unlink(path.join(containerPath, name));
+      await fs.rmdir(containerPath);
+      this.logger.debug(`Trash reaper: removed empty container '${containerPath}'`);
+      return true;
+    } catch (error) {
+      this.logger.debug(`Trash reaper: cannot remove '${containerPath}': ${getErrorMessage(error)}`);
+      return false;
+    }
   }
 
   // The keep ref exists because, at the moment the worktree was pruned, its
