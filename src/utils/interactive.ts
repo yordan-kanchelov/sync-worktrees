@@ -3,7 +3,7 @@ import * as path from "path";
 import { confirm, input, select } from "@inquirer/prompts";
 import * as cron from "node-cron";
 
-import { extractRepoNameFromUrl } from "./git-url";
+import { extractRepoNameFromUrl, isValidGitUrl } from "./git-url";
 import { pathsEqual } from "./path-compare";
 
 import type { InitConfigInput, InitRepositoryInput } from "../types";
@@ -36,8 +36,8 @@ async function promptForRepository(configDir: string): Promise<InitRepositoryInp
         if (!value.trim()) {
           return "Repository URL is required";
         }
-        if (!value.trim().match(/^(https?:\/\/|ssh:\/\/|git@|file:\/\/).*$/)) {
-          return "Please enter a valid Git URL (https://, ssh://, git@, or file://)";
+        if (!isValidGitUrl(value.trim())) {
+          return "Please enter a valid Git URL (https://, ssh://, git://, file://, user@host:path, or a local path)";
         }
         if (!safeRepoName(value)) {
           return "Couldn't derive a repository name from that URL — include the full path (e.g., https://github.com/user/repo.git)";

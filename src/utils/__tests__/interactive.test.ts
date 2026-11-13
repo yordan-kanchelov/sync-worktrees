@@ -202,14 +202,40 @@ describe("promptForInitConfig", () => {
     expect(validateFn).toBeDefined();
     if (validateFn) {
       expect(validateFn("")).toBe("Repository URL is required");
-      expect(validateFn("not-a-url")).toBe("Please enter a valid Git URL (https://, ssh://, git@, or file://)");
+      expect(validateFn("not-a-url")).toBe(
+        "Please enter a valid Git URL (https://, ssh://, git://, file://, user@host:path, or a local path)",
+      );
       expect(validateFn("https://x")).toContain("Couldn't derive a repository name");
-      expect(validateFn("git@host")).toContain("Couldn't derive a repository name");
-      expect(validateFn("ssh://host")).toContain("Couldn't derive a repository name");
+      expect(validateFn("git@host")).toBe(
+        "Please enter a valid Git URL (https://, ssh://, git://, file://, user@host:path, or a local path)",
+      );
+      expect(validateFn("ssh://host")).toBe(
+        "Please enter a valid Git URL (https://, ssh://, git://, file://, user@host:path, or a local path)",
+      );
       expect(validateFn("https://github.com/user/repo.git")).toBe(true);
       expect(validateFn("git@github.com:user/repo.git")).toBe(true);
       expect(validateFn("file:///local/repo.git")).toBe(true);
       expect(validateFn("ssh://git@github.com/user/repo.git")).toBe(true);
+    }
+  });
+
+  it("accepts every repository URL form the config loader accepts", async () => {
+    mockInput
+      .mockResolvedValueOnce("https://github.com/user/repo.git")
+      .mockResolvedValueOnce("/path/to/worktrees")
+      .mockResolvedValueOnce("0 * * * *");
+    mockSelect.mockResolvedValueOnce("worktree");
+    mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+    await promptForInitConfig(CONFIG_DIR);
+
+    const validateFn = mockInput.mock.calls.find((call) => call[0].message?.includes("repository URL"))?.[0].validate;
+
+    expect(validateFn).toBeDefined();
+    if (validateFn) {
+      expect(validateFn("git://host/o/a.git")).toBe(true);
+      expect(validateFn("deploy@host:o/b.git")).toBe(true);
+      expect(validateFn("/srv/git/c.git")).toBe(true);
     }
   });
 
@@ -498,7 +524,9 @@ describe("promptForInitConfig", () => {
         expect(validateFn("  https://github.com/user/repo.git  ")).toBe(true);
         expect(validateFn("\tgit@github.com:user/repo.git\t")).toBe(true);
         // Still not a URL once trimmed.
-        expect(validateFn("  not-a-url  ")).toBe("Please enter a valid Git URL (https://, ssh://, git@, or file://)");
+        expect(validateFn("  not-a-url  ")).toBe(
+          "Please enter a valid Git URL (https://, ssh://, git://, file://, user@host:path, or a local path)",
+        );
       }
     });
   });
