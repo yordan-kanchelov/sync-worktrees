@@ -166,6 +166,20 @@ describe("App", () => {
       expect(lastFrame()).toContain("[game-platform-slots] fetch receiving: 50% (47276/94551)");
     });
 
+    it("widens the progress rows when a reload raises maxRepositories", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={1} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("updateMaxProgressLines", 2);
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "game-platform", phase: "fetch", message: "fetch one" });
+      appEvents.emit("setSyncProgress", { repo: "game-platform-slots", phase: "fetch", message: "fetch two" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("[game-platform] fetch one");
+      expect(lastFrame()).toContain("[game-platform-slots] fetch two");
+    });
+
     it("should remove a repository progress row when it completes", async () => {
       const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
 

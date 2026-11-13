@@ -6,6 +6,7 @@ import App from "../components/App";
 import { DEFAULT_CONFIG } from "../constants";
 import { WorktreeSyncService } from "./worktree-sync.service";
 import { ConfigLoaderService } from "./config-loader.service";
+import { resolveMaxRepositories } from "./config-schema";
 import { HookExecutionService } from "./hook-execution.service";
 import type { LogOutputFn, LogLevel } from "./logger.service";
 import { Logger } from "./logger.service";
@@ -404,7 +405,7 @@ export class InteractiveUIService {
       // Validate and load new config BEFORE canceling old cron jobs
       // to prevent a window with no cron running on validation failure
       const configLoader = new ConfigLoaderService();
-      const { repositories } = await configLoader.buildRepositories(this.configPath, {
+      const { repositories, configFile } = await configLoader.buildRepositories(this.configPath, {
         debug: this.debugOverride,
         filter: this.repositoryFilter,
       });
@@ -489,6 +490,9 @@ export class InteractiveUIService {
         for (const target of getRepositoryDiskTargets(service.config)) this.diskUsage.invalidate(target.path);
       }
       this.repositoryCount = this.syncServices.length;
+      this.maxRepositories = Math.max(1, resolveMaxRepositories(configFile));
+      this.limit.concurrency = this.maxRepositories;
+      this.diskUsage.setMaxParallel(this.maxRepositories);
       this.subscribeToServiceProgress();
       // Not injectLoggersIntoServices(): these services were built with their
       // panel logger already in config, above. Injecting again would build a
@@ -502,6 +506,7 @@ export class InteractiveUIService {
       this.scheduler.setupCronJobs();
 
       this.events.emit("updateRepositoryCount", this.repositoryCount);
+      this.events.emit("updateMaxProgressLines", this.maxRepositories);
       this.events.emit("repositoriesReloaded", ++this.reloadGeneration);
       this.events.emit("updateCronSchedule", this.scheduler.getScheduledCronExpressions());
       this.dashboard.publish();

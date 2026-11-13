@@ -169,6 +169,7 @@ const App: React.FC<AppProps> = ({
   const [diskSpaceUsed, setDiskSpaceUsed] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [repoCount, setRepoCount] = useState(repositoryCount);
+  const [progressLineLimit, setProgressLineLimit] = useState(maxProgressLines);
   const [reloadGeneration, setReloadGeneration] = useState(0);
   const [schedule, setSchedule] = useState<CronScheduleDisplay>(cronSchedule);
   const [dashboardRows, setDashboardRows] = useState<readonly RepositoryDashboardRow[]>([]);
@@ -189,7 +190,7 @@ const App: React.FC<AppProps> = ({
   // No more rows than repositories, nor than leave the smallest log panel.
   const progressLineCap = Math.max(
     1,
-    Math.min(maxProgressLines, repoCount, terminalRows - 5 - activeOps.length - LOG_MIN_ROWS),
+    Math.min(progressLineLimit, repoCount, terminalRows - 5 - activeOps.length - LOG_MIN_ROWS),
   );
   const progressLineCount = status === "syncing" ? progressLineCap : 0;
   const statusBarHeight = 5 + progressLineCount + activeOps.length;
@@ -415,6 +416,9 @@ const App: React.FC<AppProps> = ({
       }),
       events.on("updateRepositoryCount", (count: number) => {
         setRepoCount(count);
+      }),
+      events.on("updateMaxProgressLines", (lines: number) => {
+        setProgressLineLimit(lines);
       }),
       // An open picker holds indexes into the old list; close it.
       events.on("repositoriesReloaded", (generation: number) => {
