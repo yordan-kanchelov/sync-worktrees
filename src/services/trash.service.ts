@@ -691,13 +691,13 @@ export class TrashService {
     }
 
     await this.stripToolFiles(manifest, payloadPath);
-    if (existingBranchOid === null) {
-      await this.gitService.createBranchAt(branch, headOid);
-      createdBranch = true;
-    }
 
     let payloadMoved = false;
     try {
+      if (existingBranchOid === null) {
+        await this.gitService.createBranchAt(branch, headOid);
+        createdBranch = true;
+      }
       await this.gitService.addWorktreeNoCheckout(branch, manifest.originalPath);
       await this.movePayloadInto(payloadPath, manifest.originalPath, () => {
         payloadMoved = true;

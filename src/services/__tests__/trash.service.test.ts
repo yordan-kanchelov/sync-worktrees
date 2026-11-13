@@ -1306,6 +1306,27 @@ describe("TrashService", () => {
       expect(gitStub.deleteRef).not.toHaveBeenCalledWith(manifest.pinRef);
     });
 
+    // e.g. `cannot lock ref` when refs/heads/topic/sub exists and the entry is `topic`.
+    it("wraps a refused branch creation in TrashOperationError and keeps the payload", async () => {
+      const source = await makeSourceDir("topic", { "work.txt": "uncommitted work" });
+      const { manifest, payloadPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "topic",
+        reason: "prune",
+      });
+      gitStub.createBranchAt.mockRejectedValue(new Error("cannot lock ref 'refs/heads/topic'"));
+
+      const error = await service.restore(manifest.id).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(TrashOperationError);
+      expect((error as Error).message).toMatch(/cannot lock ref/);
+      expect(gitStub.addWorktreeNoCheckout).not.toHaveBeenCalled();
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
+      await expect(fs.readFile(path.join(payloadPath, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      const { entries } = await service.listEntries();
+      expect(entries).toHaveLength(1);
+    });
+
     // A reap that already set the payload aside has committed the entry to
     // deletion. "Payload missing" reads like corruption for a user who can
     // still see the files sitting under the container.
