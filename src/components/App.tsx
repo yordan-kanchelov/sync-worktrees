@@ -7,7 +7,7 @@ import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
 import ForceCleanModal from "./ForceCleanModal";
 import FuzzySwitcher from "./FuzzySwitcher";
-import LogPanel, { CollapsedLogLine } from "./LogPanel";
+import LogPanel, { CollapsedLogLine, useLogScroll } from "./LogPanel";
 import RepositoryDashboard from "./RepositoryDashboard";
 import { LOG_MIN_ROWS, LOG_RESIZE_STEP, homeLayout } from "./layout";
 import type { LogSizePreference } from "./layout";
@@ -176,6 +176,7 @@ const App: React.FC<AppProps> = ({
   // `l` folds the log to one line; `+` / `-` move the line between it and the
   // repository table. Null rows: the table takes what it needs first.
   const [logSize, setLogSize] = useState<LogSizePreference>({ collapsed: false, rows: null });
+  const logScroll = useLogScroll();
   // A key that cannot act right now says so here, for a moment, in place of
   // the key legend -- `s` during a sync used to do nothing at all.
   const [notice, setNotice] = useState<string | null>(null);
@@ -201,6 +202,10 @@ const App: React.FC<AppProps> = ({
   const availableRows = Math.max(0, terminalRows - statusBarHeight);
   const modalRows = availableRows;
   const home = homeLayout(availableRows, dashboardRows.length, logSize);
+  // `l` only lifts the user's own fold; a log folded for want of room needs `+`.
+  const lFoldsOnly =
+    logSize.collapsed &&
+    !homeLayout(availableRows, dashboardRows.length, { ...logSize, collapsed: false }).logCollapsed;
 
   const pendingLogsRef = useRef<LogEntry[]>([]);
   const logFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -317,7 +322,7 @@ const App: React.FC<AppProps> = ({
       // A log `l` folded comes back at the size it had; one folded for want
       // of room comes back as the smallest panel, at the table's expense.
       setLogSize(
-        logSize.collapsed
+        lFoldsOnly
           ? { ...logSize, collapsed: false }
           : {
               collapsed: false,
@@ -479,11 +484,11 @@ const App: React.FC<AppProps> = ({
   return (
     <Box flexDirection="column" minHeight={terminalRows}>
       {!showModal && home.dashboardRows > 0 && <RepositoryDashboard rows={dashboardRows} height={home.dashboardRows} />}
-      {!showModal && !home.logCollapsed && <LogPanel logs={logs} height={home.logRows} isActive={!showModal} />}
+      {!showModal && !home.logCollapsed && <LogPanel logs={logs} height={home.logRows} scroll={logScroll} />}
       {!showModal && home.logCollapsed && (
         <>
           <Box flexGrow={1} />
-          <CollapsedLogLine logs={logs} />
+          <CollapsedLogLine logs={logs} expandKey={lFoldsOnly ? "l" : "+"} />
         </>
       )}
 

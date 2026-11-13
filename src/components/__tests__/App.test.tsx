@@ -1265,6 +1265,45 @@ describe("App", () => {
       expect(lastFrame()).toContain("REPOSITORY");
     });
 
+    it("names a key that expands a log folded for want of room", async () => {
+      const { stdin, stdout, lastFrame } = render(<App {...defaultProps} />);
+      resizeTerminal(stdout, 100, 12);
+      await waitForStateUpdate();
+      appEvents.emit("setRepositoryDashboard", table(5));
+      fillLogs(20);
+      await waitForStateUpdate();
+
+      const before = lastFrame()!;
+      const key = /entries, (\S) to expand\)/.exec(before)?.[1];
+      expect(key).toBeDefined();
+      stdin.write(key!);
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toEqual(before);
+      expect(logLinesShown(lastFrame()!)).toBeGreaterThan(1);
+    });
+
+    it("keeps the log's scroll position across a modal", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      appEvents.emit("setRepositoryDashboard", table(3));
+      fillLogs(40);
+      await waitForStateUpdate();
+
+      stdin.write("g");
+      await waitForStateUpdate();
+      stdin.write("g");
+      await waitForStateUpdate();
+      expect(lastFrame()).toMatch(/Log line 0\b/);
+
+      stdin.write("?");
+      await waitForStateUpdate();
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("REPOSITORY");
+      expect(lastFrame()).toMatch(/Log line 0\b/);
+    });
+
     describe("narrow and short terminals", () => {
       it.each([
         [80, 24],
