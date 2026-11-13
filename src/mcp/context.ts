@@ -226,6 +226,9 @@ export class RepositoryContext {
   private configLoader = new ConfigLoaderService({ logger: createStderrLogger() });
   private discoveryCache = new Map<string, CachedDiscovery>();
   private lastConfigLoadFailure: ConfigLoadFailure | null = null;
+  private loadedConfigFingerprint: ConfigFingerprint | null = null;
+  private loadedConfigCheckedMtimeMs: number | null = null;
+  private loadedConfigChanged = false;
   private readonly launchCwd: string;
 
   constructor(options: { launchCwd?: string } = {}) {
@@ -243,6 +246,7 @@ export class RepositoryContext {
   async loadConfig(configPath: string, options: { setDefaultCurrent?: boolean } = {}): Promise<RepositoryConfig[]> {
     const setDefaultCurrent = options.setDefaultCurrent ?? true;
     const absolutePath = path.resolve(configPath);
+    const fingerprint = await configFileFingerprint(absolutePath);
     const configFile = await this.configLoader.loadConfigFile(absolutePath);
 
     const configDir = path.dirname(absolutePath);
@@ -272,6 +276,9 @@ export class RepositoryContext {
     // Reached only past every throw in this method, so it marks a config that
     // is genuinely loaded -- from the auto-load below or from load_config.
     this.lastConfigLoadFailure = null;
+    this.loadedConfigFingerprint = fingerprint;
+    this.loadedConfigCheckedMtimeMs = fingerprint.mtimeMs;
+    this.loadedConfigChanged = false;
     for (const resolved of resolvedAll) {
       this.repos.set(resolved.name, {
         name: resolved.name,
@@ -297,6 +304,7 @@ export class RepositoryContext {
 
   async detectFromPath(dirPath: string): Promise<DiscoveredRepoContext> {
     const absolutePath = path.resolve(dirPath);
+    await this.checkLoadedConfigChanged();
 
     const cached = this.discoveryCache.get(absolutePath);
     if (cached && (await this.isCacheFresh(cached))) {
@@ -518,6 +526,22 @@ export class RepositoryContext {
     return null;
   }
 
+  private async checkLoadedConfigChanged(): Promise<void> {
+    // A stat per detect; the file is hashed only when its mtime moves, so a
+    // bare `touch` does not raise CONFIG_CHANGED.
+    const loaded = this.loadedConfigFingerprint;
+    if (this.configPath === null || loaded === null || loaded.contentHash === null) return;
+    const mtimeMs = await safeMtimeMs(this.configPath);
+    if (mtimeMs !== null && mtimeMs === this.loadedConfigCheckedMtimeMs) return;
+    const current = await configFileFingerprint(this.configPath);
+    const changed = current.contentHash !== loaded.contentHash;
+    this.loadedConfigCheckedMtimeMs = mtimeMs;
+    if (changed !== this.loadedConfigChanged) {
+      this.loadedConfigChanged = changed;
+      this.discoveryCache.clear();
+    }
+  }
+
   private shouldReimportConfig(configPath: string, fingerprint: ConfigFingerprint): boolean {
     const failure = this.lastConfigLoadFailure;
     if (failure === null) return true;
@@ -555,6 +579,11 @@ export class RepositoryContext {
       notes.push(
         `Found config at ${configFailure.path} but it failed to load: ${configFailure.error}. ` +
           `Fix it and call load_config.`,
+      );
+    }
+    if (this.loadedConfigChanged && this.configPath !== null) {
+      notes.push(
+        `CONFIG_CHANGED: ${this.configPath} changed on disk since it was loaded; call load_config to apply it.`,
       );
     }
 

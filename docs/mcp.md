@@ -199,6 +199,9 @@ No config path is needed: the server runs in **auto-detect mode**.
   while no config is loaded yet — found with `detect_context {path}`, which walks up from the path it is given. Once a
   config is loaded, `detect_context {path}` never loads another one; `load_config {configPath}` switches, and replaces
   the loaded repositories.
+- A loaded config is not re-read when the file changes: tools keep using the settings it had when it was loaded. Once
+  its contents change on disk, `detect_context` adds a note starting `CONFIG_CHANGED:`; call `load_config` to apply
+  the edit. Only the config file itself is compared, so an edit to a module it imports is not noticed.
 
 | Launched from | The server finds | What the agent should do |
 | --- | --- | --- |
