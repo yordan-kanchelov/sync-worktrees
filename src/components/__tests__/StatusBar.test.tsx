@@ -329,8 +329,9 @@ describe("StatusBar", () => {
       expect(frame).toMatch(/Next Sync:.*\d{1,2}:\d{2}:\d{2}/);
     });
 
-    it("should re-parse cron expression on each interval tick to avoid drift", async () => {
+    it("should re-parse cron expression on each tick to avoid drift", async () => {
       vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 0, 5, 10, 0, 30));
 
       const { CronExpressionParser } = await import("cron-parser");
       const parseSpy = vi.spyOn(CronExpressionParser, "parse");
@@ -341,14 +342,49 @@ describe("StatusBar", () => {
       const initialCallCount = parseSpy.mock.calls.length;
       expect(initialCallCount).toBeGreaterThanOrEqual(1);
 
-      // Advance by 60s to trigger interval
-      vi.advanceTimersByTime(60000);
+      // Advance just past the 11:00 tick to fire the re-armed timeout
+      vi.advanceTimersByTime(3_571_000);
 
       // Should have called parse again (fresh instance, not reusing iterator)
       expect(parseSpy.mock.calls.length).toBeGreaterThan(initialCallCount);
 
       parseSpy.mockRestore();
       vi.useRealTimers();
+    });
+
+    it("rolls Next Sync forward once the cron tick passes, not a minute after mount", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date(2026, 0, 5, 10, 0, 30));
+        const { lastFrame } = render(<StatusBar {...defaultProps} cronSchedule="* * * * *" />);
+        expect(lastFrame()).toContain(new Date(2026, 0, 5, 10, 1, 0).toLocaleTimeString());
+
+        await vi.advanceTimersByTimeAsync(45_000);
+
+        expect(lastFrame()).toContain(new Date(2026, 0, 5, 10, 2, 0).toLocaleTimeString());
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("recomputes Next Sync when lastSyncTime changes", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date(2026, 0, 5, 10, 0, 30));
+        const { lastFrame, rerender } = render(<StatusBar {...defaultProps} cronSchedule="0 * * * *" />);
+        expect(lastFrame()).toContain(new Date(2026, 0, 5, 11, 0, 0).toLocaleTimeString());
+
+        // Wall clock jumps (e.g. after sleep) without the timer firing.
+        vi.setSystemTime(new Date(2026, 0, 5, 11, 0, 5));
+        rerender(
+          <StatusBar {...defaultProps} cronSchedule="0 * * * *" lastSyncTime={new Date(2026, 0, 5, 11, 0, 5)} />,
+        );
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(lastFrame()).toContain(new Date(2026, 0, 5, 12, 0, 0).toLocaleTimeString());
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("should update next sync time when cronSchedule changes", () => {

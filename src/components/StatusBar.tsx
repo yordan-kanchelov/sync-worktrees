@@ -81,13 +81,20 @@ const StatusBar: React.FC<StatusBarProps> = ({
       return undefined;
     }
 
-    setNextSyncTime(computeNextSyncTime(list));
-    const timer = setInterval(() => {
-      setNextSyncTime(computeNextSyncTime(list));
-    }, 60000);
+    // Re-arm just past each tick so the shown time never lags behind the clock.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const update = (): void => {
+      const now = new Date();
+      const next = computeNextSyncTime(list, now);
+      setNextSyncTime(next);
+      // Capped: setTimeout fires at once past ~24.8 days.
+      const delay = next ? Math.min(Math.max(next.getTime() - now.getTime(), 0) + 1000, 3_600_000) : 0;
+      if (next) timer = setTimeout(update, delay);
+    };
+    update();
 
-    return () => clearInterval(timer);
-  }, [scheduleKey]);
+    return () => clearTimeout(timer);
+  }, [scheduleKey, lastSyncTime, status]);
 
   const formatTime = (date: Date | null): string => {
     if (!date) return "N/A";
