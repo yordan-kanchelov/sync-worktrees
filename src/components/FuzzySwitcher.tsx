@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import pLimit from "p-limit";
 import { isMouseSequence } from "../utils/mouse";
+import { sanitizePastedFilter } from "../utils/paste-filter";
 import { getErrorMessage } from "../utils/errors";
 import { fuzzyFilter } from "../utils/fuzzy";
 import type { FuzzyResult } from "../utils/fuzzy";
@@ -269,7 +270,7 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
   });
 
   usePaste((text) => {
-    if (mode === "LIST" && !busy) editQuery(query + text.replace(/[\r\n]+/g, " "));
+    if (mode === "LIST" && !busy) editQuery(query + sanitizePastedFilter(text));
   });
 
   const footer =

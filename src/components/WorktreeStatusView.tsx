@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import { isMouseSequence } from "../utils/mouse";
+import { sanitizePastedFilter } from "../utils/paste-filter";
 import { isListDown, isListUp, listRowsFor, listWindow, useModalLayout, wrappedRows } from "./layout";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
@@ -522,10 +523,10 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   usePaste((text) => {
     if (confirmDelete !== null) return;
     if (step === "SELECT_PROJECT") {
-      setProjectFilter((prev) => prev + text);
+      setProjectFilter((prev) => prev + sanitizePastedFilter(text));
       setSelectedProjectIndex(0);
     } else if (step === "VIEW_STATUS" && !loading) {
-      setEntryFilter((prev) => prev + text);
+      setEntryFilter((prev) => prev + sanitizePastedFilter(text));
       setSelectedEntryIndex(0);
       setExpandedEntry(null);
     }

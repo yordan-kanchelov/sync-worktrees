@@ -207,6 +207,21 @@ describe("OpenEditorWizard", () => {
 
       expect(lastFrame()).toContain("(1/3 matches)");
     });
+
+    it("should drop a trailing newline from a pasted filter", async () => {
+      const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
+
+      stdin.write("\r"); // Enter to select project
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      stdin.write("\u001B[200~main\n\u001B[201~");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("(1/3 matches)");
+      expect(lastFrame()).toContain("> main");
+      expect(lastFrame()).not.toContain("No matches");
+    });
   });
 
   describe("opening worktree", () => {

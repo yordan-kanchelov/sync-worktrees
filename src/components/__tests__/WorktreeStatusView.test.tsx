@@ -648,6 +648,24 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).toContain("hotfix/bug-123");
     });
 
+    it("should drop a trailing newline from a pasted filter", async () => {
+      const singleRepoProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      stdin.write("\u001B[200~main\n\u001B[201~");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("(1/4 matches)");
+      expect(lastFrame()).toContain("> main");
+      expect(lastFrame()).not.toContain("No matches");
+    });
+
     it("should expand detail on Enter", async () => {
       const singleRepoProps = {
         ...defaultProps,

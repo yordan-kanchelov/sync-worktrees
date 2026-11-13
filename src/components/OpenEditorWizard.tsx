@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import { isMouseSequence } from "../utils/mouse";
+import { sanitizePastedFilter } from "../utils/paste-filter";
 import { isListDown, isListUp, listRowsFor, listWindow, useModalLayout, wrappedRows } from "./layout";
 
 type WizardStep = "SELECT_PROJECT" | "SELECT_WORKTREE" | "OPENING" | "ERROR";
@@ -188,10 +189,10 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
 
   usePaste((text) => {
     if (step === "SELECT_PROJECT") {
-      setProjectFilter((prev) => prev + text);
+      setProjectFilter((prev) => prev + sanitizePastedFilter(text));
       setSelectedProjectIndex(0);
     } else if (step === "SELECT_WORKTREE") {
-      setWorktreeFilter((prev) => prev + text);
+      setWorktreeFilter((prev) => prev + sanitizePastedFilter(text));
       setSelectedWorktreeIndex(0);
     }
   });

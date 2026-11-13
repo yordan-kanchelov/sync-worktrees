@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import { isMouseSequence } from "../utils/mouse";
+import { sanitizePastedFilter } from "../utils/paste-filter";
 import { isListDown, isListUp, listRowsFor, listWindow, useModalLayout, wrappedRows } from "./layout";
 
 import { isValidGitBranchName } from "../utils/git-validation";
@@ -286,10 +287,10 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
   usePaste((text) => {
     if (step === "SELECT_PROJECT") {
-      setProjectFilter((prev) => prev + text);
+      setProjectFilter((prev) => prev + sanitizePastedFilter(text));
       setSelectedProjectIndex(0);
     } else if (step === "SELECT_BRANCH") {
-      setBranchFilter((prev) => prev + text);
+      setBranchFilter((prev) => prev + sanitizePastedFilter(text));
       setSelectedBranchIndex(0);
     } else if (step === "ENTER_NAME") {
       setBranchName((prev) => prev + text.replace(/[^a-zA-Z0-9/._-]/g, ""));
