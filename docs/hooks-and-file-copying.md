@@ -14,7 +14,10 @@ have it: run those steps yourself after `create_worktree`, or create the branch 
 the path.
 
 - `hooks.onBranchCreated` — array of shell commands run after the wizard has created the new branch's worktree.
-  Placeholders: `{BRANCH_NAME}`, `{WORKTREE_PATH}`, `{REPO_NAME}`, `{BASE_BRANCH}`, `{REPO_URL}`. Started in the
+  Placeholders: `{BRANCH_NAME}`, `{WORKTREE_PATH}`, `{REPO_NAME}`, `{BASE_BRANCH}`, `{REPO_URL}`; each arrives
+  already single-quoted for the shell, so write `cd {WORKTREE_PATH}`, not `cd "{WORKTREE_PATH}"`. The commands run one
+  at a time in array order, each starting only after the previous one exits 0: a failure or timeout stops the rest,
+  which are logged as skipped. Each output line is logged prefixed with the command that wrote it. Started in the
   background — branch creation does not wait for them — but they do not outlive the interface; see below.
 - `filesToCopyOnBranchCreate` — paths copied into the worktree the wizard just created (e.g. `.env.local`, `.npmrc`).
   **In worktree mode the copy source is the base branch's worktree** — the checkout the new branch was cut from — so a
@@ -74,7 +77,8 @@ nothing reclaims it if it wedges, short of quitting.
 
 ## What happens to hooks when you quit
 
-Quitting terminates every hook still running, naming each one as it does. They cannot be left running instead: a hook's
+Quitting terminates every hook still running, naming each one as it does, and the commands queued behind it in the
+array are not started. They cannot be left running instead: a hook's
 stdout and stderr are pipes into this process — which is what puts its output in the log panel — so a hook that outlived
 the quit would be killed by SIGPIPE at its next write, mid-work and without the chance to clean up that a trapped
 SIGTERM gives it. Terminating deliberately is the outcome a hook can act on — and acting on it takes a moment, which

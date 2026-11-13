@@ -18,16 +18,21 @@ import type { ChildProcess } from "child_process";
 const HOOK_TERMINATION_GRACE_MS = 250;
 
 export interface HookExecutionCallbacks {
-  onStdout?: (data: string) => void;
-  onStderr?: (data: string) => void;
+  /** One whole output line, and the command that wrote it. */
+  onStdout?: (line: string, command: string) => void;
+  onStderr?: (line: string, command: string) => void;
   onError?: (command: string, error: Error) => void;
   onComplete?: (command: string, exitCode: number | null) => void;
+  /** Commands not run because an earlier one failed or timed out. */
+  onSkipped?: (commands: string[]) => void;
 }
 
 export class HookExecutionService {
   private activeProcesses = new Map<ChildProcess, string>();
   private killTimers = new Set<ReturnType<typeof setTimeout>>();
   private timeoutTimers = new Set<ReturnType<typeof setTimeout>>();
+  // Bumped by cleanup() so a running chain does not start its next command.
+  private generation = 0;
 
   executeOnBranchCreated(
     hooks: HooksConfig | undefined,
@@ -45,9 +50,28 @@ export class HookExecutionService {
     // `??`, not `||`: 0 is the configured "no timeout", not an absent value.
     const timeoutMs = hooks.timeoutMs ?? DEFAULT_CONFIG.HOOK_TIMEOUT_MS;
 
-    for (const command of hooks.onBranchCreated) {
-      const resolvedCommand = this.resolveCommandPlaceholders(command, context);
-      this.executeCommandInBackground(resolvedCommand, env, callbacks, timeoutMs, context.worktreePath);
+    const commands = hooks.onBranchCreated.map((command) => this.resolveCommandPlaceholders(command, context));
+    void this.runSequentially(commands, env, callbacks, timeoutMs, context.worktreePath);
+  }
+
+  // In array order, each after the previous one exits 0; the first failure
+  // stops the rest, so `install` then `build` never race.
+  private async runSequentially(
+    commands: string[],
+    env: NodeJS.ProcessEnv,
+    callbacks: HookExecutionCallbacks,
+    timeoutMs: number,
+    cwd: string,
+  ): Promise<void> {
+    const generation = this.generation;
+    for (const [index, command] of commands.entries()) {
+      if (generation !== this.generation) return;
+      const ok = await this.runCommand(command, env, callbacks, timeoutMs, cwd);
+      if (!ok) {
+        const rest = commands.slice(index + 1);
+        if (rest.length > 0 && generation === this.generation) callbacks.onSkipped?.(rest);
+        return;
+      }
     }
   }
 
@@ -64,6 +88,7 @@ export class HookExecutionService {
    * it can trap. Resolves once they are gone, or once they have been SIGKILLed.
    */
   public async cleanup(): Promise<string[]> {
+    this.generation++;
     for (const timer of this.timeoutTimers) {
       clearTimeout(timer);
     }
@@ -110,7 +135,7 @@ export class HookExecutionService {
       expiry = setTimeout(resolve, graceMs);
     });
     // Safe to attach after the signal rather than before: every child here is
-    // still in activeProcesses, and the handler in executeCommandInBackground
+    // still in activeProcesses, and the handler in runCommand
     // that removes it runs on this same close event, so neither can have been
     // delivered yet.
     const settled = children.map(
@@ -162,13 +187,17 @@ export class HookExecutionService {
     );
   }
 
-  private executeCommandInBackground(
+  private runCommand(
     command: string,
     env: NodeJS.ProcessEnv,
     callbacks: HookExecutionCallbacks,
     timeoutMs: number,
     cwd?: string,
-  ): void {
+  ): Promise<boolean> {
+    let settle!: (ok: boolean) => void;
+    const result = new Promise<boolean>((resolve) => {
+      settle = resolve;
+    });
     const child = spawn(command, {
       shell: true,
       detached: process.platform !== "win32",
@@ -213,35 +242,52 @@ export class HookExecutionService {
       }
     };
 
-    if (child.stdout) {
-      child.stdout.on("data", (data: Buffer) => {
-        const output = data.toString().trim();
-        if (output) {
-          callbacks.onStdout?.(output);
-        }
-      });
-    }
-
-    if (child.stderr) {
-      child.stderr.on("data", (data: Buffer) => {
-        const output = data.toString().trim();
-        if (output) {
-          callbacks.onStderr?.(output);
-        }
-      });
-    }
+    this.forwardLines(child.stdout, command, callbacks.onStdout);
+    this.forwardLines(child.stderr, command, callbacks.onStderr);
 
     child.on("error", (error) => {
       clearHookTimers();
       this.activeProcesses.delete(child);
       callbacks.onError?.(command, error);
+      settle(false);
     });
 
     child.on("close", (code) => {
       clearHookTimers();
       this.activeProcesses.delete(child);
-      if (timedOut) return;
+      if (timedOut) {
+        settle(false);
+        return;
+      }
       callbacks.onComplete?.(command, code);
+      settle(code === 0);
+    });
+
+    return result;
+  }
+
+  // Decoded as UTF-8 by the stream (so a character split across writes
+  // survives) and handed on one whole line at a time.
+  private forwardLines(
+    stream: NodeJS.ReadableStream | null,
+    command: string,
+    emit: ((line: string, command: string) => void) | undefined,
+  ): void {
+    if (!stream) return;
+    stream.setEncoding("utf8");
+    let pending = "";
+    const send = (line: string): void => {
+      const trimmed = line.trimEnd();
+      if (trimmed.trim()) emit?.(trimmed, command);
+    };
+    stream.on("data", (chunk: string) => {
+      const parts = (pending + chunk).split("\n");
+      pending = parts.pop() ?? "";
+      parts.forEach(send);
+    });
+    stream.on("end", () => {
+      send(pending);
+      pending = "";
     });
   }
 

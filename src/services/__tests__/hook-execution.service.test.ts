@@ -151,7 +151,7 @@ describe("HookExecutionService", () => {
         { onStdout: stdoutCallback },
       );
 
-      expect(stdoutCallback).toHaveBeenCalledWith(expect.stringContaining("feature/test-branch"));
+      expect(stdoutCallback).toHaveBeenCalledWith(expect.stringContaining("feature/test-branch"), expect.any(String));
     });
 
     it("should execute commands with correct environment variables for all context fields", async () => {
@@ -169,7 +169,7 @@ describe("HookExecutionService", () => {
         { onStdout: stdoutCallback },
       );
 
-      expect(stdoutCallback).toHaveBeenCalledWith("feature/test-branch,test-repo,main");
+      expect(stdoutCallback).toHaveBeenCalledWith("feature/test-branch,test-repo,main", expect.any(String));
     });
 
     // Hook commands run with the new worktree as their cwd, which is all that
@@ -201,7 +201,7 @@ describe("HookExecutionService", () => {
         setEnvVar("GIT_INDEX_FILE", originalIndexFile);
       }
 
-      expect(stdoutCallback).toHaveBeenCalledWith("unset,unset,test-repo");
+      expect(stdoutCallback).toHaveBeenCalledWith("unset,unset,test-repo", expect.any(String));
     });
 
     it("hands hooks the working repository URL, credentials included, via the environment", async () => {
@@ -216,7 +216,7 @@ describe("HookExecutionService", () => {
         { onStdout: stdoutCallback },
       );
 
-      expect(stdoutCallback).toHaveBeenCalledWith(tokenUrl);
+      expect(stdoutCallback).toHaveBeenCalledWith(tokenUrl, expect.any(String));
     });
 
     it.each([
@@ -291,7 +291,7 @@ describe("HookExecutionService", () => {
       if (resolved !== undefined) {
         expect(completeCallback).toHaveBeenCalledWith(resolved, 0);
       }
-      expect(stdoutCallback).toHaveBeenCalledWith(expected);
+      expect(stdoutCallback).toHaveBeenCalledWith(expected, expect.any(String));
     });
 
     it("should call onComplete callback when command succeeds", async () => {
@@ -319,10 +319,10 @@ describe("HookExecutionService", () => {
         onStderr: stderrCallback,
       });
 
-      expect(stderrCallback).toHaveBeenCalledWith("error");
+      expect(stderrCallback).toHaveBeenCalledWith("error", expect.any(String));
     });
 
-    it("should execute multiple commands independently", async () => {
+    it("should execute every command in the array", async () => {
       const stdoutCallback = vi.fn();
 
       await runAndWait(
@@ -338,9 +338,9 @@ describe("HookExecutionService", () => {
       );
 
       expect(stdoutCallback).toHaveBeenCalledTimes(3);
-      expect(stdoutCallback).toHaveBeenCalledWith("first");
-      expect(stdoutCallback).toHaveBeenCalledWith("second");
-      expect(stdoutCallback).toHaveBeenCalledWith("third");
+      expect(stdoutCallback).toHaveBeenCalledWith("first", expect.any(String));
+      expect(stdoutCallback).toHaveBeenCalledWith("second", expect.any(String));
+      expect(stdoutCallback).toHaveBeenCalledWith("third", expect.any(String));
     });
 
     it("should not block when command takes long time", async () => {
@@ -372,7 +372,7 @@ describe("HookExecutionService", () => {
         { onStdout: stdoutCallback },
       );
 
-      expect(stdoutCallback).toHaveBeenCalledWith("feature/test-with-special-chars");
+      expect(stdoutCallback).toHaveBeenCalledWith("feature/test-with-special-chars", expect.any(String));
     });
 
     it("should not call callbacks for empty output", async () => {
@@ -398,7 +398,7 @@ describe("HookExecutionService", () => {
         { onStdout: stdoutCallback },
       );
 
-      expect(stdoutCallback).toHaveBeenCalledWith("feature/test-branch test-repo");
+      expect(stdoutCallback).toHaveBeenCalledWith("feature/test-branch test-repo", expect.any(String));
     });
 
     it("should prevent shell injection via placeholders", async () => {
@@ -418,7 +418,7 @@ describe("HookExecutionService", () => {
       );
 
       expect(stdoutCallback).not.toHaveBeenCalledWith("INJECTED");
-      expect(stdoutCallback).toHaveBeenCalledWith("'; echo INJECTED; '");
+      expect(stdoutCallback).toHaveBeenCalledWith("'; echo INJECTED; '", expect.any(String));
     });
 
     it("should clean up active processes", async () => {
@@ -443,7 +443,7 @@ describe("HookExecutionService", () => {
         onStdout: stdoutCallback,
       });
 
-      expect(stdoutCallback).toHaveBeenCalledWith(expect.stringContaining("tmp"));
+      expect(stdoutCallback).toHaveBeenCalledWith(expect.stringContaining("tmp"), expect.any(String));
     });
 
     it("should track active processes and remove on completion", async () => {
@@ -487,6 +487,79 @@ describe("HookExecutionService", () => {
       } finally {
         await service.cleanup();
       }
+    });
+  });
+
+  describe("order and output (TR-7)", () => {
+    it("runs the array one command at a time, in order", async () => {
+      const lines: string[] = [];
+      await runAndWait(
+        {
+          onBranchCreated: [
+            nodeScript("setTimeout(() => console.log('first'), 300)"),
+            nodeScript("console.log('second')"),
+          ],
+        },
+        mockContext,
+        { onStdout: (line) => void lines.push(line) },
+      );
+      expect(lines).toEqual(["first", "second"]);
+    });
+
+    it("stops at the first failure and reports the commands it skipped", async () => {
+      const bad = nodeScript("process.exit(2)");
+      const never = nodeScript("console.log('never')");
+      const stdout = vi.fn();
+      const complete = vi.fn();
+      const skipped = await new Promise<string[]>((resolve) => {
+        service.executeOnBranchCreated({ onBranchCreated: [bad, never] }, mockContext, {
+          onStdout: stdout,
+          onComplete: complete,
+          onSkipped: resolve,
+        });
+      });
+      expect(skipped).toEqual([never]);
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(complete).toHaveBeenCalledWith(bad, 2);
+      expect(stdout).not.toHaveBeenCalled();
+    });
+
+    it("does not start the next command after cleanup()", async () => {
+      const dir = makeFixtureDir();
+      const marker = path.join(dir, "ran");
+      const next = nodeScript(`require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`);
+      service.executeOnBranchCreated({ onBranchCreated: [livenessHook(dir), next], timeoutMs: 0 }, mockContext);
+      await readReportedPid(dir);
+      await service.cleanup();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(fs.existsSync(marker)).toBe(false);
+      expect(service.getActiveCount()).toBe(0);
+    });
+
+    it("keeps a multi-byte character split across two writes intact", async () => {
+      const stdout = vi.fn();
+      const command = nodeScript(
+        "process.stdout.write(Buffer.from([0xc3]));" +
+          "setTimeout(() => process.stdout.write(Buffer.from([0xa9, 0x0a])), 100)",
+      );
+      await runAndWait({ onBranchCreated: [command] }, mockContext, { onStdout: stdout });
+      expect(stdout.mock.calls.map((call) => call[0])).toEqual(["\u00e9"]);
+    });
+
+    it("emits whole lines, each with the command that wrote it", async () => {
+      const stdout = vi.fn();
+      const stderr = vi.fn();
+      const command = nodeScript(
+        "process.stdout.write('one\\ntw');" +
+          "setTimeout(() => { process.stdout.write('o\\nthree'); process.stderr.write('warn\\n'); }, 100)",
+      );
+      await runAndWait({ onBranchCreated: [command] }, mockContext, { onStdout: stdout, onStderr: stderr });
+      expect(stdout.mock.calls).toEqual([
+        ["one", command],
+        ["two", command],
+        ["three", command],
+      ]);
+      expect(stderr.mock.calls).toEqual([["warn", command]]);
     });
   });
 

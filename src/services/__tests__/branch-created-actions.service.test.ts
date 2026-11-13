@@ -323,4 +323,27 @@ describe("BranchCreatedActionsService.runHooks", () => {
       [`[hook] Command completed successfully: ${ok}`, `[hook] Command exited with code 1: ${bad}`].sort(),
     );
   });
+
+  it("prefixes output with its command and names the hooks a failure skipped", async () => {
+    const talk = nodeScript("console.log('hello')");
+    const bad = nodeScript("process.exit(1)");
+    const never = nodeScript("process.exit(0)");
+    new BranchCreatedActionsService().runHooks({
+      config: makeConfig({ hooks: { onBranchCreated: [talk, bad, never], timeoutMs: 0 } }),
+      repoName: "api",
+      branchName: "feature/x",
+      worktreePath: os.tmpdir(),
+      baseBranch: "main",
+      logger,
+      hookExecutionService: service,
+    });
+    await vi.waitFor(() => {
+      expect(lines.some((line) => line.includes("[hook] Skipped"))).toBe(true);
+    });
+
+    expect(lines.some((line) => line.endsWith(`[hook: ${talk}] hello`))).toBe(true);
+    expect(lines.filter((line) => line.includes("[hook] Skipped"))).toEqual([
+      expect.stringContaining(`[hook] Skipped after an earlier hook failed: ${never}`),
+    ]);
+  });
 });
