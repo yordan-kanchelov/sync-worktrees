@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppEventEmitter } from "../../utils/app-events";
 import { calculateDirectorySize, calculateSyncDiskSpace, formatBytes } from "../../utils/disk-space";
 import { InteractiveUIService } from "../InteractiveUIService";
+import { PathResolutionService } from "../path-resolution.service";
 import { RefScanScope } from "../worktree-status.service";
 
 import type { Config } from "../../types";
@@ -546,11 +547,14 @@ describe("InteractiveUIService", () => {
     });
   });
 
-  describe("registerCronJob", () => {
+  describe("cron job cleanup", () => {
     it("should stop registered cron jobs on destroy", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const destroySpy = vi.fn();
-      service.scheduler.registerCronJob({ stop: vi.fn(), destroy: destroySpy } as unknown as cron.ScheduledTask);
+      (service.scheduler as unknown as { cronJobs: cron.ScheduledTask[] }).cronJobs.push({
+        stop: vi.fn(),
+        destroy: destroySpy,
+      } as unknown as cron.ScheduledTask);
 
       await service.destroy();
 
@@ -1453,6 +1457,32 @@ describe("InteractiveUIService", () => {
 
         void service.destroy();
       });
+
+      it("emits an increasing repositoriesReloaded generation on every successful reload", async () => {
+        mockConfigLoaderInstance.loadConfigFile.mockResolvedValue({
+          repositories: [
+            {
+              name: "test-repo-1",
+              repoUrl: "https://github.com/test/repo1.git",
+              worktreeDir: "/test/worktrees1",
+              cronSchedule: "0 * * * *",
+              runOnce: false,
+            },
+          ],
+        });
+
+        const service = new InteractiveUIService([mockSyncService], "/test/config.js");
+        const generations: number[] = [];
+        service.getEvents().on("repositoriesReloaded", (generation) => generations.push(generation));
+
+        const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
+        await onReload();
+        await onReload();
+
+        expect(generations).toEqual([1, 2]);
+
+        void service.destroy();
+      });
     });
 
     describe("service lifecycle on reload", () => {
@@ -1574,7 +1604,9 @@ describe("InteractiveUIService", () => {
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(4);
+        // Once per service by the reload; the cycle's sync() initializes
+        // itself rather than calling initialize() first.
+        expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(2);
         expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalledTimes(2);
 
         void service.destroy();
@@ -1974,6 +2006,10 @@ describe("InteractiveUIService", () => {
       };
 
       mockSyncService.getGitService = vi.fn().mockReturnValue(mockGitService);
+      // Worktree mode: WorktreeSyncService.getWorktrees lists through its GitService.
+      mockSyncService.getWorktrees = vi.fn(function (this: typeof mockSyncService) {
+        return this.getGitService().getWorktrees();
+      });
       mockSyncService.getRemoteBranches = vi.fn().mockResolvedValue(["main", "develop", "feature/test"]);
     });
 
@@ -2479,7 +2515,7 @@ describe("InteractiveUIService", () => {
         // ...and the wizard's follow-up switches the clone in place rather
         // than adding a worktree — the branch it just pushed is now real.
         await service.operations.createWorktreeForBranch(0, "feature/x");
-        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/x", { allowConfigDrift: true });
+        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/x");
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
         void service.destroy();
@@ -2631,9 +2667,9 @@ describe("InteractiveUIService", () => {
 
         await service.operations.createWorktreeForBranch(0, "feature/new");
 
-        // allowConfigDrift: the wizard just created+pushed this branch, so the
-        // switch is intentional drift from config.branch (warned downstream).
-        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new", { allowConfigDrift: true });
+        // The wizard just created+pushed this branch; the drift from
+        // config.branch is warned downstream.
+        expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new");
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
         void service.destroy();
@@ -3469,6 +3505,24 @@ describe("InteractiveUIService", () => {
         expect(result).toHaveLength(1);
         expect(result[0].originalBranch).toBe("my-branch");
         expect(result[0].divergedAt).toBe("2024-03-20");
+
+        void service.destroy();
+      });
+
+      it("strips the hash and base36 suffixes from a name made like the sync runner makes it", async () => {
+        const safeBranch = new PathResolutionService().sanitizeBranchName("feat-two");
+        const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
+        const names = [`2026-11-12-${safeBranch}-${uniqueSuffix}`, "2026-11-12-feat-two-2a383c54-mwd95i8ughnw3"];
+        (fs.readdir as Mock<any>).mockResolvedValue(
+          names.map((name) => ({ name, isDirectory: () => true, isFile: () => false })),
+        );
+        (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
+
+        const service = new InteractiveUIService([mockSyncService]);
+        const result = await service.operations.getDivergedDirectoriesForRepo(0);
+
+        expect(result.map((r) => r.originalBranch)).toEqual(["feat-two", "feat-two"]);
+        expect(result.map((r) => r.divergedAt)).toEqual(["2026-11-12", "2026-11-12"]);
 
         void service.destroy();
       });

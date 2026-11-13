@@ -100,6 +100,8 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
 
     gitService = {
       ensureAnchorWorktree: vi.fn().mockResolvedValue(false),
+      // Not on disk, so the anchor check makes no realpath call.
+      getMainWorktreePath: vi.fn().mockReturnValue(path.join(worktreeDir, "main")),
       fetchAll: vi.fn().mockResolvedValue(undefined),
       // Only the default branch is on the remote, so the registered worktrees
       // are never "planned" branches and dropStaleRegistrations — the only

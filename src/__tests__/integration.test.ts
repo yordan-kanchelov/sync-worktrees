@@ -107,7 +107,7 @@ describe("Integration Tests", () => {
       });
       (mockGit.raw as Mock<any>).mockImplementation(async (args: unknown) => {
         const argsArray = args as string[];
-        if (argsArray[0] === "remote" && argsArray[1] === "get-url") return TEST_URLS.github;
+        if (argsArray[3] === "remote.origin.url") return TEST_URLS.github;
         if (argsArray[0] === "config") throw new Error("config not found");
         if (argsArray[0] === "show-ref" && String(argsArray[argsArray.length - 1]).startsWith("refs/heads/")) {
           throw new Error("show-ref: not found"); // no local branches yet: every add tracks origin
@@ -293,6 +293,7 @@ branch refs/heads/dirty-branch
         created: [],
         conflicted: [],
         not_added: [],
+        files: [],
       };
       const dirtyStatus = { ...cleanStatus, modified: ["file.txt"] };
 

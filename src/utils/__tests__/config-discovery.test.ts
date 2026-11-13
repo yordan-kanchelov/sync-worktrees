@@ -4,6 +4,7 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { CONFIG_FILE_NAMES } from "../../constants";
 import { CONFIG_PATH_ENV_VAR, describeConfigPath, findConfigUpTree, resolveConfigPath } from "../config-discovery";
 
 describe("config discovery", () => {
@@ -46,6 +47,25 @@ describe("config discovery", () => {
       await writeConfig(project, "sync-worktrees.config.ts");
       const js = await writeConfig(project, "sync-worktrees.config.js");
       expect(await findConfigUpTree(nested, home)).toBe(js);
+    });
+
+    it("matches every supported extension", async () => {
+      for (const name of CONFIG_FILE_NAMES) {
+        const dir = await fs.mkdtemp(path.join(tempDir, "ext-"));
+        const config = await writeConfig(dir, name);
+        expect(await findConfigUpTree(dir, home)).toBe(config);
+      }
+    });
+
+    // The four names the MCP instructions and `detect_context` advertise, in
+    // walk-up order; pinned so the claims and the constant cannot drift.
+    it("advertises exactly the extensions it searches, .js first", () => {
+      expect([...CONFIG_FILE_NAMES]).toEqual([
+        "sync-worktrees.config.js",
+        "sync-worktrees.config.mjs",
+        "sync-worktrees.config.cjs",
+        "sync-worktrees.config.ts",
+      ]);
     });
 
     it("checks the home directory itself", async () => {

@@ -1,9 +1,5 @@
 import { getErrorMessage } from "./errors";
 
-// Re-exported so imports that predate the move to ./errors keep compiling;
-// new code should import getErrorMessage from "./errors".
-export { getErrorMessage };
-
 /**
  * Common LFS error patterns that indicate Git LFS-related failures
  */

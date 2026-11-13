@@ -1,18 +1,16 @@
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const shouldSkip = process.env.SKIP_E2E_TESTS === "true";
-const describeOrSkip = shouldSkip ? describe.skip : describe;
 const shouldRunNetworkE2E = process.env.RUN_NETWORK_E2E === "true";
 const itNetwork = shouldRunNetworkE2E ? it : it.skip;
 
 const HELLO_WORLD = "https://github.com/octocat/Hello-World.git";
 const GITIGNORE = "https://github.com/github/gitignore.git";
 
-describeOrSkip("Clone-mode E2E tests", () => {
+describe("Clone-mode E2E tests", () => {
   const cliPath = path.join(process.cwd(), "dist", "index.js");
   const tmpBase = path.join(process.cwd(), "tmp-e2e-clone-mode");
 
@@ -276,6 +274,78 @@ export default {
     expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeTick);
   }, 90000);
 
+  // With `branch` unset the default branch is the one resolved at clone time:
+  // a later move of the remote's HEAD must not strand an existing clone.
+  it("keeps syncing the clone-time default branch after the remote HEAD moves", async () => {
+    const remoteBare = await createLocalRemote("default-moved-remote");
+    const configDir = path.join(tmpBase, "default-moved");
+    const worktreeDir = path.join(configDir, "wt");
+    const configPath = path.join(configDir, "default-moved.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir);
+    // Same config as the other tests, minus `branch`.
+    const config = await fs.readFile(configPath, "utf-8");
+    await fs.writeFile(configPath, config.replace(/,\s*branch: "main"/, ""));
+    expect(await fs.readFile(configPath, "utf-8")).not.toContain("branch:");
+    const run = (): string =>
+      execSync(`node "${cliPath}" --config "${configPath}" 2>&1`, {
+        encoding: "utf-8",
+        timeout: 60000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+    run();
+    expect(execSync(`git -C "${worktreeDir}" rev-parse --abbrev-ref HEAD`, { encoding: "utf-8" }).trim()).toBe("main");
+    // The record a later start reads. Newer git no longer writes it on a
+    // single-branch clone, so the sync has to.
+    expect(
+      execSync(`git -C "${worktreeDir}" symbolic-ref refs/remotes/origin/HEAD`, { encoding: "utf-8" }).trim(),
+    ).toBe("refs/remotes/origin/main");
+
+    const pushedHead = await pushCommit(remoteBare, "default-moved", "three.txt", "Add three");
+    execSync(`git -C "${remoteBare}" branch trunk main`, { encoding: "utf-8" });
+    execSync(`git -C "${remoteBare}" symbolic-ref HEAD refs/heads/trunk`, { encoding: "utf-8" });
+
+    const output = run();
+
+    expect(output).not.toContain("expected 'trunk'");
+    expect(output).not.toContain("Clone-mode skips");
+    expect(output).toMatch(/Processed 1 repo in \S+: 1 synced, 0 failed/);
+    expect(execSync(`git -C "${worktreeDir}" rev-parse --abbrev-ref HEAD`, { encoding: "utf-8" }).trim()).toBe("main");
+    expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(pushedHead);
+  }, 90000);
+
+  // simple-git puts a type change (` T`) in no status bucket: only in
+  // `status.files`. The dirty check used to read that as clean and
+  // fast-forward over a tracked file replaced by a symlink.
+  it("skips a clone whose tracked file was replaced by a symlink once origin moves ahead", async () => {
+    const remoteBare = await createLocalRemote("typechange-remote");
+    const configDir = path.join(tmpBase, "typechange");
+    const worktreeDir = path.join(configDir, "wt");
+    const configPath = path.join(configDir, "typechange.config.js");
+    await fs.mkdir(configDir, { recursive: true });
+    await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir);
+    const command = `node "${cliPath}" --config "${configPath}" 2>&1`;
+    const run = (): string =>
+      execSync(command, { encoding: "utf-8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] });
+
+    run();
+
+    await fs.rm(path.join(worktreeDir, "one.txt"));
+    await fs.symlink("two.txt", path.join(worktreeDir, "one.txt"));
+    expect(execSync(`git -C "${worktreeDir}" status --porcelain`, { encoding: "utf-8" })).toBe(" T one.txt\n");
+    const headBeforeTick = execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+
+    await pushCommit(remoteBare, "typechange", "three.txt", "Add three");
+
+    const output = run();
+
+    expect(output).toContain("working tree has local changes");
+    expect(output).toMatch(/Processed 1 repo in \S+: 0 synced, 1 with clone-mode skips, 0 failed/);
+    expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeTick);
+    expect((await fs.lstat(path.join(worktreeDir, "one.txt"))).isSymbolicLink()).toBe(true);
+  }, 90000);
+
   it("narrows legacy all-branches clone refspecs and deletes stale remote refs", async () => {
     const remoteBare = await createLocalRemote("legacy-remote-branches");
     const seedDir = path.join(tmpBase, "legacy-remote-branches-seed");
@@ -382,10 +452,10 @@ export default {
 
       expect(output).toMatch(/is on branch 'sidebranch', expected 'master'/);
       expect(output).toContain("Clone-mode skips");
-      // run-once initializes before the sync operation, and the operation re-detects the
-      // mismatch itself (worktree-sync.service clears the init token), so the summary line
-      // carries the sync-phase wording, not "(since process start)".
-      expect(output).toMatch(/mismatch — clone is on 'sidebranch', expected 'master' — update 'branch'/);
+      // run-once initializes inside the sync operation, so the init-phase skip is the one reported.
+      expect(output).toMatch(
+        /mismatch — clone is on 'sidebranch', expected 'master' \(since process start\) — update 'branch'/,
+      );
       expect(output).toMatch(/Processed 1 repo in \S+: 0 synced, 1 with clone-mode skips, 0 failed/);
       expect(output).not.toContain("CONFIG_CLONE_BRANCH_MISMATCH");
     },
@@ -837,6 +907,61 @@ export default {
     expect(execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim()).toBe(headBeforeSecondRun);
   }, 120000);
 
+  // Once the budget has failed on a pair it cannot fail differently later: the
+  // fetched ref already holds every target, or its whole history. Re-running it
+  // re-truncated the clone to 50 and rebought the rest every tick. Two remote
+  // lengths: past the largest target, and short enough to be held whole.
+  it.each([
+    ["past the largest deepen target", 1100],
+    ["held in full by the clone", 120],
+  ])(
+    "spends the deepen budget once on unrelated history %s",
+    async (label, commits) => {
+      const slug = `shallow-unrelated-${commits}`;
+      const remoteBare = await createLocalRemote(`${slug}-remote`);
+      const configDir = path.join(tmpBase, `${slug}-config`);
+      const worktreeDir = path.join(configDir, "clone");
+      const configPath = path.join(configDir, `${slug}.config.js`);
+      await fs.mkdir(configDir, { recursive: true });
+
+      await writeCloneDepthConfig(configPath, `file://${remoteBare}`, worktreeDir, ",\n      depth: 1");
+      execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+
+      const pushDir = path.join(tmpBase, `${slug}-push`);
+      execSync(`git clone -q "${remoteBare}" "${pushDir}"`, { encoding: "utf-8" });
+      execSync(`git -C "${pushDir}" config user.name "Test User"`, { encoding: "utf-8" });
+      execSync(`git -C "${pushDir}" config user.email "test@example.com"`, { encoding: "utf-8" });
+      execSync(
+        `git checkout -q --orphan unrelated && for i in $(seq 1 ${commits}); do git commit -q --allow-empty -m "U $i"; done`,
+        { encoding: "utf-8", cwd: pushDir },
+      );
+      execSync(`git -C "${pushDir}" push -q --force origin unrelated:main`, { encoding: "utf-8" });
+
+      const readObjects = (): string =>
+        execSync(`git -C "${worktreeDir}" count-objects -v`, { encoding: "utf-8" })
+          .split("\n")
+          .filter((line) => /^(count|in-pack|packs):/.test(line))
+          .join(" ");
+      const readHead = (): string => execSync(`git -C "${worktreeDir}" rev-parse HEAD`, { encoding: "utf-8" }).trim();
+      const headBefore = readHead();
+
+      const firstRun = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+      expect(firstRun, label).toContain("[deepen]");
+      expect(firstRun, label).toContain("could not classify origin/main");
+      const objectsAfterBudget = readObjects();
+
+      for (const tick of [2, 3]) {
+        const run = execSync(`node "${cliPath}" --config "${configPath}"`, { encoding: "utf-8", timeout: 60000 });
+        // The sync fetch is the tick's only fetch.
+        expect(run, `${label}, tick ${tick}`).not.toContain("[deepen]");
+        expect(run, `${label}, tick ${tick}`).toContain("could not classify origin/main");
+        expect(readObjects(), `${label}, tick ${tick}`).toBe(objectsAfterBudget);
+        expect(readHead()).toBe(headBefore);
+      }
+    },
+    240000,
+  );
+
   // A merge is the case a capped fetch cannot classify on its own. The clone
   // never advertised the commits on the merged-in side, and the cap stops the
   // fetch from walking past the merge commit to reach the history the clone
@@ -984,6 +1109,58 @@ export default {
     expect(output).toContain("it is not a primary checkout");
     expect(output).toContain(path.join(primaryDir, ".git"));
     expect(readPrimary()).toEqual(before);
+  }, 60000);
+
+  // On the wrong branch the tick soft-skips before the primary-checkout guard,
+  // so the sync "succeeds" — and maintenance must still not gc the repository
+  // that owns the linked worktree.
+  it("does not run git gc in the owner of a linked worktree on the wrong branch", async () => {
+    const remoteBare = await createLocalRemote("linked-gc");
+    const baseDir = path.join(tmpBase, "linked-gc");
+    const primaryDir = path.join(baseDir, "primary");
+    const linkedDir = path.join(baseDir, "linked");
+    await fs.mkdir(baseDir, { recursive: true });
+    execFileSync("git", ["clone", `file://${remoteBare}`, primaryDir], { encoding: "utf-8" });
+    execFileSync("git", ["-C", primaryDir, "worktree", "add", "-b", "feat/side", linkedDir, "main"], {
+      encoding: "utf-8",
+    });
+
+    const packDir = path.join(primaryDir, ".git", "objects", "pack");
+    const listObjects = async (): Promise<string[]> => {
+      const pack = (await fs.readdir(packDir)).sort();
+      const loose = (await fs.readdir(path.join(primaryDir, ".git", "objects"))).sort();
+      return [...pack, "|", ...loose];
+    };
+    const before = await listObjects();
+
+    const configPath = path.join(baseDir, "linked-gc.config.js");
+    await fs.writeFile(
+      configPath,
+      `export default {
+  defaults: { runOnce: true },
+  repositories: [{
+    name: "linked-gc",
+    repoUrl: "file://${remoteBare}",
+    worktreeDir: "${linkedDir.replace(/\\/g, "/")}",
+    mode: "clone",
+    branch: "main",
+    maintenance: { enabled: true, aggressive: true }
+  }]
+};
+`,
+    );
+
+    let output: string;
+    try {
+      output = execSync(`node "${cliPath}" --config "${configPath}" 2>&1`, { encoding: "utf-8", timeout: 60000 });
+    } catch (error) {
+      const err = error as { stdout?: Buffer | string };
+      output = String(err.stdout ?? "");
+    }
+
+    expect(output).toContain("expected 'main'");
+    expect(output).not.toContain("Running git gc");
+    expect(await listObjects()).toEqual(before);
   }, 60000);
 
   it("rejects clone mode combined with branchInclude (validation error)", async () => {

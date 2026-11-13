@@ -41,7 +41,8 @@ If you set `exclude` or `!`-prefixed patterns while `mode: "cone"` is explicit, 
 logs a warning.
 
 Cone-mode `include` entries are checked at load against the rules `git sparse-checkout set --cone` enforces — no leading
-slash, no `*`, `?`, `[` or `]`, and nothing climbing above the repository root with `..` — so `include: ["/apps/web"]`
+slash, no `*`, `?`, `[` or `]`, and nothing climbing above the repository root with `..` (plus a lone `.`, which git
+accepts but which selects only the root files) — so `include: ["/apps/web"]`
 is a config error naming the repository, the entry and the fix rather than a `worktree add` and rollback per branch on
 every tick. Directories are judged in the form git receives them, after the trailing slash, `./`, `..` and
 repeated-slash normalization the tool already applies, so `apps/web/` and `./apps/web` are fine. `no-cone` patterns are
@@ -53,7 +54,7 @@ its history twice. Pin `bareRepoDir` explicitly on duplicate entries if you want
 
 ## Updates that touch nothing in the sparse set
 
-By default a sparse worktree is **not** fast-forwarded when the upstream change touches nothing inside its sparse set:
+By default a sparse worktree (or clone-mode checkout) is **not** fast-forwarded when the upstream change touches nothing inside its sparse set:
 the working tree would not change either way, so HEAD is deliberately left behind the remote, and `git status` in that
 worktree reports it as behind `origin/<branch>` until a change lands inside the set. Set
 `sparseCheckout.skipUpdateWhenOutsideSparse: false` to always fast-forward. The check is honoured in cone mode only —
@@ -64,7 +65,9 @@ being treated as "nothing sparse was touched".
 
 When a sync would narrow an existing worktree's sparse patterns (remove a previously included path), it first checks the
 worktree is clean. If there are uncommitted changes, unpushed commits, or in-progress operations, the sparse update is
-skipped with a warning and reattempted on the next sync. Clone mode applies the same uncommitted-and-untracked-changes
+skipped with a warning and reattempted on the next sync. Widening a directory to its parent (`apps/web` to `apps`) is
+not a narrowing; switching `mode` from `cone` to `no-cone` is, since no-cone drops cone mode's implicit root files. A
+`mode` change with an unchanged `include` list is applied to existing worktrees like any other change. Clone mode applies the same uncommitted-and-untracked-changes
 check that gates its fast-forward; unpushed commits are reported there as a skip of their own. The check compares the
 new patterns against the ones already in force, so it does not apply to a checkout that is not sparse yet — giving an
 existing full checkout a `sparseCheckout` block narrows it on the next sync whether or not the tree is clean, in both

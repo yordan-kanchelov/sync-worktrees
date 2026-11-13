@@ -99,8 +99,8 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
       description:
         "Workspace context: isWorktree, kind, currentWorktreePath, currentBranch, allWorktrees, siblingRepositories, configPath, capabilities {available,reason}, configuredRepositories (server-wide loaded-config inventory). {isWorktree:false} when outside any workspace.",
       mimeType: "application/json",
-      // Live git state, re-probed on every read: never cache, and never share
-      // between clients (the payload carries local filesystem paths).
+      // Live git state (served from detect_context's 5 s discovery cache): no
+      // client caching, and never shared (the payload carries local paths).
       cacheHint: { ttlMs: 0, cacheScope: "private" },
     },
     async (uri) => {
@@ -194,7 +194,9 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
         includeDetails: z
           .boolean()
           .optional()
-          .describe("Include file-level lists (modified, untracked, staged). Default: false (counts only)."),
+          .describe(
+            "Add `details`: per-category file counts and lists (modified, deleted, renamed, created, conflicted, untracked), unpushed/stash counts. Default: false (no `details`; the boolean flags and reasons only).",
+          ),
       }),
       outputSchema: getWorktreeStatusOutputSchema,
       annotations: {
@@ -276,7 +278,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "update_worktree",
     {
       description:
-        "Worktree-mode only; clone-mode repos error here; use sync to update the checkout. Fast-forward one worktree to upstream. No merge, no rebase, aborts if not fast-forwardable. Whole repo? Use sync. Errors with code DETACHED_HEAD when the worktree has no branch checked out — there is nothing to fast-forward; check a branch out there first. Returns: {success, worktreePath, updated}; updated=false when the worktree already matched origin/<branch> and nothing was merged.",
+        "Worktree-mode only; clone-mode repos error here; use sync to update the checkout. Fast-forward one worktree to upstream. No merge, no rebase, aborts if not fast-forwardable. Whole repo? Use sync. Errors with code DETACHED_HEAD when the worktree has no branch checked out — there is nothing to fast-forward; check a branch out there first; WORKTREE_MISSING when its directory is gone. Returns: {success, worktreePath, updated}; updated=false when the worktree already matched origin/<branch> and nothing was merged.",
       inputSchema: z.strictObject({
         path: z.string().describe(`Worktree path to fast-forward. ${PATH_DESCRIBE_SUFFIX}`),
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
@@ -297,7 +299,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "initialize",
     {
       description:
-        "Initialize repo: clone as bare if missing, create main worktree. Idempotent. Emits progress. Preconditions: config loaded. Returns: {success, defaultBranch, worktreeDir}.",
+        "Initialize repo. Worktree mode: clone as bare if missing, create main worktree. Clone mode: clone if missing, else check the existing clone's branch and origin. Idempotent. Emits progress. Preconditions: config loaded. Returns: {success, defaultBranch, worktreeDir, skips}. success=false when an existing clone was refused (wrong branch/origin, unreadable HEAD); the reason is in skips.",
       inputSchema: z.strictObject({
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),
@@ -340,7 +342,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "set_current_repository",
     {
       description:
-        "Set current repo for tool calls that omit repoName. Applies to this server process. Preconditions: load_config called.",
+        "Set current repo for tool calls that omit repoName. Applies to this server process. repoName must be a registered repository (configured or auto-detected).",
       inputSchema: z.strictObject({
         repoName: z.string().describe("Repo name from loaded config repositories[].name."),
       }),

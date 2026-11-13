@@ -159,6 +159,23 @@ describe("BranchCreationWizard", () => {
       expect(lastFrame()).not.toContain("(default)");
     });
 
+    it("should drop a trailing newline from a pasted filter", async () => {
+      const singleRepoProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      };
+      const { stdin, lastFrame } = render(<BranchCreationWizard {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Select base branch");
+
+      stdin.write("\u001B[200~main\n\u001B[201~");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("> main");
+      expect(lastFrame()).not.toContain("No matches");
+    });
+
     it("should go back to project selection on ESC", async () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...defaultProps} />);
 
@@ -456,6 +473,59 @@ describe("BranchCreationWizard", () => {
       expect(lastFrame()).toContain("Enter to select");
       expect(lastFrame()).toContain("ESC");
       expect(lastFrame()).toContain("cancel");
+    });
+  });
+
+  // A load that resolves after the user has gone back and picked another
+  // repository must not replace that repository's list.
+  describe("a late load for a repository the user left", () => {
+    it("keeps the second repository's branches and creates the branch there", async () => {
+      let resolveA: (branches: string[]) => void = () => {};
+      const getBranchesForRepo = vi.fn((index: number) =>
+        index === 0
+          ? new Promise<string[]>((resolve) => {
+              resolveA = resolve;
+            })
+          : Promise.resolve(["b-main"]),
+      );
+      const getDefaultBranchForRepo = vi.fn(async (index: number) => (index === 0 ? "a-base" : "b-main"));
+      const createAndPushBranch = vi.fn().mockResolvedValue({ success: true, finalName: "topic" });
+      const { stdin, lastFrame } = render(
+        <BranchCreationWizard
+          {...defaultProps}
+          getBranchesForRepo={getBranchesForRepo}
+          getDefaultBranchForRepo={getDefaultBranchForRepo}
+          createAndPushBranch={createAndPushBranch}
+        />,
+      );
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("b-main");
+
+      resolveA(["a-base"]);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("b-main");
+      expect(lastFrame()).not.toContain("a-base");
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      for (const char of "topic") stdin.write(char);
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(createAndPushBranch).toHaveBeenCalledTimes(1);
+      expect(createAndPushBranch).toHaveBeenCalledWith(1, "b-main", "topic");
     });
   });
 });

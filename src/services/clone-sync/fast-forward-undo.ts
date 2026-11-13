@@ -9,6 +9,10 @@ import type { MutatingGitClients } from "./git-clients";
 import type { CloneSyncContext } from "./types";
 import type { SimpleGit } from "simple-git";
 
+// What the undo needs from its caller; worktree mode's update path passes one
+// of its own (see GitService.updateWorktree).
+export type FastForwardUndoHost = Pick<CloneSyncContext, "logger" | "repoName" | "emitProgress">;
+
 // Paths handed to one `ls-tree` / `hash-object` / `restore` while a rejected
 // fast-forward is being undone. The set is usually a handful of files — the
 // ones that sort before the path git could not write — but an upstream commit
@@ -67,14 +71,26 @@ export async function undoRejectedFastForward(
   branch: string,
   headBeforeMerge: string | null,
 ): Promise<void> {
+  await undoRejectedFastForwardIn(ctx, clients.git, worktreeDir, branch, headBeforeMerge);
+}
+
+// The same undo for a checkout that is not clone mode's primary one (a linked
+// worktree), so there is no MutatingGitClients brand to require.
+export async function undoRejectedFastForwardIn(
+  ctx: FastForwardUndoHost,
+  git: SimpleGit,
+  worktreeDir: string,
+  branch: string,
+  headBeforeMerge: string | null,
+): Promise<void> {
   // Both halves fail closed. Without a before-and-after commit there is no
   // proof the merge left HEAD alone, and a merge that did move HEAD wrote
   // those files on purpose — undoing them would delete the update.
   if (headBeforeMerge === null) return;
-  const headAfterMerge = await readHeadCommit(clients.git);
+  const headAfterMerge = await readHeadCommit(git);
   if (headAfterMerge === null || headAfterMerge !== headBeforeMerge) return;
 
-  const deviations = await readWorktreeDeviations(ctx, clients.git);
+  const deviations = await readWorktreeDeviations(ctx, git);
   if (deviations === null) return;
   const dirtyPaths = new Set([...deviations.untracked, ...deviations.modified, ...deviations.missing]);
   if (dirtyPaths.size === 0) return;
@@ -83,7 +99,14 @@ export async function undoRejectedFastForward(
   // outside that set is somebody's own work and is never touched.
   let mergePaths: string[];
   try {
-    const output = await clients.git.raw(["diff", "--name-only", "-z", "HEAD", `refs/remotes/origin/${branch}`]);
+    const output = await git.raw([
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      "HEAD",
+      `refs/remotes/origin/${branch}`,
+    ]);
     mergePaths = output.split("\0").filter((mergePath) => mergePath.length > 0);
   } catch (error) {
     ctx.logger.warn(
@@ -100,7 +123,7 @@ export async function undoRejectedFastForward(
   // ABSENCE from this map is the proof that lets a missing file be restored,
   // so a lookup that failed must abort the whole cleanup rather than read as
   // "origin does not have it".
-  const entries = await readRemoteTreeEntries(ctx, clients.git, branch, candidates);
+  const entries = await readRemoteTreeEntries(ctx, git, branch, candidates);
   if (entries === null) return;
 
   // git writes a regular file or a symlink and nothing else, and the two are
@@ -129,7 +152,7 @@ export async function undoRejectedFastForward(
     else if (kind === "symlink") symlinks.push(candidate);
   }
 
-  const hashes = await hashWorktreeFiles(ctx, clients.git, regularFiles);
+  const hashes = await hashWorktreeFiles(ctx, git, regularFiles);
   for (const candidate of regularFiles) {
     const entry = entries.get(candidate);
     // A symlink is a blob as well, so the mode has to be excluded here: a
@@ -143,12 +166,12 @@ export async function undoRejectedFastForward(
   for (const candidate of symlinks) {
     const entry = entries.get(candidate);
     if (entry?.mode !== SYMLINK_TREE_MODE) continue;
-    if (!(await symlinkTargetMatchesBlob(clients.git, worktreeDir, candidate, entry.id))) continue;
+    if (!(await symlinkTargetMatchesBlob(git, worktreeDir, candidate, entry.id))) continue;
     recordProven(candidate);
   }
 
-  const removed = await removeWrittenFiles(ctx, clients, worktreeDir, toRemove);
-  const restored = await restoreFilesFromHead(ctx, clients, toRestore);
+  const removed = await removeWrittenFiles(ctx, worktreeDir, toRemove);
+  const restored = await restoreFilesFromHead(ctx, git, toRestore);
   reportUndoneFastForward(ctx, branch, removed, restored);
 }
 
@@ -190,7 +213,7 @@ async function symlinkTargetMatchesBlob(
 // does not report a skip-worktree entry as deleted — so the cleanup cannot
 // try to materialize a path outside the cone.
 async function readWorktreeDeviations(
-  ctx: CloneSyncContext,
+  ctx: FastForwardUndoHost,
   git: SimpleGit,
 ): Promise<{ untracked: Set<string>; modified: Set<string>; missing: Set<string> } | null> {
   try {
@@ -213,7 +236,7 @@ async function readWorktreeDeviations(
 // `ls-tree` reports only the paths that exist in that tree and skips the
 // rest, which is exactly the answer the deletion half needs.
 async function readRemoteTreeEntries(
-  ctx: CloneSyncContext,
+  ctx: FastForwardUndoHost,
   git: SimpleGit,
   branch: string,
   paths: string[],
@@ -245,7 +268,11 @@ async function readRemoteTreeEntries(
 // repository's filters (LFS's clean filter, CRLF conversion) are applied the
 // way they were when the blob was made. A path missing from the result is
 // one nothing may be concluded about, so it is simply never acted on.
-async function hashWorktreeFiles(ctx: CloneSyncContext, git: SimpleGit, paths: string[]): Promise<Map<string, string>> {
+async function hashWorktreeFiles(
+  ctx: FastForwardUndoHost,
+  git: SimpleGit,
+  paths: string[],
+): Promise<Map<string, string>> {
   const hashes = new Map<string, string>();
   for (const batch of inBatches(paths, MERGE_CLEANUP_PATH_BATCH)) {
     const batched = await hashFileBatch(ctx, git, batch);
@@ -269,7 +296,7 @@ async function hashWorktreeFiles(ctx: CloneSyncContext, git: SimpleGit, paths: s
 // mapping cannot be trusted and the caller falls back to asking one at a
 // time. Only the summary line of a failure is logged: simple-git puts the
 // command's stdout in the error, which here is the hashes it did print.
-async function hashFileBatch(ctx: CloneSyncContext, git: SimpleGit, batch: string[]): Promise<string[] | null> {
+async function hashFileBatch(ctx: FastForwardUndoHost, git: SimpleGit, batch: string[]): Promise<string[] | null> {
   let output: string;
   try {
     output = await git.raw(["hash-object", "--", ...batch]);
@@ -294,16 +321,9 @@ async function hashFileBatch(ctx: CloneSyncContext, git: SimpleGit, batch: strin
   return lines;
 }
 
-// `_clients` is unused on purpose and must stay, for the reason
-// CloneGitClients.lfsSkipCheckoutClient gives: this deletes files from the
-// working tree, and requiring the brand is what keeps that behind the
-// primary-checkout guard.
-async function removeWrittenFiles(
-  ctx: CloneSyncContext,
-  _clients: MutatingGitClients,
-  worktreeDir: string,
-  paths: string[],
-): Promise<string[]> {
+// Deletes files from the working tree: clone mode reaches it only through
+// undoRejectedFastForward, which requires the primary-checkout brand.
+async function removeWrittenFiles(ctx: FastForwardUndoHost, worktreeDir: string, paths: string[]): Promise<string[]> {
   const removed: string[] = [];
   for (const target of paths) {
     try {
@@ -321,15 +341,11 @@ async function removeWrittenFiles(
 // and nothing else. It also keeps the pathspec clear of simple-git's
 // progress plugin, which appends `--progress` to every `checkout` — after a
 // `--` git reads that as one more path to restore.
-async function restoreFilesFromHead(
-  ctx: CloneSyncContext,
-  clients: MutatingGitClients,
-  paths: string[],
-): Promise<string[]> {
+async function restoreFilesFromHead(ctx: FastForwardUndoHost, git: SimpleGit, paths: string[]): Promise<string[]> {
   const restored: string[] = [];
   for (const batch of inBatches(paths, MERGE_CLEANUP_PATH_BATCH)) {
     try {
-      await clients.git.raw(["restore", "--source=HEAD", "--worktree", "--", ...batch.map(asLiteralPathspec)]);
+      await git.raw(["restore", "--source=HEAD", "--worktree", "--", ...batch.map(asLiteralPathspec)]);
       restored.push(...batch);
     } catch (error) {
       // A restore can fail for the same reason the merge did — HEAD's own
@@ -343,7 +359,12 @@ async function restoreFilesFromHead(
   return restored;
 }
 
-function reportUndoneFastForward(ctx: CloneSyncContext, branch: string, removed: string[], restored: string[]): void {
+function reportUndoneFastForward(
+  ctx: FastForwardUndoHost,
+  branch: string,
+  removed: string[],
+  restored: string[],
+): void {
   const parts = [describeCleanedPaths("removed", removed), describeCleanedPaths("restored", restored)].filter(
     (part): part is string => part !== null,
   );

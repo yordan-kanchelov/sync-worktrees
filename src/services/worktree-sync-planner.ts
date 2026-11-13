@@ -35,20 +35,23 @@ export type PruneAction =
 // update phase compares it against origin/<branch>'s tip to answer "nothing
 // changed" without spawning anything per worktree, so it is carried through the
 // plan rather than probed again.
-export type UpdateAction = { kind: "update-candidate"; branch: string; path: string; head?: string };
+// `locked`/`lockReason` keep diverged handling from moving a locked worktree.
+export type UpdateAction = {
+  kind: "update-candidate";
+  branch: string;
+  path: string;
+  head?: string;
+  locked?: boolean;
+  lockReason?: string;
+};
 
-export type SparseAction =
-  | { kind: "check-sparse"; branch: string; path: string }
-  | { kind: "skip-sparse"; branch: string; path: string; reason: "not-configured" };
-
-export type SyncAction = CreateAction | PruneAction | UpdateAction | SparseAction;
+export type SparseAction = { kind: "check-sparse"; branch: string; path: string };
 
 export interface SyncPlan {
   create: CreateAction[];
   prune: PruneAction[];
   update: UpdateAction[];
   sparse: SparseAction[];
-  warnings: string[];
 }
 
 export interface SyncPlanOptions {
@@ -69,7 +72,6 @@ export function createWorktreeSyncPlan(inventory: WorktreeInventory, options: Sy
     prune: planPruneActions(inventory),
     update: options.updateExistingWorktrees === false ? [] : planUpdateActions(inventory),
     sparse: planSparseActions(inventory, options.sparseCheckout),
-    warnings: [],
   };
 }
 
@@ -151,6 +153,8 @@ export function planUpdateActions(inventory: WorktreeInventory): UpdateAction[] 
       branch: worktree.branch,
       path: worktree.path,
       ...(worktree.head !== undefined && { head: worktree.head }),
+      ...(worktree.locked === true && { locked: true }),
+      ...(worktree.lockReason !== undefined && { lockReason: worktree.lockReason }),
     }));
 }
 

@@ -166,6 +166,20 @@ describe("App", () => {
       expect(lastFrame()).toContain("[game-platform-slots] fetch receiving: 50% (47276/94551)");
     });
 
+    it("widens the progress rows when a reload raises maxRepositories", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={1} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("updateMaxProgressLines", 2);
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "game-platform", phase: "fetch", message: "fetch one" });
+      appEvents.emit("setSyncProgress", { repo: "game-platform-slots", phase: "fetch", message: "fetch two" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("[game-platform] fetch one");
+      expect(lastFrame()).toContain("[game-platform-slots] fetch two");
+    });
+
     it("should remove a repository progress row when it completes", async () => {
       const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
 
@@ -671,6 +685,40 @@ describe("App", () => {
     });
   });
 
+  describe("repositoriesReloaded event", () => {
+    // A reload that reorders the repositories at the same count used to leave
+    // an open picker on the old list, so its indexes named other repositories.
+    it("closes an open picker so no call goes out with a stale index", async () => {
+      const getRepositoryList = vi.fn().mockReturnValue([
+        { index: 0, name: "api", repoUrl: "" },
+        { index: 1, name: "web", repoUrl: "" },
+      ]);
+      const getWorktreesForRepo = vi.fn().mockResolvedValue([{ path: "/w/x", branch: "main" }]);
+      const { stdin, lastFrame } = render(
+        <App {...defaultProps} getRepositoryList={getRepositoryList} getWorktreesForRepo={getWorktreesForRepo} />,
+      );
+      await waitForStateUpdate();
+
+      stdin.write("o");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("Select repository");
+
+      getRepositoryList.mockReturnValue([
+        { index: 0, name: "web", repoUrl: "" },
+        { index: 1, name: "api", repoUrl: "" },
+      ]);
+      appEvents.emit("updateRepositoryCount", 2);
+      appEvents.emit("repositoriesReloaded", 1);
+      await waitForStateUpdate();
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).not.toContain("Select repository");
+      expect(getWorktreesForRepo).not.toHaveBeenCalled();
+    });
+  });
+
   describe("updateCronSchedule event", () => {
     it("should update cron schedule when event is emitted", async () => {
       const { lastFrame } = render(<App {...defaultProps} cronSchedule="0 * * * *" />);
@@ -912,6 +960,54 @@ describe("App", () => {
       const frame = lastFrame()!;
       expect(frame).toContain("[repo-a] fetch receiving");
       expect(frame.split("\n")).toHaveLength(24);
+    });
+
+    it("reserves progress rows only for repositories that can sync", async () => {
+      const { stdout, lastFrame } = render(<App {...defaultProps} repositoryCount={1} maxProgressLines={8} />);
+      resizeTerminal(stdout, 100, 24);
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "only", phase: "fetch", message: "fetch receiving" });
+      await waitForStateUpdate();
+
+      const lines = lastFrame()!.split("\n");
+      expect(lines.length).toBeLessThanOrEqual(24);
+      expect(lines.filter((line) => line.includes("Progress:"))).toHaveLength(1);
+      // Status, Last Sync, one progress row, Disk Space, bottom border.
+      const statusIndex = lines.findIndex((line) => line.includes("Status:"));
+      expect(lines.length - statusIndex).toBe(5);
+    });
+
+    it("caps progress rows at what the terminal can hold", async () => {
+      const { stdout, lastFrame } = render(<App {...defaultProps} repositoryCount={20} maxProgressLines={20} />);
+      resizeTerminal(stdout, 100, 12);
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      for (let i = 0; i < 20; i++) {
+        appEvents.emit("setSyncProgress", { repo: `repo-${i}`, phase: "fetch", message: "fetch receiving" });
+      }
+      await waitForStateUpdate();
+
+      const lines = lastFrame()!.split("\n");
+      expect(lines.length).toBeLessThanOrEqual(12);
+      expect(lines[lines.length - 1]).toMatch(/^└/);
+    });
+
+    it("does not carry an idle-time progress event into the next sync", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("setSyncProgress", { repo: "alpha", phase: "fetch", message: "Resolved default branch 'main'" });
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "beta", phase: "fetch", message: "fetch receiving" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("[beta] fetch receiving");
+      expect(lastFrame()).not.toContain("Resolved default branch");
     });
 
     it("stays at the terminal height when a log entry carries newlines", async () => {
@@ -1167,6 +1263,45 @@ describe("App", () => {
       stdin.write("?");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("REPOSITORY");
+    });
+
+    it("names a key that expands a log folded for want of room", async () => {
+      const { stdin, stdout, lastFrame } = render(<App {...defaultProps} />);
+      resizeTerminal(stdout, 100, 12);
+      await waitForStateUpdate();
+      appEvents.emit("setRepositoryDashboard", table(5));
+      fillLogs(20);
+      await waitForStateUpdate();
+
+      const before = lastFrame()!;
+      const key = /entries, (\S) to expand\)/.exec(before)?.[1];
+      expect(key).toBeDefined();
+      stdin.write(key!);
+      await waitForStateUpdate();
+      expect(lastFrame()).not.toEqual(before);
+      expect(logLinesShown(lastFrame()!)).toBeGreaterThan(1);
+    });
+
+    it("keeps the log's scroll position across a modal", async () => {
+      const { stdin, lastFrame } = render(<App {...defaultProps} />);
+      await waitForStateUpdate();
+      appEvents.emit("setRepositoryDashboard", table(3));
+      fillLogs(40);
+      await waitForStateUpdate();
+
+      stdin.write("g");
+      await waitForStateUpdate();
+      stdin.write("g");
+      await waitForStateUpdate();
+      expect(lastFrame()).toMatch(/Log line 0\b/);
+
+      stdin.write("?");
+      await waitForStateUpdate();
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("REPOSITORY");
+      expect(lastFrame()).toMatch(/Log line 0\b/);
     });
 
     describe("narrow and short terminals", () => {

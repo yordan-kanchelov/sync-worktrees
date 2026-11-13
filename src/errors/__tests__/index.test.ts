@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import { ERROR_MESSAGES } from "../../constants";
 import {
   ConfigValidationError,
   FastForwardError,
@@ -10,9 +9,6 @@ import {
   WorktreeError,
   WorktreeMetadataError,
   WorktreeNotCleanError,
-  isFastForwardError,
-  isLfsError,
-  isNoUpstreamError,
 } from "../index";
 
 describe("Error Classes", () => {
@@ -86,75 +82,5 @@ describe("addWorktree failure errors", () => {
 
     expect(error.cause).toBeUndefined();
     expect(error.message).toBe("Metadata creation failed for 'feature/test': plain string");
-  });
-});
-
-describe("Error Detection Functions", () => {
-  describe("isLfsError", () => {
-    it("should detect LFS errors from Error objects", () => {
-      const lfsError = new Error("smudge filter lfs failed");
-      expect(isLfsError(lfsError)).toBe(true);
-    });
-
-    it("should detect LFS errors from string messages", () => {
-      expect(isLfsError("smudge filter lfs failed")).toBe(true);
-      expect(isLfsError("Object does not exist on the server")).toBe(true);
-      expect(isLfsError("external filter 'git-lfs filter-process' failed")).toBe(true);
-    });
-
-    it("should return false for non-LFS errors", () => {
-      expect(isLfsError(new Error("network timeout"))).toBe(false);
-      expect(isLfsError("regular git error")).toBe(false);
-    });
-
-    it("should use the stricter shared LFS classifier", () => {
-      expect(isLfsError("git-lfs pull failed")).toBe(false);
-      expect(isLfsError("LFS: error downloading")).toBe(false);
-    });
-  });
-
-  describe("isFastForwardError", () => {
-    it("should detect fast-forward errors from Error objects", () => {
-      const ffError = new Error("Not possible to fast-forward");
-      expect(isFastForwardError(ffError)).toBe(true);
-    });
-
-    it("should detect fast-forward errors from string messages", () => {
-      expect(isFastForwardError("fatal: Not possible to fast-forward")).toBe(true);
-    });
-
-    it("should return false for non-fast-forward errors", () => {
-      expect(isFastForwardError(new Error("merge conflict"))).toBe(false);
-      expect(isFastForwardError("regular error")).toBe(false);
-    });
-
-    it("should detect all fast-forward error patterns", () => {
-      ERROR_MESSAGES.FAST_FORWARD_FAILED.forEach((pattern) => {
-        expect(isFastForwardError(pattern)).toBe(true);
-      });
-    });
-  });
-
-  describe("isNoUpstreamError", () => {
-    it("should detect no upstream errors from Error objects", () => {
-      const noUpstream = new Error("fatal: no upstream configured for branch");
-      expect(isNoUpstreamError(noUpstream)).toBe(true);
-    });
-
-    it("should detect no upstream errors from string messages", () => {
-      expect(isNoUpstreamError("fatal: no upstream configured")).toBe(true);
-      expect(isNoUpstreamError("unknown revision or path not in working tree")).toBe(true);
-    });
-
-    it("should return false for non-upstream errors", () => {
-      expect(isNoUpstreamError(new Error("merge conflict"))).toBe(false);
-      expect(isNoUpstreamError("regular error")).toBe(false);
-    });
-
-    it("should detect all no upstream error patterns", () => {
-      ERROR_MESSAGES.NO_UPSTREAM.forEach((pattern) => {
-        expect(isNoUpstreamError(pattern)).toBe(true);
-      });
-    });
   });
 });

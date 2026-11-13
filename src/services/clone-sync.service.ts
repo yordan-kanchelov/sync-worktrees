@@ -12,7 +12,8 @@ import {
   switchCloneBranch,
   warnConfigDriftAfterCheckout,
 } from "./clone-sync/branch-operations";
-import { initializeClone } from "./clone-sync/clone-bootstrap";
+import { initializeClone, inspectCloneDestination } from "./clone-sync/clone-bootstrap";
+import { assertPreviousCloneCompleted } from "./clone-sync/clone-markers";
 import { undoRejectedFastForward } from "./clone-sync/fast-forward-undo";
 import {
   buildSyncFetchArgs,
@@ -40,8 +41,7 @@ import type { Config } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { PhaseTimer } from "../utils/timing";
 
-export { CLONE_SYNC_PHASES } from "./clone-sync/phases";
-export type { CloneSkipListener, CloneSkipReason } from "./clone-sync/types";
+export type { CloneSkipReason } from "./clone-sync/types";
 
 // Clone mode: one standalone clone per repository, held on one branch and
 // fast-forwarded to origin on every sync. This class owns the per-repository
@@ -52,6 +52,8 @@ export type { CloneSkipListener, CloneSkipReason } from "./clone-sync/types";
 export class CloneSyncService {
   private initialized = false;
   private resolvedBranch: string | null = null;
+  // The default branch resolveBranch found with no `branch` configured.
+  private defaultBranch: string | null = null;
   private branchCreatedActions: BranchCreatedActionsService;
   private progressEmitter?: GitProgressEmitter;
   private onSkip?: CloneSkipListener;
@@ -95,6 +97,11 @@ export class CloneSyncService {
     this.pendingInitSkip = null;
   }
 
+  // Throws unless worktreeDir is a primary checkout this tool may write to.
+  async assertPrimaryCheckout(): Promise<void> {
+    await this.clients.mutatingClientsFor(this.config.worktreeDir);
+  }
+
   async getWorktrees(): Promise<Array<{ path: string; branch: string }>> {
     const worktreeDir = path.resolve(this.config.worktreeDir);
     if (!(await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR)))) {
@@ -119,12 +126,36 @@ export class CloneSyncService {
       this.emitProgress({ phase: "branch", message: `Using configured branch '${this.resolvedBranch}'` });
       return this.resolvedBranch;
     }
+    const recorded = await this.readCloneTimeDefaultBranch();
+    if (recorded) {
+      this.resolvedBranch = this.defaultBranch = recorded;
+      this.logger.info(`No branch configured for '${this.repoName}'; using '${recorded}', the default at clone time.`);
+      this.emitProgress({ phase: "branch", message: `Using clone-time default branch '${recorded}'` });
+      return recorded;
+    }
     this.logger.info(`No branch configured for '${this.repoName}', detecting remote default branch...`);
     this.emitProgress({ phase: "branch", message: `Resolving remote default branch for '${this.repoName}'` });
-    this.resolvedBranch = await this.gitService.getRemoteDefaultBranch(this.config.repoUrl);
+    this.resolvedBranch = this.defaultBranch = await this.gitService.getRemoteDefaultBranch(this.config.repoUrl);
     this.logger.info(`  ↳ resolved default branch: ${this.resolvedBranch}`);
     this.emitProgress({ phase: "branch", message: `Resolved default branch '${this.resolvedBranch}'` });
     return this.resolvedBranch;
+  }
+
+  // The remote HEAD as it stood at clone time, kept in refs/remotes/origin/HEAD:
+  // written by clone-bootstrap for the clones made here, and by `git clone`
+  // itself on older git. Null for no clone or no such symref.
+  private async readCloneTimeDefaultBranch(): Promise<string | null> {
+    const worktreeDir = path.resolve(this.config.worktreeDir);
+    if (!(await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR)))) return null;
+    try {
+      const git = this.clients.localClientFor(worktreeDir);
+      const target = (await git.raw(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])).trim();
+      const prefix = "refs/remotes/origin/";
+      const branch = target.startsWith(prefix) ? target.slice(prefix.length) : "";
+      return branch && branch !== "HEAD" ? branch : null;
+    } catch {
+      return null;
+    }
   }
 
   async getRemoteBranches(): Promise<string[]> {
@@ -135,13 +166,15 @@ export class CloneSyncService {
     return parseLsRemoteHeads(output);
   }
 
-  async checkoutBranch(branch: string, options: { allowConfigDrift?: boolean } = {}): Promise<void> {
+  async checkoutBranch(branch: string): Promise<void> {
     if (!this.initialized) {
       await this.initialize();
     }
 
-    const targetBranch = await this.resolveBranch();
-    await switchCloneBranch(this.ctx, branch, targetBranch, options);
+    await this.resolveBranch();
+    // What the config resolves to, not the branch an earlier switch left.
+    const targetBranch = this.config.branch ?? this.defaultBranch ?? branch;
+    await switchCloneBranch(this.ctx, branch);
     this.resolvedBranch = branch;
     this.pendingInitSkip = null;
     warnConfigDriftAfterCheckout(this.ctx, branch, targetBranch);
@@ -180,6 +213,13 @@ export class CloneSyncService {
   }
 
   private async runSyncAttemptInternal(phaseTimer?: PhaseTimer): Promise<void> {
+    // A clone removed out-of-band since init: run init again so it re-clones.
+    if (
+      this.initialized &&
+      (await probePathExists(path.join(this.config.worktreeDir, PATH_CONSTANTS.GIT_DIR))) === "missing"
+    ) {
+      this.initialized = false;
+    }
     if (!this.initialized) {
       await this.initialize();
       // init ran here and recorded any skip itself; no duplicate to suppress.
@@ -333,6 +373,16 @@ export class CloneSyncService {
       return;
     }
 
+    if (await this.upstreamOutsideSparse(worktreeDir, branch)) {
+      this.logger.info(`⏭️  Skipping '${this.repoName}' - upstream changes outside sparse paths`);
+      this.emitProgress({
+        phase: "skip",
+        message: `Skipping merge for '${this.repoName}': upstream changes outside sparse paths`,
+      });
+      this.outcomeAccumulator?.recordSkipped("repo", "outside_sparse_checkout", { branch, path: worktreeDir });
+      return;
+    }
+
     this.logger.info(`Fast-forwarding '${this.repoName}' to origin/${branch}...`);
     this.emitProgress({ phase: "merge", message: `Fast-forwarding '${this.repoName}' to origin/${branch}` });
     await timePhase(phaseTimer, CLONE_SYNC_PHASES.MERGE, async () => {
@@ -359,12 +409,12 @@ export class CloneSyncService {
   // the way the tick's own fetch would move it) and writes nothing else: no
   // clone, no unshallow, no refspec narrowing, no deepening, no sparse
   // reapply, no merge. Where the tick would do one of those first, the plan
-  // says so in a note.
+  // says so in a note. A destination init would refuse fails the plan too.
   async planSyncAttempt(plan: SyncDryRunPlanBuilder): Promise<void> {
     const worktreeDir = this.config.worktreeDir;
     const branch = await this.resolveBranch();
 
-    if ((await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR))) !== "exists") {
+    if ((await inspectCloneDestination(worktreeDir)) !== "clone") {
       const depth = this.config.depth !== undefined ? ` at depth ${this.config.depth}` : "";
       plan.add({
         kind: "clone",
@@ -374,6 +424,7 @@ export class CloneSyncService {
       });
       return;
     }
+    await assertPreviousCloneCompleted(worktreeDir);
 
     const blocked = await this.checkTickPreconditions(worktreeDir, branch);
     if (blocked) {
@@ -474,7 +525,22 @@ export class CloneSyncService {
       plan.add(this.skipStep(this.dirtyTreeSkip().skip));
       return;
     }
+    if (await this.upstreamOutsideSparse(worktreeDir, branch)) {
+      plan.add({ kind: "skip", scope: "repo", reason: "outside_sparse_checkout", branch, path: worktreeDir });
+      return;
+    }
     plan.add({ kind: "update", branch, path: worktreeDir, reason: "fast_forward", message: `to origin/${branch}` });
+  }
+
+  // sparseCheckout.skipUpdateWhenOutsideSparse, as worktree mode applies it:
+  // cone mode only, and an unreadable diff never skips.
+  private async upstreamOutsideSparse(worktreeDir: string, branch: string): Promise<boolean> {
+    const cfg = this.config.sparseCheckout;
+    if (!cfg || cfg.skipUpdateWhenOutsideSparse === false) return false;
+    const sparseService = this.gitService.getSparseCheckoutService();
+    if (sparseService.resolveMode(cfg) !== "cone") return false;
+    const diff = await this.gitService.getChangedPathsInRange(worktreeDir, "HEAD", `origin/${branch}`);
+    return diff !== null && !sparseService.pathsTouchSparse(diff, cfg);
   }
 
   // The tick's checks before it writes anything: HEAD readable, on the
@@ -581,16 +647,14 @@ export class CloneSyncService {
       branch: this.resolvedBranch ?? this.config.branch,
       path: this.config.worktreeDir,
     });
-    return action.kind === "skipped"
-      ? {
-          kind: "skip",
-          scope: action.scope,
-          reason: action.reason,
-          ...(action.branch !== undefined && { branch: action.branch }),
-          ...(action.path !== undefined && { path: action.path }),
-          ...(action.message !== undefined && { message: action.message }),
-        }
-      : { kind: "skip", scope: "repo", reason: `clone_${reason.kind}` };
+    return {
+      kind: "skip",
+      scope: action.scope,
+      reason: action.reason,
+      ...(action.branch !== undefined && { branch: action.branch }),
+      ...(action.path !== undefined && { path: action.path }),
+      ...(action.message !== undefined && { message: action.message }),
+    };
   }
 
   // Display name only (log lines and progress messages), so the URL fallback

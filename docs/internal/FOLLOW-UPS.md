@@ -22,6 +22,9 @@ some entries are prefixed with an `FU-` identifier, some are keyed by their sour
 verbatim rather than normalised, since rewriting 400 entries would risk losing the precision that
 makes them worth keeping.
 
+`TODO.md`, cited throughout (headings such as "not a TODO.md item" and `TODO.md` line numbers), is the
+review file that now lives at [`6.0.0-review.md`](6.0.0-review.md).
+
 ## Worth pulling out
 
 One standing security item, which is the only entry here flagged as such:
@@ -2148,6 +2151,7 @@ behaviour it is defending is correct.**
   - `src/mcp/__tests__/context.broken-config.test.ts` ("carries the note on an unmanaged worktree context…", `expected 'unmanaged' to be 'managed'`) is very likely the same mismatch, in `detectFromPath`'s path matching.
   - `src/__tests__/e2e/unshallow-inactivity-timeout.e2e.test.ts:151` ("still kills an unshallow that goes quiet…", the clone is no longer shallow after the kill) is a separate failure and has not been diagnosed. The test's `sleep` shim and how the process is killed may behave differently on darwin.
   - When all of these pass on macOS, remove `continue-on-error` from the "Run Tests with Coverage" step in `pr.yml` and from the "Run E2E Tests (with network)" step in `nightly.yml`.
+  - _Partly resolved: worktree-path comparisons (engine and MCP `detectFromPath`/config matching) now go through realpath via `src/utils/path-compare.ts`. Still open: the `unshallow-inactivity-timeout` failure, the remaining darwin-only failures and both `continue-on-error` masks._
 
 ## From tui-dashboard (home-screen repository table, 2026-09-26)
 

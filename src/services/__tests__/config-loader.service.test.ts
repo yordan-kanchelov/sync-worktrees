@@ -5,10 +5,11 @@ import pLimit from "p-limit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__tests__/test-utils";
-import { CONFIG_FILE_NAMES, DEFAULT_CONFIG } from "../../constants";
+import { DEFAULT_CONFIG } from "../../constants";
 import { ConfigError, ConfigValidationError } from "../../errors";
 import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../../utils/git-client";
-import { ConfigLoaderService, computeParallelismPeak } from "../config-loader.service";
+import { ConfigLoaderService } from "../config-loader.service";
+import { computeParallelismPeak } from "../config-schema";
 
 import type { RepositoryConfig } from "../../types";
 
@@ -340,6 +341,23 @@ describe("ConfigLoaderService", () => {
       expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain("s3cr3t-token");
     });
 
+    it("warns about repoUrls that differ only by a trailing .git", async () => {
+      const configPath = path.join(tempDir, "duplicate-url-git-suffix.config.js");
+      const configContent = `
+        export default {
+          repositories: [
+            { name: "first", repoUrl: "https://example.com/o/r.git", worktreeDir: "/worktrees1" },
+            { name: "second", repoUrl: "https://example.com/o/r", worktreeDir: "/worktrees2" }
+          ]
+        };
+      `;
+      await fs.writeFile(configPath, configContent);
+
+      await configLoader.loadConfigFile(configPath);
+
+      expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("appears in multiple entries (first, second)"));
+    });
+
     it("should throw error for empty repositories array", async () => {
       const configPath = path.join(tempDir, "empty.config.js");
       const configContent = `
@@ -512,7 +530,7 @@ describe("ConfigLoaderService", () => {
       [
         "branchMaxAge",
         `branchMaxAge: "14 days"`,
-        `branchMaxAge' (repository 'test-repo'): must be a duration string like '14d', '12h', or '2w', got "14 days"`,
+        `branchMaxAge' (repository 'test-repo'): must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "14 days"`,
       ],
       ["skipLfs", `skipLfs: "yes"`, `skipLfs' (repository 'test-repo'): must be a boolean, got "yes"`],
       [
@@ -1628,6 +1646,63 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       });
     });
 
+    it("inherits nested values the repository sets to undefined", () => {
+      const repo = {
+        name: "test",
+        repoUrl: "https://github.com/test/repo.git",
+        worktreeDir: "./worktrees",
+        cronSchedule: "0 * * * *",
+        runOnce: false,
+        retry: { maxAttempts: undefined, maxDelayMs: 1000 },
+        parallelism: { maxStatusChecks: undefined },
+        hooks: { onBranchCreated: undefined },
+        maintenance: { enabled: undefined },
+        trash: { retentionDays: undefined },
+      };
+      const defaults = {
+        retry: { initialDelayMs: undefined },
+        hooks: { onBranchCreated: ["echo hi"] },
+        maintenance: { enabled: false },
+        trash: { retentionDays: 3 },
+      };
+
+      const resolved = configLoader.resolveRepositoryConfig(
+        repo,
+        defaults,
+        tempDir,
+        {
+          maxAttempts: "unlimited",
+          initialDelayMs: 500,
+        },
+        undefined,
+        { maxStatusChecks: 5 },
+      );
+
+      expect(resolved.retry).toEqual({ maxAttempts: "unlimited", initialDelayMs: 500, maxDelayMs: 1000 });
+      expect(resolved.parallelism).toEqual({ maxStatusChecks: 5 });
+      expect(resolved.hooks).toEqual({ onBranchCreated: ["echo hi"] });
+      expect(resolved.maintenance).toEqual({ enabled: false });
+      expect(resolved.trash).toEqual({ retentionDays: 3 });
+    });
+
+    it("keeps a global retry.maxAttempts when a loaded repository sets it to undefined", async () => {
+      const configPath = path.join(tempDir, "config.js");
+      await fs.writeFile(
+        configPath,
+        `export default { retry: { maxAttempts: "unlimited" }, repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees", retry: { maxAttempts: undefined } }] };`,
+      );
+
+      const config = await configLoader.loadConfigFile(configPath);
+      const resolved = configLoader.resolveRepositoryConfig(
+        config.repositories[0],
+        config.defaults,
+        tempDir,
+        config.retry,
+      );
+
+      expect(resolved.retry?.maxAttempts).toBe("unlimited");
+    });
+
     it("should handle no retry config", () => {
       const repo = {
         name: "test",
@@ -2117,11 +2192,9 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/Consider reducing maxRepositories/);
     });
 
-    // Every branch fetch goes through the anchor worktree's one git client,
-    // whose scheduler stops at 5 — measured: 40 concurrent fetches through one
-    // cached client peak at 9 processes, never 40. Rejecting this config would
-    // break a working setup over processes that cannot be spawned.
-    it("should accept a maxBranchFetches the shared fetch client cannot reach", async () => {
+    // maxBranchFetches is deprecated and bounds nothing, so it never counts
+    // toward the peak: rejecting this config would break a working setup.
+    it("should still accept a large deprecated maxBranchFetches", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
         export default {
@@ -2142,7 +2215,7 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       expect(config.parallelism?.maxBranchFetches).toBe(200);
     });
 
-    it("leaves the branch-fetch fallback out of the peak entirely", () => {
+    it("leaves the deprecated maxBranchFetches out of the peak entirely", () => {
       const peak = computeParallelismPeak({ maxRepositories: 1, maxBranchFetches: 1000 });
 
       expect(peak.widestPhase.field).toBe("maxStatusChecks");
@@ -2432,9 +2505,9 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       );
     });
 
-    // A repository-level `maxRepositories` is validated as a positive integer,
-    // but it bounds nothing: runMultipleRepositories reads the global or
-    // `defaults` one and nothing else. Counting it here would reject a config
+    // A repository-level `maxRepositories` is validated as a positive integer
+    // (and warned about), but it bounds nothing: runMultipleRepositories reads
+    // the global or `defaults` one and nothing else. Counting it here would reject a config
     // that runs three repositories two at a time perfectly safely.
     it("ignores a repository-level maxRepositories, which bounds nothing", async () => {
       const configPath = await writeConfig(
@@ -2472,16 +2545,15 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       );
     });
 
-    // runMultipleRepositories reads maxRepositories global-first, unlike every
-    // other setting, where `defaults` wins. The guard has to read it the same
-    // way or it weighs a width the run will never reach: here only one
-    // repository ever syncs at a time, so the peak is 25, not 5 x 25.
-    it("reads maxRepositories global-first, the way the runner does", async () => {
+    // `defaults` overrides the top level for maxRepositories as for every
+    // other setting, and the guard reads it the way the runner does: here only
+    // one repository ever syncs at a time, so the peak is 25, not 5 x 25.
+    it("reads maxRepositories with `defaults` overriding the top level, the way the runner does", async () => {
       const configPath = await writeConfig(
         "max-repos-precedence.config.js",
         `
-          parallelism: { maxRepositories: 1, maxStatusChecks: 25 },
-          defaults: { parallelism: { maxRepositories: 5 } },
+          parallelism: { maxRepositories: 5 },
+          defaults: { parallelism: { maxRepositories: 1, maxStatusChecks: 25 } },
           repositories: [
             ${repoEntry("a")}, ${repoEntry("b")}, ${repoEntry("c")}, ${repoEntry("d")}, ${repoEntry("e")}
           ],
@@ -3382,67 +3454,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
     });
   });
 
-  describe("findConfigUpward", () => {
-    it("returns null when no config exists in path or any parent", async () => {
-      const startDir = path.join(tempDir, "deep", "nested");
-      await fs.mkdir(startDir, { recursive: true });
-
-      const result = await configLoader.findConfigUpward(startDir);
-      expect(result).toBeNull();
-    });
-
-    it("finds config file in same directory", async () => {
-      const configPath = path.join(tempDir, "sync-worktrees.config.js");
-      await fs.writeFile(configPath, "export default { repositories: [] };", "utf-8");
-
-      const result = await configLoader.findConfigUpward(tempDir);
-      expect(result).toBe(configPath);
-    });
-
-    it("finds config file in parent directory", async () => {
-      const configPath = path.join(tempDir, "sync-worktrees.config.js");
-      await fs.writeFile(configPath, "export default { repositories: [] };", "utf-8");
-      const childDir = path.join(tempDir, "child", "grandchild");
-      await fs.mkdir(childDir, { recursive: true });
-
-      const result = await configLoader.findConfigUpward(childDir);
-      expect(result).toBe(configPath);
-    });
-
-    it("matches all supported extensions (.js, .mjs, .cjs, .ts)", async () => {
-      for (const ext of ["js", "mjs", "cjs", "ts"]) {
-        const dir = await createTempDirectory(`config-ext-${ext}-`);
-        const configPath = path.join(dir, `sync-worktrees.config.${ext}`);
-        await fs.writeFile(configPath, "// fake", "utf-8");
-
-        const result = await configLoader.findConfigUpward(dir);
-        expect(result).toBe(configPath);
-      }
-    });
-
-    // The four names the MCP instructions and `detect_context` advertise, in the
-    // order the walk-up tries them. Pinned as a list so the two claims and the
-    // constant cannot drift: a `.ts` config that is never *looked* for is the
-    // shape of the bug this replaced, where `detect_context` reported
-    // `configPath: null` for a file sitting next to the caller.
-    it("advertises exactly the extensions it searches, .js first", () => {
-      expect([...CONFIG_FILE_NAMES]).toEqual([
-        "sync-worktrees.config.js",
-        "sync-worktrees.config.mjs",
-        "sync-worktrees.config.cjs",
-        "sync-worktrees.config.ts",
-      ]);
-    });
-
-    it("prefers .js over .ts when a directory holds both", async () => {
-      const dir = await createTempDirectory("config-ext-both-");
-      await fs.writeFile(path.join(dir, "sync-worktrees.config.ts"), "// fake", "utf-8");
-      await fs.writeFile(path.join(dir, "sync-worktrees.config.js"), "// fake", "utf-8");
-
-      expect(await configLoader.findConfigUpward(dir)).toBe(path.join(dir, "sync-worktrees.config.js"));
-    });
-  });
-
   describe("sparseCheckout validation", () => {
     async function loadInline(content: string): Promise<unknown> {
       const configPath = path.join(tempDir, "test.config.js");
@@ -3649,6 +3660,17 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       expect(r2.bareRepoDir).toBe("/cfg/.bare/repo");
     });
 
+    it("treats repoUrls that differ only by a trailing .git as duplicates", () => {
+      const all = [
+        makeRepo("first", { repoUrl: "https://example.com/o/r.git" }),
+        makeRepo("second", { repoUrl: "https://example.com/o/r" }),
+      ];
+      const r1 = configLoader.resolveRepositoryConfig(all[0], undefined, "/cfg", undefined, all);
+      const r2 = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
+      expect(r1.bareRepoDir).toBe("/cfg/.bare/r");
+      expect(r2.bareRepoDir).toBe("/cfg/.bare/second");
+    });
+
     it("sanitizes name with slashes for path", () => {
       const all = [makeRepo("first"), makeRepo("group/sub-name")];
       const resolved = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
@@ -3662,11 +3684,10 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       );
     });
 
-    it("rejects Windows-reserved name", () => {
+    it("accepts a name reserved only on Windows", () => {
       const all = [makeRepo("first"), makeRepo("CON")];
-      expect(() => configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all)).toThrow(
-        /reserved name/,
-      );
+      const resolved = configLoader.resolveRepositoryConfig(all[1], undefined, "/cfg", undefined, all);
+      expect(resolved.bareRepoDir).toBe("/cfg/.bare/CON");
     });
   });
 
@@ -3857,6 +3878,23 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       ];
       expect(() => configLoader.detectPathCollisions(repos)).toThrow(ConfigValidationError);
       expect(() => configLoader.detectPathCollisions(repos)).toThrow(/'a' and 'b'.*same bareRepoDir/);
+    });
+
+    it("does not call different repositories that share a basename duplicate repoUrls", () => {
+      const repos = [
+        makeEntry("a", { repoUrl: "https://github.com/one/app.git", worktreeDir: "/w/a", bareRepoDir: "/b/app" }),
+        makeEntry("b", { repoUrl: "https://github.com/two/app.git", worktreeDir: "/w/b", bareRepoDir: "/b/app" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/same bareRepoDir/);
+      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow(/duplicate repoUrl/);
+    });
+
+    it("keeps the duplicate repoUrl hint when the repoUrls match after normalization", () => {
+      const repos = [
+        makeEntry("a", { repoUrl: "https://example.com/o/r.git", worktreeDir: "/w/a", bareRepoDir: "/b/r" }),
+        makeEntry("b", { repoUrl: "https://example.com/o/r", worktreeDir: "/w/b", bareRepoDir: "/b/r" }),
+      ];
+      expect(() => configLoader.detectPathCollisions(repos)).toThrow(/duplicate repoUrl/);
     });
 
     it("does not throw when bareRepoDirs differ", () => {

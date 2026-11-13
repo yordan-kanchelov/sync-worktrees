@@ -8,13 +8,10 @@ import { vi } from "vitest";
 //     (await import("./helpers/metadata-service-mock")).worktreeMetadataServiceModuleMock(),
 //   );
 export const mockMetadataServiceInstance = {
-  createInitialMetadata: vi.fn<any>().mockResolvedValue(undefined),
   createInitialMetadataFromPath: vi.fn<any>().mockResolvedValue(undefined),
-  updateLastSync: vi.fn<any>().mockResolvedValue(undefined),
   updateLastSyncFromPath: vi.fn<any>().mockResolvedValue(undefined),
   loadMetadata: vi.fn<any>().mockResolvedValue(null),
   loadMetadataFromPath: vi.fn<any>().mockResolvedValue(null),
-  deleteMetadata: vi.fn<any>().mockResolvedValue(undefined),
   deleteMetadataFromPath: vi.fn<any>().mockResolvedValue(undefined),
   saveMetadata: vi.fn<any>().mockResolvedValue(undefined),
   getMetadataPath: vi.fn<any>().mockResolvedValue("/test/path"),

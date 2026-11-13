@@ -132,10 +132,6 @@ export class SyncCycleScheduler {
     }
   }
 
-  public registerCronJob(job: cron.ScheduledTask): void {
-    this.cronJobs.push(job);
-  }
-
   public async waitForInProgressSyncs(
     timeoutMs: number = WAIT_SYNC_DEFAULT_TIMEOUT_MS,
     abort?: Promise<void>,
@@ -334,9 +330,7 @@ export class SyncCycleScheduler {
             // sync that threw, still has to close its row.
             let ownedProgressRow = true;
             try {
-              if (!service.isInitialized()) {
-                await service.initialize();
-              }
+              // sync() initializes under its lock and retry policy.
               const result = await service.sync();
               if (result?.started === false) {
                 ownedProgressRow = false;

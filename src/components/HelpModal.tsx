@@ -54,7 +54,8 @@ const SECTIONS: HelpSection[] = [
     title: "In wizards, the switcher and the status view",
     rows: [
       { keys: ["Ctrl-P", "Ctrl-N"], description: "Move up / down a list (as well as ↑/↓)" },
-      { keys: ["Tab"], description: "Switcher: editor, terminal, copy, sync, status" },
+      { keys: ["Tab"], description: "Open wizard: terminal / editor; switcher: actions" },
+      { keys: ["Ctrl-U"], description: "Switcher: clear the search" },
       { keys: ["Ctrl-D"], description: "Delete the selected .diverged directory" },
     ],
   },

@@ -13,6 +13,7 @@ import type {
   MaintenanceConfig,
   ParallelismConfig,
   RepositoryConfig,
+  RepositoryOnlyKey,
   RetryConfig,
   SparseCheckoutConfig,
   TrashConfig,
@@ -42,14 +43,14 @@ type WholeFileKeys = "runOnce" | "syncOnStart";
 type ValueShape<T, K extends keyof T> = { [P in K]-?: Exclude<T[P], undefined> };
 
 type _RepositoryKeysMatch = Expect<Equal<keyof RepositoryOutput, keyof RepositoryConfig>>;
-type _DefaultsKeysMatch = Expect<Equal<keyof DefaultsOutput, keyof Config>>;
+type _DefaultsKeysMatch = Expect<Equal<keyof DefaultsOutput, Exclude<keyof Config, RepositoryOnlyKey>>>;
 type _TopLevelKeysMatch = Expect<Equal<keyof ConfigFileOutput, keyof ConfigFile>>;
 
 type RepositoryValueKeys = Exclude<keyof RepositoryConfig, InternalKeys | WholeFileKeys>;
 type _RepositoryValuesMatch = Expect<
   Equal<ValueShape<RepositoryOutput, RepositoryValueKeys>, ValueShape<RepositoryConfig, RepositoryValueKeys>>
 >;
-type DefaultsValueKeys = Exclude<keyof Config, InternalKeys>;
+type DefaultsValueKeys = Exclude<keyof Config, InternalKeys | RepositoryOnlyKey>;
 type _DefaultsValuesMatch = Expect<
   Equal<ValueShape<DefaultsOutput, DefaultsValueKeys>, ValueShape<Config, DefaultsValueKeys>>
 >;
@@ -178,7 +179,17 @@ describe("validateConfigFile: the file and its repository entries", () => {
     [
       "an unparseable branchMaxAge",
       config({}, { branchMaxAge: "two weeks" }),
-      `repositories[0].branchMaxAge: must be a duration string like '14d', '12h', or '2w', got "two weeks"`,
+      `repositories[0].branchMaxAge: must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "two weeks"`,
+    ],
+    [
+      "a zero branchMaxAge",
+      config({}, { branchMaxAge: "0d" }),
+      `repositories[0].branchMaxAge: must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "0d"`,
+    ],
+    [
+      "a branchMaxAge too large for a cutoff date",
+      config({}, { branchMaxAge: "999999999y" }),
+      `repositories[0].branchMaxAge: must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "999999999y"`,
     ],
     [
       "a non-integer depth",
@@ -228,6 +239,18 @@ describe("validateConfigFile: the file and its repository entries", () => {
     expect(onlyIssue({ repositories: [repo(), repo({ worktreeDir: "/tmp/other" })] })).toBe(
       "repositories[1].name: duplicate repository name 'web' (already used by repositories[0])",
     );
+  });
+
+  it("rejects a name that cannot become a path segment", () => {
+    expect(onlyIssue(config({}, { name: ".." }))).toBe(
+      "repositories[0].name: '..' produces an empty path segment after sanitization",
+    );
+  });
+
+  it("accepts names that are reserved only on Windows", () => {
+    for (const name of ["aux", "CON", "nul", "com1"]) {
+      expect(issuesOf(config({}, { name })), name).toEqual([]);
+    }
   });
 
   it("names the formats a repoUrl may take, and redacts the credentials in the one it got", () => {
@@ -446,7 +469,11 @@ describe("validateConfigFile: defaults", () => {
       "defaults.cronSchedule: '* *' is not a valid cron expression",
     ],
     ["an unknown mode", { mode: "bare" }, `defaults.mode: must be 'clone' or 'worktree', got "bare"`],
-    ["a non-string worktreeDir", { worktreeDir: 3 }, "defaults.worktreeDir: must be a string, got 3"],
+    [
+      "a zero branchMaxAge",
+      { branchMaxAge: "0d" },
+      `defaults.branchMaxAge: must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "0d"`,
+    ],
     [
       "a nested block error",
       { retry: { jitterMs: -5 } },
@@ -454,6 +481,10 @@ describe("validateConfigFile: defaults", () => {
     ],
   ])("rejects %s", (_label, defaults, expected) => {
     expect(onlyIssue(config({ defaults }))).toBe(expected);
+  });
+
+  it("leaves repoUrl, worktreeDir and bareRepoDir under defaults to the unknown-key warning", () => {
+    expect(issuesOf(config({ defaults: { repoUrl: 3, worktreeDir: 3, bareRepoDir: 3 } }))).toEqual([]);
   });
 
   it("keeps loading `defaults: null` as no defaults", () => {
@@ -477,6 +508,11 @@ describe("validateConfigFile: rules across fields", () => {
       expect(onlyIssue(config({}, { mode: "clone", [field]: values[field] }))).toBe(
         `repositories[0].${field}: not supported when mode is 'clone'`,
       );
+      if (field === "bareRepoDir") {
+        // Nothing inherits defaults.bareRepoDir, so there is nothing to reject.
+        expect(issuesOf(config({ defaults: { bareRepoDir: "/tmp/bare" } }, { mode: "clone" }))).toEqual([]);
+        return;
+      }
       expect(onlyIssue(config({ defaults: { [field]: values[field] } }, { mode: "clone" }))).toBe(
         `repositories[0].${field}: not supported when mode is 'clone' (inherited from defaults.${field})`,
       );
@@ -520,6 +556,36 @@ describe("validateConfigFile: rules across fields", () => {
     expect(onlyIssue({ repositories, parallelism: { maxStatusChecks: 40 } })).toMatch(
       /^parallelism: peak concurrent git processes \(110\) exceeds safe limit \(100\) once global, defaults and per-repository parallelism are merged\./,
     );
+  });
+
+  it("lets a repository key set to undefined inherit the level above in the merged peak", () => {
+    const repositories = Array.from({ length: 6 }, (_, i) =>
+      repo({ name: `r${i}`, worktreeDir: `/tmp/r${i}`, parallelism: { maxStatusChecks: undefined } }),
+    );
+
+    expect(issuesOf({ repositories, parallelism: { maxRepositories: 6, maxStatusChecks: 10 } })).toEqual([]);
+  });
+
+  it("does not weigh clone-mode repositories at the worktree phases they never run", () => {
+    const repositories = Array.from({ length: 6 }, (_, i) =>
+      repo({ name: `c${i}`, worktreeDir: `/tmp/c${i}`, mode: "clone" }),
+    );
+
+    expect(issuesOf({ repositories, parallelism: { maxRepositories: 6 } })).toEqual([]);
+    expect(issuesOf({ repositories, defaults: { parallelism: { maxRepositories: 6 } } })).toEqual([]);
+    expect(issuesOf({ repositories, defaults: { mode: "clone", parallelism: { maxRepositories: 6 } } })).toEqual([]);
+  });
+
+  it("still weighs worktree-mode repositories synced beside clone-mode ones", () => {
+    const repositories = [
+      ...Array.from({ length: 5 }, (_, i) => repo({ name: `w${i}`, worktreeDir: `/tmp/w${i}` })),
+      repo({ name: "c", worktreeDir: "/tmp/c", mode: "clone" }),
+    ];
+
+    expect(onlyIssue({ repositories, parallelism: { maxRepositories: 6 } })).toMatch(
+      /^parallelism: peak concurrent git processes \(120\) exceeds safe limit \(100\)\. /,
+    );
+    expect(issuesOf({ repositories, parallelism: { maxRepositories: 6, maxStatusChecks: 15 } })).toEqual([]);
   });
 });
 

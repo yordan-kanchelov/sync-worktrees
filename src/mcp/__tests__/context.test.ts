@@ -186,6 +186,11 @@ describe("RepositoryContext.detectFromPath", () => {
     expect(result.notes.some((n: string) => n.startsWith("Could not determine worktreeDir"))).toBe(true);
     expect(result.capabilities.listWorktrees.available).toBe(true);
     expect(result.capabilities.getStatus.available).toBe(true);
+    // load_config / set_current_repository list it the way detect_context does,
+    // not with the internal placeholder directory.
+    expect(ctx.getRepositoryList()).toEqual([
+      expect.objectContaining({ name: result.repoName, worktreeDir: null, source: "detected" }),
+    ]);
   });
 
   it("recognises a hashed branch worktree whose branch name has more segments than its path", async () => {
@@ -626,6 +631,38 @@ describe("RepositoryContext.loadConfig selection state", () => {
     }
   });
 
+  it.each([
+    ["current", false],
+    ["not current", true],
+  ])("drops a %s detected entry that the loaded config covers", async (_label, clearCurrent) => {
+    const fixture = await makeWorktreeFixture();
+    try {
+      mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
+      mockWorktreeList.mockResolvedValue(
+        [`worktree ${fixture.currentWorktree}`, "branch refs/heads/feature-x", ""].join("\n"),
+      );
+
+      const ctx = new RepositoryContext();
+      await ctx.detectFromPath(fixture.currentWorktree);
+      await ctx.getService();
+      if (clearCurrent) ctx.__setCurrentRepoForTest(null);
+
+      const configPath = path.join(fixture.root, "sync-worktrees.config.js");
+      const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
+        { name: "configured", repoUrl: "https://github.com/test/repo.git", bareRepoDir: ${JSON.stringify(fixture.bareRepo)}, worktreeDir: ${JSON.stringify(fixture.worktreesDir)}, cronSchedule: "0 * * * *" }
+      ] };`;
+      await fs.writeFile(configPath, cfgBody, "utf-8");
+
+      await ctx.loadConfig(configPath);
+
+      expect(ctx.__repoCountForTest()).toBe(1);
+      expect(ctx.__getRepositorySelectionStateForTest()).toMatchObject({ detected: [] });
+      expect(ctx.getCurrentRepo()).toBe("configured");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("does not pin the first repo when a multi-repo config has no current match", async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-load-multi-"));
     try {
@@ -713,12 +750,16 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
       const bareDir = path.join(workspace, ".bare", "frontend");
       await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
       await fs.mkdir(bareDir, { recursive: true });
+      await fs.writeFile(path.join(bareDir, "HEAD"), "ref: refs/heads/main\n", "utf-8");
+      // The repo lock creates the bare dir before any clone: empty is not ready.
+      await fs.mkdir(path.join(workspace, ".bare", "empty"), { recursive: true });
 
       const configPath = path.join(workspace, "sync-worktrees.config.js");
       const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
         { name: "ui", repoUrl: "https://github.com/test/ui.git", worktreeDir: "./ui", mode: "clone", branch: "main", cronSchedule: "0 * * * *" },
         { name: "frontend", repoUrl: "https://github.com/test/frontend.git", bareRepoDir: "./.bare/frontend", worktreeDir: "./frontend", cronSchedule: "0 * * * *" },
-        { name: "missing", repoUrl: "https://github.com/test/missing.git", bareRepoDir: "./.bare/missing", worktreeDir: "./missing", cronSchedule: "0 * * * *" }
+        { name: "missing", repoUrl: "https://github.com/test/missing.git", bareRepoDir: "./.bare/missing", worktreeDir: "./missing", cronSchedule: "0 * * * *" },
+        { name: "empty", repoUrl: "https://github.com/test/empty.git", bareRepoDir: "./.bare/empty", worktreeDir: "./empty", cronSchedule: "0 * * * *" }
       ] };`;
       await fs.writeFile(configPath, cfgBody, "utf-8");
 
@@ -753,6 +794,15 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
           worktreeDir: path.join(workspace, "missing"),
           repoUrl: "https://github.com/test/missing.git",
           bareRepoDir: path.join(workspace, ".bare", "missing"),
+          isCurrent: false,
+          localReady: false,
+        },
+        {
+          name: "empty",
+          mode: "worktree",
+          worktreeDir: path.join(workspace, "empty"),
+          repoUrl: "https://github.com/test/empty.git",
+          bareRepoDir: path.join(workspace, ".bare", "empty"),
           isCurrent: false,
           localReady: false,
         },

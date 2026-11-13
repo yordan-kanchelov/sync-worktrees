@@ -8,10 +8,12 @@ import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { filterBranchesByName } from "../utils/branch-filter";
 import { filterBranchesByAge, formatDuration } from "../utils/date-filter";
 import { probePathExists } from "../utils/file-exists";
+import { findByWorktreePath, sameWorktreePath } from "../utils/path-compare";
 import { getErrorMessage } from "../utils/errors";
 import { isLfsError } from "../utils/lfs-error";
 import { getRemovalAuditLogPath } from "../utils/lock-path";
 import { copyTreePreservingSymlinks } from "../utils/preserving-copy";
+import { detachGitLink } from "../utils/detach-git-link";
 
 import { PathResolutionService } from "./path-resolution.service";
 import { trackPhaseItems } from "./progress-emitter";
@@ -29,7 +31,7 @@ import type { SyncRetryContext } from "./sync-retry-policy";
 import type { TrashEntry } from "./trash.service";
 import type { WorktreeStatusDetails, WorktreeStatusResult } from "./worktree-status.service";
 import type { CreateAction, PruneAction, SparseAction, SyncPlan, UpdateAction } from "./worktree-sync-planner";
-import type { Config } from "../types";
+import type { Config, SparseCheckoutConfig } from "../types";
 import type { PhaseTimer } from "../utils/timing";
 
 // How many worktreeDir containment probes may be in flight at once. Pure stat
@@ -53,7 +55,7 @@ type PruneAssessment =
       status: WorktreeStatusResult;
     };
 
-type UpdateWorktreeRef = { path: string; branch: string };
+type UpdateWorktreeRef = { path: string; branch: string; locked?: boolean; lockReason?: string };
 
 type UpdateAssessment =
   | { action: "update"; worktree: UpdateWorktreeRef; behind: number }
@@ -65,7 +67,8 @@ type DivergedAssessment =
   | { kind: "stash_present" }
   | { kind: "not_diverged"; counts: AheadBehindCounts }
   | { kind: "reset"; observedHead: string; treesIdentical: boolean }
-  | { kind: "replace"; observedHead: string };
+  | { kind: "replace"; observedHead: string }
+  | { kind: "locked"; lockReason?: string };
 
 type SparseAssessment =
   | { kind: "absent" }
@@ -73,6 +76,10 @@ type SparseAssessment =
   | { kind: "apply"; narrowing: boolean }
   | { kind: "unsafe-narrowing"; reasons: string[] }
   | { kind: "failed"; error: unknown };
+
+function lockedMessage(lockReason: string | undefined): string {
+  return `worktree is locked${lockReason !== undefined ? `: ${lockReason}` : ""}`;
+}
 
 export class WorktreeModeSyncRunner {
   private pathResolution = new PathResolutionService();
@@ -82,6 +89,7 @@ export class WorktreeModeSyncRunner {
   // — a sync that threw before phase 1, the TUI holding an idle instance —
   // cannot vouch for anything.
   private remoteRefsPrunedThisAttempt = false;
+  private warnedBadExpiry = new Set<string>();
 
   constructor(
     private config: Config,
@@ -109,11 +117,18 @@ export class WorktreeModeSyncRunner {
     // answer.
     this.remoteRefsPrunedThisAttempt = false;
     await this.ensureFetchAnchor(outcome);
-    await this.fetchLatestRemoteData(phaseTimer, syncContext);
+    await this.fetchLatestRemoteData(phaseTimer);
 
     await fs.mkdir(this.config.worktreeDir, { recursive: true });
 
-    const { worktrees, syncPlan } = await this.collectInventory((all) => this.resolveDefaultBranch(all, outcome));
+    const { worktrees, syncPlan, anchorSkip } = await this.collectInventory((all) =>
+      this.resolveDefaultBranch(all, outcome),
+    );
+    if (anchorSkip) {
+      const { reason, ...details } = anchorSkip;
+      this.logger.warn(`  ⏭️ ${details.message}`);
+      outcome.recordSkipped("worktree", reason, details);
+    }
 
     await this.createNewWorktreesWithTiming(syncPlan, phaseTimer, syncContext, outcome);
     // One listing of origin's tips for the whole attempt: the tip recording
@@ -131,10 +146,8 @@ export class WorktreeModeSyncRunner {
     }
 
     if (this.config.sparseCheckout) {
-      await this.reapplySparseCheckout(syncPlan.sparse, outcome);
+      await this.reapplySparseCheckoutWithTiming(syncPlan.sparse, phaseTimer, syncContext, outcome);
     }
-
-    await this.finalizeSyncAttempt(phaseTimer);
   }
 
   // `sync --dry-run`: every decision runSyncAttempt makes, taken by the same
@@ -168,6 +181,7 @@ export class WorktreeModeSyncRunner {
       return current;
     });
     const { syncPlan, allRemoteBranches, pendingDivergedBranches, rebuiltBranches } = inventory;
+    if (inventory.anchorSkip) plan.add({ kind: "skip", scope: "worktree", ...inventory.anchorSkip });
 
     for (const worktree of inventory.externalWorktrees) {
       plan.add({
@@ -235,8 +249,7 @@ export class WorktreeModeSyncRunner {
       const sparseService = this.gitService.getSparseCheckoutService();
       const desired = sparseService.buildPatterns(sparseConfig);
       for (const action of syncPlan.sparse) {
-        if (action.kind !== "check-sparse") continue;
-        const assessment = await this.assessSparseAction(action, desired);
+        const assessment = await this.assessSparseAction(action, sparseConfig, desired);
         const step = this.describeSparseAssessment(action, assessment);
         if (step) plan.add(step);
       }
@@ -255,11 +268,13 @@ export class WorktreeModeSyncRunner {
     allRemoteBranches: Set<string>;
     pendingDivergedBranches: Set<string>;
     rebuiltBranches: Set<string>;
+    anchorSkip?: { reason: string; branch: string; path: string; message: string };
   }> {
     const { all, remoteBranches, defaultBranch } = await this.resolveSyncBranches(resolveDefault);
     const pendingDivergedBranches = await this.getPendingDivergedBranches();
 
     const registeredWorktrees = await this.gitService.getWorktrees();
+    const anchorSkip = await this.assessAnchorBranch(registeredWorktrees, defaultBranch);
     const { worktrees, externalWorktrees } = await this.partitionByWorktreeDir(registeredWorktrees);
     const externalBranches = new Set(externalWorktrees.map((worktree) => worktree.branch));
     const plannedBranches = remoteBranches.filter(
@@ -300,6 +315,14 @@ export class WorktreeModeSyncRunner {
       updateExistingWorktrees: this.config.updateExistingWorktrees !== false,
       sparseCheckout: this.config.sparseCheckout,
     });
+    // Every fetch runs in the anchor, whatever it has checked out: never prune it.
+    if (anchorSkip) {
+      const kept: PruneAction[] = [];
+      for (const action of syncPlan.prune) {
+        if (!(await sameWorktreePath(action.path, anchorSkip.path))) kept.push(action);
+      }
+      syncPlan.prune = kept;
+    }
 
     return {
       syncPlan,
@@ -308,10 +331,57 @@ export class WorktreeModeSyncRunner {
       allRemoteBranches: new Set(all),
       pendingDivergedBranches,
       rebuiltBranches,
+      anchorSkip,
     };
   }
 
-  private async reapplySparseCheckout(actions: SparseAction[], outcome: SyncOutcomeAccumulator): Promise<void> {
+  // The anchor is matched by path, so a checkout there that left the default
+  // branch (detached, or switched) is still adopted; the planner never plans
+  // the default branch, so without this it would silently fall behind.
+  private async assessAnchorBranch(
+    registered: RegisteredWorktree[],
+    defaultBranch: string,
+  ): Promise<{ reason: string; branch: string; path: string; message: string } | undefined> {
+    const anchorPath = this.gitService.getMainWorktreePath();
+    if ((await probePathExists(anchorPath)) !== "exists") return undefined;
+    // The listing leaves out detached worktrees.
+    const entry = await findByWorktreePath(registered, anchorPath);
+    if (entry?.branch === defaultBranch) return undefined;
+    const fix = `check '${defaultBranch}' back out there to have it synced again`;
+    return entry
+      ? {
+          reason: "default_branch_mismatch",
+          branch: defaultBranch,
+          path: anchorPath,
+          message: `Default-branch worktree at '${anchorPath}' has '${entry.branch}' checked out, so '${defaultBranch}' is not synced; ${fix}`,
+        }
+      : {
+          reason: "default_branch_detached",
+          branch: defaultBranch,
+          path: anchorPath,
+          message: `Default-branch worktree at '${anchorPath}' is on a detached HEAD, so '${defaultBranch}' is not synced; ${fix}`,
+        };
+  }
+
+  private async reapplySparseCheckoutWithTiming(
+    actions: SparseAction[],
+    phaseTimer: PhaseTimer,
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<void> {
+    phaseTimer.startPhase("Phase 5: Sparse");
+
+    await this.reapplySparseCheckout(actions, syncContext, outcome);
+
+    phaseTimer.setPhaseCount("Phase 5: Sparse", actions.length);
+    phaseTimer.endPhase();
+  }
+
+  private async reapplySparseCheckout(
+    actions: SparseAction[],
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+  ): Promise<void> {
     const sparseConfig = this.config.sparseCheckout;
     if (!sparseConfig) return;
 
@@ -321,15 +391,12 @@ export class WorktreeModeSyncRunner {
     const desired = sparseService.buildPatterns(sparseConfig);
 
     const limit = pLimit(this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
-    // Only the checks are work; the other kinds are the planner saying there is
-    // nothing to reconcile, so they are neither run nor counted.
-    const checks = actions.filter((action) => action.kind === "check-sparse");
-    const itemDone = trackPhaseItems(this.progressEmitter, "sparse", "Reconciling sparse-checkout", checks.length);
+    const itemDone = trackPhaseItems(this.progressEmitter, "sparse", "Reconciling sparse-checkout", actions.length);
 
     await Promise.all(
-      checks.map((action) =>
+      actions.map((action) =>
         limit(async () => {
-          const assessment = await this.assessSparseAction(action, desired);
+          const assessment = await this.assessSparseAction(action, sparseConfig, desired);
           try {
             switch (assessment.kind) {
               case "absent":
@@ -348,8 +415,10 @@ export class WorktreeModeSyncRunner {
                 });
                 return;
               case "apply":
-                await sparseService.applyToWorktree(action.path, sparseConfig);
-                await this.gitService.checkoutHead(action.path);
+                await this.withLfsFallback(action.branch, action.path, syncContext, outcome, async () => {
+                  await sparseService.applyToWorktree(action.path, sparseConfig);
+                  await this.gitService.checkoutHead(action.path);
+                });
                 this.logger.info(`  - ✅ Sparse-checkout updated for '${action.branch}'`);
                 outcome.recordUpdated(action.branch, action.path, "sparse_checkout");
                 return;
@@ -374,6 +443,7 @@ export class WorktreeModeSyncRunner {
   // safe on a worktree that could be removed outright.
   private async assessSparseAction(
     action: { branch: string; path: string },
+    sparseConfig: SparseCheckoutConfig,
     desired: string[],
   ): Promise<SparseAssessment> {
     const sparseService = this.gitService.getSparseCheckoutService();
@@ -384,10 +454,14 @@ export class WorktreeModeSyncRunner {
         return { kind: "absent" };
       }
 
-      const current = await sparseService.readCurrent(action.path);
-      if (current !== null && sparseService.patternsEqual(current, desired)) return { kind: "in-sync" };
+      const desiredMode = sparseService.resolveMode(sparseConfig);
+      const currentMode = await sparseService.readCurrentMode(action.path);
+      const current = await sparseService.readCurrent(action.path, currentMode);
+      if (currentMode === desiredMode && current !== null && sparseService.patternsEqual(current, desired)) {
+        return { kind: "in-sync" };
+      }
 
-      const narrowing = sparseService.isNarrowing(current, desired);
+      const narrowing = sparseService.isNarrowing(current, desired, currentMode, desiredMode);
       if (narrowing) {
         const status = await this.gitService.getFullWorktreeStatus(action.path, false);
         if (!status.canRemove) return { kind: "unsafe-narrowing", reasons: status.reasons };
@@ -541,13 +615,21 @@ export class WorktreeModeSyncRunner {
     // not be read. Swallowing that reads as "nothing reserved" and lets sync take
     // a path a payload is still waiting on, so the sync fails loudly instead.
     const { entries } = await this.trashService.listEntries();
+    const now = Date.now();
     for (const { manifest } of entries) {
-      if (
-        manifest.reason === "diverged-replace" &&
-        manifest.branch &&
-        !manifest.replacedAt &&
-        (await probePathExists(manifest.originalPath)) === "missing"
-      ) {
+      if (manifest.reason !== "diverged-replace" || !manifest.branch || manifest.replacedAt) continue;
+      // The reaper can keep an expired entry listed; the reserve ends at expiresAt.
+      const expiresAt = Date.parse(manifest.expiresAt);
+      if (Number.isNaN(expiresAt)) {
+        if (!this.warnedBadExpiry.has(manifest.id)) {
+          this.warnedBadExpiry.add(manifest.id);
+          this.logger.warn(
+            `  - Trash entry '${manifest.id}' has an unparseable expiry (${manifest.expiresAt}); not reserving '${manifest.branch}'.`,
+          );
+        }
+        continue;
+      }
+      if (expiresAt > now && (await probePathExists(manifest.originalPath)) === "missing") {
         pending.add(manifest.branch);
         this.logger.info(
           `  - Reserving '${manifest.originalPath}' for trash entry '${manifest.id}'; '${manifest.branch}' stays unsynced until it is restored or expires (${manifest.expiresAt}).`,
@@ -576,18 +658,15 @@ export class WorktreeModeSyncRunner {
   // Did this attempt bring every `refs/remotes/*` ref up to date with the
   // remote and drop the ones the remote no longer has?
   //
-  // Only `fetchAll` ("fetch --all --prune") earns a true. The LFS fallback
-  // below fetches branch by branch, and a `--prune` restricted to refspecs
-  // named on the command line prunes only those branches — so a branch deleted
-  // on the remote can keep a remote-tracking ref through it. The reaper uses
-  // this to decide whether a "these commits are on a remote" reading is
-  // trustworthy enough to release a permanent recovery ref, so anything short
-  // of the full pruning fetch answers false.
+  // Only a completed `fetchAll` ("fetch --all --prune") earns a true. The
+  // reaper uses this to decide whether a "these commits are on a remote"
+  // reading is trustworthy enough to release a permanent recovery ref, so
+  // anything short of the full pruning fetch answers false.
   didPruneAllRemoteRefs(): boolean {
     return this.remoteRefsPrunedThisAttempt;
   }
 
-  private async fetchLatestRemoteData(phaseTimer: PhaseTimer, syncContext: SyncRetryContext): Promise<void> {
+  private async fetchLatestRemoteData(phaseTimer: PhaseTimer): Promise<void> {
     this.logger.info("Step 1: Fetching latest data from remote...");
     phaseTimer.startPhase("Phase 1: Fetch");
     this.progressEmitter.emit({ phase: "fetch", message: "Fetching latest data from remote" });
@@ -595,18 +674,6 @@ export class WorktreeModeSyncRunner {
     try {
       await this.gitService.fetchAll();
       this.remoteRefsPrunedThisAttempt = true;
-    } catch (fetchError) {
-      const errorMessage = getErrorMessage(fetchError);
-
-      if (isLfsError(errorMessage) && !syncContext.lfsSkipEnabled && !this.config.skipLfs) {
-        this.logger.info("⚠️  Fetch all failed due to LFS error. Attempting branch-by-branch fetch...");
-        this.logger.info("⚠️  Temporarily disabling LFS downloads for branch-by-branch fetch...");
-        this.gitService.setLfsSkipEnabled(true);
-        syncContext.lfsSkipEnabled = true;
-        await this.fetchBranchByBranch();
-      } else {
-        throw fetchError;
-      }
     } finally {
       phaseTimer.endPhase();
     }
@@ -704,12 +771,6 @@ export class WorktreeModeSyncRunner {
     }
 
     return { all: allBranches, filtered: remoteBranches };
-  }
-
-  private async finalizeSyncAttempt(phaseTimer: PhaseTimer): Promise<void> {
-    phaseTimer.startPhase("Phase 5: Cleanup");
-    this.progressEmitter.emit({ phase: "cleanup", message: "Cleanup complete" });
-    phaseTimer.endPhase();
   }
 
   private async createNewWorktreesWithTiming(
@@ -818,9 +879,8 @@ export class WorktreeModeSyncRunner {
     this.logger.info(`  Created ${successCount}/${plan.length} worktrees successfully`);
   }
 
-  // `git fetch` into a bare repository never runs the LFS smudge filter, so the
-  // fallback in fetchLatestRemoteData is not where LFS actually fails — the
-  // checkout inside `git worktree add` is (an object missing on the server, an
+  // `git fetch` into a bare repository never runs the LFS smudge filter, so
+  // LFS fails in the checkout inside `git worktree add` (an object missing on the server, an
   // endpoint the daemon holds no credentials for). That failure was recorded as
   // create_failed and then dropped by the create phase's allSettled, so it never
   // reached retry()'s LFS handler: the branch failed again on every tick while
@@ -836,16 +896,30 @@ export class WorktreeModeSyncRunner {
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<AddWorktreeResult> {
+    return this.withLfsFallback(branchName, worktreePath, syncContext, outcome, () =>
+      this.gitService.addWorktree(branchName, worktreePath),
+    );
+  }
+
+  // The update phase's fast-forward and the sparse re-apply check files out
+  // too, so they get the same one-retry fallback.
+  private async withLfsFallback<T>(
+    branchName: string,
+    worktreePath: string,
+    syncContext: SyncRetryContext,
+    outcome: SyncOutcomeAccumulator,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const skipAlreadyEnabled = this.config.skipLfs === true || syncContext.lfsSkipEnabled;
 
     try {
-      return await this.gitService.addWorktree(branchName, worktreePath);
+      return await operation();
     } catch (error) {
       if (skipAlreadyEnabled || !isLfsError(getErrorMessage(error))) throw error;
 
       this.logger.warn(`  - ⚠️ LFS checkout failed for '${branchName}': ${getErrorMessage(error)}`);
       this.enableLfsSkipForSync(syncContext, outcome, branchName, worktreePath);
-      return await this.gitService.addWorktree(branchName, worktreePath);
+      return await operation();
     }
   }
 
@@ -1359,46 +1433,6 @@ export class WorktreeModeSyncRunner {
     this.logger.info("");
   }
 
-  private async fetchBranchByBranch(): Promise<void> {
-    this.logger.info("Fetching branches individually to isolate LFS errors...");
-
-    const remoteBranches = await this.gitService.getRemoteBranches();
-    this.logger.info(`Found ${remoteBranches.length} remote branches to fetch.`);
-
-    const fetchLimit = pLimit(
-      this.config.parallelism?.maxBranchFetches ?? DEFAULT_CONFIG.PARALLELISM.MAX_BRANCH_FETCHES,
-    );
-    const failedBranches: string[] = [];
-    let successCount = 0;
-
-    const results = await Promise.allSettled(
-      remoteBranches.map((branch) =>
-        fetchLimit(async () => {
-          await this.gitService.fetchBranch(branch);
-          return branch;
-        }),
-      ),
-    );
-
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      if (result.status === "fulfilled") {
-        successCount++;
-      } else {
-        const errorMessage = getErrorMessage(result.reason);
-        this.logger.info(`  ⚠️  Failed to fetch branch '${remoteBranches[i]}': ${errorMessage}`);
-        failedBranches.push(remoteBranches[i]);
-      }
-    }
-
-    this.logger.info(`Branch-by-branch fetch completed: ${successCount}/${remoteBranches.length} successful`);
-
-    if (failedBranches.length > 0) {
-      this.logger.info(`⚠️  Failed to fetch ${failedBranches.length} branches due to errors.`);
-      this.logger.info(`   These branches will be skipped: ${failedBranches.join(", ")}`);
-    }
-  }
-
   private async updateExistingWorktreesWithTiming(
     actions: UpdateAction[],
     phaseTimer: PhaseTimer,
@@ -1437,8 +1471,8 @@ export class WorktreeModeSyncRunner {
 
     const checkResults = await this.assessUpdates(actions, remoteTips);
 
-    const worktreesToUpdate: { path: string; branch: string }[] = [];
-    const divergedWorktrees: { path: string; branch: string }[] = [];
+    const worktreesToUpdate: UpdateWorktreeRef[] = [];
+    const divergedWorktrees: UpdateWorktreeRef[] = [];
 
     checkResults.forEach((result) => {
       switch (result.action) {
@@ -1498,7 +1532,12 @@ export class WorktreeModeSyncRunner {
     const checkResults = await Promise.allSettled(
       actions.map((action) =>
         limit(async (): Promise<UpdateAssessment> => {
-          const worktree = { path: action.path, branch: action.branch };
+          const worktree: UpdateWorktreeRef = {
+            path: action.path,
+            branch: action.branch,
+            ...(action.locked === true && { locked: true }),
+            ...(action.lockReason !== undefined && { lockReason: action.lockReason }),
+          };
 
           try {
             await fs.access(worktree.path);
@@ -1672,14 +1711,22 @@ export class WorktreeModeSyncRunner {
           message: `diverged with local changes; moved to ${preservedIn === "trash" ? "trash" : GIT_CONSTANTS.DIVERGED_DIR_NAME + "/"} and recreated from origin/${details.branch}`,
         };
       }
+      case "locked":
+        return {
+          kind: "skip",
+          scope: "worktree",
+          reason: "worktree_locked",
+          ...details,
+          message: lockedMessage(assessment.lockReason),
+        };
     }
   }
 
   // Phase 4b: the mutations the assessment asked for, fast-forwards and
   // diverged handling, at the lower update concurrency.
   private async applyUpdates(
-    worktreesToUpdate: { path: string; branch: string }[],
-    divergedWorktrees: { path: string; branch: string }[],
+    worktreesToUpdate: UpdateWorktreeRef[],
+    divergedWorktrees: UpdateWorktreeRef[],
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<void> {
@@ -1705,7 +1752,9 @@ export class WorktreeModeSyncRunner {
           let changed = true;
           try {
             this.logger.info(`  - Updating worktree '${worktree.branch}'...`);
-            const { updated } = await this.gitService.updateWorktree(worktree.path, worktree.branch);
+            const { updated } = await this.withLfsFallback(worktree.branch, worktree.path, syncContext, outcome, () =>
+              this.gitService.updateWorktree(worktree.path, worktree.branch),
+            );
             if (updated) {
               this.logger.info(`    ✅ Successfully updated '${worktree.branch}'.`);
               outcome.recordUpdated(worktree.branch, worktree.path, "fast_forward");
@@ -1788,11 +1837,16 @@ export class WorktreeModeSyncRunner {
   }
 
   private async handleDivergedBranch(
-    worktree: { path: string; branch: string },
+    worktree: UpdateWorktreeRef,
     syncContext: SyncRetryContext,
     outcome: SyncOutcomeAccumulator,
   ): Promise<boolean> {
     const assessment = await this.assessDiverged(worktree);
+
+    if (assessment.kind === "locked") {
+      this.recordDivergedLocked(worktree, outcome);
+      return false;
+    }
 
     if (assessment.kind === "stash_present") {
       this.logger.warn(
@@ -1830,6 +1884,11 @@ export class WorktreeModeSyncRunner {
       this.logger.warn(
         `⚠️  Refusing to reset '${worktree.branch}' because the final safety check found local or ignored files that upstream would overwrite.`,
       );
+      // git refuses to remove a locked worktree, so it cannot be moved aside.
+      if (worktree.locked) {
+        this.recordDivergedLocked(worktree, outcome);
+        return false;
+      }
     }
     this.logger.info(`🔒 Branch '${worktree.branch}' has diverged with local changes. Moving to diverged...`);
 
@@ -1840,20 +1899,28 @@ export class WorktreeModeSyncRunner {
     const relativePath = path.relative(process.cwd(), divergedPath);
     outcome.recordPreservedDiverged(worktree.branch, worktree.path, divergedPath);
 
-    this.logger.info(`   Moved to: ${relativePath}`);
-    this.logger.info(`   Your local changes are preserved. To review:`);
-    this.logger.info(`     cd ${relativePath}`);
-    this.logger.info(`     git diff origin/${worktree.branch}`);
+    this.logger.info(`   Moved to: ${relativePath} (detached from git; do not run git inside it)`);
 
     if (!unregistered) {
       // force is safe here: the directory was already moved to .diverged/,
       // so only the stale registration is being cleared.
       await this.gitService.removeWorktree(worktree.path, { force: true });
+      await detachGitLink(divergedPath).catch((error: unknown) =>
+        this.logger.warn(`⚠️ Could not detach the .git link of '${divergedPath}': ${getErrorMessage(error)}`),
+      );
       // Deliberately fatal on failure: addWorktree below would silently
       // recreate from the stale local branch instead of upstream.
       await this.gitService.deleteLocalBranch(worktree.branch);
+    }
+    const recoverRef = keepRef ?? trashEntry?.manifest.headOid;
+    if (recoverRef) {
       this.logger.info(
-        `   Never-pushed commits remain recoverable at '${keepRef}' — recover with: git branch <name> ${keepRef}`,
+        `   Your commits are preserved. Recover them with: ${this.recoverCommand(worktree.branch, recoverRef)}`,
+      );
+    }
+    if (trashEntry) {
+      this.logger.info(
+        `   Get the files back with: sync-worktrees trash restore ${trashEntry.manifest.id} (remove the replacement worktree and its branch first)`,
       );
     }
     await this.removalAudit
@@ -1887,7 +1954,7 @@ export class WorktreeModeSyncRunner {
   // with this worktree — leave it (stash, or not diverged after all), reset it
   // to origin/<branch> (nothing local would be lost), or preserve it and
   // recreate it (local changes since the last sync).
-  private async assessDiverged(worktree: { path: string; branch: string }): Promise<DivergedAssessment> {
+  private async assessDiverged(worktree: UpdateWorktreeRef): Promise<DivergedAssessment> {
     this.logger.info(`⚠️  Branch '${worktree.branch}' has diverged from upstream. Analyzing...`);
 
     if (await this.gitService.hasStashedChanges(worktree.path)) return { kind: "stash_present" };
@@ -1906,7 +1973,24 @@ export class WorktreeModeSyncRunner {
     const hasLocalChanges = treesIdentical
       ? false
       : await this.hasLocalChangesSinceLastSync(worktree.path, observedHead);
-    return hasLocalChanges ? { kind: "replace", observedHead } : { kind: "reset", observedHead, treesIdentical };
+    if (!hasLocalChanges) return { kind: "reset", observedHead, treesIdentical };
+    // Replacing moves the directory, which git refuses for a locked worktree.
+    if (worktree.locked) {
+      return { kind: "locked", ...(worktree.lockReason !== undefined && { lockReason: worktree.lockReason }) };
+    }
+    return { kind: "replace", observedHead };
+  }
+
+  private recordDivergedLocked(worktree: UpdateWorktreeRef, outcome: SyncOutcomeAccumulator): void {
+    const message = lockedMessage(worktree.lockReason);
+    this.logger.info(
+      `  - 🔒 Skipping diverged replace of '${worktree.branch}' - the ${message}. To let sync replace it: git worktree unlock ${worktree.path}`,
+    );
+    outcome.recordSkipped("worktree", "worktree_locked", {
+      branch: worktree.branch,
+      path: worktree.path,
+      message: `diverged, but ${message}`,
+    });
   }
 
   // The re-verification in handleDivergedBranch found the worktree not
@@ -1979,11 +2063,18 @@ export class WorktreeModeSyncRunner {
           `cannot delete stale branch '${branchName}' after trashing: ${branchRefError}`,
         );
       }
-      await this.writeDivergedInfoFile(entry.payloadPath, worktreePath, branchName, entry.manifest.headOid).catch(
-        (error: unknown) =>
-          this.logger.warn(
-            `⚠️ Could not write diverged metadata for trash entry '${entry.manifest.id}': ${getErrorMessage(error)}`,
-          ),
+      // Next to manifest.json, not in the payload: restore would leave it untracked.
+      await this.writeDivergedInfoFile(
+        entry.containerPath,
+        worktreePath,
+        branchName,
+        entry.manifest.headOid,
+        null,
+        entry.manifest.id,
+      ).catch((error: unknown) =>
+        this.logger.warn(
+          `⚠️ Could not write diverged metadata for trash entry '${entry.manifest.id}': ${getErrorMessage(error)}`,
+        ),
       );
       return { divergedPath: entry.payloadPath, keepRef: null, unregistered: true, trashEntry: entry };
     }
@@ -2049,39 +2140,47 @@ export class WorktreeModeSyncRunner {
     return { divergedPath, keepRef, unregistered: false, trashEntry: null };
   }
 
+  private recoverCommand(branchName: string, ref: string): string {
+    return `git -C ${this.gitService.getBareRepoPath()} branch ${branchName}-recovered ${ref}`;
+  }
+
   private async writeDivergedInfoFile(
-    preservedPath: string,
+    infoDir: string,
     originalPath: string,
     branchName: string,
-    knownLocalCommit: string | null,
+    localCommit: string | null,
     keepRef: string | null = null,
+    trashId: string | null = null,
   ): Promise<void> {
+    const recoverRef = keepRef ?? localCommit;
     const metadata = {
       originalBranch: branchName,
       divergedAt: new Date().toISOString(),
       reason: METADATA_CONSTANTS.DIVERGED_REASON,
       originalPath,
-      localCommit: knownLocalCommit ?? (await this.gitService.getCurrentCommit(preservedPath)),
+      localCommit,
       remoteCommit: await this.gitService.getRemoteCommit(`origin/${branchName}`),
       keepRef,
-      // Two preservation mechanisms, two different ways back. A trashed copy is
-      // restored through the trash CLI and has no keep ref to release; a
-      // `.diverged/` copy is held only by its keep ref.
-      instruction: `To preserve your changes:
-  1. Review: git diff origin/${branchName}
-  2. Keep changes: git push --force-with-lease origin ${branchName}
+      trashId,
+      // The copy is detached from git, so every step runs elsewhere. A trashed
+      // copy comes back through the trash CLI; a `.diverged/` copy is held only
+      // by its keep ref.
+      instruction: `This copy is detached from git: do not run git inside it.
+  1. Recover the commits: ${recoverRef ? this.recoverCommand(branchName, recoverRef) : "no commit was recorded"}
+  2. ${
+    trashId
+      ? `Get the files back: sync-worktrees trash restore ${trashId} (remove the replacement worktree and its branch first)`
+      : "Get the files back: copy what you need out of this directory"
+  }
   3. Discard changes: ${
     keepRef
       ? "use the TUI worktree status view so the keep ref is released safely"
-      : `restore it first with 'sync-worktrees trash restore <id>' if you want it back, then delete the entry`
+      : `the files age out with the trash retention window; the commit is then kept by 'keep/${trashId}' until 'sync-worktrees trash drop-keep-ref ${trashId}'`
   }
 
   Original worktree location: ${originalPath}`,
     };
 
-    await fs.writeFile(
-      path.join(preservedPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE),
-      JSON.stringify(metadata, null, 2),
-    );
+    await fs.writeFile(path.join(infoDir, METADATA_CONSTANTS.DIVERGED_INFO_FILE), JSON.stringify(metadata, null, 2));
   }
 }

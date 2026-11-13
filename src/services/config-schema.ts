@@ -7,6 +7,7 @@ import { parseDuration } from "../utils/date-filter";
 import { MAX_TIMER_DELAY_MS, MIN_GIT_TIMEOUT_MS, SIMPLE_GIT_CLIENT_CONCURRENCY } from "../utils/git-client";
 import { isValidGitUrl, redactSecretsInText } from "../utils/git-url";
 import { REPOSITORY_MODES } from "../utils/repo-mode";
+import { sanitizeNameForPath } from "../utils/sanitize-name";
 import { findConeRuleViolations } from "./sparse-checkout.service";
 
 import type { ConfigValidationIssue } from "../errors";
@@ -30,25 +31,6 @@ import type { KnownConfigKeys } from "../utils/unknown-config-keys";
  */
 const asConfigured = (configured: number): number => configured;
 const cappedByOneClient = (configured: number): number => Math.min(configured, SIMPLE_GIT_CLIENT_CONCURRENCY);
-/**
- * The branch-by-branch fetch is a fallback that only runs when a bulk fetch
- * failed on LFS errors, and it goes through the anchor worktree's one client,
- * so it can never exceed SIMPLE_GIT_CLIENT_CONCURRENCY however high
- * `maxBranchFetches` is set. It is left out of the peak entirely rather than
- * counted at that ceiling, because counting it -- even at 5 -- would newly
- * reject configs that load today: 21 to 25 repositories with every other limit
- * at 1 sum to 84-100 under the old rule but reach 105-125 at 5 per repository.
- * Leaving it out is what makes "no config that loads today is rejected" hold
- * for every input rather than merely for the ones we swept.
- *
- * This is a deliberate hole, not an impossibility: `maxRepositories` repos can
- * each run 5 concurrent fallback fetches, so a config the peak reports as 42
- * can spawn ~105 fetch processes if every repository hits the LFS fallback at
- * once. The fallback has one call site and is gated on an LFS failure, so that
- * is a narrow path. The setting is still validated as a positive integer.
- */
-const notCounted = (): number => 0;
-
 /**
  * Every per-repository parallelism phase: the phase it bounds, and the git
  * processes that phase can really run at once. The phases run one after another
@@ -93,12 +75,6 @@ const PARALLELISM_PHASES = [
     default: DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS,
     // Enforced exactly by WorktreeStatusService's shared process budget.
     concurrentProcesses: asConfigured,
-  },
-  {
-    field: "maxBranchFetches",
-    label: "branch fetches",
-    default: DEFAULT_CONFIG.PARALLELISM.MAX_BRANCH_FETCHES,
-    concurrentProcesses: notCounted,
   },
 ] as const satisfies ReadonlyArray<{
   field: keyof ParallelismConfig;
@@ -235,14 +211,22 @@ const cronSchedule = text("must be a cron expression string").refine((value) => 
   error: (issue) => `'${String(issue.input)}' is not a valid cron expression`,
 });
 
-const DURATION = "must be a duration string like '14d', '12h', or '2w'";
-const duration = text(DURATION).refine((value) => parseDuration(value) !== null, { error: because(DURATION) });
-
 // Zero parses fine but would disable throttling entirely (gc every tick).
 const POSITIVE_DURATION = "must be a positive duration string like '7d', '24h', or '2w'";
 const positiveDuration = text(POSITIVE_DURATION).refine((value) => (parseDuration(value) ?? 0) > 0, {
   error: because(POSITIVE_DURATION),
 });
+
+// Zero keeps no branch (prunes every worktree); past ~273000y the cutoff is an Invalid Date.
+const MAX_AGE = "must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y";
+const MAX_AGE_LIMIT_MS = parseDuration("200000y")!;
+const branchMaxAge = text(MAX_AGE).refine(
+  (value) => {
+    const ms = parseDuration(value) ?? 0;
+    return ms > 0 && ms < MAX_AGE_LIMIT_MS;
+  },
+  { error: because(MAX_AGE) },
+);
 
 /**
  * `branchInclude` / `branchExclude`, at either level.
@@ -349,20 +333,27 @@ const parallelismSchema = block({
   maxWorktreeUpdates: parallelismLimit,
   maxWorktreeRemoval: parallelismLimit,
   maxStatusChecks: parallelismLimit,
+  // Deprecated, no effect: still validated so older configs load unchanged.
   maxBranchFetches: parallelismLimit,
 });
 
 /**
  * The top-level and `defaults` blocks, each checked on its own against the
  * built-in defaults for whatever it leaves out. A repository's block is only
- * half a configuration (it still inherits `maxRepositories` from above), so it
- * is weighed merged instead, in checkMergedParallelismPeak.
+ * half a configuration (`maxRepositories` comes only from above), so it
+ * is weighed merged instead, in checkMergedParallelismPeak. Returns whether
+ * it reported an issue.
  */
-const levelParallelismSchema = parallelismSchema.superRefine((parallelism, ctx) => {
+function checkLevelParallelismPeak(
+  parallelism: ParallelismConfig | null | undefined,
+  path: (string | number)[],
+  ctx: z.RefinementCtx,
+): boolean {
+  if (!parallelism) return false;
   const maxRepos = parallelism.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
   const peak = computeParallelismPeak(parallelism);
   const limit = DEFAULT_CONFIG.PARALLELISM.MAX_SAFE_TOTAL_CONCURRENT_OPS;
-  if (peak.total <= limit) return;
+  if (peak.total <= limit) return false;
 
   const { field, label, value } = peak.widestPhase;
   // Both ways out, each solving for the other side: how many repositories fit
@@ -378,6 +369,7 @@ const levelParallelismSchema = parallelismSchema.superRefine((parallelism, ctx) 
     safePhaseValue >= 1 ? ` With maxRepositories at ${maxRepos}, ${field} must be ${safePhaseValue} or less.` : "";
   ctx.addIssue({
     code: "custom",
+    path,
     message:
       `peak concurrent git processes (${peak.total}) exceeds safe limit (${limit}). ` +
       `Sync phases run one after another, so the peak is ${maxRepos} ` +
@@ -385,7 +377,8 @@ const levelParallelismSchema = parallelismSchema.superRefine((parallelism, ctx) 
       `(${label}, ${field}: ${value}) = ${peak.total} git processes. ` +
       `${headroom}${phaseAdvice} Consider reducing maxRepositories or lowering ${field}.`,
   });
-}, whenClean);
+  return true;
+}
 
 const nonEmptyStrings = listOf(nonEmptyText());
 
@@ -460,9 +453,8 @@ const trashSchema = block({
 /** Settings a repository entry and `defaults` share; a repository's own value wins. */
 const sharedFields = {
   cronSchedule: cronSchedule.optional(),
-  bareRepoDir: text().optional(),
   retry: retrySchema.optional(),
-  branchMaxAge: duration.optional(),
+  branchMaxAge: branchMaxAge.optional(),
   branchInclude: branchPatterns.optional(),
   branchExclude: branchPatterns.optional(),
   skipLfs: flag().optional(),
@@ -503,11 +495,21 @@ const REPO_URL_FORMATS =
   "host, but then the entry needs an explicit 'bareRepoDir'";
 
 export const repositorySchema = block({
-  name: nonEmptyText(),
+  // Used as a path segment (lock, audit log, duplicate-URL bare dir).
+  name: nonEmptyText().superRefine((name, ctx) => {
+    if (name.trim() === "") return;
+    try {
+      sanitizeNameForPath(name);
+    } catch (error) {
+      if (!(error instanceof ConfigValidationError)) throw error;
+      ctx.addIssue({ code: "custom", message: error.reason });
+    }
+  }),
   repoUrl: text().refine((url) => isValidGitUrl(url), {
     error: (issue) => `is not a repository URL, got ${describeValue(issue.input)}. ${REPO_URL_FORMATS}`,
   }),
   worktreeDir: nonEmptyText(),
+  bareRepoDir: text().optional(),
   ...sharedFields,
   parallelism: parallelismSchema.optional(),
   runOnce: wholeFileSetting("runOnce"),
@@ -515,13 +517,10 @@ export const repositorySchema = block({
   ...internalFields,
 });
 
+// No repoUrl/worktreeDir/bareRepoDir: nothing inherits them, so they warn as unknown.
 export const defaultsSchema = block({
-  // Known so they are not reported as unknown, but a repository's own entry is
-  // the only place either is read.
-  repoUrl: text().optional(),
-  worktreeDir: text().optional(),
   ...sharedFields,
-  parallelism: levelParallelismSchema.optional(),
+  parallelism: parallelismSchema.optional(),
   runOnce: flag().optional(),
   syncOnStart: flag().optional(),
   ...internalFields,
@@ -537,7 +536,7 @@ const configFileBaseSchema = z.object(
     // `null` has always loaded as "no defaults", and is kept loading.
     defaults: defaultsSchema.nullable().optional(),
     retry: retrySchema.optional(),
-    parallelism: levelParallelismSchema.optional(),
+    parallelism: parallelismSchema.optional(),
   },
   { error: because("must be an object with a 'repositories' array") },
 );
@@ -576,7 +575,8 @@ function checkModeSpecificFields(config: ValidatedConfigFile, ctx: z.RefinementC
         ? [CLONE_MODE_CONFLICTING_FIELDS, "not supported when mode is 'clone'"]
         : [CLONE_MODE_ONLY_FIELDS, "only supported when mode is 'clone'"];
     for (const field of fields) {
-      const inherited = repo[field] === undefined && defaults?.[field] !== undefined;
+      const fromDefaults = field === "bareRepoDir" ? undefined : defaults?.[field];
+      const inherited = repo[field] === undefined && fromDefaults !== undefined;
       if (repo[field] === undefined && !inherited) continue;
       ctx.addIssue({
         code: "custom",
@@ -585,6 +585,30 @@ function checkModeSpecificFields(config: ValidatedConfigFile, ctx: z.RefinementC
       });
     }
   });
+}
+
+type MaxRepositoriesLevel = { maxRepositories?: number } | null;
+type MaxRepositoriesSource = {
+  parallelism?: MaxRepositoriesLevel;
+  defaults?: { parallelism?: MaxRepositoriesLevel } | null;
+};
+
+/** Repositories synced at once: `defaults` overrides the top level, like every other field. */
+export function resolveMaxRepositories(config: MaxRepositoriesSource): number {
+  return (
+    config.defaults?.parallelism?.maxRepositories ??
+    config.parallelism?.maxRepositories ??
+    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES
+  );
+}
+
+/**
+ * A config block without its `undefined`-valued keys, so spreading it over an
+ * inherited block keeps the inherited value instead of resetting it.
+ */
+export function definedOnly<T extends object>(block: T | undefined): Partial<T> {
+  if (!block) return {};
+  return Object.fromEntries(Object.entries(block).filter(([, value]) => value !== undefined)) as Partial<T>;
 }
 
 /**
@@ -600,19 +624,34 @@ function checkModeSpecificFields(config: ValidatedConfigFile, ctx: z.RefinementC
  * slots, not 120). With no per-repository overrides this collapses to the
  * per-level check, which has already passed by the time this runs.
  *
- * `maxRepositories` is read global-first, the way runMultipleRepositories
- * reads it. A repository-level `maxRepositories` is still validated as a
- * positive integer, but it bounds nothing: nothing consumes it there.
+ * A repository-level `maxRepositories` is still validated as a positive
+ * integer, but it bounds nothing: nothing consumes it there.
  */
+function isCloneMode(config: ValidatedConfigFile, repo: ValidatedConfigFile["repositories"][number]): boolean {
+  return (repo.mode ?? config.defaults?.mode ?? REPOSITORY_MODES.WORKTREE) === REPOSITORY_MODES.CLONE;
+}
+
+/**
+ * Clone mode reads no `parallelism` field: each repository runs its git
+ * commands through its own simple-git clients, one sync step at a time.
+ */
+const CLONE_MODE_PEAK: ParallelismPeak = {
+  perRepository: SIMPLE_GIT_CLIENT_CONCURRENCY,
+  total: SIMPLE_GIT_CLIENT_CONCURRENCY,
+  widestPhase: { field: "maxRepositories", label: "clone sync", value: SIMPLE_GIT_CLIENT_CONCURRENCY },
+};
+
 function checkMergedParallelismPeak(config: ValidatedConfigFile, ctx: z.RefinementCtx): void {
-  const global = config.parallelism ?? {};
-  const defaults = config.defaults?.parallelism ?? {};
-  const maxRepos = global.maxRepositories ?? defaults.maxRepositories ?? DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+  const global = definedOnly(config.parallelism);
+  const defaults = definedOnly(config.defaults?.parallelism);
+  const maxRepos = resolveMaxRepositories(config);
 
   const peaks = config.repositories
     .map((repo) => ({
       name: repo.name,
-      peak: computeParallelismPeak({ ...global, ...defaults, ...repo.parallelism }),
+      peak: isCloneMode(config, repo)
+        ? CLONE_MODE_PEAK
+        : computeParallelismPeak({ ...global, ...defaults, ...definedOnly(repo.parallelism) }),
     }))
     .sort((a, b) => b.peak.perRepository - a.peak.perRepository);
 
@@ -626,8 +665,10 @@ function checkMergedParallelismPeak(config: ValidatedConfigFile, ctx: z.Refineme
   const listed = 3;
   const shown = concurrent
     .slice(0, listed)
-    .map(
-      ({ name, peak }) => `'${name}' (${peak.widestPhase.label}, ${peak.widestPhase.field}: ${peak.widestPhase.value})`,
+    .map(({ name, peak }) =>
+      peak === CLONE_MODE_PEAK
+        ? `'${name}' (clone mode, ${peak.perRepository})`
+        : `'${name}' (${peak.widestPhase.label}, ${peak.widestPhase.field}: ${peak.widestPhase.value})`,
     );
   const rest = concurrent.length - shown.length;
   const breakdown = rest > 0 ? `${shown.join(" + ")} + ${rest} more` : shown.join(" + ");
@@ -651,6 +692,12 @@ function checkMergedParallelismPeak(config: ValidatedConfigFile, ctx: z.Refineme
  * which reads its inventory off this schema (KNOWN_CONFIG_KEYS).
  */
 export const configFileSchema = configFileBaseSchema.superRefine((config, ctx) => {
+  // The per-level blocks weigh worktree phases, which clone mode never runs.
+  if (!config.repositories.every((repo) => isCloneMode(config, repo))) {
+    const top = checkLevelParallelismPeak(config.parallelism, ["parallelism"], ctx);
+    const fromDefaults = checkLevelParallelismPeak(config.defaults?.parallelism, ["defaults", "parallelism"], ctx);
+    if (top || fromDefaults) return;
+  }
   checkDuplicateNames(config, ctx);
   checkModeSpecificFields(config, ctx);
   checkMergedParallelismPeak(config, ctx);

@@ -19,7 +19,9 @@ import {
 import { configureSingleBranchRemote, evaluateOriginMatch } from "./remote-config";
 import { applySparseCheckoutAfterClone } from "./sparse";
 
+import type { MutatingGitClients } from "./git-clients";
 import type { CloneSkipDescriptor, CloneSkipReason, CloneSyncContext } from "./types";
+import type { SparseCheckoutConfig } from "../../types";
 
 // Brings `config.worktreeDir` to a clone init can hand to the sync tick:
 // adopts an existing clone (after validating it), or clones into an absent or
@@ -28,7 +30,17 @@ import type { CloneSkipDescriptor, CloneSkipReason, CloneSyncContext } from "./t
 // keep the tick that follows from recording it a second time; null otherwise.
 export async function initializeClone(ctx: CloneSyncContext, branch: string): Promise<CloneSkipReason | null> {
   const worktreeDir = ctx.config.worktreeDir;
+  const destination = await inspectCloneDestination(worktreeDir);
+  if (destination === "clone") {
+    return adoptExistingClone(ctx, worktreeDir, branch);
+  }
+  await cloneFresh(ctx, worktreeDir, branch, destination === "absent");
+  return null;
+}
 
+// init's read-only destination checks, shared with `sync --dry-run`: throws
+// where init refuses the destination, else says what init does with it.
+export async function inspectCloneDestination(worktreeDir: string): Promise<"clone" | "absent" | "empty"> {
   let entries: string[] | null;
   try {
     entries = await fs.readdir(worktreeDir);
@@ -49,9 +61,7 @@ export async function initializeClone(ctx: CloneSyncContext, branch: string): Pr
     entries = null;
   }
 
-  if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) {
-    return adoptExistingClone(ctx, worktreeDir, branch);
-  }
+  if (entries?.includes(PATH_CONSTANTS.GIT_DIR)) return "clone";
 
   if (entries && entries.length > 0) {
     throw new ConfigError(
@@ -61,8 +71,7 @@ export async function initializeClone(ctx: CloneSyncContext, branch: string): Pr
     );
   }
 
-  await cloneFresh(ctx, worktreeDir, branch, entries === null);
-  return null;
+  return entries === null ? "absent" : "empty";
 }
 
 // What a failed clone may remove. `createdDir` is true only when this init's
@@ -134,6 +143,7 @@ async function adoptExistingClone(
   // Pre-existing user clones never carry the marker and are left alone.
   if (await fileExists(getInitPendingMarkerPath(worktreeDir))) {
     ctx.logger.info(`Completing interrupted initialization for '${ctx.repoName}'...`);
+    await recordCloneTimeDefaultBranch(ctx, clients, branch);
     if (ctx.config.sparseCheckout) {
       await ctx.gitService.getSparseCheckoutService().applyToWorktree(worktreeDir, ctx.config.sparseCheckout);
       await clients.git.raw(["checkout", "HEAD"]);
@@ -142,6 +152,27 @@ async function adoptExistingClone(
   }
   ctx.emitProgress({ phase: "clone", message: `Existing clone validated for '${ctx.repoName}'` });
   return null;
+}
+
+// With no `branch` configured, the branch a clone is made on is the remote's
+// default at that moment, and resolveBranch reads it back from
+// refs/remotes/origin/HEAD on every later start. `git clone --single-branch
+// --branch` used to write that symref itself; newer git (seen on 2.56) leaves
+// it out, and a later fetch would fill it in with whatever the remote's HEAD
+// is by then. So it is written here, for the clones this tool makes.
+async function recordCloneTimeDefaultBranch(
+  ctx: CloneSyncContext,
+  clients: MutatingGitClients,
+  branch: string,
+): Promise<void> {
+  if (ctx.config.branch) return;
+  try {
+    await clients.git.raw(["symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${branch}`]);
+  } catch (error) {
+    ctx.logger.warn(
+      `Could not record '${branch}' as the clone-time default branch of '${ctx.repoName}': ${getErrorMessage(error)}`,
+    );
+  }
 }
 
 async function cloneFresh(
@@ -190,6 +221,7 @@ async function cloneFresh(
   }
 
   const freshClients = await ctx.clients.mutatingClientsFor(worktreeDir);
+  await recordCloneTimeDefaultBranch(ctx, freshClients, branch);
   await configureSingleBranchRemote(ctx, freshClients, branch);
 
   // The progress stream carries the same nuance as the log: a TUI showing
@@ -205,7 +237,7 @@ async function cloneFresh(
   if (ctx.config.sparseCheckout) {
     ctx.logger.info(`Applying sparse-checkout patterns to '${worktreeDir}'...`);
     ctx.emitProgress({ phase: "sparse_checkout", message: `Applying sparse-checkout for '${ctx.repoName}'` });
-    await applySparseCheckoutAfterClone(ctx, freshClients, worktreeDir, ctx.config.sparseCheckout, checkoutRecovered);
+    await checkOutSparseClone(ctx, freshClients, worktreeDir, ctx.config.sparseCheckout, checkoutRecovered);
     ctx.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout applied for '${ctx.repoName}'` });
   }
 
@@ -220,8 +252,57 @@ async function cloneFresh(
   ctx.outcome?.recordCreated(branch, worktreeDir);
 }
 
+// The clone ran with `--no-checkout`, so this is its first checkout. The
+// incomplete-clone marker brackets it like the clone's own checkout, and an
+// LFS failure gets the same one retry with smudging off.
+async function checkOutSparseClone(
+  ctx: CloneSyncContext,
+  clients: MutatingGitClients,
+  worktreeDir: string,
+  cfg: SparseCheckoutConfig,
+  lfsSkipped: boolean,
+): Promise<void> {
+  await writeIncompleteCloneMarker(ctx, worktreeDir, "sparse checkout was interrupted");
+  try {
+    await applySparseCheckoutAfterClone(ctx, clients, worktreeDir, cfg, lfsSkipped);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    await writeIncompleteCloneMarker(ctx, worktreeDir, message);
+    if (
+      lfsSkipped ||
+      !isLfsError(message) ||
+      !(await retrySparseCheckoutWithLfsSkipped(ctx, clients, worktreeDir, cfg))
+    ) {
+      throw error;
+    }
+    ctx.logger.warn(
+      `⚠️  '${ctx.repoName}' was checked out with LFS smudging disabled: its LFS paths hold pointer files ` +
+        `until 'git lfs pull' succeeds there.`,
+    );
+  }
+  await clearIncompleteCloneMarker(ctx, worktreeDir);
+}
+
+async function retrySparseCheckoutWithLfsSkipped(
+  ctx: CloneSyncContext,
+  clients: MutatingGitClients,
+  worktreeDir: string,
+  cfg: SparseCheckoutConfig,
+): Promise<boolean> {
+  ctx.logger.info(`⚠️  LFS error during checkout of '${ctx.repoName}'; retrying the checkout with LFS disabled.`);
+  try {
+    await applySparseCheckoutAfterClone(ctx, clients, worktreeDir, cfg, true);
+    return true;
+  } catch (error) {
+    ctx.logger.warn(`Checkout retry with LFS disabled failed for '${ctx.repoName}': ${getErrorMessage(error)}`);
+    return false;
+  }
+}
+
 function buildCloneArgs(ctx: CloneSyncContext, branch: string): string[] {
   const args = ["--branch", branch, "--single-branch", "--no-tags", "--progress"];
+  // Only the cone is checked out, after the patterns are set.
+  if (ctx.config.sparseCheckout) args.push("--no-checkout");
   if (ctx.config.depth !== undefined) {
     args.push("--depth", String(ctx.config.depth));
   }

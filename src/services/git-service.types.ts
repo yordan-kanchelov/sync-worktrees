@@ -71,6 +71,7 @@ export interface DefaultBranchRefresh {
 
 export type GitServiceOptions = Pick<
   Config,
+  | "mode"
   | "repoUrl"
   | "worktreeDir"
   | "bareRepoDir"
@@ -103,6 +104,7 @@ export interface UncachedGitClientOptions {
  */
 export interface GitServiceContext {
   readonly config: GitServiceOptions;
+  /** Throws ConfigError in clone mode, which has no bare repository. */
   readonly bareRepoPath: string;
   logger(): Logger;
   defaultBranch(): string;

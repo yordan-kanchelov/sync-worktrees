@@ -100,7 +100,16 @@ function makeService(): { service: Record<string, any>; git: Record<string, any>
       started: true,
       value: await (operation as () => Promise<unknown>)(),
     })),
-    sync: vi.fn<any>().mockResolvedValue({ started: true }),
+    sync: vi.fn<any>().mockResolvedValue({
+      started: true,
+      outcome: {
+        mode: "worktree",
+        started: true,
+        counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 0, noop: 0 },
+        actions: [],
+        durationMs: 0,
+      },
+    }),
     // WorktreeSyncService.getWorktrees is what the handlers call to list a
     // repository's worktrees; it delegates to the git service in worktree mode,
     // so this double does the same and each test keeps overriding one listing.
@@ -109,6 +118,7 @@ function makeService(): { service: Record<string, any>; git: Record<string, any>
     getDefaultBranch: vi.fn<any>().mockResolvedValue("main"),
     getRecordedSkips: () => [],
     clearPendingInitSkip: vi.fn<any>(),
+    clearRecordedSkips: vi.fn<any>(),
   };
   return { service, git };
 }

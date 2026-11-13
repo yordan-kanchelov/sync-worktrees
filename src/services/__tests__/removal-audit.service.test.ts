@@ -58,7 +58,7 @@ describe("RemovalAuditService", () => {
   });
 
   it("creates the log directory before appending", async () => {
-    await service.record({ action: "orphan_delete", result: "success", path: "/test/worktrees/orphan" });
+    await service.record({ action: "trash_create", result: "success", path: "/test/worktrees/orphan" });
 
     expect(fs.mkdir).toHaveBeenCalledWith(path.dirname(logFile), { recursive: true });
   });

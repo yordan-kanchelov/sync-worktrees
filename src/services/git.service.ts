@@ -1,7 +1,7 @@
 import * as path from "path";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, ERROR_MESSAGES, GIT_CONSTANTS } from "../constants";
-import { GitOperationError, WorktreeError } from "../errors";
+import { ConfigError, GitOperationError, WorktreeError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
@@ -9,10 +9,12 @@ import { sshNoPromptEnv } from "../utils/git-env";
 import { makeGitProgressHandler } from "../utils/git-progress";
 import { getDefaultBareRepoDir } from "../utils/git-url";
 import { getErrorMessage } from "../utils/errors";
-import { pathsEqual } from "../utils/path-compare";
+import { findByWorktreePath, sameWorktreePath } from "../utils/path-compare";
+import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { isUnitTestShortcutEnabled } from "../utils/unit-test-shortcut";
 
 import { BareRepoService } from "./bare-repo.service";
+import { undoRejectedFastForwardIn } from "./clone-sync/fast-forward-undo";
 import { BranchRefService } from "./branch-ref.service";
 import { LfsVerificationService } from "./lfs-verification.service";
 import { Logger } from "./logger.service";
@@ -36,7 +38,7 @@ import type {
 } from "./git-service.types";
 import type { RefScanScope, WorktreeStatusResult } from "./worktree-status.service";
 import type { SyncMetadata } from "../types/sync-metadata";
-import type { GitProgressEmitter } from "../utils/git-progress";
+import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 
 export type {
@@ -64,11 +66,15 @@ export type {
  */
 export class GitService {
   private git: SimpleGit | null = null;
-  private bareRepoPath: string;
+  // null in clone mode: there is no bare repository to name.
+  private readonly bareRepoPathOrNull: string | null;
   private mainWorktreePath: string;
   private defaultBranch: string = GIT_CONSTANTS.DEFAULT_BRANCH; // Will be updated after detection
+  private initializeFetched = false;
   private metadataService: WorktreeMetadataService;
   private statusService: WorktreeStatusService;
+  // Optional locks off, for callers that only report (MCP read-only tools).
+  private probeStatusService: WorktreeStatusService | null = null;
   private sparseCheckoutService: SparseCheckoutService;
   private logger: Logger;
   private lfsSkipOverride = false;
@@ -96,7 +102,10 @@ export class GitService {
     // runs needs that refresh.
     this.baseEnv = options.readOnly ? { [ENV_CONSTANTS.GIT_OPTIONAL_LOCKS]: "0" } : {};
     this.logger = logger ?? Logger.createDefault(undefined, config.debug);
-    this.bareRepoPath = this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
+    this.bareRepoPathOrNull =
+      resolveMode(this.config) === REPOSITORY_MODES.CLONE
+        ? null
+        : this.config.bareRepoDir || getDefaultBareRepoDir(this.config.repoUrl);
     this.mainWorktreePath = path.join(this.config.worktreeDir, GIT_CONSTANTS.DEFAULT_BRANCH); // Temporary, will be updated
     this.metadataService = new WorktreeMetadataService(this.logger);
     // `maxStatusChecks` is a ceiling on git processes, not on worktrees: the
@@ -136,13 +145,23 @@ export class GitService {
     });
   }
 
+  private get bareRepoPath(): string {
+    if (this.bareRepoPathOrNull === null) {
+      throw new ConfigError("A clone-mode repository has no bare repository", "WORKTREE_MODE_REQUIRED");
+    }
+    return this.bareRepoPathOrNull;
+  }
+
   // The view of this service its sub-services work through. Every accessor
   // reads the current value, so updateLogger, a default-branch switch and
   // setLfsSkipEnabled reach them without any re-wiring.
   private createContext(): GitServiceContext {
+    const readBareRepoPath = (): string => this.bareRepoPath;
     return {
       config: this.config,
-      bareRepoPath: this.bareRepoPath,
+      get bareRepoPath(): string {
+        return readBareRepoPath();
+      },
       logger: () => this.logger,
       defaultBranch: () => this.defaultBranch,
       localGit: (dirPath, useLfsSkip) => this.getCachedGit(dirPath, useLfsSkip),
@@ -224,6 +243,7 @@ export class GitService {
   private forgetCachedClients(dirPath: string): void {
     this.gitInstances.forget(dirPath);
     this.statusService.forgetWorktree(dirPath);
+    this.probeStatusService?.forgetWorktree(dirPath);
   }
 
   // Client for local commands (worktree add/remove/list/prune, merge,
@@ -267,17 +287,28 @@ export class GitService {
     this.logger = logger;
     this.metadataService.updateLogger(logger);
     this.statusService.updateLogger(logger);
+    this.probeStatusService?.updateLogger(logger);
     this.sparseCheckoutService.updateLogger(logger);
+  }
+
+  // Whether the last initialize() fetched; lets MCP skip a second fetch.
+  didInitializeFetch(): boolean {
+    return this.initializeFetched;
   }
 
   async initialize(): Promise<SimpleGit> {
     await this.bareRepo.ensureBareRepository();
     const bareGit = this.getCachedGit(this.bareRepoPath);
 
-    // Always fetch to ensure remote refs are up-to-date
-    // This is needed for branch creation UI even when repo already exists
-    this.logger.info("Fetching remote branches...");
-    await this.getCachedNetworkGit(this.bareRepoPath).fetch(["--all", "--progress"]);
+    // Fetch only when there are no remote-tracking refs yet (a fresh clone):
+    // sync() fetches right after, and the TUI wizard and MCP fetch themselves.
+    const remoteRefs = await bareGit.raw(["for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes/origin/"]);
+    this.initializeFetched = false;
+    if (remoteRefs.trim() === "") {
+      this.logger.info("Fetching remote branches...");
+      await this.getCachedNetworkGit(this.bareRepoPath).fetch(["--all", "--progress"]);
+      this.initializeFetched = true;
+    }
 
     // Detect the default branch (works from local refs even without fetch)
     this.defaultBranch = await this.bareRepo.detectDefaultBranch(bareGit);
@@ -304,10 +335,8 @@ export class GitService {
     let needsMainWorktree = true;
     try {
       const worktrees = await this.registry.getWorktreesFromBare(bareGit, true);
-      const target = path.resolve(this.mainWorktreePath);
-      const registered =
-        worktrees.find((w) => path.resolve(w.path) === target) ??
-        worktrees.find((w) => w.branch === this.defaultBranch);
+      const atTarget = await findByWorktreePath(worktrees, this.mainWorktreePath);
+      const registered = atTarget ?? worktrees.find((w) => w.branch === this.defaultBranch);
       if (registered) {
         const registeredPath = path.resolve(registered.path);
         // A registration whose directory was destroyed out-of-band (rm -rf, a
@@ -332,7 +361,7 @@ export class GitService {
             needsMainWorktree = false;
           }
         } else {
-          if (registeredPath !== target) {
+          if (!atTarget) {
             this.logger.info(
               `${this.defaultBranch} is already checked out at "${registered.path}"; using it as the ${this.defaultBranch} worktree.`,
             );
@@ -415,9 +444,9 @@ export class GitService {
     this.defaultBranch = await this.bareRepo.detectDefaultBranch(bareGit, { readOnly: true });
     this.mainWorktreePath = path.join(this.config.worktreeDir, this.defaultBranch);
     const worktrees = await this.registry.getWorktreesFromBare(bareGit, true);
-    const target = path.resolve(this.mainWorktreePath);
     const registered =
-      worktrees.find((w) => path.resolve(w.path) === target) ?? worktrees.find((w) => w.branch === this.defaultBranch);
+      (await findByWorktreePath(worktrees, this.mainWorktreePath)) ??
+      worktrees.find((w) => w.branch === this.defaultBranch);
     const anchorMissing = !registered || (await probePathExists(registered.path)) !== "exists";
     if (registered && !anchorMissing) this.mainWorktreePath = registered.path;
     this.git = this.getCachedGit(anchorMissing ? this.bareRepoPath : this.mainWorktreePath);
@@ -542,7 +571,8 @@ export class GitService {
 
   async fetchBranch(branchName: string): Promise<void> {
     this.assertInitialized();
-    await this.fetchFromAnchor(["origin", branchName, "--prune", "--progress"]);
+    // Full ref: a short name resolves to a same-named tag first.
+    await this.fetchFromAnchor(["origin", `refs/heads/${branchName}`, "--prune", "--progress"]);
   }
 
   // Fetches run in the default branch's worktree. When that directory is gone,
@@ -636,7 +666,8 @@ export class GitService {
    * leftover record is never handed to another branch.
    */
   async readWorktreeMetadataOwner(worktreeName: string): Promise<string | null> {
-    return this.metadataService.readMetadataOwner(this.bareRepoPath, worktreeName);
+    if (this.bareRepoPathOrNull === null) return null;
+    return this.metadataService.readMetadataOwner(this.bareRepoPathOrNull, worktreeName);
   }
 
   /**
@@ -647,18 +678,18 @@ export class GitService {
    * PathResolutionService.branchDirectoryName against origin's branches, the
    * registered worktrees and what is on disk.
    */
-  async resolveNewWorktreePath(branchName: string): Promise<string> {
+  async resolveNewWorktreePath(branchName: string, listed?: RegisteredWorktree[]): Promise<string> {
     const worktreeDir = path.resolve(this.config.worktreeDir);
     // Detached checkouts are left to the disk probe, as in the sync: one of
     // this repository's at the plain name keeps that name, so the caller meets
     // it there (and refuses or adopts it) instead of creating a second
     // worktree next to it.
-    const worktrees = await this.getWorktrees();
-    const own = worktrees.find(
-      (worktree) =>
-        worktree.branch === branchName && pathsEqual(path.dirname(path.resolve(worktree.path)), worktreeDir),
-    );
-    if (own) return own.path;
+    const worktrees = listed ?? (await this.getWorktrees());
+    for (const worktree of worktrees) {
+      if (worktree.branch === branchName && (await sameWorktreePath(path.dirname(worktree.path), worktreeDir))) {
+        return worktree.path;
+      }
+    }
 
     let branches: string[] = [];
     try {
@@ -729,10 +760,6 @@ export class GitService {
     return this.branchRefs.trackRemoteBranchIfExists(branchName, worktreePath);
   }
 
-  async remoteBranchExists(branchName: string): Promise<boolean> {
-    return this.branchRefs.remoteBranchExists(branchName);
-  }
-
   async createBranch(branchName: string, baseBranch: string): Promise<void> {
     return this.branchRefs.createBranch(branchName, baseBranch);
   }
@@ -753,18 +780,34 @@ export class GitService {
    * @param refScans shares one branch/remote-ref scan between every worktree
    *   probed with it; pass one scope per pass over the worktrees, and none for
    *   a check that must see the refs as they are now.
+   * @param readOnly leave the worktree's index untouched (no stat refresh).
    */
   async getFullWorktreeStatus(
     worktreePath: string,
     includeDetails = false,
     refScans?: RefScanScope,
+    { readOnly = false }: { readOnly?: boolean } = {},
   ): Promise<WorktreeStatusResult> {
-    const metadata = await this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
-    return this.statusService.getFullWorktreeStatus(worktreePath, includeDetails, {
+    const metadata = await this.getWorktreeMetadata(worktreePath);
+    const statusService = readOnly ? this.getProbeStatusService() : this.statusService;
+    return statusService.getFullWorktreeStatus(worktreePath, includeDetails, {
       lastSyncCommit: metadata?.lastSyncCommit,
       lastKnownRemoteTip: metadata?.lastKnownRemoteTip,
       refScans,
     });
+  }
+
+  private getProbeStatusService(): WorktreeStatusService {
+    if (this.baseEnv[ENV_CONSTANTS.GIT_OPTIONAL_LOCKS] === "0") return this.statusService;
+    this.probeStatusService ??= new WorktreeStatusService(
+      {
+        skipLfs: this.config.skipLfs,
+        maxConcurrentGitProcesses: this.config.parallelism?.maxStatusChecks,
+        extraEnv: { [ENV_CONSTANTS.GIT_OPTIONAL_LOCKS]: "0" },
+      },
+      this.logger,
+    );
+    return this.probeStatusService;
   }
 
   /** Map of remote branch name (without "origin/") → tip oid, from the bare repo. */
@@ -850,7 +893,22 @@ export class GitService {
     const worktreeGit = this.getCachedGit(worktreePath, this.isLfsSkipEnabled());
 
     const before = (await worktreeGit.revparse(["HEAD"])).trim();
-    await worktreeGit.merge([`origin/${branch}`, "--ff-only"]);
+    try {
+      await worktreeGit.merge([`origin/${branch}`, "--ff-only"]);
+    } catch (error) {
+      // A checkout that dies part way (an LFS smudge) leaves the paths before
+      // it written; undo them so the worktree is not left dirty for good.
+      const message = getErrorMessage(error);
+      if (!ERROR_MESSAGES.FAST_FORWARD_FAILED.some((msg) => message.includes(msg))) {
+        const host = {
+          logger: this.logger,
+          repoName: worktreePath,
+          emitProgress: (e: GitProgressEvent) => this.progressEmitter?.(e),
+        };
+        await undoRejectedFastForwardIn(host, worktreeGit, worktreePath, branch, before);
+      }
+      throw error;
+    }
     const after = (await worktreeGit.revparse(["HEAD"])).trim();
     const updated = after !== before;
 
@@ -1057,6 +1115,7 @@ export class GitService {
   }
 
   async getWorktreeMetadata(worktreePath: string): Promise<SyncMetadata | null> {
-    return this.metadataService.loadMetadataFromPath(this.bareRepoPath, worktreePath);
+    if (this.bareRepoPathOrNull === null) return null;
+    return this.metadataService.loadMetadataFromPath(this.bareRepoPathOrNull, worktreePath);
   }
 }

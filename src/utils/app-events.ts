@@ -52,6 +52,9 @@ type AppEventMap = {
   addLog: { message: string; level: "info" | "warn" | "error" };
   uiReady: void;
   updateRepositoryCount: number;
+  updateMaxProgressLines: number;
+  /** Bumped on every successful reload; repository indexes from before it are stale. */
+  repositoriesReloaded: number;
   updateCronSchedule: CronScheduleDisplay;
 };
 

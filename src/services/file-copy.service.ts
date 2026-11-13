@@ -171,11 +171,22 @@ class CopyIgnore implements IgnoreLike {
    *
    * path-scurry caches a node's realpath, so a directory costs one resolution
    * however many patterns, candidate matches and descents walk through it.
+   * Only a directory reached through a symlink (or a node of unknown type) is
+   * resolved: any other one is the canonical source plus its relative path,
+   * which the lexical exclusions already cover.
    */
   private resolvesIntoExcluded(dir: Path): boolean {
-    if (this.excluded.realPaths.length === 0) return false;
+    if (this.excluded.realPaths.length === 0 || !this.reachedThroughLink(dir)) return false;
     const target = dir.realpathSync()?.fullpath();
     return !!target && this.excluded.realPaths.some((excluded) => isPathEqualOrInside(target, excluded));
+  }
+
+  /** Whether `dir` or an ancestor below the `cwd` is a symlink or not yet typed. */
+  private reachedThroughLink(dir: Path): boolean {
+    for (let node: Path | undefined = dir; node && node.relative(); node = node.parent) {
+      if (node.isSymbolicLink() || node.isUnknown()) return true;
+    }
+    return false;
   }
 }
 

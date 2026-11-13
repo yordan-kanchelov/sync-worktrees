@@ -57,11 +57,11 @@ const FORBIDDEN_TARBALL_PREFIXES = ["src/", "scripts/", ".pnpmfile.cjs"];
 // output from an earlier build (tsc does not delete files it no longer emits).
 const FORBIDDEN_TARBALL_SUFFIXES = [".map"];
 // Ceilings so that tarball growth is noticed rather than shipped. `npm pack`
-// reports 14 files and ~0.85 MB unpacked: the esbuild output (~0.79 MB: the
-// shared chunk plus the two entries), the public .d.ts files (~0.03 MB), the
-// three bin/ files, package.json, LICENSE and the README. Ordinary work on this codebase moves the
-// total by single-digit kB at a time — the byte ceiling is sized to absorb
-// that while still tripping on the step changes it is for: a dependency that
+// reports 14 files and ~0.97 MB unpacked: the esbuild output (~0.91 MB: the
+// shared chunk plus the two entries), the public .d.ts files, the three bin/
+// files, package.json, LICENSE and the README. The total can grow by 100 kB
+// over a few dozen commits; the byte ceiling is sized to absorb that while
+// still tripping on the step changes it is for: a dependency that
 // stops being `external` in esbuild, `splitting` being switched off (the
 // shared src/utils and src/services code billed once per entry again), source
 // maps coming back, or tsc's declarations for every module reappearing, each
@@ -89,10 +89,11 @@ const FORBIDDEN_TARBALL_SUFFIXES = [".map"];
 //
 // History: the ceiling was 1,640,000 bytes and 120 files while each entry
 // bundled its own copy of the shared code and every module's .d.ts shipped
-// (1,509,649 bytes across 91 files when the shared chunk landed). Reset over
-// the new 845,789 bytes with roughly the headroom those raises used.
+// (1,509,649 bytes across 91 files when the shared chunk landed), then
+// 1,000,000. Raised to 1,150,000 at 973,422 bytes (esbuild output 907,495)
+// after ordinary growth left only ~27 kB of headroom.
 const MAX_TARBALL_FILES = 40;
-const MAX_TARBALL_UNPACKED_BYTES = 1_000_000;
+const MAX_TARBALL_UNPACKED_BYTES = 1_150_000;
 const STEP_TIMEOUT_MS = 10_000;
 
 class SmokeFailure extends Error {}
@@ -343,10 +344,9 @@ async function checkTarballContents() {
   }
   // `npm pack --json` changed shape in npm 12: up to npm 11 it printed an array
   // with one entry per packed package, and it now prints an object keyed by
-  // package name. The release job installs npm@latest before publishing (OIDC
-  // trusted publishing needs npm >= 11.5.1) while `pnpm smoke` locally and in
-  // PR CI runs whatever npm ships with Node, so both shapes reach this check
-  // and reading only the array one fails the release and nothing else.
+  // package name. The release job pins npm@11 before publishing (OIDC trusted
+  // publishing needs npm >= 11.5.1) while `pnpm smoke` locally and in PR CI
+  // runs whatever npm ships with Node, so both shapes can reach this check.
   const [packed] = Array.isArray(parsed) ? parsed : Object.values(parsed ?? {});
   if (packed === null || typeof packed !== "object") {
     fail("npm pack --dry-run --json output describes no packed package", { stdout: result.stdout });

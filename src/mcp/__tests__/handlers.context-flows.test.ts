@@ -207,7 +207,19 @@ beforeEach(() => {
   });
 
   syncSpy = vi.spyOn(WorktreeSyncService.prototype, "sync");
-  syncSpy.mockResolvedValue({ started: true } as SyncResult);
+  syncSpy.mockImplementation(async function (this: WorktreeSyncService) {
+    return {
+      started: true,
+      outcome: {
+        repoName: (this.config as { name?: string }).name,
+        mode: "worktree",
+        started: true,
+        counts: { created: 0, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 0, noop: 0 },
+        actions: [],
+        durationMs: 0,
+      },
+    } as SyncResult;
+  });
   // Only the flows below decide when a repository counts as cloned; nothing
   // here may reach the real initialize(), which would clone over the network.
   vi.spyOn(WorktreeSyncService.prototype, "isInitialized").mockReturnValue(true);
@@ -418,6 +430,7 @@ describe("flow: sync reporting a partly failed outcome", () => {
         started: true,
         counts: { created: 1, removed: 0, updated: 0, skipped: 0, preserved: 0, failed: 2, noop: 0 },
         actions: [{ kind: "created", branch: "feature-x", path: fx.featureWorktree }, removalFailure, sparseFailure],
+        durationMs: 42,
       },
     } as unknown as SyncResult);
 

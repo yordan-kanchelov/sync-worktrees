@@ -76,7 +76,7 @@ describe("disk-space", () => {
       duAnswers(`12\t${tempDir}\n`);
 
       await expect(calculateDirectorySize(tempDir)).resolves.toBe(12 * 1024);
-      expect(vi.mocked(execFile)).toHaveBeenCalledWith("du", ["-sk", "--", tempDir], expect.any(Function));
+      expect(vi.mocked(execFile)).toHaveBeenCalledWith("du", ["-sk", "-H", "--", tempDir], expect.any(Function));
     });
 
     it("measures a real directory with the system du", async () => {
@@ -107,6 +107,37 @@ describe("disk-space", () => {
       duAnswers("");
 
       await expect(calculateDirectorySize(tempDir)).rejects.toThrow("du printed no size");
+    });
+
+    it("uses the total du prints when it exits 1 over an unreadable subdirectory", async () => {
+      vi.mocked(execFile).mockImplementation(((_file: string, _args: readonly string[], callback: ExecFileCallback) => {
+        callback(Object.assign(new Error("du: cannot read directory"), { code: 1 }), "308\t/p\n", "");
+        return {} as ChildProcessModule.ChildProcess;
+      }) as unknown as typeof execFile);
+
+      await expect(calculateDirectorySize("/p")).resolves.toBe(315392);
+    });
+
+    it("still rejects when du exits 1 without a total", async () => {
+      vi.mocked(execFile).mockImplementation(((_file: string, _args: readonly string[], callback: ExecFileCallback) => {
+        callback(Object.assign(new Error("du: cannot access"), { code: 1 }), "", "");
+        return {} as ChildProcessModule.ChildProcess;
+      }) as unknown as typeof execFile);
+
+      await expect(calculateDirectorySize("/p")).rejects.toThrow("du: cannot access");
+    });
+
+    it("measures a symlinked directory as its target", async () => {
+      const target = path.join(tempDir, "target");
+      await fs.promises.mkdir(target);
+      await fs.promises.writeFile(path.join(target, "data.bin"), Buffer.alloc(64 * 1024, 1));
+      const link = path.join(tempDir, "link");
+      await fs.promises.symlink(target, link);
+
+      const viaLink = await calculateDirectorySize(link);
+
+      expect(viaLink).toBeGreaterThanOrEqual(64 * 1024);
+      expect(viaLink).toBe(await calculateDirectorySize(target));
     });
 
     it("should reject on errors", async () => {

@@ -29,7 +29,8 @@ iteration 2 (two APPROVE, 47 findings → 35 pain points, no blockers) was preci
 26 findings → 17 pain points) was the closing pass.
 
 How to re-verify: every relative link's target must exist and every `#anchor` must match a GitHub-slugged heading in
-its target file (131 links and anchors across `README.md` and the seven `docs/` pages); a stock runner such as
+its target file (131 links and anchors across `README.md` and the seven `docs/` pages of the time; there are nine
+now); a stock runner such as
 `npx markdown-link-check README.md docs/*.md` (or `lychee README.md docs/*.md`) reproduces the check — the loop used a
 small node script kept outside the repository. To re-verify a move, `grep -l "<phrase>" README.md docs/*.md` for a
 distinctive phrase of the old README (the iteration 1 spot check used 37 of them, all found).
@@ -45,8 +46,8 @@ or major and nothing minor left undeclared.
 For the site phase, the same loop with a consistency-auditor in place of the tech-writer, plus two gates: `cd site &&
 npm run build` must pass, and the rendered `site/dist/index.html` and `site/dist/llms-full.txt` are grepped for every
 fixed fact (and for literal backticks, which mean a card is rendering Markdown as plain text). The build regenerates
-`site/public/og-image.png`, so run `git checkout -- site/public/og-image.png` before committing unless the OG text in
-`site/scripts/generate-og-image.mjs` changed.
+`site/public/og-image.png` from `site/scripts/generate-og-image.mjs`; the file is gitignored, so there is nothing to
+restore.
 
 ## Target structure
 

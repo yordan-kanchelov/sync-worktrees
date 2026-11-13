@@ -189,14 +189,14 @@ describe("runMultipleRepositories in daemon mode", () => {
     expect(mocks.uiConstructions[0].args[3]).toBe(7);
   });
 
-  it("prefers the top-level maxRepositories over the one in `defaults`", async () => {
+  it("lets maxRepositories in `defaults` override the top-level one, like every other field", async () => {
     const repos = [repository("repo-a", "0 * * * *")];
     const config = daemonConfig(repos, { parallelism: { maxRepositories: 5 } });
     config.defaults = { ...config.defaults, parallelism: { maxRepositories: 7 } };
 
     await runMultipleRepositories(config, repos);
 
-    expect(mocks.uiConstructions[0].args[3]).toBe(5);
+    expect(mocks.uiConstructions[0].args[3]).toBe(7);
   });
 
   it("falls back to the built-in maxRepositories when neither level sets one", async () => {

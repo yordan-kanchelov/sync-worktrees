@@ -3,7 +3,7 @@ main:
   claudeMcpAdd: "claude mcp add --scope user sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp"
   init: "sync-worktrees init"
   runTui: "sync-worktrees"
-  runOnce: "sync-worktrees --runOnce"
+  runOnce: "sync-worktrees --run-once"
   standardJson: |-
     {
       "mcpServers": {

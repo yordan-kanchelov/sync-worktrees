@@ -6,18 +6,19 @@ import App from "../components/App";
 import { DEFAULT_CONFIG } from "../constants";
 import { WorktreeSyncService } from "./worktree-sync.service";
 import { ConfigLoaderService } from "./config-loader.service";
+import { resolveMaxRepositories } from "./config-schema";
 import { HookExecutionService } from "./hook-execution.service";
 import type { LogOutputFn, LogLevel } from "./logger.service";
 import { Logger } from "./logger.service";
 import { RepositoryDashboard } from "./repository-dashboard";
-import { RepositoryOperations } from "./repository-operations";
+import { RepositoryOperations, getRepositoryDiskTargets } from "./repository-operations";
 import { SyncCycleScheduler, WAIT_SYNC_DEFAULT_TIMEOUT_MS, WAIT_SYNC_FAST_TIMEOUT_MS } from "./sync-cycle-scheduler";
 import { TerminalLauncher } from "./terminal-launcher";
 import { formatCloneSkipReason } from "../utils/clone-skip-format";
 import { getErrorMessage } from "../utils/errors";
 import { calculateSyncDiskSpace } from "../utils/disk-space";
 import { DiskUsageCache } from "../utils/disk-usage-cache";
-import { getDefaultBareRepoDir, repoDisplayLabel } from "../utils/git-url";
+import { repoDisplayLabel } from "../utils/git-url";
 import { AppEventEmitter } from "../utils/app-events";
 import type { LastSyncOutcome } from "../utils/app-events";
 import { createMouseTracking } from "../utils/mouse";
@@ -48,6 +49,7 @@ export class InteractiveUIService {
   private readonly diskUsage: DiskUsageCache;
   private maxRepositories: number;
   private reloadInProgress = false;
+  private reloadGeneration = 0;
   private isDestroyed = false;
   private readonly events: AppEventEmitter;
   private ownsEvents: boolean;
@@ -146,10 +148,7 @@ export class InteractiveUIService {
     this.subscribeToServiceProgress();
     this.injectLoggersIntoServices();
 
-    // Add initial log after a short delay to verify the pipeline works
-    setTimeout(() => {
-      this.addLog("🚀 sync-worktrees UI initialized", "info");
-    }, 100);
+    this.addLog("🚀 sync-worktrees UI initialized", "info");
   }
 
   /**
@@ -250,10 +249,6 @@ export class InteractiveUIService {
   }
 
   private renderUI(): void {
-    if (this.app) {
-      this.app.unmount();
-    }
-
     // Every repository action goes through the operations facade, never
     // through a sync service's GitService directly.
     const ops = this.operations;
@@ -403,7 +398,7 @@ export class InteractiveUIService {
       // Validate and load new config BEFORE canceling old cron jobs
       // to prevent a window with no cron running on validation failure
       const configLoader = new ConfigLoaderService();
-      const { repositories } = await configLoader.buildRepositories(this.configPath, {
+      const { repositories, configFile } = await configLoader.buildRepositories(this.configPath, {
         debug: this.debugOverride,
         filter: this.repositoryFilter,
       });
@@ -485,10 +480,12 @@ export class InteractiveUIService {
       // header total -- so drop what the cache holds for these paths rather
       // than serve the status view a figure from before the reload.
       for (const service of newServices) {
-        this.diskUsage.invalidate(service.config.bareRepoDir || getDefaultBareRepoDir(service.config.repoUrl));
-        this.diskUsage.invalidate(service.config.worktreeDir);
+        for (const target of getRepositoryDiskTargets(service.config)) this.diskUsage.invalidate(target.path);
       }
       this.repositoryCount = this.syncServices.length;
+      this.maxRepositories = Math.max(1, resolveMaxRepositories(configFile));
+      this.limit.concurrency = this.maxRepositories;
+      this.diskUsage.setMaxParallel(this.maxRepositories);
       this.subscribeToServiceProgress();
       // Not injectLoggersIntoServices(): these services were built with their
       // panel logger already in config, above. Injecting again would build a
@@ -502,6 +499,8 @@ export class InteractiveUIService {
       this.scheduler.setupCronJobs();
 
       this.events.emit("updateRepositoryCount", this.repositoryCount);
+      this.events.emit("updateMaxProgressLines", this.maxRepositories);
+      this.events.emit("repositoriesReloaded", ++this.reloadGeneration);
       this.events.emit("updateCronSchedule", this.scheduler.getScheduledCronExpressions());
       this.dashboard.publish();
 
@@ -622,10 +621,9 @@ export class InteractiveUIService {
 
   public async calculateAndUpdateDiskSpace(): Promise<void> {
     try {
-      const bareRepoDirs = this.syncServices.map(
-        (service) => service.config.bareRepoDir || getDefaultBareRepoDir(service.config.repoUrl),
-      );
-      const worktreeDirs = this.syncServices.map((service) => service.config.worktreeDir);
+      const targets = this.syncServices.flatMap((service) => getRepositoryDiskTargets(service.config));
+      const bareRepoDirs = targets.filter((target) => target.kind === "bare").map((target) => target.path);
+      const worktreeDirs = targets.filter((target) => target.kind === "worktree").map((target) => target.path);
 
       const diskSpace = await calculateSyncDiskSpace(bareRepoDirs, worktreeDirs, (dirPath) =>
         this.diskUsage.refresh(dirPath),

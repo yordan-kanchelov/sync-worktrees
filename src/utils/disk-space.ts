@@ -6,18 +6,20 @@ import { execFile } from "child_process";
  * blocks) is the POSIX spelling that GNU and BSD `du` agree on, so this
  * reports allocated space, rounded up to whole blocks, on Linux and macOS
  * alike. Run without a shell: the path is an argument, never parsed.
+ * `-H` follows a symlinked argument. Exit 1 with a total (an unreadable
+ * subdirectory) still yields that total.
  * @param dirPath - The path to the directory
  * @returns The total size in bytes
  */
 export async function calculateDirectorySize(dirPath: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    execFile("du", ["-sk", "--", dirPath], (err, stdout) => {
-      if (err) {
+    execFile("du", ["-sk", "-H", "--", dirPath], (err, stdout) => {
+      const match = /^(\d+)\s/.exec(stdout);
+      if (err && !(err.code === 1 && match)) {
         // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- ExecFileException is an Error at runtime; its Omit<> type hides the Error base
         reject(err);
         return;
       }
-      const match = /^(\d+)\s/.exec(stdout);
       if (!match) {
         reject(new Error(`du printed no size for ${dirPath}: ${JSON.stringify(stdout)}`));
         return;

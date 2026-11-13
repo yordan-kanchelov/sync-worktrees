@@ -66,6 +66,38 @@ describe("SyncOutcomeAccumulator", () => {
     ]);
   });
 
+  it("keeps facts recorded after the checkpoint and drops only transient records", () => {
+    const accumulator = new SyncOutcomeAccumulator({ mode: "worktree" });
+    accumulator.recordNoop("repo", "before", {});
+    const checkpoint = accumulator.snapshot();
+
+    accumulator.recordCreated("main", "/wt/main");
+    accumulator.recordSkipped("worktree", "dirty", { branch: "a" });
+    accumulator.recordRemoved("old", "/wt/old");
+    accumulator.recordUpdated("b", "/wt/b", "fast_forward");
+    accumulator.recordPreservedDiverged("c", "/wt/c", "/wt/.diverged/c");
+    accumulator.recordNoop("repo", "noop", {});
+    accumulator.recordFailed("repo", "boom");
+    accumulator.restore(checkpoint);
+
+    expect(accumulator.getCounts()).toEqual({
+      created: 1,
+      removed: 1,
+      updated: 1,
+      skipped: 0,
+      preserved: 1,
+      failed: 0,
+      noop: 1,
+    });
+    expect(accumulator.toOutcome().actions.map((a) => a.kind)).toEqual([
+      "noop",
+      "created",
+      "removed",
+      "updated",
+      "preserved-diverged",
+    ]);
+  });
+
   it("converts clone skip reasons to common skipped actions", () => {
     expect(
       cloneSkipToOutcomeAction(

@@ -16,8 +16,9 @@ discarded. A new machine is one config file.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./assets/demo-dark.gif">
   <source media="(prefers-color-scheme: light)" srcset="./assets/demo-light.gif">
-  <img alt="Demo: the config, the TUI syncing two repositories, the worktree status view, one folder per branch, then a
-    one-shot sync that adds a new upstream branch and moves a deleted one to .trash/"
+  <img alt="Demo: the config, the TUI syncing two repositories, the / switcher filtering worktrees, the worktree status
+    view, one folder per branch, a --dry-run preview, then a one-shot sync that adds a new upstream branch and moves a
+    deleted one to .trash/, and a cd into the new branch's folder"
     src="https://raw.githubusercontent.com/yordan-kanchelov/sync-worktrees/main/assets/demo-dark.gif" width="1000">
 </picture>
 
@@ -138,8 +139,9 @@ Requirements:
 - An MCP-capable client, only for the optional `sync-worktrees-mcp` server
 
 The three commands under [What you get](#what-you-get) are the whole setup: `sync-worktrees init` walks you through one
-repository and writes `sync-worktrees.config.js` in the current directory (`.mjs`, `.cjs` and `.ts` are also accepted);
-to add repositories, edit that file and add entries under `repositories`. See [Configuration](#configuration).
+or more repositories and writes `sync-worktrees.config.js` in the current directory (`.mjs`, `.cjs` and `.ts` are also
+accepted); to add repositories later, edit that file and add entries under `repositories`. See
+[Configuration](#configuration).
 `sync-worktrees doctor` then checks the whole setup (git, the config, each remote's credentials, the directories)
 before the first sync.
 
@@ -153,9 +155,9 @@ any repository failed (see [Exit codes](#exit-codes)). sync-worktrees sets `GIT_
 it yourself), so credentials must come from a credential helper or `ssh-agent`. See
 [Authentication](./docs/configuration.md#authentication).
 
-Without `--config`, `sync-worktrees`, `list` and `trash` use `$SYNC_WORKTREES_CONFIG` when it is set, and otherwise
-the nearest `sync-worktrees.config.{js,mjs,cjs,ts}` in the current directory or a parent, the way git finds `.git`.
-The walk stops at your home directory when it starts inside it. `sync-worktrees` and `list` print the file they used.
+Without `--config`, `sync-worktrees`, `list`, `trash` and `doctor` use `$SYNC_WORKTREES_CONFIG` when it is set, and
+otherwise the nearest `sync-worktrees.config.{js,mjs,cjs,ts}` in the current directory or a parent, the way git finds
+`.git`. The walk stops at your home directory when it starts inside it. `sync-worktrees` and `list` print the file they used.
 If the config lives elsewhere, pass it explicitly:
 
 ```bash
@@ -403,7 +405,7 @@ Subcommands:
 ## Documentation
 
 - [docs/](./docs/README.md): one reference page per topic: configuration, clone mode, sparse checkout, trash and
-  recovery, hooks and file copying, the TUI, the MCP server.
+  recovery, hooks and file copying, the TUI, the MCP server, previewing a sync, checking your setup.
 - [`sync-worktrees.config.example.js`](./sync-worktrees.config.example.js): every setting, annotated.
 - [CHANGELOG.md](./CHANGELOG.md): what changed in each release.
 - [sync-worktrees.com](https://sync-worktrees.com): the landing page, the same FAQ, and
@@ -414,10 +416,10 @@ Subcommands:
 
 Issues and pull requests are welcome. After `pnpm install`:
 
-- `pnpm test:unit` runs the unit tests. It needs no build.
+- `pnpm test:unit` runs the unit tests and the integration suites (services against real git). It needs no build.
 - `pnpm test:e2e` builds the CLI and runs the end-to-end suites against `dist/`. `pnpm test:e2e:network` adds the cases
   that clone from GitHub; [`nightly.yml`](./.github/workflows/nightly.yml) runs those daily on Linux and macOS.
-- `pnpm test` runs both, but does not build: run `pnpm build` first, or the end-to-end suites fail.
+- `pnpm test` runs all of them, but does not build: run `pnpm build` first, or the end-to-end suites fail.
 
 [`pr.yml`](./.github/workflows/pr.yml) checks every PR (lint, format, typecheck, build, smoke test, tests with a coverage
 summary on the run page). A PR that touches code needs a changeset (`pnpm changeset`); changesets cut the release and

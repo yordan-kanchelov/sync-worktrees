@@ -2,10 +2,14 @@ import React from "react";
 import { render, cleanup } from "ink-testing-library";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-import type { LogPanelProps } from "../LogPanel";
-import LogPanel, { CollapsedLogLine } from "../LogPanel";
+import LogPanelView, { CollapsedLogLine, useLogScroll } from "../LogPanel";
 import type { LogEntry } from "../App";
 import { frameLines, resizeTerminal } from "./terminal-size";
+
+type LogPanelProps = { logs: LogEntry[]; height: number };
+
+// The App owns the scroll position; this stands in for it.
+const LogPanel: React.FC<LogPanelProps> = (props) => <LogPanelView {...props} scroll={useLogScroll()} />;
 
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -23,7 +27,6 @@ describe("LogPanel", () => {
     defaultProps = {
       logs: [],
       height: 10,
-      isActive: true,
     };
   });
 
@@ -36,7 +39,7 @@ describe("LogPanel", () => {
       Array.from({ length: count }, (_, index) => createLog(`${index}`, `Log line ${index}`));
 
     it("keeps its heading on one row in a narrow terminal", async () => {
-      const { stdout, lastFrame } = render(<LogPanel logs={many(40)} height={6} isActive />);
+      const { stdout, lastFrame } = render(<LogPanel logs={many(40)} height={6} />);
       resizeTerminal(stdout, 40, 24);
       await waitForStateUpdate();
 
@@ -48,7 +51,7 @@ describe("LogPanel", () => {
 
     it("folds to the count and the latest entry, coloured by its level", () => {
       const logs = [...many(3), createLog("err", "Sync failed for 'infra'", "error")];
-      const { lastFrame } = render(<CollapsedLogLine logs={logs} />);
+      const { lastFrame } = render(<CollapsedLogLine logs={logs} expandKey="l" />);
 
       expect(frameLines(lastFrame())).toHaveLength(1);
       expect(lastFrame()).toContain("(4 entries, l to expand)");
@@ -214,18 +217,6 @@ describe("LogPanel", () => {
       expect(lastFrame()).toContain("Log 15");
       expect(lastFrame()).toContain("Log 39");
     });
-
-    it("stays inert while the panel is not active", async () => {
-      const { stdin, lastFrame } = render(
-        <LogPanel {...defaultProps} logs={manyLogs()} height={10} isActive={false} />,
-      );
-      await waitForStateUpdate();
-
-      stdin.write(wheelUp);
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("Log 39");
-    });
   });
 
   describe("keyboard navigation", () => {
@@ -287,25 +278,6 @@ describe("LogPanel", () => {
 
       const afterDownFrame = lastFrame();
       expect(afterDownFrame).not.toEqual(afterUpFrame);
-    });
-
-    it("should not respond to keyboard when isActive is false", async () => {
-      const logs = Array.from({ length: 20 }, (_, i) => createLog(`${i}`, `Log ${i}`));
-      const props = {
-        ...defaultProps,
-        logs,
-        height: 10,
-        isActive: false,
-      };
-      const { stdin, lastFrame } = render(<LogPanel {...props} />);
-
-      await waitForStateUpdate();
-      const initialFrame = lastFrame();
-
-      stdin.write("\u001B[A"); // Up arrow
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toEqual(initialFrame);
     });
   });
 

@@ -4,7 +4,7 @@ import * as path from "path";
 import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, GIT_OPERATIONS, PATH_CONSTANTS } from "../constants";
-import { GitOperationError, WorktreeNotCleanError } from "../errors";
+import { GitOperationError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
@@ -13,7 +13,7 @@ import { Logger } from "./logger.service";
 
 import type { LastKnownRemoteTip } from "../types/sync-metadata";
 import type { LimitFunction } from "p-limit";
-import type { SimpleGit } from "simple-git";
+import type { SimpleGit, StatusResult } from "simple-git";
 
 export interface WorktreeStatusDetails {
   modifiedFiles: number;
@@ -125,7 +125,11 @@ export function stashSubjectBranch(subject: string): string | null {
   return match ? match[1] : null;
 }
 
-type StashListing = Awaited<ReturnType<SimpleGit["stashList"]>>;
+// Structural, not simple-git's type: RefScanScope is in the public typings.
+interface StashListing {
+  readonly total: number;
+  readonly all: ReadonlyArray<unknown>;
+}
 
 // Every local branch and remote-tracking ref of a repository, from one
 // `for-each-ref`. refs/heads and refs/remotes live in the common git dir, so
@@ -151,6 +155,30 @@ const REMOTE_TRACKING_PREFIX = "refs/remotes/";
 
 // Past this many changed paths a skip reason counts them instead of naming them.
 const MAX_NAMED_UNCOMMITTED_PATHS = 3;
+
+// simple-git buckets only some porcelain codes: a type change (` T`, `T `) or a
+// mixed state (`MD`, `AD`) is in `files` alone, so cleanliness is read from it.
+function unbucketedTrackedPaths(status: StatusResult): string[] {
+  const bucketed = new Set([
+    ...status.modified,
+    ...status.deleted,
+    ...status.renamed.map((r) => r.to),
+    ...status.created,
+    ...status.conflicted,
+  ]);
+  return status.files.filter((f) => f.index !== "?" && f.index !== "!" && !bucketed.has(f.path)).map((f) => f.path);
+}
+
+function hasTrackedChanges(status: StatusResult): boolean {
+  return (
+    status.modified.length > 0 ||
+    status.deleted.length > 0 ||
+    status.renamed.length > 0 ||
+    status.created.length > 0 ||
+    status.conflicted.length > 0 ||
+    unbucketedTrackedPaths(status).length > 0
+  );
+}
 
 export interface RefScan {
   /** Full names of every branch and remote-tracking ref, symrefs excluded. */
@@ -188,16 +216,27 @@ export function parseRefScan(raw: string): RefScan {
  */
 export class RefScanScope {
   private readonly scans = new Map<string, Promise<RefScan | null>>();
+  // refs/stash lives in the common git dir too: one listing per repository.
+  private readonly stashes = new Map<string, Promise<StashListing | null>>();
 
   /** The scan already started for this common git dir, or `scan()`'s. */
   share(commonDir: string, scan: () => Promise<RefScan | null>): Promise<RefScan | null> {
-    let pending = this.scans.get(commonDir);
-    if (!pending) {
-      pending = scan();
-      this.scans.set(commonDir, pending);
-    }
-    return pending;
+    return shareOnce(this.scans, commonDir, scan);
   }
+
+  /** The stash listing already started for this common git dir, or `list()`'s. */
+  shareStashes(commonDir: string, list: () => Promise<StashListing | null>): Promise<StashListing | null> {
+    return shareOnce(this.stashes, commonDir, list);
+  }
+}
+
+function shareOnce<T>(cache: Map<string, Promise<T>>, key: string, start: () => Promise<T>): Promise<T> {
+  let pending = cache.get(key);
+  if (!pending) {
+    pending = start();
+    cache.set(key, pending);
+  }
+  return pending;
 }
 
 // What a snapshot knows about the checked-out branch's upstream:
@@ -208,7 +247,6 @@ export class RefScanScope {
 type UpstreamState = "none" | "present" | "gone" | "unknown";
 
 interface WorktreeSnapshot {
-  exists: boolean;
   status: Awaited<ReturnType<SimpleGit["status"]>> | null;
   currentBranch: string | null;
   detached: boolean;
@@ -301,16 +339,7 @@ export class WorktreeStatusService {
     const worktreeGit = this.createGitInstance(worktreePath);
     const status = await this.runGit(() => worktreeGit.status());
 
-    const hasTrackedChanges =
-      status.modified.length > 0 ||
-      status.deleted.length > 0 ||
-      status.renamed.length > 0 ||
-      status.created.length > 0 ||
-      status.conflicted.length > 0;
-
-    if (hasTrackedChanges) {
-      return false;
-    }
+    if (hasTrackedChanges(status)) return false;
 
     // `status.not_added` is already the untracked-and-not-ignored list: git
     // only writes a path to a `??` line when no exclude rule matched it, and
@@ -443,8 +472,8 @@ export class WorktreeStatusService {
     };
   }
 
-  // Per worktree: `status`, `stash list`, `submodule status` and the
-  // unpushed-commit rev-lists. The checked-out branch and whether HEAD is
+  // Per worktree: `status`, `submodule status` and the unpushed-commit
+  // rev-lists; `stash list` is per repository in a RefScanScope pass. The checked-out branch and whether HEAD is
   // detached come off the `## ` header `status -b` prints anyway, and what the
   // branch tracks and whether that ref still exists come from the
   // repository-wide ref scan, so no `git branch`, `branch -r` or `rev-parse
@@ -458,16 +487,24 @@ export class WorktreeStatusService {
     const git = this.createGitInstance(worktreePath);
 
     const gitDirProbe = this.resolveGitDir(worktreePath);
+    // Keys the scope's per-repository reads; null runs them unshared.
+    const commonDirProbe = refScans
+      ? gitDirProbe.then((gitDir) => this.resolveCommonDir(gitDir)).catch(() => null)
+      : Promise.resolve(null);
+    const listStashes = (): Promise<StashListing | null> =>
+      this.listStashes(git).catch((e: unknown) => {
+        this.logger.error(`Error checking stash`, e);
+        return null;
+      });
     const [status, refScan, stashResult, submoduleResult, gitDirResult] = await Promise.all([
       this.runGit(() => git.status(["--ignore-submodules=none"])).catch((e: unknown) => {
         this.logger.error(`Error reading status for ${worktreePath}`, e);
         return null;
       }),
-      this.scanRefsFor(git, gitDirProbe, refScans),
-      this.listStashes(git).catch((e: unknown) => {
-        this.logger.error(`Error checking stash`, e);
-        return null;
-      }),
+      this.scanRefsFor(git, commonDirProbe, refScans),
+      commonDirProbe.then((commonDir) =>
+        refScans && commonDir !== null ? refScans.shareStashes(commonDir, listStashes) : listStashes(),
+      ),
       this.runGit(() => git.raw(["submodule", "status"])).catch((e: unknown) => {
         this.logger.error(`Error checking submodule status`, e);
         return null;
@@ -507,6 +544,9 @@ export class WorktreeStatusService {
     // The probes below all ask about HEAD, so they run for a checked-out branch
     // and for a detached HEAD mid-operation alike.
     if (currentBranch || (detached && !plainDetached)) {
+      const countSince = (oid: string): Promise<string> =>
+        this.runGit(() => git.raw(["rev-list", "--count", `${oid}..HEAD`]));
+      const sinceSyncProbe = lastSyncCommit ? countSince(lastSyncCommit) : null;
       const [anyRemoteResult, sinceSyncResult, recordedTipResult] = await Promise.all([
         // HEAD, never the short branch name: git resolves a bare name through
         // refs/tags/<name> before refs/heads/<name>, so a tag sharing the
@@ -519,8 +559,8 @@ export class WorktreeStatusService {
           (raw) => ({ ok: true as const, value: raw }),
           (error: unknown) => ({ ok: false as const, error }),
         ),
-        lastSyncCommit
-          ? this.runGit(() => git.raw(["rev-list", "--count", `${lastSyncCommit}..HEAD`])).then(
+        sinceSyncProbe
+          ? sinceSyncProbe.then(
               (raw) => ({ ok: true as const, value: raw }),
               (error: unknown) => ({ ok: false as const, error }),
             )
@@ -532,8 +572,12 @@ export class WorktreeStatusService {
         // Only asked when the answer can matter: the proof is consulted only
         // once the recorded ref is gone, and while it exists the ordinary
         // unpushed check already covers the branch.
+        // The same range as the since-sync count in the usual prune case.
         lastKnownRemoteTip && recordedRefGone
-          ? this.runGit(() => git.raw(["rev-list", "--count", `${lastKnownRemoteTip.oid}..HEAD`])).then(
+          ? (sinceSyncProbe && lastKnownRemoteTip.oid === lastSyncCommit
+              ? sinceSyncProbe
+              : countSince(lastKnownRemoteTip.oid)
+            ).then(
               (raw) => this.parseCount(raw) === 0,
               () => false,
             )
@@ -568,7 +612,6 @@ export class WorktreeStatusService {
     const untrackedNotIgnored = status?.not_added ?? [];
 
     return {
-      exists: true,
       status,
       currentBranch,
       detached,
@@ -614,13 +657,11 @@ export class WorktreeStatusService {
    */
   private async scanRefsFor(
     git: SimpleGit,
-    gitDirProbe: Promise<string>,
+    commonDirProbe: Promise<string | null>,
     refScans: RefScanScope | undefined,
   ): Promise<RefScan | null> {
-    if (refScans) {
-      const commonDir = await gitDirProbe.then((gitDir) => this.resolveCommonDir(gitDir)).catch(() => null);
-      if (commonDir !== null) return refScans.share(commonDir, () => this.scanRefs(git));
-    }
+    const commonDir = await commonDirProbe;
+    if (refScans && commonDir !== null) return refScans.share(commonDir, () => this.scanRefs(git));
     return this.scanRefs(git);
   }
 
@@ -651,13 +692,7 @@ export class WorktreeStatusService {
   private deriveIsClean(snap: WorktreeSnapshot): boolean {
     const status = snap.status;
     if (!status) return false;
-    const hasTracked =
-      status.modified.length > 0 ||
-      status.deleted.length > 0 ||
-      status.renamed.length > 0 ||
-      status.created.length > 0 ||
-      status.conflicted.length > 0;
-    if (hasTracked) return false;
+    if (hasTrackedChanges(status)) return false;
     return snap.untrackedNotIgnored.length === 0;
   }
 
@@ -674,6 +709,7 @@ export class WorktreeStatusService {
       ...status.renamed.map((r) => r.to),
       ...status.created,
       ...status.conflicted,
+      ...unbucketedTrackedPaths(status),
     ]);
     const untracked = snap.untrackedNotIgnored;
     if (tracked.size + untracked.length > MAX_NAMED_UNCOMMITTED_PATHS) {
@@ -690,8 +726,10 @@ export class WorktreeStatusService {
 
   private buildStatusDetails(snap: WorktreeSnapshot): WorktreeStatusDetails {
     const status = snap.status;
+    // Type changes and mixed states (` T`, `MD`) are listed as modified.
+    const modified = status ? [...status.modified, ...unbucketedTrackedPaths(status)] : [];
     const details: WorktreeStatusDetails = {
-      modifiedFiles: status?.modified.length ?? 0,
+      modifiedFiles: modified.length,
       deletedFiles: status?.deleted.length ?? 0,
       renamedFiles: status?.renamed.length ?? 0,
       createdFiles: status?.created.length ?? 0,
@@ -699,7 +737,7 @@ export class WorktreeStatusService {
       untrackedFiles: snap.untrackedNotIgnored.length,
     };
     if (status) {
-      if (status.modified.length > 0) details.modifiedFilesList = status.modified;
+      if (modified.length > 0) details.modifiedFilesList = modified;
       if (status.deleted.length > 0) details.deletedFilesList = status.deleted;
       if (status.renamed.length > 0) {
         details.renamedFilesList = status.renamed.map((r) => ({ from: r.from, to: r.to }));
@@ -744,25 +782,29 @@ export class WorktreeStatusService {
     const worktreeGit = this.createGitInstance(worktreePath);
 
     try {
-      const [stashList, branchSummary] = await Promise.all([
+      const [stashList, currentBranch] = await Promise.all([
         this.listStashes(worktreeGit),
-        this.runGit(() => worktreeGit.branch()).catch(() => null),
+        this.readCurrentBranch(worktreePath, worktreeGit),
       ]);
       if (stashList.total === 0) return false;
-      // During a rebase or bisect `git branch` prints `* (no branch, rebasing
-      // <b>)`, which simple-git parses as a branch named "(no" -- not
-      // detached. No branch name starts with "(", so that reads as unknown.
-      const current = branchSummary?.current ?? "";
-      const currentBranch =
-        branchSummary === null || current.startsWith("(")
-          ? undefined
-          : !current || branchSummary.detached
-            ? null
-            : current;
       return (await this.countOwnStashes(worktreeGit, stashList, currentBranch)) > 0;
     } catch (error) {
       this.logger.error(`Error checking stash`, error);
       return true; // Conservative: assume unsafe to delete
+    }
+  }
+
+  // The checked-out branch; null for a plain detached HEAD; undefined when
+  // unreadable or a rebase or bisect is paused (its stashes name the branch).
+  private async readCurrentBranch(worktreePath: string, git: SimpleGit): Promise<string | null | undefined> {
+    try {
+      // -q: a detached HEAD exits 1 silently, which simple-git resolves as "".
+      const ref = (await this.runGit(() => git.raw(["symbolic-ref", "-q", "HEAD"]))).trim();
+      if (ref.startsWith(GIT_CONSTANTS.REFS.HEADS)) return ref.slice(GIT_CONSTANTS.REFS.HEADS.length);
+      if (ref) return undefined;
+      return (await this.hasOperationInProgress(worktreePath)) ? undefined : null;
+    } catch {
+      return undefined;
     }
   }
 
@@ -831,18 +873,6 @@ export class WorktreeStatusService {
     );
   }
 
-  async hasModifiedSubmodules(worktreePath: string): Promise<boolean> {
-    const worktreeGit = this.createGitInstance(worktreePath);
-
-    try {
-      const result = await this.runGit(() => worktreeGit.raw(["submodule", "status"]));
-      return collectModifiedSubmodules(result).length > 0;
-    } catch (error) {
-      this.logger.error(`Error checking submodule status`, error);
-      return true;
-    }
-  }
-
   async hasOperationInProgress(worktreePath: string): Promise<boolean> {
     try {
       const gitDir = await this.resolveGitDir(worktreePath);
@@ -851,18 +881,6 @@ export class WorktreeStatusService {
     } catch (error) {
       this.logger.error(`Error checking operation in progress for ${worktreePath}`, error);
       return true;
-    }
-  }
-
-  async validateWorktreeForRemoval(
-    worktreePath: string,
-    lastSyncCommit?: string,
-    lastKnownRemoteTip?: LastKnownRemoteTip,
-  ): Promise<void> {
-    const status = await this.getFullWorktreeStatus(worktreePath, false, { lastSyncCommit, lastKnownRemoteTip });
-
-    if (!status.canRemove) {
-      throw new WorktreeNotCleanError(worktreePath, status.reasons);
     }
   }
 

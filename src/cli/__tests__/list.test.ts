@@ -129,6 +129,27 @@ describe("sync-worktrees list", () => {
     expect(out).not.toContain("s3cret");
   });
 
+  it("reports the sparse mode the sync really runs: excludes or a negated include mean no-cone", async () => {
+    const withExclude: RepositoryConfig = {
+      ...worktreeRepo,
+      sparseCheckout: { include: ["/*"], exclude: ["docs"] },
+    };
+    const withNegation: RepositoryConfig = {
+      ...worktreeRepo,
+      name: "neg",
+      sparseCheckout: { include: ["/*", "!docs/"], mode: "cone" },
+    };
+    const plain: RepositoryConfig = { ...worktreeRepo, name: "plain", sparseCheckout: { include: ["packages/app"] } };
+
+    expect(await runList(config, { json: true }, deps([withExclude, withNegation, plain]))).toBe(0);
+    const listed = JSON.parse(stdout.join("\n")) as ListedRepository[];
+    expect(listed.map((r) => r.sparseCheckout?.mode)).toEqual(["no-cone", "no-cone", "cone"]);
+
+    stdout = [];
+    expect(await runList(config, {}, deps([withExclude]))).toBe(0);
+    expect(stdout.join("\n")).toContain("   Sparse checkout (no-cone): include /*; exclude docs");
+  });
+
   it("passes the filter to the loader and exits 1 when it matches nothing, keeping stdout empty", async () => {
     const d = deps([]);
     const code = await runList(config, { filter: "nope-*", json: true }, d);

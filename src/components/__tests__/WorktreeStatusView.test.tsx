@@ -648,6 +648,24 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).toContain("hotfix/bug-123");
     });
 
+    it("should drop a trailing newline from a pasted filter", async () => {
+      const singleRepoProps = {
+        ...defaultProps,
+        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
+      };
+      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
+
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      stdin.write("\u001B[200~main\n\u001B[201~");
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("(1/4 matches)");
+      expect(lastFrame()).toContain("> main");
+      expect(lastFrame()).not.toContain("No matches");
+    });
+
     it("should expand detail on Enter", async () => {
       const singleRepoProps = {
         ...defaultProps,
@@ -1099,6 +1117,76 @@ describe("WorktreeStatusView", () => {
       // Should be on the diverged entry, not stuck on separator
       expect(lastFrame()).toContain("Ctrl-D to delete");
     });
+
+    // Index 0 is the separator when no worktree is listed; the selection must
+    // never rest on it or past the end of the list.
+    describe("selection never rests on a non-selectable row", () => {
+      const singleRepo = [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }];
+
+      it("selects the first diverged entry when the repository has no worktrees", async () => {
+        const { lastFrame } = render(
+          <WorktreeStatusView
+            {...defaultProps}
+            repositories={singleRepo}
+            getWorktreeStatusForRepo={vi.fn().mockResolvedValue([])}
+            getDivergedDirectoriesForRepo={vi.fn().mockResolvedValue([makeDiverged()])}
+            deleteDivergedDirectory={vi.fn().mockResolvedValue(undefined)}
+          />,
+        );
+        await waitForStateUpdate();
+        await waitForStateUpdate();
+
+        expect(lastFrame()).toMatch(/> 📦 feature\/x/);
+        expect(lastFrame()).toContain("Ctrl-D to delete");
+      });
+
+      it("selects the first diverged entry after a filter that matches only diverged entries", async () => {
+        const { stdin, lastFrame } = render(
+          <WorktreeStatusView
+            {...defaultProps}
+            repositories={singleRepo}
+            getWorktreeStatusForRepo={vi.fn().mockResolvedValue([makeEntry("main")])}
+            getDivergedDirectoriesForRepo={vi.fn().mockResolvedValue([makeDiverged()])}
+            deleteDivergedDirectory={vi.fn().mockResolvedValue(undefined)}
+          />,
+        );
+        await waitForStateUpdate();
+        await waitForStateUpdate();
+
+        stdin.write("feature");
+        await waitForStateUpdate();
+
+        expect(lastFrame()).toMatch(/> 📦 feature\/x/);
+        expect(lastFrame()).toContain("Ctrl-D to delete");
+      });
+
+      it("selects the last worktree after deleting the last diverged entry", async () => {
+        const { stdin, lastFrame } = render(
+          <WorktreeStatusView
+            {...defaultProps}
+            repositories={singleRepo}
+            getWorktreeStatusForRepo={vi.fn().mockResolvedValue([makeEntry("main"), makeEntry("dev")])}
+            getDivergedDirectoriesForRepo={vi.fn().mockResolvedValue([makeDiverged()])}
+            deleteDivergedDirectory={vi.fn().mockResolvedValue(undefined)}
+          />,
+        );
+        await waitForStateUpdate();
+        await waitForStateUpdate();
+
+        for (let i = 0; i < 3; i++) {
+          stdin.write("\u001B[B");
+          await waitForStateUpdate();
+        }
+        stdin.write("\u0004"); // Ctrl-D
+        await waitForStateUpdate();
+        stdin.write("y");
+        await waitForStateUpdate();
+        await waitForStateUpdate();
+
+        expect(lastFrame()).not.toContain("Diverged Directories");
+        expect(lastFrame()).toContain("> dev");
+      });
+    });
   });
 
   describe("selection edge cases", () => {
@@ -1215,6 +1303,71 @@ describe("WorktreeStatusView", () => {
 
       expect(lastFrame()).toContain("Select repository");
       expect(defaultProps.getWorktreeStatusForRepo).not.toHaveBeenCalled();
+    });
+  });
+
+  // A load that resolves after the user has gone back and picked another
+  // repository must not replace that repository's list.
+  describe("a late load for a repository the user left", () => {
+    it("keeps the second repository's rows and deletes from that repository", async () => {
+      const divergedFor = (name: string): DivergedDirectoryInfo => ({
+        name,
+        path: `/wt/.diverged/${name}`,
+        originalBranch: name,
+        divergedAt: "2024-01-01",
+        sizeBytes: 1,
+        sizeFormatted: "1 B",
+      });
+      let resolveA: (entries: WorktreeStatusEntry[]) => void = () => {};
+      const getWorktreeStatusForRepo = vi.fn((index: number) =>
+        index === 0
+          ? new Promise<WorktreeStatusEntry[]>((resolve) => {
+              resolveA = resolve;
+            })
+          : Promise.resolve([makeEntry("b-main")]),
+      );
+      const getDivergedDirectoriesForRepo = vi.fn(async (index: number) => [
+        divergedFor(index === 0 ? "a-gone" : "b-gone"),
+      ]);
+      const deleteDivergedDirectory = vi.fn().mockResolvedValue(undefined);
+      const { stdin, lastFrame } = render(
+        <WorktreeStatusView
+          {...defaultProps}
+          getWorktreeStatusForRepo={getWorktreeStatusForRepo}
+          getDivergedDirectoriesForRepo={getDivergedDirectoriesForRepo}
+          deleteDivergedDirectory={deleteDivergedDirectory}
+        />,
+      );
+
+      stdin.write("\r");
+      await waitForStateUpdate();
+      stdin.write("\u001B");
+      await waitForStateUpdate();
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\r");
+      await waitForStateUpdate();
+      expect(lastFrame()).toContain("b-main");
+
+      resolveA([makeEntry("a-main")]);
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("Repository: repo-2");
+      expect(lastFrame()).toContain("b-main");
+      expect(lastFrame()).not.toContain("a-main");
+      expect(lastFrame()).not.toContain("a-gone");
+
+      stdin.write("\u001B[B");
+      await waitForStateUpdate();
+      stdin.write("\u0004");
+      await waitForStateUpdate();
+      stdin.write("y");
+      await waitForStateUpdate();
+      await waitForStateUpdate();
+
+      expect(deleteDivergedDirectory).toHaveBeenCalledTimes(1);
+      expect(deleteDivergedDirectory).toHaveBeenCalledWith(1, "b-gone");
     });
   });
 });

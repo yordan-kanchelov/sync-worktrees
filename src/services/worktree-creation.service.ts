@@ -5,6 +5,7 @@ import { GIT_CONSTANTS, PATH_CONSTANTS } from "../constants";
 import { GitOperationError, UpstreamSetupError, WorktreeError, WorktreeMetadataError } from "../errors";
 import { getErrorMessage } from "../utils/errors";
 import { probePathExists } from "../utils/file-exists";
+import { findByWorktreePath } from "../utils/path-compare";
 import { quarantineDirectory } from "../utils/quarantine";
 
 import type { BranchRefService } from "./branch-ref.service";
@@ -127,7 +128,7 @@ export class WorktreeCreationService {
       await fs.access(absoluteWorktreePath);
       // Directory exists - check if it's already a valid worktree
       const worktrees = await this.deps.registry.getWorktreesFromBare(bareGit, true);
-      const registered = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
+      const registered = await findByWorktreePath(worktrees, absoluteWorktreePath);
 
       if (registered) {
         this.logger.info(`  - Worktree for '${branchName}' already exists at '${absoluteWorktreePath}'`);
@@ -152,7 +153,7 @@ export class WorktreeCreationService {
     absoluteWorktreePath: string,
   ): Promise<RegisteredWorktree | undefined> {
     const worktrees = await this.deps.registry.getWorktreesFromBare(bareGit, true);
-    const existingWorktree = worktrees.find((w) => path.resolve(w.path) === absoluteWorktreePath);
+    const existingWorktree = await findByWorktreePath(worktrees, absoluteWorktreePath);
     return existingWorktree && !existingWorktree.isPrunable ? existingWorktree : undefined;
   }
 

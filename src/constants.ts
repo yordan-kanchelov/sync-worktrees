@@ -1,6 +1,5 @@
 export const GIT_CONSTANTS = {
   REMOTE_PREFIX: "origin/",
-  REMOTE_NAME: "origin",
   DEFAULT_BRANCH: "main",
   COMMON_DEFAULT_BRANCHES: ["main", "master", "develop", "trunk"],
   BARE_DIR_NAME: ".bare",
@@ -22,10 +21,6 @@ export const GIT_CONSTANTS = {
   // this text; like `spawn git ENOENT` from an already-built client, it means
   // the working directory is gone.
   MISSING_BASE_DIR_ERROR: "Cannot use simple-git on a directory that does not exist",
-  // simple-git's message fragment for a git command that exited 1. `git grep`
-  // uses that exit code for "nothing matched", which is an answer rather than
-  // a failure.
-  GIT_NO_MATCH_EXIT: "exit code: 1",
   REFS: {
     HEADS: "refs/heads/",
     REMOTES: "refs/remotes/origin",
@@ -65,7 +60,6 @@ export const DEFAULT_CONFIG = {
     // status probe of a repository runs through it, so this bounds git
     // processes rather than worktrees.
     MAX_STATUS_CHECKS: 20,
-    MAX_BRANCH_FETCHES: 3,
     // Ceiling on concurrent git processes across the whole run, checked by the
     // config loader as maxRepositories × the widest sync phase (phases run one
     // after another, so their limits are never summed, and a phase that shares
@@ -96,17 +90,10 @@ export const DEFAULT_CONFIG = {
 
 export const ERROR_MESSAGES = {
   ALREADY_EXISTS: "already exists",
-  ALREADY_REGISTERED: "already registered worktree",
   FAST_FORWARD_FAILED: [
     "Not possible to fast-forward",
     "fatal: Not possible to fast-forward, aborting",
     "cannot fast-forward",
-  ],
-  NO_UPSTREAM: [
-    "fatal: no upstream configured",
-    "no upstream configured for branch",
-    "fatal: ambiguous argument",
-    "unknown revision or path",
   ],
   EXDEV: "EXDEV",
 } as const;
@@ -125,6 +112,8 @@ export const ENV_CONSTANTS = {
 
 export const PATH_CONSTANTS = {
   GIT_DIR: ".git",
+  /** A preserved copy's `.git` link, renamed so git no longer resolves it. */
+  DETACHED_GIT_LINK: ".git.detached",
   CLONE_INIT_MARKER: ".sync-worktrees-clone-init",
   /** Written the moment the clone resolves, before any post-clone step, and
    * removed once the initial file copy lands — its presence marks a
@@ -166,7 +155,7 @@ export const PATH_CONSTANTS = {
 // Kept out of the JSDoc below on purpose: `tsc --emitDeclarationOnly` copies a
 // JSDoc block attached to an exported declaration into dist/constants.d.ts,
 // which ships. Line comments are dropped there and cost nothing.
-/** Auto-discovery order for `findConfigUpward` and `findConfigInCwd`; first hit in a directory wins. */
+/** Auto-discovery order for `findConfigUpTree`; first hit in a directory wins. */
 export const CONFIG_FILE_NAMES = [
   "sync-worktrees.config.js",
   "sync-worktrees.config.mjs",

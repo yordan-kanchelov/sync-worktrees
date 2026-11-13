@@ -291,6 +291,49 @@ describe("TrashService", () => {
 
       await expect(fs.access(source)).resolves.toBeUndefined();
     });
+
+    // A kill while the bundle is written leaves only the first manifest on
+    // disk: that one must still list (and age out), not land in `invalid`.
+    it("keeps a keep-on-reap entry listable while its bundle is still being created", async () => {
+      let releaseBundle!: () => void;
+      let bundleStarted!: () => void;
+      const started = new Promise<void>((resolve) => (bundleStarted = resolve));
+      const bundleGate = new Promise<boolean>((resolve) => (releaseBundle = () => resolve(true)));
+      const stub = gitStub as ReturnType<typeof makeGitStub> & { createBundleFromRef: ReturnType<typeof vi.fn> };
+      stub.createBundleFromRef = vi.fn<any>(() => {
+        bundleStarted();
+        return bundleGate;
+      });
+      const source = await makeSourceDir("keep-mid-bundle");
+
+      const pending = service.trashDirectory({
+        dirPath: source,
+        branch: "keep-mid-bundle",
+        reason: "manual",
+        keepPinOnReap: true,
+      });
+      await started;
+
+      const fresh = new TrashService(
+        config,
+        gitStub as unknown as GitService,
+        logger,
+        audit as unknown as RemovalAuditService,
+      );
+      const { entries, invalid } = await fresh.listEntries();
+      expect(invalid).toEqual([]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].manifest.branch).toBe("keep-mid-bundle");
+
+      releaseBundle();
+      const entry = await pending;
+      expect(entry.manifest.keepPinOnReap).toBe(true);
+      expect(entry.manifest.bundleFile).toBe(TRASH_CONSTANTS.BUNDLE_FILENAME);
+      const onDisk = JSON.parse(
+        await fs.readFile(path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME), "utf-8"),
+      );
+      expect(onDisk.keepPinOnReap).toBe(true);
+    });
   });
 
   describe("trashAndUnregisterWorktree", () => {
@@ -388,7 +431,7 @@ describe("TrashService", () => {
     });
 
     it("restores the source when unregistering fails, so a partial removal never hides the worktree", async () => {
-      const source = await makeSourceDir("feature-rollback");
+      const source = await makeSourceDir("feature-rollback", { "file.txt": "data", ".git": "gitdir: /x\n" });
       gitStub.removeWorktree.mockRejectedValue(new Error("registration locked"));
 
       await expect(
@@ -396,6 +439,9 @@ describe("TrashService", () => {
       ).rejects.toThrow("restored the directory to its original path");
 
       await expect(fs.readFile(path.join(source, "file.txt"), "utf-8")).resolves.toBe("data");
+      // The detached .git link is put back with the directory.
+      await expect(fs.readFile(path.join(source, ".git"), "utf-8")).resolves.toBe("gitdir: /x\n");
+      await expect(fs.access(path.join(source, ".git.detached"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(fs.readdir(service.getTrashRoot())).resolves.toEqual([]);
     });
 
@@ -434,9 +480,6 @@ describe("TrashService", () => {
       const summary = summarizeTrashEntries(entries);
       expect(summary.itemCount).toBe(2);
       expect(summary.totalSizeBytes).toBeGreaterThanOrEqual(0);
-      expect(summary.soonestExpiresAt).toBe(
-        entries.map((entry) => entry.manifest.expiresAt).sort((a, b) => a.localeCompare(b))[0],
-      );
     });
 
     // A pin ref is what the reaper and restore hand to `git update-ref -d`, so
@@ -787,7 +830,6 @@ describe("TrashService", () => {
         itemCount: 0,
         totalSizeBytes: 0,
         unknownSizeCount: 0,
-        soonestExpiresAt: null,
       });
     });
   });
@@ -1183,6 +1225,18 @@ describe("TrashService", () => {
       expect(logger.warn).not.toHaveBeenCalled();
     });
 
+    it("warns that the next sync prunes the restore again when origin/<branch> is gone", async () => {
+      const source = await makeSourceDir("feature-gone", { "work.txt": "data" });
+      const { manifest } = await service.trashDirectory({ dirPath: source, branch: "feature-gone", reason: "prune" });
+      gitStub.trackRemoteBranchIfExists.mockResolvedValue(false);
+
+      await service.restore(manifest.id);
+
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("data");
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("if origin/feature-gone is gone"));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("next sync will prune it again"));
+    });
+
     it("finishes the restore with a warning when the upstream cannot be set", async () => {
       const source = await makeSourceDir("feature-no-upstream", { "work.txt": "data" });
       const { manifest } = await service.trashDirectory({
@@ -1258,6 +1312,27 @@ describe("TrashService", () => {
       // e2e has to build by hand. Moving the release to before
       // restoreAsWorktree rather than after it passes every other test here.
       expect(gitStub.deleteRef).not.toHaveBeenCalledWith(manifest.pinRef);
+    });
+
+    // e.g. `cannot lock ref` when refs/heads/topic/sub exists and the entry is `topic`.
+    it("wraps a refused branch creation in TrashOperationError and keeps the payload", async () => {
+      const source = await makeSourceDir("topic", { "work.txt": "uncommitted work" });
+      const { manifest, payloadPath } = await service.trashDirectory({
+        dirPath: source,
+        branch: "topic",
+        reason: "prune",
+      });
+      gitStub.createBranchAt.mockRejectedValue(new Error("cannot lock ref 'refs/heads/topic'"));
+
+      const error = await service.restore(manifest.id).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(TrashOperationError);
+      expect((error as Error).message).toMatch(/cannot lock ref/);
+      expect(gitStub.addWorktreeNoCheckout).not.toHaveBeenCalled();
+      expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
+      await expect(fs.readFile(path.join(payloadPath, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
+      const { entries } = await service.listEntries();
+      expect(entries).toHaveLength(1);
     });
 
     // A reap that already set the payload aside has committed the entry to

@@ -17,7 +17,7 @@ import {
 import { ENV_CONSTANTS } from "../../constants";
 
 import type { ForceCleanResult, ForceCleanSelection } from "../../types";
-import { ConfigError, WorktreeNotCleanError } from "../../errors";
+import { ConfigError, TrashError, WorktreeNotCleanError } from "../../errors";
 import { CloneSyncService } from "../clone-sync.service";
 import { GitMaintenanceService } from "../git-maintenance.service";
 import { PathResolutionService } from "../path-resolution.service";
@@ -180,7 +180,7 @@ describe("WorktreeSyncService", () => {
     const cloneGitClient = {
       raw: vi.fn(async (args: string[]) => {
         const key = args.join(" ");
-        if (key === "remote get-url origin") return "https://github.com/test/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/test/repo.git";
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
@@ -232,7 +232,7 @@ describe("WorktreeSyncService", () => {
       const cloneGitClient = {
         raw: vi.fn(async (args: string[]) => {
           const key = args.join(" ");
-          if (key === "remote get-url origin") return "https://github.com/test/repo.git";
+          if (key === "config --local --get remote.origin.url") return "https://github.com/test/repo.git";
           if (key === "rev-parse --abbrev-ref HEAD") return "develop";
           return "";
         }),
@@ -317,6 +317,47 @@ describe("WorktreeSyncService", () => {
 
       expect(runSyncAttempt).toHaveBeenCalledTimes(1);
     });
+
+    // A sparse failure is caught and the tick goes on; the error that later
+    // ends the tick still has to show in the outcome.
+    it("records sync_failed even when a sparse failure was recorded earlier in the tick", async () => {
+      stubInitialize(false);
+      vi.spyOn(CloneSyncService.prototype, "runSyncAttempt").mockImplementation(
+        async (outcome?: SyncOutcomeAccumulator): Promise<void> => {
+          outcome?.recordFailed("sparse-checkout", "bad pattern", { reason: "sparse_checkout_failed" });
+          throw new Error("merge exploded");
+        },
+      );
+      vi.spyOn(WorktreeSyncService.prototype, "isInitialized").mockReturnValueOnce(false);
+
+      service = new WorktreeSyncService({ ...cloneConfig(), retry: { maxAttempts: 1 } });
+      await expect(service.sync()).rejects.toThrow("merge exploded");
+
+      expect(service.getLastOutcome()?.actions).toEqual([
+        expect.objectContaining({ kind: "failed", scope: "sparse-checkout", reason: "sparse_checkout_failed" }),
+        expect.objectContaining({ kind: "failed", scope: "repo", reason: "sync_failed", error: "merge exploded" }),
+      ]);
+    });
+
+    // A failure already recorded for the error that ends the tick is not
+    // reported twice.
+    it("does not add sync_failed when the thrown error was already recorded", async () => {
+      stubInitialize(false);
+      vi.spyOn(CloneSyncService.prototype, "runSyncAttempt").mockImplementation(
+        async (outcome?: SyncOutcomeAccumulator): Promise<void> => {
+          outcome?.recordFailed("repo", "clone exploded", { reason: "clone_failed" });
+          throw new Error("clone exploded");
+        },
+      );
+      vi.spyOn(WorktreeSyncService.prototype, "isInitialized").mockReturnValueOnce(false);
+
+      service = new WorktreeSyncService({ ...cloneConfig(), retry: { maxAttempts: 1 } });
+      await expect(service.sync()).rejects.toThrow("clone exploded");
+
+      expect(service.getLastOutcome()?.actions).toEqual([
+        expect.objectContaining({ kind: "failed", scope: "repo", reason: "clone_failed" }),
+      ]);
+    });
   });
 
   describe("permanent keep refs", () => {
@@ -351,11 +392,45 @@ describe("WorktreeSyncService", () => {
 
     it("deletes an explicitly selected keep ref under the repo lock", async () => {
       await service.initialize();
+      mockGitService.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/preserved-entry"]);
 
       await service.deleteKeepRef("preserved-entry");
 
       expect(mockGitService.deleteRef).toHaveBeenCalledWith("refs/sync-worktrees/keep/preserved-entry");
       expect(handleWrites.some((write) => write.content.includes('"action":"keep_ref_delete"'))).toBe(true);
+    });
+
+    // `update-ref -d` exits 0 for a ref that is not there, so a typo used to
+    // print success and audit a deletion that never happened.
+    it("rejects a keep ref that does not exist and audits nothing", async () => {
+      await service.initialize();
+      mockGitService.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/other"]);
+
+      await expect(service.deleteKeepRef("missing")).rejects.toThrow(/no keep ref named 'missing'/i);
+      await expect(service.deleteKeepRef("missing")).rejects.toBeInstanceOf(TrashError);
+
+      expect(mockGitService.deleteRef).not.toHaveBeenCalled();
+      expect(handleWrites.some((write) => write.content.includes('"action":"keep_ref_delete"'))).toBe(false);
+    });
+
+    it("refuses a keep ref a '.diverged/' directory still depends on", async () => {
+      await service.initialize();
+      mockGitService.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/still-on-disk"]);
+      mockBusyWorktrees({}, ["still-on-disk"]);
+
+      await expect(service.deleteKeepRef("still-on-disk")).rejects.toThrow(/retained/);
+      await expect(service.deleteKeepRef("still-on-disk")).rejects.toBeInstanceOf(TrashError);
+
+      expect(mockGitService.deleteRef).not.toHaveBeenCalled();
+      expect(handleWrites.some((write) => write.content.includes('"action":"keep_ref_delete"'))).toBe(false);
+    });
+
+    it("reports a keep ref git refused to delete as a trash error", async () => {
+      await service.initialize();
+      mockGitService.listRefs.mockResolvedValue(["refs/sync-worktrees/keep/locked"]);
+      mockGitService.deleteRef.mockRejectedValueOnce(new Error("cannot lock ref"));
+
+      await expect(service.deleteKeepRef("locked")).rejects.toThrow(/cannot lock ref/);
     });
 
     describe("batch drop", () => {
@@ -848,7 +923,8 @@ describe("WorktreeSyncService", () => {
     describe("created worktree tip verification", () => {
       beforeEach(() => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
-        mockGitService.getWorktrees.mockResolvedValue([]);
+        // Only the anchor: an empty listing reads as a detached anchor.
+        mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/main", branch: "main" }]);
         mockGitService.addWorktree.mockImplementation(async (branch: string) => ({
           status: "created",
           head: branch === "feature-1" ? "aaaa1111" : "bbbb2222",
@@ -1070,6 +1146,65 @@ describe("WorktreeSyncService", () => {
       try {
         await service.sync();
         expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", wtPath("/test/worktrees", "feature-1"));
+      } finally {
+        listSpy.mockRestore();
+      }
+    });
+
+    // The reaper can leave an expired entry listed (keep-ref mint failure,
+    // payload delete refused, ...). The reservation must end at expiresAt
+    // regardless, or the branch never gets a worktree again.
+    function listDivergedEntry(expiresAt: string): ReturnType<typeof vi.spyOn> {
+      return vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({
+        entries: [
+          {
+            manifest: {
+              id: "trash-id",
+              reason: "diverged-replace",
+              branch: "feature-1",
+              originalPath: wtPath("/test/worktrees", "feature-1"),
+              expiresAt,
+            },
+          } as any,
+        ],
+        invalid: [],
+      });
+    }
+
+    it("does not reserve a branch for an expired diverged entry that is still listed", async () => {
+      await useTrashEnabledService();
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
+      mockGitService.getWorktrees.mockResolvedValue([]);
+      const listSpy = listDivergedEntry("2000-01-01T00:00:00.000Z");
+      (fs.access as Mock<any>).mockRejectedValue(
+        Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }),
+      );
+
+      try {
+        await service.sync();
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", wtPath("/test/worktrees", "feature-1"));
+      } finally {
+        listSpy.mockRestore();
+      }
+    });
+
+    it("does not reserve a branch for a diverged entry with an unparseable expiry, and warns once", async () => {
+      await useTrashEnabledService();
+      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1"]);
+      mockGitService.getWorktrees.mockResolvedValue([]);
+      const listSpy = listDivergedEntry("not-a-date");
+      (fs.access as Mock<any>).mockRejectedValue(
+        Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }),
+      );
+
+      try {
+        await service.sync();
+        expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature-1", wtPath("/test/worktrees", "feature-1"));
+        await service.sync();
+        const warnings = (mockLogger.warn as Mock<any>).mock.calls.filter(([msg]) =>
+          String(msg).includes("unparseable expiry"),
+        );
+        expect(warnings).toHaveLength(1);
       } finally {
         listSpy.mockRestore();
       }
@@ -2014,47 +2149,27 @@ describe("WorktreeSyncService", () => {
     });
 
     describe("LFS error handling", () => {
-      it("should call setLfsSkipEnabled when falling back to branch-by-branch fetch", async () => {
-        mockGitService.fetchAll = vi.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed")) as any;
+      // A fetch never runs the smudge filter, but an LFS-shaped fetch error still
+      // reaches retry()'s LFS handler, which turns the skip on for the next attempt.
+      it("retries an LFS-failed fetch with LFS downloads off, never branch by branch", async () => {
+        mockGitService.fetchAll = vi
+          .fn<any>()
+          .mockRejectedValueOnce(new Error("smudge filter lfs failed"))
+          .mockResolvedValue(undefined) as any;
         mockGitService.fetchBranch = vi.fn<any>().mockResolvedValue(undefined) as any;
+        service = new WorktreeSyncService({ ...mockConfig, retry: { initialDelayMs: 0, jitterMs: 0 } });
+        service["gitService"] = mockGitService;
 
         await service.sync();
 
-        expect(mockGitService.fetchBranch).toHaveBeenCalled();
+        expect(mockGitService.fetchAll).toHaveBeenCalledTimes(2);
+        expect(mockGitService.fetchBranch).not.toHaveBeenCalled();
         expect(mockGitService.setLfsSkipEnabled).toHaveBeenCalledWith(true);
-        // Should be reset after sync completes
-        expect(mockGitService.setLfsSkipEnabled).toHaveBeenCalledWith(false);
+        expect(mockGitService.setLfsSkipEnabled).toHaveBeenLastCalledWith(false);
       });
 
-      it("should handle partial LFS branch-by-branch fetch failures gracefully", async () => {
-        mockGitService.fetchAll = vi.fn<any>().mockRejectedValue(new Error("smudge filter lfs failed")) as any;
-
-        // Some branches succeed, some fail
-        mockGitService.fetchBranch = vi.fn<any>().mockImplementation((...args: unknown[]) => {
-          const branch = args[0] as string;
-          if (branch === "feature-1") {
-            return Promise.reject(new Error("LFS error on feature-1"));
-          }
-          return Promise.resolve(undefined);
-        }) as any;
-
-        mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
-
-        await service.sync();
-
-        // All branches should have been attempted
-        expect(mockGitService.fetchBranch).toHaveBeenCalledWith("main");
-        expect(mockGitService.fetchBranch).toHaveBeenCalledWith("feature-1");
-        expect(mockGitService.fetchBranch).toHaveBeenCalledWith("feature-2");
-
-        // Should log about partial success
-        expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("2/3 successful"));
-        expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Failed to fetch 1 branches"));
-      });
-
-      // The smudge filter runs at checkout, not at fetch, so the fallback has to
-      // engage from the create phase as well — and the skip it turns on there
-      // must be restored when the sync ends, exactly like the fetch fallback's.
+      // The smudge filter runs at checkout, so the fallback engages from the
+      // create phase — and the skip it turns on must be restored when the sync ends.
       it("retries a worktree checkout that failed with an LFS error and restores the skip", async () => {
         mockGitService.addWorktree = vi
           .fn<any>()
@@ -2075,7 +2190,7 @@ describe("WorktreeSyncService", () => {
         );
       });
 
-      it("should not retry LFS branch-by-branch if skipLfs is already configured", async () => {
+      it("gives up on an LFS-failed fetch if skipLfs is already configured", async () => {
         // Configure to skip LFS from the start
         mockConfig.skipLfs = true;
         service = new WorktreeSyncService(mockConfig);
@@ -2086,7 +2201,6 @@ describe("WorktreeSyncService", () => {
 
         await expect(service.sync()).rejects.toThrow("LFS error retry limit exceeded");
 
-        // Should not attempt branch-by-branch fetch when skipLfs is true
         expect(mockGitService.fetchBranch).not.toHaveBeenCalled();
       });
     });
@@ -2968,8 +3082,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should retry entire sync operation on network errors", async () => {
-      const networkError = new Error("Network connection failed");
-      (networkError as any).code = "ECONNREFUSED";
+      const networkError = new Error("Network connection failed: Connection refused");
 
       mockGitService.fetchAll.mockRejectedValueOnce(networkError).mockResolvedValueOnce(undefined);
       mockGitService.getRemoteBranches.mockResolvedValue(["main", "develop"]);
@@ -2996,8 +3109,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should respect maxAttempts configuration", async () => {
-      const error = new Error("Persistent network error");
-      (error as any).code = "ETIMEDOUT";
+      const error = new Error("Persistent network error: Connection timed out");
 
       mockGitService.fetchAll.mockRejectedValue(error);
 
@@ -3087,8 +3199,7 @@ describe("WorktreeSyncService", () => {
       mockGitService.fetchAll.mockImplementation(() => {
         attempts++;
         if (attempts < 5) {
-          const error = new Error("Network error");
-          (error as any).code = "ECONNREFUSED";
+          const error = new Error("Network error: Connection refused");
           return Promise.reject(error);
         }
         return Promise.resolve(undefined);
@@ -3103,8 +3214,7 @@ describe("WorktreeSyncService", () => {
     });
 
     it("should log retry attempts", async () => {
-      const error = new Error("Network timeout");
-      (error as any).code = "ETIMEDOUT";
+      const error = new Error("Network timeout: Connection timed out");
 
       mockGitService.fetchAll
         .mockRejectedValueOnce(error)
@@ -3147,7 +3257,8 @@ describe("WorktreeSyncService", () => {
         isNarrowing,
         buildPatterns: vi.fn().mockReturnValue(["apps"]),
         needsUpdate: vi.fn().mockResolvedValue(true),
-        resolveMode: vi.fn(),
+        resolveMode: vi.fn().mockReturnValue("cone"),
+        readCurrentMode: vi.fn().mockResolvedValue("cone"),
         patternsEqual: vi.fn((a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i])),
       } as any);
       (fs.access as Mock).mockResolvedValue(undefined);
@@ -3177,6 +3288,7 @@ describe("WorktreeSyncService", () => {
         buildPatterns: real.buildPatterns.bind(real),
         needsUpdate: vi.fn().mockResolvedValue(true),
         resolveMode: real.resolveMode.bind(real),
+        readCurrentMode: vi.fn().mockResolvedValue("cone"),
         patternsEqual: real.patternsEqual.bind(real),
       } as any);
       readCurrent.mockResolvedValue(["apps"]);

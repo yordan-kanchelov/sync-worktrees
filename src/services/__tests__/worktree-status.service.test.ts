@@ -4,7 +4,6 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { WorktreeNotCleanError } from "../../errors";
 import { setEnvVar } from "../../__tests__/test-utils";
 import { GIT_UNSAFE_ALLOWANCES } from "../../utils/git-env";
 import { RefScanScope, WorktreeStatusService, parseRefScan } from "../worktree-status.service";
@@ -47,6 +46,8 @@ describe("WorktreeStatusService", () => {
   // The repository-wide ref scan, kept apart from `raw` so the per-worktree
   // subcommand assertions below see only per-worktree commands.
   let mockForEachRef: Mock<(args: string[]) => Promise<string>>;
+  // `symbolic-ref -q HEAD`, which hasStashedChanges reads the branch from.
+  let mockSymbolicRef: Mock<(args: string[]) => Promise<string>>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -69,11 +70,17 @@ describe("WorktreeStatusService", () => {
 
     header = { current: "main", detached: false, tracking: "origin/main", ahead: 0, behind: 0 };
     mockForEachRef = vi.fn(async () => refScanOutput({ main: "refs/remotes/origin/main" }, ["origin/main"]));
+    mockSymbolicRef = vi.fn(async () => "refs/heads/main\n");
 
     (simpleGit as unknown as Mock).mockReturnValue({
       ...mockGit,
-      status: async (...args: any[]) => ({ ...header, ...(await (mockGit.status as any)(...args)) }),
-      raw: (args: string[]) => (args[0] === "for-each-ref" ? mockForEachRef(args) : (mockGit.raw as any)(args)),
+      status: async (...args: any[]) => ({ files: [], ...header, ...(await (mockGit.status as any)(...args)) }),
+      raw: (args: string[]) =>
+        args[0] === "for-each-ref"
+          ? mockForEachRef(args)
+          : args[0] === "symbolic-ref"
+            ? mockSymbolicRef(args)
+            : (mockGit.raw as any)(args),
     });
   });
 
@@ -793,7 +800,7 @@ describe("WorktreeStatusService", () => {
       });
 
       it("ignores stashes made on another branch", async () => {
-        mockGit.branch.mockResolvedValue({ current: "feature/a", detached: false } as any);
+        mockSymbolicRef.mockResolvedValue("refs/heads/feature/a\n");
         mockGit.stashList.mockResolvedValue(
           listing({ subject: "WIP on main: abc123 msg" }, { subject: "On other: my: message" }),
         );
@@ -803,7 +810,7 @@ describe("WorktreeStatusService", () => {
       });
 
       it("counts a stash made on the checked-out branch, custom message with colons included", async () => {
-        mockGit.branch.mockResolvedValue({ current: "feature/a", detached: false } as any);
+        mockSymbolicRef.mockResolvedValue("refs/heads/feature/a\n");
         mockGit.stashList.mockResolvedValue(
           listing({ subject: "WIP on main: abc123 msg" }, { subject: "On feature/a: fix: half done" }),
         );
@@ -812,7 +819,7 @@ describe("WorktreeStatusService", () => {
       });
 
       it("counts every named stash when the checked-out branch cannot be read", async () => {
-        mockGit.branch.mockRejectedValue(new Error("branch failed"));
+        mockSymbolicRef.mockRejectedValue(new Error("symbolic-ref failed"));
         mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on main: abc123 msg" }));
 
         await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
@@ -846,14 +853,28 @@ describe("WorktreeStatusService", () => {
         expect(revListCalls()).toEqual([]);
       });
 
-      // During a rebase or bisect `git branch` prints `* (no branch, rebasing
-      // feature/a)`, which simple-git parses as a checked-out branch named
-      // "(no". Matching stashes against that name counted none of them.
-      it("counts every named stash when `git branch` reports a rebase in progress", async () => {
-        mockGit.branch.mockResolvedValue({ current: "(no", detached: false } as any);
+      // A paused rebase or bisect detaches HEAD while the stashes made before
+      // it name the branch being worked on: count every named stash.
+      it("counts every named stash when HEAD is detached by a rebase in progress", async () => {
+        mockSymbolicRef.mockResolvedValue("");
+        (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
+          if (String(target).endsWith("rebase-merge")) return undefined;
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        });
         mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on feature/a: abc123 msg" }));
 
         await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(true);
+      });
+
+      it("ignores a named stash on a plain detached HEAD", async () => {
+        mockSymbolicRef.mockResolvedValue("");
+        (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
+        (fs.access as Mock<any>).mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+        mockGit.stashList.mockResolvedValue(listing({ subject: "WIP on feature/a: abc123 msg" }));
+
+        await expect(service.hasStashedChanges("/test/worktree")).resolves.toBe(false);
+        expect(mockGit.branch).not.toHaveBeenCalled();
       });
 
       it("reports only this worktree's stashes in the status details", async () => {
@@ -916,62 +937,6 @@ describe("WorktreeStatusService", () => {
     });
   });
 
-  describe("hasModifiedSubmodules", () => {
-    it("should return true for modified submodules", async () => {
-      mockGit.raw.mockResolvedValue("+abc123 submodule1 (modified)\n abc456 submodule2");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(true);
-    });
-
-    it("should return false for clean submodules", async () => {
-      mockGit.raw.mockResolvedValue(" abc123 submodule1\n abc456 submodule2");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return true for conflicted submodules", async () => {
-      mockGit.raw.mockResolvedValue("U6f73556 libs/sub (heads/main)");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(true);
-    });
-
-    // What every worktree `git worktree add` builds looks like: git does not
-    // initialize submodules for a new worktree, and an uninitialized submodule
-    // has no working tree that could be holding local work.
-    it("should return false for uninitialized submodules", async () => {
-      mockGit.raw.mockResolvedValue("-6f73556 libs/sub\n-6f73556 libs/other");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return false when no submodules", async () => {
-      mockGit.raw.mockResolvedValue("");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return true on error (conservative)", async () => {
-      mockGit.raw.mockRejectedValue(new Error("No submodules"));
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(true);
-      expect(consoleSpy).toHaveBeenCalled();
-      consoleSpy.mockRestore();
-    });
-  });
-
   describe("hasOperationInProgress", () => {
     it("should return true when merge is in progress", async () => {
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
@@ -1014,92 +979,6 @@ describe("WorktreeStatusService", () => {
 
       expect(result).toBe(false);
       expect(fs.readFile).toHaveBeenCalledWith(path.join("/test/worktree", ".git"), "utf-8");
-    });
-  });
-
-  describe("validateWorktreeForRemoval", () => {
-    it("should not throw for clean worktree", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-      mockGit.raw.mockResolvedValue("0\n");
-      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree")).resolves.not.toThrow();
-    });
-
-    it("should throw WorktreeNotCleanError for dirty worktree", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: ["file.ts"],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-      mockGit.raw.mockResolvedValue("0\n");
-      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree")).rejects.toThrow(WorktreeNotCleanError);
-    });
-
-    it("should throw with correct reasons", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: ["file.ts"],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-      mockGit.raw.mockResolvedValue("3\n");
-      mockGit.stashList.mockResolvedValue(stashesOnMain(1));
-      (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
-
-      try {
-        await service.validateWorktreeForRemoval("/test/worktree");
-        expect.fail("Should have thrown");
-      } catch (error) {
-        expect(error).toBeInstanceOf(WorktreeNotCleanError);
-        expect((error as WorktreeNotCleanError).reasons).toContain("uncommitted changes: 'file.ts'");
-        expect((error as WorktreeNotCleanError).reasons).toContain("unpushed commits");
-      }
-    });
-
-    it("should not throw for worktree with only gitignored files", async () => {
-      // git filtered `.DS_Store` out of the status itself; nothing re-checks it.
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-      mockGit.raw.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "submodule") return "";
-        return "0\n";
-      }) as any);
-      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree")).resolves.not.toThrow();
     });
   });
 
@@ -1421,18 +1300,6 @@ describe("WorktreeStatusService", () => {
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
       expect(status.reasons).toContain("detached HEAD");
-    });
-
-    it("validateWorktreeForRemoval accepts a fully-pushed worktree with the recorded tip", async () => {
-      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree", undefined, recordedTip)).resolves.not.toThrow();
-    });
-
-    it("validateWorktreeForRemoval still rejects without the recorded tip", async () => {
-      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree")).rejects.toThrow(WorktreeNotCleanError);
     });
   });
 

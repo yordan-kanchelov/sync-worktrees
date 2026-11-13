@@ -8,6 +8,7 @@ export type {
   SyncWorktreesConfig,
   SyncWorktreesDefaults,
   SyncWorktreesHooksConfig,
+  SyncWorktreesMaintenanceConfig,
   SyncWorktreesParallelismConfig,
   SyncWorktreesRepository,
   SyncWorktreesRepositoryMode,
@@ -15,4 +16,4 @@ export type {
   SyncWorktreesSparseCheckoutConfig,
   SyncWorktreesSparseCheckoutMode,
   SyncWorktreesTrashConfig,
-} from "./types";
+} from "./types/public-config";

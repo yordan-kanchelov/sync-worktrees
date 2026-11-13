@@ -261,6 +261,29 @@ describe("worktree sync planner", () => {
       ]);
     });
 
+    it("carries the lock onto update candidates", () => {
+      const actions = planUpdateActions(
+        makeInventory({
+          remoteBranches: ["main", "feature/a"],
+          existingWorktrees: [
+            { path: wtPath("main"), branch: "main", locked: false },
+            { path: wtPath("feature/a"), branch: "feature/a", locked: true, lockReason: "demo box" },
+          ],
+        }),
+      );
+
+      expect(actions).toEqual([
+        { kind: "update-candidate", branch: "main", path: wtPath("main") },
+        {
+          kind: "update-candidate",
+          branch: "feature/a",
+          path: wtPath("feature/a"),
+          locked: true,
+          lockReason: "demo box",
+        },
+      ]);
+    });
+
     it("omits update candidates when updateExistingWorktrees is disabled", () => {
       const plan = createWorktreeSyncPlan(makeInventory(), {
         pathResolution,

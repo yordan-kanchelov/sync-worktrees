@@ -67,7 +67,7 @@ function buildGitMock(rawMap: Record<string, string> = {}): FakeGitClient {
       // repository behind it.
       if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
       if (key.startsWith("rev-parse --abbrev-ref HEAD")) return "main";
-      if (key.startsWith("remote get-url origin")) return "https://github.com/example/repo.git";
+      if (key.startsWith("config --local --get remote.origin.url")) return "https://github.com/example/repo.git";
       if (key.startsWith("checkout HEAD")) return "";
       return "";
     }),
@@ -87,10 +87,12 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     applyToWorktree: vi.fn().mockResolvedValue(undefined),
     buildPatterns: vi.fn().mockReturnValue(["src"]),
     readCurrent: vi.fn().mockResolvedValue(null),
+    readCurrentMode: vi.fn().mockResolvedValue("cone"),
     patternsEqual: vi.fn().mockReturnValue(false),
     needsUpdate: vi.fn().mockResolvedValue(true),
     isNarrowing: vi.fn().mockReturnValue(false),
     resolveMode: vi.fn().mockReturnValue("cone"),
+    pathsTouchSparse: vi.fn().mockReturnValue(true),
   };
   const stub: Partial<Record<keyof GitService | "getSparseCheckoutService", unknown>> = {
     getRemoteDefaultBranch: vi.fn().mockResolvedValue("main"),
@@ -98,6 +100,7 @@ function buildGitService(overrides: Partial<Record<keyof GitService, Mock>> = {}
     getSparseCheckoutService: vi.fn().mockReturnValue(sparseService),
     checkWorktreeStatus: vi.fn().mockResolvedValue(true),
     classifyRemoteRelationship: vi.fn().mockResolvedValue("fast_forward"),
+    getChangedPathsInRange: vi.fn().mockResolvedValue(["src/a.ts"]),
     isLfsSkipEnabled: vi.fn().mockReturnValue(false),
     setLfsSkipEnabled: vi.fn(),
     ...overrides,
@@ -140,19 +143,22 @@ function mergeHistory(merges: number): string {
 // behind the fetched tip, and defaults to the same graph for the ticks where
 // the two coincide. `missingRemoteRef` makes the origin/main walk reject the
 // way `git rev-list` rejects an unknown ref, which is the first sync.
+// A shallow clone's parentless commits are grafted boundaries, so `cat-file`
+// shows them a parent; `completeHistory` makes them true roots instead.
 function buildSyncRawMock(opts: {
   shallow: boolean;
   history?: string | (() => string);
   headHistory?: string | (() => string);
   historyError?: Error;
   missingRemoteRef?: boolean;
+  completeHistory?: boolean;
 }): (args: string[]) => Promise<string> {
   const resolve = (source: string | (() => string) | undefined): string =>
     typeof source === "function" ? source() : (source ?? "");
   return async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-    if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+    if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
     if (key === "rev-parse --abbrev-ref HEAD") return "main";
     if (key === "rev-parse --is-shallow-repository") return opts.shallow ? "true" : "false";
     if (key === REMOTE_HISTORY_WALK) {
@@ -165,6 +171,9 @@ function buildSyncRawMock(opts: {
     if (key === HEAD_HISTORY_WALK) {
       if (opts.historyError) throw opts.historyError;
       return resolve(opts.headHistory ?? opts.history);
+    }
+    if (args[0] === "cat-file" && args[1] === "commit") {
+      return opts.shallow && !opts.completeHistory ? "tree t\nparent cut\n\nmsg\n" : "tree t\n\nmsg\n";
     }
     return "";
   };
@@ -309,6 +318,55 @@ describe("CloneSyncService", () => {
       });
     });
 
+    // With `branch` unset, later starts read the clone-time default back from
+    // refs/remotes/origin/HEAD. Newer git does not write that symref on a
+    // single-branch clone, so the init records it; a configured branch says
+    // nothing about the remote's default, so nothing is recorded for it.
+    describe("clone-time default branch record", () => {
+      const RECORD_DEFAULT = ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"];
+      const mockEmptyTarget = (): void => {
+        (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+        (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+        (fs.stat as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+        (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+      };
+
+      it("records the resolved default after a fresh clone when no branch is configured", async () => {
+        mockEmptyTarget();
+        const gitService = buildGitService({ getRemoteDefaultBranch: vi.fn().mockResolvedValue("trunk") });
+        const service = new CloneSyncService(makeConfig({ branch: undefined }), gitService, logger);
+
+        await service.initialize();
+
+        expect(gitMock.raw).toHaveBeenCalledWith(RECORD_DEFAULT);
+      });
+
+      it("records nothing when the branch is configured", async () => {
+        mockEmptyTarget();
+        const service = new CloneSyncService(makeConfig({ branch: "trunk" }), buildGitService(), logger);
+
+        await service.initialize();
+
+        expect(gitMock.raw).not.toHaveBeenCalledWith(RECORD_DEFAULT);
+      });
+
+      it("keeps the clone when the record cannot be written", async () => {
+        mockEmptyTarget();
+        const raw = gitMock.raw.getMockImplementation() as (args: string[]) => Promise<string>;
+        gitMock.raw.mockImplementation(async (args: string[]) => {
+          if (args.join(" ") === RECORD_DEFAULT.join(" ")) throw new Error("fatal: cannot lock ref");
+          return raw(args);
+        });
+        const gitService = buildGitService({ getRemoteDefaultBranch: vi.fn().mockResolvedValue("trunk") });
+        const service = new CloneSyncService(makeConfig({ branch: undefined }), gitService, logger);
+
+        await service.initialize();
+
+        expect(service.isInitialized()).toBe(true);
+      });
+    });
+
     // The recorded outcome is what the MCP `sync` result and the run summary
     // show, so a clone that git could not authenticate carries the remedy
     // hint there, not only on the rejection.
@@ -389,7 +447,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
       });
@@ -416,7 +474,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "config --get-all remote.origin.fetch") return "+refs/heads/*:refs/remotes/origin/*\n";
         return "";
@@ -444,7 +502,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "config --get-all remote.origin.fetch") {
           return ["+refs/heads/main:refs/remotes/origin/main", "+refs/pull/*/head:refs/remotes/origin/pr/*"].join("\n");
@@ -475,7 +533,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "develop";
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         return "";
       });
 
@@ -515,7 +573,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "develop";
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         return "";
       });
       const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
@@ -543,7 +601,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "remote get-url origin") return "https://github.com/example/other.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/other.git";
         return "";
       });
       const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
@@ -570,7 +628,7 @@ describe("CloneSyncService", () => {
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         // config repoUrl is "...repo.git"; on-disk origin lacks the .git suffix.
-        if (key === "remote get-url origin") return "https://github.com/example/repo";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo";
         return "";
       });
       const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger, {
@@ -592,7 +650,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") throw new Error("fatal: not a git repository");
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         return "";
       });
 
@@ -877,6 +935,93 @@ describe("CloneSyncService", () => {
         // which is the bug this test exists for.
         expect(call?.[2]).toBeDefined();
         expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+      });
+
+      describe("sparse clone checked out after the patterns are set", () => {
+        function mockFreshClone(): void {
+          (fs.readdir as unknown as Mock).mockRejectedValueOnce(enoent());
+          (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+          (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+          (fs.rm as unknown as Mock).mockResolvedValue(undefined);
+          (fs.access as unknown as Mock).mockRejectedValue(enoent());
+        }
+
+        it("clones with --no-checkout and brackets the checkout with the incomplete-clone marker", async () => {
+          mockFreshClone();
+          const gitService = buildGitService();
+          const service = new CloneSyncService(
+            makeConfig({ sparseCheckout: { include: ["src"] } }),
+            gitService,
+            logger,
+          );
+
+          await expect(service.initialize()).resolves.toBeUndefined();
+
+          expect(gitMock.clone.mock.calls[0][2]).toContain("--no-checkout");
+          expect(gitService.getSparseCheckoutService().applyToWorktree).toHaveBeenCalledTimes(1);
+          expect(gitMock.raw).toHaveBeenCalledWith(["checkout", "HEAD"]);
+          expect(fs.writeFile).toHaveBeenCalledWith(INCOMPLETE_MARKER, expect.any(String));
+          expect(fs.rm).toHaveBeenCalledWith(INCOMPLETE_MARKER, { force: true });
+        });
+
+        it("does not pass --no-checkout without sparseCheckout", async () => {
+          mockFreshClone();
+          const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
+
+          await service.initialize();
+
+          expect(gitMock.clone.mock.calls[0][2]).not.toContain("--no-checkout");
+          expect(fs.writeFile).not.toHaveBeenCalledWith(INCOMPLETE_MARKER, expect.any(String));
+        });
+
+        it("retries an LFS-failed checkout with smudging disabled", async () => {
+          mockFreshClone();
+          gitMock.raw.mockImplementation(async (args: string[]) => {
+            const key = args.join(" ");
+            if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+            if (key === "checkout HEAD") throw new Error("fatal: a.bin: smudge filter lfs failed");
+            return "";
+          });
+          const gitService = buildGitService();
+          const service = new CloneSyncService(
+            makeConfig({ sparseCheckout: { include: ["src"] } }),
+            gitService,
+            logger,
+          );
+
+          await expect(service.initialize()).resolves.toBeUndefined();
+
+          expect(gitMock.raw).toHaveBeenCalledWith(["checkout", "-f", "HEAD"]);
+          expect(gitMock.env).toHaveBeenCalledWith(expect.objectContaining({ GIT_LFS_SKIP_SMUDGE: "1" }));
+          expect(fs.rm).toHaveBeenCalledWith(INCOMPLETE_MARKER, { force: true });
+          expect(service.isInitialized()).toBe(true);
+        });
+
+        it("leaves the marker and fails when the checkout cannot be repaired", async () => {
+          mockFreshClone();
+          gitMock.raw.mockImplementation(async (args: string[]) => {
+            const key = args.join(" ");
+            if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+            if (key.endsWith("checkout HEAD") || key.endsWith("checkout -f HEAD")) {
+              throw new Error("fatal: a.bin: smudge filter lfs failed");
+            }
+            return "";
+          });
+          const service = new CloneSyncService(
+            makeConfig({ sparseCheckout: { include: ["src"] } }),
+            buildGitService(),
+            logger,
+          );
+
+          await expect(service.initialize()).rejects.toThrow("smudge filter lfs failed");
+
+          expect(fs.writeFile).toHaveBeenCalledWith(
+            INCOMPLETE_MARKER,
+            expect.stringContaining("smudge filter lfs failed"),
+          );
+          expect(fs.rm).not.toHaveBeenCalledWith(INCOMPLETE_MARKER, { force: true });
+          expect(service.isInitialized()).toBe(false);
+        });
       });
 
       // The marker is the only thing that tells a clone of ours that never
@@ -1495,34 +1640,44 @@ describe("CloneSyncService", () => {
   });
 
   describe("checkoutBranch", () => {
-    it("rejects checkout to a branch other than the configured one", async () => {
+    it("refuses a branch the clone does not hold locally before fetching or switching", async () => {
       const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
+        return "";
+      });
 
       await expect(service.checkoutBranch("feature/new")).rejects.toMatchObject({
-        constructor: ConfigError,
-        code: "CONFIG_CLONE_BRANCH_MISMATCH",
-        message: expect.stringContaining("clone mode tracks the configured branch 'main'"),
+        constructor: GitOperationError,
+        message: expect.stringContaining("has no local branch 'feature/new'"),
       });
 
       expect(gitMock.fetch).not.toHaveBeenCalled();
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/new"]);
+      expect(rawCalls().some((args) => args[0] === "switch")).toBe(false);
+      expect(rawCalls().some((args) => args[0] === "config" && args[1] === "--replace-all")).toBe(false);
     });
 
-    it("rejects checkout away from the remote default branch when no branch is configured", async () => {
-      const service = new CloneSyncService(makeConfig({ branch: undefined }), buildGitService(), logger);
+    it("fetches and fast-forwards the branch the clone is already on", async () => {
+      const service = new CloneSyncService(makeConfig({ branch: "main" }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
-
-      await expect(service.checkoutBranch("feature/new")).rejects.toMatchObject({
-        constructor: ConfigError,
-        code: "CONFIG_CLONE_BRANCH_MISMATCH",
-        message: expect.stringContaining(
-          "no 'branch' is configured, so this clone tracks the remote default branch 'main'",
-        ),
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        return "";
       });
 
-      expect(gitMock.fetch).not.toHaveBeenCalled();
+      await service.checkoutBranch("main");
+
+      expect(gitMock.fetch).toHaveBeenCalledWith(expect.arrayContaining(["+refs/heads/main:refs/remotes/origin/main"]));
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
 
     it("refuses to switch branches from a detached HEAD before any fetch", async () => {
@@ -1531,7 +1686,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "HEAD";
         return "";
       });
@@ -1543,10 +1698,9 @@ describe("CloneSyncService", () => {
 
       expect(gitMock.fetch).not.toHaveBeenCalled();
       expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/new"]);
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
     });
 
-    it("allows intentional drift with allowConfigDrift and warns to update the config", async () => {
+    it("switches away from the configured branch and warns to update the config", async () => {
       // The TUI branch wizard creates+pushes a new branch and then switches to
       // it — that drift is deliberate, but config.branch is now stale, so the
       // user must be told or every sync after a restart soft-skips silently.
@@ -1556,17 +1710,45 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false";
-        if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
         return "";
       });
 
-      await service.checkoutBranch("feature/new", { allowConfigDrift: true });
+      await service.checkoutBranch("feature/new");
 
-      expect(gitMock.raw).toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["switch", "feature/new"]);
+      expect(gitMock.merge).toHaveBeenCalledWith(["origin/feature/new", "--ff-only"]);
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`Set branch: "feature/new" in the config file`));
+    });
+
+    // The drift warning quotes what the config says, not the branch the
+    // previous in-session switch left behind.
+    it.each([
+      ["configured", "main", "still says branch 'main'"],
+      ["resolved default", undefined, "resolves the remote default 'main'"],
+    ])("names the %s branch on a second consecutive drift", async (_label, branch, expected) => {
+      const warnSpy = vi.spyOn(logger, "warn");
+      const service = new CloneSyncService(makeConfig({ branch }), buildGitService(), logger);
+      (service as unknown as { initialized: boolean }).initialized = true;
+      gitMock.raw.mockImplementation(async (args: string[]) => {
+        const key = args.join(" ");
+        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
+        if (key === "rev-parse --abbrev-ref HEAD") return "main";
+        if (key === "rev-parse --is-shallow-repository") return "false";
+        return "";
+      });
+
+      await service.checkoutBranch("featA");
+      await service.checkoutBranch("featB");
+
+      const driftWarnings = warnSpy.mock.calls.map((call) => String(call[0])).filter((m) => m.includes("now tracks"));
+      expect(driftWarnings).toHaveLength(2);
+      expect(driftWarnings[1]).toContain("now tracks 'featB'");
+      expect(driftWarnings[1]).toContain(expected);
+      expect(driftWarnings[1]).not.toContain("featA");
     });
 
     it("does not fetch from a clone whose origin mismatches config during initialization", async () => {
@@ -1575,7 +1757,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/other.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/other.git";
         return "";
       });
 
@@ -1589,20 +1771,18 @@ describe("CloneSyncService", () => {
 
       expect(service.isInitialized()).toBe(true);
       expect(gitMock.fetch).not.toHaveBeenCalled();
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
       expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/new"]);
     });
 
-    it("fetches only the requested branch and creates a safe tracking branch", async () => {
+    it("fetches only the requested branch and switches to it", async () => {
       const service = new CloneSyncService(makeConfig({ depth: 1, branch: "feature/new" }), buildGitService(), logger);
       (service as unknown as { initialized: boolean }).initialized = true;
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true";
-        if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
         if (key === "for-each-ref --format=%(refname) refs/remotes/origin") {
           return [
             "refs/remotes/origin/HEAD",
@@ -1630,7 +1810,7 @@ describe("CloneSyncService", () => {
         "1",
         "+refs/heads/feature/new:refs/remotes/origin/feature/new",
       ]);
-      expect(gitMock.raw).toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+      expect(gitMock.raw).toHaveBeenCalledWith(["switch", "feature/new"]);
       expect(gitMock.raw).toHaveBeenCalledWith([
         "config",
         "--replace-all",
@@ -1653,7 +1833,7 @@ describe("CloneSyncService", () => {
       async (args: string[]): Promise<string> => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return isShallow;
         if (key === "show-ref --verify refs/heads/feature/existing") return "";
@@ -1792,7 +1972,7 @@ describe("CloneSyncService", () => {
       // checkout reports the hard error itself; recording a missing_remote_ref
       // skip on top would double-report a user-initiated action as a sync skip
       expect(onSkip).not.toHaveBeenCalled();
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/new"]);
     });
 
     it("throws GitOperationError when the remote ref does not materialize after a successful fetch", async () => {
@@ -1801,7 +1981,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "show-ref --verify refs/remotes/origin/feature/new") throw new Error("missing remote ref");
         return "";
@@ -1812,7 +1992,7 @@ describe("CloneSyncService", () => {
         message: expect.stringContaining("did not materialize after fetch"),
       });
 
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "-c", "feature/new", "--track", "origin/feature/new"]);
+      expect(gitMock.raw).not.toHaveBeenCalledWith(["switch", "feature/new"]);
     });
 
     it("unshallows a shallow clone before the branch fetch when no depth is configured", async () => {
@@ -1821,10 +2001,9 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true";
-        if (key === "show-ref --verify refs/heads/feature/new") throw new Error("missing local branch");
         return "";
       });
 
@@ -1857,7 +2036,7 @@ describe("CloneSyncService", () => {
         const override = overrides(key);
         if (override !== undefined) return override;
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false";
         if (key === `show-ref --verify ${NEW_BRANCH_REF}`) throw new Error("missing local branch");
@@ -2023,20 +2202,20 @@ describe("CloneSyncService", () => {
       expect(gitMock.fetch).not.toHaveBeenCalled();
     });
 
-    // 'feat' already existing makes 'feat/sub' impossible. Git says so, but the
-    // wizard only suffix-retries on "already exists", and a bare git message
-    // names no repository.
+    // 'feature/new/x' existing makes 'feature/new' impossible, but a suffixed
+    // name is free, so this is worded for the wizard's suffix retry.
     it("reports a name that collides with an existing branch path in the wizard's own wording", async () => {
       mockWizardRaw();
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = Array.isArray(args) ? args.join(" ") : String(args);
         if (key.startsWith("branch --no-track")) {
           throw new Error(
-            `fatal: cannot lock ref 'refs/heads/${NEW_BRANCH}': 'refs/heads/feat' exists; cannot create '${NEW_BRANCH}'`,
+            `fatal: cannot lock ref 'refs/heads/${NEW_BRANCH}': 'refs/heads/${NEW_BRANCH}/x' exists; ` +
+              `cannot create 'refs/heads/${NEW_BRANCH}'`,
           );
         }
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false";
         if (key === `show-ref --verify ${NEW_BRANCH_REF}`) throw new Error("missing local branch");
@@ -2050,6 +2229,20 @@ describe("CloneSyncService", () => {
         message: expect.stringContaining("already exists"),
       });
 
+      expect(gitMock.push).not.toHaveBeenCalled();
+    });
+
+    it("does not word an unrelated branch failure as a collision", async () => {
+      mockWizardRaw((key) => {
+        if (key.startsWith("branch --no-track")) throw new Error("fatal: unable to write new index file");
+        return undefined;
+      });
+      const service = buildWizardService();
+
+      const error = await service.createAndPushBranch("main", NEW_BRANCH).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(GitOperationError);
+      expect((error as Error).message).toContain("unable to write new index file");
+      expect((error as Error).message).not.toContain("already exists");
       expect(gitMock.push).not.toHaveBeenCalled();
     });
 
@@ -2221,7 +2414,7 @@ describe("CloneSyncService", () => {
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "true\n";
-        if (key.startsWith("remote get-url origin")) return "https://github.com/example/repo.git";
+        if (key.startsWith("config --local --get remote.origin.url")) return "https://github.com/example/repo.git";
         return "";
       });
       gitMock.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/main"));
@@ -2617,6 +2810,38 @@ describe("CloneSyncService", () => {
       expect(skips).toEqual([{ kind: "indeterminate_shallow", branch: "main", deepenedTo: 1000 }]);
     });
 
+    // A failed budget leaves origin/main holding its targets, and refetching
+    // one it holds would only cut the clone back and buy it again.
+    it.each([
+      ["skips deepen targets the fetched ref already holds", { history: linearHistory(200) }, [1000]],
+      [
+        "skips every deepen target when the fetched ref holds its whole history",
+        { history: linearHistory(120), completeHistory: true },
+        [],
+      ],
+    ])("%s", async (_label, mockOpts, expectedTargets) => {
+      gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, ...mockOpts }));
+      const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
+      const skips: CloneSkipReason[] = [];
+      const service = new CloneSyncService(
+        makeConfig({ depth: 1 }),
+        buildGitService({ classifyRemoteRelationship: classify }),
+        logger,
+        { onSkip: (reason) => skips.push(reason) },
+      );
+      setInitialized(service);
+
+      await service.runSyncAttempt();
+
+      const deepenTargets = gitMock.fetch.mock.calls
+        .slice(1)
+        .map((call) => call[0] as string[])
+        .map((args) => Number(args[args.indexOf("--depth") + 1]));
+      expect(deepenTargets).toEqual(expectedTargets);
+      expect(classify).toHaveBeenCalledTimes(1 + expectedTargets.length);
+      expect(skips).toEqual([{ kind: "indeterminate_shallow", branch: "main", deepenedTo: 1000 }]);
+    });
+
     it("records deepenedTo:null when configured depth already meets or exceeds every deepen target", async () => {
       const classify = vi.fn().mockResolvedValue("indeterminate_shallow");
       const skips: CloneSkipReason[] = [];
@@ -2758,7 +2983,7 @@ describe("CloneSyncService", () => {
 
       await service.runSyncAttempt(outcome);
 
-      expect(sparseService.isNarrowing).toHaveBeenCalledWith(["other", "pkg"], ["pkg"]);
+      expect(sparseService.isNarrowing).toHaveBeenCalledWith(["other", "pkg"], ["pkg"], "cone", "cone");
       expect(sparseService.applyToWorktree).not.toHaveBeenCalled();
       expect(outcome.toOutcome().actions).toContainEqual(
         expect.objectContaining({
@@ -2820,6 +3045,90 @@ describe("CloneSyncService", () => {
       );
       // Still not fatal: the fast-forward the sync exists for runs anyway.
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+    });
+
+    describe("skipUpdateWhenOutsideSparse", () => {
+      function outsideCone(diff: string[] | null = ["docs/readme.md"]): GitService {
+        const gitService = buildGitService({ getChangedPathsInRange: vi.fn().mockResolvedValue(diff) });
+        const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+        (sparseService.needsUpdate as Mock).mockResolvedValue(false);
+        (sparseService.pathsTouchSparse as Mock).mockReturnValue(false);
+        return gitService;
+      }
+
+      it("leaves HEAD behind when the upstream change is outside the cone", async () => {
+        const gitService = outsideCone();
+        const config = makeConfig({ sparseCheckout: { include: ["src"] } });
+        const outcome = new SyncOutcomeAccumulator({ mode: "clone", repoName: "demo" });
+        const skips: CloneSkipReason[] = [];
+        const service = new CloneSyncService(config, gitService, logger, { onSkip: (reason) => skips.push(reason) });
+        setInitialized(service);
+
+        await service.runSyncAttempt(outcome);
+
+        expect(gitService.getChangedPathsInRange).toHaveBeenCalledWith(config.worktreeDir, "HEAD", "origin/main");
+        expect(gitMock.merge).not.toHaveBeenCalled();
+        expect(outcome.toOutcome().actions).toContainEqual(
+          expect.objectContaining({
+            kind: "skipped",
+            reason: "outside_sparse_checkout",
+            branch: "main",
+            path: config.worktreeDir,
+          }),
+        );
+        // Informational, like worktree mode: not a clone-mode skip warning.
+        expect(skips).toEqual([]);
+      });
+
+      it("fast-forwards when the option is false", async () => {
+        const gitService = outsideCone();
+        const config = makeConfig({ sparseCheckout: { include: ["src"], skipUpdateWhenOutsideSparse: false } });
+        const service = new CloneSyncService(config, gitService, logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitService.getChangedPathsInRange).not.toHaveBeenCalled();
+        expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      });
+
+      it("fast-forwards when the diff cannot be read", async () => {
+        const gitService = outsideCone(null);
+        const service = new CloneSyncService(makeConfig({ sparseCheckout: { include: ["src"] } }), gitService, logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      });
+
+      it("fast-forwards in no-cone mode", async () => {
+        const gitService = outsideCone();
+        const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+        (sparseService.resolveMode as Mock).mockReturnValue("no-cone");
+        const service = new CloneSyncService(
+          makeConfig({ sparseCheckout: { include: ["src"], mode: "no-cone" } }),
+          gitService,
+          logger,
+        );
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      });
+
+      it("fast-forwards when the change touches the cone", async () => {
+        const gitService = outsideCone(["src/a.ts"]);
+        const sparseService = (gitService.getSparseCheckoutService as unknown as Mock)();
+        (sparseService.pathsTouchSparse as Mock).mockReturnValue(true);
+        const service = new CloneSyncService(makeConfig({ sparseCheckout: { include: ["src"] } }), gitService, logger);
+        setInitialized(service);
+
+        await service.runSyncAttempt();
+
+        expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
+      });
     });
   });
 
@@ -3131,9 +3440,9 @@ describe("CloneSyncService", () => {
           const key = args.join(" ");
           if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
           if (key === "rev-parse --abbrev-ref HEAD") return "main";
-          if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+          if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
           if (key === "rev-parse HEAD") return `${headReads++ === 0 ? HEAD_BEFORE_MERGE : headAfterMerge}\n`;
-          if (key === "diff --name-only -z HEAD refs/remotes/origin/main") {
+          if (key === "diff --name-only --no-renames -z HEAD refs/remotes/origin/main") {
             return options.mergePaths.map((mergePath) => `${mergePath}\0`).join("");
           }
           if (args[0] === "ls-tree") {
@@ -3229,7 +3538,14 @@ describe("CloneSyncService", () => {
 
         await expect(service.runSyncAttempt()).rejects.toThrow("smudge filter lfs failed");
 
-        expect(gitMock.raw).toHaveBeenCalledWith(["diff", "--name-only", "-z", "HEAD", "refs/remotes/origin/main"]);
+        expect(gitMock.raw).toHaveBeenCalledWith([
+          "diff",
+          "--name-only",
+          "--no-renames",
+          "-z",
+          "HEAD",
+          "refs/remotes/origin/main",
+        ]);
         // Only the dirty half of the merge's path set is ever weighed: the
         // paths git never got to are not on disk to compare.
         expect(gitMock.raw).toHaveBeenCalledWith(["hash-object", "--", ".gitattributes"]);
@@ -3447,7 +3763,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         if (key === "rev-parse --is-shallow-repository") return "false";
         if (key === SCAN_REFS.join(" ")) return ["refs/remotes/origin/main", ...staleRefs].join("\n");
@@ -3477,7 +3793,10 @@ describe("CloneSyncService", () => {
       expect(rawCalls()).not.toContainEqual(WRITE_REFSPEC);
       expect(rawCalls()).not.toContainEqual(WRITE_TAG_OPT);
       expect(rawCalls()).not.toContainEqual(SCAN_REFS);
-      expect(rawCalls().filter((args) => args[0] === "config")).toEqual([CONFIG_READ]);
+      // The origin check's read of remote.origin.url is a separate gate.
+      expect(rawCalls().filter((args) => args[0] === "config" && args[3] !== "remote.origin.url")).toEqual([
+        CONFIG_READ,
+      ]);
     });
 
     // The spawn budget of the commonest thing this tool does: one tick over a
@@ -3495,7 +3814,7 @@ describe("CloneSyncService", () => {
         // The tick's own gates: the branch it stands on, the origin it points
         // at, and the primary-checkout guard every write path goes through.
         "rev-parse --abbrev-ref HEAD",
-        "remote get-url origin",
+        "config --local --get remote.origin.url",
         PRIMARY_CHECKOUT_GIT_DIR_PROBE,
         // Shallow state, then the remote-config read that replaced the two
         // writes and the ref scan.
@@ -3749,7 +4068,7 @@ describe("CloneSyncService", () => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "remote get-url origin") return OTHER_TOKEN_URL;
+        if (key === "config --local --get remote.origin.url") return OTHER_TOKEN_URL;
         return "";
       });
       const warnSpy = vi.spyOn(logger, "warn");
@@ -3796,7 +4115,7 @@ describe("CloneSyncService", () => {
     function adoptedDirectoryWith(gitDirs: string): (key: string) => string | undefined {
       return (key) => {
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return gitDirs;
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
       };
@@ -3819,8 +4138,7 @@ describe("CloneSyncService", () => {
             args[0] === "branch" ||
             args[0] === "switch" ||
             args[0] === "remote",
-        )
-        .filter((args) => args[0] !== "remote" || args[1] !== "get-url");
+        );
     }
 
     function expectNothingWritten(): void {
@@ -3904,7 +4222,7 @@ describe("CloneSyncService", () => {
       gitMock.raw.mockImplementation(async (args: string[]) => {
         const key = args.join(" ");
         if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) throw new Error("fatal: not a git repository");
-        if (key === "remote get-url origin") return "https://github.com/example/repo.git";
+        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
         if (key === "rev-parse --abbrev-ref HEAD") return "main";
         return "";
       });

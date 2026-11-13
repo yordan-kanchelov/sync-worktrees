@@ -237,6 +237,25 @@ describe("FuzzySwitcher", () => {
     });
   });
 
+  it("stops listing repositories once it is closed", async () => {
+    const repositories = Array.from({ length: 20 }, (_, index) => ({
+      index,
+      name: `repo-${index}`,
+      repoUrl: `https://example.com/r${index}.git`,
+    }));
+    const getWorktreesForRepo = vi.fn(
+      () => new Promise<Array<{ path: string; branch: string }>>((resolve) => setTimeout(() => resolve([]), 10)),
+    );
+    const { unmount } = render(
+      <FuzzySwitcher {...props} repositories={repositories} getWorktreesForRepo={getWorktreesForRepo} />,
+    );
+    unmount();
+    await waitForStateUpdate();
+    await waitForStateUpdate();
+
+    expect(getWorktreesForRepo.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
   it("Esc closes from the list", async () => {
     const { stdin } = render(<FuzzySwitcher {...props} />);
     await waitForStateUpdate();

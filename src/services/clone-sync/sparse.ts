@@ -4,17 +4,15 @@ import type { MutatingGitClients } from "./git-clients";
 import type { CloneSyncContext } from "./types";
 import type { SparseCheckoutConfig } from "../../types";
 
-// The initial narrowing of a fresh clone, and its re-run when init finds a
-// clone of its own that was interrupted before finishing. `sparse-checkout
-// set` then the trailing `checkout HEAD` that materializes the cone.
+// The initial narrowing of a fresh clone: `sparse-checkout set` then the
+// `checkout HEAD` that materializes the cone (the clone itself ran with
+// `--no-checkout`, so only in-cone paths are ever written or smudged).
 //
-// `lfsSkipped` is set when the clone's own checkout only succeeded with LFS
-// smudging forced off. Both halves then run with that same environment:
-// `sparse-checkout set` materializes everything the cone brings in, so with
-// the configured one it would smudge the objects the retry skipped and die
-// exactly as the clone did — leaving a half-narrowed tree that `git status`
-// calls clean and the next run adopts. Otherwise the sparse service keeps its
-// own factory, whose clients already carry the configured LFS setting.
+// `lfsSkipped` runs both halves with LFS smudging forced off: after a clone
+// or checkout that only succeeded that way, the configured environment would
+// smudge the skipped objects and die again. `-f` because a failed attempt
+// may have left untracked files behind. Otherwise the sparse service keeps
+// its own factory, whose clients already carry the configured LFS setting.
 export async function applySparseCheckoutAfterClone(
   ctx: CloneSyncContext,
   clients: MutatingGitClients,
@@ -25,7 +23,7 @@ export async function applySparseCheckoutAfterClone(
   const sparseService = ctx.gitService.getSparseCheckoutService();
   const recoveredGit = lfsSkipped ? ctx.clients.lfsSkipCheckoutClient(clients, worktreeDir) : undefined;
   await sparseService.applyToWorktree(worktreeDir, cfg, recoveredGit);
-  await (recoveredGit ?? clients.git).raw(["checkout", "HEAD"]);
+  await (recoveredGit ?? clients.git).raw(lfsSkipped ? ["checkout", "-f", "HEAD"] : ["checkout", "HEAD"]);
 }
 
 export type CloneSparseAssessment =
@@ -53,8 +51,14 @@ export async function assessSparseCheckout(
     // "Narrowing safety" section is the tool's promise to skip rather than
     // git's promise to preserve, and worktree mode has always kept it. The
     // deferred narrowing lands on the first tick that finds a clean tree.
-    const current = await sparseService.readCurrent(worktreeDir);
-    const narrowing = sparseService.isNarrowing(current, sparseService.buildPatterns(cfg));
+    const currentMode = await sparseService.readCurrentMode(worktreeDir);
+    const current = await sparseService.readCurrent(worktreeDir, currentMode);
+    const narrowing = sparseService.isNarrowing(
+      current,
+      sparseService.buildPatterns(cfg),
+      currentMode,
+      sparseService.resolveMode(cfg),
+    );
     // The same notion of "clean" the ff-merge gate uses: uncommitted and
     // untracked changes. Unpushed commits are a clone-mode skip of their
     // own and their content is safe in the object store either way.
@@ -103,7 +107,9 @@ export async function reapplySparseCheckout(
 
     ctx.emitProgress({ phase: "sparse_checkout", message: `Updating sparse-checkout for '${ctx.repoName}'` });
     await sparseService.applyToWorktree(worktreeDir, cfg);
+    ctx.logger.info(`✅ Sparse-checkout updated for '${ctx.repoName}'.`);
     ctx.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout updated for '${ctx.repoName}'` });
+    ctx.outcome?.recordUpdated(branch, worktreeDir, "sparse_checkout");
   } catch (error) {
     // Not fatal — the fetch and merge after it are what the sync is for, and
     // a stale pattern list does not block them. But it is recorded: warning

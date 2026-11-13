@@ -18,7 +18,7 @@ const compareUtf8 = (a: string, b: string): number => Buffer.compare(Buffer.from
 // attaches to the answer. Both callers must agree: the validator refuses cone
 // patterns git would refuse, so it has to be looking at the same mode the
 // apply step will pick.
-const modeFor = (cfg: SparseCheckoutConfig): SparseCheckoutMode => {
+export const modeFor = (cfg: SparseCheckoutConfig): SparseCheckoutMode => {
   if (cfg.mode === "no-cone") return "no-cone";
   if ((cfg.exclude?.length ?? 0) > 0 || cfg.include.some((p) => p.trim().startsWith("!"))) return "no-cone";
   return cfg.mode ?? "cone";
@@ -67,7 +67,8 @@ const normalizeConeDirectory = (pattern: string): string => {
 // above the repository root. Everything else git takes, however odd it looks -
 // a backslash (named in git's own message but absent from its check), a space,
 // a brace, '#', '~', a Windows-style path, a name that does not exist yet, and
-// `.`, which quietly selects nothing. Two of git's refusals are deliberately
+// `.`. `.` is refused here anyway: it selects only root files and `list` then
+// prints nothing, so it never reads back as in sync. Two of git's refusals are deliberately
 // not mirrored: `--skip-checks` is never passed here, and "is not a directory"
 // depends on what the index holds at apply time, which a config load cannot
 // know. `exclude` needs no check of its own - a non-empty `exclude` is exactly
@@ -82,6 +83,9 @@ const coneRuleBroken = (applied: string): string | null => {
   if (/[*?[\]]/.test(applied)) {
     return "contains one of '*', '?', '[' or ']': cone mode takes directory names, not globs. Name the directory itself, or set sparseCheckout.mode to 'no-cone' for gitignore-style patterns.";
   }
+  if (applied === ".") {
+    return "selects only the files at the repository root: name the directories to include, or drop sparseCheckout to check out everything.";
+  }
   if (applied === ".." || applied.startsWith("../")) {
     return "climbs above the repository root with '..': cone mode takes directories inside the repository.";
   }
@@ -89,8 +93,8 @@ const coneRuleBroken = (applied: string): string | null => {
 };
 
 /**
- * Cone-mode `include` entries `git sparse-checkout set --cone` would reject,
- * as one sentence each naming the entry and the rule. Empty in no-cone mode,
+ * Cone-mode `include` entries `git sparse-checkout set --cone` would reject
+ * (plus `.`), as one sentence each naming the entry and the rule. Empty in no-cone mode,
  * where patterns are legal. Judges the canonical directory list the apply step
  * actually passes to git, so an entry a normalization or an included parent
  * removes before git sees it is not reported.
@@ -120,6 +124,34 @@ export function findConeRuleViolations(cfg: SparseCheckoutConfig): string[] {
   }
   return violations;
 }
+
+const C_ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+
+// Undo git's C-quoting of a `sparse-checkout list` line (`"a\\b"`, `"caf\303\251"`).
+const unquoteC = (line: string): string => {
+  if (line.length < 2 || !line.startsWith('"') || !line.endsWith('"')) return line;
+  const body = line.slice(1, -1);
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== "\\") {
+      bytes.push(...Buffer.from(ch, "utf8"));
+      continue;
+    }
+    const next = body[i + 1] ?? "";
+    const octal = /^[0-3][0-7]{2}/.exec(body.slice(i + 1, i + 4));
+    if (octal) {
+      bytes.push(parseInt(octal[0], 8));
+      i += 3;
+    } else if (next in C_ESCAPES) {
+      bytes.push(C_ESCAPES[next]);
+      i += 1;
+    } else {
+      return line;
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+};
 
 interface SparseMatcher {
   mode: SparseCheckoutMode;
@@ -206,18 +238,19 @@ export class SparseCheckoutService {
     await git.raw(["sparse-checkout", "set", mode === "cone" ? "--cone" : "--no-cone", "--", ...patterns]);
   }
 
-  async readCurrent(worktreePath: string): Promise<string[] | null> {
+  // `mode` is the worktree's current mode: cone output is C-quoted and gets
+  // unquoted, no-cone output is the pattern file verbatim.
+  async readCurrent(worktreePath: string, mode?: SparseCheckoutMode | null): Promise<string[] | null> {
     const git = this.gitFactory(worktreePath);
     try {
-      // Cone mode C-quotes non-ASCII directories (`"caf\303\251"`) unless
-      // quoting is off, and a quoted line never compares equal to the pattern
-      // the config asked for. Names holding a backslash or a quote stay
-      // escaped either way.
+      // quotePath=false keeps non-ASCII unescaped; a backslash or quote is
+      // still C-quoted, so cone lines are unquoted below.
       const out = await git.raw(["-c", "core.quotePath=false", "sparse-checkout", "list"]);
       const lines = out
         .split("\n")
         .map((l) => l.trim())
-        .filter((l) => l.length > 0 && !l.startsWith("#"));
+        .filter((l) => l.length > 0 && !l.startsWith("#"))
+        .map((l) => (mode === "no-cone" ? l : unquoteC(l)));
       return lines.length === 0 ? null : lines;
     } catch {
       return null;
@@ -241,13 +274,20 @@ export class SparseCheckoutService {
     const desiredMode = this.resolveMode(cfg);
     const currentMode = await this.readCurrentMode(worktreePath);
     if (currentMode !== desiredMode) return true;
-    const current = await this.readCurrent(worktreePath);
+    const current = await this.readCurrent(worktreePath, currentMode);
     if (current === null) return true;
     return !this.patternsEqual(current, this.buildPatternsForMode(cfg, desiredMode));
   }
 
-  isNarrowing(currentPatterns: string[] | null, nextPatterns: string[]): boolean {
+  isNarrowing(
+    currentPatterns: string[] | null,
+    nextPatterns: string[],
+    currentMode?: SparseCheckoutMode | null,
+    nextMode?: SparseCheckoutMode,
+  ): boolean {
     if (!currentPatterns || currentPatterns.length === 0) return false;
+    // A no-cone pattern list drops cone mode's implicit root and parent files.
+    if (currentMode === "cone" && nextMode === "no-cone") return true;
 
     const isNeg = (p: string): boolean => p.startsWith("!");
     const trim = (xs: string[]): string[] => xs.map((p) => p.trim()).filter((p) => p.length > 0);
@@ -260,8 +300,23 @@ export class SparseCheckoutService {
     const positiveNext = new Set(next.filter((p) => !isNeg(p)));
     const negativeNext = new Set(next.filter(isNeg));
 
+    // Cone directories: one equal to or under a next directory stays covered.
+    const cone =
+      currentMode !== "no-cone" &&
+      nextMode !== "no-cone" &&
+      [...cur, ...next].every((p) => !isNeg(p) && !p.startsWith("/") && !/[*?[\]]/.test(p));
+    const covered = (p: string): boolean => {
+      if (positiveNext.has(p)) return true;
+      if (!cone) return false;
+      const parts = p.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        if (positiveNext.has(parts.slice(0, i).join("/"))) return true;
+      }
+      return false;
+    };
+
     for (const p of positiveCurrent) {
-      if (!positiveNext.has(p)) return true;
+      if (!covered(p)) return true;
     }
     for (const p of negativeNext) {
       if (!negativeCurrent.has(p)) return true;

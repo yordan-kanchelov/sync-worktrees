@@ -3,7 +3,7 @@ import * as fs from "fs/promises";
 import type { Dirent } from "fs";
 import pLimit from "p-limit";
 import { DEFAULT_CONFIG, GIT_CONSTANTS, METADATA_CONSTANTS } from "../constants";
-import { GitOperationError } from "../errors";
+import { GitOperationError, UnpushedBranchLeftoverError } from "../errors";
 import type { WorktreeSyncService } from "./worktree-sync.service";
 import type { GitService } from "./git.service";
 import { BranchCreatedActionsService } from "./branch-created-actions.service";
@@ -19,8 +19,9 @@ import { formatRepoLockUnavailable } from "../utils/repo-lock-format";
 import { formatBytes } from "../utils/disk-space";
 import type { DiskUsageCache } from "../utils/disk-usage-cache";
 import { getDefaultBareRepoDir, redactSecretsInText, repoDisplayLabel } from "../utils/git-url";
-import { resolveMode } from "../utils/repo-mode";
+import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import type {
+  Config,
   RepositoryConfig,
   RepoOperationNotStarted,
   HookContext,
@@ -95,6 +96,19 @@ export interface RepositoryOperationsHost {
  * GitService, so each operation's queueing behind the repository lock and its
  * clone-mode branch live in one place.
  */
+// The directories a repository occupies: its bare store (worktree mode only)
+// and worktreeDir. Shared by the status view and the TUI header total.
+export function getRepositoryDiskTargets(
+  config: Pick<Config, "mode" | "repoUrl" | "worktreeDir" | "bareRepoDir">,
+): Array<{ kind: "bare" | "worktree"; path: string }> {
+  return [
+    ...(resolveMode(config) === REPOSITORY_MODES.WORKTREE
+      ? [{ kind: "bare" as const, path: config.bareRepoDir || getDefaultBareRepoDir(config.repoUrl) }]
+      : []),
+    { kind: "worktree", path: config.worktreeDir },
+  ];
+}
+
 export class RepositoryOperations {
   private readonly branchCreatedActions = new BranchCreatedActionsService();
   private readonly pathResolution = new PathResolutionService();
@@ -134,13 +148,7 @@ export class RepositoryOperations {
     const service = this.requireService(repoIndex);
     const config = service.config;
     const repoName = this.getRepoName(repoIndex);
-    const mode = resolveMode(config);
-    const sizeTargets: Array<{ kind: "bare" | "worktree"; path: string }> = [
-      ...(mode === "worktree"
-        ? [{ kind: "bare" as const, path: config.bareRepoDir || getDefaultBareRepoDir(config.repoUrl) }]
-        : []),
-      { kind: "worktree", path: config.worktreeDir },
-    ];
+    const sizeTargets = getRepositoryDiskTargets(config);
 
     let bareSizeBytes = 0;
     let worktreeSizeBytes = 0;
@@ -253,14 +261,10 @@ export class RepositoryOperations {
 
     const service = this.host.getServices()[repoIndex];
     const gitService = service.getGitService();
-    // Every branch a rollback below could not remove. The loop reads it rather
-    // than sniffing the message it is about to discard.
-    const leftovers: string[] = [];
 
-    // A clone-mode repo has no bare repository, and GitService's write helpers
-    // all run in one — falling back to the relative '.bare/<repo name>', which
-    // is either missing or another repository's store. Clone mode creates and
-    // publishes the branch inside the clone itself instead.
+    // A clone-mode repo has no bare repository, which GitService's write
+    // helpers all run in. Clone mode creates and publishes the branch inside
+    // the clone itself instead.
     const createAndPush = service.isCloneMode()
       ? (name: string): Promise<void> => service.createAndPushBranch(baseBranch, name)
       : async (name: string): Promise<void> => {
@@ -271,7 +275,7 @@ export class RepositoryOperations {
           try {
             await gitService.pushBranch(name);
           } catch (error) {
-            await this.rollbackUnpushedBranch(gitService, name, createdAt, error, leftovers);
+            await this.rollbackUnpushedBranch(gitService, name, createdAt, error);
           }
         };
 
@@ -303,7 +307,7 @@ export class RepositoryOperations {
           // about: '<name>' orphaned locally and never pushed while
           // '<name>-1' is created instead. Retrying would also discard the
           // message that names it, which is the only place the user is told.
-          if (errorMessage.includes("already exists") && leftovers.length === 0) {
+          if (errorMessage.includes("already exists") && !(error instanceof UnpushedBranchLeftoverError)) {
             suffix++;
             nextName = `${stem}-${suffix}`;
             continue;
@@ -341,7 +345,6 @@ export class RepositoryOperations {
     branchName: string,
     createdAt: string | null,
     pushError: unknown,
-    leftovers: string[],
   ): Promise<never> {
     // git's stderr for an https remote carries the credential in the URL it
     // failed on ("unable to access 'https://x-access-token:<token>@…'"), and
@@ -372,10 +375,11 @@ export class RepositoryOperations {
         ` The local branch '${branchName}' is still in the bare repository — removing it failed ` +
         `(${getErrorMessage(deleteError)}); delete it with ` +
         `\`git -C "${path.resolve(gitService.getBareRepoPath())}" branch -D ${branchName}\`.`;
-      leftovers.push(leftover);
     }
 
-    throw new GitOperationError("push", `${detail}.${leftover}`, pushError instanceof Error ? pushError : undefined);
+    const cause = pushError instanceof Error ? pushError : undefined;
+    if (leftover) throw new UnpushedBranchLeftoverError(`${detail}.${leftover}`, cause);
+    throw new GitOperationError("push", `${detail}.${leftover}`, cause);
   }
 
   public async getWorktreesForRepo(repoIndex: number): Promise<Array<{ path: string; branch: string }>> {
@@ -435,13 +439,7 @@ export class RepositoryOperations {
   private async getWorktreesFromService(
     service: WorktreeSyncService,
   ): Promise<Array<{ path: string; branch: string }>> {
-    const worktreeProvider = service as WorktreeSyncService & {
-      getWorktrees?: () => Promise<Array<{ path: string; branch: string }>>;
-    };
-    if (typeof worktreeProvider.getWorktrees === "function") {
-      return worktreeProvider.getWorktrees();
-    }
-    return service.getGitService().getWorktrees();
+    return service.getWorktrees();
   }
 
   public async getDivergedDirectoriesForRepo(repoIndex: number): Promise<DivergedDirectoryInfo[]> {
@@ -478,8 +476,8 @@ export class RepositoryOperations {
           if (typeof info.divergedAt === "string") divergedAt = info.divergedAt;
           if (typeof info.keepRef === "string") keepRef = info.keepRef;
         } catch {
-          // Extract date and branch from directory name pattern: YYYY-MM-DD-branch-suffix
-          const match = entry.name.match(/^(\d{4}-\d{2}-\d{2})-(.+?)(?:-[a-f0-9]+)?$/);
+          // Name is YYYY-MM-DD-<branch>[-<8-hex hash>]-<base36 suffix>
+          const match = entry.name.match(/^(\d{4}-\d{2}-\d{2})-(.+?)(?:(?:-[0-9a-f]{8})?-[0-9a-z]+)?$/);
           if (match) {
             divergedAt = match[1];
             originalBranch = match[2];
@@ -613,7 +611,7 @@ export class RepositoryOperations {
       if (service.isCloneMode()) {
         // The wizard just created and pushed this branch — switching to it is
         // intentional config drift; checkoutBranch warns to update config.branch.
-        await service.checkoutBranch(branchName, { allowConfigDrift: true });
+        await service.checkoutBranch(branchName);
         return;
       }
       // Named inside the queued operation: the choice between the plain and
@@ -662,7 +660,8 @@ export class RepositoryOperations {
     const service = this.host.getServices()[repoIndex];
     const config = service.config;
 
-    if (!config.filesToCopyOnBranchCreate?.length) {
+    // A clone has one checkout, already on the new branch: nothing to copy between.
+    if (!config.filesToCopyOnBranchCreate?.length || service.isCloneMode()) {
       return;
     }
 

@@ -23,5 +23,5 @@ export interface LastKnownRemoteTip {
 export interface SyncHistoryEntry {
   date: string;
   commit: string;
-  action: "created" | "updated" | "fetched";
+  action: "created" | "updated";
 }
