@@ -9,7 +9,8 @@ import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { getWorktreeDirLockTarget } from "../../utils/lock-path";
 import { collectUnknownConfigKeys } from "../../utils/unknown-config-keys";
 import { KNOWN_CONFIG_KEYS } from "../config-schema";
-import { CLONE_MODE_CONFLICTING_FIELDS, ConfigLoaderService } from "../config-loader.service";
+import { ConfigLoaderService } from "../config-loader.service";
+import { CLONE_MODE_CONFLICTING_FIELDS } from "../config-schema";
 
 import type { RepositoryConfig } from "../../types";
 

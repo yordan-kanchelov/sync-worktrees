@@ -1,4 +1,3 @@
-import { ERROR_MESSAGES } from "../constants";
 import { getErrorMessage } from "../utils/errors";
 
 export class SyncWorktreesError extends Error {
@@ -168,16 +167,4 @@ export class TrashOperationError extends TrashError {
   ) {
     super(`Trash operation '${operation}' failed: ${details}`, "OPERATION_FAILED", cause);
   }
-}
-
-export { isLfsErrorFromError as isLfsError } from "../utils/lfs-error";
-
-export function isFastForwardError(error: Error | string): boolean {
-  const message = typeof error === "string" ? error : error.message;
-  return ERROR_MESSAGES.FAST_FORWARD_FAILED.some((pattern) => message.includes(pattern));
-}
-
-export function isNoUpstreamError(error: Error | string): boolean {
-  const message = typeof error === "string" ? error : error.message;
-  return ERROR_MESSAGES.NO_UPSTREAM.some((pattern) => message.includes(pattern));
 }

@@ -112,19 +112,6 @@ export class WorktreeMetadataService {
     }
   }
 
-  async deleteMetadata(bareRepoPath: string, worktreeName: string): Promise<void> {
-    const metadataPath = await this.getMetadataPath(bareRepoPath, worktreeName);
-
-    try {
-      await fs.unlink(metadataPath);
-    } catch (error) {
-      // Ignore errors if file doesn't exist
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-
   async deleteMetadataFromPath(bareRepoPath: string, worktreePath: string): Promise<void> {
     const metadataPath = await this.getMetadataPathFromWorktreePath(bareRepoPath, worktreePath);
 
@@ -138,42 +125,11 @@ export class WorktreeMetadataService {
     }
   }
 
-  async updateLastSync(
-    bareRepoPath: string,
-    worktreeName: string,
-    commit: string,
-    action: "created" | "updated" | "fetched" = "updated",
-  ): Promise<void> {
-    const existing = await this.loadMetadata(bareRepoPath, worktreeName);
-
-    if (!existing) {
-      this.logger.warn(
-        `No metadata found for worktree ${worktreeName}; skipping update because upstream/parent context is unavailable`,
-      );
-      return;
-    }
-
-    existing.lastSyncCommit = commit;
-    existing.lastSyncDate = new Date().toISOString();
-
-    existing.syncHistory.push({
-      date: existing.lastSyncDate,
-      commit,
-      action,
-    });
-
-    if (existing.syncHistory.length > METADATA_CONSTANTS.MAX_HISTORY_ENTRIES) {
-      existing.syncHistory = existing.syncHistory.slice(-METADATA_CONSTANTS.MAX_HISTORY_ENTRIES);
-    }
-
-    await this.saveMetadata(bareRepoPath, worktreeName, existing);
-  }
-
   async updateLastSyncFromPath(
     bareRepoPath: string,
     worktreePath: string,
     commit: string,
-    action: "created" | "updated" | "fetched" = "updated",
+    action: "created" | "updated" = "updated",
     defaultBranch?: string,
   ): Promise<void> {
     const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
@@ -274,34 +230,6 @@ export class WorktreeMetadataService {
 
     existing.lastKnownRemoteTip = { ref, oid, recordedAt: new Date().toISOString() };
     await this.saveMetadata(bareRepoPath, worktreeDirName, existing);
-  }
-
-  async createInitialMetadata(
-    bareRepoPath: string,
-    worktreeName: string,
-    commit: string,
-    upstreamBranch: string,
-    parentBranch: string,
-    parentCommit: string,
-  ): Promise<boolean> {
-    const metadata: SyncMetadata = {
-      lastSyncCommit: commit,
-      lastSyncDate: new Date().toISOString(),
-      upstreamBranch,
-      createdFrom: {
-        branch: parentBranch,
-        commit: parentCommit,
-      },
-      syncHistory: [
-        {
-          date: new Date().toISOString(),
-          commit,
-          action: "created",
-        },
-      ],
-    };
-
-    return this.saveMetadata(bareRepoPath, worktreeName, metadata);
   }
 
   async createInitialMetadataFromPath(

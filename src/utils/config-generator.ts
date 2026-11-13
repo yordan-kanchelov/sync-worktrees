@@ -7,8 +7,6 @@ import { extractRepoNameFromUrl } from "./git-url";
 
 import type { InitConfigInput, InitRepositoryInput } from "../types";
 
-export { ConfigFileExistsError };
-
 const CONFIG_CHEATSHEET = `
 // ─── More options (copy into a repository entry above) ────────────────
 // worktree mode (default):

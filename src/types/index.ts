@@ -257,12 +257,6 @@ export interface ConfigFile {
   parallelism?: ParallelismConfig;
 }
 
-export interface WorktreeStatus {
-  branchName: string;
-  worktreePath: string;
-  hasLocalChanges: boolean;
-}
-
 export interface WorktreeStatusEntry {
   branch: string;
   path: string;

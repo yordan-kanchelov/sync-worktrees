@@ -483,7 +483,7 @@ export class WorktreeSyncService {
   private async getDivergedDirectoryNames(): Promise<Set<string>> {
     const divergedRoot = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
     try {
-      return new Set((await fs.readdir(divergedRoot)) ?? []);
+      return new Set(await fs.readdir(divergedRoot));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
       throw new Error(
@@ -804,7 +804,7 @@ export class WorktreeSyncService {
             // reads the working tree, a post-clone tick ends `up_to_date`
             // without a status scan, so what those callers still pay for is one
             // no-op fetch.
-            clonedThisOperation = this.cloneSyncService !== undefined && outcome.getCounts().created > 0;
+            clonedThisOperation = this.cloneSyncService !== null && outcome.getCounts().created > 0;
           }
 
           this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);

@@ -249,7 +249,6 @@ export class WorktreeModeSyncRunner {
       const sparseService = this.gitService.getSparseCheckoutService();
       const desired = sparseService.buildPatterns(sparseConfig);
       for (const action of syncPlan.sparse) {
-        if (action.kind !== "check-sparse") continue;
         const assessment = await this.assessSparseAction(action, sparseConfig, desired);
         const step = this.describeSparseAssessment(action, assessment);
         if (step) plan.add(step);
@@ -374,7 +373,7 @@ export class WorktreeModeSyncRunner {
 
     await this.reapplySparseCheckout(actions, syncContext, outcome);
 
-    phaseTimer.setPhaseCount("Phase 5: Sparse", actions.filter((action) => action.kind === "check-sparse").length);
+    phaseTimer.setPhaseCount("Phase 5: Sparse", actions.length);
     phaseTimer.endPhase();
   }
 
@@ -392,13 +391,10 @@ export class WorktreeModeSyncRunner {
     const desired = sparseService.buildPatterns(sparseConfig);
 
     const limit = pLimit(this.config.parallelism?.maxStatusChecks ?? DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS);
-    // Only the checks are work; the other kinds are the planner saying there is
-    // nothing to reconcile, so they are neither run nor counted.
-    const checks = actions.filter((action) => action.kind === "check-sparse");
-    const itemDone = trackPhaseItems(this.progressEmitter, "sparse", "Reconciling sparse-checkout", checks.length);
+    const itemDone = trackPhaseItems(this.progressEmitter, "sparse", "Reconciling sparse-checkout", actions.length);
 
     await Promise.all(
-      checks.map((action) =>
+      actions.map((action) =>
         limit(async () => {
           const assessment = await this.assessSparseAction(action, sparseConfig, desired);
           try {

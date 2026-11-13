@@ -2,7 +2,6 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { ENV_CONSTANTS, GIT_CONSTANTS } from "../constants";
-import { getErrorMessage } from "../utils/errors";
 import { isGitLfsInstalled, isLfsSmudgeSkippedByEnv, warnGitLfsMissingOnce } from "../utils/git-lfs-probe";
 
 import type { GitServiceContext } from "./git-service.types";
@@ -154,10 +153,10 @@ export class LfsVerificationService {
         "*.gitattributes",
       ]);
       return matches.trim().length > 0;
-    } catch (error) {
-      // Exit 1 is `git grep`'s "nothing matched" — a definite no. Any other
-      // failure leaves the question open, and verifying is the safe answer.
-      return !getErrorMessage(error).includes(GIT_CONSTANTS.GIT_NO_MATCH_EXIT);
+    } catch {
+      // simple-git resolves "nothing matched" (exit 1) as ""; a real failure
+      // leaves the question open, and verifying is the safe answer.
+      return true;
     }
   }
 

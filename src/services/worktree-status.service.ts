@@ -4,7 +4,7 @@ import * as path from "path";
 import pLimit from "p-limit";
 
 import { DEFAULT_CONFIG, ENV_CONSTANTS, GIT_CONSTANTS, GIT_OPERATIONS, PATH_CONSTANTS } from "../constants";
-import { GitOperationError, WorktreeNotCleanError } from "../errors";
+import { GitOperationError } from "../errors";
 import { probePathExists } from "../utils/file-exists";
 import { createGitClient } from "../utils/git-client";
 import { GitClientCache } from "../utils/git-client-cache";
@@ -247,7 +247,6 @@ function shareOnce<T>(cache: Map<string, Promise<T>>, key: string, start: () => 
 type UpstreamState = "none" | "present" | "gone" | "unknown";
 
 interface WorktreeSnapshot {
-  exists: boolean;
   status: Awaited<ReturnType<SimpleGit["status"]>> | null;
   currentBranch: string | null;
   detached: boolean;
@@ -613,7 +612,6 @@ export class WorktreeStatusService {
     const untrackedNotIgnored = status?.not_added ?? [];
 
     return {
-      exists: true,
       status,
       currentBranch,
       detached,
@@ -875,18 +873,6 @@ export class WorktreeStatusService {
     );
   }
 
-  async hasModifiedSubmodules(worktreePath: string): Promise<boolean> {
-    const worktreeGit = this.createGitInstance(worktreePath);
-
-    try {
-      const result = await this.runGit(() => worktreeGit.raw(["submodule", "status"]));
-      return collectModifiedSubmodules(result).length > 0;
-    } catch (error) {
-      this.logger.error(`Error checking submodule status`, error);
-      return true;
-    }
-  }
-
   async hasOperationInProgress(worktreePath: string): Promise<boolean> {
     try {
       const gitDir = await this.resolveGitDir(worktreePath);
@@ -895,18 +881,6 @@ export class WorktreeStatusService {
     } catch (error) {
       this.logger.error(`Error checking operation in progress for ${worktreePath}`, error);
       return true;
-    }
-  }
-
-  async validateWorktreeForRemoval(
-    worktreePath: string,
-    lastSyncCommit?: string,
-    lastKnownRemoteTip?: LastKnownRemoteTip,
-  ): Promise<void> {
-    const status = await this.getFullWorktreeStatus(worktreePath, false, { lastSyncCommit, lastKnownRemoteTip });
-
-    if (!status.canRemove) {
-      throw new WorktreeNotCleanError(worktreePath, status.reasons);
     }
   }
 

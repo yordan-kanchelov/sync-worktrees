@@ -7,7 +7,8 @@ import { promisify } from "util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ConfigLoaderService } from "../../services/config-loader.service";
-import { ConfigFileExistsError, generateConfigFile, getDefaultConfigPath } from "../config-generator";
+import { ConfigFileExistsError } from "../../errors";
+import { generateConfigFile, getDefaultConfigPath } from "../config-generator";
 
 import type { InitConfigInput, InitRepositoryInput } from "../../types";
 

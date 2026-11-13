@@ -439,13 +439,7 @@ export class RepositoryOperations {
   private async getWorktreesFromService(
     service: WorktreeSyncService,
   ): Promise<Array<{ path: string; branch: string }>> {
-    const worktreeProvider = service as WorktreeSyncService & {
-      getWorktrees?: () => Promise<Array<{ path: string; branch: string }>>;
-    };
-    if (typeof worktreeProvider.getWorktrees === "function") {
-      return worktreeProvider.getWorktrees();
-    }
-    return service.getGitService().getWorktrees();
+    return service.getWorktrees();
   }
 
   public async getDivergedDirectoriesForRepo(repoIndex: number): Promise<DivergedDirectoryInfo[]> {

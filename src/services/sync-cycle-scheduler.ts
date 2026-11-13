@@ -132,10 +132,6 @@ export class SyncCycleScheduler {
     }
   }
 
-  public registerCronJob(job: cron.ScheduledTask): void {
-    this.cronJobs.push(job);
-  }
-
   public async waitForInProgressSyncs(
     timeoutMs: number = WAIT_SYNC_DEFAULT_TIMEOUT_MS,
     abort?: Promise<void>,

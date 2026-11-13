@@ -5,12 +5,9 @@ import type { WorktreeStatusResult } from "./worktree-status.service";
 
 export type RemovalAuditAction =
   | "prune_remove"
-  | "orphan_delete"
-  | "orphan_quarantine"
   | "diverged_replace"
   | "diverged_discard"
   | "keep_ref_delete"
-  | "manual_remove"
   | "trash_create"
   | "trash_adopt"
   | "trash_restore"

@@ -45,18 +45,13 @@ export type UpdateAction = {
   lockReason?: string;
 };
 
-export type SparseAction =
-  | { kind: "check-sparse"; branch: string; path: string }
-  | { kind: "skip-sparse"; branch: string; path: string; reason: "not-configured" };
-
-export type SyncAction = CreateAction | PruneAction | UpdateAction | SparseAction;
+export type SparseAction = { kind: "check-sparse"; branch: string; path: string };
 
 export interface SyncPlan {
   create: CreateAction[];
   prune: PruneAction[];
   update: UpdateAction[];
   sparse: SparseAction[];
-  warnings: string[];
 }
 
 export interface SyncPlanOptions {
@@ -77,7 +72,6 @@ export function createWorktreeSyncPlan(inventory: WorktreeInventory, options: Sy
     prune: planPruneActions(inventory),
     update: options.updateExistingWorktrees === false ? [] : planUpdateActions(inventory),
     sparse: planSparseActions(inventory, options.sparseCheckout),
-    warnings: [],
   };
 }
 

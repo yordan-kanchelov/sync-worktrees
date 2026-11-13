@@ -264,7 +264,8 @@ describe("GitService git client timeouts", () => {
     it("asks origin whether a branch exists with the fetch block timeout", async () => {
       const service = newService();
 
-      await service.remoteBranchExists("feature-1");
+      const { branchRefs } = service as unknown as { branchRefs: { remoteBranchExists(b: string): Promise<boolean> } };
+      await branchRefs.remoteBranchExists("feature-1");
 
       const prober = onlyClientThatRan("ls-remote", "--heads", "origin");
       expect(prober.baseDir).toBe(TEST_PATHS.bareRepo);

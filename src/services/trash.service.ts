@@ -67,7 +67,6 @@ export interface TrashSummary {
   itemCount: number;
   totalSizeBytes: number;
   unknownSizeCount: number;
-  soonestExpiresAt: string | null;
 }
 
 export function isWorktreeRestorable(manifest: Pick<TrashManifest, "branch" | "headOid" | "pinRef">): boolean {
@@ -77,7 +76,6 @@ export function isWorktreeRestorable(manifest: Pick<TrashManifest, "branch" | "h
 export function summarizeTrashEntries(entries: TrashEntry[]): TrashSummary {
   let totalSizeBytes = 0;
   let unknownSizeCount = 0;
-  let soonest: string | null = null;
 
   for (const { manifest } of entries) {
     if (manifest.sizeBytes === null) {
@@ -85,12 +83,9 @@ export function summarizeTrashEntries(entries: TrashEntry[]): TrashSummary {
     } else {
       totalSizeBytes += manifest.sizeBytes;
     }
-    if (soonest === null || manifest.expiresAt < soonest) {
-      soonest = manifest.expiresAt;
-    }
   }
 
-  return { itemCount: entries.length, totalSizeBytes, unknownSizeCount, soonestExpiresAt: soonest };
+  return { itemCount: entries.length, totalSizeBytes, unknownSizeCount };
 }
 
 export interface TrashDirectoryOptions {

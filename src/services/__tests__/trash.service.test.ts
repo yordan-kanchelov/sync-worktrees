@@ -480,9 +480,6 @@ describe("TrashService", () => {
       const summary = summarizeTrashEntries(entries);
       expect(summary.itemCount).toBe(2);
       expect(summary.totalSizeBytes).toBeGreaterThanOrEqual(0);
-      expect(summary.soonestExpiresAt).toBe(
-        entries.map((entry) => entry.manifest.expiresAt).sort((a, b) => a.localeCompare(b))[0],
-      );
     });
 
     // A pin ref is what the reaper and restore hand to `git update-ref -d`, so
@@ -833,7 +830,6 @@ describe("TrashService", () => {
         itemCount: 0,
         totalSizeBytes: 0,
         unknownSizeCount: 0,
-        soonestExpiresAt: null,
       });
     });
   });

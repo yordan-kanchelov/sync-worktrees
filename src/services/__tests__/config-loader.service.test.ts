@@ -8,7 +8,8 @@ import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__
 import { DEFAULT_CONFIG } from "../../constants";
 import { ConfigError, ConfigValidationError } from "../../errors";
 import { SIMPLE_GIT_CLIENT_CONCURRENCY } from "../../utils/git-client";
-import { ConfigLoaderService, computeParallelismPeak } from "../config-loader.service";
+import { ConfigLoaderService } from "../config-loader.service";
+import { computeParallelismPeak } from "../config-schema";
 
 import type { RepositoryConfig } from "../../types";
 

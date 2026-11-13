@@ -143,7 +143,7 @@ export class SyncOutcomeAccumulator {
 export function cloneSkipToOutcomeAction(
   reason: CloneSkipReason,
   details: { branch?: string; path?: string } = {},
-): SyncOutcomeAction {
+): Extract<SyncOutcomeAction, { kind: "skipped" }> {
   const message = formatCloneSkipReason(reason);
   const branch =
     "branch" in reason ? reason.branch : reason.kind === "branch_mismatch" ? reason.expectedBranch : details.branch;

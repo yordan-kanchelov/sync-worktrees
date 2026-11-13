@@ -1,6 +1,5 @@
 export const GIT_CONSTANTS = {
   REMOTE_PREFIX: "origin/",
-  REMOTE_NAME: "origin",
   DEFAULT_BRANCH: "main",
   COMMON_DEFAULT_BRANCHES: ["main", "master", "develop", "trunk"],
   BARE_DIR_NAME: ".bare",
@@ -22,10 +21,6 @@ export const GIT_CONSTANTS = {
   // this text; like `spawn git ENOENT` from an already-built client, it means
   // the working directory is gone.
   MISSING_BASE_DIR_ERROR: "Cannot use simple-git on a directory that does not exist",
-  // simple-git's message fragment for a git command that exited 1. `git grep`
-  // uses that exit code for "nothing matched", which is an answer rather than
-  // a failure.
-  GIT_NO_MATCH_EXIT: "exit code: 1",
   REFS: {
     HEADS: "refs/heads/",
     REMOTES: "refs/remotes/origin",
@@ -95,17 +90,10 @@ export const DEFAULT_CONFIG = {
 
 export const ERROR_MESSAGES = {
   ALREADY_EXISTS: "already exists",
-  ALREADY_REGISTERED: "already registered worktree",
   FAST_FORWARD_FAILED: [
     "Not possible to fast-forward",
     "fatal: Not possible to fast-forward, aborting",
     "cannot fast-forward",
-  ],
-  NO_UPSTREAM: [
-    "fatal: no upstream configured",
-    "no upstream configured for branch",
-    "fatal: ambiguous argument",
-    "unknown revision or path",
   ],
   EXDEV: "EXDEV",
 } as const;

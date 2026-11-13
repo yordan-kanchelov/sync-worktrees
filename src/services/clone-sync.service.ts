@@ -41,8 +41,7 @@ import type { Config } from "../types";
 import type { GitProgressEmitter, GitProgressEvent } from "../utils/git-progress";
 import type { PhaseTimer } from "../utils/timing";
 
-export { CLONE_SYNC_PHASES } from "./clone-sync/phases";
-export type { CloneSkipListener, CloneSkipReason } from "./clone-sync/types";
+export type { CloneSkipReason } from "./clone-sync/types";
 
 // Clone mode: one standalone clone per repository, held on one branch and
 // fast-forwarded to origin on every sync. This class owns the per-repository
@@ -647,16 +646,14 @@ export class CloneSyncService {
       branch: this.resolvedBranch ?? this.config.branch,
       path: this.config.worktreeDir,
     });
-    return action.kind === "skipped"
-      ? {
-          kind: "skip",
-          scope: action.scope,
-          reason: action.reason,
-          ...(action.branch !== undefined && { branch: action.branch }),
-          ...(action.path !== undefined && { path: action.path }),
-          ...(action.message !== undefined && { message: action.message }),
-        }
-      : { kind: "skip", scope: "repo", reason: `clone_${reason.kind}` };
+    return {
+      kind: "skip",
+      scope: action.scope,
+      reason: action.reason,
+      ...(action.branch !== undefined && { branch: action.branch }),
+      ...(action.path !== undefined && { path: action.path }),
+      ...(action.message !== undefined && { message: action.message }),
+    };
   }
 
   // Display name only (log lines and progress messages), so the URL fallback

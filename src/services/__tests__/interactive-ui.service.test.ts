@@ -547,11 +547,14 @@ describe("InteractiveUIService", () => {
     });
   });
 
-  describe("registerCronJob", () => {
+  describe("cron job cleanup", () => {
     it("should stop registered cron jobs on destroy", async () => {
       const service = new InteractiveUIService([mockSyncService]);
       const destroySpy = vi.fn();
-      service.scheduler.registerCronJob({ stop: vi.fn(), destroy: destroySpy } as unknown as cron.ScheduledTask);
+      (service.scheduler as unknown as { cronJobs: cron.ScheduledTask[] }).cronJobs.push({
+        stop: vi.fn(),
+        destroy: destroySpy,
+      } as unknown as cron.ScheduledTask);
 
       await service.destroy();
 
@@ -2003,6 +2006,10 @@ describe("InteractiveUIService", () => {
       };
 
       mockSyncService.getGitService = vi.fn().mockReturnValue(mockGitService);
+      // Worktree mode: WorktreeSyncService.getWorktrees lists through its GitService.
+      mockSyncService.getWorktrees = vi.fn(function (this: typeof mockSyncService) {
+        return this.getGitService().getWorktrees();
+      });
       mockSyncService.getRemoteBranches = vi.fn().mockResolvedValue(["main", "develop", "feature/test"]);
     });
 

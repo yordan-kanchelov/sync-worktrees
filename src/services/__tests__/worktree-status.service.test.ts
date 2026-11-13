@@ -4,7 +4,6 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { WorktreeNotCleanError } from "../../errors";
 import { setEnvVar } from "../../__tests__/test-utils";
 import { GIT_UNSAFE_ALLOWANCES } from "../../utils/git-env";
 import { RefScanScope, WorktreeStatusService, parseRefScan } from "../worktree-status.service";
@@ -938,62 +937,6 @@ describe("WorktreeStatusService", () => {
     });
   });
 
-  describe("hasModifiedSubmodules", () => {
-    it("should return true for modified submodules", async () => {
-      mockGit.raw.mockResolvedValue("+abc123 submodule1 (modified)\n abc456 submodule2");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(true);
-    });
-
-    it("should return false for clean submodules", async () => {
-      mockGit.raw.mockResolvedValue(" abc123 submodule1\n abc456 submodule2");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return true for conflicted submodules", async () => {
-      mockGit.raw.mockResolvedValue("U6f73556 libs/sub (heads/main)");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(true);
-    });
-
-    // What every worktree `git worktree add` builds looks like: git does not
-    // initialize submodules for a new worktree, and an uninitialized submodule
-    // has no working tree that could be holding local work.
-    it("should return false for uninitialized submodules", async () => {
-      mockGit.raw.mockResolvedValue("-6f73556 libs/sub\n-6f73556 libs/other");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return false when no submodules", async () => {
-      mockGit.raw.mockResolvedValue("");
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(false);
-    });
-
-    it("should return true on error (conservative)", async () => {
-      mockGit.raw.mockRejectedValue(new Error("No submodules"));
-      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-      const result = await service.hasModifiedSubmodules("/test/worktree");
-
-      expect(result).toBe(true);
-      expect(consoleSpy).toHaveBeenCalled();
-      consoleSpy.mockRestore();
-    });
-  });
-
   describe("hasOperationInProgress", () => {
     it("should return true when merge is in progress", async () => {
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
@@ -1036,92 +979,6 @@ describe("WorktreeStatusService", () => {
 
       expect(result).toBe(false);
       expect(fs.readFile).toHaveBeenCalledWith(path.join("/test/worktree", ".git"), "utf-8");
-    });
-  });
-
-  describe("validateWorktreeForRemoval", () => {
-    it("should not throw for clean worktree", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-      mockGit.raw.mockResolvedValue("0\n");
-      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree")).resolves.not.toThrow();
-    });
-
-    it("should throw WorktreeNotCleanError for dirty worktree", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: ["file.ts"],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-      mockGit.raw.mockResolvedValue("0\n");
-      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree")).rejects.toThrow(WorktreeNotCleanError);
-    });
-
-    it("should throw with correct reasons", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: ["file.ts"],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-      mockGit.raw.mockResolvedValue("3\n");
-      mockGit.stashList.mockResolvedValue(stashesOnMain(1));
-      (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
-
-      try {
-        await service.validateWorktreeForRemoval("/test/worktree");
-        expect.fail("Should have thrown");
-      } catch (error) {
-        expect(error).toBeInstanceOf(WorktreeNotCleanError);
-        expect((error as WorktreeNotCleanError).reasons).toContain("uncommitted changes: 'file.ts'");
-        expect((error as WorktreeNotCleanError).reasons).toContain("unpushed commits");
-      }
-    });
-
-    it("should not throw for worktree with only gitignored files", async () => {
-      // git filtered `.DS_Store` out of the status itself; nothing re-checks it.
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-      mockGit.raw.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "submodule") return "";
-        return "0\n";
-      }) as any);
-      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree")).resolves.not.toThrow();
     });
   });
 
@@ -1443,18 +1300,6 @@ describe("WorktreeStatusService", () => {
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
       expect(status.reasons).toContain("detached HEAD");
-    });
-
-    it("validateWorktreeForRemoval accepts a fully-pushed worktree with the recorded tip", async () => {
-      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree", undefined, recordedTip)).resolves.not.toThrow();
-    });
-
-    it("validateWorktreeForRemoval still rejects without the recorded tip", async () => {
-      setupGoneUpstreamWorktree({ headIsAncestorOfTip: true });
-
-      await expect(service.validateWorktreeForRemoval("/test/worktree")).rejects.toThrow(WorktreeNotCleanError);
     });
   });
 

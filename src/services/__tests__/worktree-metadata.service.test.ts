@@ -19,6 +19,7 @@ describe("WorktreeMetadataService", () => {
   let mockFileHandle: { writeFile: Mock<any>; sync: Mock<any>; close: Mock<any> };
   const mockBareRepoPath = "/test/bare/repo";
   const mockWorktreeName = "feature-branch";
+  const mockWorktreePath = "/test/worktrees/feature-branch";
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -259,11 +260,11 @@ describe("WorktreeMetadataService", () => {
     });
   });
 
-  describe("deleteMetadata", () => {
+  describe("deleteMetadataFromPath", () => {
     it("should delete metadata file", async () => {
       (fs.unlink as Mock<any>).mockResolvedValue(undefined);
 
-      await service.deleteMetadata(mockBareRepoPath, mockWorktreeName);
+      await service.deleteMetadataFromPath(mockBareRepoPath, mockWorktreePath);
 
       expect(fs.unlink).toHaveBeenCalledWith("/test/bare/repo/.git/worktrees/feature-branch/sync-metadata.json");
     });
@@ -273,21 +274,23 @@ describe("WorktreeMetadataService", () => {
       error.code = "ENOENT";
       (fs.unlink as Mock<any>).mockRejectedValue(error);
 
-      await expect(service.deleteMetadata(mockBareRepoPath, mockWorktreeName)).resolves.not.toThrow();
+      await expect(service.deleteMetadataFromPath(mockBareRepoPath, mockWorktreePath)).resolves.not.toThrow();
     });
 
     it("should throw for other errors", async () => {
       const error = new Error("Permission denied");
       (fs.unlink as Mock<any>).mockRejectedValue(error);
 
-      await expect(service.deleteMetadata(mockBareRepoPath, mockWorktreeName)).rejects.toThrow("Permission denied");
+      await expect(service.deleteMetadataFromPath(mockBareRepoPath, mockWorktreePath)).rejects.toThrow(
+        "Permission denied",
+      );
     });
   });
 
-  describe("updateLastSync", () => {
+  describe("updateLastSyncFromPath", () => {
     it("should update existing metadata", async () => {
       const existingMetadata: SyncMetadata = {
-        lastSyncCommit: "old123",
+        lastSyncCommit: "0dd123",
         lastSyncDate: "2024-01-14T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
         createdFrom: {
@@ -310,7 +313,7 @@ describe("WorktreeMetadataService", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2024-01-15T12:00:00Z"));
 
-      await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456", "updated");
+      await service.updateLastSyncFromPath(mockBareRepoPath, mockWorktreePath, "new456", "updated");
 
       expect(mockFileHandle.writeFile).toHaveBeenCalledWith(
         expect.stringContaining('"lastSyncCommit": "new456"'),
@@ -326,7 +329,7 @@ describe("WorktreeMetadataService", () => {
 
     it("should limit sync history to 10 entries", async () => {
       const existingMetadata: SyncMetadata = {
-        lastSyncCommit: "old123",
+        lastSyncCommit: "0dd123",
         lastSyncDate: "2024-01-14T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
         createdFrom: {
@@ -343,38 +346,25 @@ describe("WorktreeMetadataService", () => {
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
-      await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456", "updated");
+      await service.updateLastSyncFromPath(mockBareRepoPath, mockWorktreePath, "new456", "updated");
 
       // Check that the saved metadata has exactly 10 entries
       const savedData = JSON.parse(mockFileHandle.writeFile.mock.calls[0][0] as string);
       expect(savedData.syncHistory).toHaveLength(10);
       expect(savedData.syncHistory[9].commit).toBe("new456");
     });
-
-    it("should skip writing metadata when none exists and upstream context is unavailable", async () => {
-      (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new456");
-
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("upstream/parent context is unavailable"));
-      expect(mockFileHandle.writeFile).not.toHaveBeenCalled();
-
-      consoleSpy.mockRestore();
-    });
   });
 
-  describe("createInitialMetadata", () => {
+  describe("createInitialMetadataFromPath", () => {
     it("should create initial metadata for new worktree", async () => {
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2024-01-15T12:00:00Z"));
 
-      await service.createInitialMetadata(
+      await service.createInitialMetadataFromPath(
         mockBareRepoPath,
-        mockWorktreeName,
+        mockWorktreePath,
         "abc123",
         "origin/feature-branch",
         "main",
@@ -655,10 +645,10 @@ describe("WorktreeMetadataService", () => {
     });
   });
 
-  describe("updateLastSync", () => {
+  describe("updateLastSyncFromPath", () => {
     it("should update existing metadata when present", async () => {
       const existingMetadata: SyncMetadata = {
-        lastSyncCommit: "old123",
+        lastSyncCommit: "0dd123",
         lastSyncDate: "2024-01-14T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
         createdFrom: { branch: "main", commit: "def456" },
@@ -668,7 +658,7 @@ describe("WorktreeMetadataService", () => {
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
-      await service.updateLastSync(mockBareRepoPath, mockWorktreeName, "new123", "updated");
+      await service.updateLastSyncFromPath(mockBareRepoPath, mockWorktreePath, "new123", "updated");
 
       expect(mockFileHandle.writeFile).toHaveBeenCalledWith(
         expect.stringContaining('"lastSyncCommit": "new123"'),

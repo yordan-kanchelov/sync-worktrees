@@ -23,11 +23,6 @@ import { KNOWN_CONFIG_KEYS, definedOnly, validateConfigFile } from "./config-sch
 import type { Logger } from "./logger.service";
 import type { Config, ConfigFile, RepositoryConfig, RepositoryMode } from "../types";
 
-// Validation lives in the config schema; these are re-exported for the
-// callers that have always imported them from here.
-export { CLONE_MODE_CONFLICTING_FIELDS, computeParallelismPeak } from "./config-schema";
-export type { ParallelismPeak } from "./config-schema";
-
 const require = createRequire(import.meta.url);
 
 /**

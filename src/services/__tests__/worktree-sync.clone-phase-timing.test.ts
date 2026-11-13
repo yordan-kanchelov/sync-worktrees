@@ -4,7 +4,7 @@ import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PRIMARY_CHECKOUT_GIT_DIRS, PRIMARY_CHECKOUT_GIT_DIR_PROBE, buildFsStats } from "../../__tests__/test-utils";
-import { CLONE_SYNC_PHASES } from "../clone-sync.service";
+import { CLONE_SYNC_PHASES } from "../clone-sync/phases";
 import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { Config } from "../../types";

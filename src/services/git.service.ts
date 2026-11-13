@@ -760,10 +760,6 @@ export class GitService {
     return this.branchRefs.trackRemoteBranchIfExists(branchName, worktreePath);
   }
 
-  async remoteBranchExists(branchName: string): Promise<boolean> {
-    return this.branchRefs.remoteBranchExists(branchName);
-  }
-
   async createBranch(branchName: string, baseBranch: string): Promise<void> {
     return this.branchRefs.createBranch(branchName, baseBranch);
   }
