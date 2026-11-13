@@ -55,6 +55,10 @@ jobs:
         working-directory: site
         run: npm ci
 
+      - name: Type check
+        working-directory: site
+        run: npm run check
+
       - name: Build
         working-directory: site
         env:

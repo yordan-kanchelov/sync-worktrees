@@ -45,8 +45,8 @@ or major and nothing minor left undeclared.
 For the site phase, the same loop with a consistency-auditor in place of the tech-writer, plus two gates: `cd site &&
 npm run build` must pass, and the rendered `site/dist/index.html` and `site/dist/llms-full.txt` are grepped for every
 fixed fact (and for literal backticks, which mean a card is rendering Markdown as plain text). The build regenerates
-`site/public/og-image.png`, so run `git checkout -- site/public/og-image.png` before committing unless the OG text in
-`site/scripts/generate-og-image.mjs` changed.
+`site/public/og-image.png` from `site/scripts/generate-og-image.mjs`; the file is gitignored, so there is nothing to
+restore.
 
 ## Target structure
 
