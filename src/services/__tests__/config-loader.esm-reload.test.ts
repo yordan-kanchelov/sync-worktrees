@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import packageJson from "../../../package.json" with { type: "json" };
 import { TEST_URLS } from "../../__tests__/test-utils";
+import { findConfigUpTree } from "../../utils/config-discovery";
 
 const execFileAsync = promisify(execFile);
 
@@ -344,10 +345,11 @@ describe("config reload under real Node", () => {
  */
 describe("TypeScript configs under real Node", () => {
   async function loadThroughRealNode(startDir: string): Promise<{ found: string | null; name?: string }> {
+    const found = await findConfigUpTree(startDir);
     const script = `
       import { ConfigLoaderService } from ${JSON.stringify(bundlePath)};
       const loader = new ConfigLoaderService();
-      const found = await loader.findConfigUpward(${JSON.stringify(startDir)});
+      const found = ${JSON.stringify(found)};
       const out = { found };
       if (found) out.name = (await loader.loadConfigFile(found)).repositories[0].name;
       console.log(JSON.stringify(out));

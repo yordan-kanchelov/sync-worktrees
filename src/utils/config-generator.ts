@@ -3,7 +3,6 @@ import * as path from "path";
 
 import { ConfigFileExistsError } from "../errors";
 
-import { resolveConfigPath } from "./config-discovery";
 import { extractRepoNameFromUrl } from "./git-url";
 
 import type { InitConfigInput, InitRepositoryInput } from "../types";
@@ -232,15 +231,4 @@ ${CONFIG_CHEATSHEET}`;
 
 export function getDefaultConfigPath(): string {
   return path.join(process.cwd(), "sync-worktrees.config.js");
-}
-
-/**
- * The config a command without `--config` loads: `SYNC_WORKTREES_CONFIG` when
- * set, otherwise the first config file in `cwd` or one of its parents.
- *
- * @deprecated The name predates the walk-up; use `resolveConfigPath`, which
- * also says where the path came from.
- */
-export async function findConfigInCwd(cwd: string = process.cwd()): Promise<string | null> {
-  return (await resolveConfigPath(undefined, { cwd }))?.path ?? null;
 }

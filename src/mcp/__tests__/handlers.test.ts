@@ -241,7 +241,7 @@ function makeCtx(opts: {
     loadConfig: vi.fn<any>().mockImplementation((opts.loadConfigImpl ?? (async () => [])) as any),
     getCurrentRepo: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
     getConfigPath: vi.fn<any>().mockReturnValue(opts.configPath ?? null),
-    findConfigUpward: vi.fn<any>().mockResolvedValue(null),
+    findConfigUpTree: vi.fn<any>().mockResolvedValue(null),
     getLaunchCwd: vi.fn<any>().mockReturnValue(opts.launchCwd ?? "/repo/main"),
     autoSelectCurrentRepoIfSingleConfig: vi.fn<any>().mockReturnValue(opts.currentRepo ?? "test"),
     getRepositoryList: vi.fn<any>().mockReturnValue([]),
@@ -1994,7 +1994,7 @@ describe("handleLoadConfig", () => {
 
   it("surfaces the real parse error when detection finds a config that fails to load", async () => {
     // detectFromPath only records configs that loaded successfully, so a
-    // found-but-broken config is only reachable via the findConfigUpward
+    // found-but-broken config is only reachable via the findConfigUpTree
     // fallback — without it the user would get the unhelpful generic
     // "configPath required" message instead of the parse error.
     const { ctx } = makeCtx({
@@ -2003,7 +2003,7 @@ describe("handleLoadConfig", () => {
         throw new Error("Unexpected token '}' in sync-worktrees.config.js");
       },
     });
-    (ctx as any).findConfigUpward.mockResolvedValue("/workspace/sync-worktrees.config.js");
+    (ctx as any).findConfigUpTree.mockResolvedValue("/workspace/sync-worktrees.config.js");
 
     const result = await invoke(handleLoadConfig, ctx, {});
     const body = parseResponse(result);

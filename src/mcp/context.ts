@@ -9,6 +9,7 @@ import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
 import { PathResolutionService } from "../services/path-resolution.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
+import { findConfigUpTree } from "../utils/config-discovery";
 import { createGitClient } from "../utils/git-client";
 import { redactRepoUrl } from "../utils/git-url";
 import { normalizePathForCompare, pathsEqual } from "../utils/path-compare";
@@ -229,8 +230,8 @@ export class RepositoryContext {
     return this.launchCwd;
   }
 
-  async findConfigUpward(startDir: string): Promise<string | null> {
-    return this.configLoader.findConfigUpward(startDir);
+  async findConfigUpTree(startDir: string): Promise<string | null> {
+    return findConfigUpTree(startDir);
   }
 
   async loadConfig(configPath: string, options: { setDefaultCurrent?: boolean } = {}): Promise<RepositoryConfig[]> {
@@ -301,7 +302,7 @@ export class RepositoryContext {
     }
 
     if (this.configPath === null) {
-      const found = await this.configLoader.findConfigUpward(absolutePath);
+      const found = await findConfigUpTree(absolutePath);
       if (found === null) {
         this.lastConfigLoadFailure = null;
       } else {

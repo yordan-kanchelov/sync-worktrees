@@ -167,7 +167,7 @@ export const PATH_CONSTANTS = {
 // Kept out of the JSDoc below on purpose: `tsc --emitDeclarationOnly` copies a
 // JSDoc block attached to an exported declaration into dist/constants.d.ts,
 // which ships. Line comments are dropped there and cost nothing.
-/** Auto-discovery order for `findConfigUpward` and `findConfigInCwd`; first hit in a directory wins. */
+/** Auto-discovery order for `findConfigUpTree`; first hit in a directory wins. */
 export const CONFIG_FILE_NAMES = [
   "sync-worktrees.config.js",
   "sync-worktrees.config.mjs",

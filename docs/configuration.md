@@ -15,9 +15,9 @@ recovery](./trash-and-recovery.md) and [Hooks and file copying](./hooks-and-file
 ## File formats and discovery
 
 Discovery tries `sync-worktrees.config.js`, `.mjs`, `.cjs` and `.ts`, in that order, in each directory from the
-current one upwards; the first directory with a match wins. The CLI stops at your home directory when it starts inside
-it (like a git ceiling directory: a config in `~` is found, one in `/home` or `/` is not); the MCP server walks to the
-filesystem root. The CLI resolves its config in this order:
+current one upwards; the first directory with a match wins. The walk stops at your home directory when it starts
+inside it (like a git ceiling directory: a config in `~` is found, one in `/home` or `/` is not); the CLI and the MCP
+server share this rule. The CLI resolves its config in this order:
 
 1. `--config <path>`.
 2. The `SYNC_WORKTREES_CONFIG` environment variable, relative to the current directory. An empty value counts as unset;

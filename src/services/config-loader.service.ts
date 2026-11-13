@@ -3,7 +3,7 @@ import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { Worker } from "worker_threads";
 
-import { CONFIG_FILE_NAMES, DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
 import { fileExists } from "../utils/file-exists";
@@ -338,24 +338,6 @@ export class ConfigLoaderService {
       this.logger.warn(message);
     } else {
       console.warn(message);
-    }
-  }
-
-  async findConfigUpward(startDir: string): Promise<string | null> {
-    let current = path.resolve(startDir);
-    const root = path.parse(current).root;
-
-    while (true) {
-      for (const name of CONFIG_FILE_NAMES) {
-        const candidate = path.join(current, name);
-        if (await fileExists(candidate)) {
-          return candidate;
-        }
-      }
-      if (current === root) return null;
-      const parent = path.dirname(current);
-      if (parent === current) return null;
-      current = parent;
     }
   }
 

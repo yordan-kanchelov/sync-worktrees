@@ -7,7 +7,7 @@ import { promisify } from "util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ConfigLoaderService } from "../../services/config-loader.service";
-import { ConfigFileExistsError, findConfigInCwd, generateConfigFile, getDefaultConfigPath } from "../config-generator";
+import { ConfigFileExistsError, generateConfigFile, getDefaultConfigPath } from "../config-generator";
 
 import type { InitConfigInput, InitRepositoryInput } from "../../types";
 
@@ -541,53 +541,6 @@ describe("Config Generator", () => {
       const configPath = getDefaultConfigPath();
       expect(path.basename(configPath)).toBe("sync-worktrees.config.js");
       expect(path.dirname(configPath)).toBe(process.cwd());
-    });
-  });
-
-  describe("findConfigInCwd", () => {
-    it("returns null when no config file exists", async () => {
-      const result = await findConfigInCwd(tempDir);
-      expect(result).toBeNull();
-    });
-
-    it("finds sync-worktrees.config.js", async () => {
-      const configPath = path.join(tempDir, "sync-worktrees.config.js");
-      await fs.writeFile(configPath, "export default {};");
-      const result = await findConfigInCwd(tempDir);
-      expect(result).toBe(configPath);
-    });
-
-    it("finds sync-worktrees.config.mjs", async () => {
-      const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
-      await fs.writeFile(configPath, "export default {};");
-      const result = await findConfigInCwd(tempDir);
-      expect(result).toBe(configPath);
-    });
-
-    it("finds sync-worktrees.config.cjs", async () => {
-      const configPath = path.join(tempDir, "sync-worktrees.config.cjs");
-      await fs.writeFile(configPath, "module.exports = {};");
-      const result = await findConfigInCwd(tempDir);
-      expect(result).toBe(configPath);
-    });
-
-    // The CLI's bare `sync-worktrees` resolves its config through this, so a
-    // hand-written .ts config has to be reachable here too — not only through
-    // the MCP server's walk-up.
-    it("finds sync-worktrees.config.ts", async () => {
-      const configPath = path.join(tempDir, "sync-worktrees.config.ts");
-      await fs.writeFile(configPath, "export default {};");
-      const result = await findConfigInCwd(tempDir);
-      expect(result).toBe(configPath);
-    });
-
-    it("prefers .js over .mjs and .cjs when all exist", async () => {
-      const jsPath = path.join(tempDir, "sync-worktrees.config.js");
-      await fs.writeFile(jsPath, "export default {};");
-      await fs.writeFile(path.join(tempDir, "sync-worktrees.config.mjs"), "export default {};");
-      await fs.writeFile(path.join(tempDir, "sync-worktrees.config.cjs"), "module.exports = {};");
-      const result = await findConfigInCwd(tempDir);
-      expect(result).toBe(jsPath);
     });
   });
 });

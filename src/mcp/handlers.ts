@@ -777,7 +777,7 @@ async function detectConfigFromLaunchCwd(ctx: RepositoryContext): Promise<string
     // but broken config would otherwise be invisible here. Return it so the
     // loadConfig call surfaces the real parse error instead of the generic
     // "configPath required" message.
-    return await ctx.findConfigUpward(ctx.getLaunchCwd());
+    return await ctx.findConfigUpTree(ctx.getLaunchCwd());
   } catch {
     return null;
   }
