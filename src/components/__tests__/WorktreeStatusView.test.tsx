@@ -1099,6 +1099,76 @@ describe("WorktreeStatusView", () => {
       // Should be on the diverged entry, not stuck on separator
       expect(lastFrame()).toContain("Ctrl-D to delete");
     });
+
+    // Index 0 is the separator when no worktree is listed; the selection must
+    // never rest on it or past the end of the list.
+    describe("selection never rests on a non-selectable row", () => {
+      const singleRepo = [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }];
+
+      it("selects the first diverged entry when the repository has no worktrees", async () => {
+        const { lastFrame } = render(
+          <WorktreeStatusView
+            {...defaultProps}
+            repositories={singleRepo}
+            getWorktreeStatusForRepo={vi.fn().mockResolvedValue([])}
+            getDivergedDirectoriesForRepo={vi.fn().mockResolvedValue([makeDiverged()])}
+            deleteDivergedDirectory={vi.fn().mockResolvedValue(undefined)}
+          />,
+        );
+        await waitForStateUpdate();
+        await waitForStateUpdate();
+
+        expect(lastFrame()).toMatch(/> 📦 feature\/x/);
+        expect(lastFrame()).toContain("Ctrl-D to delete");
+      });
+
+      it("selects the first diverged entry after a filter that matches only diverged entries", async () => {
+        const { stdin, lastFrame } = render(
+          <WorktreeStatusView
+            {...defaultProps}
+            repositories={singleRepo}
+            getWorktreeStatusForRepo={vi.fn().mockResolvedValue([makeEntry("main")])}
+            getDivergedDirectoriesForRepo={vi.fn().mockResolvedValue([makeDiverged()])}
+            deleteDivergedDirectory={vi.fn().mockResolvedValue(undefined)}
+          />,
+        );
+        await waitForStateUpdate();
+        await waitForStateUpdate();
+
+        stdin.write("feature");
+        await waitForStateUpdate();
+
+        expect(lastFrame()).toMatch(/> 📦 feature\/x/);
+        expect(lastFrame()).toContain("Ctrl-D to delete");
+      });
+
+      it("selects the last worktree after deleting the last diverged entry", async () => {
+        const { stdin, lastFrame } = render(
+          <WorktreeStatusView
+            {...defaultProps}
+            repositories={singleRepo}
+            getWorktreeStatusForRepo={vi.fn().mockResolvedValue([makeEntry("main"), makeEntry("dev")])}
+            getDivergedDirectoriesForRepo={vi.fn().mockResolvedValue([makeDiverged()])}
+            deleteDivergedDirectory={vi.fn().mockResolvedValue(undefined)}
+          />,
+        );
+        await waitForStateUpdate();
+        await waitForStateUpdate();
+
+        for (let i = 0; i < 3; i++) {
+          stdin.write("\u001B[B");
+          await waitForStateUpdate();
+        }
+        stdin.write("\u0004"); // Ctrl-D
+        await waitForStateUpdate();
+        stdin.write("y");
+        await waitForStateUpdate();
+        await waitForStateUpdate();
+
+        expect(lastFrame()).not.toContain("Diverged Directories");
+        expect(lastFrame()).toContain("> dev");
+      });
+    });
   });
 
   describe("selection edge cases", () => {

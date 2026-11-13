@@ -221,7 +221,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   const [entries, setEntries] = useState<WorktreeStatusEntry[]>([]);
   const [divergedEntries, setDivergedEntries] = useState<DivergedDirectoryInfo[]>([]);
-  const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
+  const [storedEntryIndex, setSelectedEntryIndex] = useState(0);
   const [entryFilter, setEntryFilter] = useState(initialBranchRef.current ?? "");
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -375,22 +375,29 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     void loadStatus(repoIndex);
   }, [step, loadStatus]);
 
+  // The stored index can name the separator or a row past the end (no
+  // worktrees, a diverged-only filter, a delete): snap to a selectable row.
+  const snapToSelectable = useCallback(
+    (index: number): number =>
+      selectableIndices.find((i) => i >= index) ?? selectableIndices[selectableIndices.length - 1] ?? 0,
+    [selectableIndices],
+  );
+  const selectedEntryIndex = snapToSelectable(storedEntryIndex);
+
   const navigateUp = useCallback(() => {
     setSelectedEntryIndex((prev) => {
-      const currentSelectableIdx = selectableIndices.indexOf(prev);
-      if (currentSelectableIdx <= 0) return selectableIndices[0] ?? 0;
-      return selectableIndices[currentSelectableIdx - 1];
+      const pos = selectableIndices.indexOf(snapToSelectable(prev));
+      return pos <= 0 ? (selectableIndices[0] ?? 0) : selectableIndices[pos - 1];
     });
-  }, [selectableIndices]);
+  }, [selectableIndices, snapToSelectable]);
 
   const navigateDown = useCallback(() => {
     setSelectedEntryIndex((prev) => {
-      const currentSelectableIdx = selectableIndices.indexOf(prev);
-      if (currentSelectableIdx === -1) return selectableIndices[0] ?? 0;
-      if (currentSelectableIdx >= selectableIndices.length - 1) return prev;
-      return selectableIndices[currentSelectableIdx + 1];
+      const pos = selectableIndices.indexOf(snapToSelectable(prev));
+      if (pos === -1) return 0;
+      return selectableIndices[Math.min(pos + 1, selectableIndices.length - 1)];
     });
-  }, [selectableIndices]);
+  }, [selectableIndices, snapToSelectable]);
 
   const selectedItem = combinedList[selectedEntryIndex];
   const isDivergedSelected = selectedItem?.type === "diverged";
