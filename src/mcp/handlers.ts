@@ -14,7 +14,7 @@ import { getErrorMessage } from "../utils/errors";
 import { probePathExists } from "../utils/file-exists";
 import { redactSecretsInText } from "../utils/git-url";
 import { isValidGitBranchName } from "../utils/git-validation";
-import { pathsEqual } from "../utils/path-compare";
+import { isPathEqualOrInside, isPathStrictlyInside, pathsEqual, resolveRealPathAsync } from "../utils/path-compare";
 
 import {
   CapabilityUnavailableError,
@@ -129,69 +129,23 @@ async function runExclusiveRepoOperation<T>(
   return result.value;
 }
 
-async function ensureRepoWorktreePath(
-  ctx: RepositoryContext,
-  params: WorktreePathParams,
-  service: RepoService,
-): Promise<string> {
-  return (await ensureRepoWorktree(ctx, params, service)).path;
-}
-
 /**
- * Resolves `params.path` to a registered worktree of this repository.
+ * Resolves `params.path` to a registered worktree of this repository, always
+ * from git's own listing. The discovery snapshot has no freshness check, so it
+ * would keep answering for a worktree removed or moved to another branch since.
  *
- * `fresh` skips the discovery snapshot and asks git for the listing. That
- * snapshot is a plain field with no freshness check: a `git checkout -b` inside
- * a worktree touches only that worktree's own admin HEAD, so neither the
- * detection mtime cache nor `invalidateDiscovered` ever notices, and the branch
- * name recorded when the session first detected the repository can outlive the
- * checkout it described. A stale name is harmless to a tool that only labels or
- * locates a worktree, but not to one that then acts on the branch: merging
- * origin/<stale name> into a worktree that has since been moved to another
- * branch fast-forwards *that* branch to the wrong tip, silently, whenever the
- * new branch has no commits of its own. Callers that mutate must pass `fresh`.
- *
- * `includeDetached` widens the fresh listing to worktrees with no branch
- * checked out, which git otherwise omits. Without it a detached worktree — a
- * path this repository really does have registered — comes back as "not a
- * registered worktree", which is both wrong and useless to act on. The
- * resolved worktree then carries `detached` and its HEAD oid, and it is the
- * caller's job to refuse it: `branch` is the empty string for such an entry.
+ * Detached worktrees are included (git omits them otherwise) and carry
+ * `detached` plus their HEAD oid with `branch` empty; a caller that acts on the
+ * branch must refuse them. Prunable rows (checkout gone) read as absent.
  */
-async function ensureRepoWorktree(
-  ctx: RepositoryContext,
-  params: WorktreePathParams,
-  service: RepoService,
-  options: { fresh?: boolean; includeDetached?: boolean } = {},
-): Promise<RepoWorktree> {
+async function ensureRepoWorktree(params: WorktreePathParams, service: RepoService): Promise<RepoWorktree> {
   const targetPath = params.path;
-  if (!options.fresh) {
-    const discovered = ctx.getDiscoveredContext(params.repoName);
-    if (discovered?.allWorktrees.length) {
-      const match = discovered.allWorktrees.find((w) => pathsEqual(w.path, targetPath));
-      // No `detached`/`head` here, and `branch` is the snapshot's DISPLAY label:
-      // for a detached worktree that is the pseudo-name `(detached abc1234)`,
-      // which is not a ref and must never reach fetchBranch/updateWorktree.
-      // Safe only while every non-`fresh` caller uses `.path` alone, which is
-      // what the rule above enforces — a mutating caller added here would
-      // resurrect exactly the bug this branch is not allowed to cause.
-      if (match) return { path: path.resolve(match.path), branch: match.branch };
-    }
-  }
-
   try {
-    const worktrees = await service.getWorktrees({ includeDetached: options.includeDetached === true });
-    const match = worktrees.find((w) => pathsEqual(w.path, targetPath));
-    // A detached registration whose checkout is gone reads as absent here, the
-    // way `getWorktrees` already drops the prunable detached rows: there is no
-    // directory in which to act on "check out a branch", so DETACHED_HEAD would
-    // name a remedy that cannot be performed. Git computes `prunable` for every
-    // registration EXCEPT a locked one, so only a locked row can reach this
-    // point with its checkout deleted — which is the documented use of
-    // `git worktree lock`, a worktree on media that is not always mounted — and
-    // it is the only shape the listing itself cannot answer for. An
-    // unverifiable path ("unknown") keeps the detached answer rather than
-    // inventing an absence.
+    const worktrees = await service.getWorktrees({ includeDetached: true });
+    const match = worktrees.find((w) => pathsEqual(w.path, targetPath) && w.isPrunable !== true);
+    // Git never marks a locked row prunable, so a locked detached row whose
+    // checkout is gone is probed here; DETACHED_HEAD would name a remedy that
+    // cannot be performed. An unverifiable path ("unknown") keeps the answer.
     const vanished =
       match?.detached === true && match.locked === true && (await probePathExists(match.path)) === "missing";
     if (match && !vanished) {
@@ -420,7 +374,18 @@ async function listWorktreesForRepo(
     }
   }
 
-  const currentPath = discovered?.currentWorktreePath ?? null;
+  // The worktree holding the launch cwd (deepest match), not the snapshot's
+  // currentWorktreePath, which mutating tools clear and detect_context moves.
+  const launchCwd = await resolveRealPathAsync(ctx.getLaunchCwd());
+  let currentPath: string | null = null;
+  for (const wt of worktrees) {
+    if (
+      isPathEqualOrInside(launchCwd, wt.path) &&
+      (currentPath === null || isPathStrictlyInside(wt.path, currentPath))
+    ) {
+      currentPath = wt.path;
+    }
+  }
   // One branch/remote-ref scan for the whole listing, not one per worktree.
   const refScans = new RefScanScope();
 
@@ -465,7 +430,7 @@ export async function handleGetWorktreeStatus(
     capability: "getStatus",
     toolName: "get_worktree_status",
   });
-  const resolvedPath = await ensureRepoWorktreePath(ctx, params, service);
+  const resolvedPath = (await ensureRepoWorktree(params, service)).path;
   const status = await git.getFullWorktreeStatus(params.path, params.includeDetails ?? false);
 
   // `divergence` rides in on the spread: it is a field of the status result now.
@@ -694,17 +659,8 @@ export async function handleUpdateWorktree(
     if (!service.isInitialized()) {
       await service.initializeUnlocked();
     }
-    // `fresh`: the branch this resolves to is the ref the fast-forward below
-    // merges, so it has to be the branch the worktree is on now, not the one
-    // the session's discovery snapshot remembers.
-    //
-    // `includeDetached`: git's default listing omits a worktree with no branch
-    // checked out, so a detached one used to answer "not a registered worktree"
-    // — for a path that is registered. Asking for it costs nothing (it is the
-    // same `worktree list --porcelain`, and the flag and the HEAD oid are both
-    // in the rows already parsed) and lets the refusal below name the real
-    // problem and the remedy instead.
-    const worktree = await ensureRepoWorktree(ctx, params, service, { fresh: true, includeDetached: true });
+    // Resolved from git, so the branch merged below is the one checked out now.
+    const worktree = await ensureRepoWorktree(params, service);
     if (worktree.detached === true) {
       throw new WorktreeDetachedError(worktree.path, worktree.head);
     }

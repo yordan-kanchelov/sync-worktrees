@@ -214,7 +214,7 @@ function makeCtx(opts: {
     }),
     getGitService: () => git,
     getDefaultBranch: vi.fn<any>().mockResolvedValue("main"),
-    getWorktrees: vi.fn<any>().mockImplementation(() => (git.getWorktrees as any)()),
+    getWorktrees: vi.fn<any>().mockImplementation((options?: unknown) => (git.getWorktrees as any)(options)),
     isCloneMode: vi.fn<any>().mockReturnValue(false),
     getRecordedSkips: vi.fn<any>().mockReturnValue([]),
     clearRecordedSkips: vi.fn<any>(),
@@ -403,6 +403,7 @@ describe("handleListWorktrees", () => {
 
     const ctx = {
       getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getLaunchCwd: vi.fn<any>().mockReturnValue("/repos/a/main"),
       getBaseCapabilities: vi.fn<any>().mockReturnValue(makeCapabilities()),
       getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
         makeDiscovered({
@@ -462,6 +463,7 @@ describe("handleListWorktrees", () => {
 
     const ctx = {
       getConfiguredRepositoryNames: vi.fn<any>().mockReturnValue(["repo-a", "repo-b"]),
+      getLaunchCwd: vi.fn<any>().mockReturnValue("/repos/a/main"),
       getBaseCapabilities: vi.fn<any>().mockReturnValue(makeCapabilities()),
       getDiscoveredContext: vi.fn<any>().mockImplementation((repoName: unknown) =>
         makeDiscovered({
@@ -1913,18 +1915,17 @@ describe("handleGetWorktreeStatus", () => {
     expect(git.getWorktrees).not.toHaveBeenCalled();
   });
 
-  // The consequence of the choice below, pinned so it stays a decision rather
-  // than a surprise: membership for a DETACHED path still depends on cache
-  // state here. The discovery snapshot lists such a worktree (under the
-  // pseudo-name `(detached <sha>)`), the fresh branch-only listing does not —
-  // so a warm snapshot answers and a cold one says "not a registered worktree"
-  // about the same registered path. Harmless only because this handler throws
-  // `.branch` away; `update_worktree`, which does not, resolves `fresh` plus
-  // `includeDetached` and is cache-independent either way.
-  it("answers a detached path from the snapshot but denies it without one", async () => {
+  // Membership comes from git every time, never from the discovery snapshot:
+  // a detached worktree gets the same answer cold and warm.
+  it("answers a detached path the same with and without a discovery snapshot", async () => {
     const detachedPath = "/w/loose";
     const gitMock = {
-      getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/x", branch: "x" }]),
+      getWorktrees: vi
+        .fn<any>()
+        .mockImplementation(async (options?: any) => [
+          { path: "/w/x", branch: "x" },
+          ...(options?.includeDetached ? [{ path: detachedPath, branch: "", detached: true, head: "9f1c0de" }] : []),
+        ]),
       getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ isClean: false, reasons: ["detached HEAD"] }),
     };
 
@@ -1933,19 +1934,16 @@ describe("handleGetWorktreeStatus", () => {
       git: gitMock,
     });
     const warmBody = parseResponse(await invoke(handleGetWorktreeStatus, warm.ctx, { path: detachedPath }));
-    expect(warmBody.path).toBe(detachedPath);
-    expect(warmBody.reasons).toContain("detached HEAD");
 
     const cold = makeCtx({ discovered: makeDiscovered({ allWorktrees: [] }), git: gitMock });
     const coldBody = parseResponse(await invoke(handleGetWorktreeStatus, cold.ctx, { path: detachedPath }));
-    expect(coldBody.message).toContain("not a registered worktree");
+
+    expect(warmBody.path).toBe(detachedPath);
+    expect(warmBody.reasons).toContain("detached HEAD");
+    expect(coldBody).toEqual(warmBody);
   });
 
-  // Read-only tools are left alone: they already describe a detached worktree
-  // (`get_worktree_status` puts "detached HEAD" in its reasons), so widening
-  // their listing would only change which paths they accept. Only the tool
-  // that acts on `branch` asks for detached entries.
-  it("keeps asking for the branch-only listing", async () => {
+  it("asks the membership listing for detached entries", async () => {
     const { ctx, service } = makeCtx({
       discovered: makeDiscovered({ allWorktrees: [] }),
       git: {
@@ -1956,7 +1954,53 @@ describe("handleGetWorktreeStatus", () => {
 
     await invoke(handleGetWorktreeStatus, ctx, { path: "/w/x" });
 
-    expect(service.getWorktrees).toHaveBeenCalledWith(expect.objectContaining({ includeDetached: false }));
+    expect(service.getWorktrees).toHaveBeenCalledWith(expect.objectContaining({ includeDetached: true }));
+  });
+
+  // A worktree removed behind the session's back (a daemon prune) must not keep
+  // answering from the snapshot with the status service's "missing path" result.
+  it("refuses a path the snapshot lists but git no longer does", async () => {
+    const { ctx, git } = makeCtx({
+      discovered: makeDiscovered({
+        allWorktrees: [
+          { path: "/repo/main", branch: "main", isCurrent: true },
+          { path: "/repo/worktrees/gone", branch: "gone", isCurrent: false },
+        ],
+      }),
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/repo/main", branch: "main" }]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ isClean: true, canRemove: true, reasons: [] }),
+      },
+    });
+
+    const result = await invoke(handleGetWorktreeStatus, ctx, { path: "/repo/worktrees/gone" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.message).toContain("not a registered worktree");
+    expect(git.getFullWorktreeStatus).not.toHaveBeenCalled();
+  });
+
+  it("refuses a registration git reports as prunable", async () => {
+    const { ctx, git } = makeCtx({
+      discovered: makeDiscovered({
+        allWorktrees: [{ path: "/repo/worktrees/gone", branch: "gone", isCurrent: false }],
+      }),
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([
+          { path: "/repo/main", branch: "main" },
+          { path: "/repo/worktrees/gone", branch: "gone", isPrunable: true },
+        ]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ isClean: true, canRemove: true, reasons: [] }),
+      },
+    });
+
+    const result = await invoke(handleGetWorktreeStatus, ctx, { path: "/repo/worktrees/gone" });
+    const body = parseResponse(result);
+
+    expect(result.isError).toBe(true);
+    expect(body.message).toContain("not a registered worktree");
+    expect(git.getFullWorktreeStatus).not.toHaveBeenCalled();
   });
 });
 
@@ -2106,6 +2150,55 @@ describe("list_worktrees lastSyncAt", () => {
     const result = await invoke(handleListWorktrees, ctx, {});
     const body = parseResponse(result);
     expect(body.worktrees[0].lastSyncAt).toBeNull();
+  });
+});
+
+describe("handleListWorktrees isCurrent", () => {
+  // isCurrent follows the launch cwd, not the discovery snapshot, so a mutating
+  // tool's invalidateDiscovered() (or a detect_context elsewhere) cannot flip it.
+  it("is identical before and after the discovery snapshot is invalidated", async () => {
+    const { ctx } = makeCtx({
+      launchCwd: "/repo/main",
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([
+          { path: "/repo/main", branch: "main" },
+          { path: "/repo/worktrees/feature", branch: "feature" },
+        ]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ isClean: true, canRemove: true, reasons: [] }),
+      },
+    });
+    (ctx.getDiscoveredContext as any).mockReturnValue(
+      makeDiscovered({ currentWorktreePath: "/repo/worktrees/feature" }),
+    );
+
+    const before = parseResponse(await invoke(handleListWorktrees, ctx, {}));
+    (ctx.getDiscoveredContext as any).mockReturnValue(null);
+    const after = parseResponse(await invoke(handleListWorktrees, ctx, {}));
+
+    const current = (body: any): Array<[string, boolean]> => body.worktrees.map((w: any) => [w.path, w.isCurrent]);
+    expect(current(before)).toEqual([
+      ["/repo/main", true],
+      ["/repo/worktrees/feature", false],
+    ]);
+    expect(current(after)).toEqual(current(before));
+  });
+
+  it("marks the worktree that contains the launch cwd", async () => {
+    const { ctx } = makeCtx({
+      launchCwd: "/repo/worktrees/feature/src/lib",
+      discovered: null,
+      git: {
+        getWorktrees: vi.fn<any>().mockResolvedValue([
+          { path: "/repo/main", branch: "main" },
+          { path: "/repo/worktrees/feature", branch: "feature" },
+        ]),
+        getFullWorktreeStatus: vi.fn<any>().mockResolvedValue({ isClean: true, canRemove: true, reasons: [] }),
+      },
+    });
+
+    const body = parseResponse(await invoke(handleListWorktrees, ctx, {}));
+
+    expect(body.worktrees.map((w: any) => w.isCurrent)).toEqual([false, true]);
   });
 });
 
