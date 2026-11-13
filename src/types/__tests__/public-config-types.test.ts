@@ -1,7 +1,11 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
-import type { SyncWorktreesConfig, SyncWorktreesRepository } from "../../public-types";
-import type { Config, SyncWorktreesWorktreeRepository } from "../index";
+import type { SyncWorktreesConfig, SyncWorktreesMaintenanceConfig, SyncWorktreesRepository } from "../../public-types";
+import type { Config, MaintenanceConfig, SyncWorktreesWorktreeRepository } from "../index";
 
 type Expect<T extends true> = T;
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -68,6 +72,29 @@ type PublicWorktreeOnlyShape = {
 };
 type InternalWorktreeOnlyShape = { [K in WorktreeOnlyConfigKeys]-?: Exclude<Config[K], undefined> };
 type _WorktreeOnlyFieldTypesMatch = Expect<Equal<PublicWorktreeOnlyShape, InternalWorktreeOnlyShape>>;
+type _MaintenanceAliasMatches = Expect<Equal<SyncWorktreesMaintenanceConfig, MaintenanceConfig>>;
+
+const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+// Every source module the public entry imports, transitively. tsc emits a .d.ts
+// for each one, so this is what `dist` ships as declarations.
+function publicTypeModules(): string[] {
+  const seen = new Set<string>();
+  const queue = [path.join(srcDir, "public-types.ts")];
+  while (queue.length > 0) {
+    const file = queue.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const source = readFileSync(file, "utf8");
+    for (const match of source.matchAll(/\bfrom\s*["'](\.\.?\/[^"']+)["']/g)) {
+      const base = path.resolve(path.dirname(file), match[1]);
+      const target = [`${base}.ts`, `${base}.tsx`, path.join(base, "index.ts")].find((c) => existsSync(c));
+      if (!target) throw new Error(`${file}: cannot resolve ${match[1]}`);
+      queue.push(target);
+    }
+  }
+  return [...seen].map((file) => path.relative(srcDir, file).split(path.sep).join("/")).sort();
+}
 
 const minimalConfig = {
   repositories: [
@@ -169,6 +196,18 @@ describe("public config types", () => {
     expect(cloneModeConfig.repositories[0].mode).toBe("clone");
     expect(invalidCloneRepository.mode).toBe("clone");
     expect(invalidWorktreeRepository.mode).toBe("worktree");
+  });
+
+  it("exports the maintenance block alias", () => {
+    const maintenance: SyncWorktreesMaintenanceConfig = { enabled: true, interval: "7d", aggressive: false };
+    const config = {
+      repositories: [{ name: "m", repoUrl: "https://example.com/m.git", worktreeDir: "./m", maintenance }],
+    } satisfies SyncWorktreesConfig;
+    expect(config.repositories[0].maintenance.interval).toBe("7d");
+  });
+
+  it("keeps the public declaration graph free of internal modules", () => {
+    expect(publicTypeModules()).toEqual(["public-types.ts", "types/public-config.ts"]);
   });
 
   it("accepts the inactivity timeouts under defaults and on a repository, in both modes", () => {
