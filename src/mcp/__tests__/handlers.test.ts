@@ -1537,6 +1537,34 @@ describe("handleInitialize", () => {
     expect(service.getDefaultBranch).toHaveBeenCalled();
   });
 
+  it("reports a clone it refused to adopt (wrong branch) instead of success", async () => {
+    const { ctx, service } = makeCtx({
+      service: { isCloneMode: vi.fn<any>().mockReturnValue(true) },
+    });
+    service.getRecordedSkips.mockReturnValue([{ kind: "dirty_tree" }]);
+    service.clearRecordedSkips.mockImplementation(() => service.getRecordedSkips.mockReturnValue([]));
+    service.initializeUnlocked.mockImplementation(async () => {
+      service.getRecordedSkips.mockReturnValue([
+        { kind: "branch_mismatch", phase: "init", currentBranch: "feature", expectedBranch: "main" },
+      ]);
+    });
+
+    const body = parseResponse(await invoke(handleInitialize, ctx, {}));
+
+    expect(service.clearRecordedSkips).toHaveBeenCalled();
+    expect(body.success).toBe(false);
+    expect(body.skips).toEqual([
+      {
+        kind: "branch_mismatch",
+        phase: "init",
+        currentBranch: "feature",
+        expectedBranch: "main",
+        message:
+          "clone is on 'feature', expected 'main' (since process start) — update 'branch' in the config or switch the clone back",
+      },
+    ]);
+  });
+
   it("denies initialize from durable capabilities when the discovery cache is empty", async () => {
     const { ctx, service } = makeCtx({
       baseCapabilities: makeCapabilities({
@@ -2099,6 +2127,7 @@ describe("handleInitialize", () => {
     const body = parseResponse(result);
 
     expect(body.success).toBe(true);
+    expect(body.skips).toEqual([]);
     expect(body.defaultBranch).toBe("main");
     expect(body.worktreeDir).toBe("/repo/worktrees");
     expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);

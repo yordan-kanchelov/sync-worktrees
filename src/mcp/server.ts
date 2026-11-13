@@ -297,7 +297,7 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     "initialize",
     {
       description:
-        "Initialize repo: clone as bare if missing, create main worktree. Idempotent. Emits progress. Preconditions: config loaded. Returns: {success, defaultBranch, worktreeDir}.",
+        "Initialize repo. Worktree mode: clone as bare if missing, create main worktree. Clone mode: clone if missing, else check the existing clone's branch and origin. Idempotent. Emits progress. Preconditions: config loaded. Returns: {success, defaultBranch, worktreeDir, skips}. success=false when an existing clone was refused (wrong branch/origin, unreadable HEAD); the reason is in skips.",
       inputSchema: z.strictObject({
         repoName: z.string().optional().describe(REPO_NAME_DESCRIBE),
       }),

@@ -757,14 +757,19 @@ export async function handleInitialize(
   const dispose = attachProgressReporter(service, handlerContext);
   try {
     return await runExclusiveRepoOperation(ctx, params.repoName, service, async () => {
+      service.clearRecordedSkips();
       await service.initializeUnlocked();
-      // A standalone initialize does not surface skips in its response. Clear the
-      // one-shot suppression token so a later independent `sync` re-detects and
-      // reports a wrong-branch / unreadable-HEAD clone instead of swallowing it.
+      const skips = service.getRecordedSkips().map((reason) => ({
+        ...reason,
+        message: formatCloneSkipReason(reason),
+      }));
+      // Clear the one-shot token so a later `sync` re-reports a refused clone.
       service.clearPendingInitSkip();
       ctx.invalidateDiscovered();
       return formatToolResponse({
-        success: true,
+        // A recorded skip means init refused to adopt the existing clone.
+        success: skips.length === 0,
+        skips,
         defaultBranch: await service.getDefaultBranch(),
         worktreeDir: service.config.worktreeDir,
       });

@@ -109,6 +109,7 @@ function makeService(): { service: Record<string, any>; git: Record<string, any>
     getDefaultBranch: vi.fn<any>().mockResolvedValue("main"),
     getRecordedSkips: () => [],
     clearPendingInitSkip: vi.fn<any>(),
+    clearRecordedSkips: vi.fn<any>(),
   };
   return { service, git };
 }

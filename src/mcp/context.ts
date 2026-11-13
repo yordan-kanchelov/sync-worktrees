@@ -292,7 +292,7 @@ export class RepositoryContext {
       });
     });
 
-    this.reselectDetectedCurrentRepoIfConfigured();
+    this.dropDetectedEntriesCoveredByConfig();
 
     if (this.currentRepo && !this.repos.has(this.currentRepo)) {
       this.currentRepo = null;
@@ -498,13 +498,14 @@ export class RepositoryContext {
     this.currentRepo = candidate;
   }
 
-  private reselectDetectedCurrentRepoIfConfigured(): void {
-    if (!this.currentRepo) return;
-    const current = this.repos.get(this.currentRepo);
-    if (current?.source !== "detected") return;
-    const match = this.findConfiguredEntryForDetected(current);
-    if (match) {
-      this.currentRepo = match.name;
+  private dropDetectedEntriesCoveredByConfig(): void {
+    // One entry (and one service) per repository: the config entry wins.
+    for (const [name, entry] of this.repos) {
+      if (entry.source !== "detected") continue;
+      const match = this.findConfiguredEntryForDetected(entry);
+      if (!match) continue;
+      this.repos.delete(name);
+      if (this.currentRepo === name) this.currentRepo = match.name;
     }
   }
 
@@ -1087,7 +1088,8 @@ export class RepositoryContext {
 
           if (entry.config.bareRepoDir) {
             summary.bareRepoDir = path.resolve(entry.config.bareRepoDir);
-            summary.localReady = await isDirectory(summary.bareRepoDir);
+            // HEAD, not the dir: the repo lock creates the dir before any clone.
+            summary.localReady = await pathExists(path.join(summary.bareRepoDir, "HEAD"));
           } else {
             summary.localReady = false;
           }
@@ -1416,13 +1418,17 @@ async function isDirectory(filePath: string): Promise<boolean> {
   }
 }
 
-async function hasGitMetadata(worktreePath: string): Promise<boolean> {
+async function pathExists(filePath: string): Promise<boolean> {
   try {
-    await fs.stat(path.join(worktreePath, ".git"));
+    await fs.stat(filePath);
     return true;
   } catch {
     return false;
   }
+}
+
+async function hasGitMetadata(worktreePath: string): Promise<boolean> {
+  return pathExists(path.join(worktreePath, ".git"));
 }
 
 async function isGitCheckout(checkoutPath: string): Promise<boolean> {

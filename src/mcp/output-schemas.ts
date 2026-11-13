@@ -216,6 +216,13 @@ const syncFailedActionSchema = z.looseObject({
   path: z.string().optional(),
 });
 
+const skipsSchema = z.array(
+  z.looseObject({
+    kind: z.string(),
+    message: z.string().describe("Human-readable rendering of the skip reason."),
+  }),
+);
+
 export const syncOutputSchema = z.looseObject({
   success: z
     .boolean()
@@ -243,12 +250,7 @@ export const syncOutputSchema = z.looseObject({
     actions: z.array(syncOutcomeActionSchema),
     durationMs: z.number().optional(),
   }),
-  skips: z.array(
-    z.looseObject({
-      kind: z.string(),
-      message: z.string().describe("Human-readable rendering of the skip reason."),
-    }),
-  ),
+  skips: skipsSchema,
 });
 
 export const updateWorktreeOutputSchema = z.looseObject({
@@ -260,9 +262,10 @@ export const updateWorktreeOutputSchema = z.looseObject({
 });
 
 export const initializeOutputSchema = z.looseObject({
-  success: z.boolean(),
+  success: z.boolean().describe("false when an existing clone was refused; see skips."),
   defaultBranch: z.string(),
   worktreeDir: z.string(),
+  skips: skipsSchema,
 });
 
 export const loadConfigOutputSchema = z.looseObject({
