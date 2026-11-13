@@ -1229,6 +1229,18 @@ describe("TrashService", () => {
       expect(logger.warn).not.toHaveBeenCalled();
     });
 
+    it("warns that the next sync prunes the restore again when origin/<branch> is gone", async () => {
+      const source = await makeSourceDir("feature-gone", { "work.txt": "data" });
+      const { manifest } = await service.trashDirectory({ dirPath: source, branch: "feature-gone", reason: "prune" });
+      gitStub.trackRemoteBranchIfExists.mockResolvedValue(false);
+
+      await service.restore(manifest.id);
+
+      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("data");
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("if origin/feature-gone is gone"));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("next sync will prune it again"));
+    });
+
     it("finishes the restore with a warning when the upstream cannot be set", async () => {
       const source = await makeSourceDir("feature-no-upstream", { "work.txt": "data" });
       const { manifest } = await service.trashDirectory({

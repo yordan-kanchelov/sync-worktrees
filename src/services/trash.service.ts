@@ -715,7 +715,11 @@ export class TrashService {
       // origin/<branch> when it is known so pull/status work as before.
       // Best-effort: the worktree is complete either way.
       try {
-        await this.gitService.trackRemoteBranchIfExists(branch, manifest.originalPath);
+        if (!(await this.gitService.trackRemoteBranchIfExists(branch, manifest.originalPath))) {
+          this.logger.warn(
+            `⚠️ Restored '${branch}' has no upstream: if origin/${branch} is gone, the next sync will prune it again unless it has uncommitted or unpushed work, or the remote branch returns.`,
+          );
+        }
       } catch (upstreamError) {
         this.logger.warn(`⚠️ Could not set the upstream of restored '${branch}': ${getErrorMessage(upstreamError)}`);
       }
