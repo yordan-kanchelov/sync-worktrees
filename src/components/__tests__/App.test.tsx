@@ -948,6 +948,54 @@ describe("App", () => {
       expect(frame.split("\n")).toHaveLength(24);
     });
 
+    it("reserves progress rows only for repositories that can sync", async () => {
+      const { stdout, lastFrame } = render(<App {...defaultProps} repositoryCount={1} maxProgressLines={8} />);
+      resizeTerminal(stdout, 100, 24);
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "only", phase: "fetch", message: "fetch receiving" });
+      await waitForStateUpdate();
+
+      const lines = lastFrame()!.split("\n");
+      expect(lines.length).toBeLessThanOrEqual(24);
+      expect(lines.filter((line) => line.includes("Progress:"))).toHaveLength(1);
+      // Status, Last Sync, one progress row, Disk Space, bottom border.
+      const statusIndex = lines.findIndex((line) => line.includes("Status:"));
+      expect(lines.length - statusIndex).toBe(5);
+    });
+
+    it("caps progress rows at what the terminal can hold", async () => {
+      const { stdout, lastFrame } = render(<App {...defaultProps} repositoryCount={20} maxProgressLines={20} />);
+      resizeTerminal(stdout, 100, 12);
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      for (let i = 0; i < 20; i++) {
+        appEvents.emit("setSyncProgress", { repo: `repo-${i}`, phase: "fetch", message: "fetch receiving" });
+      }
+      await waitForStateUpdate();
+
+      const lines = lastFrame()!.split("\n");
+      expect(lines.length).toBeLessThanOrEqual(12);
+      expect(lines[lines.length - 1]).toMatch(/^└/);
+    });
+
+    it("does not carry an idle-time progress event into the next sync", async () => {
+      const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
+      await waitForStateUpdate();
+
+      appEvents.emit("setSyncProgress", { repo: "alpha", phase: "fetch", message: "Resolved default branch 'main'" });
+      await waitForStateUpdate();
+
+      appEvents.emit("setStatus", "syncing");
+      appEvents.emit("setSyncProgress", { repo: "beta", phase: "fetch", message: "fetch receiving" });
+      await waitForStateUpdate();
+
+      expect(lastFrame()).toContain("[beta] fetch receiving");
+      expect(lastFrame()).not.toContain("Resolved default branch");
+    });
+
     it("stays at the terminal height when a log entry carries newlines", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 

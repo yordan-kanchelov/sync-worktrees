@@ -150,12 +150,20 @@ const App: React.FC<AppProps> = ({
   const [showOpenEditorWizard, setShowOpenEditorWizard] = useState(false);
   const [showWorktreeStatus, setShowWorktreeStatus] = useState(false);
   const [showForceClean, setShowForceClean] = useState(false);
-  const [status, setStatus] = useState<"idle" | "syncing">("idle");
+  const [status, setStatusState] = useState<"idle" | "syncing">("idle");
   // Interactive operations (branch/worktree creation) run independently of sync and
   // queue behind it. Tracked separately so they don't drive the sync `status` spinner.
   const [activeOps, setActiveOps] = useState<Array<{ id: number; label: string }>>([]);
   const opIdRef = useRef(0);
   const [syncProgressEntries, setSyncProgressEntries] = useState<AppSyncProgress[]>([]);
+  // Read synchronously by the progress listener: rows arriving while idle are
+  // dropped, and each new sync starts with none.
+  const statusRef = useRef<"idle" | "syncing">("idle");
+  const setStatus = (next: "idle" | "syncing"): void => {
+    if (next !== statusRef.current || next === "idle") setSyncProgressEntries([]);
+    statusRef.current = next;
+    setStatusState(next);
+  };
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [lastSyncOutcome, setLastSyncOutcome] = useState<LastSyncOutcome | null>(null);
   const [diskSpaceUsed, setDiskSpaceUsed] = useState<string | null>(null);
@@ -177,9 +185,14 @@ const App: React.FC<AppProps> = ({
 
   const { rows } = useWindowSize();
 
-  const progressLineCount = status === "syncing" ? Math.max(1, maxProgressLines) : 0;
-  const statusBarHeight = 5 + progressLineCount + activeOps.length;
   const terminalRows = rows ?? 24;
+  // No more rows than repositories, nor than leave the smallest log panel.
+  const progressLineCap = Math.max(
+    1,
+    Math.min(maxProgressLines, repoCount, terminalRows - 5 - activeOps.length - LOG_MIN_ROWS),
+  );
+  const progressLineCount = status === "syncing" ? progressLineCap : 0;
+  const statusBarHeight = 5 + progressLineCount + activeOps.length;
   const showModal =
     showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher;
   // What the home screen, or a modal in its place, may take without pushing
@@ -374,15 +387,13 @@ const App: React.FC<AppProps> = ({
       }),
       events.on("setStatus", (newStatus: "idle" | "syncing") => {
         setStatus(newStatus);
-        if (newStatus === "idle") {
-          setSyncProgressEntries([]);
-        }
       }),
       events.on("setSyncProgress", (progress: AppSyncProgress | null) => {
         if (progress === null) {
           setSyncProgressEntries([]);
           return;
         }
+        if (statusRef.current !== "syncing") return;
         setSyncProgressEntries((prev) => {
           if (progress.completed) {
             return prev.filter((entry) => entry.repo !== progress.repo);
@@ -589,7 +600,7 @@ const App: React.FC<AppProps> = ({
         status={status}
         syncProgressEntries={syncProgressEntries}
         activeOps={activeOpLabels}
-        maxProgressLines={maxProgressLines}
+        maxProgressLines={progressLineCap}
         repositoryCount={repoCount}
         lastSyncTime={lastSyncTime}
         lastSyncOutcome={lastSyncOutcome}
