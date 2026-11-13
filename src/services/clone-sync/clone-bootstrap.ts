@@ -143,6 +143,7 @@ async function adoptExistingClone(
   // Pre-existing user clones never carry the marker and are left alone.
   if (await fileExists(getInitPendingMarkerPath(worktreeDir))) {
     ctx.logger.info(`Completing interrupted initialization for '${ctx.repoName}'...`);
+    await recordCloneTimeDefaultBranch(ctx, clients, branch);
     if (ctx.config.sparseCheckout) {
       await ctx.gitService.getSparseCheckoutService().applyToWorktree(worktreeDir, ctx.config.sparseCheckout);
       await clients.git.raw(["checkout", "HEAD"]);
@@ -151,6 +152,27 @@ async function adoptExistingClone(
   }
   ctx.emitProgress({ phase: "clone", message: `Existing clone validated for '${ctx.repoName}'` });
   return null;
+}
+
+// With no `branch` configured, the branch a clone is made on is the remote's
+// default at that moment, and resolveBranch reads it back from
+// refs/remotes/origin/HEAD on every later start. `git clone --single-branch
+// --branch` used to write that symref itself; newer git (seen on 2.56) leaves
+// it out, and a later fetch would fill it in with whatever the remote's HEAD
+// is by then. So it is written here, for the clones this tool makes.
+async function recordCloneTimeDefaultBranch(
+  ctx: CloneSyncContext,
+  clients: MutatingGitClients,
+  branch: string,
+): Promise<void> {
+  if (ctx.config.branch) return;
+  try {
+    await clients.git.raw(["symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${branch}`]);
+  } catch (error) {
+    ctx.logger.warn(
+      `Could not record '${branch}' as the clone-time default branch of '${ctx.repoName}': ${getErrorMessage(error)}`,
+    );
+  }
 }
 
 async function cloneFresh(
@@ -199,6 +221,7 @@ async function cloneFresh(
   }
 
   const freshClients = await ctx.clients.mutatingClientsFor(worktreeDir);
+  await recordCloneTimeDefaultBranch(ctx, freshClients, branch);
   await configureSingleBranchRemote(ctx, freshClients, branch);
 
   // The progress stream carries the same nuance as the log: a TUI showing

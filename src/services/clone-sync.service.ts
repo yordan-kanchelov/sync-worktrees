@@ -141,8 +141,9 @@ export class CloneSyncService {
     return this.resolvedBranch;
   }
 
-  // `git clone` records the remote HEAD it saw as refs/remotes/origin/HEAD, and
-  // nothing here rewrites it. Null for no clone or no such symref.
+  // The remote HEAD as it stood at clone time, kept in refs/remotes/origin/HEAD:
+  // written by clone-bootstrap for the clones made here, and by `git clone`
+  // itself on older git. Null for no clone or no such symref.
   private async readCloneTimeDefaultBranch(): Promise<string | null> {
     const worktreeDir = path.resolve(this.config.worktreeDir);
     if (!(await fileExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR)))) return null;

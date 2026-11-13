@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 
@@ -296,6 +296,11 @@ export default {
 
     run();
     expect(execSync(`git -C "${worktreeDir}" rev-parse --abbrev-ref HEAD`, { encoding: "utf-8" }).trim()).toBe("main");
+    // The record a later start reads. Newer git no longer writes it on a
+    // single-branch clone, so the sync has to.
+    expect(
+      execSync(`git -C "${worktreeDir}" symbolic-ref refs/remotes/origin/HEAD`, { encoding: "utf-8" }).trim(),
+    ).toBe("refs/remotes/origin/main");
 
     const pushedHead = await pushCommit(remoteBare, "default-moved", "three.txt", "Add three");
     execSync(`git -C "${remoteBare}" branch trunk main`, { encoding: "utf-8" });
@@ -1115,8 +1120,10 @@ export default {
     const primaryDir = path.join(baseDir, "primary");
     const linkedDir = path.join(baseDir, "linked");
     await fs.mkdir(baseDir, { recursive: true });
-    execSync(`git clone "file://${remoteBare}" "${primaryDir}"`, { encoding: "utf-8" });
-    execSync(`git -C "${primaryDir}" worktree add -b "feat/side" "${linkedDir}" main`, { encoding: "utf-8" });
+    execFileSync("git", ["clone", `file://${remoteBare}`, primaryDir], { encoding: "utf-8" });
+    execFileSync("git", ["-C", primaryDir, "worktree", "add", "-b", "feat/side", linkedDir, "main"], {
+      encoding: "utf-8",
+    });
 
     const packDir = path.join(primaryDir, ".git", "objects", "pack");
     const listObjects = async (): Promise<string[]> => {

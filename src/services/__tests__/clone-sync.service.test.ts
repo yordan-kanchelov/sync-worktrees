@@ -318,6 +318,55 @@ describe("CloneSyncService", () => {
       });
     });
 
+    // With `branch` unset, later starts read the clone-time default back from
+    // refs/remotes/origin/HEAD. Newer git does not write that symref on a
+    // single-branch clone, so the init records it; a configured branch says
+    // nothing about the remote's default, so nothing is recorded for it.
+    describe("clone-time default branch record", () => {
+      const RECORD_DEFAULT = ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"];
+      const mockEmptyTarget = (): void => {
+        (fs.readdir as unknown as Mock).mockResolvedValueOnce([]);
+        (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
+        (fs.stat as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+        (fs.access as unknown as Mock).mockRejectedValue(new Error("ENOENT"));
+        (fs.writeFile as unknown as Mock).mockResolvedValue(undefined);
+      };
+
+      it("records the resolved default after a fresh clone when no branch is configured", async () => {
+        mockEmptyTarget();
+        const gitService = buildGitService({ getRemoteDefaultBranch: vi.fn().mockResolvedValue("trunk") });
+        const service = new CloneSyncService(makeConfig({ branch: undefined }), gitService, logger);
+
+        await service.initialize();
+
+        expect(gitMock.raw).toHaveBeenCalledWith(RECORD_DEFAULT);
+      });
+
+      it("records nothing when the branch is configured", async () => {
+        mockEmptyTarget();
+        const service = new CloneSyncService(makeConfig({ branch: "trunk" }), buildGitService(), logger);
+
+        await service.initialize();
+
+        expect(gitMock.raw).not.toHaveBeenCalledWith(RECORD_DEFAULT);
+      });
+
+      it("keeps the clone when the record cannot be written", async () => {
+        mockEmptyTarget();
+        const raw = gitMock.raw.getMockImplementation() as (args: string[]) => Promise<string>;
+        gitMock.raw.mockImplementation(async (args: string[]) => {
+          if (args.join(" ") === RECORD_DEFAULT.join(" ")) throw new Error("fatal: cannot lock ref");
+          return raw(args);
+        });
+        const gitService = buildGitService({ getRemoteDefaultBranch: vi.fn().mockResolvedValue("trunk") });
+        const service = new CloneSyncService(makeConfig({ branch: undefined }), gitService, logger);
+
+        await service.initialize();
+
+        expect(service.isInitialized()).toBe(true);
+      });
+    });
+
     // The recorded outcome is what the MCP `sync` result and the run summary
     // show, so a clone that git could not authenticate carries the remedy
     // hint there, not only on the rejection.
