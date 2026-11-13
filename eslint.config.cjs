@@ -78,12 +78,6 @@ module.exports = defineConfig([
     // Ink components and their tests.
     files: ["src/components/**/*.{ts,tsx}"],
     extends: [reactHooks.configs.flat.recommended],
-    rules: {
-      // React Compiler rules: the existing ref-during-render and setState-in-effect patterns predate the linter
-      // and changing them alters render behaviour, so they are off until those components are reworked.
-      "react-hooks/refs": "off",
-      "react-hooks/set-state-in-effect": "off",
-    },
   },
   {
     // Root-level TypeScript config files belong to no tsconfig project.

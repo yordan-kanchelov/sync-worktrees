@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Box, Text, useWindowSize } from "ink";
 import { CronExpressionParser } from "cron-parser";
 
@@ -70,31 +70,24 @@ const StatusBar: React.FC<StatusBarProps> = ({
 }) => {
   const { columns } = useWindowSize();
   const schedules = toScheduleList(cronSchedule);
-  const [nextSyncTime, setNextSyncTime] = useState<Date | null>(() => computeNextSyncTime(schedules));
-  // A fresh array on every render; the key is what the effect compares.
+  // A fresh array on every render; the key is what the memo compares.
   const scheduleKey = schedules.join("\n");
+  // Bumped just past each tick so the shown time never lags behind the clock.
+  const [tick, setTick] = useState(0);
+  const nextSyncTime = useMemo(
+    () => (scheduleKey === "" ? null : computeNextSyncTime(scheduleKey.split("\n"))),
+    // Not read: each is a moment to re-read the clock.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scheduleKey, lastSyncTime, status, tick],
+  );
 
   useEffect(() => {
-    const list = scheduleKey === "" ? [] : scheduleKey.split("\n");
-    if (list.length === 0) {
-      setNextSyncTime(null);
-      return undefined;
-    }
-
-    // Re-arm just past each tick so the shown time never lags behind the clock.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const update = (): void => {
-      const now = new Date();
-      const next = computeNextSyncTime(list, now);
-      setNextSyncTime(next);
-      // Capped: setTimeout fires at once past ~24.8 days.
-      const delay = next ? Math.min(Math.max(next.getTime() - now.getTime(), 0) + 1000, 3_600_000) : 0;
-      if (next) timer = setTimeout(update, delay);
-    };
-    update();
-
+    if (!nextSyncTime) return undefined;
+    // Capped: setTimeout fires at once past ~24.8 days.
+    const delay = Math.min(Math.max(nextSyncTime.getTime() - Date.now(), 0) + 1000, 3_600_000);
+    const timer = setTimeout(() => setTick((n) => n + 1), delay);
     return () => clearTimeout(timer);
-  }, [scheduleKey, lastSyncTime, status]);
+  }, [nextSyncTime]);
 
   const formatTime = (date: Date | null): string => {
     if (!date) return "N/A";

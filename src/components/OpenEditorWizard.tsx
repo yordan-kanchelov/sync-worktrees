@@ -4,7 +4,7 @@ import { isMouseSequence } from "../utils/mouse";
 import { sanitizePastedFilter } from "../utils/paste-filter";
 import { isListDown, isListUp, listRowsFor, listWindow, useModalLayout, wrappedRows } from "./layout";
 
-type WizardStep = "SELECT_PROJECT" | "SELECT_WORKTREE" | "OPENING" | "ERROR";
+type WizardStep = "SELECT_PROJECT" | "SELECT_WORKTREE" | "ERROR";
 
 export type OpenAction = "terminal" | "editor";
 
@@ -34,7 +34,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   const [step, setStep] = useState<WizardStep>(repositories.length > 1 ? "SELECT_PROJECT" : "SELECT_WORKTREE");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
-  const selectedRepoIndexRef = useRef<number>(repositories.length === 1 ? repositories[0].index : -1);
+  const [selectedRepoIndex, setSelectedRepoIndex] = useState(repositories.length === 1 ? repositories[0].index : -1);
 
   const [worktrees, setWorktrees] = useState<Array<{ path: string; branch: string }>>([]);
   const [selectedWorktreeIndex, setSelectedWorktreeIndex] = useState(0);
@@ -89,21 +89,19 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   // identity of `loadWorktrees`, is what keeps it to one: a caller that hands in
   // a fresh `getWorktreesForRepo` on every render must not re-run the load.
   useEffect(() => {
-    const repoIndex = selectedRepoIndexRef.current;
-    if (step !== "SELECT_WORKTREE" || repoIndex < 0) return;
-    if (loadedForRepoRef.current === repoIndex) return;
-    loadedForRepoRef.current = repoIndex;
-    void loadWorktrees(repoIndex);
-  }, [step, loadWorktrees]);
+    if (step !== "SELECT_WORKTREE" || selectedRepoIndex < 0) return;
+    if (loadedForRepoRef.current === selectedRepoIndex) return;
+    loadedForRepoRef.current = selectedRepoIndex;
+    void loadWorktrees(selectedRepoIndex);
+  }, [step, selectedRepoIndex, loadWorktrees]);
 
   const handleOpen = () => {
     const worktree = filteredWorktrees[selectedWorktreeIndex];
     if (!worktree) return;
 
-    setStep("OPENING");
     const result =
       openAction === "terminal"
-        ? openTerminalInWorktree(selectedRepoIndexRef.current, worktree.path, worktree.branch)
+        ? openTerminalInWorktree(selectedRepoIndex, worktree.path, worktree.branch)
         : openEditorInWorktree(worktree.path);
     if (result.success) {
       onClose();
@@ -118,8 +116,6 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     // scroll never registers as a keystroke.
     if (isMouseSequence(input)) return;
 
-    if (step === "OPENING") return;
-
     if (key.escape) {
       if (step === "SELECT_PROJECT") {
         onClose();
@@ -129,7 +125,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
           setLoading(false);
           setWorktrees([]);
           setWorktreeFilter("");
-          selectedRepoIndexRef.current = -1;
+          setSelectedRepoIndex(-1);
           loadedForRepoRef.current = null;
           setStep("SELECT_PROJECT");
         } else {
@@ -151,7 +147,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
       } else if (key.return && filteredProjects.length > 0) {
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
-          selectedRepoIndexRef.current = selectedRepo.index;
+          setSelectedRepoIndex(selectedRepo.index);
           // The effect owns the call; this only keeps the first frame of the
           // next step from claiming there are no worktrees before it runs.
           setLoading(true);
@@ -320,12 +316,6 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     );
   };
 
-  const renderOpening = () => (
-    <Box flexDirection="column" gap={1}>
-      <Text color="yellow">{openAction === "terminal" ? "Opening terminal..." : "Opening editor..."}</Text>
-    </Box>
-  );
-
   const renderError = () => (
     <Box flexDirection="column" gap={1}>
       <Text color="red">Error: {error}</Text>
@@ -339,15 +329,12 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
         return renderProjectSelection();
       case "SELECT_WORKTREE":
         return renderWorktreeSelection();
-      case "OPENING":
-        return renderOpening();
       case "ERROR":
         return renderError();
     }
   };
 
   function footerText(): string | null {
-    if (step === "OPENING") return null;
     if (step === "ERROR") return null;
     if (step === "SELECT_WORKTREE") {
       return "↑/↓ navigate • Type to filter • Tab switch mode • Enter to select • ESC to cancel";
@@ -373,7 +360,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
         <Box marginBottom={1}>
           <Text bold color="blue">
             📂 Open Worktree{" "}
-            {step !== "OPENING" && step !== "ERROR" && (
+            {step !== "ERROR" && (
               <Text dimColor>
                 (Step {getStepNumber()}/{getTotalSteps()})
               </Text>
@@ -381,11 +368,10 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
           </Text>
         </Box>
 
-        {repositories.length > 1 && step === "SELECT_WORKTREE" && !loading && selectedRepoIndexRef.current >= 0 && (
+        {repositories.length > 1 && step === "SELECT_WORKTREE" && !loading && selectedRepoIndex >= 0 && (
           <Box marginBottom={1}>
             <Text>
-              Repository:{" "}
-              <Text color="cyan">{repositories.find((r) => r.index === selectedRepoIndexRef.current)?.name}</Text>
+              Repository: <Text color="cyan">{repositories.find((r) => r.index === selectedRepoIndex)?.name}</Text>
             </Text>
           </Box>
         )}

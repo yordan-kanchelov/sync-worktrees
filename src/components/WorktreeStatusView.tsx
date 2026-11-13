@@ -8,8 +8,6 @@ import type { WorktreeStatusResult } from "../services/worktree-status.service";
 import type { WorktreeStatusEntry, DivergedDirectoryInfo, RepositoryListEntry, RepositoryDiskUsage } from "../types";
 import { getErrorMessage } from "../utils/errors";
 
-export type { WorktreeStatusEntry };
-
 type ViewStep = "SELECT_PROJECT" | "VIEW_STATUS" | "ERROR";
 
 export interface WorktreeStatusViewProps {
@@ -213,17 +211,16 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [step, setStep] = useState<ViewStep>(startsOnRepo >= 0 ? "VIEW_STATUS" : "SELECT_PROJECT");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
-  const selectedRepoIndexRef = useRef<number>(startsOnRepo);
+  const [selectedRepoIndex, setSelectedRepoIndex] = useState(startsOnRepo);
+  const startBranch = startsOnRepo >= 0 && startsOnRepo === initialRepoIndex ? initialBranch : undefined;
   // Consumed by the first load only; ESC back to the repository choice and a
   // second pick behave as they always have.
-  const initialBranchRef = useRef<string | undefined>(
-    startsOnRepo >= 0 && startsOnRepo === initialRepoIndex ? initialBranch : undefined,
-  );
+  const initialBranchRef = useRef<string | undefined>(startBranch);
 
   const [entries, setEntries] = useState<WorktreeStatusEntry[]>([]);
   const [divergedEntries, setDivergedEntries] = useState<DivergedDirectoryInfo[]>([]);
   const [storedEntryIndex, setSelectedEntryIndex] = useState(0);
-  const [entryFilter, setEntryFilter] = useState(initialBranchRef.current ?? "");
+  const [entryFilter, setEntryFilter] = useState(startBranch ?? "");
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   // What ends the "not loaded yet" state is a load that finished, not a
@@ -369,12 +366,11 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   // identity of `loadStatus`, is what keeps it to one: a caller that hands in a
   // fresh `getWorktreeStatusForRepo` on every render must not re-run the load.
   useEffect(() => {
-    const repoIndex = selectedRepoIndexRef.current;
-    if (step !== "VIEW_STATUS" || repoIndex < 0) return;
-    if (loadedForRepoRef.current === repoIndex) return;
-    loadedForRepoRef.current = repoIndex;
-    void loadStatus(repoIndex);
-  }, [step, loadStatus]);
+    if (step !== "VIEW_STATUS" || selectedRepoIndex < 0) return;
+    if (loadedForRepoRef.current === selectedRepoIndex) return;
+    loadedForRepoRef.current = selectedRepoIndex;
+    void loadStatus(selectedRepoIndex);
+  }, [step, selectedRepoIndex, loadStatus]);
 
   // The stored index can name the separator or a row past the end (no
   // worktrees, a diverged-only filter, a delete): snap to a selectable row.
@@ -418,9 +414,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     if (confirmDelete !== null) {
       if (input === "y" || input === "Y") {
         const item = combinedList[confirmDelete];
-        if (item?.type === "diverged" && deleteDivergedDirectory && selectedRepoIndexRef.current >= 0) {
+        if (item?.type === "diverged" && deleteDivergedDirectory && selectedRepoIndex >= 0) {
           setDeleting(true);
-          deleteDivergedDirectory(selectedRepoIndexRef.current, item.entry.name)
+          deleteDivergedDirectory(selectedRepoIndex, item.entry.name)
             .then(() => {
               setDivergedEntries((prev) => prev.filter((d) => d.name !== item.entry.name));
               setConfirmDelete(null);
@@ -456,7 +452,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
           setExpandedEntry(null);
           setConfirmDelete(null);
           setDeleteError(null);
-          selectedRepoIndexRef.current = -1;
+          setSelectedRepoIndex(-1);
           loadedForRepoRef.current = null;
           setStep("SELECT_PROJECT");
         } else {
@@ -478,7 +474,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
       } else if (key.return && filteredProjects.length > 0) {
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
-          selectedRepoIndexRef.current = selectedRepo.index;
+          setSelectedRepoIndex(selectedRepo.index);
           // The effect owns the call; this only keeps the first frame of the
           // next step from claiming there are no worktrees before it runs.
           setLoading(true);
@@ -626,9 +622,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   };
 
   const selectedRepo =
-    selectedRepoIndexRef.current >= 0
-      ? repositories.find((repo) => repo.index === selectedRepoIndexRef.current)
-      : undefined;
+    selectedRepoIndex >= 0 ? repositories.find((repo) => repo.index === selectedRepoIndex) : undefined;
 
   const renderStatusList = () => {
     if (loading) {

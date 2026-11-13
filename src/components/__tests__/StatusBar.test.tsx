@@ -345,8 +345,9 @@ describe("StatusBar", () => {
       // Advance just past the 11:00 tick to fire the re-armed timeout
       vi.advanceTimersByTime(3_571_000);
 
-      // Should have called parse again (fresh instance, not reusing iterator)
-      expect(parseSpy.mock.calls.length).toBeGreaterThan(initialCallCount);
+      // Should have called parse again (fresh instance, not reusing iterator).
+      // The timer's re-render is scheduled on the real event loop.
+      await vi.waitFor(() => expect(parseSpy.mock.calls.length).toBeGreaterThan(initialCallCount));
 
       parseSpy.mockRestore();
       vi.useRealTimers();
@@ -361,7 +362,8 @@ describe("StatusBar", () => {
 
         await vi.advanceTimersByTimeAsync(45_000);
 
-        expect(lastFrame()).toContain(new Date(2026, 0, 5, 10, 2, 0).toLocaleTimeString());
+        // The timer's re-render is scheduled on the real event loop.
+        await vi.waitFor(() => expect(lastFrame()).toContain(new Date(2026, 0, 5, 10, 2, 0).toLocaleTimeString()));
       } finally {
         vi.useRealTimers();
       }

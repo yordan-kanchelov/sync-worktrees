@@ -31,8 +31,6 @@ import type {
   ForceCleanRepositorySelection,
 } from "../types";
 
-export type { HookContext, WorktreeStatusEntry };
-
 export interface AppProps {
   events: AppEventEmitter;
   repositoryCount: number;
@@ -246,9 +244,6 @@ const App: React.FC<AppProps> = ({
     [],
   );
 
-  const addLogRef = useRef(addLog);
-  addLogRef.current = addLog;
-
   const showNotice = useCallback((message: string) => {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     setNotice(message);
@@ -286,14 +281,7 @@ const App: React.FC<AppProps> = ({
     // them, and no shortcut here should fire off a stray click.
     if (isMouseSequence(input)) return;
 
-    if (showHelp) {
-      if (input === "?" || input === "h" || key.escape) {
-        setShowHelp(false);
-      }
-      return;
-    }
-
-    if (showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher) {
+    if (showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher) {
       return;
     }
 
@@ -417,7 +405,7 @@ const App: React.FC<AppProps> = ({
         setDiskSpaceUsed(diskSpace);
       }),
       events.on("addLog", ({ message, level }: { message: string; level: "info" | "warn" | "error" }) => {
-        addLogRef.current(message, level);
+        addLog(message, level);
       }),
       events.on("updateRepositoryCount", (count: number) => {
         setRepoCount(count);
@@ -522,7 +510,7 @@ const App: React.FC<AppProps> = ({
                     executeOnBranchCreatedHooks(context.repoIndex, {
                       branchName: context.newBranch,
                       worktreePath: worktree.path,
-                      repoName: repo?.name || `repo-${context.repoIndex}`,
+                      repoName: repo?.name ?? "",
                       baseBranch: context.baseBranch,
                       repoUrl: repo?.repoUrl || "",
                     });

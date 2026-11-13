@@ -34,7 +34,7 @@ export interface BranchCreationWizardProps {
     branchName: string,
   ) => Promise<{ success: boolean; finalName: string; error?: string }>;
   onClose: () => void;
-  onComplete: (success: boolean) => void;
+  onComplete: () => void;
   onBranchCreated?: (context: { repoIndex: number; baseBranch: string; newBranch: string }) => void;
   /** Rows the wizard may use; defaults to the terminal height. */
   availableRows?: number;
@@ -61,7 +61,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   const [selectedBranchIndex, setSelectedBranchIndex] = useState(0);
   const [branchFilter, setBranchFilter] = useState("");
   const [branchName, setBranchName] = useState("");
-  const [validationError, setValidationError] = useState<string | null>(null);
   const [result, setResult] = useState<{ success: boolean; finalName: string; error?: string } | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -81,18 +80,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
     const lowerFilter = branchFilter.toLowerCase();
     return branches.filter((branch) => branch.toLowerCase().includes(lowerFilter));
   }, [branches, branchFilter]);
-
-  useEffect(() => {
-    if (filteredProjects.length > 0) {
-      setSelectedProjectIndex((prev) => Math.max(0, Math.min(prev, filteredProjects.length - 1)));
-    }
-  }, [filteredProjects.length]);
-
-  useEffect(() => {
-    if (filteredBranches.length > 0) {
-      setSelectedBranchIndex((prev) => Math.max(0, Math.min(prev, filteredBranches.length - 1)));
-    }
-  }, [filteredBranches.length]);
 
   const loadBranches = useCallback(
     async (repoIndex: number) => {
@@ -140,15 +127,12 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   // keystroke could leave a render behind.
   const plannedName = useMemo(() => resolveFreeBranchName(branchName.trim(), branches), [branchName, branches]);
 
-  const validateBranchName = useCallback((name: string) => {
-    if (!name.trim()) {
-      setValidationError(null);
-      return;
-    }
-
-    const validation = isValidGitBranchName(name);
-    setValidationError(validation.valid ? null : (validation.error ?? null));
-  }, []);
+  const validationError = useMemo(() => {
+    const trimmed = branchName.trim();
+    if (!trimmed) return null;
+    const validation = isValidGitBranchName(trimmed);
+    return validation.valid ? null : (validation.error ?? null);
+  }, [branchName]);
 
   useEffect(() => {
     if (step === "SELECT_BRANCH" && !branchesLoadedRef.current && !loading && selectedRepoIndex >= 0) {
@@ -157,25 +141,12 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
     }
   }, [step, selectedRepoIndex, loading, loadBranches]);
 
-  useEffect(() => {
-    if (step === "ENTER_NAME") {
-      validateBranchName(branchName);
-    }
-  }, [branchName, step, validateBranchName]);
-
   const handleCreateBranch = async () => {
-    const trimmedName = branchName.trim();
-    if (!trimmedName) return;
-
-    const validation = isValidGitBranchName(trimmedName);
-    if (!validation.valid) {
-      setValidationError(validation.error ?? null);
-      return;
-    }
+    if (!branchName.trim() || validationError) return;
 
     setStep("CREATING");
     const baseBranch = filteredBranches[selectedBranchIndex];
-    // `plannedName`, not `trimmedName`: the name the step above displayed is
+    // `plannedName`, not the typed name: the name the step above displayed is
     // the name that gets created.
     const requestedName = plannedName;
     try {
@@ -225,7 +196,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         setBranchName("");
         setStep("SELECT_BRANCH");
       } else if (step === "RESULT") {
-        onComplete(result?.success ?? false);
+        onComplete();
       }
       return;
     }
@@ -281,7 +252,7 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
         }
       }
     } else if (step === "RESULT") {
-      onComplete(result?.success ?? false);
+      onComplete();
     }
   });
 

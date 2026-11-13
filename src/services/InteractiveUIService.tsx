@@ -148,10 +148,7 @@ export class InteractiveUIService {
     this.subscribeToServiceProgress();
     this.injectLoggersIntoServices();
 
-    // Add initial log after a short delay to verify the pipeline works
-    setTimeout(() => {
-      this.addLog("🚀 sync-worktrees UI initialized", "info");
-    }, 100);
+    this.addLog("🚀 sync-worktrees UI initialized", "info");
   }
 
   /**
@@ -252,10 +249,6 @@ export class InteractiveUIService {
   }
 
   private renderUI(): void {
-    if (this.app) {
-      this.app.unmount();
-    }
-
     // Every repository action goes through the operations facade, never
     // through a sync service's GitService directly.
     const ops = this.operations;
