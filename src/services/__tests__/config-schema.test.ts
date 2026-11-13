@@ -565,6 +565,28 @@ describe("validateConfigFile: rules across fields", () => {
 
     expect(issuesOf({ repositories, parallelism: { maxRepositories: 6, maxStatusChecks: 10 } })).toEqual([]);
   });
+
+  it("does not weigh clone-mode repositories at the worktree phases they never run", () => {
+    const repositories = Array.from({ length: 6 }, (_, i) =>
+      repo({ name: `c${i}`, worktreeDir: `/tmp/c${i}`, mode: "clone" }),
+    );
+
+    expect(issuesOf({ repositories, parallelism: { maxRepositories: 6 } })).toEqual([]);
+    expect(issuesOf({ repositories, defaults: { parallelism: { maxRepositories: 6 } } })).toEqual([]);
+    expect(issuesOf({ repositories, defaults: { mode: "clone", parallelism: { maxRepositories: 6 } } })).toEqual([]);
+  });
+
+  it("still weighs worktree-mode repositories synced beside clone-mode ones", () => {
+    const repositories = [
+      ...Array.from({ length: 5 }, (_, i) => repo({ name: `w${i}`, worktreeDir: `/tmp/w${i}` })),
+      repo({ name: "c", worktreeDir: "/tmp/c", mode: "clone" }),
+    ];
+
+    expect(onlyIssue({ repositories, parallelism: { maxRepositories: 6 } })).toMatch(
+      /^parallelism: peak concurrent git processes \(120\) exceeds safe limit \(100\)\. /,
+    );
+    expect(issuesOf({ repositories, parallelism: { maxRepositories: 6, maxStatusChecks: 15 } })).toEqual([]);
+  });
 });
 
 describe("validateConfigFile: reporting", () => {
