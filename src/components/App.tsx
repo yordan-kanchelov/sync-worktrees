@@ -169,6 +169,7 @@ const App: React.FC<AppProps> = ({
   const [repoCount, setRepoCount] = useState(repositoryCount);
   const [progressLineLimit, setProgressLineLimit] = useState(maxProgressLines);
   const [reloadGeneration, setReloadGeneration] = useState(0);
+  const reloadGenerationRef = useRef(0);
   const [schedule, setSchedule] = useState<CronScheduleDisplay>(cronSchedule);
   const [dashboardRows, setDashboardRows] = useState<readonly RepositoryDashboardRow[]>([]);
   // `l` folds the log to one line; `+` / `-` move the line between it and the
@@ -415,6 +416,7 @@ const App: React.FC<AppProps> = ({
       }),
       // An open picker holds indexes into the old list; close it.
       events.on("repositoriesReloaded", (generation: number) => {
+        reloadGenerationRef.current = generation;
         setReloadGeneration(generation);
         setShowBranchWizard(false);
         setShowOpenEditorWizard(false);
@@ -492,19 +494,34 @@ const App: React.FC<AppProps> = ({
           createAndPushBranch={createAndPushBranch}
           onClose={() => setShowBranchWizard(false)}
           onBranchCreated={(context) => {
+            // context.repoIndex indexes the list of this render's generation.
+            // Each step re-resolves it, and after a reload it names another
+            // repository, so stop at the first step that would cross one.
+            const generation = reloadGeneration;
+            const reloaded = (skipped: string): boolean => {
+              if (reloadGenerationRef.current === generation) return false;
+              events.emit("addLog", {
+                message: `The configuration was reloaded; skipped ${skipped} for '${context.newBranch}'.`,
+                level: "error",
+              });
+              return true;
+            };
             const opId = ++opIdRef.current;
             setActiveOps((prev) => [...prev, { id: opId, label: `Creating worktree ${context.newBranch}` }]);
             (async () => {
               try {
+                if (reloaded("the worktree, file copy and hooks")) return;
                 await createWorktreeForBranch(context.repoIndex, context.newBranch);
                 if (copyBranchFiles) {
+                  if (reloaded("file copy and hooks")) return;
                   await copyBranchFiles(context.repoIndex, context.baseBranch, context.newBranch);
                 }
 
                 if (executeOnBranchCreatedHooks) {
+                  if (reloaded("hooks")) return;
                   const worktrees = await getWorktreesForRepo(context.repoIndex);
                   const worktree = worktrees.find((w) => w.branch === context.newBranch);
-                  if (worktree) {
+                  if (worktree && !reloaded("hooks")) {
                     const repos = getRepositoryList();
                     const repo = repos.find((r) => r.index === context.repoIndex);
                     executeOnBranchCreatedHooks(context.repoIndex, {

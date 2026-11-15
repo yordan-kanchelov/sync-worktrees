@@ -717,6 +717,109 @@ describe("App", () => {
       expect(lastFrame()).not.toContain("Select repository");
       expect(getWorktreesForRepo).not.toHaveBeenCalled();
     });
+
+    // The branch wizard hands its index to a creation that keeps running after
+    // the wizard closes. After a reload that index names another repository.
+    describe("a worktree creation in flight", () => {
+      const deferred = <T,>() => {
+        let resolve: (value: T) => void = () => {};
+        const promise = new Promise<T>((r) => {
+          resolve = r;
+        });
+        return { promise, resolve };
+      };
+
+      async function createTopicBranch(stdin: { write: (s: string) => void }): Promise<void> {
+        await waitForStateUpdate();
+        stdin.write("c");
+        await waitForStateUpdate();
+        stdin.write("\r");
+        await waitForStateUpdate();
+        for (const char of "topic") stdin.write(char);
+        await waitForStateUpdate();
+        stdin.write("\r");
+        await waitForStateUpdate();
+      }
+
+      function reloadToOtherRepository(getRepositoryList: ReturnType<typeof vi.fn>): void {
+        getRepositoryList.mockReturnValue([{ index: 0, name: "web", repoUrl: "https://example.com/web.git" }]);
+        appEvents.emit("repositoriesReloaded", 1);
+      }
+
+      function setup(overrides: Partial<AppProps>) {
+        const getRepositoryList = vi
+          .fn()
+          .mockReturnValue([{ index: 0, name: "api", repoUrl: "https://example.com/api.git" }]);
+        const props = {
+          ...defaultProps,
+          getRepositoryList,
+          createAndPushBranch: vi.fn().mockResolvedValue({ success: true, finalName: "topic" }),
+          getWorktreesForRepo: vi.fn().mockResolvedValue([{ path: "/w/topic", branch: "topic" }]),
+          copyBranchFiles: vi.fn().mockResolvedValue(undefined),
+          executeOnBranchCreatedHooks: vi.fn(),
+          ...overrides,
+        };
+        const errors: string[] = [];
+        appEvents.on("addLog", ({ message, level }: { message: string; level: string }) => {
+          if (level === "error") errors.push(message);
+        });
+        const { stdin } = render(<App {...props} />);
+        return { props, getRepositoryList, errors, stdin };
+      }
+
+      it("stops before the remaining steps when a reload lands while the worktree is being added", async () => {
+        const added = deferred<void>();
+        const { props, getRepositoryList, errors, stdin } = setup({
+          createWorktreeForBranch: vi.fn().mockReturnValue(added.promise),
+        });
+
+        await createTopicBranch(stdin);
+        expect(props.createWorktreeForBranch).toHaveBeenCalledWith(0, "topic");
+
+        reloadToOtherRepository(getRepositoryList);
+        added.resolve();
+        await waitForStateUpdate();
+
+        expect(props.copyBranchFiles).not.toHaveBeenCalled();
+        expect(props.getWorktreesForRepo).not.toHaveBeenCalled();
+        expect(props.executeOnBranchCreatedHooks).not.toHaveBeenCalled();
+        expect(errors).toEqual([expect.stringContaining("configuration was reloaded")]);
+      });
+
+      it("does not add the worktree when a reload lands while the branch is being pushed", async () => {
+        const pushed = deferred<{ success: boolean; finalName: string }>();
+        const { props, getRepositoryList, errors, stdin } = setup({
+          createAndPushBranch: vi.fn().mockReturnValue(pushed.promise),
+        });
+
+        await createTopicBranch(stdin);
+        expect(props.createAndPushBranch).toHaveBeenCalledWith(0, "main", "topic");
+
+        reloadToOtherRepository(getRepositoryList);
+        pushed.resolve({ success: true, finalName: "topic" });
+        await waitForStateUpdate();
+
+        expect(props.createWorktreeForBranch).not.toHaveBeenCalled();
+        expect(props.copyBranchFiles).not.toHaveBeenCalled();
+        expect(props.executeOnBranchCreatedHooks).not.toHaveBeenCalled();
+        expect(errors).toEqual([expect.stringContaining("configuration was reloaded")]);
+      });
+
+      it("runs every step for the chosen repository when no reload lands", async () => {
+        const { props, errors, stdin } = setup({});
+
+        await createTopicBranch(stdin);
+        await waitForStateUpdate();
+
+        expect(props.createWorktreeForBranch).toHaveBeenCalledWith(0, "topic");
+        expect(props.copyBranchFiles).toHaveBeenCalledWith(0, "main", "topic");
+        expect(props.executeOnBranchCreatedHooks).toHaveBeenCalledWith(
+          0,
+          expect.objectContaining({ repoName: "api", worktreePath: "/w/topic" }),
+        );
+        expect(errors).toEqual([]);
+      });
+    });
   });
 
   describe("updateCronSchedule event", () => {
