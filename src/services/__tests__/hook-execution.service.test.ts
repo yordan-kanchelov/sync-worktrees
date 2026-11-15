@@ -14,7 +14,7 @@ import type { HookExecutionCallbacks } from "../hook-execution.service";
 
 const NODE = process.execPath;
 
-const nodeScript = (body: string): string => `"${NODE}" -e "${body.replace(/"/g, '\\"')}"`;
+const nodeScript = (body: string): string => `"${NODE}" -e "${body.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 const printArgs = nodeScript("process.stdout.write(process.argv.slice(1).join(' '))");
 
 describe("HookExecutionService", () => {
