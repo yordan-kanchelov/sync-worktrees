@@ -136,6 +136,10 @@ describe("Two concurrent CLI processes contend for the repo lock (E2E)", () => {
     // a prefix match would stop recognising the fetch the day one is added,
     // parking nothing and leaving the assertions below with no arrangement to
     // rest on.
+    //
+    // The case patterns carry their leading parenthesis because macOS's
+    // /bin/sh is bash 3.2, which otherwise reads a pattern's `)` as the end
+    // of the enclosing `$(`.
     await fs.mkdir(shimDir, { recursive: true });
     const shim = path.join(shimDir, "git");
     await fs.writeFile(
@@ -144,12 +148,12 @@ describe("Two concurrent CLI processes contend for the repo lock (E2E)", () => {
         `subcommand=$(\n` +
         `  while [ "$#" -gt 0 ]; do\n` +
         `    case "$1" in\n` +
-        `      -c|-C|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix)\n` +
+        `      (-c|-C|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix)\n` +
         `        shift\n` +
         `        [ "$#" -gt 0 ] && shift\n` +
         `        ;;\n` +
-        `      -*) shift ;;\n` +
-        `      *) printf '%s' "$1"; break ;;\n` +
+        `      (-*) shift ;;\n` +
+        `      (*) printf '%s' "$1"; break ;;\n` +
         `    esac\n` +
         `  done\n` +
         `)\n` +

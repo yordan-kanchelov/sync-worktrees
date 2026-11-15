@@ -44,7 +44,7 @@ async function makeWorktreeFixture(): Promise<{
   currentWorktree: string;
   cleanup: () => Promise<void>;
 }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ctx-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-ctx-")));
   const bareRepo = path.join(root, ".bare", "repo");
   const gitInternal = path.join(bareRepo, "worktrees", "feature-x");
   await fs.mkdir(gitInternal, { recursive: true });
@@ -250,7 +250,7 @@ describe("RepositoryContext.detectFromPath", () => {
   // the answer back; otherwise the reported worktreeDir and the one the tools
   // resolve drift apart, which is the whole defect in a second guise.
   it("refreshes an existing detected entry's worktreeDir once the derivation succeeds", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-nested-"));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-nested-")));
     const bareRepo = path.join(root, ".bare", "repo");
     await fs.mkdir(path.join(bareRepo, "worktrees", "2024"), { recursive: true });
     const worktreesDir = path.join(root, "worktrees");
@@ -285,7 +285,7 @@ describe("RepositoryContext.detectFromPath", () => {
   });
 
   it("returns unsupported for regular git repo (directory .git)", async () => {
-    const regularRepo = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-regular-"));
+    const regularRepo = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-regular-")));
     await fs.mkdir(path.join(regularRepo, ".git"), { recursive: true });
 
     const ctx = new RepositoryContext();
@@ -300,7 +300,7 @@ describe("RepositoryContext.detectFromPath", () => {
   });
 
   it("returns unsupported for non-git directory", async () => {
-    const plain = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-plain-"));
+    const plain = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-plain-")));
 
     const ctx = new RepositoryContext();
     const result = await ctx.detectFromPath(plain);
@@ -373,7 +373,7 @@ describe("RepositoryContext.detectFromPath", () => {
 
 describe("RepositoryContext.detectFromPath sibling discovery", () => {
   it("discovers sibling repos with .bare directories under workspace root", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-siblings-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-siblings-")));
     try {
       const currentRepo = path.join(workspace, "repo-current");
       const currentBare = path.join(currentRepo, ".bare");
@@ -409,7 +409,7 @@ describe("RepositoryContext.detectFromPath sibling discovery", () => {
   });
 
   it("marks sibling as configMatched when bareRepoDir matches a loaded config repo", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-siblings-cfg-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-siblings-cfg-")));
     try {
       const currentRepo = path.join(workspace, "repo-current");
       const currentBare = path.join(currentRepo, ".bare");
@@ -450,7 +450,7 @@ describe("RepositoryContext.detectFromPath sibling discovery", () => {
   });
 
   it("populates config-driven sibling repos with nested worktreeDir even when bare repo is missing", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-siblings-nested-cfg-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-siblings-nested-cfg-")));
     try {
       const currentBare = path.join(workspace, ".bare", "amusnet-react-ui");
       const adminDir = path.join(currentBare, "worktrees", "stream-test");
@@ -494,7 +494,7 @@ describe("RepositoryContext.detectFromPath sibling discovery", () => {
 
 describe("RepositoryContext.detectFromPath config auto-discovery", () => {
   it("auto-loads sync-worktrees.config.js found by walking up", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-auto-cfg-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-auto-cfg-")));
     try {
       const currentRepo = path.join(workspace, "repo-current");
       const currentBare = path.join(currentRepo, ".bare");
@@ -523,7 +523,7 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
   });
 
   it("detects a configured clone-mode checkout as managed", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-cfg-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-cfg-")));
     try {
       const cloneDir = path.join(workspace, "slots", "game-platform");
       await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
@@ -567,7 +567,7 @@ describe("RepositoryContext.detectFromPath config auto-discovery", () => {
   });
 
   it("does not report configured clone-mode branch when checkout branch is unreadable", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-broken-branch-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-broken-branch-")));
     try {
       const cloneDir = path.join(workspace, "slots", "game-platform");
       await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
@@ -664,7 +664,7 @@ describe("RepositoryContext.loadConfig selection state", () => {
   });
 
   it("does not pin the first repo when a multi-repo config has no current match", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-load-multi-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-load-multi-")));
     try {
       const configPath = path.join(workspace, "sync-worktrees.config.js");
       const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
@@ -722,7 +722,7 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
   });
 
   it("returns lean configured repositories by default", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-")));
     try {
       const configPath = path.join(workspace, "sync-worktrees.config.js");
       const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
@@ -744,7 +744,7 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
   });
 
   it("adds detailed local setup only when requested", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-detail-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-detail-")));
     try {
       const cloneDir = path.join(workspace, "ui");
       const bareDir = path.join(workspace, ".bare", "frontend");
@@ -813,7 +813,7 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
   });
 
   it("returns server-wide inventory regardless of params.path semantics (no scoping)", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-scope-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-repo-summary-scope-")));
     try {
       const configPath = path.join(workspace, "sync-worktrees.config.js");
       const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
@@ -841,7 +841,7 @@ describe("RepositoryContext.getAllConfiguredWorktreeDetails", () => {
   });
 
   it("returns configured repo worktrees keyed by repo name", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-all-worktrees-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-all-worktrees-")));
     try {
       const currentBare = path.join(workspace, ".bare", "repo-a");
       const currentAdmin = path.join(currentBare, "worktrees", "main");
@@ -883,7 +883,7 @@ describe("RepositoryContext.getAllConfiguredWorktreeDetails", () => {
   });
 
   it("surfaces per-repo worktree enumeration errors", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-all-worktrees-error-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-all-worktrees-error-")));
     try {
       const currentBare = path.join(workspace, ".bare", "repo-a");
       const currentAdmin = path.join(currentBare, "worktrees", "main");
@@ -1030,7 +1030,7 @@ describe("RepositoryContext.detectFromPath caching", () => {
   });
 
   it("does not cache unsupported results", async () => {
-    const plain = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-plain-cache-"));
+    const plain = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-plain-cache-")));
 
     const ctx = new RepositoryContext();
     await ctx.detectFromPath(plain);
@@ -1468,7 +1468,7 @@ describe("RepositoryContext.getBaseCapabilities", () => {
 
   it("explains that the loaded config does not list a detected repository", async () => {
     const fixture = await makeWorktreeFixture();
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-other-cfg-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-other-cfg-")));
     try {
       const configPath = path.join(workspace, "sync-worktrees.config.js");
       const cfgBody = `export default { defaults: { runOnce: true }, repositories: [
@@ -1582,7 +1582,7 @@ describe("RepositoryContext repoUrl credential redaction", () => {
   });
 
   it("redacts the configured repoUrl of a clone-mode checkout", async () => {
-    const cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-token-"));
+    const cloneDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-clone-token-")));
     try {
       await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
       mockWorktreeList.mockResolvedValue("main\n");
@@ -1614,7 +1614,7 @@ describe("RepositoryContext repoUrl credential redaction", () => {
 
 describe("RepositoryContext.loadConfig path collisions", () => {
   it("rejects two entries that share a worktreeDir and surfaces the error through load_config", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-shared-worktree-dir-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-shared-worktree-dir-")));
     try {
       const configPath = path.join(workspace, "sync-worktrees.config.js");
       await fs.writeFile(
@@ -1654,7 +1654,7 @@ describe("RepositoryContext.loadConfig unknown-key warnings", () => {
    * halves — the warning arrives, and nothing reaches stdout.
    */
   it("routes the warning to stderr and writes nothing to stdout", async () => {
-    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-unknown-key-"));
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-unknown-key-")));
     try {
       const configPath = path.join(workspace, "sync-worktrees.config.js");
       await fs.writeFile(

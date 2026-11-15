@@ -110,7 +110,15 @@ describe("Unshallow runs on the clone inactivity budget (E2E)", () => {
     const realGit = execFileSync("sh", ["-c", "command -v git"]).toString().trim();
     await fs.writeFile(
       path.join(shimDir, "git"),
-      `#!/bin/sh\ncase " $* " in\n  *" --unshallow "*) sleep ${SILENCE_MS / 1000} ;;\nesac\nexec "${realGit}" "$@"\n`,
+      // The sleep runs in the background under a trap: dash exits on the
+      // timeout's SIGINT, but bash (macOS's /bin/sh) waits out a foreground
+      // child and then carries on to the real git.
+      `#!/bin/sh\ncase " $* " in\n  (*" --unshallow "*)\n` +
+        `    trap 'kill "$pid" 2>/dev/null; exit 130' INT TERM\n` +
+        `    sleep ${SILENCE_MS / 1000} & pid=$!\n` +
+        `    wait "$pid"\n` +
+        `    trap - INT TERM\n` +
+        `    ;;\nesac\nexec "${realGit}" "$@"\n`,
       { mode: 0o755 },
     );
 

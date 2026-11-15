@@ -40,6 +40,3 @@ jobs:
       # Builds first: the e2e suites run the bundled CLI in dist/.
       - name: Run E2E Tests (with network)
         run: pnpm test:e2e:network
-        # Non-blocking on macOS for the same known darwin failures as pr.yml's test step
-        # (docs/internal/FOLLOW-UPS.md, FU-CI-1); the failing step still shows on the run.
-        continue-on-error: ${{ matrix.os == 'macos-latest' }}

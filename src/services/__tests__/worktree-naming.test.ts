@@ -26,7 +26,12 @@ describe("worktree directory naming (real git)", () => {
 
   const hashed = (branch: string): string => path.join(worktreeDir, pathResolution.sanitizeBranchName(branch));
 
+  // Refs are packed first so that names differing only in case (`Docs`/`docs`,
+  // `main`/`MAIN`) can coexist on a case-insensitive filesystem, the way they
+  // do in a real clone: as loose files the second would collide with the first.
   async function pushBranch(branch: string): Promise<void> {
+    await simpleGit(remote).raw(["pack-refs", "--all"]);
+    await simpleGit(bareRepoDir).raw(["pack-refs", "--all"]);
     await simpleGit(seedDir).push("origin", `main:refs/heads/${branch}`);
     await service.getGitService().fetchAll();
   }
