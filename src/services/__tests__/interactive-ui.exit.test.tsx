@@ -523,7 +523,7 @@ describe("InteractiveUIService exit path", () => {
       fixtureDirs.push(dir);
       const pidFile = JSON.stringify(path.join(dir, "pid"));
       const body = `const fs=require('fs');fs.writeFileSync(${pidFile},String(process.pid));setInterval(()=>{},20);`;
-      const command = `"${process.execPath}" -e "${body.replace(/"/g, '\\"')}"`;
+      const command = `"${process.execPath}" -e "${body.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
       (
         service as unknown as { hookExecutionService: HookExecutionService }

@@ -26,7 +26,7 @@ const { mockConfigLoaderInstance, mockWorktreeSyncServiceInstance, mockSpawn, mo
           resolveRepositoryConfig: vi.fn<any>().mockImplementation((repo: any) => repo),
           filterRepositories: vi.fn<any>().mockImplementation((repos: any, filter: any) => {
             if (!filter) return repos;
-            return repos.filter((r: any) => r.name?.startsWith(String(filter).replace("*", "")));
+            return repos.filter((r: any) => r.name?.startsWith(String(filter).replaceAll("*", "")));
           }),
         };
         inst.buildRepositories = vi.fn<any>().mockImplementation(async (configPath: any, overrides: any) => {

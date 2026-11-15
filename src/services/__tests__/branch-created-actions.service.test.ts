@@ -261,7 +261,7 @@ describe("BranchCreatedActionsService.copyFiles", () => {
 
 describe("BranchCreatedActionsService.runHooks", () => {
   const NODE = process.execPath;
-  const nodeScript = (body: string): string => `"${NODE}" -e "${body.replace(/"/g, '\\"')}"`;
+  const nodeScript = (body: string): string => `"${NODE}" -e "${body.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
   let service: HookExecutionService;
   let lines: string[];

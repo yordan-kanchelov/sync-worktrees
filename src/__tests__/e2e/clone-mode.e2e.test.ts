@@ -356,7 +356,7 @@ export default {
     execSync(`git -C "${seedDir}" push origin "feat/cloudflare-deploys"`, { encoding: "utf-8" });
 
     const worktreeDir = path.join(tmpBase, "legacy-remote-branches", "wt");
-    execSync(`git clone --branch main "file://${remoteBare}" "${worktreeDir}"`, {
+    execFileSync("git", ["clone", "--branch", "main", `file://${remoteBare}`, worktreeDir], {
       encoding: "utf-8",
     });
 
@@ -395,7 +395,7 @@ export default {
     }
 
     const worktreeDir = path.join(tmpBase, "locked-stale-ref", "wt");
-    execSync(`git clone --branch main "file://${remoteBare}" "${worktreeDir}"`, { encoding: "utf-8" });
+    execFileSync("git", ["clone", "--branch", "main", `file://${remoteBare}`, worktreeDir], { encoding: "utf-8" });
     const lockDir = path.join(worktreeDir, ".git", "refs", "remotes", "origin");
     await fs.mkdir(lockDir, { recursive: true });
     await fs.writeFile(path.join(lockDir, "stale-b.lock"), "");
@@ -1069,7 +1069,7 @@ export default {
     const primaryDir = path.join(baseDir, "primary");
     const linkedDir = path.join(baseDir, "linked");
     await fs.mkdir(baseDir, { recursive: true });
-    execSync(`git clone "file://${remoteBare}" "${primaryDir}"`, { encoding: "utf-8" });
+    execFileSync("git", ["clone", `file://${remoteBare}`, primaryDir], { encoding: "utf-8" });
     // Frees 'main' for the linked worktree — a branch can only be checked out once.
     execSync(`git -C "${primaryDir}" switch "feat/other"`, { encoding: "utf-8" });
     execSync(`git -C "${primaryDir}" worktree add "${linkedDir}" main`, { encoding: "utf-8" });
